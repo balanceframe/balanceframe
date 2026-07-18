@@ -241,9 +241,7 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
                                 finding_type: "amount_overflow".into(),
                                 severity: "blocker".into(),
                                 entity_id: tx.id.clone(),
-                                message: format!(
-                                    "Accumulation overflow while summing uncategorized transactions"
-                                ),
+                                message: "Accumulation overflow while summing uncategorized transactions".to_string(),
                                 drill_down: vec![],
                             });
                             reason_codes.push("amount_overflow".into());
