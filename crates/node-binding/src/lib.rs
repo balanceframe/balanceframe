@@ -4,7 +4,7 @@
 //! its body in [`std::panic::catch_unwind`] so that a Rust panic cannot crash
 //! the Node.js process — it is surfaced as an `napi::Error` instead.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};

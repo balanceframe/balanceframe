@@ -110,11 +110,11 @@
       "properties": {
         "id": { "type": "string" },
         "account_id": { "type": "string" },
-        "payee_id": { "type": "string" },
-        "category_id": { "type": "string" },
-        "payee_name": { "type": "string" },
+        "payee_id": { "type": ["string", "null"] },
+        "category_id": { "type": ["string", "null"] },
+        "payee_name": { "type": ["string", "null"] },
         "name": { "type": "string" },
-        "memo": { "type": "string" },
+        "memo": { "type": ["string", "null"] },
         "cleared": {
           "type": "string",
           "enum": ["cleared", "uncleared", "reconciled"]
@@ -131,9 +131,9 @@
           "description": "Amount in minor units (cents). Positive = inflow, negative = outflow."
         },
         "date": { "type": "string", "format": "date" },
-        "imported_payee": { "type": "string" },
-        "imported_id": { "type": "string" },
-        "import_date": { "type": "string", "format": "date-time" },
+        "imported_payee": { "type": ["string", "null"] },
+        "imported_id": { "type": ["string", "null"] },
+        "import_date": { "type": ["string", "null"] },
         "deleted": { "type": "boolean" },
         "type": {
           "type": "string",
