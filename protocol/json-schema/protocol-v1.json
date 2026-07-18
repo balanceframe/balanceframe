@@ -2,7 +2,8 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://balanceframe.dev/schemas/protocol-v1.json",
   "title": "BalanceFrame Protocol v1",
-  "description": "JSON Schema defining all BalanceFrame protocol types for financial categorization on Actual Budget",
+  "description": "JSON Schema defining all BalanceFrame protocol types for financial categorization on Actual Budget.\n\nForward-compatibility policy: Known fields are validated against the schema; unknown fields are preserved and passed through. This allows future versions of the protocol to add new fields without breaking existing consumers. Sub-object types within the schema may or may not allow unknown fields independently, but the top-level ProtocolSnapshot MUST accept them.",
+  "additionalProperties": true,
   "type": "object",
   "required": [
     "schema_version",

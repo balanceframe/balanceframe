@@ -1,12 +1,18 @@
 {
   "name": "@balanceframe/native",
+  "version": "0.1.0",
+  "description": "N-API bindings for BalanceFrame Rust financial core",
   "napi": {
     "name": "balanceframe",
     "triples": {
+      "defaults": true,
       "additional": [
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu"
       ]
     }
+  },
+  "scripts": {
+    "build": "napi build --release"
   }
 }

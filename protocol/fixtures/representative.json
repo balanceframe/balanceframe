@@ -6,424 +6,255 @@
     {
       "id": "a_1",
       "name": "Checking Account",
-      "type": "checking",
-      "on_budget": true,
-      "closed": false,
-      "note": "Primary checking account",
-      "order": 0
+      "accountType": "checking",
+      "offBudget": false,
+      "isClosed": false,
+      "clearedBalance": { "minorUnits": "125000", "currency": "USD" },
+      "importedBalance": { "minorUnits": "125000", "currency": "USD" },
+      "mtid": null,
+      "bank_sync": true
     },
     {
       "id": "a_2",
       "name": "Savings Account",
-      "type": "savings",
-      "on_budget": true,
-      "closed": false,
-      "note": "",
-      "order": 1
+      "accountType": "savings",
+      "offBudget": false,
+      "isClosed": false,
+      "clearedBalance": { "minorUnits": "500000", "currency": "USD" },
+      "importedBalance": { "minorUnits": "500000", "currency": "USD" },
+      "mtid": null,
+      "bank_sync": true
     },
     {
       "id": "a_3",
       "name": "Credit Card",
-      "type": "creditCard",
-      "on_budget": true,
-      "closed": false,
-      "note": "",
-      "order": 2
-    }
-  ],
-  "transactions": [
-    {
-      "id": "txn_1",
-      "account_id": "a_1",
-      "payee_id": "payee_1",
-      "category_id": "cat_1",
-      "payee_name": "Supermarket Inc.",
-      "name": "Weekly groceries",
-      "memo": null,
-      "cleared": "cleared",
-      "approved": true,
-      "flag_color": null,
-      "amount": -8500,
-      "date": "2026-07-14",
-      "imported_payee": null,
-      "imported_id": null,
-      "import_date": null,
-      "deleted": false,
-      "type": "regular",
-      "transfer_id": null,
-      "sub_txns": []
+      "accountType": "creditCard",
+      "offBudget": true,
+      "isClosed": false,
+      "clearedBalance": { "minorUnits": "-45000", "currency": "USD" },
+      "importedBalance": { "minorUnits": "-45000", "currency": "USD" },
+      "mtid": null,
+      "bank_sync": true
     },
     {
-      "id": "txn_2",
-      "account_id": "a_1",
-      "payee_id": "payee_2",
-      "category_id": null,
-      "payee_name": "Electric Company",
-      "name": "Monthly electric bill",
-      "memo": "Bill for June usage",
-      "cleared": "cleared",
-      "approved": true,
-      "flag_color": "yellow",
-      "amount": -12500,
-      "date": "2026-07-10",
-      "imported_payee": null,
-      "imported_id": null,
-      "import_date": null,
-      "deleted": false,
-      "type": "regular",
-      "transfer_id": null,
-      "sub_txns": []
+      "id": "a_4",
+      "name": "Cash Wallet",
+      "accountType": "cash",
+      "offBudget": false,
+      "isClosed": false,
+      "clearedBalance": { "minorUnits": "20000", "currency": "USD" },
+      "importedBalance": { "minorUnits": "20000", "currency": "USD" },
+      "mtid": null,
+      "bank_sync": false
     },
     {
-      "id": "txn_3",
-      "account_id": "a_2",
-      "payee_id": "payee_3",
-      "category_id": "cat_5",
-      "payee_name": "Employer Corp",
-      "name": "Salary deposit",
-      "memo": null,
-      "cleared": "cleared",
-      "approved": true,
-      "flag_color": "green",
-      "amount": 320000,
-      "date": "2026-07-01",
-      "imported_payee": null,
-      "imported_id": null,
-      "import_date": null,
-      "deleted": false,
-      "type": "regular",
-      "transfer_id": null,
-      "sub_txns": []
+      "id": "a_5",
+      "name": "Investment Portfolio",
+      "accountType": "investment",
+      "offBudget": true,
+      "isClosed": false,
+      "clearedBalance": { "minorUnits": "1000000", "currency": "USD" },
+      "importedBalance": { "minorUnits": "1000000", "currency": "USD" },
+      "mtid": null,
+      "bank_sync": false
     },
     {
-      "id": "txn_4",
-      "account_id": "a_1",
-      "payee_id": "payee_4",
-      "category_id": "cat_2",
-      "payee_name": "Online Retailer",
-      "name": "Amazon purchase",
-      "memo": "Order #12345",
-      "cleared": "uncleared",
-      "approved": false,
-      "flag_color": null,
-      "amount": -3499,
-      "date": "2026-07-16",
-      "imported_payee": null,
-      "imported_id": null,
-      "import_date": null,
-      "deleted": false,
-      "type": "regular",
-      "transfer_id": null,
-      "sub_txns": []
-    },
-    {
-      "id": "txn_5",
-      "account_id": "a_1",
-      "payee_id": "payee_2",
-      "category_id": "cat_3",
-      "payee_name": "Gas Company",
-      "name": "Transfer to savings",
-      "memo": null,
-      "cleared": "reconciled",
-      "approved": true,
-      "flag_color": null,
-      "amount": -50000,
-      "date": "2026-07-03",
-      "imported_payee": null,
-      "imported_id": null,
-      "import_date": null,
-      "deleted": false,
-      "type": "transfer",
-      "transfer_id": "txn_6",
-      "sub_txns": []
-    },
-    {
-      "id": "txn_6",
-      "account_id": "a_2",
-      "payee_id": "payee_2",
-      "category_id": null,
-      "payee_name": "Transfer from checking",
-      "name": "Transfer from checking",
-      "memo": null,
-      "cleared": "reconciled",
-      "approved": true,
-      "flag_color": null,
-      "amount": 50000,
-      "date": "2026-07-03",
-      "imported_payee": null,
-      "imported_id": null,
-      "import_date": null,
-      "deleted": false,
-      "type": "transfer",
-      "transfer_id": "txn_5",
-      "sub_txns": []
-    },
-    {
-      "id": "txn_7",
-      "account_id": "a_3",
-      "payee_id": "payee_1",
-      "category_id": "cat_1",
-      "payee_name": "Supermarket Inc.",
-      "name": "Split transaction",
-      "memo": "Weekly groceries - split",
-      "cleared": "cleared",
-      "approved": true,
-      "flag_color": null,
-      "amount": -4230,
-      "date": "2026-07-12",
-      "imported_payee": null,
-      "imported_id": null,
-      "import_date": null,
-      "deleted": false,
-      "type": "parent",
-      "transfer_id": null,
-      "sub_txns": [
-        {
-          "id": "txn_7a",
-          "account_id": "a_3",
-          "payee_id": "payee_1",
-          "category_id": "cat_1",
-          "payee_name": null,
-          "name": "Groceries",
-          "memo": null,
-          "cleared": "cleared",
-          "approved": true,
-          "flag_color": null,
-          "amount": -3100,
-          "date": "2026-07-12",
-          "imported_payee": null,
-          "imported_id": null,
-          "import_date": null,
-          "deleted": false,
-          "type": "sub",
-          "transfer_id": null,
-          "sub_txns": []
-        },
-        {
-          "id": "txn_7b",
-          "account_id": "a_3",
-          "payee_id": "payee_1",
-          "category_id": "cat_2",
-          "payee_name": null,
-          "name": "Household goods",
-          "memo": null,
-          "cleared": "cleared",
-          "approved": true,
-          "flag_color": null,
-          "amount": -1130,
-          "date": "2026-07-12",
-          "imported_payee": null,
-          "imported_id": null,
-          "import_date": null,
-          "deleted": false,
-          "type": "sub",
-          "transfer_id": null,
-          "sub_txns": []
-        }
-      ]
+      "id": "a_6",
+      "name": "Car Loan",
+      "accountType": "loan",
+      "offBudget": true,
+      "isClosed": false,
+      "clearedBalance": { "minorUnits": "-250000", "currency": "USD" },
+      "importedBalance": { "minorUnits": "-240000", "currency": "USD" },
+      "mtid": null,
+      "bank_sync": false
     }
   ],
   "categories": [
-    {
-      "id": "cg_1",
-      "name": "Everyday Expenses",
-      "deleted": false,
-      "hidden": false,
-      "is_in_report": true,
-      "categories": [
-        {
-          "id": "cat_1",
-          "name": "Groceries",
-          "group_id": "cg_1",
-          "deleted": false,
-          "calculated_auto_budget_amount": null,
-          "auto_budget_type": "none",
-          "auto_budget_frequency": null
-        },
-        {
-          "id": "cat_2",
-          "name": "Shopping",
-          "group_id": "cg_1",
-          "deleted": false,
-          "calculated_auto_budget_amount": null,
-          "auto_budget_type": "none",
-          "auto_budget_frequency": null
-        },
-        {
-          "id": "cat_3",
-          "name": "Utilities",
-          "group_id": "cg_1",
-          "deleted": false,
-          "calculated_auto_budget_amount": null,
-          "auto_budget_type": "monthly",
-          "auto_budget_frequency": null
-        }
-      ]
-    },
-    {
-      "id": "cg_2",
-      "name": "Bills & Subscriptions",
-      "deleted": false,
-      "hidden": false,
-      "is_in_report": true,
-      "categories": [
-        {
-          "id": "cat_4",
-          "name": "Rent",
-          "group_id": "cg_2",
-          "deleted": false,
-          "calculated_auto_budget_amount": 120000,
-          "auto_budget_type": "monthly",
-          "auto_budget_frequency": null
-        },
-        {
-          "id": "cat_5",
-          "name": "Income",
-          "group_id": "cg_2",
-          "deleted": false,
-          "calculated_auto_budget_amount": null,
-          "auto_budget_type": "none",
-          "auto_budget_frequency": null
-        }
-      ]
-    },
-    {
-      "id": "cg_3",
-      "name": "Hidden Group",
-      "deleted": false,
-      "hidden": true,
-      "is_in_report": false,
-      "categories": [
-        {
-          "id": "cat_6",
-          "name": "Internal Transfer",
-          "group_id": "cg_3",
-          "deleted": false,
-          "calculated_auto_budget_amount": null,
-          "auto_budget_type": "none",
-          "auto_budget_frequency": null
-        }
-      ]
-    }
+    { "id": "cat_1", "name": "Groceries", "groupName": "Everyday Expenses", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_2", "name": "Shopping", "groupName": "Everyday Expenses", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_3", "name": "Utilities", "groupName": "Everyday Expenses", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_4", "name": "Dining Out", "groupName": "Everyday Expenses", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_5", "name": "Transportation", "groupName": "Everyday Expenses", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_6", "name": "Rent", "groupName": "Bills & Subscriptions", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_7", "name": "Internet", "groupName": "Bills & Subscriptions", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_8", "name": "Phone", "groupName": "Bills & Subscriptions", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_9", "name": "Insurance", "groupName": "Bills & Subscriptions", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_10", "name": "Salary", "groupName": "Income", "isIncome": true, "mtid": null, "deleted": false },
+    { "id": "cat_11", "name": "Side Income", "groupName": "Income", "isIncome": true, "mtid": null, "deleted": false },
+    { "id": "cat_12", "name": "Investment Contributions", "groupName": "Investments & Savings", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_13", "name": "Savings Goals", "groupName": "Investments & Savings", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_14", "name": "Emergency Fund", "groupName": "Investments & Savings", "isIncome": false, "mtid": null, "deleted": false },
+    { "id": "cat_deleted", "name": "Old Category", "groupName": "Bills & Subscriptions", "isIncome": false, "mtid": null, "deleted": true }
   ],
-  "payee_groups": [],
   "payees": [
-    {
-      "id": "payee_1",
-      "name": "Supermarket Inc.",
-      "transfer_account_id": null,
-      "mtid": null,
-      "deleted": false
-    },
-    {
-      "id": "payee_2",
-      "name": "Transfer",
-      "transfer_account_id": null,
-      "mtid": null,
-      "deleted": false
-    },
-    {
-      "id": "payee_3",
-      "name": "Employer Corp",
-      "transfer_account_id": null,
-      "mtid": null,
-      "deleted": false
-    },
-    {
-      "id": "payee_4",
-      "name": "Online Retailer",
-      "transfer_account_id": null,
-      "mtid": null,
-      "deleted": false
-    }
+    { "id": "payee_1", "name": "Supermarket Inc.", "transferAccountId": null, "mtid": null },
+    { "id": "payee_2", "name": "Electric Company", "transferAccountId": null, "mtid": null },
+    { "id": "payee_3", "name": "Employer Corp", "transferAccountId": null, "mtid": null },
+    { "id": "payee_4", "name": "Online Retailer", "transferAccountId": null, "mtid": null },
+    { "id": "payee_5", "name": "Transfer - Checking", "transferAccountId": "a_1", "mtid": null },
+    { "id": "payee_6", "name": "Transfer - Savings", "transferAccountId": "a_2", "mtid": null },
+    { "id": "payee_7", "name": "Landlord Properties", "transferAccountId": null, "mtid": null },
+    { "id": "payee_8", "name": "Phone Company", "transferAccountId": null, "mtid": null },
+    { "id": "payee_9", "name": "Insurance Co", "transferAccountId": null, "mtid": null },
+    { "id": "payee_10", "name": "Gas Station", "transferAccountId": null, "mtid": null },
+    { "id": "payee_11", "name": "Freelance Client", "transferAccountId": null, "mtid": null },
+    { "id": "payee_12", "name": "Internet Provider", "transferAccountId": null, "mtid": null },
+    { "id": "payee_13", "name": "Pharmacy", "transferAccountId": null, "mtid": null },
+    { "id": "payee_14", "name": "Restaurant", "transferAccountId": null, "mtid": null },
+    { "id": "payee_15", "name": "Gym Membership", "transferAccountId": null, "mtid": null },
+    { "id": "payee_16", "name": "Streaming Service", "transferAccountId": null, "mtid": null },
+    { "id": "payee_17", "name": "Hardware Store", "transferAccountId": null, "mtid": null },
+    { "id": "payee_18", "name": "Coffee Shop", "transferAccountId": null, "mtid": null },
+    { "id": "payee_19", "name": "Tax Refund", "transferAccountId": null, "mtid": null },
+    { "id": "payee_20", "name": "Charity", "transferAccountId": null, "mtid": null }
   ],
   "rules": [
-    {
-      "id": "rule_1",
-      "name": "Groceries auto-categorize",
-      "trigger": "payee_is",
-      "trigger_value": "Supermarket Inc.",
-      "actions": [
-        {
-          "action": "set_category",
-          "action_data": "cat_1"
-        }
-      ],
-      "inactive": false,
-      "mtid": null,
-      "order": 0
-    },
-    {
-      "id": "rule_2",
-      "name": "Flag large expenses",
-      "trigger": "amount_between",
-      "trigger_value": "10000,1000000",
-      "actions": [
-        {
-          "action": "set_flag",
-          "action_data": "red"
-        }
-      ],
-      "inactive": true,
-      "mtid": "mtid_2",
-      "order": 1
-    }
+    { "id": "rule_1", "name": "Groceries auto-categorize", "order": 0, "trigger": { "payee": "Supermarket Inc." }, "actions": [{ "action": "set_category", "action_data": "cat_1" }], "inactive": false },
+    { "id": "rule_2", "name": "Flag large expenses", "order": 1, "trigger": "large_expense", "actions": [{ "action": "set_flag", "action_data": "red" }], "inactive": true },
+    { "id": "rule_3", "name": "Salary auto-categorize", "order": 2, "trigger": { "payee": "Employer Corp" }, "actions": [{ "action": "set_category", "action_data": "cat_10" }], "inactive": false },
+    { "id": "rule_4", "name": "Rent auto-categorize (learning)", "order": 3, "trigger": { "payee": "Landlord Properties" }, "actions": [{ "action": "set_category", "action_data": "cat_6" }], "inactive": false },
+    { "id": "rule_5", "name": "Coffee shop reminder", "order": 4, "trigger": { "payee": "Coffee Shop" }, "actions": [{ "action": "set_flag", "action_data": "yellow" }], "inactive": false }
   ],
   "schedules": [
-    {
-      "id": "sched_1",
-      "frequency": "monthly",
-      "frequency_n": 1,
-      "next_expected": "2026-08-01",
-      "bill": true,
-      "deleted": false
-    },
-    {
-      "id": "sched_2",
-      "frequency": "biweekly",
-      "frequency_n": 2,
-      "next_expected": "2026-07-28",
-      "bill": false,
-      "deleted": false
-    }
+    { "id": "sched_1", "frequency": "monthly", "amount": { "minorUnits": "120000", "currency": "USD" }, "payeeName": "Landlord Properties", "accountId": "a_1", "nextExpected": "2026-08-01" },
+    { "id": "sched_2", "frequency": "biweekly", "amount": { "minorUnits": "320000", "currency": "USD" }, "payeeName": "Employer Corp", "accountId": "a_1", "nextExpected": "2026-07-28" },
+    { "id": "sched_3", "frequency": "monthly", "amount": { "minorUnits": "6500", "currency": "USD" }, "payeeName": "Internet Provider", "accountId": "a_1", "nextExpected": "2026-08-05" },
+    { "id": "sched_4", "frequency": "yearly", "amount": { "minorUnits": "150000", "currency": "USD" }, "payeeName": "Insurance Co", "accountId": "a_3", "nextExpected": "2027-01-01" }
   ],
   "budgets": [
+    {
+      "id": "budget_2026_06",
+      "month": "2026-06",
+      "categories": {
+        "cat_1": { "categoryId": "cat_1", "amount": { "minorUnits": "40000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false },
+        "cat_2": { "categoryId": "cat_2", "amount": { "minorUnits": "20000", "currency": "USD" }, "carryover": { "minorUnits": "1500", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "2500", "currency": "USD" }, "carriesOver": true },
+        "cat_6": { "categoryId": "cat_6", "amount": { "minorUnits": "120000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false }
+      }
+    },
     {
       "id": "budget_2026_07",
       "month": "2026-07",
       "categories": {
-        "cat_1": {
-          "category_id": "cat_1",
-          "amount": 40000,
-          "carryover": 0,
-          "carryover_from_previous": 0,
-          "carries_over": false
-        },
-        "cat_2": {
-          "category_id": "cat_2",
-          "amount": 20000,
-          "carryover": 0,
-          "carryover_from_previous": 2500,
-          "carries_over": true
-        },
-        "cat_4": {
-          "category_id": "cat_4",
-          "amount": 120000,
-          "carryover": 0,
-          "carryover_from_previous": 0,
-          "carries_over": false
-        }
+        "cat_1": { "categoryId": "cat_1", "amount": { "minorUnits": "40000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false },
+        "cat_2": { "categoryId": "cat_2", "amount": { "minorUnits": "20000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "1500", "currency": "USD" }, "carriesOver": true },
+        "cat_4": { "categoryId": "cat_4", "amount": { "minorUnits": "8000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false },
+        "cat_6": { "categoryId": "cat_6", "amount": { "minorUnits": "120000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false },
+        "cat_14": { "categoryId": "cat_14", "amount": { "minorUnits": "50000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false }
+      }
+    },
+    {
+      "id": "budget_2026_08",
+      "month": "2026-08",
+      "categories": {
+        "cat_1": { "categoryId": "cat_1", "amount": { "minorUnits": "44000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false },
+        "cat_6": { "categoryId": "cat_6", "amount": { "minorUnits": "120000", "currency": "USD" }, "carryover": { "minorUnits": "0", "currency": "USD" }, "carryoverFromPrevious": { "minorUnits": "0", "currency": "USD" }, "carriesOver": false }
       }
     }
   ],
   "tags": [
-    {
-      "id": "tag_1",
-      "name": "recurring"
-    },
-    {
-      "id": "tag_2",
-      "name": "tax-deductible"
-    }
+    { "id": "tag_1", "name": "recurring" },
+    { "id": "tag_2", "name": "tax-deductible" },
+    { "id": "tag_3", "name": "essential" },
+    { "id": "tag_4", "name": "discretionary" },
+    { "id": "tag_5", "name": "transfer" },
+    { "id": "tag_6", "name": "bill" },
+    { "id": "tag_7", "name": "subscription" },
+    { "id": "tag_8", "name": "salary" },
+    { "id": "tag_9", "name": "investment" },
+    { "id": "tag_10", "name": "emergency" }
+  ],
+  "transactions": [
+    { "id": "txn_1", "accountId": "a_1", "date": "2026-07-16", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-3499", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_001", "importedPayee": "ONLINE RETAILER", "notes": "Order #12345", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_2", "accountId": "a_1", "date": "2026-07-17", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-2300", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_002", "importedPayee": "SUPERMARKET INC", "notes": "Quick stop", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_3", "accountId": "a_2", "date": "2026-07-18", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-4500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_003", "importedPayee": "GAS STATION", "notes": "Fill up", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_4", "accountId": "a_3", "date": "2026-07-08", "payeeId": "payee_17", "payeeName": "Hardware Store", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-6700", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_004", "importedPayee": "HARDWARE STORE", "notes": "Tools", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_5", "accountId": "a_1", "date": "2026-07-10", "payeeId": "payee_2", "payeeName": "Electric Company", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-12500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Bill for June usage", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_6", "accountId": "a_3", "date": "2026-07-14", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-8500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Weekly groceries", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_7", "accountId": "a_2", "date": "2026-07-20", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-1999", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Subscription", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_8", "accountId": "a_1", "date": "2026-07-01", "payeeId": "payee_7", "payeeName": "Landlord Properties", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-120000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "July rent", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_9", "accountId": "a_4", "date": "2026-07-22", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-3800", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Fill up", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_10", "accountId": "a_1", "date": "2026-07-23", "payeeId": "payee_18", "payeeName": "Coffee Shop", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-450", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_11", "accountId": "a_4", "date": "2026-07-25", "payeeId": "payee_18", "payeeName": "Coffee Shop", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-320", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_12", "accountId": "a_3", "date": "2026-07-19", "payeeId": "payee_16", "payeeName": "Streaming Service", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-1500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_13", "accountId": "a_1", "date": "2026-07-21", "payeeId": "payee_8", "payeeName": "Phone Company", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-4500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_14", "accountId": "a_4", "date": "2026-07-24", "payeeId": "payee_13", "payeeName": "Pharmacy", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-2800", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_15", "accountId": "a_2", "date": "2026-06-12", "payeeId": "payee_2", "payeeName": "Electric Company", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-9500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_16", "accountId": "a_1", "date": "2026-06-05", "payeeId": "payee_12", "payeeName": "Internet Provider", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-6500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_17", "accountId": "a_1", "date": "2026-06-01", "payeeId": "payee_7", "payeeName": "Landlord Properties", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-120000", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_18", "accountId": "a_1", "date": "2026-07-28", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-7800", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_19", "accountId": "a_3", "date": "2026-07-29", "payeeId": "payee_18", "payeeName": "Coffee Shop", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-550", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_20", "accountId": "a_4", "date": "2026-07-26", "payeeId": "payee_14", "payeeName": "Restaurant", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-4200", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_21", "accountId": "a_3", "date": "2026-07-12", "payeeId": "payee_14", "payeeName": "Restaurant", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-5600", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Dinner", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_22", "accountId": "a_5", "date": "2026-06-15", "payeeId": "payee_19", "payeeName": "Tax Refund", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "250000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_23", "accountId": "a_2", "date": "2026-07-01", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Salary deposit", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_24", "accountId": "a_1", "date": "2026-06-10", "payeeId": "payee_2", "payeeName": "Electric Company", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-11200", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_25", "accountId": "a_1", "date": "2026-07-05", "payeeId": "payee_12", "payeeName": "Internet Provider", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-6500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_26", "accountId": "a_2", "date": "2026-06-01", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_27", "accountId": "a_3", "date": "2026-07-09", "payeeId": "payee_14", "payeeName": "Restaurant", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-3200", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_28", "accountId": "a_1", "date": "2026-07-03", "payeeId": "payee_9", "payeeName": "Insurance Co", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-15000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_29", "accountId": "a_5", "date": "2026-07-02", "payeeId": "payee_15", "payeeName": "Gym Membership", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-5000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_30", "accountId": "a_3", "date": "2026-07-07", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-4100", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_31", "accountId": "a_5", "date": "2026-07-11", "payeeId": "payee_19", "payeeName": "Tax Refund", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "30000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_32", "accountId": "a_2", "date": "2026-07-04", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-1800", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_33", "accountId": "a_3", "date": "2026-06-10", "payeeId": "payee_2", "payeeName": "Electric Company", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-9800", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_34", "accountId": "a_5", "date": "2026-07-15", "payeeId": "payee_11", "payeeName": "Freelance Client", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "50000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_35", "accountId": "a_3", "date": "2026-07-12", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": "cat_5", "categoryName": null, "amount": { "minorUnits": "-4900", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_021", "importedPayee": "GAS STATION", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_36", "accountId": "a_2", "date": "2026-07-16", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-1500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_017", "importedPayee": "ONLINE RETAILER", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_37", "accountId": "a_2", "date": "2026-07-19", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-6200", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_014", "importedPayee": "SUPERMARKET INC", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_38", "accountId": "a_2", "date": "2026-07-23", "payeeId": "payee_11", "payeeName": "Freelance Client", "categoryId": "cat_11", "categoryName": null, "amount": { "minorUnits": "50000", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_010", "importedPayee": "FREELANCE CLIENT", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_39", "accountId": "a_2", "date": "2026-07-25", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": "cat_5", "categoryName": null, "amount": { "minorUnits": "-5100", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_007", "importedPayee": "GAS STATION", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_40", "accountId": "a_1", "date": "2026-07-13", "payeeId": "payee_13", "payeeName": "Pharmacy", "categoryId": "cat_13", "categoryName": null, "amount": { "minorUnits": "-2500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_020", "importedPayee": "PHARMACY", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_41", "accountId": "a_1", "date": "2026-07-15", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": "cat_10", "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_018", "importedPayee": "EMPLOYER CORP", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_42", "accountId": "a_1", "date": "2026-07-17", "payeeId": "payee_17", "payeeName": "Hardware Store", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-3100", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_016", "importedPayee": "HARDWARE STORE", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_43", "accountId": "a_1", "date": "2026-07-20", "payeeId": "payee_13", "payeeName": "Insurance Co", "categoryId": "cat_9", "categoryName": null, "amount": { "minorUnits": "-1800", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_013", "importedPayee": "PHARMACY", "notes": "Co-pay", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_44", "accountId": "a_1", "date": "2026-07-22", "payeeId": "payee_17", "payeeName": "Hardware Store", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-12500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_011", "importedPayee": "HARDWARE STORE", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_45", "accountId": "a_1", "date": "2026-07-26", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-2900", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_006", "importedPayee": "ONLINE RETAILER", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_46", "accountId": "a_1", "date": "2026-07-27", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-9100", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_005", "importedPayee": "SUPERMARKET INC", "notes": "Weekly groceries", "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_47", "accountId": "a_1", "date": "2026-08-01", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": "cat_10", "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_009", "importedPayee": "EMPLOYER CORP", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_48", "accountId": "a_3", "date": "2026-07-14", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-7500", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_019", "importedPayee": "SUPERMARKET INC", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_49", "accountId": "a_3", "date": "2026-07-18", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": "cat_5", "categoryName": null, "amount": { "minorUnits": "-4800", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_015", "importedPayee": "GAS STATION", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_50", "accountId": "a_3", "date": "2026-07-21", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-3400", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_012", "importedPayee": "ONLINE RETAILER", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_51", "accountId": "a_3", "date": "2026-07-24", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-4200", "currency": "USD" }, "cleared": false, "reconciled": false, "importedId": "imp_008", "importedPayee": "SUPERMARKET INC", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_52", "accountId": "a_1", "date": "2026-07-02", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-8400", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_53", "accountId": "a_1", "date": "2026-07-01", "payeeId": "payee_7", "payeeName": "Landlord Properties", "categoryId": "cat_6", "categoryName": null, "amount": { "minorUnits": "-120000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_54", "accountId": "a_1", "date": "2026-07-10", "payeeId": "payee_2", "payeeName": "Electric Company", "categoryId": "cat_3", "categoryName": null, "amount": { "minorUnits": "-12500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_55", "accountId": "a_1", "date": "2026-07-05", "payeeId": "payee_12", "payeeName": "Internet Provider", "categoryId": "cat_7", "categoryName": null, "amount": { "minorUnits": "-6500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_56", "accountId": "a_1", "date": "2026-07-07", "payeeId": "payee_8", "payeeName": "Phone Company", "categoryId": "cat_8", "categoryName": null, "amount": { "minorUnits": "-4500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_57", "accountId": "a_1", "date": "2026-07-10", "payeeId": "payee_18", "payeeName": "Coffee Shop", "categoryId": "cat_4", "categoryName": null, "amount": { "minorUnits": "-380", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_58", "accountId": "a_1", "date": "2026-06-28", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-6200", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_59", "accountId": "a_1", "date": "2026-06-10", "payeeId": "payee_2", "payeeName": "Electric Company", "categoryId": "cat_3", "categoryName": null, "amount": { "minorUnits": "-11800", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_60", "accountId": "a_1", "date": "2026-06-01", "payeeId": "payee_7", "payeeName": "Landlord Properties", "categoryId": "cat_6", "categoryName": null, "amount": { "minorUnits": "-120000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_61", "accountId": "a_2", "date": "2026-07-01", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": "cat_10", "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_62", "accountId": "a_2", "date": "2026-07-06", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-2200", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_63", "accountId": "a_2", "date": "2026-07-09", "payeeId": "payee_15", "payeeName": "Gym Membership", "categoryId": "cat_14", "categoryName": null, "amount": { "minorUnits": "-5000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_64", "accountId": "a_2", "date": "2026-06-25", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-3500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_65", "accountId": "a_2", "date": "2026-07-13", "payeeId": "payee_18", "payeeName": "Coffee Shop", "categoryId": "cat_4", "categoryName": null, "amount": { "minorUnits": "-500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_66", "accountId": "a_3", "date": "2026-07-03", "payeeId": "payee_14", "payeeName": "Restaurant", "categoryId": "cat_4", "categoryName": null, "amount": { "minorUnits": "-4500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_67", "accountId": "a_3", "date": "2026-07-05", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": "cat_5", "categoryName": null, "amount": { "minorUnits": "-4300", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_68", "accountId": "a_3", "date": "2026-07-04", "payeeId": "payee_9", "payeeName": "Insurance Co", "categoryId": "cat_9", "categoryName": null, "amount": { "minorUnits": "-15000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_69", "accountId": "a_3", "date": "2026-07-11", "payeeId": "payee_16", "payeeName": "Streaming Service", "categoryId": "cat_7", "categoryName": null, "amount": { "minorUnits": "-1500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_70", "accountId": "a_3", "date": "2026-06-04", "payeeId": "payee_9", "payeeName": "Insurance Co", "categoryId": "cat_9", "categoryName": null, "amount": { "minorUnits": "-15000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_71", "accountId": "a_3", "date": "2026-06-15", "payeeId": "payee_14", "payeeName": "Restaurant", "categoryId": "cat_4", "categoryName": null, "amount": { "minorUnits": "-6800", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_72", "accountId": "a_4", "date": "2026-07-02", "payeeId": "payee_14", "payeeName": "Restaurant", "categoryId": "cat_4", "categoryName": null, "amount": { "minorUnits": "-3500", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_73", "accountId": "a_4", "date": "2026-06-20", "payeeId": "payee_18", "payeeName": "Coffee Shop", "categoryId": "cat_4", "categoryName": null, "amount": { "minorUnits": "-400", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_74", "accountId": "a_5", "date": "2026-07-08", "payeeId": "payee_11", "payeeName": "Freelance Client", "categoryId": "cat_12", "categoryName": null, "amount": { "minorUnits": "50000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_75", "accountId": "a_5", "date": "2026-07-12", "payeeId": "payee_19", "payeeName": "Tax Refund", "categoryId": "cat_11", "categoryName": null, "amount": { "minorUnits": "30000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_76", "accountId": "a_5", "date": "2026-06-01", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": "cat_10", "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_77", "accountId": "a_2", "date": "2026-07-02", "payeeId": "payee_13", "payeeName": "Pharmacy", "categoryId": "cat_13", "categoryName": null, "amount": { "minorUnits": "-2100", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_029", "importedPayee": "PHARMACY", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_78", "accountId": "a_2", "date": "2026-07-06", "payeeId": "payee_10", "payeeName": "Gas Station", "categoryId": "cat_5", "categoryName": null, "amount": { "minorUnits": "-4600", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_025", "importedPayee": "GAS STATION", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_79", "accountId": "a_2", "date": "2026-07-01", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": "cat_10", "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_023", "importedPayee": "EMPLOYER CORP", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_80", "accountId": "a_1", "date": "2026-07-01", "payeeId": "payee_3", "payeeName": "Employer Corp", "categoryId": "cat_10", "categoryName": null, "amount": { "minorUnits": "320000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_030", "importedPayee": "EMPLOYER CORP", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_81", "accountId": "a_1", "date": "2026-07-04", "payeeId": "payee_17", "payeeName": "Hardware Store", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-8300", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_027", "importedPayee": "HARDWARE STORE", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_82", "accountId": "a_1", "date": "2026-07-08", "payeeId": "payee_4", "payeeName": "Online Retailer", "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-5200", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_024", "importedPayee": "ONLINE RETAILER", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_83", "accountId": "a_1", "date": "2026-07-10", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-5100", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_022", "importedPayee": "SUPERMARKET INC", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_84", "accountId": "a_3", "date": "2026-07-03", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-6300", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_028", "importedPayee": "SUPERMARKET INC", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_85", "accountId": "a_5", "date": "2026-07-05", "payeeId": "payee_11", "payeeName": "Freelance Client", "categoryId": "cat_11", "categoryName": null, "amount": { "minorUnits": "75000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": "imp_026", "importedPayee": "FREELANCE CLIENT", "notes": null, "tags": [], "transferAccountId": null, "subtransactions": [] },
+    { "id": "txn_86", "accountId": "a_1", "date": "2026-07-03", "payeeId": "payee_5", "payeeName": "Transfer to Savings", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-50000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Monthly savings transfer", "tags": [], "transferAccountId": "a_2", "subtransactions": [] },
+    { "id": "txn_87", "accountId": "a_2", "date": "2026-07-03", "payeeId": "payee_6", "payeeName": "Transfer from Checking", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "50000", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Monthly savings transfer", "tags": [], "transferAccountId": "a_1", "subtransactions": [] },
+    { "id": "txn_88", "accountId": "a_3", "date": "2026-07-12", "payeeId": "payee_1", "payeeName": "Supermarket Inc.", "categoryId": null, "categoryName": null, "amount": { "minorUnits": "-4230", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Split transaction", "tags": [], "transferAccountId": null, "subtransactions": [
+      { "id": "txn_88_sub_1", "accountId": "a_3", "date": "2026-07-12", "payeeId": "payee_1", "payeeName": null, "categoryId": "cat_1", "categoryName": null, "amount": { "minorUnits": "-3100", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Groceries", "tags": [], "transferAccountId": null, "subtransactions": [] },
+      { "id": "txn_88_sub_2", "accountId": "a_3", "date": "2026-07-12", "payeeId": "payee_1", "payeeName": null, "categoryId": "cat_2", "categoryName": null, "amount": { "minorUnits": "-1130", "currency": "USD" }, "cleared": true, "reconciled": false, "importedId": null, "importedPayee": null, "notes": "Household goods", "tags": [], "transferAccountId": null, "subtransactions": [] }
+    ] }
   ]
 }

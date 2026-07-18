@@ -1,7 +1,0 @@
-{
-  "name": "@balanceframe/node-binding",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "N-API bindings for Rust-to-TypeScript bridge"
-}

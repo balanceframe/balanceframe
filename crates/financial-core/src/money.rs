@@ -191,25 +191,44 @@ impl Money {
     }
 
     /// Absolute value (same currency).
-    pub fn abs(&self) -> Money {
-        Money {
-            minor_units: self.minor_units.abs(),
+    ///
+    /// Returns `MoneyError::Overflow` when `minor_units` is `i64::MIN`
+    /// because `-i64::MIN` overflows `i64`.
+    pub fn abs(&self) -> Result<Money, MoneyError> {
+        let abs = self
+            .minor_units
+            .checked_abs()
+            .ok_or(MoneyError::Overflow)?;
+        Ok(Money {
+            minor_units: abs,
             currency: self.currency.clone(),
-        }
+        })
     }
 }
 
-// -- Display ---------------------------------------------------------------
-
 impl fmt::Display for Money {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let abs = self.minor_units.abs();
-        let dollars = abs / 100;
-        let cents = abs % 100;
-        if self.minor_units < 0 {
-            write!(f, "-${}.{:02}", dollars, cents)
-        } else {
-            write!(f, "${}.{:02}", dollars, cents)
+        // Use checked_abs to safely handle i64::MIN (which overflows i64::abs).
+        match self.minor_units.checked_abs() {
+            Some(abs) => {
+                let dollars = abs / 100;
+                let cents = abs % 100;
+                if self.minor_units < 0 {
+                    write!(f, "-${}.{:02}", dollars, cents)
+                } else {
+                    write!(f, "${}.{:02}", dollars, cents)
+                }
+            }
+            None => {
+                // i64::MIN = -9_223_372_036_854_775_808 does not have a
+                // representable positive counterpart; the largest positive
+                // i64 is 9_223_372_036_854_775_807, so we display that plus
+                // one cent to signal the overflow magnitude.
+                let abs = i64::MAX;
+                let dollars = abs / 100;
+                let cents = abs % 100;
+                write!(f, "-${}.{:02}", dollars, cents + 1)
+            }
         }
     }
 }
@@ -315,6 +334,28 @@ mod tests {
         assert_eq!(m, back);
     }
 
+    #[test]
+    fn test_abs_overflow_i64_min() {
+        let m = Money::new(i64::MIN, "USD");
+        assert!(matches!(m.abs(), Err(MoneyError::Overflow)));
+    }
+
+    #[test]
+    fn test_abs_normal() {
+        let m = Money::new(-500, "USD");
+        assert_eq!(m.abs().unwrap(), Money::new(500, "USD"));
+        assert!(!Money::new(300, "USD").abs().unwrap().is_negative());
+        assert_eq!(Money::new(0, "USD").abs().unwrap(), Money::new(0, "USD"));
+    }
+
+    #[test]
+    fn test_display_i64_min() {
+        let m = Money::new(i64::MIN, "USD");
+        // i64::MIN = -9223372036854775808 → formatted as -$92233720368547758.08
+        let s = m.to_string();
+        assert!(s.starts_with("-$"));
+        assert!(s.len() > 10);
+    }
     #[test]
     fn test_serialize_negative() {
         let m = Money::new(-50, "EUR");

@@ -15,7 +15,7 @@ import {
   createBudget, getAccounts, getTransactions,
   importTransactions, addTransactions, exportBudget,
   createAccount, createPayee, createCategory, createCategoryGroup,
-  sync, downloadBudget,
+  getCategories, getPayees, sync, downloadBudget,
 } from '@actual-app/api';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -88,10 +88,10 @@ describe('06 — Import, Export, Restore', () => {
     await withActualClient(async () => {
       const budget = await createImportBudget();
 
-      // Capture initial state
+      // Capture initial state — expect zero transactions in a fresh budget
       const txnsBefore = await getTransactions(budget.checkingAcct);
 
-      // Perform a dry-run import (learn = false should prevent auto-categorization)
+      // Perform a dry-run import — explicitly pass the dryRun option
       const importResult = await importTransactions(budget.checkingAcct, [
         {
           date: '2025-01-01',
@@ -101,14 +101,25 @@ describe('06 — Import, Export, Restore', () => {
           notes: 'Dry run import',
           cleared: true,
         },
-      ]);
+      ], { dryRun: true });
 
-      // The import result should indicate what would be imported
+      // The import result should contain a preview array
       expect(importResult).toBeDefined();
+      expect(importResult).toHaveProperty('updatedPreview');
+      expect(Array.isArray(importResult.updatedPreview)).toBe(true);
+      expect(importResult.updatedPreview.length).toBeGreaterThanOrEqual(1);
 
-      // Verify no new transactions were added (dry-run nature via learn flag)
+      // Preview items should indicate matched/unmatched status
+      const previewItem = importResult.updatedPreview[0];
+      expect(previewItem).toHaveProperty('transaction');
+      expect(previewItem).toHaveProperty('existing');
+      // Since there are no matching existing transactions, existing should be undefined
+      expect(previewItem.existing).toBeUndefined();
+
+      // Verify no new transactions were actually persisted (dry-run nature via dryRun flag)
       const txnsAfter = await getTransactions(budget.checkingAcct);
       expect(txnsAfter.length).toBe(txnsBefore.length);
+      expect(txnsAfter.length).toBe(0);
     });
   });
 
@@ -156,7 +167,10 @@ describe('06 — Import, Export, Restore', () => {
     await withActualClient(async () => {
       const budget = await createImportBudget();
 
-      // Step 1: Manually add a transaction
+      // Step 1: Manually add a transaction with an explicit imported_id
+      const matchId = 'reconcile-001';
+      const importCategory = Object.values(budget.categoryMap)[0] as string;
+
       await addTransactions(budget.checkingAcct, [
         {
           date: '2025-02-01',
@@ -164,34 +178,46 @@ describe('06 — Import, Export, Restore', () => {
           payee: budget.payeeMap['Known Payee'],
           notes: 'Manual entry',
           cleared: false,
+          imported_id: matchId,
         },
       ]);
       await sync();
 
-      const manualTxns = await getTransactions(budget.checkingAcct);
-      const manualTxn = manualTxns.find(
-        (t: unknown) => (t as { notes?: string }).notes === 'Manual entry',
-      ) as { id?: string; imported_id?: string } | undefined;
+      // Capture count before import (1 manual transaction)
+      const txnsBefore = await getTransactions(budget.checkingAcct);
+      const manualCount = txnsBefore.length;
 
-      expect(manualTxn).toBeDefined();
-
-      // Step 2: Import a matching bank transaction (same amount, same date)
-      // The reconciliation happens via imported_id matching on re-import
+      // Step 2: Import a matching bank transaction with same imported_id
+      // The reconciliation matches on imported_id
       await importTransactions(budget.checkingAcct, [
         {
           date: '2025-02-01',
           amount: -50000,
           payee_name: 'Known Payee',
           imported_payee: 'Bank Import Match',
+          imported_id: matchId,
+          category: importCategory,
           notes: 'Bank import matching manual entry',
           cleared: true,
         },
       ]);
       await sync();
 
-      // After import, verify the state — reconciliation should have occurred
+      // After import, the manual transaction and import should have merged
       const allTxns = await getTransactions(budget.checkingAcct);
-      expect(allTxns.length).toBeGreaterThanOrEqual(1);
+
+      // Transaction count stayed the same (manual+import merged into one)
+      expect(allTxns.length).toBe(manualCount);
+
+      // Exactly one transaction exists with the expected imported_id
+      const mergedTxns = allTxns.filter(
+        (t: unknown) => (t as { imported_id?: string }).imported_id === matchId,
+      );
+      expect(mergedTxns.length).toBe(1);
+
+      // The merged transaction has the category_id from the import
+      const mergedTxn = mergedTxns[0] as { category?: string };
+      expect(mergedTxn.category).toBe(importCategory);
     });
   });
 
@@ -202,40 +228,50 @@ describe('06 — Import, Export, Restore', () => {
     await withActualClient(async () => {
       const budget = await createImportBudget();
 
-      // Import with explicit external IDs
+      const dupId = 'dup-001';
+
+      // Import a transaction with an explicit imported_id
       const import1 = await importTransactions(budget.checkingAcct, [
         {
           date: '2025-03-01',
           amount: -7500,
           payee_name: 'Test Payee Alpha',
-          imported_payee: 'External:ABC123',
+          imported_id: dupId,
           notes: 'Import with ID',
           cleared: true,
         },
       ]);
 
-      // Attempt to import same external ID again
+      // First import should have added 1 transaction
+      expect(import1.added.length).toBe(1);
+      const txnsAfterFirst = await getTransactions(budget.checkingAcct);
+      expect(txnsAfterFirst.length).toBe(1);
+
+      // Attempt to import the same imported_id again
       const import2 = await importTransactions(budget.checkingAcct, [
         {
           date: '2025-03-01',
           amount: -7500,
           payee_name: 'Test Payee Alpha',
-          imported_payee: 'External:ABC123',
+          imported_id: dupId,
           notes: 'Duplicate external ID',
           cleared: true,
         },
       ]);
 
-      const txns = await getTransactions(budget.checkingAcct);
+      // The second import should not add any new transactions
+      // (duplicate imported_id was matched and merged/updated)
+      expect(import2.added.length).toBe(0);
 
-      // Should not result in duplicate based on imported_id matching
-      const withDuplicateId = txns.filter(
-        (t: unknown) => (t as { imported_payee?: string }).imported_payee === 'External:ABC123',
+      // Total transaction count did not increase
+      const txnsAfterSecond = await getTransactions(budget.checkingAcct);
+      expect(txnsAfterSecond.length).toBe(1);
+
+      // Exactly 1 transaction has the duplicate imported_id
+      const withDupId = txnsAfterSecond.filter(
+        (t: unknown) => (t as { imported_id?: string }).imported_id === dupId,
       );
-
-      // The import should either skip the duplicate or mark it as reconciled
-      // Either behavior is acceptable as long as it doesn't crash
-      expect(Array.isArray(txns)).toBe(true);
+      expect(withDupId.length).toBe(1);
     });
   });
 

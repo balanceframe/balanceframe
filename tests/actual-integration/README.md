@@ -115,3 +115,95 @@ Example GitHub Actions snippet:
 - Test timeouts are set to 60 seconds to accommodate network latency.
 - Some tests use `retry: 1` in the vitest config to handle transient network issues.
 - The `setup-fixture-server.sh` script handles both local and remote server modes.
+
+## Manual Actual Baseline Methodology
+
+Beyond the automated integration tests, BalanceFrame maintains a **manual baseline**
+methodology that captures real-world Actual Budget behavior for comparison.
+This is the "ground truth" against which the automated review-workflow output is
+validated.
+
+### Purpose
+
+The automated tests prove API coverage and deterministic read-only behavior, but
+they cannot fully replicate the human review workflow: a user opening Actual's
+web UI, inspecting uncleared transactions, assigning categories, and reconciling
+accounts. The manual baseline captures that workflow end-to-end so that review-
+workflow suggestions can be compared against what a human actually did.
+
+### Prerequisites
+
+- A running Actual Budget server (local or remote)
+- The `setup-fixture-server.sh` script has been run to seed the `representative.json`
+  fixture into a disposable budget
+- Node.js >= 20 and a modern browser (Chrome/Firefox) to access the Actual UI
+
+### How to Run the Manual Baseline
+
+1. **Start Actual with the fixture:**
+
+   ```bash
+   cd tests/actual-integration
+   ./setup-fixture-server.sh
+   ```
+
+   This seeds the representative fixture into a new budget and starts the server.
+
+2. **Open the Actual UI** in a browser at the server URL (default `http://localhost:5006`).
+
+3. **Navigate to the test budget** (named `BalanceFrame Test Budget` by default).
+
+4. **Work through the uncategorized transactions** as a human reviewer would:
+   - Open the "Transactions" view, filter by uncategorized.
+   - For each uncategorized transaction, examine the payee, amount, and memo.
+   - Assign a category based on your knowledge of the budget structure.
+   - Record the time taken per transaction and the final category assignment.
+
+5. **Record the results** in a structured format (CSV or JSON):
+   - Transaction ID
+   - Chosen category ID
+   - Time to categorize (seconds)
+   - Confidence level (high / medium / low)
+
+### Time-to-Categorize Measurement
+
+The time-to-categorize measurement is a critical output of the manual baseline:
+
+- Start a stopwatch when you begin reviewing a transaction (after reading its details).
+- Stop when you have selected a category and confirmed the assignment.
+- Record the elapsed time in seconds.
+- Discard any measurement where you were interrupted or had to re-familiarize
+  yourself with the budget structure (the first 2-3 transactions often take longer).
+- Calculate summary statistics (mean, median, P90, P99) for the remaining measurements.
+
+This gives a benchmark for the automated review workflow: if the automated system
+categorizes transactions as accurately as a human but in milliseconds, that is the
+baseline to beat.
+
+### Later Review-Workflow Baseline
+
+Once the automated review workflow is implemented:
+
+1. Run the review workflow against the same representative fixture.
+2. Compare the automated category assignments against the manual baseline.
+3. Measure:
+   - **Accuracy**: fraction of automated assignments matching the manual baseline.
+   - **Coverage**: fraction of uncategorized transactions the system proposed a
+     category for (vs. declining with low confidence).
+   - **Speed**: time-to-categorize for the automated pipeline.
+4. Flag discrepancies where the automated system disagrees with the human judgment
+   — these become training data for improving the classifiers.
+
+### Comparison to Automated Tests
+
+| Aspect | Automated Tests | Manual Baseline |
+|--------|----------------|-----------------|
+| Scope | API correctness, data integrity, determinism | End-to-end human review workflow |
+| Data | Synthetic fixture | Same fixture, but exercised through the UI |
+| Measurement | Pass/fail assertions | Time-to-categorize, accuracy, coverage |
+| Repeatability | Fully deterministic | Subject to human variation |
+| Cadence | CI / every commit | Periodic (per milestone / schema change) |
+
+The two approaches are complementary: automated tests catch regressions in the
+analysis pipeline, while the manual baseline validates that the pipeline's output
+is meaningful for real human reviewers.

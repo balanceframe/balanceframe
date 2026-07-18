@@ -13,6 +13,7 @@ import { withActualClient, requireEnv, withTestBudget } from './helpers';
 import {
   init, shutdown, createBudget, getAccounts, getPayees,
   getTransactions, getCategories, getBudgets, addTransactions,
+  updateTransaction,
   createAccount, createPayee, createCategory, createCategoryGroup,
   sync, downloadBudget, getBudgetMonth, runQuery, exportBudget,
 } from '@actual-app/api';
@@ -116,23 +117,35 @@ describe('07 — Concurrency & Compatibility', () => {
         avoidUpload: false,
       });
       await createAccount({ name: 'Checking', type: 'checking' });
-
-      // Perform sequential writes (each depends on previous)
-      await addTransactions(
-        (await getAccounts())[0].id,
-        [{ date: '2025-01-01', amount: -10000 }],
-      );
       await sync();
 
-      await addTransactions(
-        (await getAccounts())[0].id,
-        [{ date: '2025-01-02', amount: -20000 }],
-      );
+      const accountId = (await getAccounts())[0].id;
+
+      // Create an initial transaction to update
+      await addTransactions(accountId, [
+        { date: '2025-01-01', amount: -10000, notes: 'original' },
+      ]);
       await sync();
 
-      // Verify both writes persisted
-      const txns = await getTransactions((await getAccounts())[0].id);
-      expect(txns.length).toBeGreaterThanOrEqual(2);
+      const [txn] = await getTransactions(accountId);
+
+      // Submit 3 updateTransaction operations simultaneously without awaiting sequentially
+      const results = await Promise.all([
+        updateTransaction(txn.id, { notes: 'updated' }),
+        updateTransaction(txn.id, { amount: -25000 }),
+        updateTransaction(txn.id, { cleared: true }),
+      ]);
+
+      // All writes should have completed successfully
+      expect(results.length).toBe(3);
+      results.forEach(r => expect(r).toBeDefined());
+      await sync();
+
+      // Final state reflects all writes applied correctly
+      const [updated] = await getTransactions(accountId);
+      expect(updated.notes).toBe('updated');
+      expect(updated.amount).toBe(-25000);
+      expect(updated.cleared).toBe(true);
     });
   });
 
@@ -252,24 +265,63 @@ describe('07 — Concurrency & Compatibility', () => {
   });
 
   it('should handle retry after server interruption gracefully', async () => {
-    await withActualClient(async () => {
+    await withActualClient(async (config) => {
       const { id: budgetId, groupId } = await createBudget({
         name: `Retry-${Date.now()}`,
         avoidUpload: false,
       });
       await createAccount({ name: 'Retry-Acct', type: 'checking' });
 
-      // Simulate retry by calling the same operation multiple times
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const accounts = await getAccounts();
-          expect(accounts.length).toBeGreaterThanOrEqual(1);
-          break; // Success, no retry needed
-        } catch {
-          if (attempt === 2) throw; // Last attempt
-          // Would retry in production
-        }
+      const accountId = (await getAccounts())[0].id;
+
+      // Add an initial transaction before interruption
+      await addTransactions(accountId, [
+        { date: '2025-04-01', amount: -10000, notes: 'Before interruption' },
+      ]);
+      await sync();
+
+      const txnsBefore = await getTransactions(accountId);
+      const countBefore = txnsBefore.length;
+
+      // Simulate a transport interruption by shutting down the client
+      await shutdown();
+
+      // Attempt an operation during interruption — it must fail
+      let interruptionCaught = false;
+      try {
+        await addTransactions(accountId, [
+          { date: '2025-04-02', amount: -20000, notes: 'Retry attempt' },
+        ]);
+      } catch {
+        interruptionCaught = true;
       }
+      expect(interruptionCaught).toBe(true);
+
+      // Resume by re-initializing the client with the same config
+      await init({
+        serverURL: config.serverURL,
+        password: config.password,
+        dataDir: config.dataDir,
+      });
+
+      // Re-download and select the budget we created earlier
+      await downloadBudget(groupId, budgetId);
+
+      // Retry the operation — should succeed now
+      await addTransactions(accountId, [
+        { date: '2025-04-02', amount: -20000, notes: 'Retry attempt' },
+      ]);
+      await sync();
+
+      // Verify idempotent behavior: only one transaction was added (not two)
+      const txnsAfter = await getTransactions(accountId);
+      expect(txnsAfter.length).toBe(countBefore + 1);
+
+      // Assert no duplicate transaction/category was created
+      const retryTxns = txnsAfter.filter(
+        (t: unknown) => (t as { notes?: string }).notes === 'Retry attempt',
+      );
+      expect(retryTxns.length).toBe(1);
     });
   });
 
