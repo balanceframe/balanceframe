@@ -333,3 +333,122 @@ fn test_verify_mutation_valid() {
     let result = verify_mutation(&plan, &snapshot);
     assert!(result.verified);
 }
+
+// ---------------------------------------------------------------------------
+// i64::MIN must not panic or silently wrap
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_analysis_i64_min_overflow_as_finding() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1.0".into(),
+        actual_version: "2026.07.01".into(),
+        snapshot_date: "2026-07-17T00:00:00Z".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("overflow_tx", None, i64::MIN)],
+        categories: vec![],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+    };
+
+    let request = AnalysisRequest {
+        snapshot,
+        options: AnalysisOptions {
+            include_pending: true,
+            include_cleared: true,
+            max_results: None,
+        },
+    };
+
+    // Must not panic; must produce a finding about the overflow
+    let result = analyze_snapshot(request);
+    assert!(
+        result.findings.iter().any(|f| f.finding_type == "amount_overflow"),
+        "i64::MIN abs overflow should produce an amount_overflow finding; got: {:?}",
+        result.findings,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Unsupported schema version must be rejected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_analysis_rejects_unsupported_schema_version() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "2.0".into(),
+        actual_version: "2026.07.01".into(),
+        snapshot_date: "2026-07-17T00:00:00Z".into(),
+        accounts: vec![],
+        transactions: vec![],
+        categories: vec![],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+    };
+
+    let request = AnalysisRequest {
+        snapshot,
+        options: AnalysisOptions {
+            include_pending: true,
+            include_cleared: true,
+            max_results: None,
+        },
+    };
+
+    let result = analyze_snapshot(request);
+    assert_eq!(result.result_code, "error");
+    assert!(
+        result.reason_codes.contains(&"unsupported_schema_version".into()),
+        "reason_codes should contain unsupported_schema_version; got: {:?}",
+        result.reason_codes,
+    );
+    assert!(
+        result.findings.iter().any(|f| f.finding_type == "unsupported_schema_version"),
+        "findings should include unsupported_schema_version",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Data-quality fixture must surface readiness findings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_analysis_data_quality_readiness_findings() {
+    let fixture = include_str!("../../../protocol/fixtures/data-quality.json");
+    let snapshot: ProtocolSnapshot = serde_json::from_str(fixture)
+        .expect("data-quality fixture must be valid");
+
+    let request = AnalysisRequest {
+        snapshot,
+        options: AnalysisOptions {
+            include_pending: true,
+            include_cleared: true,
+            max_results: None,
+        },
+    };
+
+    let result = analyze_snapshot(request);
+
+    // Should have readiness findings -- at minimum pending exposure from
+    // the many cleared=false filler transactions and uncategorized summary.
+    assert!(!result.findings.is_empty(), "analysis of data-quality fixture must return findings");
+
+    // The readiness analyzer surfaces per-transaction PENDING_EXPOSURE
+    assert!(
+        result.findings.iter().any(|f| f.finding_type == "PENDING_EXPOSURE"),
+        "expected PENDING_EXPOSURE finding from readiness analysis; got: {:?}",
+        result.findings.iter().map(|f| &f.finding_type).collect::<Vec<_>>(),
+    );
+
+    // The readiness analyzer surfaces an UNCATEGORIZED_TRANSACTIONS summary
+    assert!(
+        result.findings.iter().any(|f| f.finding_type == "UNCATEGORIZED_TRANSACTIONS"),
+        "expected UNCATEGORIZED_TRANSACTIONS finding from readiness analysis",
+    );
+}

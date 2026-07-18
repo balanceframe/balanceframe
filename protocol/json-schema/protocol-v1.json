@@ -55,25 +55,25 @@
     "rules": {
       "type": "array",
       "items": {
-        "type": "object"
+        "$ref": "#/$defs/Rule"
       }
     },
     "schedules": {
       "type": "array",
       "items": {
-        "type": "object"
+        "$ref": "#/$defs/Schedule"
       }
     },
     "budgets": {
       "type": "array",
       "items": {
-        "type": "object"
+        "$ref": "#/$defs/BudgetMonth"
       }
     },
     "tags": {
       "type": "array",
       "items": {
-        "type": "object"
+        "$ref": "#/$defs/Tag"
       }
     }
   },
@@ -315,6 +315,138 @@
             "string",
             "null"
           ]
+        }
+      }
+    },
+    "Rule": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "order",
+        "trigger",
+        "actions",
+        "inactive"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trigger": {},
+        "actions": {},
+        "inactive": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Schedule": {
+      "type": "object",
+      "required": [
+        "id",
+        "frequency",
+        "amount",
+        "payeeName",
+        "accountId",
+        "nextExpected"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "frequency": {
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "payeeName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "nextExpected": {
+          "type": "string"
+        }
+      }
+    },
+    "BudgetCategory": {
+      "type": "object",
+      "required": [
+        "categoryId",
+        "amount",
+        "carryover",
+        "carryoverFromPrevious",
+        "carriesOver"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "categoryId": {
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "carryover": {
+          "$ref": "#/$defs/Money"
+        },
+        "carryoverFromPrevious": {
+          "$ref": "#/$defs/Money"
+        },
+        "carriesOver": {
+          "type": "boolean"
+        }
+      }
+    },
+    "BudgetMonth": {
+      "type": "object",
+      "required": [
+        "id",
+        "month",
+        "categories"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "month": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}$"
+        },
+        "categories": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/BudgetCategory"
+          }
+        }
+      }
+    },
+    "Tag": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
         }
       }
     }

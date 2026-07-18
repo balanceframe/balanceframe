@@ -172,7 +172,16 @@ pub fn analyze_transactions(
         // --- Uncategorized ---
         if is_uncategorized {
             uncategorized_count += 1;
-            uncategorized_total += tx.amount.minor_units().abs();
+            match tx.amount.minor_units().checked_abs() {
+                Some(abs) => uncategorized_total += abs,
+                None => issues.push(QualityIssue::new(
+                    Severity::Blocker,
+                    "AMOUNT_OVERFLOW",
+                    format!("Transaction {} has an unrepresentable absolute amount", tx.id),
+                    "Transaction",
+                    &tx.id,
+                )),
+            }
         }
 
         // --- Split coverage ---
@@ -215,7 +224,19 @@ pub fn analyze_transactions(
     let mut seen: Vec<(&str, i64, &str)> = Vec::new(); // (payee, amount_abs, date)
     for tx in transactions {
         let payee_key = tx.payee_name.as_deref().unwrap_or("");
-        let amount_abs = tx.amount.minor_units().abs();
+        let amount_abs = match tx.amount.minor_units().checked_abs() {
+            Some(abs) => abs,
+            None => {
+                issues.push(QualityIssue::new(
+                    Severity::Blocker,
+                    "AMOUNT_OVERFLOW",
+                    format!("Transaction {} has an unrepresentable absolute amount", tx.id),
+                    "Transaction",
+                    &tx.id,
+                ));
+                continue;
+            }
+        };
         let date = &tx.date;
 
         if let Some((_prev_payee, _prev_amt, _prev_date)) =
@@ -445,5 +466,40 @@ mod tests {
 
         let issues = analyze_accounts(&accounts, &[tx], "2026-07-17");
         assert!(issues.iter().any(|i| i.code == "STALE_BALANCE"));
+    }
+
+    #[test]
+    fn test_overflow_i64_min_uncategorized() {
+        // i64::MIN has no representable absolute value; the analyzer must
+        // emit an AMOUNT_OVERFLOW blocker instead of panicking.
+        let tx = Transaction {
+            id: "overflow_tx".into(),
+            account_id: "acct1".into(),
+            date: "2026-07-17".into(),
+            payee_id: None,
+            payee_name: Some("Overflow".into()),
+            category_id: None,
+            category_name: None,
+            amount: Money::new(i64::MIN, "USD"),
+            cleared: true,
+            reconciled: false,
+            imported_id: None,
+            imported_payee: None,
+            notes: None,
+            tags: vec![],
+            transfer_account_id: None,
+            subtransactions: vec![],
+        };
+
+        let report = analyze_readiness(&[], &[tx], &[], "2026-07-17");
+        assert!(
+            report.issues.iter().any(|i| i.code == "AMOUNT_OVERFLOW"),
+            "expected AMOUNT_OVERFLOW blocker, got issues: {:?}",
+            report.issues,
+        );
+        assert!(
+            report.issues.iter().any(|i| i.severity == Severity::Blocker),
+            "expected at least one blocker",
+        );
     }
 }

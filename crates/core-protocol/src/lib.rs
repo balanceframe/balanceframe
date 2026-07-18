@@ -1,10 +1,22 @@
 #![forbid(unsafe_code)]
 
+use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{
     Account, BudgetMonth, CategorizationCandidate, Category, Payee, Rule, Schedule, Tag,
     Transaction,
 };
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Protocol constants
+// ---------------------------------------------------------------------------
+
+/// Schema versions accepted by the v1 analysis pipeline.
+const SUPPORTED_SCHEMA_VERSIONS: &[&str] = &["1", "1.0"];
+
+fn is_supported_schema_version(version: &str) -> bool {
+    SUPPORTED_SCHEMA_VERSIONS.contains(&version)
+}
 
 // ---------------------------------------------------------------------------
 // Protocol types
@@ -134,11 +146,60 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
     let snapshot = &request.snapshot;
     let options = &request.options;
 
+    // -----------------------------------------------------------------------
+    // 1. Protocol version validation
+    // -----------------------------------------------------------------------
+    if !is_supported_schema_version(&snapshot.schema_version) {
+        return AnalysisResult {
+            result_code: "error".into(),
+            reason_codes: vec!["unsupported_schema_version".into()],
+            findings: vec![Finding {
+                finding_type: "unsupported_schema_version".into(),
+                severity: "blocker".into(),
+                entity_id: "_overview".into(),
+                message: format!("Unsupported schema version: {}", snapshot.schema_version),
+                drill_down: vec![],
+            }],
+            suggestions: vec![],
+        };
+    }
+
     let mut findings: Vec<Finding> = Vec::new();
     let mut suggestions: Vec<Suggestion> = Vec::new();
     let mut reason_codes: Vec<String> = Vec::new();
 
-    // Transaction-level checks
+    // -----------------------------------------------------------------------
+    // 2. Readiness analysis (from financial-core data quality module)
+    // -----------------------------------------------------------------------
+    {
+        let report = analyze_readiness(
+            &snapshot.accounts,
+            &snapshot.transactions,
+            &snapshot.categories,
+            &snapshot.snapshot_date,
+        );
+        for issue in report.issues {
+            let severity_str = match issue.severity {
+                DqSeverity::Blocker => "blocker",
+                DqSeverity::Warning => "warning",
+                DqSeverity::Info => "info",
+            };
+            if severity_str == "blocker" {
+                reason_codes.push(issue.code.clone());
+            }
+            findings.push(Finding {
+                finding_type: issue.code,
+                severity: severity_str.into(),
+                entity_id: issue.entity_id,
+                message: issue.message,
+                drill_down: vec![],
+            });
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Transaction-level checks
+    // -----------------------------------------------------------------------
     if options.include_pending {
         let pending_count = snapshot
             .transactions
@@ -156,7 +217,9 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         }
     }
 
-    // Uncategorized transactions
+    // -----------------------------------------------------------------------
+    // 4. Uncategorized transactions (checked arithmetic)
+    // -----------------------------------------------------------------------
     let uncategorized: Vec<&Transaction> = snapshot
         .transactions
         .iter()
@@ -164,10 +227,44 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         .collect();
 
     if !uncategorized.is_empty() {
-        let total_minor: i64 = uncategorized
-            .iter()
-            .map(|tx| tx.amount.minor_units().abs())
-            .sum();
+        // Use Money::abs() (checked) instead of i64::abs() which panics on
+        // i64::MIN.  Accumulate with checked_add so the total never silently
+        // wraps.
+        let mut total_minor: i64 = 0;
+        for tx in &uncategorized {
+            match tx.amount.abs() {
+                Ok(abs) => {
+                    match total_minor.checked_add(abs.minor_units()) {
+                        Some(sum) => total_minor = sum,
+                        None => {
+                            findings.push(Finding {
+                                finding_type: "amount_overflow".into(),
+                                severity: "blocker".into(),
+                                entity_id: tx.id.clone(),
+                                message: format!(
+                                    "Accumulation overflow while summing uncategorized transactions"
+                                ),
+                                drill_down: vec![],
+                            });
+                            reason_codes.push("amount_overflow".into());
+                        }
+                    }
+                }
+                Err(_) => {
+                    findings.push(Finding {
+                        finding_type: "amount_overflow".into(),
+                        severity: "blocker".into(),
+                        entity_id: tx.id.clone(),
+                        message: format!(
+                            "Transaction {} amount absolute value causes arithmetic overflow",
+                            tx.id,
+                        ),
+                        drill_down: vec![],
+                    });
+                    reason_codes.push("amount_overflow".into());
+                }
+            }
+        }
 
         findings.push(Finding {
             finding_type: "uncategorized".into(),
@@ -194,7 +291,9 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         }
     }
 
-    // Category integrity
+    // -----------------------------------------------------------------------
+    // 5. Category integrity
+    // -----------------------------------------------------------------------
     let deleted_ids: Vec<&str> = snapshot
         .categories
         .iter()
@@ -223,7 +322,9 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         }
     }
 
-    // Budget coverage
+    // -----------------------------------------------------------------------
+    // 6. Budget coverage
+    // -----------------------------------------------------------------------
     let uncategorized_ids: std::collections::HashSet<&str> = uncategorized
         .iter()
         .filter_map(|tx| tx.category_id.as_deref())
@@ -233,14 +334,18 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         reason_codes.push("uncategorized".into());
     }
 
-    // Apply max_results limit
+    // -----------------------------------------------------------------------
+    // 7. Apply max_results limit
+    // -----------------------------------------------------------------------
     if let Some(max) = options.max_results {
         let max = max as usize;
         findings.truncate(max);
         suggestions.truncate(max);
     }
 
-    // Determine result code
+    // -----------------------------------------------------------------------
+    // 8. Determine result code
+    // -----------------------------------------------------------------------
     let has_blockers = findings.iter().any(|f| f.severity == "blocker");
     let has_warnings = findings.iter().any(|f| f.severity == "warning");
 
