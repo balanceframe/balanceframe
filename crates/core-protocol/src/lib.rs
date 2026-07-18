@@ -2,9 +2,10 @@
 
 use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{
-    Account, BudgetMonth, CategorizationCandidate, Category, Payee, Rule, Schedule, Tag,
-    Transaction,
+    Account, BudgetMonth, CategorizationCandidate, Category, CompatibilityMetadata, Payee, Rule,
+    Schedule, Tag, Transaction,
 };
+use balanceframe_financial_core as fc;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,17 @@ pub struct ProtocolSnapshot {
     pub schedules: Vec<Schedule>,
     pub budgets: Vec<BudgetMonth>,
     pub tags: Vec<Tag>,
+    /// ISO‑8601 timestamp of when the Actual data was last downloaded.
+    /// `None` when unknown (legacy snapshots).
+    #[serde(default)]
+    pub actual_downloaded_at: Option<String>,
+    /// Whether the Actual budget requires an encryption key. `None` when
+    /// the connector could not determine encryption state.
+    #[serde(default)]
+    pub encrypted: Option<bool>,
+    /// ISO‑8601 timestamp of the last bank sync. `None` when unknown.
+    #[serde(default)]
+    pub bank_synced_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,13 +135,39 @@ pub struct ValidationResult {
     pub reason_codes: Vec<String>,
     pub message: Option<String>,
 }
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationResult {
     pub verified: bool,
     pub reason_codes: Vec<String>,
     pub message: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic analysis types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeterministicAnalysisRequest {
+    pub snapshot: ProtocolSnapshot,
+    pub options: AnalysisOptions,
+    pub request_id: Option<String>,
+    pub actor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeterministicAnalysisResponse {
+    pub schema_version: String,
+    pub request_id: String,
+    pub status: String,
+    pub freshness: fc::DataFreshness,
+    pub compatibility: CompatibilityMetadata,
+    pub coverage: fc::CoverageReport,
+    pub analysis: fc::DeterministicAnalysis,
+    pub reason_codes: Vec<String>,
+    pub error: Option<fc::ErrorInfo>,
 }
 
 // Re-export types from financial-core for convenience, with aliases
@@ -360,6 +398,111 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         reason_codes,
         findings,
         suggestions,
+    }
+}
+
+/// Run the deterministic (no‑model) analysis pipeline on a snapshot.
+///
+/// This is a protocol-level wrapper around
+/// [`fc::analysis::run_deterministic_analysis`] that builds the
+/// compatibility metadata from the snapshot and returns the wrapped
+/// [`DeterministicAnalysisResponse`].
+pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> DeterministicAnalysisResponse {
+    let snapshot = &request.snapshot;
+    let options = &request.options;
+
+    // Version check
+    if !is_supported_schema_version(&snapshot.schema_version) {
+        let scope = fc::InclusionScope::new(options.include_pending, options.include_cleared);
+        return DeterministicAnalysisResponse {
+            schema_version: "1.0".into(),
+            request_id: request.request_id.clone().unwrap_or_default(),
+            status: "error".into(),
+            freshness: fc::DataFreshness::compute(None, None, options.include_pending, &snapshot.snapshot_date),
+            compatibility: fc::CompatibilityMetadata::new(
+                snapshot.encrypted.unwrap_or(false),
+                snapshot.actual_downloaded_at.is_some() || !snapshot.encrypted.unwrap_or(true),
+                snapshot.actual_version.clone(),
+            ),
+            coverage: fc::build_coverage_report(
+                &snapshot.accounts,
+                &snapshot.transactions,
+                &scope,
+            ),
+            analysis: fc::DeterministicAnalysis {
+                freshness: fc::DataFreshness::compute(None, None, false, ""),
+                compatibility: fc::CompatibilityMetadata::new(false, false, String::new()),
+                coverage: fc::build_coverage_report(&[], &[], &scope),
+                readiness: fc::analyze_readiness(&[], &[], &[], ""),
+                uncategorized_backlog: fc::UncategorizedBacklog {
+                    count: 0, oldest_date: None, total_amount: fc::Money::zero("USD"),
+                    transaction_ids: vec![],
+                },
+                repeated_merchants: vec![],
+                deterministic_classifications: vec![],
+                rule_candidates: vec![],
+                duplicate_evidence: vec![],
+                recurring_charges: vec![],
+                historical_corrections: vec![],
+                blockers: vec![],
+                reason_codes: vec!["unsupported_schema_version".into()],
+                result_code: "error".into(),
+            },
+            reason_codes: vec!["unsupported_schema_version".into()],
+            error: Some(fc::ErrorInfo::new(
+                "unsupported_schema_version",
+                format!("Unsupported schema version: {}", snapshot.schema_version),
+                false,
+            )),
+        };
+    }
+    let actual_downloaded_at = snapshot.actual_downloaded_at.clone();
+    let reference_date = &snapshot.snapshot_date;
+
+    // Build compatibility metadata.
+    // If the data was actually downloaded (actual_downloaded_at is present),
+    // encryption must have been unlocked — treat it as such regardless of
+    // the raw `encrypted` flag from the connector.
+    let has_download = snapshot.actual_downloaded_at.is_some();
+    let compatibility = fc::CompatibilityMetadata::new(
+        snapshot.encrypted.unwrap_or(false),
+        has_download || !snapshot.encrypted.unwrap_or(true),
+        snapshot.actual_version.clone(),
+    );
+
+    let scope = fc::InclusionScope::new(options.include_pending, options.include_cleared);
+
+    let analysis = fc::run_deterministic_analysis(
+        &snapshot.accounts,
+        &snapshot.transactions,
+        &snapshot.categories,
+        &snapshot.payees,
+        &snapshot.rules,
+        &snapshot.schedules,
+        &snapshot.budgets,
+        compatibility.clone(),
+        actual_downloaded_at,
+        snapshot.bank_synced_at.clone(),
+        &scope,
+        reference_date,
+    );
+
+    let status = if analysis.result_code == "error" {
+        "error"
+    } else {
+        "ok"
+    };
+
+    DeterministicAnalysisResponse {
+        schema_version: "1.0".into(),
+        request_id: request.request_id.unwrap_or_default(),
+        status: status.into(),
+        freshness: analysis.freshness.clone(),
+        compatibility: analysis.compatibility.clone(),
+        coverage: analysis.coverage.clone(),
+        reason_codes: analysis.reason_codes.clone(),
+        analysis,
+        error: None,
     }
 }
 

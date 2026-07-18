@@ -18,6 +18,9 @@ fn empty_snapshot() -> ProtocolSnapshot {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     }
 }
 
@@ -80,6 +83,9 @@ fn test_protocol_snapshot_roundtrip() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -140,6 +146,9 @@ fn test_analysis_uncategorized() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let request = AnalysisRequest {
@@ -225,6 +234,9 @@ fn test_validate_suggestion_valid() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let suggestion = Suggestion {
@@ -319,6 +331,9 @@ fn test_verify_mutation_valid() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let plan = MutationPlan {
@@ -352,6 +367,9 @@ fn test_analysis_i64_min_overflow_as_finding() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let request = AnalysisRequest {
@@ -390,6 +408,9 @@ fn test_analysis_rejects_unsupported_schema_version() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let request = AnalysisRequest {
