@@ -1,6 +1,7 @@
 # ---- Nix ----
 .direnv/
-
+result-bin
+result-man
 # ---- Rust / Cargo ----
 /target/
 **/*.rs.bk
