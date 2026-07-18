@@ -15,7 +15,7 @@ let
 
   # Node.js + package manager bootstrap
   node = with pkgs; [
-    nodejs_22
+    nodejs_24
     corepack
   ];
 
@@ -25,8 +25,8 @@ let
     pkgs.stdenv.cc
     gnumake
     pkg-config
+    pnpm
   ];
-
   buildInputs = with pkgs; [
     openssl
     sqlite
@@ -62,6 +62,7 @@ in
     "node"
     "npm"
     "corepack"
+    "pnpm"
     "cc"
     "make"
     "pkg-config"
