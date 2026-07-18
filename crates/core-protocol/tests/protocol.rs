@@ -87,6 +87,18 @@ fn test_protocol_snapshot_roundtrip() {
     assert_eq!(snapshot, back);
 }
 
+#[test]
+fn test_shared_fixtures_deserialize_from_camel_case_protocol() {
+    for fixture in [
+        include_str!("../../../protocol/fixtures/representative.json"),
+        include_str!("../../../protocol/fixtures/data-quality.json"),
+    ] {
+        let snapshot: ProtocolSnapshot =
+            serde_json::from_str(fixture).expect("shared fixture must match the Rust protocol");
+        assert_eq!(snapshot.schema_version, "1");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Empty snapshot analysis
 // ---------------------------------------------------------------------------

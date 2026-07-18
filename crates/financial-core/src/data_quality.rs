@@ -94,7 +94,7 @@ pub fn analyze_accounts(
             if tx.account_id == account.id && !tx.reconciled {
                 match latest_unreconciled {
                     None => latest_unreconciled = Some(&tx.date),
-                    Some(prev) if tx.date > prev.to_string() => latest_unreconciled = Some(&tx.date),
+                    Some(prev) if tx.date.as_str() > prev => latest_unreconciled = Some(&tx.date),
                     _ => {}
                 }
             }

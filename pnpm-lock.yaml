@@ -36,8 +36,6 @@ importers:
 
   packages/inference: {}
 
-  packages/node-binding: {}
-
   packages/protocol-generated:
     dependencies:
       zod:

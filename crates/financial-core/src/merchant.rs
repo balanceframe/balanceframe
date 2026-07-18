@@ -25,7 +25,7 @@ pub fn normalize_merchant(s: &str) -> String {
     s.trim().to_string()
 }
 
-fn strip_prefixes<'a>(s: &'a str, prefixes: &[&str]) -> String {
+fn strip_prefixes(s: &str, prefixes: &[&str]) -> String {
     let mut result = s;
     for &prefix in prefixes {
         if let Some(rest) = result.strip_prefix(prefix) {
@@ -36,7 +36,7 @@ fn strip_prefixes<'a>(s: &'a str, prefixes: &[&str]) -> String {
     result.to_string()
 }
 
-fn strip_suffixes<'a>(s: &'a str, suffixes: &[&str]) -> String {
+fn strip_suffixes(s: &str, suffixes: &[&str]) -> String {
     let mut result = s;
     for &suffix in suffixes {
         if let Some(rest) = result.strip_suffix(suffix) {

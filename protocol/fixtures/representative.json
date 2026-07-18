@@ -146,7 +146,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_001",
@@ -167,7 +167,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_002",
@@ -188,7 +188,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_003",
@@ -209,7 +209,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_004",
@@ -230,7 +230,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_005",
@@ -251,7 +251,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_006",
@@ -272,7 +272,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_007",
@@ -293,7 +293,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_008",
@@ -314,7 +314,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_009",
@@ -335,7 +335,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_010",
@@ -356,7 +356,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_011",
@@ -377,7 +377,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_012",
@@ -398,7 +398,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_013",
@@ -419,7 +419,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_014",
@@ -440,7 +440,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_015",
@@ -461,7 +461,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_016",
@@ -482,7 +482,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_017",
@@ -503,7 +503,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_018",
@@ -524,7 +524,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_019",
@@ -545,7 +545,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_020",
@@ -566,7 +566,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_021",
@@ -587,7 +587,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_022",
@@ -608,7 +608,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_023",
@@ -629,7 +629,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_024",
@@ -650,7 +650,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_025",
@@ -671,7 +671,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_026",
@@ -692,7 +692,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_027",
@@ -713,7 +713,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_028",
@@ -734,7 +734,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_029",
@@ -755,7 +755,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_030",
@@ -776,7 +776,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_031",
@@ -797,7 +797,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_032",
@@ -818,7 +818,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_033",
@@ -839,7 +839,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_034",
@@ -860,7 +860,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_035",
@@ -881,7 +881,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_036",
@@ -902,7 +902,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_037",
@@ -923,7 +923,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_038",
@@ -944,7 +944,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_039",
@@ -965,7 +965,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_040",
@@ -986,7 +986,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_041",
@@ -1007,7 +1007,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_042",
@@ -1028,7 +1028,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_043",
@@ -1049,7 +1049,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_044",
@@ -1070,7 +1070,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_045",
@@ -1091,7 +1091,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_046",
@@ -1112,7 +1112,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_047",
@@ -1133,7 +1133,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_048",
@@ -1154,7 +1154,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_049",
@@ -1175,7 +1175,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_050",
@@ -1196,7 +1196,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_051",
@@ -1217,7 +1217,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_052",
@@ -1238,7 +1238,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_053",
@@ -1259,7 +1259,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_054",
@@ -1280,7 +1280,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_055",
@@ -1301,7 +1301,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_056",
@@ -1322,7 +1322,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_057",
@@ -1343,7 +1343,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_058",
@@ -1364,7 +1364,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_059",
@@ -1385,7 +1385,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_060",
@@ -1406,7 +1406,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_061",
@@ -1427,7 +1427,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_062",
@@ -1448,7 +1448,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_063",
@@ -1469,7 +1469,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_064",
@@ -1490,7 +1490,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_065",
@@ -1511,7 +1511,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_066",
@@ -1532,7 +1532,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_067",
@@ -1553,7 +1553,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_068",
@@ -1574,7 +1574,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_069",
@@ -1595,7 +1595,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_070",
@@ -1616,7 +1616,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_071",
@@ -1637,7 +1637,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_072",
@@ -1658,7 +1658,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_073",
@@ -1679,7 +1679,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_074",
@@ -1700,7 +1700,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_075",
@@ -1721,7 +1721,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_076",
@@ -1742,7 +1742,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_3",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_077",
@@ -1763,7 +1763,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_1",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_078",
@@ -1784,7 +1784,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_2",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_079",
@@ -1805,7 +1805,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_1",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_080",
@@ -1826,7 +1826,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_6",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_081",
@@ -1847,7 +1847,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_1",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_082",
@@ -1868,7 +1868,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_1",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_083",
@@ -1889,7 +1889,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": "a_3",
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_084",
@@ -1912,20 +1912,46 @@
       "transferAccountId": null,
       "subtransactions": [
         {
+          "id": "tx_084-sub-1",
+          "accountId": "a_4",
+          "date": "2026-07-11",
+          "payeeId": null,
+          "payeeName": "Home Depot",
+          "categoryId": "cat_2",
+          "categoryName": "Groceries",
           "amount": {
             "minorUnits": "-5000",
             "currency": "USD"
           },
-          "categoryId": "cat_2",
-          "categoryName": "Groceries"
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
         },
         {
+          "id": "tx_084-sub-2",
+          "accountId": "a_4",
+          "date": "2026-07-11",
+          "payeeId": null,
+          "payeeName": "Home Depot",
+          "categoryId": "cat_2",
+          "categoryName": "Groceries",
           "amount": {
             "minorUnits": "-3000",
             "currency": "USD"
           },
-          "categoryId": "cat_2",
-          "categoryName": "Groceries"
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
         }
       ]
     },
@@ -1950,20 +1976,46 @@
       "transferAccountId": null,
       "subtransactions": [
         {
+          "id": "tx_085-sub-1",
+          "accountId": "a_4",
+          "date": "2026-07-10",
+          "payeeId": null,
+          "payeeName": "Target",
+          "categoryId": "cat_3",
+          "categoryName": "Dining Out",
           "amount": {
             "minorUnits": "-4000",
             "currency": "USD"
           },
-          "categoryId": "cat_3",
-          "categoryName": "Dining Out"
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
         },
         {
+          "id": "tx_085-sub-2",
+          "accountId": "a_4",
+          "date": "2026-07-10",
+          "payeeId": null,
+          "payeeName": "Target",
+          "categoryId": "cat_3",
+          "categoryName": "Dining Out",
           "amount": {
             "minorUnits": "-8000",
             "currency": "USD"
           },
-          "categoryId": "cat_3",
-          "categoryName": "Dining Out"
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
         }
       ]
     },
@@ -1988,20 +2040,46 @@
       "transferAccountId": null,
       "subtransactions": [
         {
+          "id": "tx_086-sub-1",
+          "accountId": "a_4",
+          "date": "2026-07-10",
+          "payeeId": null,
+          "payeeName": "Costco Wholesale",
+          "categoryId": "cat_4",
+          "categoryName": "Gas / Fuel",
           "amount": {
             "minorUnits": "-3500",
             "currency": "USD"
           },
-          "categoryId": "cat_4",
-          "categoryName": "Gas / Fuel"
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
         },
         {
+          "id": "tx_086-sub-2",
+          "accountId": "a_4",
+          "date": "2026-07-10",
+          "payeeId": null,
+          "payeeName": "Costco Wholesale",
+          "categoryId": "cat_4",
+          "categoryName": "Gas / Fuel",
           "amount": {
             "minorUnits": "-3000",
             "currency": "USD"
           },
-          "categoryId": "cat_4",
-          "categoryName": "Gas / Fuel"
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
         }
       ]
     },
@@ -2024,7 +2102,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_088",
@@ -2045,7 +2123,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_089",
@@ -2066,7 +2144,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_090",
@@ -2087,7 +2165,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_091",
@@ -2108,7 +2186,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_092",
@@ -2129,7 +2207,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_093",
@@ -2150,7 +2228,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_094",
@@ -2171,7 +2249,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_095",
@@ -2192,7 +2270,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_096",
@@ -2213,7 +2291,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_097",
@@ -2234,7 +2312,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_098",
@@ -2255,7 +2333,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_099",
@@ -2276,7 +2354,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     },
     {
       "id": "tx_100",
@@ -2297,7 +2375,7 @@
       "notes": null,
       "tags": [],
       "transferAccountId": null,
-      "subtransactions": null
+      "subtransactions": []
     }
   ],
   "categories": [
@@ -2434,112 +2512,134 @@
     {
       "id": "pay_1",
       "name": "AMAZON MKTPLACE",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_2",
       "name": "Amazon Marketplace",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_3",
       "name": "Whole Foods",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_4",
       "name": "Shell Gas Station",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_5",
       "name": "City Electric Co",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_6",
       "name": "Netflix",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_7",
       "name": "Spotify",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_8",
       "name": "Landlord Property Mgmt",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_9",
       "name": "Starbucks",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_10",
       "name": "Target",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_11",
       "name": "CVS Pharmacy",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_12",
       "name": "Uber",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_13",
       "name": "Home Depot",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_14",
       "name": "Costco Wholesale",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_15",
       "name": "Best Buy",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_16",
       "name": "ATM Withdrawal",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_17",
       "name": "Direct Deposit - Employer",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_18",
       "name": "Checking <> Credit Card",
-      "transferAccountId": "a_3"
+      "transferAccountId": "a_3",
+      "mtid": null
     },
     {
       "id": "pay_19",
       "name": "Checking <> Savings",
-      "transferAccountId": "a_2"
+      "transferAccountId": "a_2",
+      "mtid": null
     },
     {
       "id": "pay_20",
       "name": "Checking <> Loan",
-      "transferAccountId": "a_6"
+      "transferAccountId": "a_6",
+      "mtid": null
     },
     {
       "id": "pay_21",
       "name": "Comcast Cable",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     },
     {
       "id": "pay_22",
       "name": "City Water Dept",
-      "transferAccountId": null
+      "transferAccountId": null,
+      "mtid": null
     }
   ],
   "rules": [],
