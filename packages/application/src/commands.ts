@@ -7,8 +7,8 @@
  * No model invocation — all analysis uses injected adapter/protocol.
  */
 
-import type { ResponseEnvelope, DataFreshness } from './envelope';
-import { ApplicationError, ObserveWriteError, ReasonCodes } from './errors';
+import type { ResponseEnvelope, DataFreshness } from './envelope.js';
+import { ApplicationError, ObserveWriteError, ReasonCodes } from './errors.js';
 import type { Money } from '@balanceframe/protocol-generated';
 
 // ---------------------------------------------------------------------------

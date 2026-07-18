@@ -7,6 +7,9 @@ result-man
 **/*.rs.bk
 
 # ---- Node.js / npm / pnpm ----
+
+# TypeScript build output
+dist/
 node_modules/
 npm-debug.log*
 yarn-debug.log*

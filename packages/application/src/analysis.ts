@@ -13,7 +13,7 @@ import {
   errorResponse,
   AuthorizationContext,
   ErrorInfo,
-} from './envelope';
+} from './envelope.js';
 import type {
   CommandInput,
   PendingReviewOutput,
@@ -23,7 +23,7 @@ import type {
   BudgetSummaryOutput,
   BudgetSummaryResult,
   AnalysisProtocol,
-} from './commands';
+} from './commands.js';
 
 // ---------------------------------------------------------------------------
 // Manual/no-model analysis path
@@ -69,7 +69,7 @@ export async function pendingReviewAnalysis(
       code: 'no_analysis_protocol',
       message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
-      reasonCodes: ['missing_ledger_config'],
+      reasonCodes: ['missing_analysis_protocol'],
     });
     return errorResponse(requestId, err);
   }
@@ -109,12 +109,23 @@ export async function reviewShowAnalysis(
     return errorResponse(requestId, err);
   }
 
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_snapshot',
+      message: 'Snapshot data is stale. Reconnect or re-download before analysis.',
+      retryable: true,
+      reasonCodes: ['stale_snapshot'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+
   if (!analysisProtocol) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
       message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
-      reasonCodes: ['missing_ledger_config'],
+      reasonCodes: ['missing_analysis_protocol'],
     });
     return errorResponse(requestId, err);
   }
@@ -149,12 +160,23 @@ export async function budgetSummaryAnalysis(
     return errorResponse(requestId, err);
   }
 
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_snapshot',
+      message: 'Snapshot data is stale. Reconnect or re-download before analysis.',
+      retryable: true,
+      reasonCodes: ['stale_snapshot'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+
   if (!analysisProtocol) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
       message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
-      reasonCodes: ['missing_ledger_config'],
+      reasonCodes: ['missing_analysis_protocol'],
     });
     return errorResponse(requestId, err);
   }

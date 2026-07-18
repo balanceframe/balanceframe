@@ -48,6 +48,12 @@ export function integerToMoney(value: number, currency = 'USD'): Money {
  * importedBalance defaults to clearedBalance when not provided (Actual doesn't
  * expose imported balance through the getAccounts API).
  */
+export function buildTransferAcctMap(payees: Payee[]): Record<string, string | null> {
+  const map: Record<string, string | null> = {};
+  for (const p of payees) map[p.id] = p.transferAccountId;
+  return map;
+}
+
 export function normalizeAccount(account: APIAccountEntity, currency = 'USD'): Account {
   return {
     id: account.id,
@@ -84,6 +90,8 @@ export function normalizeTransaction(
   txn: TransactionEntity,
   payeeMap: Record<string, string>,
   categoryMap: Record<string, { name: string; groupName: string | null }>,
+  transferAcctMap: Record<string, string | null>,
+  subtransactions: Transaction[] = [],
   currency = 'USD',
 ): Transaction {
   const payeeId = txn.payee ?? null;
@@ -106,8 +114,8 @@ export function normalizeTransaction(
     importedPayee: txn.imported_payee ?? null,
     notes: txn.notes ?? null,
     tags: [],
-    transferAccountId: txn.transfer_id ?? null,
-    subtransactions: [],
+    transferAccountId: payeeId ? (transferAcctMap[payeeId] ?? null) : null,
+    subtransactions,
   };
 }
 
@@ -115,11 +123,44 @@ export function normalizeTransactions(
   transactions: TransactionEntity[],
   payeeMap: Record<string, string>,
   categoryMap: Record<string, { name: string; groupName: string | null }>,
+  transferAcctMap: Record<string, string | null>,
   currency = 'USD',
 ): Transaction[] {
-  return transactions
-    .filter(txn => !txn.is_child && !txn.tombstone)
-    .map(txn => normalizeTransaction(txn, payeeMap, categoryMap, currency));
+  // Group child transactions by parent_id
+  const childrenByParent: Record<string, TransactionEntity[]> = {};
+  const parents: TransactionEntity[] = [];
+
+  for (const txn of transactions) {
+    if (txn.tombstone) continue;
+    if (txn.is_child && txn.parent_id) {
+      if (!childrenByParent[txn.parent_id]) childrenByParent[txn.parent_id] = [];
+      childrenByParent[txn.parent_id].push(txn);
+    } else if (!txn.is_child) {
+      parents.push(txn);
+    }
+    // Orphaned children (is_child without parent_id) are filtered out
+  }
+
+  return parents.map(txn => {
+    const children = (childrenByParent[txn.id] ?? []).map(child =>
+      normalizeTransaction(
+        child,
+        payeeMap,
+        categoryMap,
+        transferAcctMap,
+        [],
+        currency,
+      ),
+    );
+    return normalizeTransaction(
+      txn,
+      payeeMap,
+      categoryMap,
+      transferAcctMap,
+      children,
+      currency,
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +178,7 @@ export function normalizeCategory(
     groupName,
     isIncome: cat.is_income ?? false,
     mtid: null,
-    deleted: cat.hidden ?? false,
+    deleted: Boolean((cat as Record<string, unknown>).tombstone ?? false),
   };
 }
 
@@ -195,7 +236,9 @@ export function normalizeRules(rules: RuleEntity[]): Rule[] {
 export function normalizeSchedule(schedule: APIScheduleEntity, currency = 'USD'): Schedule {
   return {
     id: schedule.id,
-    frequency: String(schedule.date ?? ''),
+    frequency: typeof schedule.date === 'object' && schedule.date !== null
+      ? String((schedule.date as Record<string, unknown>).frequency ?? '')
+      : String(schedule.date ?? ''),
     amount: integerToMoney(
       typeof schedule.amount === 'number' ? schedule.amount : 0,
       currency,

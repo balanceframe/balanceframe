@@ -11,6 +11,7 @@ import type {
   ReviewDetailResult,
   BudgetSummaryResult,
 } from '../src/commands';
+import { ReasonCodes } from '../src/errors';
 import { AuthorizationContext, ErrorInfo } from '../src/envelope';
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,10 @@ describe('pendingReviewAnalysis', () => {
     expect(envelope.result).toBeTruthy();
     expect(envelope.result.uncategorizedCount).toBe(5);
     expect(envelope.result.totalUncategorizedAmount.minorUnits).toBe('15000');
+    expect(envelope.authorization).toBeTruthy();
+    expect(envelope.authorization!.actorId).toBe('usr_test');
+    expect(envelope.authorization!.capability).toBe('observe');
+    expect(envelope.authorization!.allowed).toBe(true);
   });
 
   it('returns error when ledger is null', async () => {
@@ -162,6 +167,7 @@ describe('pendingReviewAnalysis', () => {
 
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('no_analysis_protocol');
+    expect(envelope.error!.reasonCodes).toContain(ReasonCodes.MISSING_ANALYSIS_PROTOCOL);
   });
 
   it('returns error envelope when protocol throws', async () => {
@@ -200,6 +206,10 @@ describe('reviewShowAnalysis', () => {
     expect(envelope.status).toBe('ok');
     expect(envelope.result.reviewId).toBe('rev_test');
     expect(envelope.result.items).toHaveLength(1);
+    expect(envelope.authorization).toBeTruthy();
+    expect(envelope.authorization!.actorId).toBe('usr_test');
+    expect(envelope.authorization!.capability).toBe('observe');
+    expect(envelope.authorization!.allowed).toBe(true);
   });
 
   it('returns error when ledger is null', async () => {
@@ -211,12 +221,49 @@ describe('reviewShowAnalysis', () => {
     expect(envelope.error!.code).toBe('not_connected');
   });
 
+  it('returns error when freshness is stale (fail-closed guard)', async () => {
+    const { protocol, calls } = createMockProtocol();
+    const input = baseInput({
+      analysisProtocol: protocol,
+      freshness: {
+        actualDownloadedAt: null,
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 0,
+        isStale: true,
+      },
+    });
+    const envelope = await reviewShowAnalysis(input, 'rev_test');
+
+    expect(envelope.status).toBe('error');
+    expect(envelope.error!.code).toBe('stale_snapshot');
+    expect(calls.reviewShow).toHaveLength(0);
+  });
+
   it('returns error when analysisProtocol is missing', async () => {
     const input = baseInput({ analysisProtocol: undefined });
     const envelope = await reviewShowAnalysis(input, 'rev_test');
 
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('no_analysis_protocol');
+    expect(envelope.error!.reasonCodes).toContain(ReasonCodes.MISSING_ANALYSIS_PROTOCOL);
+  });
+
+  it('does not call protocol when freshness is stale', async () => {
+    const { protocol, calls } = createMockProtocol();
+    const input = baseInput({
+      analysisProtocol: protocol,
+      freshness: {
+        actualDownloadedAt: null,
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 0,
+        isStale: true,
+      },
+    });
+    await reviewShowAnalysis(input, 'rev_test');
+
+    expect(calls.reviewShow).toHaveLength(0);
   });
 });
 
@@ -235,6 +282,10 @@ describe('budgetSummaryAnalysis', () => {
     expect(envelope.status).toBe('ok');
     expect(envelope.result.month).toBe('2026-07');
     expect(envelope.result.categories).toHaveLength(1);
+    expect(envelope.authorization).toBeTruthy();
+    expect(envelope.authorization!.actorId).toBe('usr_test');
+    expect(envelope.authorization!.capability).toBe('observe');
+    expect(envelope.authorization!.allowed).toBe(true);
   });
 
   it('returns error when ledger is null', async () => {
@@ -246,11 +297,48 @@ describe('budgetSummaryAnalysis', () => {
     expect(envelope.error!.code).toBe('not_connected');
   });
 
+  it('returns error when freshness is stale (fail-closed guard)', async () => {
+    const { protocol, calls } = createMockProtocol();
+    const input = baseInput({
+      analysisProtocol: protocol,
+      freshness: {
+        actualDownloadedAt: null,
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 0,
+        isStale: true,
+      },
+    });
+    const envelope = await budgetSummaryAnalysis(input);
+
+    expect(envelope.status).toBe('error');
+    expect(envelope.error!.code).toBe('stale_snapshot');
+    expect(calls.budgetSummary).toHaveLength(0);
+  });
+
   it('returns error when analysisProtocol is missing', async () => {
     const input = baseInput({ analysisProtocol: undefined });
     const envelope = await budgetSummaryAnalysis(input);
 
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('no_analysis_protocol');
+    expect(envelope.error!.reasonCodes).toContain(ReasonCodes.MISSING_ANALYSIS_PROTOCOL);
+  });
+
+  it('does not call protocol when freshness is stale', async () => {
+    const { protocol, calls } = createMockProtocol();
+    const input = baseInput({
+      analysisProtocol: protocol,
+      freshness: {
+        actualDownloadedAt: null,
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 0,
+        isStale: true,
+      },
+    });
+    await budgetSummaryAnalysis(input);
+
+    expect(calls.budgetSummary).toHaveLength(0);
   });
 });

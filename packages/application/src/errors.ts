@@ -6,7 +6,8 @@
  */
 
 // ---------------------------------------------------------------------------
-// Canonical reason codes
+// Rust-canonical reason codes — every variant from
+// `crates/financial-core/src/blockers.rs` `ReasonCode`.
 // ---------------------------------------------------------------------------
 
 export const ReasonCodes = {
@@ -34,12 +35,25 @@ export const ReasonCodes = {
   MISSING_LEDGER_CONFIG: 'missing_ledger_config',
   /** The connection health check failed. */
   CONNECTION_UNHEALTHY: 'connection_unhealthy',
+  /** Encryption is required and the data could not be decrypted. */
+  ENCRYPTION_LOCKED: 'encryption_locked',
+  /** Freshness metadata is missing or unreliable. */
+  STALE_METADATA: 'stale_metadata',
+  /** Transactions were excluded by the current policy filter. */
+  EXCLUDED_BY_POLICY: 'excluded_by_policy',
+
+  // -----------------------------------------------------------------------
+  // Application-layer only (no Rust `ReasonCode` variant)
+  // -----------------------------------------------------------------------
+
   /** Write blocked in Observe mode. */
   OBSERVE_MODE_WRITE_BLOCKED: 'observe_mode_write_blocked',
   /** Unknown or unsupported CLI command. */
   UNSUPPORTED_RAW_QUERY: 'unsupported_raw_query',
   /** Review not found. */
   REVIEW_NOT_FOUND: 'review_not_found',
+  /** Analysis protocol (Rust bindings) is not available. */
+  MISSING_ANALYSIS_PROTOCOL: 'missing_analysis_protocol',
 } as const;
 
 // ---------------------------------------------------------------------------

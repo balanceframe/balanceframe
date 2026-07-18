@@ -164,6 +164,10 @@ pub fn build_coverage_report(
         }
     };
 
+    // Sort accounts by account_id for deterministic output
+    account_coverage.sort_by(|a, b| a.account_id.cmp(&b.account_id));
+    accounts_missing.sort();
+
     CoverageReport {
         accounts: account_coverage,
         overall_date_range: overall,

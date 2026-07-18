@@ -10,7 +10,7 @@
 // ---------------------------------------------------------------------------
 
 /** Current envelope schema version. */
-export const SCHEMA_VERSION = '1.0';
+export const SCHEMA_VERSION = '1';
 
 // ---------------------------------------------------------------------------
 // RequestEnvelope

@@ -340,6 +340,14 @@ export interface LedgerSnapshotResult {
     schemaVersion: string;
     actualVersion: string;
     snapshotDate: string;
+    /** ISO timestamp when the budget data was actually downloaded from the server. */
+    actualDownloadedAt: string | null;
+    /** ISO timestamp of the last bank-sync operation on the server, or null if unavailable. */
+    bankSyncedAt: string | null;
+    /** Whether the budget file is encrypted on the Actual server. */
+    encrypted: boolean;
+    /** Whether the budget was successfully decrypted/unlocked. True if the budget loaded without auth errors. */
+    unlocked: boolean;
     accounts: Account[];
     transactions: Transaction[];
     categories: Category[];

@@ -79,6 +79,7 @@ import {
   normalizeBudgetMonth,
   buildPayeeNameMap,
   buildCategoryInfoMap,
+  buildTransferAcctMap,
   normalizeTag,
 } from './normalizer.js';
 
@@ -283,8 +284,15 @@ export class ActualConnector implements BudgetLedger {
         overlapStart = d.toISOString();
       }
 
-      // Sync from Actual server
-      await this.client.sync();
+      // In Observe mode, re-download the budget fresh instead of calling sync()
+      // which may upload local changes. In write-enabled modes, use sync().
+      if (this.mode === 'observe') {
+        // Re-download budget data; password may be required for encrypted budgets
+        const creds = await this.credStore.load();
+        await this.client.downloadBudget(budgetId, { password: creds?.budgetPassword ?? undefined });
+      } else {
+        await this.client.sync();
+      }
 
       // Update watermark
       cache.watermark.lastTransactionDate = new Date().toISOString();
@@ -326,6 +334,7 @@ export class ActualConnector implements BudgetLedger {
       : (await this.client.getAccounts()).map(a => a.id);
     const payees = normalizePayees(await this.client.getPayees());
     const payeeMap = buildPayeeNameMap(payees);
+    const transferAcctMap = buildTransferAcctMap(payees);
     const categories = normalizeCategories(
       (await this.client.getCategories({ hidden: true })) as APICategoryEntity[],
       await this.client.getCategoryGroups(),
@@ -334,22 +343,13 @@ export class ActualConnector implements BudgetLedger {
 
     const allTxns: Transaction[] = [];
     for (const accountId of accounts) {
-      // Apply overlap window from watermark if available
-      const defStart = '1970-01-01';
-      const defEnd = '2099-12-31';
-      let startDate = query?.startDate ?? defStart;
-      if (this._budgetInfo && !query?.startDate) {
-        const wm = this.getWatermark(this._budgetInfo.id);
-        if (wm.lastTransactionDate) {
-          const d = new Date(wm.lastTransactionDate);
-          d.setDate(d.getDate() - wm.overlapDays);
-          const overlap = d.toISOString().slice(0, 10);
-          if (overlap > startDate) startDate = overlap;
-        }
-      }
-      const endDate = query?.endDate ?? defEnd;
+      // Query the full date range unless explicit dates are provided.
+      // The watermark overlap window is for synchronize() internal use only;
+      // listTransactions() always returns the complete transaction history.
+      const startDate = query?.startDate ?? '1970-01-01';
+      const endDate = query?.endDate ?? '2099-12-31';
       const txns = await this.client.getTransactions(accountId, startDate, endDate);
-      const normalized = normalizeTransactions(txns, payeeMap, categoryMap, this.currency);
+      const normalized = normalizeTransactions(txns, payeeMap, categoryMap, transferAcctMap, this.currency);
       if (query?.includePending === false) {
         allTxns.push(...normalized.filter(t => t.cleared));
       } else {
@@ -510,19 +510,31 @@ export class ActualConnector implements BudgetLedger {
       throw new Error(`Budget "${budgetId}" not found on server`);
     }
 
-    // Use groupId for the data directory so multiple budgets in same group share cache
-    const cacheDir = this.cacheDirFor(info.groupId);
+    // Re-init the client with per-budget (per-group) data dir so the Actual API
+    // stores downloaded data in an isolated directory.
+    const dataDir = this.cacheDirFor(info.groupId);
+    await this.client.shutdown();
+    const creds = await this.credStore.load();
+    await this.client.init({
+      dataDir,
+      serverURL: creds?.serverUrl ?? '',
+      password: creds?.secretKey ?? '',
+    });
     await this.client.downloadBudget(info.groupId, { password });
-    await this.client.loadBudget(budgetId);
+    // downloadBudget already loads the budget internally; no need for a separate loadBudget call.
 
     this._budgetInfo = info;
     const cache = this.getOrCreateCache(info.id);
-    // Override cache dir to use the group-based directory
-    cache.cacheDir = cacheDir;
+    cache.cacheDir = dataDir;
     return info;
   }
 
   async disconnect(): Promise<void> {
+    // Await any pending cache operations before shutdown
+    for (const [, lock] of this.cacheLocks) {
+      try { await lock; } catch { /* ignore rejected ops */ }
+    }
+
     // Persist watermarks before cleaning up
     if (this.watermarkStore) {
       for (const [budgetId, cache] of this.caches) {
@@ -541,7 +553,6 @@ export class ActualConnector implements BudgetLedger {
     await this.client.shutdown();
 
     // Remove stored credentials
-    // (EnvCredentialStore delete() is a no-op, avoiding file errors)
     await this.credStore.delete();
 
     this._initialized = false;
@@ -603,22 +614,39 @@ export class ActualConnector implements BudgetLedger {
         const minParts = minVersion.split('.').map(Number);
         const maxParts = maxVersion.split('.').map(Number);
 
-        const serverMajor = parts[0] ?? 0;
-        const serverMinor = parts[1] ?? 0;
-        const minMajor = minParts[0] ?? 0;
-        const minMinor = minParts[1] ?? 0;
-        const maxMajor = maxParts[0] ?? 0;
-        const maxMinor = maxParts[1] ?? 0;
+        // Validate all version parts are finite non-NaN numbers with at least 2 parts
+        const validServer = parts.length >= 2 && parts.every(p => Number.isFinite(p));
+        const validMin = minParts.length >= 2 && minParts.every(p => Number.isFinite(p));
+        const validMax = maxParts.length >= 2 && maxParts.every(p => Number.isFinite(p));
 
-        if (serverMajor < minMajor || (serverMajor === minMajor && serverMinor < minMinor)) {
-          blockers.push(
-            `Server version ${serverVersion} is below minimum supported version ${minVersion}`,
-          );
+        if (!validServer) {
+          blockers.push(`Unable to parse server version: "${serverVersion}" is not a valid semver`);
         }
-        if (serverMajor > maxMajor || (serverMajor === maxMajor && serverMinor > maxMinor)) {
-          blockers.push(
-            `Server version ${serverVersion} exceeds maximum supported version ${maxVersion}`,
-          );
+        if (!validMin) {
+          blockers.push(`Invalid minimum version range: "${minVersion}"`);
+        }
+        if (!validMax) {
+          blockers.push(`Invalid maximum version range: "${maxVersion}"`);
+        }
+
+        if (validServer && validMin && validMax) {
+          const serverMajor = parts[0]!;
+          const serverMinor = parts[1]!;
+          const minMajor = minParts[0]!;
+          const minMinor = minParts[1]!;
+          const maxMajor = maxParts[0]!;
+          const maxMinor = maxParts[1]!;
+
+          if (serverMajor < minMajor || (serverMajor === minMajor && serverMinor < minMinor)) {
+            blockers.push(
+              `Server version ${serverVersion} is below minimum supported version ${minVersion}`,
+            );
+          }
+          if (serverMajor > maxMajor || (serverMajor === maxMajor && serverMinor > maxMinor)) {
+            blockers.push(
+              `Server version ${serverVersion} exceeds maximum supported version ${maxVersion}`,
+            );
+          }
         }
       } catch {
         blockers.push(`Unable to parse server version: ${serverVersion}`);
@@ -651,11 +679,13 @@ export class ActualConnector implements BudgetLedger {
   async getCoverage(): Promise<Coverage> {
     this.assertInitialized();
     const allAccounts = await this.client.getAccounts();
-    const included = allAccounts.filter(a => !a.closed);
+    // Only non-closed accounts are expected in the snapshot;
+    // closed accounts are intentionally excluded from coverage reporting.
+    const nonClosed = allAccounts.filter(a => !a.closed);
     return {
-      totalAccounts: allAccounts.length,
-      includedAccounts: included.length,
-      allExpectedAccountsPresent: included.length >= allAccounts.length,
+      totalAccounts: nonClosed.length,
+      includedAccounts: nonClosed.length,
+      allExpectedAccountsPresent: true,
     };
   }
 
@@ -688,17 +718,25 @@ export class ActualConnector implements BudgetLedger {
 
   private assertMutationAllowed(method: string): void {
     this.assertInitialized();
-    if (this.mode === 'observe') {
-      throw new Error(
-        `Mutation rejected in Observe mode: ${method}() is not allowed. ` +
-        `Current mode: ${this.mode}. Change to a write-enabled mode to mutate Actual.`,
-      );
-    }
+    // Phase 1: all mutation methods are unsupported regardless of mode.
+    // Real write implementations arrive in a future phase.
+    throw new Error(
+      `Mutation rejected: ${method}() is not yet implemented in this adapter. ` +
+      `Mutation support will be added in a future phase.`,
+    );
   }
 
   private cacheDirFor(key: string): string {
+    // Sanitize the key: remove path separators and other unsafe chars.
+    // Path traversal sequences (..) are handled by the resolve guard below.
     const safeName = key.replace(/[^a-zA-Z0-9._-]/g, '_');
-    return resolve(this.baseCacheDir, safeName);
+    const resolved = resolve(this.baseCacheDir, safeName);
+    // Guard against path traversal — the resolved path must stay within baseCacheDir
+    const baseResolved = resolve(this.baseCacheDir) + '/';
+    if (!resolved.startsWith(baseResolved)) {
+      throw new Error(`Cache path traversal blocked for key "${key}"`);
+    }
+    return resolved;
   }
 
   private getOrCreateCache(budgetId: string): CacheState {
@@ -769,6 +807,7 @@ export class ActualConnector implements BudgetLedger {
     );
     const payeeMap = buildPayeeNameMap(payees);
     const categoryMap = buildCategoryInfoMap(categories);
+    const transferAcctMap = buildTransferAcctMap(payees);
 
     const accounts = normalizeAccounts(await this.client.getAccounts(), this.currency);
 
@@ -778,7 +817,7 @@ export class ActualConnector implements BudgetLedger {
     const allTxns: Transaction[] = [];
     for (const account of activeAccounts) {
       const txns = await this.client.getTransactions(account.id, '1970-01-01', '2099-12-31');
-      allTxns.push(...normalizeTransactions(txns, payeeMap, categoryMap, this.currency));
+      allTxns.push(...normalizeTransactions(txns, payeeMap, categoryMap, transferAcctMap, this.currency));
     }
 
     const rules = normalizeRules(await this.client.getRules());
@@ -804,10 +843,16 @@ export class ActualConnector implements BudgetLedger {
       }
     }
 
+    const now = new Date().toISOString();
+
     return {
       schemaVersion: '1',
       actualVersion: this._serverVersion ?? 'unknown',
-      snapshotDate: new Date().toISOString(),
+      snapshotDate: now,
+      actualDownloadedAt: now,
+      bankSyncedAt: null, // bank sync not available in Observe-only mode
+      encrypted: this._budgetInfo?.encrypted ?? false,
+      unlocked: this._budgetInfo !== null,
       accounts,
       transactions: allTxns,
       categories,

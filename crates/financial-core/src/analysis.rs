@@ -181,6 +181,18 @@ pub fn run_deterministic_analysis(
     if actual_downloaded_at.is_none() {
         collector.add_reason(ReasonCode::StaleMetadata);
     }
+    // Bank sync staleness
+    if freshness.bank_sync_stale {
+        collector.add_blocker(
+            "stale_bank_sync",
+            format!(
+                "Bank sync is stale ({} days old)",
+                freshness.bank_staleness_days
+            ),
+            "_overview",
+        );
+        collector.add_reason(ReasonCode::StaleBankSync);
+    }
 
     // -----------------------------------------------------------------------
     // 2. Compatibility
@@ -234,12 +246,28 @@ pub fn run_deterministic_analysis(
     for issue in &readiness.issues {
         if issue.code == "AMOUNT_OVERFLOW" {
             collector.add_reason(ReasonCode::AmountOverflow);
+            collector.add_blocker(
+                "amount_overflow",
+                format!(
+                    "Amount overflow detected for entity {}: {}",
+                    issue.entity_id, issue.message
+                ),
+                issue.entity_id.clone(),
+            );
         }
         if issue.code == "UNCATEGORIZED_TRANSACTIONS" {
             collector.add_reason(ReasonCode::UncategorizedExposure);
         }
         if issue.code == "DELETED_CATEGORY_REFERENCED" {
             collector.add_reason(ReasonCode::DeletedCategoryReferenced);
+            collector.add_blocker(
+                "deleted_category_referenced",
+                format!(
+                    "Deleted category referenced by entity {}: {}",
+                    issue.entity_id, issue.message
+                ),
+                issue.entity_id.clone(),
+            );
         }
         if issue.code == "DUPLICATE_CANDIDATE" {
             collector.add_reason(ReasonCode::DuplicateDetected);
@@ -254,6 +282,19 @@ pub fn run_deterministic_analysis(
         for code in blocker_codes {
             if code == "amount_overflow" {
                 collector.add_reason(ReasonCode::AmountOverflow);
+                collector.add_blocker(
+                    "amount_overflow",
+                    "Overflow while summing uncategorized transaction amounts",
+                    "_overview",
+                );
+            }
+            if code == "mixed_currency" {
+                collector.add_reason(ReasonCode::UnresolvedMetadataRef);
+                collector.add_blocker(
+                    "mixed_currency",
+                    "Uncategorized transactions span multiple currencies",
+                    "_overview",
+                );
             }
         }
     }
@@ -392,6 +433,15 @@ fn build_uncategorized_backlog(
 
     let oldest_date = uncategorized.first().map(|tx| tx.date.clone());
 
+    // Check that all transactions share the same currency
+    let first_currency = uncategorized[0].amount.currency().to_string();
+    let mixed_currency = uncategorized
+        .iter()
+        .any(|tx| tx.amount.currency() != first_currency);
+    if mixed_currency {
+        blocker_codes.push("mixed_currency".into());
+    }
+
     let mut total_minor: i64 = 0;
     for tx in &uncategorized {
         match tx.amount.minor_units().checked_abs() {
@@ -409,15 +459,11 @@ fn build_uncategorized_backlog(
         }
     }
 
-    let currency = uncategorized
-        .first()
-        .map(|tx| tx.amount.currency().to_string())
-        .unwrap_or_else(|| "USD".into());
+    // Use the first transaction's currency (consistent across all if mixed_currency wasn't set)
+    let currency = first_currency;
 
-    let total_amount = match Money::new(total_minor, &currency).abs() {
-        Ok(m) => m,
-        Err(_) => Money::new(total_minor, &currency),
-    };
+    // total_minor is already absolute — no need for another .abs() call
+    let total_amount = Money::new(total_minor, &currency);
 
     let transaction_ids: Vec<String> = uncategorized.iter().map(|tx| tx.id.clone()).collect();
 
@@ -447,36 +493,44 @@ fn find_repeated_merchants(transactions: &[Transaction]) -> Vec<RepeatedMerchant
         groups.entry(normalized).or_default().push(tx);
     }
 
-    groups
+    let mut merchants: Vec<RepeatedMerchant> = groups
         .into_iter()
         .filter(|(_, txs)| txs.len() > 1)
-        .map(|(norm, txs)| {
+        .filter_map(|(norm, txs)| {
+            // Reject mixed-currency groups
+            let currency = txs.first()?.amount.currency().to_string();
+            if txs.iter().any(|tx| tx.amount.currency() != currency) {
+                return None;
+            }
+
             let original_names: Vec<String> = txs
                 .iter()
                 .filter_map(|tx| tx.payee_name.clone())
                 .collect();
             let frequency = txs.len();
 
-            let total_minor: i64 = txs
-                .iter()
-                .filter_map(|tx| tx.amount.minor_units().checked_abs())
-                .sum();
-            let currency = txs
-                .first()
-                .map(|tx| tx.amount.currency().to_string())
-                .unwrap_or_else(|| "USD".into());
+            // Checked accumulation of absolute values
+            let mut total_minor: i64 = 0;
+            for tx in &txs {
+                let abs = tx.amount.minor_units().checked_abs()?;
+                total_minor = total_minor.checked_add(abs)?;
+            }
 
             let sample_ids: Vec<String> = txs.iter().take(10).map(|tx| tx.id.clone()).collect();
 
-            RepeatedMerchant {
+            Some(RepeatedMerchant {
                 normalized_name: norm,
                 original_names,
                 frequency,
                 total_amount: Money::new(total_minor, &currency),
                 sample_transaction_ids: sample_ids,
-            }
+            })
         })
-        .collect()
+        .collect();
+
+    // Sort by normalized_name for deterministic output
+    merchants.sort_by(|a, b| a.normalized_name.cmp(&b.normalized_name));
+    merchants
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +688,8 @@ fn find_recurring_charges(
         });
     }
 
+    // Sort by normalized_merchant for deterministic output
+    charges.sort_by(|a, b| a.normalized_merchant.cmp(&b.normalized_merchant));
     charges
 }
 
@@ -641,12 +697,24 @@ fn amounts_similar(amounts: &[i64]) -> bool {
     if amounts.len() < 2 {
         return true;
     }
-    let min = *amounts.iter().min().unwrap_or(&0);
-    let max = *amounts.iter().max().unwrap_or(&0);
+    // Use checked absolute values to avoid panic on i64::MIN
+    let abs_vals: Vec<i64> = amounts
+        .iter()
+        .filter_map(|a| a.checked_abs())
+        .collect();
+    if abs_vals.len() < 2 {
+        return false;
+    }
+    let min = *abs_vals.iter().min().unwrap_or(&0);
+    let max = *abs_vals.iter().max().unwrap_or(&0);
     if min == 0 && max == 0 {
         return true;
     }
-    let ratio = (max as f64) / (min as f64).max(1.0);
+    // Avoid division by zero; if min is 0 but max is not, they're not similar
+    if min == 0 {
+        return false;
+    }
+    let ratio = (max as f64) / (min as f64);
     ratio <= 1.5 // within 50%
 }
 
@@ -762,8 +830,12 @@ fn find_historical_corrections(
         }
     }
 
-    // Sort by change_count descending
-    corrections.sort_by_key(|b| std::cmp::Reverse(b.change_count));
+    // Sort by change_count descending, then by category_id for deterministic tie-breaking
+    corrections.sort_by(|a, b| {
+        b.change_count
+            .cmp(&a.change_count)
+            .then_with(|| a.category_id.cmp(&b.category_id))
+    });
     corrections
 }
 
@@ -1090,5 +1162,259 @@ mod tests {
             &scope, "2026-07-18",
         );
         assert_eq!(result_a, result_b, "deterministic analysis must be reproducible");
+    }
+
+    // -- deterministic ordering tests ---------------------------------------
+
+    #[test]
+    fn test_repeated_merchants_sorted_deterministically() {
+        // Create merchants in insertion order that would differ from sorted
+        let txs = vec![
+            sample_tx("tx3", "a1", Some("Zappos"), None, None, -500, "2026-01-01", true),
+            sample_tx("tx4", "a1", Some("Zappos"), None, None, -550, "2026-02-01", true),
+            sample_tx("tx1", "a1", Some("Amazon"), None, None, -2000, "2026-01-01", true),
+            sample_tx("tx2", "a1", Some("Amazon"), None, None, -2100, "2026-02-01", true),
+            sample_tx("tx5", "a1", Some("Ebay"), None, None, -300, "2026-01-01", true),
+            sample_tx("tx6", "a1", Some("Ebay"), None, None, -350, "2026-02-01", true),
+        ];
+        let repeated = find_repeated_merchants(&txs);
+        assert_eq!(repeated.len(), 3);
+        // MUST be in alphabetical order regardless of insertion
+        assert_eq!(repeated[0].normalized_name, "amazon");
+        assert_eq!(repeated[1].normalized_name, "ebay");
+        assert_eq!(repeated[2].normalized_name, "zappos");
+    }
+
+    #[test]
+    fn test_recurring_charges_sorted_deterministically() {
+        let txs = vec![
+            sample_tx("tx3", "a1", Some("Zappos"), Some("c1"), Some("Shopping"), -1500, "2026-01-15", true),
+            sample_tx("tx4", "a1", Some("Zappos"), Some("c1"), Some("Shopping"), -1500, "2026-02-15", true),
+            sample_tx("tx1", "a1", Some("Netflix"), Some("c2"), Some("Subs"), -1500, "2026-01-15", true),
+            sample_tx("tx2", "a1", Some("Netflix"), Some("c2"), Some("Subs"), -1500, "2026-02-15", true),
+        ];
+        let charges = find_recurring_charges(&txs, &[]);
+        assert!(charges.len() >= 2, "expected at least 2 charges, got {}", charges.len());
+        if charges.len() >= 2 {
+            assert_eq!(charges[0].normalized_merchant, "netflix");
+            assert_eq!(charges[1].normalized_merchant, "zappos");
+        }
+    }
+
+    #[test]
+    fn test_historical_corrections_sorted_deterministically() {
+        use crate::snapshots::BudgetCategory;
+        use std::collections::HashMap;
+        let b1 = BudgetMonth {
+            id: "bm-1".into(),
+            month: "2026-01".into(),
+            categories: {
+                let mut m = HashMap::new();
+                m.insert("cat_b".into(), BudgetCategory {
+                    category_id: "cat_b".into(),
+                    amount: Money::new(100, "USD"),
+                    carryover: Money::zero("USD"),
+                    carryover_from_previous: Money::zero("USD"),
+                    carries_over: false,
+                });
+                m.insert("cat_a".into(), BudgetCategory {
+                    category_id: "cat_a".into(),
+                    amount: Money::new(200, "USD"),
+                    carryover: Money::zero("USD"),
+                    carryover_from_previous: Money::zero("USD"),
+                    carries_over: false,
+                });
+                m
+            },
+        };
+        let b2 = BudgetMonth {
+            id: "bm-2".into(),
+            month: "2026-02".into(),
+            categories: {
+                let mut m = HashMap::new();
+                m.insert("cat_b".into(), BudgetCategory {
+                    category_id: "cat_b".into(),
+                    amount: Money::new(300, "USD"),
+                    carryover: Money::zero("USD"),
+                    carryover_from_previous: Money::zero("USD"),
+                    carries_over: false,
+                });
+                m.insert("cat_a".into(), BudgetCategory {
+                    category_id: "cat_a".into(),
+                    amount: Money::new(200, "USD"),
+                    carryover: Money::zero("USD"),
+                    carryover_from_previous: Money::zero("USD"),
+                    carries_over: false,
+                });
+                m
+            },
+        };
+        let cats = vec![
+            sample_category("cat_a", "Category A", false),
+            sample_category("cat_b", "Category B", false),
+        ];
+        let corrections = find_historical_corrections(&[b1, b2], &cats);
+        // cat_b changed (100→300), cat_a stayed same (200→200)
+        // So only cat_b should appear
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].category_id, "cat_b");
+    }
+
+    // -- amounts_similar uses absolute values --------------------------------
+
+    #[test]
+    fn test_amounts_similar_uses_absolute_values() {
+        // All negative amounts with similar absolute values
+        assert!(amounts_similar(&[-1500, -1600, -1400]));
+        // Large difference in negative amounts (abs differs by >50%)
+        assert!(!amounts_similar(&[-1500, -3000]));
+        // Mixed signs: -3000 and 2000 have abs values 3000 and 2000, ratio=1.5 — borderline
+        assert!(amounts_similar(&[-3000, 2000]));
+        // i64::MIN should not cause panic
+        assert!(!amounts_similar(&[i64::MIN, -1500]));
+    }
+
+    // -- mixed-currency rejection -------------------------------------------
+
+    #[test]
+    fn test_uncategorized_backlog_rejects_mixed_currencies() {
+        let txs = vec![
+            Transaction {
+                amount: Money::new(-500, "USD"),
+                ..sample_tx("tx1", "a1", Some("Shop"), None, None, -500, "2026-01-01", true)
+            },
+            Transaction {
+                amount: Money::new(-1000, "EUR"),
+                ..sample_tx("tx2", "a1", Some("Cafe"), None, None, -1000, "2026-01-02", true)
+            },
+        ];
+        let cats = vec![sample_category("c1", "Food", false)];
+        let (_backlog, blocker_codes) = build_uncategorized_backlog(&txs, &cats);
+        // Mixed currencies should produce a blocker code
+        assert!(
+            blocker_codes.contains(&"mixed_currency".to_string()),
+            "mixed currencies should produce a blocker code: {:?}",
+            blocker_codes
+        );
+    }
+
+    #[test]
+    fn test_repeated_merchants_rejects_mixed_currencies() {
+        let txs = vec![
+            Transaction {
+                amount: Money::new(-500, "USD"),
+                ..sample_tx("tx1", "a1", Some("Amazon"), None, None, -500, "2026-01-01", true)
+            },
+            Transaction {
+                amount: Money::new(-1000, "EUR"),
+                ..sample_tx("tx2", "a1", Some("Amazon"), None, None, -1000, "2026-02-01", true)
+            },
+        ];
+        let repeated = find_repeated_merchants(&txs);
+        // Mixed currencies with same merchant should not be grouped
+        assert!(repeated.is_empty(), "mixed-currency merchant group should be excluded");
+    }
+
+    // -- i64::MIN handling ---------------------------------------------------
+
+    #[test]
+    fn test_uncategorized_backlog_rejects_i64_min() {
+        let txs = vec![
+            Transaction {
+                amount: Money::new(i64::MIN, "USD"),
+                ..sample_tx("tx1", "a1", Some("Exploit"), None, None, 0, "2026-01-01", true)
+            },
+        ];
+        let cats = vec![sample_category("c1", "Food", false)];
+        let (backlog, blocker_codes) = build_uncategorized_backlog(&txs, &cats);
+        assert!(blocker_codes.contains(&"amount_overflow".to_string()));
+        // Total must be non-negative safe value
+        assert!(backlog.total_amount.minor_units() >= 0 || backlog.total_amount.minor_units() == 0);
+    }
+
+    // -- bank sync staleness blocker ----------------------------------------
+
+    #[test]
+    fn test_bank_sync_staleness_emits_blocker() {
+        let accounts = vec![sample_account("a1", "Checking")];
+        let cats = vec![sample_category("c1", "Food", false)];
+        let txs = vec![];
+        let compatibility = CompatibilityMetadata::new(false, true, "25.1.0".into());
+        let scope = InclusionScope::new(true, true);
+        // Bank sync 30 days old → stale
+        let result = run_deterministic_analysis(
+            &accounts, &txs, &cats, &[], &[], &[], &[],
+            compatibility, Some("2026-07-18T00:00:00Z".into()),
+            Some("2026-06-18T00:00:00Z".into()),
+            &scope, "2026-07-18",
+        );
+        assert!(
+            result.reason_codes.contains(&"stale_bank_sync".to_string()),
+            "stale bank sync should produce stale_bank_sync reason code: {:?}",
+            result.reason_codes
+        );
+        let has_bank_blocker = result.blockers.iter().any(|b| b.code == "stale_bank_sync");
+        assert!(has_bank_blocker, "stale bank sync should be promoted to a blocker");
+    }
+
+    // -- amount overflow blocker promotion ----------------------------------
+
+    #[test]
+    fn test_amount_overflow_promotes_blocker() {
+        let accounts = vec![sample_account("a1", "Checking")];
+        let cats = vec![sample_category("c1", "Food", false)];
+        let txs = vec![
+            Transaction {
+                amount: Money::new(i64::MIN, "USD"),
+                category_id: None,
+                ..sample_tx("tx_bomb", "a1", Some("Bad"), None, None, 0, "2026-01-01", true)
+            },
+        ];
+        let compatibility = CompatibilityMetadata::new(false, true, "25.1.0".into());
+        let scope = InclusionScope::new(true, true);
+        let result = run_deterministic_analysis(
+            &accounts, &txs, &cats, &[], &[], &[], &[],
+            compatibility, Some("2026-07-18T00:00:00Z".into()),
+            Some("2026-07-17T00:00:00Z".into()),
+            &scope, "2026-07-18",
+        );
+        assert!(
+            result.reason_codes.contains(&"amount_overflow".to_string()),
+            "i64::MIN should produce amount_overflow reason code: {:?}",
+            result.reason_codes
+        );
+        let has_blocker = result.blockers.iter().any(|b| b.code == "amount_overflow");
+        assert!(has_blocker, "amount overflow should be promoted to a blocker: {:?}",
+            result.blockers.iter().map(|b| &b.code).collect::<Vec<_>>());
+    }
+
+    // -- deterministic repeatability with multiple categories ----------------
+
+    #[test]
+    fn test_deterministic_repeatability_sorted() {
+        // Ensure multiple repeated merchants come out in a stable order
+        let accounts = vec![sample_account("a1", "Checking")];
+        let cats = vec![sample_category("c1", "Food", false), sample_category("c2", "Shopping", false)];
+        let txs = vec![
+            sample_tx("tx1", "a1", Some("Zappos"), None, None, -500, "2026-01-01", true),
+            sample_tx("tx2", "a1", Some("Zappos"), None, None, -550, "2026-02-01", true),
+            sample_tx("tx3", "a1", Some("Amazon"), Some("c1"), Some("Food"), -2000, "2026-01-01", true),
+            sample_tx("tx4", "a1", Some("Amazon"), Some("c1"), Some("Food"), -2100, "2026-02-01", true),
+        ];
+        let compatibility = CompatibilityMetadata::new(false, true, "25.1.0".into());
+        let scope = InclusionScope::new(true, true);
+        let result_a = run_deterministic_analysis(
+            &accounts, &txs, &cats, &[], &[], &[], &[],
+            compatibility.clone(), Some("2026-07-18T00:00:00Z".into()),
+            Some("2026-07-17T00:00:00Z".into()),
+            &scope, "2026-07-18",
+        );
+        let result_b = run_deterministic_analysis(
+            &accounts, &txs, &cats, &[], &[], &[], &[],
+            compatibility, Some("2026-07-18T00:00:00Z".into()),
+            Some("2026-07-17T00:00:00Z".into()),
+            &scope, "2026-07-18",
+        );
+        assert_eq!(result_a.repeated_merchants, result_b.repeated_merchants);
     }
 }

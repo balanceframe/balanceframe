@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * @balanceframe/cli — BalanceFrame CLI tool.
  *
@@ -46,6 +45,14 @@ export interface CliCommand {
 }
 
 // ---------------------------------------------------------------------------
+// Parse result — stable error envelope data, never throws
+// ---------------------------------------------------------------------------
+
+export type ParseResult =
+  | { ok: true; cmd: CliCommand }
+  | { ok: false; error: { code: string; message: string } };
+
+// ---------------------------------------------------------------------------
 // Rejected command patterns
 // ---------------------------------------------------------------------------
 
@@ -62,20 +69,42 @@ const REJECTED_PATTERNS = [
 /**
  * Parse raw CLI argument vector into a structured CliCommand.
  *
- * Throws if the command is rejected or malformed.
+ * Returns a `ParseResult` – never throws. Caller inspects `.ok` to decide
+ * whether the command can be dispatched.
  */
-export function parseArgs(argv: string[]): CliCommand {
+export function parseArgs(argv: string[]): ParseResult {
   const normalized = argv.filter(a => a !== '');
 
   // Reject dangerous commands
   for (const pat of REJECTED_PATTERNS) {
     if (normalized[0] === pat) {
-      throw new Error(`Command rejected: "${pat}" is not supported.`);
+      return {
+        ok: false,
+        error: {
+          code: 'rejected_command',
+          message: `Command rejected: "${pat}" is not supported.`,
+        },
+      };
     }
   }
 
   if (normalized.length < 1) {
-    throw new Error('No command provided. Use --help for usage.');
+    return {
+      ok: false,
+      error: { code: 'no_command', message: 'No command provided. Use --help for usage.' },
+    };
+  }
+
+  // Validate flags — only --json is recognised
+  const unknownFlags = normalized.filter(a => a.startsWith('--') && a !== '--json');
+  if (unknownFlags.length > 0) {
+    return {
+      ok: false,
+      error: {
+        code: 'unknown_flags',
+        message: `Unknown flags: ${unknownFlags.join(', ')}`,
+      },
+    };
   }
 
   const hasJson = normalized.includes('--json');
@@ -87,59 +116,158 @@ export function parseArgs(argv: string[]): CliCommand {
     cleanArgs[0] === 'transactions' &&
     cleanArgs[1] === 'pending-review'
   ) {
+    if (cleanArgs.length > 2) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'transactions pending-review': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
+    }
     return {
-      command: 'transactions.pending-review',
-      format,
-      args: normalized,
+      ok: true,
+      cmd: {
+        command: 'transactions.pending-review',
+        format,
+        args: normalized,
+      },
     };
   }
 
   if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'show') {
     const reviewId = cleanArgs[2];
     if (!reviewId || reviewId.startsWith('--')) {
-      throw new Error('reviews show requires a REVIEW_ID argument.');
+      return {
+        ok: false,
+        error: { code: 'missing_review_id', message: 'reviews show requires a REVIEW_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after review ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
     }
     return {
-      command: 'reviews.show',
-      format,
-      args: normalized,
-      reviewId,
+      ok: true,
+      cmd: {
+        command: 'reviews.show',
+        format,
+        args: normalized,
+        reviewId,
+      },
     };
   }
 
   if (cleanArgs[0] === 'budget' && cleanArgs[1] === 'summary') {
+    if (cleanArgs.length > 2) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'budget summary': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
+    }
     return {
-      command: 'budget.summary',
-      format,
-      args: normalized,
+      ok: true,
+      cmd: {
+        command: 'budget.summary',
+        format,
+        args: normalized,
+      },
     };
   }
 
   if (cleanArgs[0] === 'export') {
+    if (cleanArgs.length > 1) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'export': ${cleanArgs.slice(1).join(' ')}`,
+        },
+      };
+    }
     return {
-      command: 'export',
-      format,
-      args: normalized,
+      ok: true,
+      cmd: {
+        command: 'export',
+        format,
+        args: normalized,
+      },
     };
   }
 
   if (cleanArgs[0] === 'disconnect') {
+    if (cleanArgs.length > 1) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'disconnect': ${cleanArgs.slice(1).join(' ')}`,
+        },
+      };
+    }
     return {
-      command: 'disconnect',
-      format,
-      args: normalized,
+      ok: true,
+      cmd: {
+        command: 'disconnect',
+        format,
+        args: normalized,
+      },
     };
   }
 
   if (cleanArgs[0] === 'remove-connection') {
+    if (cleanArgs.length > 1) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'remove-connection': ${cleanArgs.slice(1).join(' ')}`,
+        },
+      };
+    }
     return {
-      command: 'remove-connection',
-      format,
-      args: normalized,
+      ok: true,
+      cmd: {
+        command: 'remove-connection',
+        format,
+        args: normalized,
+      },
     };
   }
 
-  throw new Error(`Unknown command: ${normalized.join(' ')}`);
+  return {
+    ok: false,
+    error: {
+      code: 'unknown_command',
+      message: `Unknown command: ${normalized.join(' ')}`,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Authorization helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an `AuthorizationContext` for a lifecycle operation.
+ *
+ * Destructive operations (remove-connection) are denied in Observe mode.
+ * Read-lifecycle operations (export, disconnect) proceed in any mode, but
+ * the returned context reflects the operation name so callers can audit it.
+ */
+function modeAuthorization(mode: ConnectionMode, actorId: string, operation: string): AuthorizationContext {
+  if (operation === 'remove-connection' && mode === 'observe') {
+    return AuthorizationContext.denied(actorId, operation);
+  }
+  return { actorId, capability: operation, allowed: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +277,7 @@ export function parseArgs(argv: string[]): CliCommand {
 /**
  * Execute a CLI command and return a JSON envelope.
  *
- * @param argv CLi argument vector (excluding node/binary).
+ * @param argv CLI argument vector (excluding node/binary).
  * @param opts Optional injected services for testing.
  */
 export async function main(
@@ -164,13 +292,24 @@ export async function main(
     lifecycleCallbacks?: LifecycleCallbacks;
   },
 ): Promise<string> {
-  const cmd = parseArgs(argv);
-
   const mode: ConnectionMode = opts?.mode ?? 'observe';
   const actorId = opts?.actorId ?? 'usr_cli';
   const requestId = opts?.requestId ?? `req_${Date.now().toString(36)}`;
   const ledger = opts?.ledger ?? null;
   const freshness: DataFreshness | null = opts?.freshness ?? null;
+
+  // Handle parse errors as stable JSON error envelopes — never throw
+  const parsed = parseArgs(argv);
+  if (!parsed.ok) {
+    const info = new ErrorInfo({
+      code: parsed.error.code,
+      message: parsed.error.message,
+      retryable: false,
+      reasonCodes: ['cli_error'],
+    });
+    return JSON.stringify(errorResponse(requestId, info), null, 2);
+  }
+  const cmd = parsed.cmd;
 
   const commandInput: CommandInput = {
     args: cmd.args,
@@ -225,7 +364,7 @@ export async function main(
         }
         try {
           const result = await callbacks.doExport(ledger);
-          const envelope = okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+          const envelope = okResponse(requestId, freshness, modeAuthorization(mode, actorId, 'export'), result);
           return JSON.stringify(envelope, null, 2);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -261,7 +400,7 @@ export async function main(
         }
         try {
           const result = await callbacks.doDisconnect(ledger);
-          const envelope = okResponse(requestId, null, AuthorizationContext.observe(actorId), result);
+          const envelope = okResponse(requestId, null, modeAuthorization(mode, actorId, 'disconnect'), result);
           return JSON.stringify(envelope, null, 2);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -295,9 +434,19 @@ export async function main(
           });
           return JSON.stringify(errorResponse(requestId, info), null, 2);
         }
+        // Enforce mode authorization — destructive operation blocked in Observe
+        if (mode === 'observe') {
+          const info = new ErrorInfo({
+            code: 'write_rejected',
+            message: 'remove-connection requires write authorization and is not available in observe mode.',
+            retryable: false,
+            reasonCodes: ['observe_mode_write_blocked'],
+          });
+          return JSON.stringify(errorResponse(requestId, info), null, 2);
+        }
         try {
           const result = await callbacks.doRemoveConnection(ledger);
-          const envelope = okResponse(requestId, null, AuthorizationContext.observe(actorId), result);
+          const envelope = okResponse(requestId, null, modeAuthorization(mode, actorId, 'remove-connection'), result);
           return JSON.stringify(envelope, null, 2);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

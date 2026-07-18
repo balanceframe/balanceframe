@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   RouteCommand,
   CommandInput,
@@ -10,9 +10,17 @@ import {
   ExportOutput,
   DisconnectOutput,
   RemovalOutput,
+  PendingReviewResult,
+  ReviewDetailResult,
+  BudgetSummaryResult,
+  ExportResult,
+  DisconnectResult,
+  RemovalResult,
+  LifecycleCallbacks,
   routeCommand,
 } from '../src/commands';
-import { AuthorizationContext, DataFreshness } from '../src/envelope';
+import { AuthorizationContext, DataFreshness, okResponse, errorResponse, ErrorInfo, ResponseEnvelope } from '../src/envelope';
+import { ReasonCodes } from '../src/errors';
 
 // ---------------------------------------------------------------------------
 // Route parsing
@@ -138,6 +146,13 @@ describe('routeCommand — unknown/rejected commands', () => {
       freshness: null,
     };
     expect(() => routeCommand(input)).toThrow(CommandError);
+    try {
+      routeCommand(input);
+    } catch (e) {
+      const err = e as CommandError;
+      expect(err.code).toBe('unknown_command');
+      expect(err.reasonCodes).toContain(ReasonCodes.UNSUPPORTED_RAW_QUERY);
+    }
   });
 
   it('rejects shell with CommandError', () => {
@@ -150,6 +165,13 @@ describe('routeCommand — unknown/rejected commands', () => {
       freshness: null,
     };
     expect(() => routeCommand(input)).toThrow(CommandError);
+    try {
+      routeCommand(input);
+    } catch (e) {
+      const err = e as CommandError;
+      expect(err.code).toBe('unknown_command');
+      expect(err.reasonCodes).toContain(ReasonCodes.UNSUPPORTED_RAW_QUERY);
+    }
   });
 });
 
@@ -187,6 +209,13 @@ describe('routeCommand — write rejection in Observe mode', () => {
       freshness: null,
     };
     expect(() => routeCommand(input)).toThrow();
+    try {
+      routeCommand(input);
+    } catch (e) {
+      const err = e as CommandError;
+      expect(err.code).toBe('write_rejected');
+      expect(err.reasonCodes).toContain(ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED);
+    }
   });
 });
 
@@ -204,44 +233,34 @@ describe('PendingReviewOutput — exact envelope fields', () => {
       isStale: false,
     };
     const auth = AuthorizationContext.observe('usr_test');
-
-    const output: PendingReviewOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_pending',
-        status: 'ok',
-        dataFreshness: freshness,
-        authorization: auth,
-        result: {
-          uncategorizedCount: 12,
-          totalUncategorizedAmount: { minorUnits: '45000', currency: 'USD' },
-          candidates: [
-            {
-              transactionId: 'tx_001',
-              amount: { minorUnits: '5000', currency: 'USD' },
-              payeeName: 'Grocery Store',
-              date: '2026-07-15',
-              reasons: [{ kind: 'historical', details: 'Previously categorized as Food' }],
-            },
-          ],
-          oldestUncategorizedDate: '2026-06-01',
-          healthState: 'healthy',
-          blockers: [],
+    const result: PendingReviewResult = {
+      uncategorizedCount: 12,
+      totalUncategorizedAmount: { minorUnits: '45000', currency: 'USD' },
+      candidates: [
+        {
+          transactionId: 'tx_001',
+          amount: { minorUnits: '5000', currency: 'USD' },
+          payeeName: 'Grocery Store',
+          date: '2026-07-15',
+          reasons: [{ kind: 'historical', details: 'Previously categorized as Food' }],
         },
-        error: null,
-      },
+      ],
+      oldestUncategorizedDate: '2026-06-01',
+      healthState: 'healthy',
+      blockers: [],
     };
+    const envelope = okResponse('req_pending', freshness, auth, result);
 
-    expect(output.envelope.schemaVersion).toBe('1.0');
-    expect(output.envelope.requestId).toBe('req_pending');
-    expect(output.envelope.status).toBe('ok');
-    expect(output.envelope.dataFreshness).toBeTruthy();
-    expect(output.envelope.authorization).toBeTruthy();
-    expect(output.envelope.result).toBeTruthy();
-    expect(output.envelope.error).toBeNull();
+    expect(envelope.schemaVersion).toBe('1');
+    expect(envelope.requestId).toBe('req_pending');
+    expect(envelope.status).toBe('ok');
+    expect(envelope.dataFreshness).toBeTruthy();
+    expect(envelope.authorization).toBeTruthy();
+    expect(envelope.result).toBeTruthy();
+    expect(envelope.error).toBeNull();
 
     // Verify JSON serialization uses camelCase keys matching the Rust envelope
-    const json = JSON.stringify(output);
+    const json = JSON.stringify(envelope);
     expect(json).toContain('"schemaVersion"');
     expect(json).toContain('"requestId"');
     expect(json).toContain('"status"');
@@ -252,30 +271,22 @@ describe('PendingReviewOutput — exact envelope fields', () => {
   });
 
   it('includes reason codes and blockers when present', () => {
-    const output: PendingReviewOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_blocked',
-        status: 'ok',
-        dataFreshness: null,
-        authorization: AuthorizationContext.observe('usr_test'),
-        result: {
-          uncategorizedCount: 0,
-          totalUncategorizedAmount: { minorUnits: '0', currency: 'USD' },
-          candidates: [],
-          oldestUncategorizedDate: null,
-          healthState: 'degraded',
-          blockers: [
-            { code: 'stale_snapshot', message: 'No recent download', entityId: '_overview' },
-          ],
-        },
-        error: null,
-      },
+    const auth = AuthorizationContext.observe('usr_test');
+    const result: PendingReviewResult = {
+      uncategorizedCount: 0,
+      totalUncategorizedAmount: { minorUnits: '0', currency: 'USD' },
+      candidates: [],
+      oldestUncategorizedDate: null,
+      healthState: 'degraded',
+      blockers: [
+        { code: 'stale_snapshot', message: 'No recent download', entityId: '_overview' },
+      ],
     };
+    const envelope = okResponse('req_blocked', null, auth, result);
 
-    expect(output.envelope.result.blockers).toHaveLength(1);
-    expect(output.envelope.result.blockers[0].code).toBe('stale_snapshot');
-    expect(output.envelope.result.healthState).toBe('degraded');
+    expect(envelope.result.blockers).toHaveLength(1);
+    expect(envelope.result.blockers[0].code).toBe('stale_snapshot');
+    expect(envelope.result.healthState).toBe('degraded');
   });
 });
 
@@ -285,63 +296,46 @@ describe('PendingReviewOutput — exact envelope fields', () => {
 
 describe('ReviewShowOutput — exact envelope fields', () => {
   it('includes review detail in result', () => {
-    const output: ReviewShowOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_rev',
-        status: 'ok',
-        dataFreshness: null,
-        authorization: AuthorizationContext.observe('usr_test'),
-        result: {
-          reviewId: 'rev_abc123',
-          generatedAt: '2026-07-15T12:00:00Z',
-          status: 'pending_review',
-          description: 'Review 12 uncategorized transactions',
-          totalAmount: { minorUnits: '45000', currency: 'USD' },
-          itemCount: 12,
-          items: [
-            {
-              transactionId: 'tx_001',
-              amount: { minorUnits: '5000', currency: 'USD' },
-              payeeName: 'Grocery Store',
-              date: '2026-07-15',
-              categoryName: null,
-              suggestedCategoryId: 'cat_2',
-              suggestedCategoryName: 'Food & Dining',
-              confidence: 0.85,
-              reasonCodes: ['exact_payee_match'],
-            },
-          ],
+    const auth = AuthorizationContext.observe('usr_test');
+    const result: ReviewDetailResult = {
+      reviewId: 'rev_abc123',
+      generatedAt: '2026-07-15T12:00:00Z',
+      status: 'pending_review',
+      description: 'Review 12 uncategorized transactions',
+      totalAmount: { minorUnits: '45000', currency: 'USD' },
+      itemCount: 12,
+      items: [
+        {
+          transactionId: 'tx_001',
+          amount: { minorUnits: '5000', currency: 'USD' },
+          payeeName: 'Grocery Store',
+          date: '2026-07-15',
+          categoryName: null,
+          suggestedCategoryId: 'cat_2',
+          suggestedCategoryName: 'Food & Dining',
+          confidence: 0.85,
+          reasonCodes: ['exact_payee_match'],
         },
-        error: null,
-      },
+      ],
     };
+    const envelope = okResponse('req_rev', null, auth, result);
 
-    expect(output.envelope.result.reviewId).toBe('rev_abc123');
-    expect(output.envelope.result.items).toHaveLength(1);
-    expect(output.envelope.result.items[0].suggestedCategoryName).toBe('Food & Dining');
+    expect(envelope.result.reviewId).toBe('rev_abc123');
+    expect(envelope.result.items).toHaveLength(1);
+    expect(envelope.result.items[0].suggestedCategoryName).toBe('Food & Dining');
   });
 
   it('review not found returns error status', () => {
-    const output: ReviewShowOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_notfound',
-        status: 'error',
-        dataFreshness: null,
-        authorization: null,
-        result: null,
-        error: {
-          code: 'not_found',
-          message: 'Review rev_nonexistent not found',
-          retryable: false,
-          reasonCodes: ['review_not_found'],
-        },
-      },
-    };
+    const err = new ErrorInfo({
+      code: 'not_found',
+      message: 'Review rev_nonexistent not found',
+      retryable: false,
+      reasonCodes: ['review_not_found'],
+    });
+    const envelope = errorResponse('req_notfound', err);
 
-    expect(output.envelope.status).toBe('error');
-    expect(output.envelope.error!.code).toBe('not_found');
+    expect(envelope.status).toBe('error');
+    expect(envelope.error!.code).toBe('not_found');
   });
 });
 
@@ -351,35 +345,27 @@ describe('ReviewShowOutput — exact envelope fields', () => {
 
 describe('BudgetSummaryOutput — exact envelope fields', () => {
   it('includes budget summary with categories in result', () => {
-    const output: BudgetSummaryOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_budget',
-        status: 'ok',
-        dataFreshness: null,
-        authorization: AuthorizationContext.observe('usr_test'),
-        result: {
-          month: '2026-07',
-          totalBudgeted: { minorUnits: '500000', currency: 'USD' },
-          totalSpent: { minorUnits: '120000', currency: 'USD' },
-          totalRemaining: { minorUnits: '380000', currency: 'USD' },
-          categories: [
-            {
-              categoryId: 'cat_1',
-              categoryName: 'Food & Dining',
-              budgeted: { minorUnits: '200000', currency: 'USD' },
-              spent: { minorUnits: '85000', currency: 'USD' },
-              remaining: { minorUnits: '115000', currency: 'USD' },
-            },
-          ],
+    const auth = AuthorizationContext.observe('usr_test');
+    const result: BudgetSummaryResult = {
+      month: '2026-07',
+      totalBudgeted: { minorUnits: '500000', currency: 'USD' },
+      totalSpent: { minorUnits: '120000', currency: 'USD' },
+      totalRemaining: { minorUnits: '380000', currency: 'USD' },
+      categories: [
+        {
+          categoryId: 'cat_1',
+          categoryName: 'Food & Dining',
+          budgeted: { minorUnits: '200000', currency: 'USD' },
+          spent: { minorUnits: '85000', currency: 'USD' },
+          remaining: { minorUnits: '115000', currency: 'USD' },
         },
-        error: null,
-      },
+      ],
     };
+    const envelope = okResponse('req_budget', null, auth, result);
 
-    expect(output.envelope.result.month).toBe('2026-07');
-    expect(output.envelope.result.categories).toHaveLength(1);
-    expect(output.envelope.result.totalBudgeted.minorUnits).toBe('500000');
+    expect(envelope.result.month).toBe('2026-07');
+    expect(envelope.result.categories).toHaveLength(1);
+    expect(envelope.result.totalBudgeted.minorUnits).toBe('500000');
   });
 });
 
@@ -389,76 +375,105 @@ describe('BudgetSummaryOutput — exact envelope fields', () => {
 
 describe('Export/Disconnect/Removal — safe behavior', () => {
   it('export returns success with metadata', () => {
-    const output: ExportOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_export',
-        status: 'ok',
-        dataFreshness: null,
-        authorization: AuthorizationContext.observe('usr_test'),
-        result: {
-          exportedAt: '2026-07-18T10:00:00Z',
-          budgetName: 'My Budget',
-          exportPath: '/tmp/balanceframe-export/my-budget.json',
-          accountCount: 5,
-          transactionCount: 250,
-        },
-        error: null,
-      },
+    const auth = AuthorizationContext.observe('usr_test');
+    const result: ExportResult = {
+      exportedAt: '2026-07-18T10:00:00Z',
+      budgetName: 'My Budget',
+      exportPath: '/tmp/balanceframe-export/my-budget.json',
+      accountCount: 5,
+      transactionCount: 250,
     };
+    const envelope = okResponse('req_export', null, auth, result);
 
-    expect(output.envelope.status).toBe('ok');
-    expect(output.envelope.result.exportedAt).toBeTruthy();
-    expect(output.envelope.result.budgetName).toBe('My Budget');
+    expect(envelope.status).toBe('ok');
+    expect(envelope.result.exportedAt).toBeTruthy();
+    expect(envelope.result.budgetName).toBe('My Budget');
   });
 
   it('disconnect returns cache/credentials removal confirmation', () => {
-    const output: DisconnectOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_dc',
-        status: 'ok',
-        dataFreshness: null,
-        authorization: AuthorizationContext.observe('usr_test'),
-        result: {
-          disconnected: true,
-          cacheRemoved: true,
-          credentialsRemoved: true,
-          message: 'Connection removed. Actual server was not modified.',
-        },
-        error: null,
-      },
+    const auth = AuthorizationContext.observe('usr_test');
+    const result: DisconnectResult = {
+      disconnected: true,
+      cacheRemoved: true,
+      credentialsRemoved: true,
+      message: 'Connection removed. Actual server was not modified.',
     };
+    const envelope = okResponse('req_dc', null, auth, result);
 
-    expect(output.envelope.result.disconnected).toBe(true);
-    expect(output.envelope.result.cacheRemoved).toBe(true);
-    expect(output.envelope.result.credentialsRemoved).toBe(true);
-    expect(output.envelope.result.message).toContain('Actual server was not modified');
+    expect(envelope.result.disconnected).toBe(true);
+    expect(envelope.result.cacheRemoved).toBe(true);
+    expect(envelope.result.credentialsRemoved).toBe(true);
+    expect(envelope.result.message).toContain('Actual server was not modified');
   });
 
   it('removal confirmation with broad-access caveat', () => {
-    const output: RemovalOutput = {
-      envelope: {
-        schemaVersion: '1.0',
-        requestId: 'req_rem',
-        status: 'ok',
-        dataFreshness: null,
-        authorization: AuthorizationContext.observe('usr_test'),
-        result: {
-          removed: true,
-          cacheRemoved: true,
-          credentialsRemoved: true,
-          broadAccessCaveat:
-            'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
-            'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
-            'Project-side filtering does not reduce the broad access held by the connector. ' +
-            'Ensure your Actual server and backups have appropriate security.',
-        },
-        error: null,
-      },
+    const auth = AuthorizationContext.observe('usr_test');
+    const result: RemovalResult = {
+      removed: true,
+      cacheRemoved: true,
+      credentialsRemoved: true,
+      broadAccessCaveat:
+        'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
+        'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
+        'Project-side filtering does not reduce the broad access held by the connector. ' +
+        'Ensure your Actual server and backups have appropriate security.',
     };
+    const envelope = okResponse('req_rem', null, auth, result);
 
-    expect(output.envelope.result.removed).toBe(true);
-    expect(output.envelope.result.broadAccessCaveat).toBeTruthy();
+    expect(envelope.result.removed).toBe(true);
+    expect(envelope.result.broadAccessCaveat).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle callbacks
+// ---------------------------------------------------------------------------
+
+describe('Lifecycle callbacks', () => {
+  it('doExport spy receives ledger and returns envelope result', async () => {
+    const doExport = vi.fn(async (ledger: unknown): Promise<ExportResult> => ({
+      exportedAt: '2026-07-18T10:00:00Z',
+      budgetName: 'My Budget',
+      exportPath: '/tmp/balanceframe-export/my-budget.json',
+      accountCount: 5,
+      transactionCount: 250,
+    }));
+    const callbacks: LifecycleCallbacks = { doExport, doDisconnect: vi.fn(), doRemoveConnection: vi.fn() };
+    const ledger = { mockLedger: true };
+    const result = await callbacks.doExport(ledger);
+    expect(doExport).toHaveBeenCalledWith(ledger);
+    expect(result.budgetName).toBe('My Budget');
+  });
+
+  it('doDisconnect spy traces call and returns confirmation', async () => {
+    const doDisconnect = vi.fn(async (_ledger: unknown): Promise<DisconnectResult> => ({
+      disconnected: true,
+      cacheRemoved: true,
+      credentialsRemoved: true,
+      message: 'Connection removed. Actual server was not modified.',
+    }));
+    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect, doRemoveConnection: vi.fn() };
+    const result = await callbacks.doDisconnect({ mockLedger: true });
+    expect(doDisconnect).toHaveBeenCalledTimes(1);
+    expect(result.disconnected).toBe(true);
+    expect(result.cacheRemoved).toBe(true);
+  });
+
+  it('doRemoveConnection spy returns broad-access caveat', async () => {
+    const doRemoveConnection = vi.fn(async (_ledger: unknown): Promise<RemovalResult> => ({
+      removed: true,
+      cacheRemoved: true,
+      credentialsRemoved: true,
+      broadAccessCaveat:
+        'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
+        'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
+        'Project-side filtering does not reduce the broad access held by the connector. ' +
+        'Ensure your Actual server and backups have appropriate security.',
+    }));
+    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect: vi.fn(), doRemoveConnection };
+    const result = await callbacks.doRemoveConnection({});
+    expect(doRemoveConnection).toHaveBeenCalledTimes(1);
+    expect(result.removed).toBe(true);
+    expect(result.broadAccessCaveat).toBeTruthy();
   });
 });

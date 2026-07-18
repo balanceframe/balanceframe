@@ -6,7 +6,7 @@
  * adapter/protocol values.
  */
 
-export * from './envelope';
-export * from './errors';
-export * from './commands';
-export * from './analysis';
+export * from './envelope.js';
+export * from './errors.js';
+export * from './commands.js';
+export * from './analysis.js';

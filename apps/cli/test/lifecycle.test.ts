@@ -184,6 +184,7 @@ describe('CLI lifecycle — remove-connection', () => {
     const result = await main(['remove-connection'], {
       actorId: 'usr_test',
       requestId: 'req_rem',
+      mode: 'managedAutomation',
       ledger: { mockLedger: true },
       lifecycleCallbacks: t.callbacks,
     });
@@ -194,5 +195,100 @@ describe('CLI lifecycle — remove-connection', () => {
     expect(parsed.result.removed).toBe(true);
     expect(parsed.result.cacheRemoved).toBe(true);
     expect(parsed.result.broadAccessCaveat).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle authorization — mode enforcement
+// ---------------------------------------------------------------------------
+
+describe('CLI lifecycle — authorization', () => {
+  it('rejects remove-connection in observe mode and does not call callback', async () => {
+    const t = createLifecycleTracker();
+    const result = await main(['remove-connection'], {
+      actorId: 'usr_test',
+      requestId: 'req_rem_obs',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      lifecycleCallbacks: t.callbacks,
+    });
+
+    // Callback must not be invoked
+    expect(t.removeCallCount).toBe(0);
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('write_rejected');
+  });
+
+  it('allows remove-connection in managedAutomation mode', async () => {
+    const t = createLifecycleTracker();
+    const result = await main(['remove-connection'], {
+      actorId: 'usr_test',
+      requestId: 'req_rem_auto',
+      mode: 'managedAutomation',
+      ledger: { mockLedger: true },
+      lifecycleCallbacks: t.callbacks,
+    });
+
+    expect(t.removeCallCount).toBe(1);
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+  });
+
+  it('includes mode-appropriate authorization in remove-connection response', async () => {
+    const t = createLifecycleTracker();
+    const result = await main(['remove-connection'], {
+      actorId: 'usr_test',
+      requestId: 'req_auth_rem',
+      mode: 'managedAutomation',
+      ledger: { mockLedger: true },
+      lifecycleCallbacks: t.callbacks,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.authorization).toEqual({
+      actorId: 'usr_test',
+      capability: 'remove-connection',
+      allowed: true,
+    });
+  });
+
+  it('includes authorized context in export response', async () => {
+    const t = createLifecycleTracker();
+    const result = await main(['export', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_auth_exp',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      lifecycleCallbacks: t.callbacks,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.authorization).toEqual({
+      actorId: 'usr_test',
+      capability: 'export',
+      allowed: true,
+    });
+  });
+
+  it('includes authorized context in disconnect response', async () => {
+    const t = createLifecycleTracker();
+    const result = await main(['disconnect'], {
+      actorId: 'usr_test',
+      requestId: 'req_auth_dc',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      lifecycleCallbacks: t.callbacks,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.authorization).toEqual({
+      actorId: 'usr_test',
+      capability: 'disconnect',
+      allowed: true,
+    });
   });
 });
