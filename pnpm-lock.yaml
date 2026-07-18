@@ -30,6 +30,12 @@ importers:
 
   apps/web: {}
 
+  crates/node-binding:
+    devDependencies:
+      '@napi-rs/cli':
+        specifier: ^2.0.0
+        version: 2.18.4
+
   packages/actual-adapter: {}
 
   packages/application: {}
@@ -428,6 +434,11 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@napi-rs/cli@2.18.4':
+    resolution: {integrity: sha512-SgJeA4df9DE2iAEpr3M2H0OKl/yjtg1BnRI5/JyowS71tUWhrfSu2LT0V3vlHET+g1hBVlrO60PmEXwUEKp8Mg==}
+    engines: {node: '>= 10'}
+    hasBin: true
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -1927,6 +1938,8 @@ snapshots:
   '@jlongster/sql.js@1.6.7': {}
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@napi-rs/cli@2.18.4': {}
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:

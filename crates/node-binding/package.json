@@ -12,6 +12,9 @@
       ]
     }
   },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.0.0"
+  },
   "scripts": {
     "build": "napi build --release"
   }
