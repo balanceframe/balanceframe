@@ -14,6 +14,9 @@ import {
 } from './helpers';
 import { init, shutdown, getBudgets, downloadBudget, getAccounts,
          createBudget } from '@actual-app/api';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 // ---- Setup / Teardown -----------------------------------------------------
 
@@ -158,27 +161,72 @@ describe('01 — Connection & Budget Discovery', () => {
 
   // ------------------------------------------------------------------
   // Proof 4a: Encrypted budget support
-  // ------------------------------------------------------------------
-  it('should connect to an encrypted budget', async () => {
-    await withActualClient(async () => {
-      const budgetName = `Encrypted-Test-${Date.now()}`;
+  it('should reject download of an encrypted budget without password and accept with correct password', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'bf-actual-enc-test-'));
+    const encPassword = 'test-encrypt-password-42';
+    const budgetName = `Encrypted-Test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-      // Create budget
-      const { id: budgetId, groupId } = await createBudget({
-        name: budgetName,
-        avoidUpload: false,
-      });
+    const { send } = await init({
+      serverURL: serverUrl,
+      password: secretKey,
+      dataDir,
+    });
+    let budgetId: string | undefined;
+    let cloudFileId: string | undefined;
+    let groupId: string | undefined;
 
-      // Sync (upload) and download with encryption password
-      await downloadBudget(groupId, budgetId, {
-        password: secretKey,
-      });
+    try {
+      // Step 1: Create a disposable budget
+      await send('create-budget', { budgetName, avoidUpload: false });
 
+      // Step 2: Find the budget via the public API to get its identity
+      const budgets = await getBudgets();
+      const budget = budgets.find((b: { name?: string }) => b.name === budgetName);
+      expect(budget).toBeDefined();
+      budgetId = budget!.id!;
+      cloudFileId = budget!.cloudFileId!;
+
+      // Step 3: Encrypt the budget with a real password
+      // This calls key-make which generates a key from the password, stores
+      // the key test on the server, and sets encryptKeyId in local prefs.
+      await send('key-make', { password: encPassword });
+
+      // Step 4: Re-upload the budget — now encrypted with encryptKeyId metadata
+      await send('upload-budget');
+
+      // Step 5: Get the updated budget info (groupId was restored by upload)
+      const afterUpload = await getBudgets();
+      const synced = afterUpload.find((b: { name?: string }) => b.name === budgetName);
+      expect(synced).toBeDefined();
+      groupId = synced!.groupId!;
+
+      // Budget must now be marked as encrypted
+      expect(synced).toHaveProperty('encryptKeyId');
+      expect(synced!.encryptKeyId).toBeTruthy();
+
+      // Step 6: Close the budget so downloadBudget re-downloads it fresh
+      await send('close-budget');
+
+      // Step 7: Download without password — must reject (file is encrypted)
+      await expect(
+        downloadBudget(groupId),
+      ).rejects.toThrow(/encrypted/i);
+
+      // Step 8: Download with wrong password — must reject
+      await expect(
+        downloadBudget(groupId, { password: 'wrong-password' }),
+      ).rejects.toThrow();
+
+      // Step 9: Download with correct password — must succeed
+      await downloadBudget(groupId, { password: encPassword });
       const accounts = await getAccounts();
       expect(Array.isArray(accounts)).toBe(true);
-
-      await cleanupBudget(budgetId, groupId);
-    });
+    } finally {
+      // Step 10: Cleanup — delete the encrypted budget from server and disk
+      await send('delete-budget', { id: budgetId, cloudFileId }).catch(() => {});
+      await shutdown();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   // ------------------------------------------------------------------

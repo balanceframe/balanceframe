@@ -24,6 +24,95 @@ import {
 describe('03 — Read Entities & Queries', () => {
 
   // ==================================================================
+  //  Seed Proof: Translate canonical fixture into Actual entities
+  // ==================================================================
+  it('should seed representative fixture data correctly', async () => {
+    await withActualClient(async () => {
+      await createBudget({
+        name: `Seed-Canonical-${Date.now()}`,
+        avoidUpload: false,
+      });
+
+      // Use loadFixtureData to get canonical fixture and verify adaption
+      await seedFixtureData();
+
+      // Verify accounts were created with expected names
+      const accounts = await getAccounts();
+      const accountNames = accounts.map((a) => {
+        const obj = a as { name?: string };
+        return obj.name ?? '';
+      });
+      expect(accountNames).toContain('Checking Account');
+      expect(accountNames).toContain('Savings Account');
+      expect(accountNames).toContain('Credit Card');
+      expect(accountNames).toContain('Cash Wallet');
+      expect(accountNames).toContain('Car Loan');
+
+      // Verify categories were created
+      const categories = await getCategories();
+      expect(categories.length).toBeGreaterThanOrEqual(1);
+      const catNames = categories.map((c) => {
+        const obj = c as { name?: string };
+        return obj.name ?? '';
+      });
+      expect(catNames).toContain('Rent / Mortgage');
+      expect(catNames).toContain('Groceries');
+      expect(catNames).toContain('Dining Out');
+      // Deleted category should NOT be present
+      expect(catNames).not.toContain('Old Category');
+
+      // Verify category groups were created
+      const groups = await getCategoryGroups();
+      const groupNames = groups.map((g) => {
+        const obj = g as { name?: string };
+        return obj.name ?? '';
+      });
+      expect(groupNames).toContain('Housing');
+      expect(groupNames).toContain('Food');
+      expect(groupNames).toContain('Transportation');
+      expect(groupNames).toContain('Utilities');
+
+      // Verify payees were created
+      const payees = await getPayees();
+      const payeeNames = payees.map((p) => {
+        const obj = p as { name?: string };
+        return obj.name ?? '';
+      });
+      expect(payeeNames).toContain('AMAZON MKTPLACE');
+      expect(payeeNames).toContain('Whole Foods');
+      expect(payeeNames).toContain('Checking <> Credit Card');
+
+      // Verify transactions exist across accounts
+      let totalTxns = 0;
+      for (const acct of accounts) {
+        const aObj = acct as { id?: string };
+        if (!aObj.id) continue;
+        const txns = await getTransactions(aObj.id);
+        totalTxns += txns.length;
+      }
+      expect(totalTxns).toBeGreaterThan(0);
+
+      // Verify that transactions have expected amounts (Money amounts parsed)
+      const checkingAcct = accounts.find((a) => {
+        const obj = a as { name?: string };
+        return obj.name === 'Checking Account';
+      });
+      if (checkingAcct) {
+        const cObj = checkingAcct as { id?: string };
+        if (cObj.id) {
+          const txns = await getTransactions(cObj.id);
+          // At least one transaction should have a non-zero integer amount
+          const hasNonZero = txns.some((t) => {
+            const tObj = t as { amount?: number };
+            return typeof tObj.amount === 'number' && tObj.amount !== 0;
+          });
+          expect(hasNonZero).toBe(true);
+        }
+      }
+    });
+  });
+
+  // ==================================================================
   //  Proof 1: Read accounts, categories, payees, transactions
   // ==================================================================
   it('should read all accounts from a budget', async () => {
