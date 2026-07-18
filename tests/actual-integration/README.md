@@ -8,8 +8,8 @@ used by `@balanceframe/actual-adapter`.
 
 - **Node.js** >= 20
 - **pnpm** >= 9
-- A running **Actual Budget server** (local or remote)
-- The server's **secret key / password**
+- The pinned Nix `actual-server` package (`nix develop`)
+- The server's secret key / password
 
 ## Environment Variables
 
@@ -33,11 +33,10 @@ cd tests/actual-integration
 ./setup-fixture-server.sh
 ```
 
-This script:
-- Checks that Node.js, npx, curl, and jq are available
+- Checks that Node.js, pnpm, the pinned `actual-server`, curl, and jq are available
 - Stops any running Actual server on the target port
 - Creates a representative fixture data file (if missing)
-- Starts the Actual server in server mode
+- Starts the Nix-provided Actual server with isolated data directories
 - Creates a new test budget and seeds it with accounts, categories, payees,
   transactions, rules, and schedules
 - Writes environment configuration to `.env.test`

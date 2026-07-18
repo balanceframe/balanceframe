@@ -9,14 +9,17 @@
  *   5. Restore from export
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, it, expect } from 'vitest';
 import { withActualClient } from './helpers';
 import {
-  createBudget, getAccounts, getTransactions,
-  importTransactions, addTransactions, exportBudget,
-  createAccount, createPayee, createCategory, createCategoryGroup,
-  getCategories, getPayees, sync,
-} from '@actual-app/api';
+  createBudget, getAccounts, getTransactions, importTransactions,
+  addTransactions, exportBudget, importBudgetArchive, createAccount,
+  createPayee, createCategory, createCategoryGroup, getCategories,
+  getPayees, sync,
+} from './actual-client.js';
 
 
 /**
@@ -35,9 +38,13 @@ async function createImportBudget(): Promise<{
   });
 
   await createAccount({ name: 'Checking', type: 'checking' });
-  await createCategoryGroup({ name: 'Expenses' });
-
-  await createCategory({ name: 'Uncategorized', groupId: null as unknown as string, isIncome: false, hidden: false });
+  const expenseGroupId = await createCategoryGroup({ name: 'Expenses' });
+  await createCategory({
+    name: 'Uncategorized',
+    groupId: expenseGroupId,
+    isIncome: false,
+    hidden: false,
+  });
   await createPayee({ name: 'Test Payee Alpha' });
   await createPayee({ name: 'Test Payee Beta' });
   await createPayee({ name: 'Known Payee' });
@@ -93,18 +100,13 @@ describe('06 — Import, Export, Restore', () => {
         },
       ], { dryRun: true });
 
-      // The import result should contain a preview array
+      // A new unmatched import is reported in `added`; `updatedPreview`
+      // only contains imports reconciled against existing transactions.
       expect(importResult).toBeDefined();
-      expect(importResult).toHaveProperty('updatedPreview');
-      expect(Array.isArray(importResult.updatedPreview)).toBe(true);
-      expect(importResult.updatedPreview.length).toBeGreaterThanOrEqual(1);
-
-      // Preview items should indicate matched/unmatched status
-      const previewItem = importResult.updatedPreview[0];
-      expect(previewItem).toHaveProperty('transaction');
-      expect(previewItem).toHaveProperty('existing');
-      // Since there are no matching existing transactions, existing should be undefined
-      expect(previewItem.existing).toBeUndefined();
+      expect(Array.isArray(importResult.added)).toBe(true);
+      expect(importResult.added).toHaveLength(1);
+      expect(importResult.added[0]).toEqual(expect.any(String));
+      expect(importResult.added[0]).not.toHaveLength(0);
 
       // Verify no new transactions were actually persisted (dry-run nature via dryRun flag)
       const txnsAfter = await getTransactions(budget.checkingAcct);
@@ -277,18 +279,10 @@ describe('06 — Import, Export, Restore', () => {
         { date: '2025-04-01', amount: -10000, notes: 'Export test txn' },
       ]);
       await sync();
-
-      // Export the budget
       const exported = await exportBudget();
-      expect(exported).toBeDefined();
-
-      // The export should be a string (JSON serialized budget data)
-      expect(typeof exported).toBe('string');
-
-      // Parse to verify structure
-      const parsed = JSON.parse(exported);
-      expect(parsed).toHaveProperty('accounts');
-      expect(parsed).toHaveProperty('transactions');
+      expect(Buffer.isBuffer(exported)).toBe(true);
+      expect(exported.length).toBeGreaterThan(0);
+      expect(exported.subarray(0, 2).toString('ascii')).toBe('PK');
     });
   });
 
@@ -301,16 +295,16 @@ describe('06 — Import, Export, Restore', () => {
         { date: '2025-05-01', amount: -20000, notes: 'Full export' },
         { date: '2025-05-02', amount: -35000, notes: 'Full export 2' },
       ]);
-      await sync();
-
-      const exported = await exportBudget();
-      const parsed = JSON.parse(exported);
-
-      // Verify export contains key entities
-      expect(parsed).toHaveProperty('accounts');
-      expect(parsed).toHaveProperty('transactions');
-      expect(parsed).toHaveProperty('categoryGroups');
-      expect(parsed).toHaveProperty('payees');
+      const [accounts, categories, payees, exported] = await Promise.all([
+        getAccounts(),
+        getCategories(),
+        getPayees(),
+        exportBudget(),
+      ]);
+      expect(accounts.some((account) => account.name === 'Checking')).toBe(true);
+      expect(categories.some((category) => category.name === 'Uncategorized')).toBe(true);
+      expect(payees.some((payee) => payee.name === 'Known Payee')).toBe(true);
+      expect(exported.length).toBeGreaterThan(0);
     });
   });
 
@@ -319,51 +313,58 @@ describe('06 — Import, Export, Restore', () => {
   // ==================================================================
   it('should restore a budget from an export file', async () => {
     await withActualClient(async () => {
-      // Step 1: Create a budget and export it
       const sourceBudget = await createImportBudget();
-
       await addTransactions(sourceBudget.checkingAcct, [
         { date: '2025-06-01', amount: -5000, notes: 'Restore test' },
       ]);
       await sync();
 
-      const exportedData = await exportBudget();
+      const archive = await exportBudget();
+      const tempDir = mkdtempSync(join(tmpdir(), 'bf-actual-restore-'));
+      const archivePath = join(tempDir, 'budget.actual');
+      try {
+        writeFileSync(archivePath, archive);
+        await importBudgetArchive(archivePath);
 
-      // Step 2: Create a new budget and import the exported data
-      await createBudget({
-        name: `Restored-${Date.now()}`,
-        avoidUpload: false,
-      });
-
-      // Re-init with the new budget then we need to see if restore is
-      // done by downloading from server. The restore pattern is:
-      // export from source, then recreate via API calls.
-
-      // Verify exported data is parseable and has transactions
-      const parsed = JSON.parse(exportedData);
-      expect(parsed.transactions.length).toBeGreaterThanOrEqual(1);
+        const restoredAccounts = await getAccounts();
+        const restoredTransactions = (
+          await Promise.all(restoredAccounts.map((account) => getTransactions(account.id)))
+        ).flat();
+        expect(restoredTransactions.some((transaction) =>
+          transaction.notes === 'Restore test'
+        )).toBe(true);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 
   it('should verify restored budget contains original data', async () => {
     await withActualClient(async () => {
       const budget = await createImportBudget();
-
       const originalNote = `Original-${Date.now()}`;
       await addTransactions(budget.checkingAcct, [
         { date: '2025-07-01', amount: -15000, notes: originalNote },
       ]);
       await sync();
 
-      // Export
-      const exported = await exportBudget();
+      const archive = await exportBudget();
+      const tempDir = mkdtempSync(join(tmpdir(), 'bf-actual-roundtrip-'));
+      const archivePath = join(tempDir, 'budget.actual');
+      try {
+        writeFileSync(archivePath, archive);
+        await importBudgetArchive(archivePath);
 
-      // The export is a JSON string — verify transaction data round-trips
-      const parsed = JSON.parse(exported);
-      const originalTxns = parsed.transactions.filter(
-        (t: { notes?: string }) => t.notes === originalNote,
-      );
-      expect(originalTxns.length).toBeGreaterThanOrEqual(1);
+        const restoredAccounts = await getAccounts();
+        const restoredTransactions = (
+          await Promise.all(restoredAccounts.map((account) => getTransactions(account.id)))
+        ).flat();
+        expect(restoredTransactions.some((transaction) =>
+          transaction.notes === originalNote
+        )).toBe(true);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 });

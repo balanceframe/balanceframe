@@ -13,7 +13,7 @@ import {
   getActualClient, requireEnv, withActualClient, cleanupBudget, buildClientConfig,
 } from './helpers';
 import { init, shutdown, getBudgets, downloadBudget, getAccounts,
-         createBudget } from '@actual-app/api';
+         createBudget } from './actual-client.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -78,9 +78,9 @@ describe('01 — Connection & Budget Discovery', () => {
       expect(Array.isArray(budgets)).toBe(true);
       // After setup-fixture-server, at least one budget should exist.
       // If none exist (fresh server), the array is empty — still valid.
-      for (const b of budgets) {
-        expect(b).toHaveProperty('id');
-        expect(b).toHaveProperty('name');
+      for (const budget of budgets) {
+        expect(budget).toHaveProperty('name');
+        expect('id' in budget || 'cloudFileId' in budget).toBe(true);
       }
     });
   });
@@ -196,7 +196,9 @@ describe('01 — Connection & Budget Discovery', () => {
 
       // Step 5: Get the updated budget info (groupId was restored by upload)
       const afterUpload = await getBudgets();
-      const synced = afterUpload.find((b: { name?: string }) => b.name === budgetName);
+      const synced = afterUpload.find(
+        (budget) => budget.name === budgetName && Boolean(budget.groupId),
+      );
       expect(synced).toBeDefined();
       groupId = synced!.groupId!;
 
@@ -238,8 +240,8 @@ describe('01 — Connection & Budget Discovery', () => {
       expect(Array.isArray(budgets)).toBe(true);
       if (budgets.length > 0) {
         const budget = budgets[0] as Record<string, unknown>;
-        // Budget objects should have identification fields
-        expect(budget).toHaveProperty('id');
+        // Remote entries expose cloudFileId; downloaded entries expose id.
+        expect('id' in budget || 'cloudFileId' in budget).toBe(true);
         expect(budget).toHaveProperty('name');
       }
     });

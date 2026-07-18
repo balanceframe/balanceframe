@@ -64,19 +64,26 @@ trap cleanup_on_fail ERR
 check_deps() {
   info "Checking dependencies..."
 
-  # Node.js is required for the Actual server
+  # The API client is used by the seed script; the server is provided by Nix.
+  if ! command -v actual-server &>/dev/null; then
+    error "actual-server is required; enter nix develop or provide a compatible server"
+    exit 1
+  fi
+  ok "actual-server $(actual-server --version 2>/dev/null || true)"
+
+  # Node.js is required by the Actual API seed script
   if ! command -v node &>/dev/null; then
     error "Node.js is required but not found in PATH"
     exit 1
   fi
   ok "Node.js $(node --version)"
 
-  # npx for running @actual-app/api commands
-  if ! command -v npx &>/dev/null; then
-    error "npx is required but not found in PATH"
+  # pnpm provides the workspace dependency resolution for the seed script
+  if ! command -v pnpm &>/dev/null; then
+    error "pnpm is required but not found in PATH"
     exit 1
   fi
-  ok "npx available"
+  ok "pnpm available"
 
   # curl for API health checks
   if ! command -v curl &>/dev/null; then
@@ -213,29 +220,31 @@ FIXX
 # ---- Step 4: Start Actual server -------------------------------------------
 SERVER_CACHE_DIR="$SCRIPT_DIR/.actual-server-data"
 SERVER_PID_FILE="$SCRIPT_DIR/.actual-server.pid"
+SEED_DATA_DIR="$SERVER_CACHE_DIR/seed-data"
+SEED_RESULT_JSON=""
 
 start_actual_server() {
   info "Starting Actual server..."
 
   if [ "$DRY_RUN" = "1" ]; then
     info "[DRY_RUN] Would start Actual server on port $ACTUAL_SERVER_PORT"
-    info "[DRY_RUN]   with data directory: $FIXTURE_DIR/server-data"
+    info "[DRY_RUN]   with data directory: $SERVER_CACHE_DIR"
     return
   fi
 
-  # Create server data directory
-  mkdir -p "$SERVER_CACHE_DIR"
+  mkdir -p "$SERVER_CACHE_DIR/server-files" "$SERVER_CACHE_DIR/user-files"
 
-  # Start Actual in server mode using npx
-  # The Actual server listens on the specified port and manages budget data
-  npx -y @actual-app/api serve \
-    --port "$ACTUAL_SERVER_PORT" \
-    --password "$ACTUAL_SECRET_KEY" \
-    --data-dir "$SERVER_CACHE_DIR" &
+  # Actual's published server is a separate executable from @actual-app/api.
+  # Configuration is supplied through the documented ACTUAL_* environment
+  # variables; the API client password is applied by the seed script.
+  ACTUAL_PORT="$ACTUAL_SERVER_PORT" \
+  ACTUAL_DATA_DIR="$SERVER_CACHE_DIR" \
+  ACTUAL_SERVER_FILES="$SERVER_CACHE_DIR/server-files" \
+  ACTUAL_USER_FILES="$SERVER_CACHE_DIR/user-files" \
+    actual-server >"$SERVER_CACHE_DIR/server.log" 2>&1 &
   local server_pid=$!
   echo "$server_pid" > "$SERVER_PID_FILE"
 
-  # Wait for server to be ready
   info "Waiting for server to become ready..."
   for i in $(seq 1 30); do
     if curl -s "${ACTUAL_SERVER_URL}/health" >/dev/null 2>&1; then
@@ -246,8 +255,60 @@ start_actual_server() {
   done
 
   error "Server did not become ready within 30 seconds"
+  cat "$SERVER_CACHE_DIR/server.log" >&2 || true
   kill "$server_pid" 2>/dev/null || true
   return 1
+}
+
+initialize_actual_password() {
+  export ACTUAL_SECRET_KEY
+  if [ "$DRY_RUN" = "1" ]; then
+    info "[DRY_RUN] Would initialize Actual server password"
+    return
+  fi
+
+  info "Initializing Actual server password..."
+  export ACTUAL_PORT="$ACTUAL_SERVER_PORT"
+  export ACTUAL_DATA_DIR="$SERVER_CACHE_DIR"
+  export ACTUAL_SERVER_FILES="$SERVER_CACHE_DIR/server-files"
+  export ACTUAL_USER_FILES="$SERVER_CACHE_DIR/user-files"
+
+  # Reset while the server is stopped so the next process observes the new
+  # password instead of retaining the previous account database in memory.
+  stop_actual_server
+  if ! expect <<'EXPECT'
+    set timeout 30
+    log_user 0
+    spawn actual-server --reset-password
+    expect -re "Enter a password, then press enter:" {
+      send -- "$env(ACTUAL_SECRET_KEY)"
+      after 500
+      send -- "\r"
+    }
+    expect -re "Enter the password again, then press enter:" {
+      send -- "$env(ACTUAL_SECRET_KEY)"
+      after 500
+      send -- "\r"
+    }
+    expect {
+      -re "Password (set|changed)!" {
+        expect eof
+        exit 0
+      }
+      -re "Passwords do not match." {
+        exit 1
+      }
+      eof {
+        exit 1
+      }
+    }
+EXPECT
+  then
+    error "Actual server password initialization failed"
+    return 1
+  fi
+  start_actual_server
+  ok "Actual server password initialized"
 }
 
 # ---- Step 5: Create and seed the test budget --------------------------------
@@ -257,7 +318,7 @@ create_seed_script() {
   info "Creating seed script..."
 
   cat > "$SEED_SCRIPT" << 'SEED'
-import actualApi from '@actual-app/api';
+import * as actualApi from '@actual-app/api';
 import { readFileSync } from 'fs';
 
 async function main() {
@@ -267,21 +328,22 @@ async function main() {
   const fixturePath = process.env.FIXTURE_DATA_PATH;
 
   // Initialize connection
-  await actualApi.init({
+  const client = await actualApi.init({
     serverURL: serverUrl,
-    password: password,
-    dataDir: '/tmp/balanceframe-seed-data',
+    password,
+    dataDir: process.env.SEED_DATA_DIR,
   });
 
-  // List existing budgets
-  const budgets = await actualApi.getBudgets();
-  console.log(JSON.stringify({ status: 'budgets_found', count: budgets.length }));
-
-  // Create and open a new budget
-  const { id: budgetId, groupId } = await actualApi.createBudget({
-    name: budgetName,
+  await client.send('create-budget', {
+    budgetName,
     avoidUpload: false,
   });
+  const budgets = await actualApi.getBudgets();
+  const budget = budgets.find((candidate) => candidate.name === budgetName);
+  if (!budget) {
+    throw new Error(`Created budget "${budgetName}" was not returned by the server`);
+  }
+  const { id: budgetId, groupId } = budget;
   console.log(JSON.stringify({ status: 'budget_created', budgetId, groupId, name: budgetName }));
 
   // Load fixture data
@@ -296,7 +358,7 @@ async function main() {
   // Create category groups with categories
   if (fixture.categoryGroups) {
     for (const group of fixture.categoryGroups) {
-      const { id: groupId } = await actualApi.createCategoryGroup({ name: group.name });
+      const groupId = await actualApi.createCategoryGroup({ name: group.name });
       for (const cat of (group.categories || [])) {
         await actualApi.createCategory({
           name: cat.name,
@@ -388,6 +450,7 @@ async function main() {
   // Sync to server
   await actualApi.sync();
 
+  await actualApi.shutdown();
   console.log(JSON.stringify({
     status: 'seeded',
     budgetId,
@@ -395,8 +458,6 @@ async function main() {
     serverUrl: process.env.ACTUAL_SERVER_URL,
     budgetName,
   }));
-
-  await actualApi.shutdown();
 }
 
 main().catch((err) => {
@@ -417,12 +478,20 @@ seed_budget() {
     return
   fi
 
-  # Run the seed script
-  ACTUAL_SERVER_URL="$ACTUAL_SERVER_URL" \
-  ACTUAL_SECRET_KEY="$ACTUAL_SECRET_KEY" \
-  ACTUAL_BUDGET_NAME="$ACTUAL_BUDGET_NAME" \
-  FIXTURE_DATA_PATH="$FIXTURE_DATA_FILE" \
-  node "$SEED_SCRIPT"
+  rm -rf "$SEED_DATA_DIR"
+  mkdir -p "$SEED_DATA_DIR"
+
+  local seed_output
+  seed_output=$(
+    ACTUAL_SERVER_URL="$ACTUAL_SERVER_URL" \
+    ACTUAL_SECRET_KEY="$ACTUAL_SECRET_KEY" \
+    ACTUAL_BUDGET_NAME="$ACTUAL_BUDGET_NAME" \
+    FIXTURE_DATA_PATH="$FIXTURE_DATA_FILE" \
+    SEED_DATA_DIR="$SEED_DATA_DIR" \
+      node "$SEED_SCRIPT"
+  )
+  printf '%s\n' "$seed_output"
+  SEED_RESULT_JSON="${seed_output##*$'\n'}"
 
   ok "Budget seeded successfully"
 }
@@ -442,9 +511,7 @@ ENV
     return
   fi
 
-  # Extract budget info from the seed script's output
-  local seed_output
-  seed_output=$(node "$SEED_SCRIPT" 2>&1 | tail -1)
+  local seed_output="$SEED_RESULT_JSON"
   local budget_id
   budget_id=$(echo "$seed_output" | jq -r '.budgetId // empty' 2>/dev/null || echo "")
   local group_id
@@ -455,7 +522,6 @@ ENV
     return 1
   fi
 
-  # Write environment file for tests
   cat > "$SCRIPT_DIR/.env.test" << ENV
 ACTUAL_SERVER_URL=$ACTUAL_SERVER_URL
 ACTUAL_SECRET_KEY=$ACTUAL_SECRET_KEY
@@ -490,6 +556,8 @@ main() {
   ensure_fixture_data
   echo ""
   start_actual_server
+  echo ""
+  initialize_actual_password
   echo ""
   create_seed_script
   echo ""

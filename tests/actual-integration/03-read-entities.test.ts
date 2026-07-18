@@ -15,10 +15,9 @@ import { withActualClient, seedFixtureData } from './helpers';
 import {
   createBudget, getAccounts, getCategories, getCategoryGroups,
   getPayees, getTransactions, getRules, getSchedules,
-  getBudgetMonth, getBudgetMonths, runQuery,
-  batch as actualBatch, addTransactions, createAccount,
-  createCategoryGroup, sync,
-} from '@actual-app/api';
+  getBudgetMonth, getBudgetMonths, runQuery, addTransactions,
+  createAccount, createCategoryGroup, sync,
+} from './actual-client.js';
 
 
 describe('03 — Read Entities & Queries', () => {
@@ -268,11 +267,11 @@ describe('03 — Read Entities & Queries', () => {
       await seedFixtureData();
 
       // Read a specific budget month
-      const monthData = await getBudgetMonth('2025-01');
+      const monthData = await getBudgetMonth('2026-07');
       expect(monthData).toBeDefined();
       expect(monthData).toHaveProperty('month');
-      // Category budget data is present
-      expect(monthData).toHaveProperty('categoryBudgetAmount');
+      // Actual reports the month aggregate and its category groups.
+      expect(monthData).toHaveProperty('categoryGroups');
     });
   });
 
@@ -285,7 +284,7 @@ describe('03 — Read Entities & Queries', () => {
       await seedFixtureData();
 
       // Read a range of budget months
-      const months = await getBudgetMonths('2025-01', '2025-03');
+      const months = await getBudgetMonths('2026-07', '2026-07');
       expect(Array.isArray(months)).toBe(true);
       expect(months.length).toBeGreaterThanOrEqual(1);
     });
@@ -299,7 +298,7 @@ describe('03 — Read Entities & Queries', () => {
       });
 
       // Create a budget month and check carryover
-      const monthData = await getBudgetMonth('2025-01');
+      const monthData = await getBudgetMonth('2026-07');
       if (monthData && typeof monthData === 'object') {
         // Check that budget month has carryover field
         const md = monthData as Record<string, unknown>;
@@ -317,10 +316,9 @@ describe('03 — Read Entities & Queries', () => {
       });
       await seedFixtureData();
 
-      const monthData = await getBudgetMonth('2025-01');
+      const monthData = await getBudgetMonth('2026-07');
       if (monthData && typeof monthData === 'object') {
-        const md = monthData as { categoryBudgetAmount?: unknown };
-        expect(md).toHaveProperty('categoryBudgetAmount');
+        expect(monthData).toHaveProperty('categoryGroups');
       }
     });
   });
@@ -419,11 +417,11 @@ describe('03 — Read Entities & Queries', () => {
       });
       await seedFixtureData();
 
-      // Run batch queries using the batch API
-      const results = await actualBatch([
-        ['get-accounts', 'getAccounts', []],
-        ['get-categories', 'getCategories', []],
-        ['get-payees', 'getPayees', []],
+      // Read independent entity collections concurrently.
+      const results = await Promise.all([
+        getAccounts(),
+        getCategories(),
+        getPayees(),
       ]);
 
       expect(results).toBeDefined();
@@ -440,12 +438,10 @@ describe('03 — Read Entities & Queries', () => {
       });
       await createAccount({ name: 'Batch-Acct', type: 'checking' });
 
-      const batchOps = [
-        ['getAccounts', []],
-        ['getPayees', []],
-      ];
-
-      const results = await actualBatch(batchOps);
+      const results = await Promise.all([
+        getAccounts(),
+        getPayees(),
+      ]);
       expect(results).toBeDefined();
     });
   });

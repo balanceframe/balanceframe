@@ -11,10 +11,10 @@
 import { describe, it, expect } from 'vitest';
 import { withActualClient } from './helpers';
 import {
-  createBudget, getTransactions, getAccounts, getPayees,
-  getCategories, runQuery, sync, downloadBudget, addTransactions,
-  createAccount, createCategory, createPayee,
-} from '@actual-app/api';
+  createBudget, getTransactions, getAccounts, getPayees, getCategories,
+  runQuery, sync, downloadBudget, addTransactions, createAccount,
+  createCategory, createCategoryGroup, createPayee,
+} from './actual-client.js';
 
 
 describe('04 — Observe Mode (Strict Read-Only)', () => {
@@ -41,16 +41,16 @@ describe('04 — Observe Mode (Strict Read-Only)', () => {
     await createAccount({ name: 'Checking', type: 'checking' });
     await createAccount({ name: 'Credit Card', type: 'credit', offbudget: true });
 
-    // Create some categories
+    const expenseGroupId = await createCategoryGroup({ name: 'Expenses' });
     await createCategory({
       name: 'Groceries',
-      groupId: null as unknown as string, // root group
+      groupId: expenseGroupId,
       isIncome: false,
       hidden: false,
     });
     await createCategory({
       name: 'Dining Out',
-      groupId: null as unknown as string,
+      groupId: expenseGroupId,
       isIncome: false,
       hidden: false,
     });

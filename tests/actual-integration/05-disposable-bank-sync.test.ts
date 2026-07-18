@@ -12,12 +12,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { withActualClient } from './helpers';
-import {
-  createBudget, getAccounts, getPayees, getTransactions,
-  getCategories, getRules, addTransactions, sync,
-  createAccount, createPayee, createCategory, createCategoryGroup,
-  createRule, deleteRule, updateTransaction, deleteTransaction,
-} from '@actual-app/api';
+import { createBudget, getAccounts, getPayees, getTransactions,
+getCategories, getRules, addTransactions, sync,
+createAccount, createPayee, createCategory, createCategoryGroup,
+createRule, deleteRule, updateTransaction, deleteTransaction, } from './actual-client.js';
 
 
 /**
@@ -41,8 +39,8 @@ async function createBankSyncBudget(): Promise<{
   await createAccount({ name: 'Savings', type: 'savings' });
 
   // Create category groups and categories
-  const { id: fixedGroupId } = await createCategoryGroup({ name: 'Fixed' });
-  const { id: variableGroupId } = await createCategoryGroup({ name: 'Variable' });
+  const fixedGroupId = await createCategoryGroup({ name: 'Fixed' });
+  const variableGroupId = await createCategoryGroup({ name: 'Variable' });
 
   await createCategory({ name: 'Groceries', groupId: variableGroupId, isIncome: false, hidden: false });
   await createCategory({ name: 'Dining Out', groupId: variableGroupId, isIncome: false, hidden: false });

@@ -1,5 +1,8 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
+import { config as loadEnv } from 'dotenv';
+
+loadEnv({ path: resolve(__dirname, '.env.test') });
 
 export default defineConfig({
   test: {
@@ -11,11 +14,16 @@ export default defineConfig({
     // Node environment — no DOM needed.
     environment: 'node',
 
+    // Actual's embedded API owns process-global services, and the fixture
+    // server rate-limits concurrent authentication. Run live proof files
+    // serially so each client lifecycle is isolated.
+    fileParallelism: false,
+
     // Fail fast on integration test regression.
     bail: 1,
 
-    // Retry flaky network-dependent tests once.
-    retry: 1,
+    // Live proofs are deterministic and must not mask failures with retries.
+    retry: 0,
 
     // Output
     reporters: ['default', 'verbose'],

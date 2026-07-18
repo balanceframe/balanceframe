@@ -11,7 +11,7 @@
 import { init, shutdown, createBudget, deleteBudget, downloadBudget,
          getAccounts, getPayees, getCategories, addTransactions,
          createAccount, createPayee, createCategory, createCategoryGroup,
-         createRule, createSchedule, sync as actualSync } from '@actual-app/api';
+         createRule, createSchedule, sync as actualSync } from './actual-client.js';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -241,7 +241,10 @@ export async function seedFixtureData(
     if (cat.deleted) continue;
     if (!groupsSeen.has(cat.groupName)) {
       groupsSeen.add(cat.groupName);
-      const { id: groupId } = await createCategoryGroup({ name: cat.groupName });
+      const groupId = await createCategoryGroup({ name: cat.groupName });
+      if (!groupId) {
+        throw new Error(`Actual did not create category group "${cat.groupName}"`);
+      }
       groupByName[cat.groupName] = groupId;
     }
     await createCategory({
