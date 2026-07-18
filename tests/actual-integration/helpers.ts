@@ -85,7 +85,7 @@ export async function getActualClient(
  * Wrapper that initializes a client, runs `fn`, and always shuts down.
  */
 export async function withActualClient<T>(
-  fn: (config: ClientConfig) => Promise<T>,
+  fn: (..._args: [ClientConfig]) => Promise<T>,
   config?: Partial<ClientConfig>,
 ): Promise<T> {
   const cfg = await getActualClient(config);
@@ -140,7 +140,7 @@ export async function cleanupBudget(
  * Wrapper that creates a disposable budget, runs `fn`, and cleans up.
  */
 export async function withTestBudget<T>(
-  fn: (budget: SeededBudget) => Promise<T>,
+  fn: (..._args: [SeededBudget]) => Promise<T>,
   name?: string,
 ): Promise<T> {
   const budget = await createTestBudget(name);
@@ -357,7 +357,7 @@ export async function syncWithServer(): Promise<void> {
  */
 export async function expectRejection(
   fn: () => Promise<unknown>,
-  predicate?: (err: Error) => boolean | void,
+  predicate?: (..._args: [Error]) => boolean | void,
 ): Promise<void> {
   let thrown = false;
   try {

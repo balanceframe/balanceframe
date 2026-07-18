@@ -9,12 +9,12 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { withActualClient, requireEnv, withTestBudget } from './helpers';
+import { withActualClient, requireEnv } from './helpers';
 import {
   init, shutdown, createBudget, getAccounts, getPayees,
   getTransactions, getCategories, getBudgets, addTransactions,
   updateTransaction,
-  createAccount, createPayee, createCategory, createCategoryGroup,
+  createAccount, createPayee, createCategoryGroup,
   sync, downloadBudget, getBudgetMonth, runQuery, exportBudget,
 } from '@actual-app/api';
 import { mkdtempSync } from 'node:fs';
@@ -36,7 +36,7 @@ describe('07 — Concurrency & Compatibility', () => {
   // ==================================================================
   it('should handle concurrent reads from the same budget', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Concurrent-Reads-${Date.now()}`,
         avoidUpload: false,
       });
@@ -63,7 +63,7 @@ describe('07 — Concurrency & Compatibility', () => {
 
   it('should handle many concurrent read requests', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Many-Concurrent-${Date.now()}`,
         avoidUpload: false,
       });
@@ -87,11 +87,11 @@ describe('07 — Concurrency & Compatibility', () => {
   it('should handle concurrent reads from multiple budgets', async () => {
     await withActualClient(async () => {
       // Create two budgets
-      const b1 = await createBudget({
+      await createBudget({
         name: `Concurrent-A-${Date.now()}`,
         avoidUpload: false,
       });
-      const b2 = await createBudget({
+      await createBudget({
         name: `Concurrent-B-${Date.now()}`,
         avoidUpload: false,
       });
@@ -112,7 +112,7 @@ describe('07 — Concurrency & Compatibility', () => {
   // ==================================================================
   it('should serialize writes to the same budget', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Serialized-Writes-${Date.now()}`,
         avoidUpload: false,
       });
@@ -151,7 +151,7 @@ describe('07 — Concurrency & Compatibility', () => {
 
   it('should allow read operations between writes', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Interleaved-${Date.now()}`,
         avoidUpload: false,
       });
@@ -172,6 +172,7 @@ describe('07 — Concurrency & Compatibility', () => {
 
       // Read again
       const payees = await getPayees();
+      expect(payees).toHaveLength(1);
       // Write
       await addTransactions(
         accounts[0].id,
@@ -188,7 +189,7 @@ describe('07 — Concurrency & Compatibility', () => {
 
   it('should not lose data under sequential write pressure', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Write-Pressure-${Date.now()}`,
         avoidUpload: false,
       });
@@ -217,7 +218,7 @@ describe('07 — Concurrency & Compatibility', () => {
   // ==================================================================
   it('should handle timeout for long operations', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Timeout-Test-${Date.now()}`,
         avoidUpload: false,
       });
@@ -236,7 +237,7 @@ describe('07 — Concurrency & Compatibility', () => {
 
   it('should recover from a failed write attempt', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Recovery-${Date.now()}`,
         avoidUpload: false,
       });
@@ -350,7 +351,7 @@ describe('07 — Concurrency & Compatibility', () => {
       expect(Array.isArray(budgets)).toBe(true);
 
       // Create a test budget
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Compat-Test-${Date.now()}`,
         avoidUpload: false,
       });
@@ -371,7 +372,7 @@ describe('07 — Concurrency & Compatibility', () => {
 
   it('should handle a mix of reads and writes without deadlock', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Mix-Deadlock-${Date.now()}`,
         avoidUpload: false,
       });

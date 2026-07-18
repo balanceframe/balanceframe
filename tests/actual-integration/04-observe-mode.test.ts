@@ -8,22 +8,14 @@
  *   4. Verify read-only analysis produces deterministic findings
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { withActualClient, requireEnv, withTestBudget, seedFixtureData } from './helpers';
+import { describe, it, expect } from 'vitest';
+import { withActualClient } from './helpers';
 import {
   createBudget, getTransactions, getAccounts, getPayees,
   getCategories, runQuery, sync, downloadBudget, addTransactions,
-  createAccount, createCategory, createPayee, createRule,
-  updateTransaction, deleteTransaction,
+  createAccount, createCategory, createPayee,
 } from '@actual-app/api';
 
-let serverUrl: string;
-let secretKey: string;
-
-beforeAll(() => {
-  serverUrl = requireEnv('ACTUAL_SERVER_URL');
-  secretKey = requireEnv('ACTUAL_SECRET_KEY');
-});
 
 describe('04 — Observe Mode (Strict Read-Only)', () => {
 
@@ -50,13 +42,13 @@ describe('04 — Observe Mode (Strict Read-Only)', () => {
     await createAccount({ name: 'Credit Card', type: 'credit', offbudget: true });
 
     // Create some categories
-    const { id: groceriesCatId } = await createCategory({
+    await createCategory({
       name: 'Groceries',
       groupId: null as unknown as string, // root group
       isIncome: false,
       hidden: false,
     });
-    const { id: diningCatId } = await createCategory({
+    await createCategory({
       name: 'Dining Out',
       groupId: null as unknown as string,
       isIncome: false,
@@ -206,8 +198,6 @@ describe('04 — Observe Mode (Strict Read-Only)', () => {
         (a: unknown) => getTransactions((a as { id: string }).id),
       );
       const allTransactions = await Promise.all(transactionsPromises);
-      const payees = await getPayees();
-      const categories = await getCategories();
 
       // ---- Analyze ----
       const uncategorizedCount = allTransactions

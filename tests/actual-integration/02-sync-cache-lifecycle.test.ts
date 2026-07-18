@@ -9,10 +9,9 @@
  *   5. Prove cache is isolated (no cross-budget leakage)
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
-  getActualClient, requireEnv, withActualClient,
-  downloadBudgetWithOpts, seedFixtureData,
+  getActualClient, requireEnv, withActualClient, seedFixtureData,
 } from './helpers';
 import {
   init, shutdown, createBudget, downloadBudget, deleteBudget,
@@ -38,7 +37,7 @@ describe('02 — Sync & Cache Lifecycle', () => {
   it('should download an unencrypted budget', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'bf-dl-unencrypted-'));
 
-    await withActualClient(async (cfg) => {
+    await withActualClient(async () => {
       const { id: budgetId, groupId } = await createBudget({
         name: `DL-Unencrypted-${Date.now()}`,
         avoidUpload: false,
@@ -106,7 +105,7 @@ describe('02 — Sync & Cache Lifecycle', () => {
 
   it('should sync after seeding fixture data', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Sync-Fixture-${Date.now()}`,
         avoidUpload: false,
       });
@@ -219,7 +218,6 @@ describe('02 — Sync & Cache Lifecycle', () => {
 
       // Download Budget 1 explicitly and read accounts
       await downloadBudget(group1, id1);
-      const accounts1 = await getAccounts();
 
       // Budget 2 — should have no accounts yet
       const { id: id2, groupId: group2 } = await createBudget({
@@ -263,3 +261,4 @@ describe('02 — Sync & Cache Lifecycle', () => {
       ).rejects.toThrow();
     });
   });
+});

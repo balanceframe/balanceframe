@@ -10,24 +10,15 @@
  *   6. Observe Actual automatic rule learning after API updates
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { withActualClient, requireEnv, expectRejection } from './helpers';
+import { describe, it, expect } from 'vitest';
+import { withActualClient } from './helpers';
 import {
   createBudget, getAccounts, getPayees, getTransactions,
   getCategories, getRules, addTransactions, sync,
   createAccount, createPayee, createCategory, createCategoryGroup,
   createRule, deleteRule, updateTransaction, deleteTransaction,
-  runQuery, importTransactions, downloadBudget,
 } from '@actual-app/api';
-import { setTimeout as sleep } from 'node:timers/promises';
 
-let serverUrl: string;
-let secretKey: string;
-
-beforeAll(() => {
-  serverUrl = requireEnv('ACTUAL_SERVER_URL');
-  secretKey = requireEnv('ACTUAL_SECRET_KEY');
-});
 
 /**
  * Helper: create a disposable budget with a checking account and basic
@@ -303,7 +294,6 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
       await sync();
 
       // Verify it's gone — the rule count should decrease
-      const rulesAfter = await getRules();
     });
   });
 

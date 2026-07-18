@@ -9,25 +9,15 @@
  *   5. Restore from export
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { withActualClient, requireEnv } from './helpers';
+import { describe, it, expect } from 'vitest';
+import { withActualClient } from './helpers';
 import {
   createBudget, getAccounts, getTransactions,
   importTransactions, addTransactions, exportBudget,
   createAccount, createPayee, createCategory, createCategoryGroup,
-  getCategories, getPayees, sync, downloadBudget,
+  getCategories, getPayees, sync,
 } from '@actual-app/api';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 
-let serverUrl: string;
-let secretKey: string;
-
-beforeAll(() => {
-  serverUrl = requireEnv('ACTUAL_SERVER_URL');
-  secretKey = requireEnv('ACTUAL_SECRET_KEY');
-});
 
 /**
  * Create a minimal budget with one account and payees for import/export tests.
@@ -128,7 +118,7 @@ describe('06 — Import, Export, Restore', () => {
       const budget = await createImportBudget();
 
       // Import transactions
-      const result = await importTransactions(budget.checkingAcct, [
+      await importTransactions(budget.checkingAcct, [
         {
           date: '2025-01-15',
           amount: -25000,
@@ -340,7 +330,7 @@ describe('06 — Import, Export, Restore', () => {
       const exportedData = await exportBudget();
 
       // Step 2: Create a new budget and import the exported data
-      const { id: restoreBudgetId, groupId: restoreGroupId } = await createBudget({
+      await createBudget({
         name: `Restored-${Date.now()}`,
         avoidUpload: false,
       });

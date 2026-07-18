@@ -14,6 +14,7 @@ yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
 tests/actual-integration/.actual-server-data/
+tests/actual-integration/.seed-budget.mjs
 
 # ---- IDE / editor ----
 .idea/

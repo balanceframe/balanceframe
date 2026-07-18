@@ -10,24 +10,16 @@
  *   6. Test filtering and pagination
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { withActualClient, requireEnv, seedFixtureData } from './helpers';
+import { describe, it, expect } from 'vitest';
+import { withActualClient, seedFixtureData } from './helpers';
 import {
   createBudget, getAccounts, getCategories, getCategoryGroups,
   getPayees, getTransactions, getRules, getSchedules,
   getBudgetMonth, getBudgetMonths, runQuery,
   batch as actualBatch, addTransactions, createAccount,
-  createPayee, createCategory, createCategoryGroup,
-  sync, downloadBudget,
+  createCategoryGroup, sync,
 } from '@actual-app/api';
 
-let serverUrl: string;
-let secretKey: string;
-
-beforeAll(() => {
-  serverUrl = requireEnv('ACTUAL_SERVER_URL');
-  secretKey = requireEnv('ACTUAL_SECRET_KEY');
-});
 
 describe('03 — Read Entities & Queries', () => {
 
@@ -36,7 +28,7 @@ describe('03 — Read Entities & Queries', () => {
   // ==================================================================
   it('should read all accounts from a budget', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Read-Accts-${Date.now()}`,
         avoidUpload: false,
       });
@@ -55,7 +47,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read all categories from a budget', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Read-Cats-${Date.now()}`,
         avoidUpload: false,
       });
@@ -77,7 +69,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read all payees from a budget', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Read-Payees-${Date.now()}`,
         avoidUpload: false,
       });
@@ -94,7 +86,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read transactions from an account', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Read-Txns-${Date.now()}`,
         avoidUpload: false,
       });
@@ -118,7 +110,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read transactions with date filtering', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Filter-Txns-${Date.now()}`,
         avoidUpload: false,
       });
@@ -154,7 +146,7 @@ describe('03 — Read Entities & Queries', () => {
   // ==================================================================
   it('should read rules from a budget', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Read-Rules-${Date.now()}`,
         avoidUpload: false,
       });
@@ -167,7 +159,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read schedules from a budget', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Read-Sched-${Date.now()}`,
         avoidUpload: false,
       });
@@ -180,7 +172,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read budget month data', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Budget-Month-${Date.now()}`,
         avoidUpload: false,
       });
@@ -197,7 +189,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read budget months over a range', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Budget-Range-${Date.now()}`,
         avoidUpload: false,
       });
@@ -212,7 +204,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read budget carryover settings', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Carryover-${Date.now()}`,
         avoidUpload: false,
       });
@@ -230,7 +222,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should read category holds data', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Category-Holds-${Date.now()}`,
         avoidUpload: false,
       });
@@ -249,7 +241,7 @@ describe('03 — Read Entities & Queries', () => {
   // ==================================================================
   it('should read notes from transactions', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Notes-Test-${Date.now()}`,
         avoidUpload: false,
       });
@@ -277,7 +269,7 @@ describe('03 — Read Entities & Queries', () => {
   // ==================================================================
   it('should execute an ActualQL query', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `ActualQL-${Date.now()}`,
         avoidUpload: false,
       });
@@ -303,7 +295,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should execute ActualQL with account filter', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `QL-Acct-${Date.now()}`,
         avoidUpload: false,
       });
@@ -332,7 +324,7 @@ describe('03 — Read Entities & Queries', () => {
   // ==================================================================
   it('should execute a batch of queries', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Batch-${Date.now()}`,
         avoidUpload: false,
       });
@@ -353,7 +345,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should handle batch with mixed operations', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Batch-Mixed-${Date.now()}`,
         avoidUpload: false,
       });
@@ -374,7 +366,7 @@ describe('03 — Read Entities & Queries', () => {
   // ==================================================================
   it('should support paginated transaction reads', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Pagination-${Date.now()}`,
         avoidUpload: false,
       });
@@ -399,7 +391,7 @@ describe('03 — Read Entities & Queries', () => {
 
   it('should filter transactions by date range boundaries', async () => {
     await withActualClient(async () => {
-      const { id: budgetId, groupId } = await createBudget({
+      await createBudget({
         name: `Date-Bound-${Date.now()}`,
         avoidUpload: false,
       });

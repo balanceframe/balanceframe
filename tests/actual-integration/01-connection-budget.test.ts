@@ -8,10 +8,9 @@
  *   4. Connect to both encrypted and unencrypted budgets
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
-  getActualClient, requireEnv, downloadBudgetWithOpts,
-  withActualClient, withTestBudget, cleanupBudget, buildClientConfig,
+  getActualClient, requireEnv, withActualClient, cleanupBudget, buildClientConfig,
 } from './helpers';
 import { init, shutdown, getBudgets, downloadBudget, getAccounts,
          createBudget } from '@actual-app/api';
@@ -86,7 +85,6 @@ describe('01 — Connection & Budget Discovery', () => {
   it('should create a budget and find it in the budget list', async () => {
     await withActualClient(async () => {
       const before = await getBudgets();
-      const beforeNames = before.map((b: { name?: string }) => b.name ?? '');
 
       // Create a new budget
       const { id, groupId } = await createBudget({
