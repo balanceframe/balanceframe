@@ -1,0 +1,19 @@
+{
+  "name": "@balanceframe/test-contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Contract tests",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@balanceframe/protocol-generated": "workspace:*"
+  },
+  "devDependencies": {
+    "ajv": "^8.0.0",
+    "vitest": "^1.0.0",
+    "zod": "^3.0.0"
+  }
+}

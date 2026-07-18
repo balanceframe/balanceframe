@@ -49,7 +49,7 @@ let
           rustc cargo rustfmt cargo-clippy rust-analyzer \
           cargo-nextest cargo-audit cargo-deny \
           node npm corepack pnpm cc make pkg-config openssl \
-          sqlite3 git jq python3 nixfmt; do
+          sqlite3 git jq python3 nixfmt expect actual-server; do
           path="$(command -v "$tool" 2>/dev/null)" || {
             echo "missing command: $tool" >&2
             exit 1

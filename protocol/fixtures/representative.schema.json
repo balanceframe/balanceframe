@@ -1,0 +1,322 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/fixtures/representative.json",
+  "title": "BalanceFrame Representative Fixture",
+  "description": "Rust-owned normalized protocol. JSON uses camelCase, matching serde(rename_all = \"camelCase\").",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schemaVersion",
+    "actualVersion",
+    "snapshotDate",
+    "accounts",
+    "transactions",
+    "categories",
+    "payees",
+    "rules",
+    "schedules",
+    "budgets",
+    "tags"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1"
+    },
+    "actualVersion": {
+      "type": "string"
+    },
+    "snapshotDate": {
+      "type": "string"
+    },
+    "accounts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Account"
+      }
+    },
+    "transactions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Transaction"
+      }
+    },
+    "categories": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Category"
+      }
+    },
+    "payees": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Payee"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "schedules": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "budgets": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "$defs": {
+    "Money": {
+      "type": "object",
+      "required": [
+        "minorUnits",
+        "currency"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^-?\\d+$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    },
+    "Account": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "accountType",
+        "offBudget",
+        "isClosed",
+        "clearedBalance",
+        "importedBalance",
+        "mtid"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "accountType": {
+          "enum": [
+            "checking",
+            "savings",
+            "creditCard",
+            "cash",
+            "investment",
+            "mortgage",
+            "loan",
+            "other"
+          ]
+        },
+        "offBudget": {
+          "type": "boolean"
+        },
+        "isClosed": {
+          "type": "boolean"
+        },
+        "clearedBalance": {
+          "$ref": "#/$defs/Money"
+        },
+        "importedBalance": {
+          "$ref": "#/$defs/Money"
+        },
+        "mtid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Transaction": {
+      "type": "object",
+      "required": [
+        "id",
+        "accountId",
+        "date",
+        "payeeId",
+        "payeeName",
+        "categoryId",
+        "categoryName",
+        "amount",
+        "cleared",
+        "reconciled",
+        "importedId",
+        "importedPayee",
+        "notes",
+        "tags",
+        "transferAccountId",
+        "subtransactions"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "payeeId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payeeName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "categoryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "categoryName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "cleared": {
+          "type": "boolean"
+        },
+        "reconciled": {
+          "type": "boolean"
+        },
+        "importedId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "importedPayee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "transferAccountId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subtransactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Transaction"
+          }
+        }
+      }
+    },
+    "Category": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "groupName",
+        "isIncome",
+        "mtid",
+        "deleted"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "groupName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isIncome": {
+          "type": "boolean"
+        },
+        "mtid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Payee": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "transferAccountId",
+        "mtid"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "transferAccountId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mtid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

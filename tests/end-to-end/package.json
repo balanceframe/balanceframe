@@ -1,0 +1,7 @@
+{
+  "name": "@balanceframe/test-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end tests"
+}

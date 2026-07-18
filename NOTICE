@@ -1,0 +1,66 @@
+BalanceFrame
+Copyright 2026 BalanceFrame contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+---
+
+Apache License, Version 2.0 NOTICE Guidance
+
+This product includes software developed by the BalanceFrame contributors
+(https://github.com/balanceframe).
+
+The Apache License, Version 2.0 requires that Derivative Works retain
+attribution notices from the Source form of the Work (Section 4(c)).
+This NOTICE file serves that purpose and is provided for informational
+purposes only. It does not modify the terms of the Apache License, Version 2.0.
+
+---
+
+Inspiration: Actual AI
+
+Actual AI (https://github.com/sakowicz/actual-ai) is an MIT-licensed project
+that served as conceptual inspiration for BalanceFrame's independent
+implementation. Its source code is NOT directly incorporated into this project.
+
+Ideas, architectural patterns, and documented behavior from Actual AI were
+studied and independently reimplemented in Rust and TypeScript. No source
+code from Actual AI has been copied, translated, or derived.
+
+Per Section 4(d) of the Apache License, Version 2.0, if any code were copied
+from Actual AI (MIT), the copyright notice and MIT license text for that code
+would be preserved in the applicable source file(s) and listed in THIRD_PARTY_NOTICES.
+
+Original Actual AI license:
+
+    MIT License
+
+    Copyright (c) 2024 Uladzislau Sakowicz
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.

@@ -13,6 +13,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
+tests/actual-integration/.actual-server-data/
+tests/actual-integration/.seed-budget.mjs
+tests/actual-integration/.env.test
+crates/node-binding/balanceframe.node
+crates/node-binding/index.d.ts
 
 # ---- IDE / editor ----
 .idea/

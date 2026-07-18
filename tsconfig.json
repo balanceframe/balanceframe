@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@balanceframe/actual-adapter": ["packages/actual-adapter/src"],
+      "@balanceframe/actual-adapter/*": ["packages/actual-adapter/src/*"],
+      "@balanceframe/application": ["packages/application/src"],
+      "@balanceframe/application/*": ["packages/application/src/*"],
+      "@balanceframe/workflow-store": ["packages/workflow-store/src"],
+      "@balanceframe/workflow-store/*": ["packages/workflow-store/src/*"],
+      "@balanceframe/inference": ["packages/inference/src"],
+      "@balanceframe/inference/*": ["packages/inference/src/*"],
+      "@balanceframe/protocol-generated": ["packages/protocol-generated/src"],
+      "@balanceframe/protocol-generated/*": ["packages/protocol-generated/src/*"],
+    },
+    "typeRoots": ["./node_modules/@types"]
+  },
+  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts", "tests/*/src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "target", "crates"]
+}

@@ -32,13 +32,14 @@ let
     sqlite
   ];
 
-  # Repository and inspection tools
+  # Repository, server, password-bootstrap, and inspection tools
   repoTools = with pkgs; [
     git
     jq
     python3
+    expect
+    actual-server
   ];
-
 in
 {
   formatter = pkgs.nixfmt-rfc-style;
@@ -69,7 +70,7 @@ in
     "sqlite3"
     "git"
     "jq"
-    "python3"
-    "nixfmt"
+    "expect"
+    "actual-server"
   ];
 }

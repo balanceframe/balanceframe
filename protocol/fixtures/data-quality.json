@@ -1,0 +1,1922 @@
+{
+  "schemaVersion": "1",
+  "actualVersion": "25.1.0",
+  "snapshotDate": "2026-07-15T00:00:00Z",
+  "accounts": [
+    {
+      "id": "a_dq1",
+      "name": "Data Quality Testing Account",
+      "accountType": "checking",
+      "offBudget": false,
+      "isClosed": false,
+      "clearedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "importedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "mtid": null
+    },
+    {
+      "id": "a_dq2",
+      "name": "DQ Savings",
+      "accountType": "savings",
+      "offBudget": false,
+      "isClosed": false,
+      "clearedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "importedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "mtid": null
+    },
+    {
+      "id": "a_dq3",
+      "name": "DQ Credit Card",
+      "accountType": "creditCard",
+      "offBudget": false,
+      "isClosed": false,
+      "clearedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "importedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "mtid": null
+    },
+    {
+      "id": "a_dq4",
+      "name": "DQ Cash",
+      "accountType": "other",
+      "offBudget": true,
+      "isClosed": false,
+      "clearedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "importedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "mtid": null
+    },
+    {
+      "id": "a_dq5",
+      "name": "DQ Closed Account",
+      "accountType": "checking",
+      "offBudget": false,
+      "isClosed": true,
+      "clearedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "importedBalance": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "mtid": null
+    }
+  ],
+  "transactions": [
+    {
+      "id": "dq_001",
+      "accountId": "a_dq1",
+      "date": "2026-07-10",
+      "payeeId": "pay_dq1",
+      "payeeName": "Zero Amount",
+      "categoryId": null,
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_002",
+      "accountId": "a_dq1",
+      "date": "2026-07-11",
+      "payeeId": "pay_dq1",
+      "payeeName": "Negative Cents",
+      "categoryId": null,
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "-1",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_003",
+      "accountId": "a_dq1",
+      "date": "2026-07-12",
+      "payeeId": "pay_dq1",
+      "payeeName": "Large Amount",
+      "categoryId": null,
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "999999999",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_004",
+      "accountId": "a_dq1",
+      "date": "2026-07-13",
+      "payeeId": "pay_dq1",
+      "payeeName": "Bad Currency",
+      "categoryId": null,
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "50000",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_005",
+      "accountId": "a_dq1",
+      "date": "2024-01-01",
+      "payeeId": "pay_dq1",
+      "payeeName": "Stale Date",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "150000",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": true,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_006",
+      "accountId": "a_dq1",
+      "date": "2026-07-14",
+      "payeeId": "pay_dq1",
+      "payeeName": "Duplicate ID A",
+      "categoryId": null,
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1000",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": "DUP-006-A",
+      "importedPayee": "BANK Duplicate A",
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_006",
+      "accountId": "a_dq1",
+      "date": "2026-07-14",
+      "payeeId": "pay_dq1",
+      "payeeName": "Duplicate ID B",
+      "categoryId": null,
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1000",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": "DUP-006-B",
+      "importedPayee": "BANK Duplicate B",
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_007",
+      "accountId": "a_dq1",
+      "date": "2026-07-15",
+      "payeeId": "pay_dq1",
+      "payeeName": "Deleted Category Ref",
+      "categoryId": "cat_deleted",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2500",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_000",
+      "accountId": "a_dq1",
+      "date": "2026-07-01",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 0",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "500",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_001",
+      "accountId": "a_dq1",
+      "date": "2026-07-02",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 1",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "637",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_002",
+      "accountId": "a_dq1",
+      "date": "2026-07-03",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 2",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "774",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_003",
+      "accountId": "a_dq1",
+      "date": "2026-07-04",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 3",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "911",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_004",
+      "accountId": "a_dq1",
+      "date": "2026-07-05",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 4",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1048",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_005",
+      "accountId": "a_dq1",
+      "date": "2026-07-06",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 5",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1185",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_006",
+      "accountId": "a_dq1",
+      "date": "2026-07-07",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 6",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1322",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_007",
+      "accountId": "a_dq1",
+      "date": "2026-07-08",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 7",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1459",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_008",
+      "accountId": "a_dq1",
+      "date": "2026-07-09",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 8",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1596",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_009",
+      "accountId": "a_dq1",
+      "date": "2026-07-10",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 9",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1733",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_010",
+      "accountId": "a_dq1",
+      "date": "2026-07-11",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 10",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "1870",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_011",
+      "accountId": "a_dq1",
+      "date": "2026-07-12",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 11",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2007",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_012",
+      "accountId": "a_dq1",
+      "date": "2026-07-13",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 12",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2144",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_013",
+      "accountId": "a_dq1",
+      "date": "2026-07-14",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 13",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2281",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_014",
+      "accountId": "a_dq1",
+      "date": "2026-07-15",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 14",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2418",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_015",
+      "accountId": "a_dq1",
+      "date": "2026-07-01",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 15",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2555",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_016",
+      "accountId": "a_dq1",
+      "date": "2026-07-02",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 16",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2692",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_017",
+      "accountId": "a_dq1",
+      "date": "2026-07-03",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 17",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2829",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_018",
+      "accountId": "a_dq1",
+      "date": "2026-07-04",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 18",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "2966",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_019",
+      "accountId": "a_dq1",
+      "date": "2026-07-05",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 19",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "3103",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_020",
+      "accountId": "a_dq1",
+      "date": "2026-07-06",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 20",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "3240",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_021",
+      "accountId": "a_dq1",
+      "date": "2026-07-07",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 21",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "3377",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_022",
+      "accountId": "a_dq1",
+      "date": "2026-07-08",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 22",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "3514",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_023",
+      "accountId": "a_dq1",
+      "date": "2026-07-09",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 23",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "3651",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_024",
+      "accountId": "a_dq1",
+      "date": "2026-07-10",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 24",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "3788",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_025",
+      "accountId": "a_dq1",
+      "date": "2026-07-11",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 25",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "3925",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_026",
+      "accountId": "a_dq1",
+      "date": "2026-07-12",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 26",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "4062",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_027",
+      "accountId": "a_dq1",
+      "date": "2026-07-13",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 27",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "4199",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_028",
+      "accountId": "a_dq1",
+      "date": "2026-07-14",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 28",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "4336",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_029",
+      "accountId": "a_dq1",
+      "date": "2026-07-15",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 29",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "4473",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_030",
+      "accountId": "a_dq1",
+      "date": "2026-07-01",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 30",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "4610",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_031",
+      "accountId": "a_dq1",
+      "date": "2026-07-02",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 31",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "4747",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_032",
+      "accountId": "a_dq1",
+      "date": "2026-07-03",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 32",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "4884",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_033",
+      "accountId": "a_dq1",
+      "date": "2026-07-04",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 33",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5021",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_034",
+      "accountId": "a_dq1",
+      "date": "2026-07-05",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 34",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5158",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_035",
+      "accountId": "a_dq1",
+      "date": "2026-07-06",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 35",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5295",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_036",
+      "accountId": "a_dq1",
+      "date": "2026-07-07",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 36",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5432",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_037",
+      "accountId": "a_dq1",
+      "date": "2026-07-08",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 37",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5569",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_038",
+      "accountId": "a_dq1",
+      "date": "2026-07-09",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 38",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5706",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_039",
+      "accountId": "a_dq1",
+      "date": "2026-07-10",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 39",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5843",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_040",
+      "accountId": "a_dq1",
+      "date": "2026-07-11",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 40",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "5980",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_041",
+      "accountId": "a_dq1",
+      "date": "2026-07-12",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 41",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "6117",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_042",
+      "accountId": "a_dq1",
+      "date": "2026-07-13",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 42",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "6254",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_043",
+      "accountId": "a_dq1",
+      "date": "2026-07-14",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 43",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "6391",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_044",
+      "accountId": "a_dq1",
+      "date": "2026-07-15",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 44",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "6528",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_045",
+      "accountId": "a_dq1",
+      "date": "2026-07-01",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 45",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "6665",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_046",
+      "accountId": "a_dq1",
+      "date": "2026-07-02",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 46",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "6802",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_047",
+      "accountId": "a_dq1",
+      "date": "2026-07-03",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 47",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "6939",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_048",
+      "accountId": "a_dq1",
+      "date": "2026-07-04",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 48",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "7076",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_049",
+      "accountId": "a_dq1",
+      "date": "2026-07-05",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 49",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "7213",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_050",
+      "accountId": "a_dq1",
+      "date": "2026-07-06",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 50",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "7350",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_051",
+      "accountId": "a_dq1",
+      "date": "2026-07-07",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 51",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "7487",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_052",
+      "accountId": "a_dq1",
+      "date": "2026-07-08",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 52",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "7624",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_053",
+      "accountId": "a_dq1",
+      "date": "2026-07-09",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 53",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "7761",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_054",
+      "accountId": "a_dq1",
+      "date": "2026-07-10",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 54",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "7898",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_055",
+      "accountId": "a_dq1",
+      "date": "2026-07-11",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 55",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8035",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_056",
+      "accountId": "a_dq1",
+      "date": "2026-07-12",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 56",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8172",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_057",
+      "accountId": "a_dq1",
+      "date": "2026-07-13",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 57",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8309",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_058",
+      "accountId": "a_dq1",
+      "date": "2026-07-14",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 58",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8446",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_059",
+      "accountId": "a_dq1",
+      "date": "2026-07-15",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 59",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8583",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_060",
+      "accountId": "a_dq1",
+      "date": "2026-07-01",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 60",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8720",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_061",
+      "accountId": "a_dq1",
+      "date": "2026-07-02",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 61",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8857",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_062",
+      "accountId": "a_dq1",
+      "date": "2026-07-03",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 62",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "8994",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_063",
+      "accountId": "a_dq1",
+      "date": "2026-07-04",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 63",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "9131",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_064",
+      "accountId": "a_dq1",
+      "date": "2026-07-05",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 64",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "9268",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_065",
+      "accountId": "a_dq1",
+      "date": "2026-07-06",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 65",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "9405",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_066",
+      "accountId": "a_dq1",
+      "date": "2026-07-07",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 66",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "9542",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_067",
+      "accountId": "a_dq1",
+      "date": "2026-07-08",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 67",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "9679",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_068",
+      "accountId": "a_dq1",
+      "date": "2026-07-09",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 68",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "9816",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_069",
+      "accountId": "a_dq1",
+      "date": "2026-07-10",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 69",
+      "categoryId": "cat_valid",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "9953",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_070",
+      "accountId": "a_dq1",
+      "date": "2026-07-11",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 70",
+      "categoryId": "cat_f1",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "10090",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    },
+    {
+      "id": "dq_filler_071",
+      "accountId": "a_dq1",
+      "date": "2026-07-12",
+      "payeeId": "pay_dq1",
+      "payeeName": "Filler Transaction 71",
+      "categoryId": "cat_f2",
+      "categoryName": null,
+      "amount": {
+        "minorUnits": "10227",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "importedId": null,
+      "importedPayee": null,
+      "notes": null,
+      "tags": [],
+      "transferAccountId": null,
+      "subtransactions": []
+    }
+  ],
+  "categories": [
+    {
+      "id": "cg_dq",
+      "name": "Data Quality Categories",
+      "groupName": null,
+      "isIncome": false,
+      "mtid": null,
+      "deleted": false
+    },
+    {
+      "id": "cg_filler1",
+      "name": "Filler Group 1",
+      "groupName": null,
+      "isIncome": false,
+      "mtid": null,
+      "deleted": false
+    },
+    {
+      "id": "cg_filler2",
+      "name": "Filler Group 2",
+      "groupName": null,
+      "isIncome": false,
+      "mtid": null,
+      "deleted": false
+    }
+  ],
+  "payees": [
+    {
+      "id": "pay_dq1",
+      "name": "Generic Payee",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq2",
+      "name": "Filler Payee 2",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq3",
+      "name": "Filler Payee 3",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq4",
+      "name": "Filler Payee 4",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq5",
+      "name": "Filler Payee 5",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq6",
+      "name": "Filler Payee 6",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq7",
+      "name": "Filler Payee 7",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq8",
+      "name": "Filler Payee 8",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq9",
+      "name": "Filler Payee 9",
+      "transferAccountId": "",
+      "mtid": ""
+    },
+    {
+      "id": "pay_dq10",
+      "name": "Filler Payee 10",
+      "transferAccountId": "",
+      "mtid": ""
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_dq1",
+      "name": "DQ Test Rule",
+      "trigger": {
+        "type": "payee_is",
+        "value": "Generic Payee"
+      },
+      "actions": [
+        {
+          "action": "set_category",
+          "action_data": "cat_valid"
+        }
+      ],
+      "inactive": false,
+      "mtid": "",
+      "order": 0
+    }
+  ],
+  "schedules": [
+    {
+      "id": "sched_dq1",
+      "frequency": "monthly",
+      "frequency_n": 1,
+      "bill": false,
+      "deleted": false,
+      "nextExpected": "2026-08-01",
+      "amount": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "payeeName": null,
+      "accountId": "a_dq1"
+    }
+  ],
+  "budgets": [
+    {
+      "id": "budget_2026_07",
+      "month": "2026-07",
+      "categories": {
+        "cat_valid": {
+          "categoryId": "cat_valid",
+          "amount": {
+            "minorUnits": "50000",
+            "currency": "USD"
+          },
+          "carryover": {
+            "minorUnits": "0",
+            "currency": "USD"
+          },
+          "carryoverFromPrevious": {
+            "minorUnits": "0",
+            "currency": "USD"
+          },
+          "carriesOver": false
+        }
+      }
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag_dq1",
+      "name": "DQ Test Tag"
+    }
+  ]
+}
