@@ -1,797 +1,182 @@
 {
-  "snapshot_date": "2026-07-15T00:00:00Z",
+  "schemaVersion": "1",
+  "actualVersion": "25.1.0",
+  "snapshotDate": "2026-07-15T00:00:00Z",
   "accounts": [
     {
-      "id": "a_stale",
-      "name": "Old Checking Account",
+      "id": "a_dq1",
+      "name": "Data Quality Testing Account",
       "type": "checking",
-      "balance_current": 45000,
-      "is_excluded": false,
-      "bank_sync": false,
-      "offbudget": false,
-      "reconciled_date": "2026-04-01T10:00:00Z"
-    },
-    {
-      "id": "a_excluded",
-      "name": "Joint Account - Excluded",
-      "type": "checking",
-      "balance_current": 120000,
-      "is_excluded": true,
-      "bank_sync": false,
-      "offbudget": false,
-      "reconciled_date": "2026-07-10T12:00:00Z"
-    },
-    {
-      "id": "a_1",
-      "name": "Primary Checking",
-      "type": "checking",
-      "balance_current": 350000,
-      "is_excluded": false,
+      "balance_current": 100000,
+      "imported_balance": 95000,
+      "cleared_balance": 100000,
+      "is_closed": false,
+      "off_budget": false,
       "bank_sync": true,
-      "offbudget": false,
-      "reconciled_date": "2026-07-14T12:00:00Z"
+      "mtid": null
+    }
+  ],
+  "transactions": [
+    {
+      "id": "dq_001",
+      "account_id": "a_dq1",
+      "date": "2026-07-10",
+      "payee_name": "Bad Amount",
+      "category_id": null,
+      "category_name": null,
+      "amount": {
+        "minorUnits": "invalid",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "imported_id": null,
+      "imported_payee": null,
+      "notes": null,
+      "tags": [],
+      "transfer_account_id": null,
+      "subtransactions": null
     },
     {
-      "id": "a_2",
-      "name": "Everyday Card",
-      "type": "creditCard",
-      "balance_current": -125000,
-      "is_excluded": false,
-      "bank_sync": true,
-      "offbudget": false,
-      "reconciled_date": "2026-07-13T16:00:00Z"
+      "id": "dq_002",
+      "account_id": "a_dq1",
+      "date": "2026-07-11",
+      "payee_name": "Negative Cents",
+      "category_id": null,
+      "category_name": null,
+      "amount": {
+        "minorUnits": "-1",
+        "currency": "USD"
+      },
+      "cleared": false,
+      "reconciled": false,
+      "imported_id": null,
+      "imported_payee": null,
+      "notes": null,
+      "tags": [],
+      "transfer_account_id": null,
+      "subtransactions": null
+    },
+    {
+      "id": "dq_003",
+      "account_id": "a_dq1",
+      "date": "2026-07-12",
+      "payee_name": "Zero Amount",
+      "category_id": null,
+      "category_name": null,
+      "amount": {
+        "minorUnits": "0",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "imported_id": null,
+      "imported_payee": null,
+      "notes": null,
+      "tags": [],
+      "transfer_account_id": null,
+      "subtransactions": null
+    },
+    {
+      "id": "dq_004",
+      "account_id": "a_dq1",
+      "date": "2026-07-13",
+      "payee_name": "Bad Currency",
+      "category_id": null,
+      "category_name": null,
+      "amount": {
+        "minorUnits": "500",
+        "currency": "XXX"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "imported_id": null,
+      "imported_payee": null,
+      "notes": null,
+      "tags": [],
+      "transfer_account_id": null,
+      "subtransactions": null
+    },
+    {
+      "id": "dq_005",
+      "account_id": "a_dq1",
+      "date": "2026-01-01",
+      "payee_name": "Ancient Transaction",
+      "category_id": "cat_1",
+      "category_name": "Rent / Mortgage",
+      "amount": {
+        "minorUnits": "150000",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": true,
+      "imported_id": null,
+      "imported_payee": null,
+      "notes": null,
+      "tags": [],
+      "transfer_account_id": null,
+      "subtransactions": null
+    },
+    {
+      "id": "dq_006",
+      "account_id": "a_dq1",
+      "date": "2026-07-14",
+      "payee_name": "Duplicate Test",
+      "category_id": null,
+      "category_name": null,
+      "amount": {
+        "minorUnits": "1000",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "imported_id": "DUP-006-A",
+      "imported_payee": "BANK Duplicate Test",
+      "notes": null,
+      "tags": [],
+      "transfer_account_id": null,
+      "subtransactions": null
+    },
+    {
+      "id": "dq_007",
+      "account_id": "a_dq1",
+      "date": "2026-07-14",
+      "payee_name": "Duplicate Test",
+      "category_id": null,
+      "category_name": null,
+      "amount": {
+        "minorUnits": "1000",
+        "currency": "USD"
+      },
+      "cleared": true,
+      "reconciled": false,
+      "imported_id": "DUP-006-B",
+      "imported_payee": "BANK Duplicate Test",
+      "notes": null,
+      "tags": [],
+      "transfer_account_id": null,
+      "subtransactions": null
     }
   ],
   "categories": [
     {
       "id": "cat_1",
-      "name": "Groceries",
-      "group_id": "grp_food",
-      "version": 1,
+      "name": "Rent / Mortgage",
+      "group_name": "Housing",
+      "is_income": false,
+      "mtid": null,
       "deleted": false
-    },
-    {
-      "id": "cat_2",
-      "name": "Dining Out",
-      "group_id": "grp_food",
-      "version": 1,
-      "deleted": false
-    },
-    {
-      "id": "cat_3",
-      "name": "Fuel",
-      "group_id": "grp_transport",
-      "version": 1,
-      "deleted": false
-    },
-    {
-      "id": "cat_deleted",
-      "name": "Old Category",
-      "group_id": "grp_other",
-      "version": 2,
-      "deleted": true
-    },
-    {
-      "id": "cat_renamed",
-      "name": "Renamed Category",
-      "group_id": "grp_other",
-      "version": 2,
-      "deleted": false,
-      "old_name": "Old Name"
-    }
-  ],
-  "category_groups": [
-    {
-      "id": "grp_food",
-      "name": "Food",
-      "categories": [
-        "cat_1",
-        "cat_2"
-      ]
-    },
-    {
-      "id": "grp_transport",
-      "name": "Transportation",
-      "categories": [
-        "cat_3"
-      ]
-    },
-    {
-      "id": "grp_other",
-      "name": "Other",
-      "categories": [
-        "cat_deleted",
-        "cat_renamed"
-      ]
     }
   ],
   "payees": [
     {
-      "id": "payee_1",
-      "name": "Whole Foods Market"
-    },
-    {
-      "id": "payee_2",
-      "name": "Shell Gas Station"
-    },
-    {
-      "id": "payee_3",
-      "name": "Starbucks"
-    },
-    {
-      "id": "payee_4",
-      "name": "Uber Rides"
-    },
-    {
-      "id": "payee_5",
-      "name": "Trader Joe's"
-    },
-    {
-      "id": "payee_orphan",
-      "name": "Orphan Merchant",
-      "transfer_account_id": "nonexistent"
+      "id": "pay_1",
+      "name": "Duplicate Test",
+      "transfer_account_id": null
     }
   ],
-  "transactions": [
-    {
-      "id": "tx_0001",
-      "account": "a_2",
-      "amount": -2399,
-      "date": "2026-07-08",
-      "payee": "Amazon Marketplace",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "imported_payee": "AMZN MKTP US*XYZ789",
-      "category_id": "cat_1",
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": []
-    },
-    {
-      "id": "tx_0002",
-      "account": "a_1",
-      "amount": -5500,
-      "date": "2026-07-09",
-      "payee": "Whole Foods Market",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "imported_payee": "AMZN Whole Foods 0425",
-      "category_id": "cat_1",
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": []
-    },
-    {
-      "id": "tx_0003",
-      "account": "a_2",
-      "amount": -3400,
-      "date": "2026-07-10",
-      "payee": "Shell Gas Station",
-      "payee_id": "payee_2",
-      "cleared": "uncleared",
-      "imported_payee": "SHELL OIL 18273",
-      "category_id": "cat_3",
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": []
-    },
-    {
-      "id": "tx_0004",
-      "account": "a_2",
-      "amount": -1500,
-      "date": "2026-07-10",
-      "payee": "Netflix",
-      "payee_id": "payee_3",
-      "cleared": "uncleared",
-      "imported_payee": "NETFLIX.COM",
-      "category_id": null,
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0005",
-      "account": "a_2",
-      "amount": -1200,
-      "date": "2026-07-11",
-      "payee": "Starbucks",
-      "payee_id": "payee_3",
-      "cleared": "uncleared",
-      "imported_payee": "SBUX CARD 2345",
-      "category_id": "cat_2",
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": []
-    },
-    {
-      "id": "tx_0006",
-      "account": "a_2",
-      "amount": -2800,
-      "date": "2026-07-12",
-      "payee": "Uber Rides",
-      "payee_id": "payee_4",
-      "cleared": "uncleared",
-      "imported_payee": "UBER *TRIP ABC",
-      "category_id": null,
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0007",
-      "account": "a_1",
-      "amount": -4500,
-      "date": "2026-07-13",
-      "payee": "Trader Joe's",
-      "payee_id": "payee_5",
-      "cleared": "uncleared",
-      "imported_payee": "TRADER JOE'S #678",
-      "category_id": "cat_1",
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": []
-    },
-    {
-      "id": "tx_0008",
-      "account": "a_2",
-      "amount": -1870,
-      "date": "2026-07-14",
-      "payee": "Panera Bread",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "imported_payee": "PANERA #1822",
-      "category_id": "cat_2",
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": []
-    },
-    {
-      "id": "tx_0009",
-      "account": "a_1",
-      "amount": -3200,
-      "date": "2026-07-14",
-      "payee": "Metro Transit",
-      "payee_id": "payee_4",
-      "cleared": "uncleared",
-      "imported_payee": "MTA TICKET WEB",
-      "category_id": null,
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0010",
-      "account": "a_2",
-      "amount": -1099,
-      "date": "2026-07-15",
-      "payee": "Spotify",
-      "payee_id": "payee_3",
-      "cleared": "uncleared",
-      "imported_payee": "SPOTIFY USA",
-      "category_id": null,
-      "category": null,
-      "notes": "Pending bank import",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0011",
-      "account": "a_1",
-      "amount": -4320,
-      "date": "2026-07-08",
-      "payee": "Whole Foods Market",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "WHOLE FOODS MARKET",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0012",
-      "account": "a_2",
-      "amount": -1456,
-      "date": "2026-07-09",
-      "payee": "Target",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "TARGET",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0013",
-      "account": "a_1",
-      "amount": -3890,
-      "date": "2026-07-09",
-      "payee": "Shell Gas Station",
-      "payee_id": "payee_2",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "SHELL GAS STATION",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0014",
-      "account": "a_1",
-      "amount": -2130,
-      "date": "2026-07-10",
-      "payee": "Chevron Gas",
-      "payee_id": "payee_2",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "CHEVRON GAS",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0015",
-      "account": "a_2",
-      "amount": -1500,
-      "date": "2026-07-10",
-      "payee": "Amazon",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "AMAZON",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0016",
-      "account": "a_2",
-      "amount": -7500,
-      "date": "2026-07-11",
-      "payee": "Best Buy",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "BEST BUY",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0017",
-      "account": "a_2",
-      "amount": -1200,
-      "date": "2026-07-11",
-      "payee": "Starbucks",
-      "payee_id": "payee_3",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "STARBUCKS",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0018",
-      "account": "a_2",
-      "amount": -2850,
-      "date": "2026-07-12",
-      "payee": "Uber Eats",
-      "payee_id": "payee_4",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "UBER EATS",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0019",
-      "account": "a_1",
-      "amount": -4200,
-      "date": "2026-07-12",
-      "payee": "Trader Joe's",
-      "payee_id": "payee_5",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "TRADER JOE'S",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0020",
-      "account": "a_1",
-      "amount": -3400,
-      "date": "2026-07-13",
-      "payee": "Shell Gas Station",
-      "payee_id": "payee_2",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "SHELL GAS STATION",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0021",
-      "account": "a_2",
-      "amount": -1800,
-      "date": "2026-07-13",
-      "payee": "Panera Bread",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "PANERA BREAD",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0022",
-      "account": "a_1",
-      "amount": -2200,
-      "date": "2026-07-14",
-      "payee": "Whole Foods Market",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "WHOLE FOODS MARKET",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0023",
-      "account": "a_1",
-      "amount": -4500,
-      "date": "2026-07-14",
-      "payee": "Home Depot",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "HOME DEPOT",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0024",
-      "account": "a_2",
-      "amount": -1599,
-      "date": "2026-07-15",
-      "payee": "Netflix",
-      "payee_id": "payee_3",
-      "cleared": "uncleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "NETFLIX",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0025",
-      "account": "a_1",
-      "amount": -3000,
-      "date": "2026-07-15",
-      "payee": "Costco",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Needs categorization",
-      "imported_payee": "COSTCO",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0026",
-      "account": "a_2",
-      "amount": -2399,
-      "date": "2026-07-10",
-      "payee": "AMAZON MKTPLACE",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "imported_payee": "AMZN MKTP US*XYZ789",
-      "category_id": null,
-      "category": null,
-      "notes": "DUPLICATE CANDIDATE: matches Amazon Marketplace 7/10 -2399",
-      "tags": [
-        "tag_dq_1"
-      ]
-    },
-    {
-      "id": "tx_0027",
-      "account": "a_2",
-      "amount": -2399,
-      "date": "2026-07-11",
-      "payee": "Amazon Marketplace",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "imported_payee": "AMZN MKTP US*XYZ789 DUPE",
-      "category_id": null,
-      "category": null,
-      "notes": "DUPLICATE CANDIDATE: matches AMAZON MKTPLACE 7/10 -2399",
-      "tags": [
-        "tag_dq_1"
-      ]
-    },
-    {
-      "id": "tx_0028",
-      "account": "a_1",
-      "amount": -3890,
-      "date": "2026-07-13",
-      "payee": "Shell Gas",
-      "payee_id": "payee_2",
-      "cleared": "cleared",
-      "imported_payee": "SHELL OIL 18273",
-      "category_id": "cat_3",
-      "category": null,
-      "notes": "DUPLICATE CANDIDATE: matches 'Shell Gas Station' 7/13 -3890",
-      "tags": [
-        "tag_dq_1"
-      ]
-    },
-    {
-      "id": "tx_0029",
-      "account": "a_1",
-      "amount": -3890,
-      "date": "2026-07-13",
-      "payee": "Shell Gas Station",
-      "payee_id": "payee_2",
-      "cleared": "cleared",
-      "imported_payee": "SHELL 29471",
-      "category_id": "cat_3",
-      "category": null,
-      "notes": "DUPLICATE CANDIDATE: matches 'Shell Gas' 7/13 -3890",
-      "tags": [
-        "tag_dq_1"
-      ]
-    },
-    {
-      "id": "tx_0030",
-      "account": "a_1",
-      "amount": -50000,
-      "date": "2026-07-10",
-      "payee": "Transfer: Everyday Card",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "type": "transfer",
-      "transfer_id": "tx_bref_1",
-      "notes": "Transfer to credit card",
-      "imported_payee": "TRANSFER: EVERYDAY CARD",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0031",
-      "account": "a_2",
-      "amount": 50000,
-      "date": "2026-07-10",
-      "payee": "Transfer: Primary Checking",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "type": "transfer",
-      "transfer_id": "tx_bref_2",
-      "notes": "Received from checking",
-      "imported_payee": "TRANSFER: PRIMARY CHECKING",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0032",
-      "account": "a_2",
-      "amount": -25000,
-      "date": "2026-07-12",
-      "payee": "Amazon Marketplace",
-      "payee_id": "payee_1",
-      "imported_payee": "AMZN MKTP US*XYZ789",
-      "cleared": "cleared",
-      "category_id": null,
-      "category": null,
-      "type": "split",
-      "notes": "Split across categories incl. deleted",
-      "sub_txns": [
-        {
-          "id": "tx_0032_s1",
-          "amount": -10000,
-          "category_id": "cat_1",
-          "category": "Groceries",
-          "notes": "Food items"
-        },
-        {
-          "id": "tx_0032_s2",
-          "amount": -8000,
-          "category_id": "cat_2",
-          "category": "Dining Out",
-          "notes": "Snacks"
-        },
-        {
-          "id": "tx_0032_s3",
-          "amount": -7000,
-          "category_id": "cat_deleted",
-          "category": "Old Category",
-          "notes": "Reference to deleted category"
-        }
-      ],
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0033",
-      "account": "a_stale",
-      "amount": -5000,
-      "date": "2026-07-10",
-      "payee": "Old Vendor",
-      "payee_id": "payee_1",
-      "cleared": "uncleared",
-      "category_id": null,
-      "category": null,
-      "notes": "Transaction in stale account",
-      "tags": [
-        "tag_dq_2"
-      ]
-    },
-    {
-      "id": "tx_0034",
-      "account": "a_stale",
-      "amount": -12000,
-      "date": "2026-07-12",
-      "payee": "Another Old Vendor",
-      "payee_id": "payee_1",
-      "cleared": "cleared",
-      "category_id": "cat_1",
-      "category": null,
-      "notes": "Another transaction in stale account",
-      "tags": [
-        "tag_dq_2"
-      ]
-    },
-    {
-      "id": "tx_0035",
-      "account": "a_2",
-      "amount": -899,
-      "date": "2026-07-14",
-      "payee": "Orphan Merchant",
-      "payee_id": "payee_orphan",
-      "cleared": "uncleared",
-      "imported_payee": "ORPHAN MERCHANT",
-      "category_id": null,
-      "category": null,
-      "notes": "Transaction with orphan payee (transfer_account_id nonexistent)",
-      "tags": [
-        "tag_dq_3"
-      ]
-    },
-    {
-      "id": "tx_0036",
-      "account": "a_2",
-      "amount": -1500,
-      "date": "2026-07-11",
-      "payee": "Netflix",
-      "payee_id": "payee_3",
-      "cleared": "cleared",
-      "imported_payee": "NETFLIX.COM",
-      "category_id": "cat_deleted",
-      "category": "Old Category",
-      "notes": "Reference to deleted category",
-      "tags": []
-    },
-    {
-      "id": "tx_0037",
-      "account": "a_2",
-      "amount": -1099,
-      "date": "2026-07-13",
-      "payee": "Spotify",
-      "payee_id": "payee_3",
-      "cleared": "cleared",
-      "imported_payee": "SPOTIFY USA",
-      "category_id": "cat_renamed",
-      "category": "Renamed Category",
-      "notes": "Reference to renamed category (was: Old Name)",
-      "tags": []
-    }
-  ],
-  "rules": [
-    {
-      "id": "rule_dq_1",
-      "stage": "pre",
-      "conditions": {
-        "field": "payee",
-        "op": "contains",
-        "value": "AMAZON"
-      },
-      "actions": {
-        "set_category": "cat_1"
-      },
-      "learning_enabled": false,
-      "order": 1
-    }
-  ],
-  "schedules": [
-    {
-      "id": "sched_dq_1",
-      "name": "Netflix DQ",
-      "type": "monthly",
-      "start": "2026-01-15",
-      "next_date": "2026-08-15",
-      "amount": -1500,
-      "account": "a_2",
-      "payee": "payee_3",
-      "category_id": "cat_2"
-    }
-  ],
-  "budgets": [
-    {
-      "month": "2026-07",
-      "category_budgets": {
-        "cat_1": 60000,
-        "cat_2": 25000,
-        "cat_3": 20000,
-        "cat_deleted": 0,
-        "cat_renamed": 10000
-      }
-    }
-  ],
-  "tags": [
-    {
-      "id": "tag_dq_1",
-      "name": "Duplicate",
-      "color": "#FF0000"
-    },
-    {
-      "id": "tag_dq_2",
-      "name": "Stale Data",
-      "color": "#FFA500"
-    },
-    {
-      "id": "tag_dq_3",
-      "name": "Needs Review",
-      "color": "#FFD700"
-    }
-  ]
+  "rules": [],
+  "schedules": [],
+  "budgets": [],
+  "tags": []
 }
