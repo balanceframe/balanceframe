@@ -1,0 +1,20 @@
+{
+  "name": "@balanceframe/actual-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Actual Budget API integration tests for BalanceFrame",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "setup": "./setup-fixture-server.sh",
+    "pretest": "./setup-fixture-server.sh"
+  },
+  "devDependencies": {
+    "@actual-app/api": "^26.7.0",
+    "@types/node": "^20.0.0",
+    "dotenv": "^16.4.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "balanceframe-node-binding"
+version = "0.1.0"
+description = "N-API bindings for BalanceFrame Rust-to-TypeScript bridge"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+napi.workspace = true
+napi-derive.workspace = true
+
+[build-dependencies]
+napi-build = "2"

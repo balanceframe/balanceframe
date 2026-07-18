@@ -1,0 +1,296 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.com/schemas/fixtures/representative.json",
+  "title": "RepresentativeFixture",
+  "description": "Representative test fixture for BalanceFrame Phase 0. Contains realistic Actual Budget data including accounts, categories, payees, transactions, rules, schedules, budgets, and tags.",
+  "type": "object",
+  "required": [
+    "snapshot_date",
+    "accounts",
+    "categories",
+    "category_groups",
+    "payees",
+    "transactions",
+    "rules",
+    "schedules",
+    "budgets",
+    "tags"
+  ],
+  "additionalProperties": true,
+
+  "properties": {
+    "snapshot_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp of the snapshot. All transaction dates are within 7 days before this value."
+    },
+
+    "accounts": {
+      "type": "array",
+      "description": "All accounts known to the budget at snapshot time.",
+      "items": {
+        "$ref": "#/definitions/Account"
+      },
+      "minItems": 5
+    },
+
+    "categories": {
+      "type": "array",
+      "description": "All categories, including deleted and renamed ones.",
+      "items": {
+        "$ref": "#/definitions/Category"
+      },
+      "minItems": 10
+    },
+
+    "category_groups": {
+      "type": "array",
+      "description": "Groupings of categories (e.g., Housing, Transportation).",
+      "items": {
+        "$ref": "#/definitions/CategoryGroup"
+      },
+      "minItems": 3
+    },
+
+    "payees": {
+      "type": "array",
+      "description": "Known payees including merchants, transfers, and internal payees.",
+      "items": {
+        "$ref": "#/definitions/Payee"
+      },
+      "minItems": 10
+    },
+
+    "transactions": {
+      "type": "array",
+      "description": "All transactions in the snapshot period. Includes cleared, pending, uncategorized, transfers, and splits. Sub-transactions are nested under their parent.",
+      "items": {
+        "$ref": "#/definitions/Transaction"
+      },
+      "minItems": 80
+    },
+
+    "rules": {
+      "type": "array",
+      "description": "Deterministic rules applied during import and categorization.",
+      "items": {
+        "$ref": "#/definitions/Rule"
+      },
+      "minItems": 1
+    },
+
+    "schedules": {
+      "type": "array",
+      "description": "Recurring scheduled transactions.",
+      "items": {
+        "$ref": "#/definitions/Schedule"
+      },
+      "minItems": 1
+    },
+
+    "budgets": {
+      "type": "array",
+      "description": "Monthly envelope budget amounts per category.",
+      "items": {
+        "$ref": "#/definitions/BudgetMonth"
+      },
+      "minItems": 1
+    },
+
+    "tags": {
+      "type": "array",
+      "description": "Tags applied to transactions for additional categorization.",
+      "items": {
+        "$ref": "#/definitions/Tag"
+      },
+      "minItems": 1
+    }
+  },
+
+  "definitions": {
+    "Account": {
+      "type": "object",
+      "required": ["id", "name", "type", "balance_current"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "Opaque account identifier." },
+        "name": { "type": "string", "description": "Human-readable account name." },
+        "type": { "type": "string", "enum": ["checking", "savings", "creditCard", "cash", "investment", "loan", "other"], "description": "Account type." },
+        "balance_current": { "$ref": "#/definitions/MonetaryAmount", "description": "Current balance in minor units." },
+        "is_excluded": { "type": "boolean", "default": false, "description": "When true, this account's transactions are excluded from the snapshot." },
+        "bank_sync": { "type": "boolean", "default": false, "description": "Whether the account uses bank-synced import." },
+        "transfer_from": { "type": "string", "description": "Override: default source account ID for transfers to this account." },
+        "transfer_to": { "type": "string", "description": "Override: default destination account ID for transfers from this account." },
+        "reconciled_date": { "type": "string", "format": "date-time", "description": "Last reconciliation timestamp." },
+        "offbudget": { "type": "boolean", "default": false }
+      }
+    },
+
+    "Category": {
+      "type": "object",
+      "required": ["id", "name", "group_id"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "Opaque category identifier." },
+        "name": { "type": "string", "description": "Category display name." },
+        "group_id": { "type": "string", "description": "ID of the category group this category belongs to." },
+        "deleted": { "type": "boolean", "default": false },
+        "version": { "type": "integer", "minimum": 1, "default": 1, "description": "Version number incremented on each modification." },
+        "old_name": { "type": "string", "description": "Previous name if the category was renamed." },
+        "is_income": { "type": "boolean", "default": false },
+        "hidden": { "type": "boolean", "default": false }
+      }
+    },
+
+    "CategoryGroup": {
+      "type": "object",
+      "required": ["id", "name", "categories"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "Opaque group identifier." },
+        "name": { "type": "string", "description": "Group display name." },
+        "categories": { "type": "array", "items": { "type": "string" }, "description": "List of category IDs in this group." }
+      }
+    },
+
+    "Payee": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "Opaque payee identifier." },
+        "name": { "type": "string", "description": "Payee display name." },
+        "transfer_acct": { "type": "string", "description": "Account ID for transfer payees." },
+        "category_id": { "type": "string", "description": "Default category for this payee." }
+      }
+    },
+
+    "Transaction": {
+      "type": "object",
+      "required": ["id", "account", "amount", "date"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "Opaque transaction identifier." },
+        "account": { "type": "string", "description": "Account ID this transaction belongs to." },
+        "amount": { "$ref": "#/definitions/MonetaryAmount", "description": "Transaction amount in minor units. Negative for outflow, positive for inflow." },
+        "date": { "type": "string", "description": "Transaction date in ISO 8601 format (YYYY-MM-DD or full date-time)." },
+        "payee": { "type": "string", "description": "Payee display name at time of transaction." },
+        "payee_id": { "type": "string", "description": "Payee ID if matched to a known payee." },
+        "imported_payee": { "type": "string", "description": "Raw payee text from bank import." },
+        "category": { "type": "string", "description": "Category display name." },
+        "category_id": { "type": ["string", "null"], "description": "Category ID, or null if uncategorized." },
+        "cleared": {
+          "type": "string",
+          "enum": ["cleared", "uncleared", "reconciled"],
+          "default": "uncleared",
+          "description": "Cleared state: 'cleared' (appeared on bank statement), 'uncleared' (not yet confirmed), 'reconciled' (matched during reconciliation)."
+        },
+        "imported_id": { "type": "string", "description": "Unique ID from bank import for deduplication." },
+        "type": {
+          "type": "string",
+          "enum": ["transaction", "transfer", "split"],
+          "default": "transaction",
+          "description": "Transaction type."
+        },
+        "sub_txns": {
+          "type": "array",
+          "description": "Child split transactions, present only when type is 'split'.",
+          "items": { "$ref": "#/definitions/SplitTransaction" }
+        },
+        "notes": { "type": "string", "description": "User notes attached to the transaction." },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tag IDs applied to this transaction."
+        },
+        "schedule": { "type": "string", "description": "Schedule ID if this transaction was generated by a recurring schedule." },
+        "transfer_id": { "type": "string", "description": "Paired transaction ID for transfer matches." },
+        "error": { "type": ["object", "null"], "description": "Import error metadata." }
+      }
+    },
+
+    "SplitTransaction": {
+      "type": "object",
+      "required": ["id", "amount"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "amount": { "$ref": "#/definitions/MonetaryAmount" },
+        "category": { "type": "string" },
+        "category_id": { "type": ["string", "null"] },
+        "notes": { "type": "string" },
+        "payee": { "type": "string" },
+        "payee_id": { "type": "string" }
+      }
+    },
+
+    "Rule": {
+      "type": "object",
+      "required": ["id", "stage", "conditions", "actions"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "stage": { "type": "string", "enum": ["pre", "post"], "description": "Rule stage: pre-import or post-import." },
+        "conditions": {
+          "type": "object",
+          "description": "Rule matching conditions.",
+          "additionalProperties": true
+        },
+        "actions": {
+          "type": "object",
+          "description": "Actions taken when rule conditions match.",
+          "additionalProperties": true
+        },
+        "learning_enabled": { "type": "boolean", "default": false },
+        "order": { "type": "integer" }
+      }
+    },
+
+    "Schedule": {
+      "type": "object",
+      "required": ["id", "name", "type", "start"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["weekly", "biweekly", "monthly", "quarterly", "yearly"] },
+        "start": { "type": "string", "format": "date" },
+        "next_date": { "type": "string", "format": "date" },
+        "amount": { "$ref": "#/definitions/MonetaryAmount" },
+        "account": { "type": "string" },
+        "payee": { "type": "string" },
+        "category_id": { "type": "string" }
+      }
+    },
+
+    "BudgetMonth": {
+      "type": "object",
+      "required": ["month", "category_budgets"],
+      "additionalProperties": true,
+      "properties": {
+        "month": { "type": "string", "description": "Month in YYYY-MM format." },
+        "category_budgets": {
+          "type": "object",
+          "description": "Map of category ID to envelope budget amount.",
+          "additionalProperties": { "$ref": "#/definitions/MonetaryAmount" }
+        }
+      }
+    },
+
+    "Tag": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "color": { "type": "string", "description": "Optional color hex code." }
+      }
+    },
+
+    "MonetaryAmount": {
+      "type": "integer",
+      "description": "Monetary amount in minor units (cents). Negative values represent outflow, positive values represent inflow."
+    }
+  }
+}

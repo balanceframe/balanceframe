@@ -1,0 +1,429 @@
+{
+  "schema_version": "1",
+  "actual_version": "25.1.0",
+  "snapshot_date": "2026-07-15T00:00:00Z",
+  "accounts": [
+    {
+      "id": "a_1",
+      "name": "Checking Account",
+      "type": "checking",
+      "on_budget": true,
+      "closed": false,
+      "note": "Primary checking account",
+      "order": 0
+    },
+    {
+      "id": "a_2",
+      "name": "Savings Account",
+      "type": "savings",
+      "on_budget": true,
+      "closed": false,
+      "note": "",
+      "order": 1
+    },
+    {
+      "id": "a_3",
+      "name": "Credit Card",
+      "type": "creditCard",
+      "on_budget": true,
+      "closed": false,
+      "note": "",
+      "order": 2
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_1",
+      "account_id": "a_1",
+      "payee_id": "payee_1",
+      "category_id": "cat_1",
+      "payee_name": "Supermarket Inc.",
+      "name": "Weekly groceries",
+      "memo": null,
+      "cleared": "cleared",
+      "approved": true,
+      "flag_color": null,
+      "amount": -8500,
+      "date": "2026-07-14",
+      "imported_payee": null,
+      "imported_id": null,
+      "import_date": null,
+      "deleted": false,
+      "type": "regular",
+      "transfer_id": null,
+      "sub_txns": []
+    },
+    {
+      "id": "txn_2",
+      "account_id": "a_1",
+      "payee_id": "payee_2",
+      "category_id": null,
+      "payee_name": "Electric Company",
+      "name": "Monthly electric bill",
+      "memo": "Bill for June usage",
+      "cleared": "cleared",
+      "approved": true,
+      "flag_color": "yellow",
+      "amount": -12500,
+      "date": "2026-07-10",
+      "imported_payee": null,
+      "imported_id": null,
+      "import_date": null,
+      "deleted": false,
+      "type": "regular",
+      "transfer_id": null,
+      "sub_txns": []
+    },
+    {
+      "id": "txn_3",
+      "account_id": "a_2",
+      "payee_id": "payee_3",
+      "category_id": "cat_5",
+      "payee_name": "Employer Corp",
+      "name": "Salary deposit",
+      "memo": null,
+      "cleared": "cleared",
+      "approved": true,
+      "flag_color": "green",
+      "amount": 320000,
+      "date": "2026-07-01",
+      "imported_payee": null,
+      "imported_id": null,
+      "import_date": null,
+      "deleted": false,
+      "type": "regular",
+      "transfer_id": null,
+      "sub_txns": []
+    },
+    {
+      "id": "txn_4",
+      "account_id": "a_1",
+      "payee_id": "payee_4",
+      "category_id": "cat_2",
+      "payee_name": "Online Retailer",
+      "name": "Amazon purchase",
+      "memo": "Order #12345",
+      "cleared": "uncleared",
+      "approved": false,
+      "flag_color": null,
+      "amount": -3499,
+      "date": "2026-07-16",
+      "imported_payee": null,
+      "imported_id": null,
+      "import_date": null,
+      "deleted": false,
+      "type": "regular",
+      "transfer_id": null,
+      "sub_txns": []
+    },
+    {
+      "id": "txn_5",
+      "account_id": "a_1",
+      "payee_id": "payee_2",
+      "category_id": "cat_3",
+      "payee_name": "Gas Company",
+      "name": "Transfer to savings",
+      "memo": null,
+      "cleared": "reconciled",
+      "approved": true,
+      "flag_color": null,
+      "amount": -50000,
+      "date": "2026-07-03",
+      "imported_payee": null,
+      "imported_id": null,
+      "import_date": null,
+      "deleted": false,
+      "type": "transfer",
+      "transfer_id": "txn_6",
+      "sub_txns": []
+    },
+    {
+      "id": "txn_6",
+      "account_id": "a_2",
+      "payee_id": "payee_2",
+      "category_id": null,
+      "payee_name": "Transfer from checking",
+      "name": "Transfer from checking",
+      "memo": null,
+      "cleared": "reconciled",
+      "approved": true,
+      "flag_color": null,
+      "amount": 50000,
+      "date": "2026-07-03",
+      "imported_payee": null,
+      "imported_id": null,
+      "import_date": null,
+      "deleted": false,
+      "type": "transfer",
+      "transfer_id": "txn_5",
+      "sub_txns": []
+    },
+    {
+      "id": "txn_7",
+      "account_id": "a_3",
+      "payee_id": "payee_1",
+      "category_id": "cat_1",
+      "payee_name": "Supermarket Inc.",
+      "name": "Split transaction",
+      "memo": "Weekly groceries - split",
+      "cleared": "cleared",
+      "approved": true,
+      "flag_color": null,
+      "amount": -4230,
+      "date": "2026-07-12",
+      "imported_payee": null,
+      "imported_id": null,
+      "import_date": null,
+      "deleted": false,
+      "type": "parent",
+      "transfer_id": null,
+      "sub_txns": [
+        {
+          "id": "txn_7a",
+          "account_id": "a_3",
+          "payee_id": "payee_1",
+          "category_id": "cat_1",
+          "payee_name": null,
+          "name": "Groceries",
+          "memo": null,
+          "cleared": "cleared",
+          "approved": true,
+          "flag_color": null,
+          "amount": -3100,
+          "date": "2026-07-12",
+          "imported_payee": null,
+          "imported_id": null,
+          "import_date": null,
+          "deleted": false,
+          "type": "sub",
+          "transfer_id": null,
+          "sub_txns": []
+        },
+        {
+          "id": "txn_7b",
+          "account_id": "a_3",
+          "payee_id": "payee_1",
+          "category_id": "cat_2",
+          "payee_name": null,
+          "name": "Household goods",
+          "memo": null,
+          "cleared": "cleared",
+          "approved": true,
+          "flag_color": null,
+          "amount": -1130,
+          "date": "2026-07-12",
+          "imported_payee": null,
+          "imported_id": null,
+          "import_date": null,
+          "deleted": false,
+          "type": "sub",
+          "transfer_id": null,
+          "sub_txns": []
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "id": "cg_1",
+      "name": "Everyday Expenses",
+      "deleted": false,
+      "hidden": false,
+      "is_in_report": true,
+      "categories": [
+        {
+          "id": "cat_1",
+          "name": "Groceries",
+          "group_id": "cg_1",
+          "deleted": false,
+          "calculated_auto_budget_amount": null,
+          "auto_budget_type": "none",
+          "auto_budget_frequency": null
+        },
+        {
+          "id": "cat_2",
+          "name": "Shopping",
+          "group_id": "cg_1",
+          "deleted": false,
+          "calculated_auto_budget_amount": null,
+          "auto_budget_type": "none",
+          "auto_budget_frequency": null
+        },
+        {
+          "id": "cat_3",
+          "name": "Utilities",
+          "group_id": "cg_1",
+          "deleted": false,
+          "calculated_auto_budget_amount": null,
+          "auto_budget_type": "monthly",
+          "auto_budget_frequency": null
+        }
+      ]
+    },
+    {
+      "id": "cg_2",
+      "name": "Bills & Subscriptions",
+      "deleted": false,
+      "hidden": false,
+      "is_in_report": true,
+      "categories": [
+        {
+          "id": "cat_4",
+          "name": "Rent",
+          "group_id": "cg_2",
+          "deleted": false,
+          "calculated_auto_budget_amount": 120000,
+          "auto_budget_type": "monthly",
+          "auto_budget_frequency": null
+        },
+        {
+          "id": "cat_5",
+          "name": "Income",
+          "group_id": "cg_2",
+          "deleted": false,
+          "calculated_auto_budget_amount": null,
+          "auto_budget_type": "none",
+          "auto_budget_frequency": null
+        }
+      ]
+    },
+    {
+      "id": "cg_3",
+      "name": "Hidden Group",
+      "deleted": false,
+      "hidden": true,
+      "is_in_report": false,
+      "categories": [
+        {
+          "id": "cat_6",
+          "name": "Internal Transfer",
+          "group_id": "cg_3",
+          "deleted": false,
+          "calculated_auto_budget_amount": null,
+          "auto_budget_type": "none",
+          "auto_budget_frequency": null
+        }
+      ]
+    }
+  ],
+  "payee_groups": [],
+  "payees": [
+    {
+      "id": "payee_1",
+      "name": "Supermarket Inc.",
+      "transfer_account_id": null,
+      "mtid": null,
+      "deleted": false
+    },
+    {
+      "id": "payee_2",
+      "name": "Transfer",
+      "transfer_account_id": null,
+      "mtid": null,
+      "deleted": false
+    },
+    {
+      "id": "payee_3",
+      "name": "Employer Corp",
+      "transfer_account_id": null,
+      "mtid": null,
+      "deleted": false
+    },
+    {
+      "id": "payee_4",
+      "name": "Online Retailer",
+      "transfer_account_id": null,
+      "mtid": null,
+      "deleted": false
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule_1",
+      "name": "Groceries auto-categorize",
+      "trigger": "payee_is",
+      "trigger_value": "Supermarket Inc.",
+      "actions": [
+        {
+          "action": "set_category",
+          "action_data": "cat_1"
+        }
+      ],
+      "inactive": false,
+      "mtid": null,
+      "order": 0
+    },
+    {
+      "id": "rule_2",
+      "name": "Flag large expenses",
+      "trigger": "amount_between",
+      "trigger_value": "10000,1000000",
+      "actions": [
+        {
+          "action": "set_flag",
+          "action_data": "red"
+        }
+      ],
+      "inactive": true,
+      "mtid": "mtid_2",
+      "order": 1
+    }
+  ],
+  "schedules": [
+    {
+      "id": "sched_1",
+      "frequency": "monthly",
+      "frequency_n": 1,
+      "next_expected": "2026-08-01",
+      "bill": true,
+      "deleted": false
+    },
+    {
+      "id": "sched_2",
+      "frequency": "biweekly",
+      "frequency_n": 2,
+      "next_expected": "2026-07-28",
+      "bill": false,
+      "deleted": false
+    }
+  ],
+  "budgets": [
+    {
+      "id": "budget_2026_07",
+      "month": "2026-07",
+      "categories": {
+        "cat_1": {
+          "category_id": "cat_1",
+          "amount": 40000,
+          "carryover": 0,
+          "carryover_from_previous": 0,
+          "carries_over": false
+        },
+        "cat_2": {
+          "category_id": "cat_2",
+          "amount": 20000,
+          "carryover": 0,
+          "carryover_from_previous": 2500,
+          "carries_over": true
+        },
+        "cat_4": {
+          "category_id": "cat_4",
+          "amount": 120000,
+          "carryover": 0,
+          "carryover_from_previous": 0,
+          "carries_over": false
+        }
+      }
+    }
+  ],
+  "tags": [
+    {
+      "id": "tag_1",
+      "name": "recurring"
+    },
+    {
+      "id": "tag_2",
+      "name": "tax-deductible"
+    }
+  ]
+}

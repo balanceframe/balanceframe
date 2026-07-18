@@ -1,0 +1,7 @@
+{
+  "name": "@balanceframe/inference",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ML inference abstraction"
+}

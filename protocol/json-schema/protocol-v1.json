@@ -1,0 +1,531 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/protocol-v1.json",
+  "title": "BalanceFrame Protocol v1",
+  "description": "JSON Schema defining all BalanceFrame protocol types for financial categorization on Actual Budget",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "actual_version",
+    "snapshot_date",
+    "accounts",
+    "transactions",
+    "categories",
+    "payee_groups",
+    "payees",
+    "rules",
+    "schedules",
+    "budgets",
+    "tags"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1" },
+    "actual_version": { "type": "string" },
+    "snapshot_date": { "type": "string", "format": "date-time" },
+    "accounts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Account" }
+    },
+    "transactions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Transaction" }
+    },
+    "categories": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CategoryGroup" }
+    },
+    "payee_groups": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CategoryGroup" }
+    },
+    "payees": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Payee" }
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Rule" }
+    },
+    "schedules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Schedule" }
+    },
+    "budgets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/BudgetMonth" }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Tag" }
+    }
+  },
+  "$defs": {
+    "Money": {
+      "type": "object",
+      "description": "Monetary value with currency",
+      "required": ["minorUnits", "currency"],
+      "additionalProperties": false,
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "description": "Amount in minor units (e.g. cents) as string to avoid float precision"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 currency code"
+        }
+      }
+    },
+
+    "Account": {
+      "type": "object",
+      "description": "A financial account",
+      "required": ["id", "name", "type", "on_budget", "closed", "note", "order"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["checking", "savings", "creditCard", "investment", "mortgage", "loan", "other"]
+        },
+        "on_budget": { "type": "boolean" },
+        "closed": { "type": "boolean" },
+        "note": { "type": "string" },
+        "order": { "type": "integer" }
+      }
+    },
+
+    "Transaction": {
+      "type": "object",
+      "description": "A single financial transaction",
+      "required": [
+        "id", "account_id", "payee_id", "category_id", "payee_name",
+        "name", "memo", "cleared", "approved", "flag_color", "amount",
+        "date", "imported_payee", "imported_id", "import_date",
+        "deleted", "type", "transfer_id", "sub_txns"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "account_id": { "type": "string" },
+        "payee_id": { "type": "string" },
+        "category_id": { "type": "string" },
+        "payee_name": { "type": "string" },
+        "name": { "type": "string" },
+        "memo": { "type": "string" },
+        "cleared": {
+          "type": "string",
+          "enum": ["cleared", "uncleared", "reconciled"]
+        },
+        "approved": { "type": "boolean" },
+        "flag_color": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "enum": ["red", "orange", "yellow", "green", "blue", "purple"] }
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "description": "Amount in minor units (cents). Positive = inflow, negative = outflow."
+        },
+        "date": { "type": "string", "format": "date" },
+        "imported_payee": { "type": "string" },
+        "imported_id": { "type": "string" },
+        "import_date": { "type": "string", "format": "date-time" },
+        "deleted": { "type": "boolean" },
+        "type": {
+          "type": "string",
+          "enum": ["regular", "transfer", "parent", "sub"]
+        },
+        "transfer_id": { "type": "string" },
+        "sub_txns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Transaction" }
+        }
+      }
+    },
+
+    "Category": {
+      "type": "object",
+      "description": "A spending category within a group",
+      "required": [
+        "id", "name", "group_id", "deleted",
+        "calculated_auto_budget_amount", "auto_budget_type",
+        "auto_budget_frequency"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "group_id": { "type": "string" },
+        "deleted": { "type": "boolean" },
+        "calculated_auto_budget_amount": { "type": "integer" },
+        "auto_budget_type": {
+          "type": "string",
+          "enum": ["none", "monthly", "weekly", "daily", "yearly", "byDate", "byDayOfMonth", "spending"]
+        },
+        "auto_budget_frequency": { "type": "string" }
+      }
+    },
+
+    "CategoryGroup": {
+      "type": "object",
+      "description": "A group of spending categories",
+      "required": ["id", "name", "deleted", "hidden", "is_in_report", "categories"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "deleted": { "type": "boolean" },
+        "hidden": { "type": "boolean" },
+        "is_in_report": { "type": "boolean" },
+        "categories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Category" }
+        }
+      }
+    },
+
+    "Payee": {
+      "type": "object",
+      "description": "A transaction payee or counterparty",
+      "required": ["id", "name", "transfer_account_id", "mtid", "deleted"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "transfer_account_id": { "type": "string" },
+        "mtid": { "type": "string" },
+        "deleted": { "type": "boolean" }
+      }
+    },
+
+    "Rule": {
+      "type": "object",
+      "description": "An automated categorization rule",
+      "required": [
+        "id", "name", "trigger", "trigger_value",
+        "actions", "inactive", "mtid", "order"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "trigger": {
+          "type": "string",
+          "enum": ["payee_is", "category_is", "notes_contain", "imported_payee_is", "amount_between"]
+        },
+        "trigger_value": { "type": "string" },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action", "action_data"],
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": ["set_category", "set_flag", "set_memo", "link_schedule"]
+              },
+              "action_data": { "type": "string" }
+            }
+          }
+        },
+        "inactive": { "type": "boolean" },
+        "mtid": { "type": "string" },
+        "order": { "type": "integer" }
+      }
+    },
+
+    "Schedule": {
+      "type": "object",
+      "description": "A recurring scheduled transaction",
+      "required": ["id", "frequency", "frequency_n", "next_expected", "bill", "deleted"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "frequency": {
+          "type": "string",
+          "enum": ["weekly", "biweekly", "monthly", "bimonthly", "quarterly", "yearly", "daily"]
+        },
+        "frequency_n": { "type": "integer" },
+        "next_expected": { "type": "string", "format": "date" },
+        "bill": { "type": "boolean" },
+        "deleted": { "type": "boolean" }
+      }
+    },
+
+    "BudgetCategory": {
+      "type": "object",
+      "description": "A category's budget state within a month",
+      "required": ["category_id", "amount", "carryover", "carryover_from_previous", "carries_over"],
+      "additionalProperties": false,
+      "properties": {
+        "category_id": { "type": "string" },
+        "amount": { "type": "integer" },
+        "carryover": { "type": "integer" },
+        "carryover_from_previous": { "type": "integer" },
+        "carries_over": { "type": "boolean" }
+      }
+    },
+
+    "BudgetMonth": {
+      "type": "object",
+      "description": "A month's budget with per-category allocations",
+      "required": ["id", "month", "categories"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "month": { "type": "string", "pattern": "^\\d{4}-\\d{2}$" },
+        "categories": {
+          "type": "object",
+          "description": "Map of category_id to BudgetCategory",
+          "additionalProperties": { "$ref": "#/$defs/BudgetCategory" }
+        }
+      }
+    },
+
+    "Tag": {
+      "type": "object",
+      "description": "A user-defined tag",
+      "required": ["id", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    },
+
+    "ProtocolSnapshot": {
+      "type": "object",
+      "description": "Complete snapshot of Actual Budget data for analysis",
+      "required": [
+        "schema_version", "actual_version", "snapshot_date",
+        "accounts", "transactions", "categories",
+        "payee_groups", "payees", "rules", "schedules",
+        "budgets", "tags"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "string", "const": "1" },
+        "actual_version": { "type": "string" },
+        "snapshot_date": { "type": "string", "format": "date-time" },
+        "accounts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Account" }
+        },
+        "transactions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Transaction" }
+        },
+        "categories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CategoryGroup" }
+        },
+        "payee_groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CategoryGroup" }
+        },
+        "payees": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Payee" }
+        },
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Rule" }
+        },
+        "schedules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Schedule" }
+        },
+        "budgets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/BudgetMonth" }
+        },
+        "tags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Tag" }
+        }
+      }
+    },
+
+    "AnalysisOptions": {
+      "type": "object",
+      "description": "Options controlling analysis behavior",
+      "required": ["include_pending", "include_cleared", "max_results"],
+      "additionalProperties": false,
+      "properties": {
+        "include_pending": { "type": "boolean" },
+        "include_cleared": { "type": "boolean" },
+        "max_results": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 1 }
+          ]
+        }
+      }
+    },
+
+    "AnalysisRequest": {
+      "type": "object",
+      "description": "Request to perform categorization analysis",
+      "required": ["snapshot", "options"],
+      "additionalProperties": false,
+      "properties": {
+        "snapshot": { "$ref": "#/$defs/ProtocolSnapshot" },
+        "options": { "$ref": "#/$defs/AnalysisOptions" }
+      }
+    },
+
+    "AnalysisResult": {
+      "type": "object",
+      "description": "Result of categorization analysis",
+      "required": ["result_code", "reason_codes", "findings", "suggestions"],
+      "additionalProperties": false,
+      "properties": {
+        "result_code": { "type": "integer" },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Finding" }
+        },
+        "suggestions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Suggestion" }
+        }
+      }
+    },
+
+    "Finding": {
+      "type": "object",
+      "description": "A finding or issue detected during analysis",
+      "required": ["finding_type", "severity", "entity_id", "message", "drill_down"],
+      "additionalProperties": false,
+      "properties": {
+        "finding_type": { "type": "string" },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "blocker"]
+        },
+        "entity_id": { "type": "string" },
+        "message": { "type": "string" },
+        "drill_down": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "Suggestion": {
+      "type": "object",
+      "description": "A suggested category reassignment for a transaction",
+      "required": [
+        "transaction_id", "proposed_category_id", "category_name",
+        "confidence", "reason_codes", "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "transaction_id": { "type": "string" },
+        "proposed_category_id": { "type": "string" },
+        "category_name": { "type": "string" },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "MutationPlan": {
+      "type": "object",
+      "description": "A proposed mutation to apply to a transaction",
+      "required": [
+        "plan_id", "transaction_id", "current_category_id",
+        "proposed_category_id", "hash", "postconditions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "plan_id": { "type": "string" },
+        "transaction_id": { "type": "string" },
+        "current_category_id": { "type": "string" },
+        "proposed_category_id": { "type": "string" },
+        "hash": { "type": "string" },
+        "postconditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Postcondition" }
+        }
+      }
+    },
+
+    "Postcondition": {
+      "type": "object",
+      "description": "A condition that must hold after applying a mutation",
+      "required": ["type", "category_id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["category_exists"]
+        },
+        "category_id": { "type": "string" }
+      }
+    },
+
+    "RuleSimulationResult": {
+      "type": "object",
+      "description": "Result of simulating a rule against transactions",
+      "required": ["rule_id", "name", "transactions_matched", "transactions_affected"],
+      "additionalProperties": false,
+      "properties": {
+        "rule_id": { "type": "string" },
+        "name": { "type": "string" },
+        "transactions_matched": { "type": "integer", "minimum": 0 },
+        "transactions_affected": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "ValidationResult": {
+      "type": "object",
+      "description": "Result of validating data against schema",
+      "required": ["valid", "reason_codes"],
+      "additionalProperties": false,
+      "properties": {
+        "valid": { "type": "boolean" },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "VerificationResult": {
+      "type": "object",
+      "description": "Result of verifying the integrity of a mutation plan",
+      "required": ["verified", "reason_codes"],
+      "additionalProperties": false,
+      "properties": {
+        "verified": { "type": "boolean" },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
