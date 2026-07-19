@@ -1567,6 +1567,42 @@ describe('ActualConnector', () => {
       expect(mockClient.downloadBudget).toHaveBeenCalled();
     });
 
+    it('should downloadBudget using groupId, not public BudgetInfo.id, during Observe synchronize', async () => {
+      mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
+      mockClient.downloadBudget = vi.fn().mockResolvedValue(undefined);
+      mockClient.loadBudget = vi.fn().mockResolvedValue(undefined);
+      mockClient.getAccounts = vi.fn().mockResolvedValue(mockAccounts);
+      mockClient.getPayees = vi.fn().mockResolvedValue(mockPayees);
+      mockClient.getCategories = vi.fn().mockResolvedValue(mockCategories);
+      mockClient.getCategoryGroups = vi.fn().mockResolvedValue(mockCategoryGroups);
+      mockClient.getTransactions = vi.fn().mockResolvedValue(mockTransactions);
+      mockClient.getRules = vi.fn().mockResolvedValue(mockRules);
+      mockClient.getSchedules = vi.fn().mockResolvedValue(mockSchedules);
+
+      await connector.connect({
+        serverUrl: 'http://localhost:5006',
+        secretKey: 'secret',
+      });
+
+      // Select via public BudgetInfo.id
+      await connector.selectBudget('budget_1');
+
+      // Reset downloadBudget spy to measure what synchronize passes
+      mockClient.downloadBudget = vi.fn().mockResolvedValue(undefined);
+
+      await connector.synchronize();
+
+      // synchronize must download using the groupId/sync identifier, not the public id
+      expect(mockClient.downloadBudget).toHaveBeenCalledWith(
+        'group_1',
+        expect.objectContaining({}),
+      );
+      expect(mockClient.downloadBudget).not.toHaveBeenCalledWith(
+        'budget_1',
+        expect.anything(),
+      );
+    });
+
     it('should not call any client mutation methods during synchronize in Observe mode', async () => {
       await connector.connect({
         serverUrl: 'http://localhost:5006',

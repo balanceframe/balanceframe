@@ -4,6 +4,7 @@
  * TDD: these tests are written before the implementation and will fail
  * until the minimal controller code in review.ts makes them pass.
  */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type {

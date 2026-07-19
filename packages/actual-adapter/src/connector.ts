@@ -288,7 +288,7 @@ export class ActualConnector implements BudgetLedger {
       if (this.mode === 'observe') {
         // Re-download budget data; password may be required for encrypted budgets
         const creds = await this.credStore.load();
-        await this.client.downloadBudget(budgetId, { password: creds?.budgetPassword ?? undefined });
+        await this.client.downloadBudget(this._budgetInfo.groupId, { password: creds?.budgetPassword ?? undefined });
       } else {
         await this.client.sync();
       }
