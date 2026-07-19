@@ -55,7 +55,7 @@ jobs:
       matrix:
         include:
           - name: macOS x86_64
-            runner: macos-13
+            runner: macos-15-intel
           - name: macOS ARM64
             runner: macos-14
           - name: Windows x86_64
