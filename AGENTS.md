@@ -2,17 +2,37 @@
 
 ## Git Commits
 
-Before making a git commit with `--signoff`, agents **MUST** read the repository's git config and use those values for the `Signed-off-by` line:
+**Every commit created by an agent MUST include a DCO sign-off.** Agents MUST
+invoke `git commit --signoff` (or `git commit -s`) for every commit they
+create. This requirement applies even when the user does not mention DCO,
+sign-off, or commit options. An unsigned commit is not an acceptable
+deliverable.
+
+Before committing, agents MUST read the repository's configured identity and
+use those values for Git's generated `Signed-off-by` trailer:
 
 ```bash
 git config user.name
 git config user.email
+git commit --signoff
 ```
 
-Do **NOT** use hardcoded or fabricated identities. Always derive `Signed-off-by: Name <email>` from the actual `git config` output for this repository.
+Do NOT manually invent, hardcode, or substitute an identity. If either value
+is missing or uncertain, run:
 
-If you are uncertain about the identity, run `git config --list --show-origin | grep user` to check local, global, and includes — do not guess.
+```bash
+git config --list --show-origin | grep user
+```
 
+and stop before committing if no valid identity is configured. After committing,
+agents MUST verify the trailer on the commit they created:
+
+```bash
+git log -1 --format='%(trailers:only,unfold)'
+```
+
+The commit is complete only when that output contains exactly one valid
+`Signed-off-by: Name <email>` trailer matching the configured identity.
 ## Test Driven Development (TDD)
 
 **All code changes MUST follow Test Driven Development.** The testing cycle is mandatory for every unit of work:

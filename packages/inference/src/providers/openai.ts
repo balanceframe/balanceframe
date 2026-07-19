@@ -187,7 +187,7 @@ export class OpenAIProvider implements ProviderAdapter {
    * Throws on invalid input before any credentials are sent.
    */
   private validateEndpoint(endpoint: string): URL {
-    if (!endpoint.match(/^https:\/\/[^\/]/)) {
+    if (!endpoint.match(/^https:\/\/[^/]/)) {
       throw new Error(`OpenAI provider: invalid endpoint URL "${endpoint}" — must start with https://<host>`);
     }
     let parsed: URL;

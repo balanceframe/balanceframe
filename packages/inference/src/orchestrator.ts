@@ -27,6 +27,8 @@ import type {
 } from './types';
 import type { ProviderAdapter } from './providers/types';
 
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+
 /** Dependency-injection configuration for the orchestrator. */
 export interface OrchestratorConfig {
   /** Registered provider adapters — injectable. */
@@ -124,7 +126,7 @@ export class Orchestrator {
       : this.redactor.forLocal(candidate);
 
     // Build classify request with deadline race
-    let timeoutId: NodeJS.Timeout | undefined;
+    let timeoutId: TimeoutHandle | undefined;
     const abortController = new AbortController();
     const timeoutMs = this.providerTimeoutMs ?? (isExternal ? 30_000 : 10_000);
 
