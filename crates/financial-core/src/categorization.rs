@@ -181,18 +181,25 @@ impl CategorizationCandidate {
     /// Returns whether this candidate's strongest evidence resolves it
     /// deterministically.  Only [`Unresolved`](CandidateStatus::Unresolved)
     /// candidates qualify for TypeScript provider inference.
+    ///
+    /// Evidence is ranked by priority: ExactPayee > Historical > AmountPattern >
+    /// ImportMatch.  The highest-priority evidence determines the status
+    /// regardless of position in the `reasons` vec — unlike the legacy
+    /// `reasons.first()` heuristic which trusted insertion order.
     pub fn eligibility(&self) -> CandidateStatus {
-        let strongest = self.reasons.first();
-        match strongest {
-            None => CandidateStatus::Unresolved,
-            Some(e) => match e.kind {
-                EvidenceKind::ExactPayee | EvidenceKind::Historical => {
-                    CandidateStatus::Resolved
-                }
-                EvidenceKind::AmountPattern | EvidenceKind::ImportMatch => {
-                    CandidateStatus::Unresolved
-                }
-            },
+        // Scan all evidence and rank by priority.  Any ExactPayee or Historical
+        // evidence (deterministic / resolved) takes precedence over non-deterministic
+        // kinds, making the candidate ineligible for provider inference.
+        let has_deterministic = self.reasons.iter().any(|e| {
+            matches!(
+                e.kind,
+                EvidenceKind::ExactPayee | EvidenceKind::Historical
+            )
+        });
+        if has_deterministic {
+            CandidateStatus::Resolved
+        } else {
+            CandidateStatus::Unresolved
         }
     }
 }

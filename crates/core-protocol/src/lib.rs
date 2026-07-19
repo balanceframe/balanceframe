@@ -703,6 +703,26 @@ pub fn validate_suggestion(
     }
 }
 
+/// Compute a deterministic version string for a transaction from its current
+/// mutable state fields.  This version is used to detect stale suggestions:
+/// if the transaction's amount, category, date, or cleared status has changed
+/// since the provider issued the suggestion, the version will differ.
+///
+/// The version is computed from fields that affect categorization relevance:
+/// `id`, `amount`, `date`, `category_id`, `cleared`.  Changes to immutable
+/// or unrelated fields (notes, tags, import IDs) do not alter the version.
+fn compute_transaction_version(tx: &Transaction) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tx.id.hash(&mut hasher);
+    tx.amount.minor_units().hash(&mut hasher);
+    tx.amount.currency().hash(&mut hasher);
+    tx.date.hash(&mut hasher);
+    tx.category_id.hash(&mut hasher);
+    tx.cleared.hash(&mut hasher);
+    format!("txv{:x}", hasher.finish())
+}
+
 /// Validate a provider-issued suggestion against the current snapshot
 /// and candidate eligibility, without mutating any data.
 ///
@@ -710,65 +730,126 @@ pub fn validate_suggestion(
 /// persisted or acted upon.  It performs the same checks as
 /// [`validate_suggestion`] plus:
 ///
+/// * **Transaction ID binding** – the suggestion's `transaction_id` must
+///   match both the candidate's `transaction_id` and a real transaction
+///   in the snapshot.
 /// * **Candidate eligibility** – only [`CandidateStatus::Unresolved`]
-///   candidates may receive provider inference.
+///   candidates may receive provider inference.  Evidence is explicitly
+///   ranked by type rather than trusting insertion order.
 /// * **Transaction version** – if the suggestion carries a
-///   `transaction_version`, it must match expectations.
+///   `transaction_version`, it is compared against a trustworthy version
+///   computed from the snapshot transaction.  Mismatches are rejected
+///   as stale.
 /// * **Inference policy** – if an effective policy is supplied, the
-///   provider field is checked against it.
+///   provider field is checked against it (fail‑closed).
 /// * **Immutable metadata** – provider suggestions must carry provenance
 ///   and creation timestamp.
+/// * **Provenance consistency** – top‑level `provider` / `created_at`
+///   must match their counterparts inside `provenance`.
+/// * **Payload hash integrity** – both the top‑level `payload_hash` and
+///   `provenance.payload_hash` must be present and non‑empty.
 pub fn validate_provider_suggestion(
     suggestion: &Suggestion,
     snapshot: &ProtocolSnapshot,
     candidate: &CategorizationCandidate,
     effective_policy: Option<InferencePolicy>,
 ) -> ValidationResult {
-    // 1. Run basic suggestion validation first
+    // 1. Run basic suggestion validation first (transaction exists + category valid)
     let basic = validate_suggestion(suggestion, snapshot);
-    if !basic.valid {
-        return basic;
-    }
-
     let mut reason_codes: Vec<String> = basic.reason_codes;
 
-    // 2. Candidate eligibility: only unresolved candidates qualify
+    // 2. Transaction ID binding: suggestion.transaction_id must match
+    //    candidate.transaction_id and reference a real snapshot transaction
+    if suggestion.transaction_id != candidate.transaction_id {
+        reason_codes.push("transaction_id_mismatch".into());
+    }
+
+    // Double-check that the candidate references a real transaction
+    let tx_in_snapshot = snapshot
+        .transactions
+        .iter()
+        .find(|tx| tx.id == candidate.transaction_id);
+    if tx_in_snapshot.is_none() {
+        reason_codes.push("candidate_transaction_not_found".into());
+    }
+
+    // 3. Candidate eligibility: only unresolved candidates qualify
+    //    (eligibility now uses explicit evidence ranking, not reasons.first())
     if candidate.eligibility() != CandidateStatus::Unresolved {
         reason_codes.push("candidate_already_resolved".into());
     }
 
-    // 3. Stale transaction version detection
+    // 4. Stale transaction version detection
+    //    If the suggestion carries a version, compute the trustworthy version
+    //    from the current snapshot transaction and compare.
     if let Some(version) = &suggestion.transaction_version {
         if version.trim().is_empty() {
             reason_codes.push("invalid_transaction_version".into());
+        } else if let Some(tx) = tx_in_snapshot {
+            let expected = compute_transaction_version(tx);
+            if *version != expected {
+                reason_codes.push("stale_transaction_version".into());
+            }
         }
     }
 
-    // 4. Inference policy enforcement
+    // 5. Inference policy enforcement (fail‑closed)
     if let Some(policy) = &effective_policy {
         match policy {
             InferencePolicy::Disabled => {
+                // Fail‑closed: Disabled rejects ALL provider suggestions
+                // regardless of whether a provider is specified.
                 reason_codes.push("provider_inference_disabled".into());
             }
             InferencePolicy::LocalOnly => {
-                if let Some(prov) = &suggestion.provider {
-                    if prov != "local" {
-                        reason_codes.push("external_provider_not_allowed".into());
-                    }
+                // When provider is absent or external, reject.
+                let provider = suggestion.provider.as_deref().unwrap_or("");
+                if provider != "local" {
+                    reason_codes.push("external_provider_not_allowed".into());
                 }
             }
             InferencePolicy::ExternalAllowed => {}
         }
     }
 
-
-    // 5. Immutable metadata validation: provider suggestions MUST carry
+    // 6. Immutable metadata validation: provider suggestions MUST carry
     //    provenance and creation timestamp to be considered well-formed.
-    if suggestion.provenance.is_none() {
+    let has_provenance = suggestion.provenance.is_some();
+    if !has_provenance {
         reason_codes.push("missing_provenance".into());
     }
     if suggestion.created_at.is_none() {
         reason_codes.push("missing_created_at".into());
+    }
+
+    // 7. Provenance consistency: top-level provider/created_at must match
+    //    their counterparts inside provenance (prevents field-level tampering).
+    if let Some(prov) = &suggestion.provenance {
+        // Top-level provider must match provenance.provider
+        if suggestion.provider != prov.provider {
+            reason_codes.push("provenance_provider_mismatch".into());
+        }
+        // Top-level created_at must match provenance.created_at
+        if suggestion.created_at.as_deref() != Some(&prov.created_at) {
+            reason_codes.push("provenance_timestamp_mismatch".into());
+        }
+    }
+
+    // 8. Non-empty / canonical payload hashes
+    //    payload_hash must be present and non-empty on both suggestion and provenance.
+    let hash_ok = suggestion
+        .payload_hash
+        .as_ref()
+        .map(|h| !h.trim().is_empty())
+        .unwrap_or(false);
+    if !hash_ok {
+        reason_codes.push("missing_payload_hash".into());
+    }
+    if let Some(prov) = &suggestion.provenance {
+        let prov_hash_ok = !prov.payload_hash.trim().is_empty();
+        if !prov_hash_ok {
+            reason_codes.push("provenance_payload_hash_empty".into());
+        }
     }
 
     let message = if reason_codes.is_empty() {

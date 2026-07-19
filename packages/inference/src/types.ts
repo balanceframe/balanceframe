@@ -4,6 +4,11 @@
  * An unresolved candidate arrives from Rust after deterministic processing
  * leaves it ambiguous. The inference layer classifies it via an allowed
  * provider, producing an immutable Suggestion that never mutates the ledger.
+ *
+ * The Suggestion type is a superset of the protocol-generated
+ * @balanceframe/protocol-generated Suggestion — all protocol fields are
+ * present plus inference-specific metadata (id, hash, errors,
+ * deterministicEvidence, alternatives).
  */
 
 // ---------------------------------------------------------------------------
@@ -93,6 +98,8 @@ export interface ClassifyRequest {
   categoryNames: Record<string, string>;
   /** Category group names keyed by id — for provider context. */
   categoryGroups: Record<string, string>;
+  /** AbortSignal for provider deadline/cancellation. */
+  signal?: AbortSignal;
 }
 
 /** Raw classification result from a provider adapter. */
@@ -128,35 +135,72 @@ export interface Provenance {
 /**
  * Immutable suggestion produced by the inference layer.
  *
- * Suggestion data lives outside Actual. The categoryId is a proposal:
+ * Superset of the protocol-generated Suggestion (camelCase). The canonical
+ * protocol fields (transactionId, proposedCategoryId, etc.) are present
+ * alongside inference-specific metadata.
+ *
+ * Suggestion data lives outside Actual. The proposedCategoryId is a proposal:
  * Rust validates it against the current snapshot, transaction version,
  * policy, and blockers before any effect.
  */
 export interface Suggestion {
+  // ---- Canonical protocol fields (aligned with protcol-generated) ----
+  /** Stable transaction identifier within the Actual budget. */
+  transactionId: string;
+  /** Proposed category identifier (empty string = uncategorize/remove). */
+  proposedCategoryId: string;
+  /** Backward-compatible convenience alias for proposedCategoryId. */
+  categoryId: string;
+  /** Human-readable name of the proposed category. */
+  categoryName: string;
+  /** Model confidence score (metadata only, never authorization). */
+  confidence: number;
+  /** Machine-readable reason codes for this suggestion. */
+  reasonCodes: string[];
+  /** Evidence strings supporting the suggestion. */
+  evidence: string[];
+
+  // ---- Phase 2: Suggestion-only classifier fields ----
+  /** Stable space identifier for multi-space deployments. */
+  spaceId: string;
+  /** Connection identifier for the data source. */
+  connectionId: string;
+  /** Budget identifier for the current budget cycle. */
+  budgetId: string;
+  /** Version identifier for the transaction, used for staleness detection. */
+  transactionVersion: string;
+  /** Raw merchant name as recorded in the transaction. */
+  rawMerchant: string | null;
+  /** Normalized merchant name for cross-reference matching. */
+  normalizedMerchant: string | null;
+  /** Optional research summary from merchant research provider. */
+  researchSummary: string | null;
+  /** Alternative category identifiers that were considered. */
+  alternativeCategoryIds: string[];
+  /** Free-text rationale for the suggestion. */
+  rationale: string;
+  /** Inference provider identifier (e.g. "openai", "local"). */
+  provider: string;
+  /** Model identifier used for this suggestion. */
+  model: string;
+  /** Version of the prompt template used. */
+  promptVersion: string;
+  /** Version of the inference policy at time of suggestion. */
+  inferencePolicyVersion: string;
+  /** ISO-8601 timestamp of suggestion creation. */
+  createdAt: string;
+  /** Hash of the suggestion payload for integrity verification. */
+  payloadHash: string;
+  /** Provenance metadata (provider, model, version chain). */
+  provenance: Provenance;
+  /** Backward-compatible convenience alias for payloadHash. */
+  hash: string;
+
+  // ---- Inference-specific extras (not in protocol) ----
   /** Stable unique identifier for this suggestion. */
   id: string;
-  spaceId: string;
-  connectionId: string;
-  budgetId: string;
-  transactionId: string;
-  transactionVersion: string;
-  rawMerchant: string | null;
-  normalizedMerchant: string | null;
-  /** Optional research summary — populated by merchantResearch capability. */
-  researchSummary: string | null;
-  /** Proposed category. Empty string when classification failed. */
-  categoryId: string;
-  /** Alternative category proposals. */
+  /** Alternative category proposals with reasons. */
   alternatives: Alternative[];
-  /** Free-text rationale. */
-  rationale: string;
-  provenance: Provenance;
-  createdAt: string;
-  /**
-   * Cryptographic-quality hash of the payload for integrity verification.
-   * Not a placeholder — real SHA-256 in production; hex string here.
-   */
-  hash: string;
   /** Error messages. Empty array = success. */
   errors: string[];
   /** Deterministic evidence from the unresolved candidate. */

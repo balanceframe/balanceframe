@@ -183,15 +183,20 @@ export interface WorkflowStore {
     claimTimeoutMs?: number,
   ): Promise<CandidateJob | null>;
 
-  /** Mark a claimed job as completed. No-op if already terminal. */
-  completeJob(jobId: string): Promise<void>;
+  /** Mark a processing job as completed. Requires the active claim token. */
+  completeJob(jobId: string, claimToken: string): Promise<void>;
 
   /**
-   * Mark a claimed job as failed and persist a failure record.
-   * No-op if the job is already terminal.
+   * Mark a processing job as failed and persist a failure record.
+   * Requires the active claim token.
+   * Idempotent on already-terminal jobs with the correct claim token.
+   *
+   * @throws If the claim token does not match a processing job
+   *         (stale worker or wrong token).
    */
   failJob(
     jobId: string,
+    claimToken: string,
     errorCode: string,
     errorMessage: string,
   ): Promise<FailureRecord>;

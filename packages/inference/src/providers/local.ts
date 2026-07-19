@@ -30,7 +30,7 @@ export class LocalProvider implements ProviderAdapter {
   readonly providerInfo: ProviderInfo;
 
   constructor(config: LocalProviderConfig = {}) {
-    const id = config.providerId ?? 'local-default';
+    const id = config.providerId ?? 'local';
     this.providerId = id;
     this.providerInfo = {
       id,
@@ -50,8 +50,8 @@ export class LocalProvider implements ProviderAdapter {
     const categoryId = this.heuristicLookup(merchant);
 
     return {
-      categoryId,
-      confidence: categoryId ? 0.6 : null,
+      categoryId: categoryId || 'uncategorized',
+      confidence: categoryId ? 0.6 : 0,
       alternatives: [],
       rationale: categoryId
         ? `Local heuristic matched merchant pattern for "${merchant}"`

@@ -151,7 +151,7 @@ pub fn validate_provider_suggestion(input: String) -> napi::Result<String> {
             &vpsi.suggestion,
             &vpsi.snapshot,
             &vpsi.candidate,
-            vpsi.effective_policy,
+            Some(vpsi.effective_policy.unwrap_or(cp::InferencePolicy::Disabled)),
         ))
     })
 }

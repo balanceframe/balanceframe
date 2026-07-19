@@ -454,12 +454,7 @@
       "type": "object",
       "required": [
         "payloadHash",
-        "provider",
-        "model",
-        "promptVersion",
-        "inferencePolicyVersion",
-        "createdAt",
-        "actorId"
+        "createdAt"
       ],
       "additionalProperties": false,
       "properties": {
@@ -616,6 +611,31 @@
           "items": {
             "$ref": "#/$defs/HistoryRecord"
           }
+        },
+        "id": {
+          "type": "string"
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["categoryId", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "categoryId": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deterministicEvidence": {
+          "type": "object",
+          "additionalProperties": {}
         }
       }
     }

@@ -134,6 +134,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectTransactionSuggestions: null as unknown as ReturnType<DatabaseType['prepare']>,
     supersedeByVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
     countSuperseded: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectMaxVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
     upsertJob: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectJobByCandidate: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectJobById: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -142,6 +143,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectClaimedJob: null as unknown as ReturnType<DatabaseType['prepare']>,
     completeJob: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertFailure: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectLatestFailure: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectPendingJobs: null as unknown as ReturnType<DatabaseType['prepare']>,
     failJobStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
@@ -221,7 +223,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
                                transaction_version, superseded_at, created_at)
       VALUES (@id, @budgetId, @transactionId, @categoryId,
               @classifier, @promptVersion, @payload,
-              @transactionVersion, NULL, @createdAt)
+              @transactionVersion, @supersededAt, @createdAt)
     `);
 
     this.stmt.supersedeMatch = this.db.prepare(`
@@ -265,6 +267,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
       SELECT changes() AS count
     `);
 
+    this.stmt.selectMaxVersion = this.db.prepare(`
+      SELECT MAX(transaction_version) AS max_version FROM suggestions
+       WHERE budget_id = @budgetId
+         AND transaction_id = @transactionId
+         AND classifier = @classifier
+         AND prompt_version = @promptVersion
+    `);
+
     // ── Jobs ───────────────────────────────────────────────────────────
 
     this.stmt.upsertJob = this.db.prepare(`
@@ -273,8 +283,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
                                   claim_expires_at, created_at, updated_at)
       VALUES (@id, @jobType, @candidateId, 'pending',
               NULL, NULL, NULL, @now, @now)
-      ON CONFLICT(job_type, candidate_id) DO UPDATE SET
-        updated_at = excluded.updated_at
+      ON CONFLICT(job_type, candidate_id) DO NOTHING
       RETURNING *
     `);
 
@@ -320,7 +329,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
          SET status = 'completed',
              updated_at = @now
        WHERE id = @jobId
-         AND status IN ('processing', 'pending')
+         AND status = 'processing'
+         AND claim_token = @claimToken
     `);
 
     this.stmt.insertFailure = this.db.prepare(`
@@ -328,12 +338,20 @@ export class SqliteWorkflowStore implements WorkflowStore {
       VALUES (@id, @jobId, @errorCode, @errorMessage, @createdAt)
     `);
 
+    this.stmt.selectLatestFailure = this.db.prepare(`
+      SELECT * FROM failure_records
+       WHERE job_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1
+    `);
+
     this.stmt.failJobStatus = this.db.prepare(`
       UPDATE candidate_jobs
          SET status = 'failed',
              updated_at = @now
        WHERE id = @jobId
-         AND status IN ('processing', 'pending')
+         AND status = 'processing'
+         AND claim_token = @claimToken
     `);
 
     this.stmt.selectPendingJobs = this.db.prepare(`
@@ -352,7 +370,41 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const payloadJson = JSON.stringify(input.payload);
 
     const txn = this.db.transaction(() => {
-      // Supersede any existing active suggestion for the same key
+      // ── Stale-version detection ────────────────────────────────────
+      // If a suggestion already exists (active or superseded) with a
+      // higher transactionVersion for the same composite key, the
+      // incoming suggestion is stale — save it but immediately supersede
+      // so it never becomes the active suggestion (audit trail preserved).
+      const versionRow = this.stmt.selectMaxVersion.get({
+        budgetId: input.budgetId,
+        transactionId: input.transactionId,
+        classifier: input.classifier,
+        promptVersion: input.promptVersion,
+      }) as { max_version: number | null } | undefined;
+
+      const maxVersion = versionRow?.max_version ?? null;
+
+      if (maxVersion !== null && maxVersion > input.transactionVersion) {
+        // Stale incoming suggestion — save with supersededAt = now so
+        // it is immediately inactive. The higher-version suggestion
+        // remains the active one.
+        this.stmt.insertSuggestion.run({
+          id,
+          budgetId: input.budgetId,
+          transactionId: input.transactionId,
+          categoryId: input.categoryId,
+          classifier: input.classifier,
+          promptVersion: input.promptVersion,
+          payload: payloadJson,
+          transactionVersion: input.transactionVersion,
+          supersededAt: now,
+          createdAt: now,
+        });
+        return;
+      }
+
+      // Fresh (or first) suggestion — supersede any existing active
+      // suggestion for the same composite key, then insert as active.
       this.stmt.supersedeMatch.run({
         now,
         budgetId: input.budgetId,
@@ -370,6 +422,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         promptVersion: input.promptVersion,
         payload: payloadJson,
         transactionVersion: input.transactionVersion,
+        supersededAt: null,
         createdAt: now,
       });
     });
@@ -424,6 +477,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const id = randomUUID();
     const now = nowISO();
 
+    // ON CONFLICT DO NOTHING RETURNING * returns undefined on duplicate
     const row = this.stmt.upsertJob.get({
       id,
       jobType: input.jobType,
@@ -432,8 +486,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }) as JobRow | undefined;
 
     if (!row) {
-      // ON CONFLICT DO UPDATE RETURNING * should always return a row;
-      // fallback to a select if the upsert hit a race.
+      // Row already existed — fetch the existing record unchanged
+      // (no updated_at modification, true no-op).
       const existing = this.stmt.selectJobByCandidate.get({
         jobType: input.jobType, candidateId: input.candidateId,
       }) as JobRow | undefined;
@@ -487,21 +541,34 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return null;
   }
 
-  async completeJob(jobId: string): Promise<void> {
+  async completeJob(jobId: string, claimToken: string): Promise<void> {
     const now = nowISO();
-    this.stmt.completeJob.run({ jobId, now });
+    this.stmt.completeJob.run({ jobId, claimToken, now });
   }
 
   async failJob(
     jobId: string,
+    claimToken: string,
     errorCode: string,
     errorMessage: string,
   ): Promise<FailureRecord> {
     const now = nowISO();
     const failureId = randomUUID();
 
+    // Transaction: update status AND insert failure record atomically.
+    // The failure record is only inserted when the state transition
+    // succeeds (job was 'processing' with matching claim_token).
     const txn = this.db.transaction(() => {
-      this.stmt.failJobStatus.run({ jobId, now });
+      const result = this.stmt.failJobStatus.run({ jobId, claimToken, now });
+
+      if (result.changes === 0) {
+        // State transition did not happen. This could mean the job is
+        // already terminal or the claim token doesn't match.
+        // We'll handle idempotency / errors after the transaction.
+        return;
+      }
+
+      // Transition succeeded — insert failure record
       this.stmt.insertFailure.run({
         id: failureId,
         jobId,
@@ -513,13 +580,30 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     txn();
 
-    return {
-      id: failureId,
-      jobId,
-      errorCode,
-      errorMessage,
-      createdAt: now,
-    };
+    // Determine outcome based on current job state
+    const job = this.stmt.selectJobById.get(jobId) as JobRow | undefined;
+    if (!job) throw new Error(`Job ${jobId} not found`);
+
+    // Idempotent retry or successful transition: return latest failure record
+    if (job.status === 'failed') {
+      const failureRow = this.stmt.selectLatestFailure.get(jobId) as FailureRow | undefined;
+      if (failureRow) return rowToFailure(failureRow);
+      // No failure record found — fall through to error
+    }
+
+    // Stale/expired worker: claim token doesn't match the current processing job
+    if (job.status === 'processing' && job.claim_token !== claimToken) {
+      throw new Error(
+        `Cannot fail job ${jobId}: claim token mismatch (current token: ${job.claim_token})`,
+      );
+    }
+
+    // Job is 'pending' (never claimed) or 'completed' (no failure record) —
+    // the transition was rejected because the job wasn't in 'processing'
+    // with the matching claim token.
+    throw new Error(
+      `Cannot fail job ${jobId}: status is '${job.status}', must be 'processing' with matching claim token`,
+    );
   }
 
   // ── Queries ───────────────────────────────────────────────────────

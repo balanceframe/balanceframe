@@ -5,11 +5,22 @@
  * endpoint (OpenAI, Azure OpenAI, local LLM servers with OpenAI-compatible
  * chat completions API, etc.).
  *
+ * Security hardening:
+ * - Endpoint scheme/host validated before sending credentials
+ * - Redirects are rejected (credentials never sent to a different origin)
+ * - Bounded fetch via AbortSignal from the request context
+ * - Configurable Bearer or Api-Key auth
+ * - Untrusted data delimiters in prompt construction
+ * - No String/Number coercion in response parsing
+ *
  * No hardcoded credentials. The caller injects the API key and endpoint
  * at construction time — secrets never leak into the adapter itself.
  */
 import type { ProviderAdapter } from './types';
 import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types';
+
+/** Supported auth schemes. */
+export type OpenAIAuthType = 'bearer' | 'api-key';
 
 /** Configuration for the OpenAI-compatible provider adapter. */
 export interface OpenAIProviderConfig {
@@ -18,6 +29,10 @@ export interface OpenAIProviderConfig {
   endpoint: string;
   apiKey: string;
   model: string;
+  /** Provider locality — defaults to 'external'. Set 'local' for self-hosted endpoints. */
+  locality?: 'local' | 'external';
+  /** Auth header scheme — 'bearer' (default) or 'api-key'. */
+  authType?: OpenAIAuthType;
   /** Optional fetch override for testing — defaults to global fetch. */
   fetchFn?: typeof fetch;
 }
@@ -34,35 +49,50 @@ export class OpenAIProvider implements ProviderAdapter {
   private readonly endpoint: string;
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly authType: OpenAIAuthType;
   private readonly fetchFn: typeof fetch;
 
   constructor(config: OpenAIProviderConfig) {
+    // Validate endpoint scheme and host before accepting config
+    const parsedUrl = this.validateEndpoint(config.endpoint);
+
     const id = config.providerId ?? 'openai-default';
     this.providerId = id;
     this.providerInfo = {
       id,
       name: config.name ?? 'OpenAI-Compatible',
-      locality: 'external',
+      locality: config.locality ?? 'external',
       supportedCapabilities: ['classification', 'merchantResearch'],
       endpoint: config.endpoint,
-      authType: 'api-key',
+      authType: config.authType === 'api-key' ? 'api-key' : 'api-key',
       model: config.model,
     };
     this.endpoint = config.endpoint;
     this.apiKey = config.apiKey;
     this.model = config.model;
+    this.authType = config.authType ?? 'bearer';
     this.fetchFn = config.fetchFn ?? globalThis.fetch.bind(globalThis);
   }
 
   async classify(request: ClassifyRequest): Promise<ClassificationResult> {
+    const authHeader = this.authType === 'api-key'
+      ? `Api-Key ${this.apiKey}`
+      : `Bearer ${this.apiKey}`;
+
     const response = await this.fetchFn(this.endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: authHeader,
       },
       body: JSON.stringify(this.buildChatRequest(request)),
+      signal: request.signal,
+      redirect: 'error',
     });
+
+    if (response.redirected) {
+      throw new Error('OpenAI provider rejected: redirect detected');
+    }
 
     if (!response.ok) {
       throw new Error(`OpenAI provider returned status ${response.status}`);
@@ -75,8 +105,15 @@ export class OpenAIProvider implements ProviderAdapter {
   /**
    * Build the chat completions request payload.
    * Override in subclass to customize the prompt.
+   *
+   * Untrusted content is wrapped in named XML-style delimiters to
+   * mitigate prompt injection via transaction data.
    */
   protected buildChatRequest(request: ClassifyRequest): Record<string, unknown> {
+    const description = request.description ?? '';
+    const notes = request.notes ?? '';
+    const importedPayee = request.importedPayee ?? '';
+
     return {
       model: this.model,
       messages: [
@@ -86,7 +123,17 @@ export class OpenAIProvider implements ProviderAdapter {
         },
         {
           role: 'user',
-          content: `Categorize this transaction:\nMerchant: ${request.rawMerchant ?? request.normalizedMerchant ?? 'unknown'}\nAmount: ${request.amountMinorUnits} ${request.currency}\nDate: ${request.date}\nCategory names: ${JSON.stringify(request.categoryNames)}`,
+          content: [
+            'Categorize this transaction:',
+            `<description>${description}</description>`,
+            `<notes>${notes}</notes>`,
+            `<importedPayee>${importedPayee}</importedPayee>`,
+            `<merchant>${request.rawMerchant ?? request.normalizedMerchant ?? 'unknown'}</merchant>`,
+            `<amount>${request.amountMinorUnits} ${request.currency}</amount>`,
+            `<date>${request.date}</date>`,
+            `<categoryNames>${JSON.stringify(request.categoryNames)}</categoryNames>`,
+            `<categoryGroups>${JSON.stringify(request.categoryGroups)}</categoryGroups>`,
+          ].join('\n'),
         },
       ],
       temperature: 0.1,
@@ -97,6 +144,7 @@ export class OpenAIProvider implements ProviderAdapter {
   /**
    * Parse and validate the API response.
    * Throws on malformed JSON or missing required fields.
+   * Does NOT coerce types — validates them explicitly.
    */
   private parseResponse(body: unknown): ClassificationResult {
     const root = body as Record<string, unknown> | null;
@@ -113,12 +161,47 @@ export class OpenAIProvider implements ProviderAdapter {
       throw new Error('OpenAI response missing choices[0].message.content');
     }
     const parsed = JSON.parse(content);
+
+    // Validate types explicitly — no coercion
+    if (typeof parsed.categoryId !== 'string') {
+      throw new Error(`OpenAI response: categoryId must be a string, got ${typeof parsed.categoryId}`);
+    }
+    if (parsed.confidence != null && typeof parsed.confidence !== 'number') {
+      throw new Error(`OpenAI response: confidence must be a number or null, got ${typeof parsed.confidence}`);
+    }
+    if (typeof parsed.rationale !== 'string') {
+      throw new Error(`OpenAI response: rationale must be a string, got ${typeof parsed.rationale}`);
+    }
+
     return {
-      categoryId: String(parsed.categoryId ?? ''),
-      confidence: parsed.confidence != null ? Number(parsed.confidence) : null,
+      categoryId: parsed.categoryId,
+      confidence: parsed.confidence ?? null,
       alternatives: Array.isArray(parsed.alternatives) ? parsed.alternatives : [],
-      rationale: String(parsed.rationale ?? ''),
+      rationale: parsed.rationale,
       model: this.model,
     };
+  }
+
+  /**
+   * Validate endpoint URL: must be https and have a non-empty host.
+   * Throws on invalid input before any credentials are sent.
+   */
+  private validateEndpoint(endpoint: string): URL {
+    if (!endpoint.match(/^https:\/\/[^\/]/)) {
+      throw new Error(`OpenAI provider: invalid endpoint URL "${endpoint}" — must start with https://<host>`);
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(endpoint);
+    } catch {
+      throw new Error(`OpenAI provider: invalid endpoint URL "${endpoint}"`);
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new Error(`OpenAI provider: endpoint must use https scheme, got "${parsed.protocol}"`);
+    }
+    if (!parsed.host || parsed.host === '') {
+      throw new Error(`OpenAI provider: endpoint must have a non-empty host`);
+    }
+    return parsed;
   }
 }

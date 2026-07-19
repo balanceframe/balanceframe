@@ -92,7 +92,7 @@ export const provenanceSchema = z.object({
   inferencePolicyVersion: z.string().nullable().optional(),
   createdAt: z.string(),
   actorId: z.string().nullable().optional(),
-});
+}).strict();
 
 export const historyRecordSchema = z.object({
   transactionId: z.string(),
@@ -101,9 +101,9 @@ export const historyRecordSchema = z.object({
   categoryName: z.string(),
   amount: moneySchema,
   date: z.string(),
-});
+}).strict();
 
-export const suggestionSchema: z.ZodTypeAny = z.object({
+export const suggestionSchema = z.object({
   transactionId: z.string(),
   proposedCategoryId: z.string(),
   categoryName: z.string(),
@@ -128,8 +128,14 @@ export const suggestionSchema: z.ZodTypeAny = z.object({
   payloadHash: z.string().nullable().optional(),
   provenance: provenanceSchema.nullable().optional(),
   history: z.array(historyRecordSchema).optional(),
-});
-
+  id: z.string().optional(),
+  alternatives: z.array(z.object({
+    categoryId: z.string(),
+    reason: z.string(),
+  }).strict()).optional(),
+  errors: z.array(z.string()).optional(),
+  deterministicEvidence: z.record(z.unknown()).optional(),
+}).strict();
 export const canonicalTransactionSchema: z.ZodTypeAny = z.lazy(() =>
   z.object({
     id: z.string(),

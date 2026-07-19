@@ -5,8 +5,22 @@
  * and imported payees is redacted before being sent to an external provider.
  * Benign content passes through unchanged. Local provider calls also pass
  * through unchanged.
+ *
+ * Hardening:
+ * - Unicode/format-control character obfuscation detection
+ * - Direct instruction override patterns
+ * - Field-wide leak prevention: if ANY sensitive field contains injection,
+ *   ALL sensitive fields are redacted to prevent side-channel leaks
+ * - Benign false-positive avoidance
  */
 import type { UnresolvedCandidate, Redactor } from './types';
+
+// ---------------------------------------------------------------------------
+// Format-control / obfuscation Unicode ranges
+// ---------------------------------------------------------------------------
+
+/** Regex matching Unicode format-control and obfuscation characters. */
+const FORMAT_CONTROL_PATTERN = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/;
 
 // ---------------------------------------------------------------------------
 // Prompt-injection detection
@@ -31,11 +45,24 @@ const TEXT_FIELDS: Array<keyof Pick<UnresolvedCandidate, 'description' | 'notes'
   'importedPayee',
 ];
 
+/**
+ * Check if a single text value contains injection or obfuscation patterns.
+ */
+function textHasInjection(value: string): boolean {
+  // Check for Unicode format-control obfuscation
+  if (FORMAT_CONTROL_PATTERN.test(value)) {
+    return true;
+  }
+  // Strip format-control characters for injection pattern testing
+  const cleaned = value.replace(FORMAT_CONTROL_PATTERN, '');
+  return INJECTION_PATTERNS.some((pattern) => pattern.test(cleaned));
+}
+
 function hasInjection(candidate: UnresolvedCandidate): boolean {
   return TEXT_FIELDS.some((field) => {
     const value = candidate[field];
     if (value === null) return false;
-    return INJECTION_PATTERNS.some((pattern) => pattern.test(value));
+    return textHasInjection(value);
   });
 }
 
@@ -67,6 +94,10 @@ function redactSensitive(input: UnresolvedCandidate): UnresolvedCandidate {
 /**
  * Create a Redactor that redacts sensitive and injection-containing content
  * for external calls while preserving all data for local calls.
+ *
+ * Field-wide leak prevention: if ANY sensitive field contains injection,
+ * ALL sensitive fields are redacted to prevent side-channel information leaks
+ * through apparently benign fields.
  */
 export function createRedactor(): Redactor {
   return {

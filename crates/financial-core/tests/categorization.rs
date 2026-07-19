@@ -131,3 +131,43 @@ fn test_provenance_default_fields() {
     assert!(json.contains("\"provider\":null"));
     assert!(json.contains("\"model\":null"));
 }
+
+// ---------------------------------------------------------------------------
+// Explicit evidence ranking (not insertion order)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_eligibility_ranks_evidence_explicitly_not_position() {
+    // Evidence placed in non-priority order should still resolve correctly
+    // because eligibility() scans ALL evidence, not just reasons.first().
+    let candidate = sample_candidate("tx-ranked", vec![
+        Evidence::new(EvidenceKind::AmountPattern, "Low priority"),
+        Evidence::new(EvidenceKind::Historical, "Categorized as Food on 2026-07-01"),
+        Evidence::new(EvidenceKind::ImportMatch, "Imported match"),
+    ]);
+    // Even though AmountPattern comes first, Historical should resolve it
+    assert_eq!(candidate.eligibility(), CandidateStatus::Resolved,
+        "Historical evidence later in the vec must still resolve the candidate");
+}
+
+#[test]
+fn test_eligibility_any_deterministic_evidence_resolves() {
+    let candidate = sample_candidate("tx-any-det", vec![
+        Evidence::new(EvidenceKind::ImportMatch, "imp001"),
+        Evidence::new(EvidenceKind::ExactPayee, "Payee 'Store' (id=p1)"),
+        Evidence::new(EvidenceKind::AmountPattern, "$9.99 recurring"),
+    ]);
+    assert_eq!(candidate.eligibility(), CandidateStatus::Resolved,
+        "ExactPayee anywhere in the list must resolve the candidate");
+}
+
+#[test]
+fn test_eligibility_no_deterministic_evidence_leaves_unresolved() {
+    let candidate = sample_candidate("tx-none-det", vec![
+        Evidence::new(EvidenceKind::ImportMatch, "imp002"),
+        Evidence::new(EvidenceKind::AmountPattern, "$4.99 pattern"),
+        Evidence::new(EvidenceKind::ImportMatch, "imp003"),
+    ]);
+    assert_eq!(candidate.eligibility(), CandidateStatus::Unresolved,
+        "Only non-deterministic evidence must leave the candidate unresolved");
+}

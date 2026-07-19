@@ -8,7 +8,6 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./classifier": "./src/classifier.ts",
     "./orchestrator": "./src/orchestrator.ts",
     "./policy": "./src/policy.ts",
     "./redactor": "./src/redactor.ts",

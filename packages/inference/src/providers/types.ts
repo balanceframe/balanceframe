@@ -18,6 +18,9 @@ export interface ProviderAdapter {
    * outage, or malformed response from the underlying model endpoint.
    * The orchestrator catches all errors and converts them to error-bearing
    * Suggestion entries — no provider error propagates to the caller.
+   *
+   * Adapters SHOULD check `request.signal` for provider-initiated cancellation
+   * and abort inflight work when the signal is aborted.
    */
   classify(request: ClassifyRequest): Promise<ClassificationResult>;
 }
