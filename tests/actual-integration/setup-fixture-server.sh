@@ -100,31 +100,63 @@ check_deps() {
   fi
 }
 
-# ---- Step 2: Stop any running Actual instances -----------------------------
+# ---- Step 2: Stop a fixture server previously started by this script --------
 stop_actual_server() {
-  info "Checking for running Actual server instances..."
+  info "Checking for a fixture server previously started by this script..."
 
-  # Try to stop any process on the target port
-  local pid
-  pid=$(lsof -ti "tcp:${ACTUAL_SERVER_PORT}" 2>/dev/null || true)
-  if [ -n "$pid" ]; then
-    info "Stopping existing Actual server (PID $pid) on port $ACTUAL_SERVER_PORT..."
-    run_or_dry kill "$pid" 2>/dev/null || true
-    # Wait for it to be fully down
-    for i in $(seq 1 10); do
-      if ! lsof -ti "tcp:${ACTUAL_SERVER_PORT}" &>/dev/null; then
-        ok "Existing server stopped"
-        break
-      fi
-      sleep 0.5
-    done
-    if lsof -ti "tcp:${ACTUAL_SERVER_PORT}" &>/dev/null; then
-      error "Could not stop existing server on port $ACTUAL_SERVER_PORT"
-      run_or_dry kill -9 "$pid" 2>/dev/null || true
-    fi
-  else
-    info "No running server found on port $ACTUAL_SERVER_PORT"
+  local pid=""
+  if [ -f "$SERVER_PID_FILE" ]; then
+    pid="$(cat "$SERVER_PID_FILE")"
   fi
+
+  if [ -z "$pid" ]; then
+    local port_pid
+    port_pid=$(lsof -ti "tcp:${ACTUAL_SERVER_PORT}" 2>/dev/null || true)
+    if [ -n "$port_pid" ]; then
+      warn "Port $ACTUAL_SERVER_PORT is occupied by unmanaged PID $port_pid."
+      warn "Refusing to stop an existing server without $SERVER_PID_FILE."
+      if [ "$DRY_RUN" = "1" ]; then
+        return 0
+      fi
+      error "Choose another ACTUAL_SERVER_PORT or stop the existing server explicitly."
+      return 1
+    fi
+    info "No managed fixture server found."
+    return 0
+  fi
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    warn "Removing stale fixture PID file for PID $pid."
+    rm -f "$SERVER_PID_FILE"
+    return 0
+  fi
+
+  local command_line
+  command_line=$(ps -p "$pid" -o args= 2>/dev/null || true)
+  if [[ "$command_line" != *actual-server* ]]; then
+    error "PID file $SERVER_PID_FILE points to non-Actual process (PID $pid)."
+    return 1
+  fi
+
+  info "Stopping managed Actual server (PID $pid) on port $ACTUAL_SERVER_PORT..."
+  if [ "$DRY_RUN" = "1" ]; then
+    info "[DRY_RUN] Would execute: kill $pid"
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$SERVER_PID_FILE"
+      ok "Managed fixture server stopped"
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  warn "Managed server did not stop gracefully; sending SIGKILL."
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$SERVER_PID_FILE"
 }
 
 # ---- Step 3: Create fixture data directory ---------------------------------

@@ -135,7 +135,6 @@ interface ActualInitResult {
   getDataDir: () => string;
   sendMessage: (msg: unknown, args: unknown) => void;
   send: <K extends string>(_name: K, _args?: unknown) => Promise<unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-unknown
   amountToInteger: (amount: number) => number;
   integerToAmount: (integer: number) => number;
 }
