@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+commit_message="$1"
+user_name=$(git config user.name || true)
+user_email=$(git config user.email || true)
+
+if [ -z "$user_name" ] || [ -z "$user_email" ]; then
+  printf '%s\n' "DCO check failed: configure git user.name and user.email before committing." >&2
+  exit 1
+fi
+
+expected="Signed-off-by: $user_name <$user_email>"
+trailers=$(git interpret-trailers --parse "$commit_message")
+signoff_count=$(printf '%s\n' "$trailers" | awk 'tolower($0) ~ /^signed-off-by:/ { count++ } END { print count + 0 }')
+
+if [ "$signoff_count" -ne 1 ]; then
+  printf '%s\n' "DCO check failed: commit messages must contain exactly one Signed-off-by trailer." >&2
+  printf '%s\n' "Use: git commit --signoff" >&2
+  exit 1
+fi
+
+actual=$(printf '%s\n' "$trailers" | awk 'tolower($0) ~ /^signed-off-by:/ { print; exit }')
+if [ "$actual" != "$expected" ]; then
+  printf '%s\n' "DCO check failed: Signed-off-by must match the configured git identity." >&2
+  printf '%s\n' "Expected: $expected" >&2
+  exit 1
+fi

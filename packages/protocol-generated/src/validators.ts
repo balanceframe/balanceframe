@@ -80,6 +80,62 @@ export const tagSchema = z.object({
   name: z.string(),
 });
 
+// ---------------------------------------------------------------------------
+// Suggestion / Provenance — inference output from Rust (camelCase)
+// ---------------------------------------------------------------------------
+
+export const provenanceSchema = z.object({
+  payloadHash: z.string(),
+  provider: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  promptVersion: z.string().nullable().optional(),
+  inferencePolicyVersion: z.string().nullable().optional(),
+  createdAt: z.string(),
+  actorId: z.string().nullable().optional(),
+}).strict();
+
+export const historyRecordSchema = z.object({
+  transactionId: z.string(),
+  payeeName: z.string(),
+  categoryId: z.string(),
+  categoryName: z.string(),
+  amount: moneySchema,
+  date: z.string(),
+}).strict();
+
+export const suggestionSchema = z.object({
+  transactionId: z.string(),
+  proposedCategoryId: z.string(),
+  categoryName: z.string(),
+  confidence: z.number(),
+  reasonCodes: z.array(z.string()),
+  evidence: z.array(z.string()),
+  spaceId: z.string().nullable().optional(),
+  connectionId: z.string().nullable().optional(),
+  budgetId: z.string().nullable().optional(),
+  transactionVersion: z.string().nullable().optional(),
+  rawMerchant: z.string().nullable().optional(),
+  normalizedMerchant: z.string().nullable().optional(),
+  researchSummary: z.string().nullable().optional(),
+  alternativeCategoryIds: z.array(z.string()).optional(),
+  rationale: z.string().nullable().optional(),
+  provider: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  promptVersion: z.string().nullable().optional(),
+  inferencePolicyVersion: z.string().nullable().optional(),
+  createdAt: z.string().nullable().optional(),
+  actorId: z.string().nullable().optional(),
+  payloadHash: z.string().nullable().optional(),
+  provenance: provenanceSchema.nullable().optional(),
+  history: z.array(historyRecordSchema).optional(),
+  id: z.string().optional(),
+  alternatives: z.array(z.object({
+    categoryId: z.string(),
+    reason: z.string(),
+  }).strict()).optional(),
+  errors: z.array(z.string()).optional(),
+  deterministicEvidence: z.record(z.unknown()).optional(),
+}).strict();
 export const canonicalTransactionSchema: z.ZodTypeAny = z.lazy(() =>
   z.object({
     id: z.string(),
@@ -126,3 +182,7 @@ export type Schedule = z.infer<typeof scheduleSchema>;
 export type BudgetCategory = z.infer<typeof budgetCategorySchema>;
 export type BudgetMonth = z.infer<typeof budgetMonthSchema>;
 export type Tag = z.infer<typeof tagSchema>;
+
+export type Provenance = z.infer<typeof provenanceSchema>;
+export type HistoryRecord = z.infer<typeof historyRecordSchema>;
+export type Suggestion = z.infer<typeof suggestionSchema>;

@@ -449,6 +449,195 @@
           "type": "string"
         }
       }
+      },
+    "Provenance": {
+      "type": "object",
+      "required": [
+        "payloadHash",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "payloadHash": {
+          "type": "string"
+        },
+        "provider": {
+          "type": ["string", "null"]
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "promptVersion": {
+          "type": ["string", "null"]
+        },
+        "inferencePolicyVersion": {
+          "type": ["string", "null"]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "actorId": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "HistoryRecord": {
+      "type": "object",
+      "required": [
+        "transactionId",
+        "payeeName",
+        "categoryId",
+        "categoryName",
+        "amount",
+        "date"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "transactionId": {
+          "type": "string"
+        },
+        "payeeName": {
+          "type": "string"
+        },
+        "categoryId": {
+          "type": "string"
+        },
+        "categoryName": {
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "date": {
+          "type": "string"
+        }
+      }
+    },
+    "Suggestion": {
+      "type": "object",
+      "required": [
+        "transactionId",
+        "proposedCategoryId",
+        "categoryName",
+        "confidence",
+        "reasonCodes",
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "transactionId": {
+          "type": "string"
+        },
+        "proposedCategoryId": {
+          "type": "string"
+        },
+        "categoryName": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "spaceId": {
+          "type": ["string", "null"]
+        },
+        "connectionId": {
+          "type": ["string", "null"]
+        },
+        "budgetId": {
+          "type": ["string", "null"]
+        },
+        "transactionVersion": {
+          "type": ["string", "null"]
+        },
+        "rawMerchant": {
+          "type": ["string", "null"]
+        },
+        "normalizedMerchant": {
+          "type": ["string", "null"]
+        },
+        "researchSummary": {
+          "type": ["string", "null"]
+        },
+        "alternativeCategoryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rationale": {
+          "type": ["string", "null"]
+        },
+        "provider": {
+          "type": ["string", "null"]
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "promptVersion": {
+          "type": ["string", "null"]
+        },
+        "inferencePolicyVersion": {
+          "type": ["string", "null"]
+        },
+        "createdAt": {
+          "type": ["string", "null"]
+        },
+        "actorId": {
+          "type": ["string", "null"]
+        },
+        "payloadHash": {
+          "type": ["string", "null"]
+        },
+        "provenance": {
+          "anyOf": [
+            {"$ref": "#/$defs/Provenance"},
+            {"type": "null"}
+          ]
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HistoryRecord"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["categoryId", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "categoryId": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deterministicEvidence": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      }
     }
   }
 }

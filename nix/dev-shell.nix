@@ -11,7 +11,7 @@ pkgs.mkShell {
 
   shellHook = ''
     printf '%s\n' \
-      "BalanceFrame development shell" \
+      "Welcome to the Balanceframe development shell!" \
       "Canonical commands:" \
       "  nix develop" \
       "  nix flake show" \

@@ -3,5 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ML inference abstraction"
+  "description": "Provider-neutral classifier for unresolved candidates — Phase 2",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./orchestrator": "./src/orchestrator.ts",
+    "./policy": "./src/policy.ts",
+    "./redactor": "./src/redactor.ts",
+    "./providers/types": "./src/providers/types.ts",
+    "./providers/local": "./src/providers/local.ts",
+    "./providers/openai": "./src/providers/openai.ts",
+    "./types": "./src/types.ts",
+    "./validators": "./src/validators.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@balanceframe/protocol-generated": "workspace:*",
+    "zod": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "vitest": "^1.0.0"
+  }
 }

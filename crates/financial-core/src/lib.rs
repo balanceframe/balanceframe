@@ -18,8 +18,8 @@ pub use analysis::{
 };
 pub use blockers::{Blocker, BlockerCollector, ReasonCode};
 pub use categorization::{
-    classify_exact_match, classify_historical, find_candidates, CategorizationCandidate,
-    Evidence, EvidenceKind, HistoryRecord,
+    classify_exact_match, classify_historical, find_candidates, CandidateStatus,
+    CategorizationCandidate, Evidence, EvidenceKind, HistoryRecord, InferencePolicy, Provenance,
 };
 pub use coverage::{build_coverage_report, AccountCoverage, CoverageReport, DateRange, InclusionScope};
 pub use data_quality::{

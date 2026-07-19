@@ -4,18 +4,24 @@ use balanceframe_core_protocol::{
     find_categorization_candidates,
     plan_set_category,
     simulate_rule,
+    validate_provider_suggestion,
     validate_suggestion,
     verify_mutation,
     AnalysisOptions,
     AnalysisRequest,
     DeterministicAnalysisRequest,
+    InferencePolicy,
     MutationPlan,
     Postcondition,
     PostconditionType,
     ProtocolSnapshot,
+    Provenance,
     Suggestion,
 };
-use balanceframe_financial_core::{Account, Category, Money, Rule, Transaction};
+use balanceframe_financial_core::{
+    Account, CandidateStatus, CategorizationCandidate, Category, Evidence, EvidenceKind, Money,
+    Rule, Transaction,
+};
 fn empty_snapshot() -> ProtocolSnapshot {
     ProtocolSnapshot {
         schema_version: "1.0".into(),
@@ -218,6 +224,24 @@ fn test_validate_suggestion_invalid_category() {
         confidence: 0.9,
         reason_codes: vec![],
         evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: None,
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: None,
+        actor_id: None,
+        payload_hash: None,
+        provenance: None,
+        history: vec![],
     };
 
     let result = validate_suggestion(&suggestion, &snapshot);
@@ -257,6 +281,24 @@ fn test_validate_suggestion_valid() {
         confidence: 0.85,
         reason_codes: vec!["historical_match".into()],
         evidence: vec!["Previously categorized as Food".into()],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: None,
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: None,
+        actor_id: None,
+        payload_hash: None,
+        provenance: None,
+        history: vec![],
     };
 
     let result = validate_suggestion(&suggestion, &snapshot);
@@ -695,4 +737,1370 @@ fn test_deterministic_analysis_accepts_legacy_schema_version_1_0() {
     assert_eq!(response.schema_version, "1",
         "response for legacy '1.0' input must emit canonical schemaVersion '1'");
     assert_eq!(response.status, "ok");
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion validation — basic
+// ---------------------------------------------------------------------------
+
+fn sample_candidate(tx_id: &str, reasons: Vec<Evidence>) -> CategorizationCandidate {
+    CategorizationCandidate {
+        transaction_id: tx_id.into(),
+        amount: Money::new(100, "USD"),
+        payee_name: Some("Test Store".into()),
+        date: "2026-07-18".into(),
+        reasons,
+    }
+}
+
+#[test]
+fn test_validate_provider_suggestion_valid() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec!["provider_match".into()],
+        evidence: vec!["Classifier output".into()],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: Some("Test Store".into()),
+        normalized_merchant: Some("test store".into()),
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: Some("Match by provider".into()),
+        provider: Some("test-provider".into()),
+        model: Some("test-model-v1".into()),
+        prompt_version: Some("p1".into()),
+        inference_policy_version: Some("1.0".into()),
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: Some("system".into()),
+        payload_hash: Some("hash123".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash123".into(),
+            provider: Some("test-provider".into()),
+            model: Some("test-model-v1".into()),
+            prompt_version: Some("p1".into()),
+            inference_policy_version: Some("1.0".into()),
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: Some("system".into()),
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(result.valid, "Expected valid suggestion: {:?}", result.reason_codes);
+    assert!(result.reason_codes.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: resolved candidate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_resolved_candidate_rejected() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    // ExactPayee candidate -> Resolved
+    let candidate = sample_candidate(
+        "tx1",
+        vec![Evidence::new(EvidenceKind::ExactPayee, "Payee 'Store' (id=p1)")],
+    );
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.9,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: None,
+        provenance: Some(Provenance {
+            payload_hash: "h".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid, "Resolved candidate must be rejected");
+    assert!(result.reason_codes.contains(&"candidate_already_resolved".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: transaction not found
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_tx_not_found() {
+    let snapshot = empty_snapshot();
+    let candidate = sample_candidate("nonexistent", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "nonexistent".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.9,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: None,
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: None,
+        actor_id: None,
+        payload_hash: None,
+        provenance: None,
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"transaction_not_found".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: deleted category
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_deleted_category_rejected() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", true)], // deleted
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.9,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: None,
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: None,
+        actor_id: None,
+        payload_hash: None,
+        provenance: None,
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"category_not_found".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: disabled policy blocker
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_disabled_policy_blocked() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("openai".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: None,
+        provenance: Some(Provenance {
+            payload_hash: "h".into(),
+            provider: Some("openai".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    // Policy = Disabled -> all provider inference blocked
+    let result = validate_provider_suggestion(
+        &suggestion,
+        &snapshot,
+        &candidate,
+        Some(InferencePolicy::Disabled),
+    );
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"provider_inference_disabled".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: local-only policy blocks external provider
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_local_only_blocks_external() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("openai".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: None,
+        provenance: Some(Provenance {
+            payload_hash: "h".into(),
+            provider: Some("openai".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    // LocalOnly policy with external provider -> blocked
+    let result = validate_provider_suggestion(
+        &suggestion,
+        &snapshot,
+        &candidate,
+        Some(InferencePolicy::LocalOnly),
+    );
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"external_provider_not_allowed".into()));
+}
+
+#[test]
+fn test_validate_provider_suggestion_local_only_allows_local() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("local".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("h".into()),
+        provenance: Some(Provenance {
+            payload_hash: "h".into(),
+            provider: Some("local".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(
+        &suggestion,
+        &snapshot,
+        &candidate,
+        Some(InferencePolicy::LocalOnly),
+    );
+    assert!(result.valid, "Local provider under LocalOnly policy must be accepted");
+}
+
+// ---------------------------------------------------------------------------
+// Immutable metadata validation: missing provenance / created_at
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_missing_provenance() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: None,
+        provenance: None, // missing
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"missing_provenance".into()));
+}
+
+#[test]
+fn test_validate_provider_suggestion_missing_created_at() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: None, // missing
+        actor_id: None,
+        payload_hash: None,
+        provenance: Some(Provenance {
+            payload_hash: "h".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"missing_created_at".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: stale transaction version
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_invalid_transaction_version() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: Some("".into()), // empty -> invalid
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: None,
+        provenance: Some(Provenance {
+            payload_hash: "h".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"invalid_transaction_version".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic evidence / processing order handoff
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_deterministic_classification_yields_resolved_candidate() {
+    // ExactPayee evidence from deterministic classification produces a Resolved candidate
+    let candidate = sample_candidate(
+        "tx1",
+        vec![Evidence::new(EvidenceKind::ExactPayee, "Payee 'Acme' (id=p1)")],
+    );
+    assert_eq!(candidate.eligibility(), CandidateStatus::Resolved);
+    // Historical evidence also resolves
+    let candidate2 = sample_candidate(
+        "tx2",
+        vec![Evidence::new(EvidenceKind::Historical, "Previously categorized as Food")],
+    );
+    assert_eq!(candidate2.eligibility(), CandidateStatus::Resolved);
+}
+
+#[test]
+fn test_non_deterministic_classification_yields_unresolved_candidate() {
+    // AmountPattern and ImportMatch leave candidate unresolved
+    let candidate = sample_candidate(
+        "tx1",
+        vec![Evidence::new(EvidenceKind::AmountPattern, "Recurring $9.99")],
+    );
+    assert_eq!(candidate.eligibility(), CandidateStatus::Unresolved);
+
+    let candidate2 = sample_candidate(
+        "tx2",
+        vec![Evidence::new(EvidenceKind::ImportMatch, "Matched by imp001")],
+    );
+    assert_eq!(candidate2.eligibility(), CandidateStatus::Unresolved);
+}
+
+// ---------------------------------------------------------------------------
+// Extended Suggestion backward compatibility with old JSON
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_extended_suggestion_deserializes_from_old_format() {
+    // Old Suggestion JSON (no Phase 2 fields) must still deserialize
+    let json = r#"{
+        "transactionId": "tx1",
+        "proposedCategoryId": "cat1",
+        "categoryName": "Food",
+        "confidence": 0.85,
+        "reasonCodes": ["historical_match"],
+        "evidence": ["Previously categorized as Food"]
+    }"#;
+    let suggestion: Suggestion = serde_json::from_str(json)
+        .expect("Old Suggestion JSON without Phase 2 fields must deserialize");
+    assert_eq!(suggestion.transaction_id, "tx1");
+    assert_eq!(suggestion.proposed_category_id, "cat1");
+    assert_eq!(suggestion.confidence, 0.85);
+    // New fields should default
+    assert_eq!(suggestion.space_id, None);
+    assert!(suggestion.alternative_category_ids.is_empty());
+    assert!(suggestion.history.is_empty());
+    assert_eq!(suggestion.provenance, None);
+}
+
+#[test]
+fn test_extended_suggestion_round_trip_full() {
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec!["provider_match".into()],
+        evidence: vec!["Classifier".into()],
+        space_id: Some("space-1".into()),
+        connection_id: Some("conn-1".into()),
+        budget_id: Some("budget-1".into()),
+        transaction_version: Some("v3".into()),
+        raw_merchant: Some("Test Store".into()),
+        normalized_merchant: Some("test store".into()),
+        research_summary: None,
+        alternative_category_ids: vec!["cat2".into(), "cat3".into()],
+        rationale: Some("Best match".into()),
+        provider: Some("test-provider".into()),
+        model: Some("v1".into()),
+        prompt_version: Some("p1".into()),
+        inference_policy_version: Some("2.0".into()),
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: Some("user-1".into()),
+        payload_hash: Some("abc".into()),
+        provenance: Some(Provenance {
+            payload_hash: "abc".into(),
+            provider: Some("test-provider".into()),
+            model: Some("v1".into()),
+            prompt_version: Some("p1".into()),
+            inference_policy_version: Some("2.0".into()),
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: Some("user-1".into()),
+        }),
+        history: vec![],
+    };
+    let json = serde_json::to_string(&suggestion).unwrap();
+    // Verify camelCase field naming
+    assert!(json.contains("transactionId"), "must use camelCase transactionId");
+    assert!(json.contains("proposedCategoryId"));
+    assert!(json.contains("spaceId"), "must use camelCase spaceId");
+    assert!(json.contains("connectionId"));
+    assert!(json.contains("budgetId"));
+    assert!(json.contains("transactionVersion"));
+    assert!(json.contains("rawMerchant"));
+    assert!(json.contains("normalizedMerchant"));
+    assert!(json.contains("researchSummary"));
+    assert!(json.contains("alternativeCategoryIds"));
+    assert!(json.contains("promptVersion"));
+    assert!(json.contains("inferencePolicyVersion"));
+    assert!(json.contains("createdAt"));
+    assert!(json.contains("actorId"));
+    assert!(json.contains("payloadHash"));
+    assert!(json.contains("provenance"));
+    // Verify round-trip
+    let back: Suggestion = serde_json::from_str(&json).unwrap();
+    assert_eq!(suggestion, back);
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: transaction ID mismatch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_tx_id_mismatch() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx2", vec![]); // different from suggestion
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash1".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash1".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"transaction_id_mismatch".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: candidate transaction not in snapshot
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_candidate_tx_not_found() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("nonexistent", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "nonexistent".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash2".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash2".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"candidate_transaction_not_found".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: stale transaction version (mismatch)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_stale_transaction_version() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        // Deliberately wrong version string — will not match computed hash
+        transaction_version: Some("txv0000000000000000".into()),
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash3".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash3".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"stale_transaction_version".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: provenance provider mismatch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_provenance_provider_mismatch() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("openai".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash4".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash4".into(),
+            provider: Some("local".into()), // mismatches top-level "openai"
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"provenance_provider_mismatch".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: provenance timestamp mismatch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_provenance_timestamp_mismatch() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash5".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash5".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-17T12:00:00Z".into(), // mismatches top-level
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"provenance_timestamp_mismatch".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: missing payload hash
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_missing_payload_hash() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: None, // missing
+        provenance: Some(Provenance {
+            payload_hash: "hash6".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"missing_payload_hash".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: provenance empty payload hash
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_provenance_empty_hash() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash7".into()),
+        provenance: Some(Provenance {
+            payload_hash: "   ".into(), // whitespace-only — effectively empty
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"provenance_payload_hash_empty".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: evidence ranking — deterministic evidence anywhere
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_evidence_ranking_resolves_anywhere() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    // ExactPayee is second but must still resolve the candidate
+    let candidate = sample_candidate("tx1", vec![
+        Evidence::new(EvidenceKind::ImportMatch, "imp001"),
+        Evidence::new(EvidenceKind::ExactPayee, "Payee 'Store' (id=p1)"),
+        Evidence::new(EvidenceKind::AmountPattern, "$9.99 pattern"),
+    ]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: Some("test".into()),
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash8".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash8".into(),
+            provider: Some("test".into()),
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
+    assert!(!result.valid);
+    // Must be rejected as resolved (regardless of evidence position)
+    assert!(result.reason_codes.contains(&"candidate_already_resolved".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: policy fail‑closed — Disabled with absent provider
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_disabled_policy_no_provider() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: None, // absent
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash9".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash9".into(),
+            provider: None,
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    // Disabled policy must reject even when no provider is specified
+    let result = validate_provider_suggestion(
+        &suggestion,
+        &snapshot,
+        &candidate,
+        Some(InferencePolicy::Disabled),
+    );
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"provider_inference_disabled".into()),
+        "Disabled policy must reject suggestions even without a provider field");
+}
+
+// ---------------------------------------------------------------------------
+// Provider suggestion: policy fail‑closed — LocalOnly with no provider
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_provider_suggestion_local_only_no_provider() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 1000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+    let candidate = sample_candidate("tx1", vec![]);
+    let suggestion = Suggestion {
+        transaction_id: "tx1".into(),
+        proposed_category_id: "cat1".into(),
+        category_name: "Food".into(),
+        confidence: 0.85,
+        reason_codes: vec![],
+        evidence: vec![],
+        space_id: None,
+        connection_id: None,
+        budget_id: None,
+        transaction_version: None,
+        raw_merchant: None,
+        normalized_merchant: None,
+        research_summary: None,
+        alternative_category_ids: vec![],
+        rationale: None,
+        provider: None, // absent -> not "local", must be rejected
+        model: None,
+        prompt_version: None,
+        inference_policy_version: None,
+        created_at: Some("2026-07-18T12:00:00Z".into()),
+        actor_id: None,
+        payload_hash: Some("hash10".into()),
+        provenance: Some(Provenance {
+            payload_hash: "hash10".into(),
+            provider: None,
+            model: None,
+            prompt_version: None,
+            inference_policy_version: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            actor_id: None,
+        }),
+        history: vec![],
+    };
+    // LocalOnly with absent provider must reject
+    let result = validate_provider_suggestion(
+        &suggestion,
+        &snapshot,
+        &candidate,
+        Some(InferencePolicy::LocalOnly),
+    );
+    assert!(!result.valid);
+    assert!(result.reason_codes.contains(&"external_provider_not_allowed".into()),
+        "LocalOnly must reject suggestions without an explicit 'local' provider");
 }
