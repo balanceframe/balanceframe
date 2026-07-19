@@ -15,6 +15,7 @@ pkgs.mkShell {
       "Canonical commands:" \
       "  nix develop" \
       "  nix flake show" \
-      "  nix flake check"
+      "  nix flake check" \
+      "  just --list"
   '';
 }

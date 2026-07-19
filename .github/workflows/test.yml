@@ -1,0 +1,39 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Nix binary cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Validate the flake
+        run: nix flake check --print-build-logs
+
+      - name: Build, lint, and test the workspace
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            pnpm install --frozen-lockfile
+            pnpm build
+            pnpm typecheck
+            pnpm lint
+            pnpm test
+            cargo test --workspace
+            cargo clippy --workspace --all-targets -- -D warnings
+          '

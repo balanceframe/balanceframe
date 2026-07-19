@@ -39,6 +39,7 @@ let
     python3
     expect
     actual-server
+    just
   ];
 in
 {
@@ -71,6 +72,7 @@ in
     "git"
     "jq"
     "expect"
+    "just"
     "actual-server"
   ];
 }
