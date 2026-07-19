@@ -25,7 +25,7 @@ let
     pkgs.stdenv.cc
     gnumake
     pkg-config
-    pnpm
+    pnpm_10
   ];
   buildInputs = with pkgs; [
     openssl
