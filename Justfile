@@ -4,6 +4,10 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
+# Configure the repository's shared DCO commit hooks.
+setup-hooks:
+    git config core.hooksPath .githooks
+
 # Install the locked workspace dependencies.
 install:
     pnpm install --frozen-lockfile
