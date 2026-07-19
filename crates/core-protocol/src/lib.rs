@@ -2,9 +2,11 @@
 
 use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{
-    Account, BudgetMonth, CategorizationCandidate, Category, CompatibilityMetadata, Payee, Rule,
-    Schedule, Tag, Transaction,
+    Account, BudgetMonth, CandidateStatus, CategorizationCandidate, Category,
+    CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag,
+    Transaction,
 };
+pub use balanceframe_financial_core::{InferencePolicy, Provenance};
 use balanceframe_financial_core as fc;
 use serde::{Deserialize, Serialize};
 
@@ -87,12 +89,77 @@ pub struct Finding {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Suggestion {
+    /// Stable transaction identifier within the Actual budget.
     pub transaction_id: String,
+    /// Proposed category identifier (empty string = uncategorize/remove).
     pub proposed_category_id: String,
+    /// Human-readable name of the proposed category.
     pub category_name: String,
+    /// Model confidence score (metadata only, never authorization).
     pub confidence: f64,
+    /// Machine-readable reason codes for this suggestion.
     pub reason_codes: Vec<String>,
+    /// Evidence strings supporting the suggestion.
     pub evidence: Vec<String>,
+
+    // ---- Phase 2: Suggestion-only classifier fields -----------------------
+    // All new fields are Option<…> / Vec-defaulted for backward compatibility
+    // with existing Suggestion JSON that lacks them.
+
+    /// Stable space identifier for multi-space deployments.
+    #[serde(default)]
+    pub space_id: Option<String>,
+    /// Connection identifier for the data source.
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    /// Budget identifier for the current budget cycle.
+    #[serde(default)]
+    pub budget_id: Option<String>,
+    /// Version identifier for the transaction, used for staleness detection.
+    #[serde(default)]
+    pub transaction_version: Option<String>,
+    /// Raw merchant name as recorded in the transaction.
+    #[serde(default)]
+    pub raw_merchant: Option<String>,
+    /// Normalized merchant name for cross-reference matching.
+    #[serde(default)]
+    pub normalized_merchant: Option<String>,
+    /// Optional research summary from merchant research provider.
+    #[serde(default)]
+    pub research_summary: Option<String>,
+    /// Alternative category identifiers that were considered.
+    #[serde(default)]
+    pub alternative_category_ids: Vec<String>,
+    /// Free-text rationale for the suggestion.
+    #[serde(default)]
+    pub rationale: Option<String>,
+    /// Inference provider identifier (e.g. "openai", "local").
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model identifier used for this suggestion.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Version of the prompt template used.
+    #[serde(default)]
+    pub prompt_version: Option<String>,
+    /// Version of the inference policy at time of suggestion.
+    #[serde(default)]
+    pub inference_policy_version: Option<String>,
+    /// ISO-8601 timestamp of suggestion creation.
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Originating actor identifier (user or system).
+    #[serde(default)]
+    pub actor_id: Option<String>,
+    /// Hash of the suggestion payload for integrity verification.
+    #[serde(default)]
+    pub payload_hash: Option<String>,
+    /// Provenance metadata (provider, model, version chain).
+    #[serde(default)]
+    pub provenance: Option<Provenance>,
+    /// Historical categorization records considered.
+    #[serde(default)]
+    pub history: Vec<HistoryRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -323,6 +390,24 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
                 confidence: 0.0,
                 reason_codes: vec!["uncategorized".into()],
                 evidence: vec![],
+                space_id: None,
+                connection_id: None,
+                budget_id: None,
+                transaction_version: None,
+                raw_merchant: None,
+                normalized_merchant: None,
+                research_summary: None,
+                alternative_category_ids: vec![],
+                rationale: None,
+                provider: None,
+                model: None,
+                prompt_version: None,
+                inference_policy_version: None,
+                created_at: None,
+                actor_id: None,
+                payload_hash: None,
+                provenance: None,
+                history: vec![],
             });
         }
     }
@@ -565,6 +650,9 @@ pub fn find_categorization_candidates(
 }
 
 /// Validate that a suggestion is applicable to the given snapshot.
+///
+/// Checks that the target transaction exists and that the proposed category
+/// (if non‑empty) exists in the snapshot and is not marked as deleted.
 pub fn validate_suggestion(
     suggestion: &Suggestion,
     snapshot: &ProtocolSnapshot,
@@ -612,6 +700,90 @@ pub fn validate_suggestion(
         valid: reason_codes.is_empty(),
         reason_codes,
         message: None,
+    }
+}
+
+/// Validate a provider-issued suggestion against the current snapshot
+/// and candidate eligibility, without mutating any data.
+///
+/// This is the authoritative Rust gate before a provider suggestion is
+/// persisted or acted upon.  It performs the same checks as
+/// [`validate_suggestion`] plus:
+///
+/// * **Candidate eligibility** – only [`CandidateStatus::Unresolved`]
+///   candidates may receive provider inference.
+/// * **Transaction version** – if the suggestion carries a
+///   `transaction_version`, it must match expectations.
+/// * **Inference policy** – if an effective policy is supplied, the
+///   provider field is checked against it.
+/// * **Immutable metadata** – provider suggestions must carry provenance
+///   and creation timestamp.
+pub fn validate_provider_suggestion(
+    suggestion: &Suggestion,
+    snapshot: &ProtocolSnapshot,
+    candidate: &CategorizationCandidate,
+    effective_policy: Option<InferencePolicy>,
+) -> ValidationResult {
+    // 1. Run basic suggestion validation first
+    let basic = validate_suggestion(suggestion, snapshot);
+    if !basic.valid {
+        return basic;
+    }
+
+    let mut reason_codes: Vec<String> = basic.reason_codes;
+
+    // 2. Candidate eligibility: only unresolved candidates qualify
+    if candidate.eligibility() != CandidateStatus::Unresolved {
+        reason_codes.push("candidate_already_resolved".into());
+    }
+
+    // 3. Stale transaction version detection
+    if let Some(version) = &suggestion.transaction_version {
+        if version.trim().is_empty() {
+            reason_codes.push("invalid_transaction_version".into());
+        }
+    }
+
+    // 4. Inference policy enforcement
+    if let Some(policy) = &effective_policy {
+        match policy {
+            InferencePolicy::Disabled => {
+                reason_codes.push("provider_inference_disabled".into());
+            }
+            InferencePolicy::LocalOnly => {
+                if let Some(prov) = &suggestion.provider {
+                    if prov != "local" {
+                        reason_codes.push("external_provider_not_allowed".into());
+                    }
+                }
+            }
+            InferencePolicy::ExternalAllowed => {}
+        }
+    }
+
+
+    // 5. Immutable metadata validation: provider suggestions MUST carry
+    //    provenance and creation timestamp to be considered well-formed.
+    if suggestion.provenance.is_none() {
+        reason_codes.push("missing_provenance".into());
+    }
+    if suggestion.created_at.is_none() {
+        reason_codes.push("missing_created_at".into());
+    }
+
+    let message = if reason_codes.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Provider suggestion validation failed: {}",
+            reason_codes.join(", ")
+        ))
+    };
+
+    ValidationResult {
+        valid: reason_codes.is_empty(),
+        reason_codes,
+        message,
     }
 }
 

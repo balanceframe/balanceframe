@@ -11,9 +11,13 @@
     "./validators": "./src/validators.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "zod": "^3.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0"
   }
 }

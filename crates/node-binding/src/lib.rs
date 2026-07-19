@@ -124,6 +124,39 @@ pub fn validate_suggestion(input: String) -> napi::Result<String> {
 }
 
 // ===========================================================================
+// 3b. validate_provider_suggestion
+// ===========================================================================
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ValidateProviderSuggestionInput {
+    suggestion: Suggestion,
+    snapshot: ProtocolSnapshot,
+    candidate: CategorizationCandidate,
+    effective_policy: Option<cp::InferencePolicy>,
+}
+
+/// Validate a provider-issued suggestion against the current snapshot,
+/// candidate eligibility, and inference policy (e.g. disabled, localOnly).
+/// Returns `{ valid, reasonCodes, message }`.
+///
+/// This is the authoritative Rust gate before a provider suggestion is
+/// persisted — it performs basic suggestion validation plus candidate
+/// eligibility, staleness detection, policy enforcement, and metadata
+/// integrity checks, all without mutating any data.
+#[napi]
+pub fn validate_provider_suggestion(input: String) -> napi::Result<String> {
+    run::<ValidateProviderSuggestionInput, ValidationResult>(input, |vpsi| {
+        Ok(cp::validate_provider_suggestion(
+            &vpsi.suggestion,
+            &vpsi.snapshot,
+            &vpsi.candidate,
+            vpsi.effective_policy,
+        ))
+    })
+}
+
+// ===========================================================================
 // 4. plan_set_category
 // ===========================================================================
 

@@ -161,3 +161,84 @@ pub fn find_candidates(
 
     candidates
 }
+
+// ---------------------------------------------------------------------------
+// CandidateStatus
+// ---------------------------------------------------------------------------
+
+/// Whether a categorization candidate has been fully resolved by deterministic
+/// layers (Rust classifiers) or remains unresolved and eligible for provider
+/// inference (TypeScript).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CandidateStatus {
+    /// Candidate has sufficient deterministic evidence — no inference needed.
+    Resolved,
+    /// Candidate lacks deterministic resolution — eligible for TS provider inference.
+    Unresolved,
+}
+
+impl CategorizationCandidate {
+    /// Returns whether this candidate's strongest evidence resolves it
+    /// deterministically.  Only [`Unresolved`](CandidateStatus::Unresolved)
+    /// candidates qualify for TypeScript provider inference.
+    pub fn eligibility(&self) -> CandidateStatus {
+        let strongest = self.reasons.first();
+        match strongest {
+            None => CandidateStatus::Unresolved,
+            Some(e) => match e.kind {
+                EvidenceKind::ExactPayee | EvidenceKind::Historical => {
+                    CandidateStatus::Resolved
+                }
+                EvidenceKind::AmountPattern | EvidenceKind::ImportMatch => {
+                    CandidateStatus::Unresolved
+                }
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InferencePolicy
+// ---------------------------------------------------------------------------
+
+/// Privacy and locality policy for inference providers.
+///
+/// Controls which providers may be used for each capability
+/// (classification, merchant research, conversation, telemetry).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum InferencePolicy {
+    /// Capability is disabled entirely; no provider calls are allowed.
+    #[serde(rename = "disabled")]
+    Disabled,
+    /// Only local (on-device / same-process) providers are allowed.
+    #[serde(rename = "localOnly")]
+    LocalOnly,
+    /// External / remote providers are also allowed.
+    #[serde(rename = "externalAllowed")]
+    ExternalAllowed,
+}
+
+// ---------------------------------------------------------------------------
+// Provenance
+// ---------------------------------------------------------------------------
+
+/// Provenance metadata attached to a suggestion, recording origin,
+/// integrity, and version chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Provenance {
+    /// Hash of the suggestion payload for integrity verification.
+    pub payload_hash: String,
+    /// Inference provider identifier (e.g. "openai", "local").
+    pub provider: Option<String>,
+    /// Model identifier used for inference.
+    pub model: Option<String>,
+    /// Version of the prompt template used.
+    pub prompt_version: Option<String>,
+    /// Version of the inference policy document at time of creation.
+    pub inference_policy_version: Option<String>,
+    /// ISO-8601 timestamp of suggestion creation.
+    pub created_at: String,
+    /// Identifier of the originating actor (user or system).
+    pub actor_id: Option<String>,
+}
