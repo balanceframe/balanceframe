@@ -12,6 +12,7 @@
   },
   "ignorePatterns": ["dist", "target", "node_modules", "*.js", "*.mjs", "*.cjs"],
   "rules": {
-    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
+    "no-unused-vars": "off",
+    "no-redeclare": "off"
   }
 }

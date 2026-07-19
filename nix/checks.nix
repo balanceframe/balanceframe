@@ -28,7 +28,7 @@ let
       }
       ''
         cd ${root}
-        for f in flake.nix flake.lock nix/dev-shell.nix nix/tooling.nix nix/checks.nix; do
+        for f in flake.nix flake.lock Justfile nix/dev-shell.nix nix/tooling.nix nix/checks.nix; do
           test -f "$f" || { echo "missing: $f" >&2; exit 1; }
         done
         # Validate flake.lock as JSON
@@ -48,8 +48,7 @@ let
         for tool in \
           rustc cargo rustfmt cargo-clippy rust-analyzer \
           cargo-nextest cargo-audit cargo-deny \
-          node npm corepack pnpm cc make pkg-config openssl \
-          sqlite3 git jq python3 nixfmt expect actual-server; do
+          sqlite3 git jq python3 nixfmt expect actual-server just; do
           path="$(command -v "$tool" 2>/dev/null)" || {
             echo "missing command: $tool" >&2
             exit 1

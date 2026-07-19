@@ -1,10 +1,21 @@
 use balanceframe_core_protocol::{
-    analyze_snapshot, find_categorization_candidates, plan_set_category, simulate_rule,
-    validate_suggestion, verify_mutation, AnalysisOptions, AnalysisRequest, MutationPlan,
-    Postcondition, PostconditionType, ProtocolSnapshot, Suggestion,
+    analyze_deterministic,
+    analyze_snapshot,
+    find_categorization_candidates,
+    plan_set_category,
+    simulate_rule,
+    validate_suggestion,
+    verify_mutation,
+    AnalysisOptions,
+    AnalysisRequest,
+    DeterministicAnalysisRequest,
+    MutationPlan,
+    Postcondition,
+    PostconditionType,
+    ProtocolSnapshot,
+    Suggestion,
 };
 use balanceframe_financial_core::{Account, Category, Money, Rule, Transaction};
-
 fn empty_snapshot() -> ProtocolSnapshot {
     ProtocolSnapshot {
         schema_version: "1.0".into(),
@@ -18,6 +29,9 @@ fn empty_snapshot() -> ProtocolSnapshot {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     }
 }
 
@@ -80,6 +94,9 @@ fn test_protocol_snapshot_roundtrip() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -140,6 +157,9 @@ fn test_analysis_uncategorized() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let request = AnalysisRequest {
@@ -225,6 +245,9 @@ fn test_validate_suggestion_valid() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let suggestion = Suggestion {
@@ -319,6 +342,9 @@ fn test_verify_mutation_valid() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let plan = MutationPlan {
@@ -352,6 +378,9 @@ fn test_analysis_i64_min_overflow_as_finding() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let request = AnalysisRequest {
@@ -390,6 +419,9 @@ fn test_analysis_rejects_unsupported_schema_version() {
         schedules: vec![],
         budgets: vec![],
         tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
     };
 
     let request = AnalysisRequest {
@@ -451,4 +483,216 @@ fn test_analysis_data_quality_readiness_findings() {
         result.findings.iter().any(|f| f.finding_type == "UNCATEGORIZED_TRANSACTIONS"),
         "expected UNCATEGORIZED_TRANSACTIONS finding from readiness analysis",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate evidence regression tests (via find_duplicates)
+// ---------------------------------------------------------------------------
+
+use balanceframe_financial_core::find_duplicates;
+
+#[test]
+fn test_protocol_duplicate_i64_min_skipped() {
+    let txs = vec![
+        sample_transaction("tx_a", None, i64::MIN),
+        sample_transaction("tx_b", None, i64::MIN),
+    ];
+    let result = find_duplicates(&txs);
+    assert!(result.is_empty(), "i64::MIN must not produce duplicates: {:?}", result);
+}
+
+#[test]
+fn test_protocol_duplicate_plus_one_day_window() {
+    let txs = vec![
+        Transaction { date: "2026-03-01".into(), ..sample_transaction("tx_1", None, -1000) },
+        Transaction { date: "2026-03-02".into(), ..sample_transaction("tx_2", None, -1000) },
+    ];
+    let result = find_duplicates(&txs);
+    assert_eq!(result.len(), 1, "±1 day window should match: {:?}", result);
+    assert_eq!(result[0].match_reason, "amount_date");
+}
+
+ #[test]
+ fn test_protocol_duplicate_outside_window_no_match() {
+     let payee_a = Some("Different Store");
+     let payee_b = Some("Other Shop");
+     let tx_a = Transaction {
+         date: "2026-03-01".into(),
+         payee_name: payee_a.map(|s| s.into()),
+         ..sample_transaction("tx_a", None, -1000)
+     };
+     let tx_b = Transaction {
+         date: "2026-03-03".into(),
+         payee_name: payee_b.map(|s| s.into()),
+         ..sample_transaction("tx_b", None, -1000)
+     };
+     let txs = vec![tx_a, tx_b];
+     let result = find_duplicates(&txs);
+     assert!(result.is_empty(), "2 days apart and different merchants must not match: {:?}", result);
+ }
+
+#[test]
+fn test_protocol_duplicate_chain_preserved() {
+    let txs = vec![
+        Transaction { imported_id: Some("imp001".into()), ..sample_transaction("tx_a", None, -500) },
+        Transaction { imported_id: Some("imp001".into()), ..sample_transaction("tx_b", None, -500) },
+        Transaction { imported_id: None, payee_name: Some("Other".into()), ..sample_transaction("tx_c", None, -500) },
+    ];
+    let result = find_duplicates(&txs);
+    assert_eq!(result.len(), 3, "chain of 3 should produce 3 evidence entries: {:?}", result);
+}
+
+#[test]
+fn test_protocol_duplicate_json_deterministic() {
+    let txs = vec![
+        Transaction { imported_id: Some("imp1".into()), ..sample_transaction("tx_z", None, -300) },
+        Transaction { imported_id: None, ..sample_transaction("tx_y", None, -300) },
+        Transaction { imported_id: Some("imp2".into()), ..sample_transaction("tx_x", None, -300) },
+    ];
+    let json1 = serde_json::to_string(&find_duplicates(&txs)).unwrap();
+    let json2 = serde_json::to_string(&find_duplicates(&txs)).unwrap();
+    assert_eq!(json1, json2, "duplicate evidence JSON must be deterministic");
+}
+
+#[test]
+fn test_protocol_duplicate_same_date_exact_match() {
+    // Existing contract: exact date match still works (regression)
+    let txs = vec![
+        Transaction { date: "2026-05-15".into(), ..sample_transaction("tx_p", None, -200) },
+        Transaction { date: "2026-05-15".into(), ..sample_transaction("tx_q", None, -200) },
+    ];
+    let result = find_duplicates(&txs);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].match_reason, "amount_date");
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic analysis — schema version contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_deterministic_analysis_schema_version_ok() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![Account {
+            id: "acct1".into(),
+            name: "Checking".into(),
+            account_type: "checking".into(),
+            off_budget: false,
+            is_closed: false,
+            cleared_balance: Money::new(100000, "USD"),
+            imported_balance: Money::new(100000, "USD"),
+            mtid: None,
+        }],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), 5000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: Some("2026-07-18T00:00:00Z".into()),
+        encrypted: Some(false),
+        bank_synced_at: Some("2026-07-17T00:00:00Z".into()),
+    };
+    let request = DeterministicAnalysisRequest {
+        snapshot,
+        options: AnalysisOptions {
+            include_pending: true,
+            include_cleared: true,
+            max_results: None,
+        },
+        request_id: Some("det-int-req".into()),
+        actor_id: None,
+    };
+    let response = analyze_deterministic(request);
+    assert_eq!(response.schema_version, "1",
+        "deterministic analysis ok response must emit canonical schemaVersion '1'");
+    assert_eq!(response.status, "ok");
+}
+
+#[test]
+fn test_deterministic_analysis_unsupported_version_emits_schema_version_1() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "2.0".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-17T00:00:00Z".into(),
+        accounts: vec![],
+        transactions: vec![],
+        categories: vec![],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+
+    let request = DeterministicAnalysisRequest {
+        snapshot,
+        options: AnalysisOptions {
+            include_pending: true,
+            include_cleared: true,
+            max_results: None,
+        },
+        request_id: Some("det-uv-req".into()),
+        actor_id: None,
+    };
+    let response = analyze_deterministic(request);
+    assert_eq!(response.schema_version, "1",
+        "deterministic analysis error response must emit canonical schemaVersion '1'");
+    assert_eq!(response.status, "error");
+    if let Some(err) = &response.error {
+        assert_eq!(err.code, "unsupported_schema_version");
+    } else {
+        panic!("expected error info for unsupported schema version");
+    }
+}
+
+#[test]
+fn test_deterministic_analysis_accepts_legacy_schema_version_1_0() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1.0".into(),
+        actual_version: "25.1.0".into(),
+        snapshot_date: "2026-07-18".into(),
+        accounts: vec![Account {
+            id: "acct1".into(),
+            name: "Checking".into(),
+            account_type: "checking".into(),
+            off_budget: false,
+            is_closed: false,
+            cleared_balance: Money::new(100000, "USD"),
+            imported_balance: Money::new(100000, "USD"),
+            mtid: None,
+        }],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), 5000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: Some("2026-07-18T00:00:00Z".into()),
+        encrypted: Some(false),
+        bank_synced_at: Some("2026-07-17T00:00:00Z".into()),
+    };
+
+    let request = DeterministicAnalysisRequest {
+        snapshot,
+        options: AnalysisOptions {
+            include_pending: true,
+            include_cleared: true,
+            max_results: None,
+        },
+        request_id: Some("det-legacy-req".into()),
+        actor_id: None,
+    };
+    let response = analyze_deterministic(request);
+    assert_eq!(response.schema_version, "1",
+        "response for legacy '1.0' input must emit canonical schemaVersion '1'");
+    assert_eq!(response.status, "ok");
 }

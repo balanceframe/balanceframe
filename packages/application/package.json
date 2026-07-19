@@ -3,5 +3,26 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Application orchestration layer"
+  "description": "Application orchestration layer",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./envelope": "./dist/envelope.js",
+    "./commands": "./dist/commands.js",
+    "./errors": "./dist/errors.js",
+    "./analysis": "./dist/analysis.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@balanceframe/protocol-generated": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "vitest": "^1.0.0"
+  }
 }

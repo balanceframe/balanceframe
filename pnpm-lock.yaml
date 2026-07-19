@@ -24,7 +24,21 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
-  apps/cli: {}
+  apps/cli:
+    dependencies:
+      '@balanceframe/application':
+        specifier: workspace:*
+        version: link:../../packages/application
+      '@balanceframe/protocol-generated':
+        specifier: workspace:*
+        version: link:../../packages/protocol-generated
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      vitest:
+        specifier: ^1.0.0
+        version: 1.6.1(@types/node@20.19.43)
 
   apps/server: {}
 
@@ -36,9 +50,40 @@ importers:
         specifier: ^2.0.0
         version: 2.18.4
 
-  packages/actual-adapter: {}
+  packages/actual-adapter:
+    dependencies:
+      '@actual-app/api':
+        specifier: ^26.7.0
+        version: 26.7.0
+      '@balanceframe/protocol-generated':
+        specifier: workspace:*
+        version: link:../protocol-generated
+      zod:
+        specifier: ^3.0.0
+        version: 3.25.76
+    devDependencies:
+      '@actual-app/core':
+        specifier: ^26.7.0
+        version: 26.7.0
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      vitest:
+        specifier: ^1.0.0
+        version: 1.6.1(@types/node@20.19.43)
 
-  packages/application: {}
+  packages/application:
+    dependencies:
+      '@balanceframe/protocol-generated':
+        specifier: workspace:*
+        version: link:../protocol-generated
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      vitest:
+        specifier: ^1.0.0
+        version: 1.6.1(@types/node@20.19.43)
 
   packages/inference: {}
 

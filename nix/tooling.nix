@@ -25,7 +25,7 @@ let
     pkgs.stdenv.cc
     gnumake
     pkg-config
-    pnpm
+    pnpm_10
   ];
   buildInputs = with pkgs; [
     openssl
@@ -39,6 +39,7 @@ let
     python3
     expect
     actual-server
+    just
   ];
 in
 {
@@ -71,6 +72,7 @@ in
     "git"
     "jq"
     "expect"
+    "just"
     "actual-server"
   ];
 }

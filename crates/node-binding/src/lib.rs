@@ -14,7 +14,8 @@ use serde::Deserialize;
 
 use balanceframe_core_protocol as cp;
 pub use balanceframe_core_protocol::{
-    AnalysisRequest, AnalysisResult, MutationPlan, ProtocolSnapshot,
+    AnalysisRequest, AnalysisResult, DeterministicAnalysisRequest,
+    DeterministicAnalysisResponse, MutationPlan, ProtocolSnapshot,
     RuleSimulationResult, Suggestion, ValidationResult, VerificationResult,
 };
 pub use balanceframe_financial_core::{Category, CategorizationCandidate, Rule, Transaction};
@@ -71,6 +72,21 @@ where
 #[napi]
 pub fn analyze_snapshot(input: String) -> napi::Result<String> {
     run::<AnalysisRequest, AnalysisResult>(input, |req| Ok(cp::analyze_snapshot(req)))
+}
+
+// ===========================================================================
+// 1b. analyze_deterministic
+// ===========================================================================
+
+/// Run the deterministic (no‑model) analysis pipeline on a snapshot.
+/// Returns structured findings for uncategorized backlog, repeated merchants,
+/// duplicate evidence, rule candidates, recurring charges, and historical
+/// corrections — all without invoking any model provider.
+#[napi]
+pub fn analyze_deterministic(input: String) -> napi::Result<String> {
+    run::<DeterministicAnalysisRequest, DeterministicAnalysisResponse>(input, |req| {
+        Ok(cp::analyze_deterministic(req))
+    })
 }
 
 // ===========================================================================
