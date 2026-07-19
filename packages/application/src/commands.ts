@@ -38,6 +38,12 @@ export interface ReviewActionOptions {
   message?: string;
   /** Reason code or text (e.g. 'wrong_category', 'duplicate'). */
   reason?: string;
+  /** Actor ID for provenance tracking. */
+  actorId?: string;
+  /** Request ID for correlation. */
+  requestId?: string;
+  /** Correlation ID for audit trail. */
+  correlationId?: string;
 }
 
 export interface AnalysisProtocol {
@@ -56,14 +62,14 @@ export interface AnalysisProtocol {
   // -----------------------------------------------------------------------
 
   /** Approve a pending review item. */
-  reviewApprove(
+  reviewApprove?(
     ledger: unknown,
     reviewId: string,
     options?: ReviewActionOptions,
   ): Promise<ReviewActionResult>;
 
   /** Correct a review item with a specific category. */
-  reviewCorrect(
+  reviewCorrect?(
     ledger: unknown,
     reviewId: string,
     categoryId: string,
@@ -71,35 +77,35 @@ export interface AnalysisProtocol {
   ): Promise<ReviewActionResult>;
 
   /** Reject a pending review item's suggestion. */
-  reviewReject(
+  reviewReject?(
     ledger: unknown,
     reviewId: string,
     options?: ReviewActionOptions,
   ): Promise<ReviewActionResult>;
 
   /** Skip a review item for later. */
-  reviewSkip(
+  reviewSkip?(
     ledger: unknown,
     reviewId: string,
     options?: ReviewActionOptions,
   ): Promise<ReviewActionResult>;
 
   /** Undo the last transition on a review item (where reversible). */
-  reviewUndo(
+  reviewUndo?(
     ledger: unknown,
     reviewId: string,
     options?: ReviewActionOptions,
   ): Promise<ReviewActionResult>;
 
   /** Approve multiple review items in bulk. */
-  reviewApproveBulk(
+  reviewApproveBulk?(
     ledger: unknown,
     reviewIds: string[],
     options?: ReviewActionOptions,
   ): Promise<ReviewBulkActionResult>;
 
   /** Group homogeneous review evidence. */
-  reviewGroup(
+  reviewGroup?(
     ledger: unknown,
     reviewIds: string[],
     options?: ReviewActionOptions,

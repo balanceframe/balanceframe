@@ -251,6 +251,16 @@ async function guardReviewAction(
     return { ok: false, envelope: errorResponse(requestId, err) };
   }
 
+  if (input.mode === 'observe') {
+    const err = new ErrorInfo({
+      code: 'write_rejected',
+      message: 'Write operation is not permitted in Observe mode. Switch to a mode that permits writes, or disconnect.',
+      retryable: false,
+      reasonCodes: ['observe_mode_write_blocked'],
+    });
+    return { ok: false, envelope: errorResponse(requestId, err) };
+  }
+
   return { ok: true, requestId, actorId, ledger, freshness, analysisProtocol };
 }
 
@@ -267,8 +277,19 @@ export async function reviewApproveAnalysis(
   if (!guarded.ok) return guarded.envelope;
   const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
 
+  if (!analysisProtocol.reviewApprove) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Review action not available: the protocol does not support approve.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
   try {
-    const result = await analysisProtocol.reviewApprove(ledger, reviewId, options);
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.reviewApprove(ledger, reviewId, mergedOptions);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -296,8 +317,19 @@ export async function reviewCorrectAnalysis(
   if (!guarded.ok) return guarded.envelope;
   const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
 
+  if (!analysisProtocol.reviewCorrect) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Review action not available: the protocol does not support correct.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
   try {
-    const result = await analysisProtocol.reviewCorrect(ledger, reviewId, categoryId, options);
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.reviewCorrect(ledger, reviewId, categoryId, mergedOptions);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -323,8 +355,19 @@ export async function reviewRejectAnalysis(
   if (!guarded.ok) return guarded.envelope;
   const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
 
+  if (!analysisProtocol.reviewReject) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Review action not available: the protocol does not support reject.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
   try {
-    const result = await analysisProtocol.reviewReject(ledger, reviewId, options);
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.reviewReject(ledger, reviewId, mergedOptions);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -350,8 +393,19 @@ export async function reviewSkipAnalysis(
   if (!guarded.ok) return guarded.envelope;
   const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
 
+  if (!analysisProtocol.reviewSkip) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Review action not available: the protocol does not support skip.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
   try {
-    const result = await analysisProtocol.reviewSkip(ledger, reviewId, options);
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.reviewSkip(ledger, reviewId, mergedOptions);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -377,8 +431,19 @@ export async function reviewUndoAnalysis(
   if (!guarded.ok) return guarded.envelope;
   const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
 
+  if (!analysisProtocol.reviewUndo) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Review action not available: the protocol does not support undo.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
   try {
-    const result = await analysisProtocol.reviewUndo(ledger, reviewId, options);
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.reviewUndo(ledger, reviewId, mergedOptions);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -404,8 +469,19 @@ export async function reviewApproveBulkAnalysis(
   if (!guarded.ok) return guarded.envelope;
   const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
 
+  if (!analysisProtocol.reviewApproveBulk) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Review action not available: the protocol does not support approve-bulk.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
   try {
-    const result = await analysisProtocol.reviewApproveBulk(ledger, reviewIds, options);
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.reviewApproveBulk(ledger, reviewIds, mergedOptions);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -431,8 +507,19 @@ export async function reviewGroupAnalysis(
   if (!guarded.ok) return guarded.envelope;
   const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
 
+  if (!analysisProtocol.reviewGroup) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Review action not available: the protocol does not support group.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
   try {
-    const result = await analysisProtocol.reviewGroup(ledger, reviewIds, options);
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.reviewGroup(ledger, reviewIds, mergedOptions);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

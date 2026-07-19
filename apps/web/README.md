@@ -16,12 +16,13 @@ The review surface is a **framework-neutral TypeScript controller** (`ReviewCont
 ### Review lifecycle
 
 The controller maps the lifecycle from `@balanceframe/workflow-store`:
-- Items are loaded from the store in priority order (highest first).
-- Actions transition items through the lifecycle: `pending_review → approved | correcting | rejected | skipped`.
-- The queue advances immediately after each action (immediate progression).
-- Bulk operations require homogeneous status and category; heterogeneous selections are rejected with a clear conflict reason.
-- Reversible transitions (`approved → pending_review`, `correcting → pending_review`) are exposed via undo.
-- Terminal items (`applied`, `rejected`, `skipped`, `superseded`) are excluded from the attention queue.
+  - Items are loaded from the store in priority order (highest first).
+  - Actions transition items through the lifecycle: `pending_review → approved | correcting | rejected | skipped`.
+  - The queue advances immediately after each action (immediate progression).
+  - Bulk operations require homogeneous status and category; heterogeneous selections are rejected with a clear conflict reason.
+  - Reversible transitions (`approved → pending_review`, `correcting → pending_review`) are exposed via undo.
+  - Terminal items (`applied`, `apply_failed`, `rejected`, `skipped`, `superseded`) are excluded from the attention queue.
+  - **apply_failed**: items where the apply-to-ledger step errored. These remain in the store for failure forensics and manual re-processing; the controller does not surface them automatically. Downstream systems should inspect `apply_failed` items separately via direct store queries.
 
 ### Evidence model
 

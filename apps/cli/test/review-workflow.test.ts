@@ -356,66 +356,90 @@ describe('main — review action dispatch', () => {
 // ---------------------------------------------------------------------------
 
 describe('main — observe mode blocks review actions', () => {
-  it('reviews approve returns error in observe mode', async () => {
-    const output = await main(['reviews', 'approve', 'rev_abc'], {
-      mode: 'observe',
-      actorId: 'usr_test',
-      ledger: { mock: true },
-      analysisProtocol: noopProtocol(),
-    });
-    const parsed = JSON.parse(output);
-    expect(parsed.status).toBe('error');
-  });
+  const actions: Array<{ args: string[]; description: string }> = [
+    { args: ['reviews', 'approve', 'rev_abc'], description: 'reviews approve' },
+    { args: ['reviews', 'correct', 'rev_abc', 'cat_xyz'], description: 'reviews correct' },
+    { args: ['reviews', 'reject', 'rev_abc'], description: 'reviews reject' },
+    { args: ['reviews', 'skip', 'rev_abc'], description: 'reviews skip' },
+    { args: ['reviews', 'undo', 'rev_abc'], description: 'reviews undo' },
+    { args: ['reviews', 'approve-bulk', 'rev_a', 'rev_b'], description: 'reviews approve-bulk' },
+    { args: ['reviews', 'group', 'rev_a', 'rev_b'], description: 'reviews group' },
+  ];
 
-  it('reviews correct returns error in observe mode', async () => {
-    const output = await main(['reviews', 'correct', 'rev_abc', 'cat_xyz'], {
-      mode: 'observe',
-      actorId: 'usr_test',
-      ledger: { mock: true },
-      analysisProtocol: noopProtocol(),
+  for (const { args, description } of actions) {
+    it(`'${description}' returns error in observe mode`, async () => {
+      const output = await main(args, {
+        mode: 'observe',
+        actorId: 'usr_test',
+        ledger: { mock: true },
+        analysisProtocol: noopProtocol(),
+      });
+      const parsed = JSON.parse(output);
+      expect(parsed.status).toBe('error');
+      expect(parsed.error.code).toBe('write_rejected');
     });
-    const parsed = JSON.parse(output);
-    expect(parsed.status).toBe('error');
-  });
+  }
 });
 
 // ---------------------------------------------------------------------------
 // main() — stale conflict / inaccessible provider
-// ---------------------------------------------------------------------------
-
 describe('main — stale conflict error', () => {
-  it('returns stale_snapshot error when freshness is stale', async () => {
-    const output = await main(['reviews', 'approve', 'rev_abc'], {
-      mode: 'reviewAndApply',
-      actorId: 'usr_test',
-      ledger: { mock: true },
-      freshness: {
-        actualDownloadedAt: '2026-06-01T00:00:00Z',
-        bankSyncedAt: null,
-        pendingTransactionsIncluded: false,
-        stalenessDays: 30,
-        isStale: true,
-      },
-      analysisProtocol: noopProtocol(),
+  const cases: Array<{ args: string[] }> = [
+    { args: ['reviews', 'approve', 'rev_abc'] },
+    { args: ['reviews', 'correct', 'rev_abc', 'cat_xyz'] },
+    { args: ['reviews', 'reject', 'rev_abc'] },
+    { args: ['reviews', 'skip', 'rev_abc'] },
+    { args: ['reviews', 'undo', 'rev_abc'] },
+    { args: ['reviews', 'approve-bulk', 'rev_a', 'rev_b'] },
+    { args: ['reviews', 'group', 'rev_a', 'rev_b'] },
+  ];
+
+  for (const { args } of cases) {
+    it(`'${args.join(' ')}' returns stale_snapshot error when freshness is stale`, async () => {
+      const output = await main(args, {
+        mode: 'reviewAndApply',
+        actorId: 'usr_test',
+        ledger: { mock: true },
+        freshness: {
+          actualDownloadedAt: '2026-06-01T00:00:00Z',
+          bankSyncedAt: null,
+          pendingTransactionsIncluded: false,
+          stalenessDays: 30,
+          isStale: true,
+        },
+        analysisProtocol: noopProtocol(),
+      });
+      const parsed = JSON.parse(output);
+      expect(parsed.status).toBe('error');
+      expect(parsed.error.code).toBe('stale_snapshot');
     });
-    const parsed = JSON.parse(output);
-    expect(parsed.status).toBe('error');
-    expect(parsed.error.code).toBe('stale_snapshot');
-  });
+  }
 });
 
 describe('main — inaccessible provider error', () => {
-  it('returns error envelope when analysisProtocol is missing', async () => {
-    const output = await main(['reviews', 'approve', 'rev_abc'], {
-      mode: 'reviewAndApply',
-      actorId: 'usr_test',
-      ledger: { mock: true },
-      // analysisProtocol intentionally omitted
+  const cases: Array<{ args: string[] }> = [
+    { args: ['reviews', 'approve', 'rev_abc'] },
+    { args: ['reviews', 'correct', 'rev_abc', 'cat_xyz'] },
+    { args: ['reviews', 'reject', 'rev_abc'] },
+    { args: ['reviews', 'skip', 'rev_abc'] },
+    { args: ['reviews', 'undo', 'rev_abc'] },
+    { args: ['reviews', 'approve-bulk', 'rev_a', 'rev_b'] },
+    { args: ['reviews', 'group', 'rev_a', 'rev_b'] },
+  ];
+
+  for (const { args } of cases) {
+    it(`'${args.join(' ')}' returns error envelope when analysisProtocol is missing`, async () => {
+      const output = await main(args, {
+        mode: 'reviewAndApply',
+        actorId: 'usr_test',
+        ledger: { mock: true },
+        // analysisProtocol intentionally omitted
+      });
+      const parsed = JSON.parse(output);
+      expect(parsed.status).toBe('error');
+      expect(parsed.error.code).toBe('no_analysis_protocol');
     });
-    const parsed = JSON.parse(output);
-    expect(parsed.status).toBe('error');
-    expect(parsed.error.code).toBe('no_analysis_protocol');
-  });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -451,4 +475,168 @@ describe('main — review action semantic parity', () => {
       assertResult(parsed.result);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// main() — provider failure for all review actions
+// ---------------------------------------------------------------------------
+
+function throwingProtocol(): AnalysisProtocol {
+  return {
+    async pendingReview() { return {} as PendingReviewResult; },
+    async reviewShow() { return {} as ReviewDetailResult; },
+    async budgetSummary() { return {} as BudgetSummaryResult; },
+    async reviewApprove() { throw new Error('Provider unreachable'); },
+    async reviewCorrect() { throw new Error('Provider unreachable'); },
+    async reviewReject() { throw new Error('Provider unreachable'); },
+    async reviewSkip() { throw new Error('Provider unreachable'); },
+    async reviewUndo() { throw new Error('Provider unreachable'); },
+    async reviewApproveBulk() { throw new Error('Provider unreachable'); },
+    async reviewGroup() { throw new Error('Provider unreachable'); },
+  };
+}
+
+describe('main — provider failure error', () => {
+  const cases: Array<{ args: string[] }> = [
+    { args: ['reviews', 'approve', 'rev_abc'] },
+    { args: ['reviews', 'correct', 'rev_abc', 'cat_xyz'] },
+    { args: ['reviews', 'reject', 'rev_abc'] },
+    { args: ['reviews', 'skip', 'rev_abc'] },
+    { args: ['reviews', 'undo', 'rev_abc'] },
+    { args: ['reviews', 'approve-bulk', 'rev_a', 'rev_b'] },
+    { args: ['reviews', 'group', 'rev_a', 'rev_b'] },
+  ];
+
+  for (const { args } of cases) {
+    it(`'${args.join(' ')}' returns analysis_failed when protocol throws`, async () => {
+      const output = await main(args, {
+        mode: 'reviewAndApply',
+        actorId: 'usr_test',
+        ledger: { mock: true },
+        analysisProtocol: throwingProtocol(),
+      });
+      const parsed = JSON.parse(output);
+      expect(parsed.status).toBe('error');
+      expect(parsed.error.code).toBe('analysis_failed');
+      expect(parsed.error.message).toContain('Provider unreachable');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// main() — analysis-only protocol compatibility
+// ---------------------------------------------------------------------------
+
+describe('main — analysis-only protocol', () => {
+  const analysisOnlyProtocol: AnalysisProtocol = {
+    async pendingReview() { return {} as PendingReviewResult; },
+    async reviewShow() { return {} as ReviewDetailResult; },
+    async budgetSummary() { return {} as BudgetSummaryResult; },
+  };
+
+  const cases: Array<{ args: string[] }> = [
+    { args: ['reviews', 'approve', 'rev_abc'] },
+    { args: ['reviews', 'correct', 'rev_abc', 'cat_xyz'] },
+    { args: ['reviews', 'reject', 'rev_abc'] },
+    { args: ['reviews', 'skip', 'rev_abc'] },
+    { args: ['reviews', 'undo', 'rev_abc'] },
+    { args: ['reviews', 'approve-bulk', 'rev_a', 'rev_b'] },
+    { args: ['reviews', 'group', 'rev_a', 'rev_b'] },
+  ];
+
+  for (const { args } of cases) {
+    it(`'${args.join(' ')}' returns no_analysis_protocol when review method missing`, async () => {
+      const output = await main(args, {
+        mode: 'reviewAndApply',
+        actorId: 'usr_test',
+        ledger: { mock: true },
+        analysisProtocol: analysisOnlyProtocol,
+      });
+      const parsed = JSON.parse(output);
+      expect(parsed.status).toBe('error');
+      expect(parsed.error.code).toBe('no_analysis_protocol');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Actor / correlation propagation
+// ---------------------------------------------------------------------------
+
+describe('main — actor and correlation propagation', () => {
+  it('includes actorId and correlationId in approve result', async () => {
+    const output = await main(['reviews', 'approve', 'rev_abc'], {
+      mode: 'reviewAndApply',
+      actorId: 'usr_test',
+      ledger: { mock: true },
+      analysisProtocol: noopProtocol(),
+    });
+    const parsed = JSON.parse(output);
+    expect(parsed.result.actorId).toBe('usr_test');
+    expect(parsed.result.correlationId).toBeTruthy();
+  });
+
+  it('includes actorId in reject result', async () => {
+    const output = await main(['reviews', 'reject', 'rev_abc'], {
+      mode: 'reviewAndApply',
+      actorId: 'usr_test',
+      ledger: { mock: true },
+      analysisProtocol: noopProtocol(),
+    });
+    const parsed = JSON.parse(output);
+    expect(parsed.result.actorId).toBe('usr_test');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ApplicationError code/reason/retryability preservation
+// ---------------------------------------------------------------------------
+
+describe('main — ApplicationError preservation', () => {
+  it('preserves error code, reasonCodes, and retryable in stale_snapshot error', async () => {
+    const output = await main(['reviews', 'approve', 'rev_abc'], {
+      mode: 'reviewAndApply',
+      actorId: 'usr_test',
+      ledger: { mock: true },
+      freshness: {
+        actualDownloadedAt: '2026-06-01T00:00:00Z',
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 30,
+        isStale: true,
+      },
+      analysisProtocol: noopProtocol(),
+    });
+    const parsed = JSON.parse(output);
+    expect(parsed.error.code).toBe('stale_snapshot');
+    expect(Array.isArray(parsed.error.reasonCodes)).toBe(true);
+    expect(parsed.error.reasonCodes).toContain('stale_snapshot');
+    expect(parsed.error.retryable).toBe(true);
+  });
+
+  it('preserves error code, reasonCodes, and retryable in write_rejected error', async () => {
+    const output = await main(['reviews', 'approve', 'rev_abc'], {
+      mode: 'observe',
+      actorId: 'usr_test',
+      ledger: { mock: true },
+      analysisProtocol: noopProtocol(),
+    });
+    const parsed = JSON.parse(output);
+    expect(parsed.error.code).toBe('write_rejected');
+    expect(parsed.error.reasonCodes).toContain('observe_mode_write_blocked');
+    expect(parsed.error.retryable).toBe(false);
+  });
+
+  it('preserves error code and retryable in no_analysis_protocol error', async () => {
+    const output = await main(['reviews', 'approve', 'rev_abc'], {
+      mode: 'reviewAndApply',
+      actorId: 'usr_test',
+      ledger: { mock: true },
+      // analysisProtocol intentionally omitted
+    });
+    const parsed = JSON.parse(output);
+    expect(parsed.error.code).toBe('no_analysis_protocol');
+    expect(Array.isArray(parsed.error.reasonCodes)).toBe(true);
+    expect(parsed.error.retryable).toBe(true);
+  });
 });

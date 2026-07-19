@@ -263,6 +263,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     listReviewItemsByCorrelation: null as unknown as ReturnType<DatabaseType['prepare']>,
     transitionReviewItemStale: null as unknown as ReturnType<DatabaseType['prepare']>,
     transitionReviewItemUpdate: null as unknown as ReturnType<DatabaseType['prepare']>,
+    supersedeReviewItem: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertReviewAction: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectReviewActions: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateApprovedBy: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -597,11 +598,25 @@ export class SqliteWorkflowStore implements WorkflowStore {
       UPDATE review_items
          SET status = @toStatus,
              superseded_reason = @reason,
+             superseded_by = CASE WHEN @toStatus = 'superseded' THEN @supersededBy ELSE superseded_by END,
+             approved_by = CASE WHEN @toStatus = 'approved' THEN @approvedBy ELSE approved_by END,
              updated_at = @now,
              version = version + 1
        WHERE id = @id
          AND status = @fromStatus
          AND version = @expectedVersion
+    `);
+
+    this.stmt.supersedeReviewItem = this.db.prepare(`
+      UPDATE review_items
+         SET status = 'superseded',
+             superseded_by = @supersededBy,
+             superseded_reason = @reason,
+             updated_at = @now,
+             version = version + 1
+       WHERE id = @id
+         AND status = @oldStatus
+         AND version = @oldVersion
     `);
 
     this.stmt.updateApprovedBy = this.db.prepare(`
@@ -900,9 +915,83 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async createReviewItem(input: CreateReviewItemInput): Promise<ReviewItem> {
     const id = randomUUID();
     const now = nowISO();
+    const inputVersion = input.transactionVersion ?? 1;
 
-    // Idempotent insert — the unique partial index prevents duplicates
-    // for non-superseded items sharing the same issue key.
+    // Check for existing active item for the same issue key
+    const existingActive = this.stmt.selectReviewByIssue.get({
+      budgetId: input.budgetId,
+      transactionId: input.transactionId,
+      categoryId: input.categoryId,
+      classifier: input.classifier,
+    }) as ReviewItemRow | undefined;
+
+    if (existingActive) {
+      if (inputVersion <= existingActive.transaction_version) {
+        // Not newer — return existing (idempotent)
+        return rowToReviewItem(existingActive);
+      }
+
+      // Newer transactionVersion — supersede old item, create new one
+      const actionId = randomUUID();
+
+      const txn = this.db.transaction(() => {
+        // Supersede the old active item
+        this.stmt.supersedeReviewItem.run({
+          id: existingActive.id,
+          oldStatus: existingActive.status,
+          oldVersion: existingActive.version,
+          supersededBy: id,
+          reason: `Superseded by newer classification (transactionVersion ${inputVersion})`,
+          now,
+        });
+
+        // Record audit action for the supersession
+        this.stmt.insertReviewAction.run({
+          id: actionId,
+          reviewItemId: existingActive.id,
+          fromStatus: existingActive.status,
+          toStatus: 'superseded',
+          actor: 'system',
+          reason: `Superseded by newer snapshot (version ${inputVersion})`,
+          metadata: JSON.stringify({ newItemId: id }),
+          createdAt: now,
+        });
+
+        // Create the new item
+        this.stmt.insertReviewItem.run({
+          id,
+          suggestionId: input.suggestionId ?? null,
+          budgetId: input.budgetId,
+          transactionId: input.transactionId,
+          categoryId: input.categoryId,
+          classifier: input.classifier,
+          promptVersion: input.promptVersion ?? '',
+          transactionVersion: inputVersion,
+          status: 'discovered',
+          correlationId: input.correlationId ?? null,
+          assignedReviewerId: input.assignedReviewerId ?? null,
+          approvedBy: '[]',
+          reviewersRequired: input.reviewersRequired ?? 1,
+          priority: input.priority ?? 0,
+          evidence: JSON.stringify(input.evidence ?? {}),
+          provenance: input.provenance,
+          supersededBy: null,
+          supersededReason: null,
+          freshnessExpiresAt: input.freshnessExpiresAt ?? null,
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+        });
+      });
+
+      txn();
+
+      const newRow = this.stmt.selectReviewItem.get(id) as ReviewItemRow | undefined;
+      if (!newRow) throw new Error('Failed to read back created review item');
+      return rowToReviewItem(newRow);
+    }
+
+    // No existing active item — insert normally (idempotent via unique partial index)
     const row = this.stmt.insertReviewItem.get({
       id,
       suggestionId: input.suggestionId ?? null,
@@ -911,7 +1000,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       categoryId: input.categoryId,
       classifier: input.classifier,
       promptVersion: input.promptVersion ?? '',
-      transactionVersion: input.transactionVersion ?? 1,
+      transactionVersion: inputVersion,
       status: 'discovered',
       correlationId: input.correlationId ?? null,
       assignedReviewerId: input.assignedReviewerId ?? null,
@@ -929,7 +1018,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }) as ReviewItemRow | undefined;
 
     if (!row) {
-      // Duplicate issue key — fetch the existing active item
+      // Rare race: another connection created it; fetch existing
       const existing = this.stmt.selectReviewByIssue.get({
         budgetId: input.budgetId,
         transactionId: input.transactionId,
@@ -1010,46 +1099,55 @@ export class SqliteWorkflowStore implements WorkflowStore {
       );
     }
 
-    // Special handling for two-reviewer approval
+    // Track approvedBy for final approval persistence
+    let approvedByArr: string[] | null = null;
+
+    // Special handling for approval
     if (toStatus === 'approved') {
-      const approvedBy: string[] = JSON.parse(current.approved_by) as string[];
-      if (approvedBy.includes(input.actor)) {
+      approvedByArr = JSON.parse(current.approved_by) as string[];
+      if (approvedByArr.includes(input.actor)) {
         // Same actor approving again — idempotent, return current item
         const full = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
         return rowToReviewItem(full);
       }
-      approvedBy.push(input.actor);
+      approvedByArr.push(input.actor);
 
       // Need the full item to check reviewersRequired
       const fullRow = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
       const needed = fullRow.reviewers_required;
 
-      if (approvedBy.length < needed) {
+      if (approvedByArr.length < needed) {
         // Not enough reviewers yet — just record the approval, stay in current status
-        const updatedBy = JSON.stringify(approvedBy);
-        const result = this.stmt.updateApprovedBy.run({
-          id,
-          approvedBy: updatedBy,
-          now,
-          expectedVersion: input.expectedVersion,
-          isNew: 1, // increment version since we added a reviewer
+        const updatedBy = JSON.stringify(approvedByArr);
+
+        // Atomic: update approvedBy AND insert audit action in one transaction
+        const partialTxn = this.db.transaction(() => {
+          const result = this.stmt.updateApprovedBy.run({
+            id,
+            approvedBy: updatedBy,
+            now,
+            expectedVersion: input.expectedVersion,
+            isNew: 1, // increment version since we added a reviewer
+          });
+
+          if (result.changes === 0) {
+            throw new Error(`Version conflict on review item ${id}: expected ${input.expectedVersion}`);
+          }
+
+          // Record action for the approval step (even though status didn't change)
+          this.stmt.insertReviewAction.run({
+            id: randomUUID(),
+            reviewItemId: id,
+            fromStatus: fromStatus,
+            toStatus: fromStatus, // stayed same
+            actor: input.actor,
+            reason: input.reason ?? `Approved by ${input.actor} (${approvedByArr!.length}/${needed} reviewers)`,
+            metadata: JSON.stringify(input.metadata ?? {}),
+            createdAt: now,
+          });
         });
 
-        if (result.changes === 0) {
-          throw new Error(`Version conflict on review item ${id}: expected ${input.expectedVersion}`);
-        }
-
-        // Record action for the approval step (even though status didn't change)
-        this.stmt.insertReviewAction.run({
-          id: randomUUID(),
-          reviewItemId: id,
-          fromStatus: fromStatus,
-          toStatus: fromStatus, // stayed same
-          actor: input.actor,
-          reason: input.reason ?? `Approved by ${input.actor} (${approvedBy.length}/${needed} reviewers)`,
-          metadata: JSON.stringify(input.metadata ?? {}),
-          createdAt: now,
-        });
+        partialTxn();
 
         const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
         return rowToReviewItem(updated);
@@ -1057,8 +1155,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
       // Else: enough reviewers — fall through to the full transition below
     }
 
-    // Perform the transition atomically
+    // Perform the transition atomically (status change + audit + optional field updates)
     const actionId = randomUUID();
+    const approvedByJson = approvedByArr ? JSON.stringify(approvedByArr) : null;
+
     const txn = this.db.transaction(() => {
       const result = this.stmt.transitionReviewItemUpdate.run({
         id,
@@ -1066,6 +1166,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
         toStatus,
         expectedVersion: input.expectedVersion,
         reason: toStatus === 'superseded' ? (input.reason ?? null) : null,
+        supersededBy: input.supersededBy ?? null,
+        approvedBy: approvedByJson,
         now,
       });
 
@@ -1103,15 +1205,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
   ): Promise<TransitionReviewResult[]> {
     if (ids.length === 0) return [];
 
-    // Read current statuses for all items
-    const items = ids.map(id => {
+    // Read current statuses for all items, tracking found/missing per index
+    const items: ({ id: string; status: ReviewStatus; version: number } | null)[] = ids.map(id => {
       const row = this.stmt.selectReviewItemsByIds.get(id) as { id: string; status: string; version: number } | undefined;
       return row ? { id: row.id, status: row.status as ReviewStatus, version: row.version } : null;
-    }).filter((x): x is NonNullable<typeof x> => x !== null);
+    });
 
-    // Heterogeneous group check: all must share the same current status
-    const firstStatus = items[0]?.status;
-    if (!firstStatus) {
+    // Collect only found items for validation
+    const foundItems = items.filter((x): x is NonNullable<typeof x> => x !== null);
+
+    if (foundItems.length === 0) {
+      // All IDs are missing
       return ids.map(id => ({
         itemId: id,
         success: false,
@@ -1120,10 +1224,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
       }));
     }
 
-    if (!items.every(i => i.status === firstStatus)) {
+    // Heterogeneous group check: all found items must share the same current status
+    const firstStatus = foundItems[0].status;
+    if (!foundItems.every(i => i.status === firstStatus)) {
       throw new Error(
         `Heterogeneous group: all items must have the same current status ` +
-        `(found items with statuses: ${[...new Set(items.map(i => i.status))].join(', ')})`,
+        `(found items with statuses: ${[...new Set(foundItems.map(i => i.status))].join(', ')})`,
       );
     }
 
@@ -1136,9 +1242,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }
 
     // Transition each item atomically, collecting per-item results
+    // (one result per requested ID, including missing IDs)
     const results: TransitionReviewResult[] = [];
 
-    for (const item of items) {
+    for (let i = 0; i < ids.length; i++) {
+      const item = items[i];
+      if (!item) {
+        results.push({
+          itemId: ids[i],
+          success: false,
+          item: null,
+          error: 'Not found',
+        });
+        continue;
+      }
+
       try {
         const transitioned = await this.transitionReviewItem(item.id, {
           toStatus,

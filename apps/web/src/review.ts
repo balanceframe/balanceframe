@@ -231,12 +231,12 @@ class MetricsCollector {
   private duplicatesAvoided: number = 0;
   private loadedCount: number = 0;
 
-  record(event: Omit<MetricEvent, 'latencyMs'>): void {
+  record(event: Omit<MetricEvent, 'latencyMs'> & { latencyMs?: number }): void {
     this.events.push({
       ...event,
-      latencyMs: event.timestamp
+      latencyMs: event.latencyMs ?? (event.timestamp
         ? Date.now() - new Date(event.timestamp).getTime()
-        : 0,
+        : 0),
     });
   }
 
@@ -431,28 +431,35 @@ function extractEvidence(item: ReviewItem): ReviewEvidence {
 
 // ---------------------------------------------------------------------------
 // Statuses qualifying as action-needing
-// ---------------------------------------------------------------------------
+const ACTIONABLE_STATUSES: Partial<Record<ReviewStatus, true>> = {
+  pending_review: true,
+};
 
-const ACTIONABLE_STATUSES: ReadonlySet<ReviewStatus> = new Set([
-  'pending_review',
-  'discovered',
-  'suggestion_generated',
-]);
+/**
+ * Statuses that may appear in the review queue.
+ * Broader than ACTIONABLE_STATUSES — includes recently-reviewed items
+ * for undo visibility and bulk correction.
+ */
+const QUEUEABLE_STATUSES: Partial<Record<ReviewStatus, true>> = {
+  pending_review: true,
+  approved: true,
+  correcting: true,
+};
 
-const TERMINAL_STATUSES: ReadonlySet<ReviewStatus> = new Set([
-  'applied',
-  'apply_failed',
-  'rejected',
-  'skipped',
-  'superseded',
-]);
+const TERMINAL_STATUSES: Partial<Record<ReviewStatus, true>> = {
+  applied: true,
+  apply_failed: true,
+  rejected: true,
+  skipped: true,
+  superseded: true,
+};
 
 function isActionable(status: ReviewStatus): boolean {
-  return ACTIONABLE_STATUSES.has(status);
+  return status in ACTIONABLE_STATUSES;
 }
 
 function isTerminal(status: ReviewStatus): boolean {
-  return TERMINAL_STATUSES.has(status);
+  return status in TERMINAL_STATUSES;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +486,7 @@ export class ReviewController {
 
   private items: ReviewQueueItem[] = [];
   private currentIndex: number = 0;
-  private selectedIndices: Set<number> = new Set();
+  private selectedIds: Set<string> = new Set();
   private hasMore: boolean = true;
   private offset: number = 0;
   private loading: boolean = false;
@@ -487,8 +494,9 @@ export class ReviewController {
   private metrics: MetricsCollector = new MetricsCollector();
   /** ID of the most recently consumed item, for undo when queue is empty. */
   private lastActedItemId: string | null = null;
+  /** Timestamps when each item first became current (for latency metrics). */
+  private itemReviewStartTimes: Map<string, number> = new Map();
   private listeners: Set<StateListener> = new Set();
-
   constructor(store: WorkflowStore, config: ReviewConfig) {
     this.store = store;
     this.config = {
@@ -519,8 +527,8 @@ export class ReviewController {
         queueItems.push(await this.buildQueueItem(raw));
       }
 
-      // Exclude terminal items — they don't need attention
-      const newItems = queueItems.filter(i => !isTerminal(i.reviewItem.status));
+      // Include only queueable statuses (pending_review, approved, correcting)
+      const newItems = queueItems.filter(i => i.reviewItem.status in QUEUEABLE_STATUSES);
 
       this.items = [...this.items, ...newItems];
 
@@ -530,6 +538,14 @@ export class ReviewController {
       // Ensure currentIndex is valid
       if (this.currentIndex >= this.items.length && this.items.length > 0) {
         this.currentIndex = this.items.length - 1;
+      }
+
+      // Track start time for the current item (latency metrics)
+      if (this.currentIndex < this.items.length) {
+        this.itemReviewStartTimes.set(
+          this.items[this.currentIndex].reviewItem.id,
+          Date.now(),
+        );
       }
 
       this.error = null;
@@ -558,7 +574,7 @@ export class ReviewController {
   async refresh(): Promise<void> {
     this.items = [];
     this.currentIndex = 0;
-    this.selectedIndices.clear();
+    this.selectedIds.clear();
     this.offset = 0;
     this.hasMore = true;
     this.error = null;
@@ -588,7 +604,9 @@ export class ReviewController {
       items: this.items,
       currentIndex: this.currentIndex,
       currentItem,
-      selectedIndices: [...this.selectedIndices].sort((a, b) => a - b),
+      selectedIndices: this.items
+        .map((item, idx) => this.selectedIds.has(item.reviewItem.id) ? idx : -1)
+        .filter(idx => idx !== -1),
       selectionHomogeneity,
       metrics: this.metrics.snapshot(this.items.length, backlogAgesMs),
       hasMore: this.hasMore,
@@ -655,17 +673,19 @@ export class ReviewController {
 
   private async doApprove(): Promise<void> {
     const item = this.requireCurrentItem();
+    const latencyMs = this.computeLatencyMs(item);
     await this.transitionItem(item, 'approved', 'Looks correct');
     this.metrics.record({
       type: 'approve',
       itemId: item.reviewItem.id,
       timestamp: new Date().toISOString(),
+      latencyMs,
     });
     this.advanceAfterAction();
   }
-
   private async doCorrect(categoryId: string): Promise<void> {
     const item = this.requireCurrentItem();
+    const latencyMs = this.computeLatencyMs(item);
     const status = item.reviewItem.status;
 
     // Correction requires a two-step transition from pending_review:
@@ -715,64 +735,71 @@ export class ReviewController {
       type: 'correct',
       itemId: item.reviewItem.id,
       timestamp: new Date().toISOString(),
+      latencyMs,
     });
     this.advanceAfterAction();
   }
-
   private async doReject(): Promise<void> {
     const item = this.requireCurrentItem();
+    const latencyMs = this.computeLatencyMs(item);
     await this.transitionItem(item, 'rejected', 'Not appropriate');
     this.metrics.record({
       type: 'reject',
       itemId: item.reviewItem.id,
       timestamp: new Date().toISOString(),
+      latencyMs,
     });
     this.advanceAfterAction();
   }
 
   private async doSkip(): Promise<void> {
     const item = this.requireCurrentItem();
+    const latencyMs = this.computeLatencyMs(item);
     await this.transitionItem(item, 'skipped', 'Deferred');
     this.metrics.record({
       type: 'skip',
       itemId: item.reviewItem.id,
       timestamp: new Date().toISOString(),
+      latencyMs,
     });
     this.advanceAfterAction();
   }
 
   private async doUndo(): Promise<void> {
-    let item: ReviewQueueItem | null = null;
-    try {
-      item = this.requireCurrentItem();
-    } catch {
-      // No current item — fall back to the last acted-upon item
-      if (this.lastActedItemId) {
-        const stored = await this.store.getReviewItem(this.lastActedItemId);
-        if (stored) {
-          item = this.buildQueueItemSync(stored);
-        }
-      }
-    }
-
-    if (!item) {
+    if (!this.lastActedItemId) {
       throw new ReviewActionError(
         'no_current',
-        'No current item to undo. Load the queue first.',
+        'No item to undo. Act on an item first.',
+        false,
+      );
+    }
+
+    const stored = await this.store.getReviewItem(this.lastActedItemId);
+    if (!stored) {
+      throw new ReviewActionError(
+        'not_found',
+        'The item to undo was not found in the store.',
         false,
       );
     }
 
     const updated = await this.store.undoReviewTransition(
-      item.reviewItem.id,
+      stored.id,
       this.config.actorId,
       'Reversed by reviewer',
-      item.reviewItem.version,
+      stored.version,
     );
+
+    // Build queue item and insert at current position
+    const restored = this.buildQueueItemSync(updated);
+    this.items.splice(this.currentIndex, 0, restored);
+    // currentIndex now points to the restored item
+    this.trackCurrentItemStart();
     this.lastActedItemId = null;
+
     this.metrics.record({
       type: 'undo',
-      itemId: item.reviewItem.id,
+      itemId: stored.id,
       timestamp: new Date().toISOString(),
     });
     this.notify();
@@ -791,7 +818,6 @@ export class ReviewController {
   private async doBulkSkip(): Promise<TransitionReviewResult[]> {
     return this.doBulkStatusTransition('skipped', 'Bulk skipped');
   }
-
   private async doBulkCorrect(
     categoryId: string,
   ): Promise<TransitionReviewResult[]> {
@@ -802,52 +828,74 @@ export class ReviewController {
       return [];
     }
 
-    this.requireHomogeneous(selected);
-    const ids = selected.map(i => i.reviewItem.id);
-
-    // Two-step bulk correct: approve all first, then correct all.
-    // The store's transitionReviewItems checks homogeneity on each call.
-    const approveResults = await this.store.transitionReviewItems(
-      ids,
-      'approved',
-      this.config.actorId,
-      `Bulk correcting to ${categoryId}`,
+    // Check category and classifier homogeneity (status may vary between pending_review and approved)
+    const firstCategory = selected[0].reviewItem.categoryId;
+    const firstClassifier = selected[0].reviewItem.classifier;
+    const badItems = selected.filter(
+      i => i.reviewItem.categoryId !== firstCategory || i.reviewItem.classifier !== firstClassifier,
     );
-
-    const failedApprove = approveResults.filter(r => !r.success);
-    if (failedApprove.length > 0) {
-      // Some approvals failed; return the partial results.
-      this.metrics.record({
-        type: 'bulk_action',
-        itemId: null,
-        timestamp: new Date().toISOString(),
-      });
-      this.notify();
-      return approveResults;
+    if (badItems.length > 0) {
+      throw new ReviewActionError(
+        'heterogeneous_selection',
+        'Cannot bulk-correct heterogeneous selection: items must share the same category and classifier',
+        false,
+      );
     }
 
-    // All approved — now correct them
-    const correctResults = await this.store.transitionReviewItems(
-      ids,
-      'correcting',
-      this.config.actorId,
-      `Bulk corrected to ${categoryId}`,
+    // Reject items that are neither pending_review nor approved
+    const invalid = selected.filter(
+      i => i.reviewItem.status !== 'pending_review' && i.reviewItem.status !== 'approved',
     );
+    if (invalid.length > 0) {
+      throw new ReviewActionError(
+        'invalid_status',
+        'Bulk correct only supports pending_review and approved items',
+        false,
+      );
+    }
 
-    // Update local cache and remove consumed items
     const consumedIds = new Set<string>();
-    for (const r of correctResults) {
-      if (r.success && r.item) {
-        consumedIds.add(r.itemId);
-        this.replaceItemById(r.item);
+    const results: TransitionReviewResult[] = [];
+
+    for (const item of selected) {
+      try {
+        let current = item.reviewItem;
+        // Step 1: approve (only needed for pending_review items)
+        if (current.status === 'pending_review') {
+          current = await this.store.transitionReviewItem(current.id, {
+            toStatus: 'approved',
+            actor: this.config.actorId,
+            reason: `Bulk correcting to ${categoryId}`,
+            expectedVersion: current.version,
+          });
+        }
+        // Step 2: correct (from approved)
+        const r = await this.store.transitionReviewItem(current.id, {
+          toStatus: 'correcting',
+          actor: this.config.actorId,
+          reason: `Bulk corrected to ${categoryId}`,
+          metadata: { correctedCategory: categoryId },
+          expectedVersion: current.version,
+        });
+        this.replaceItemById(r);
+        consumedIds.add(r.id);
+        results.push({ itemId: r.id, success: true, item: r, error: null });
+      } catch (err) {
+        results.push({
+          itemId: item.reviewItem.id,
+          success: false,
+          item: null,
+          error: (err as Error).message,
+        });
       }
     }
 
     this.items = this.items.filter(i => !consumedIds.has(i.reviewItem.id));
-    this.selectedIndices.clear();
+    this.selectedIds.clear();
     if (this.currentIndex >= this.items.length) {
       this.currentIndex = Math.max(0, this.items.length - 1);
     }
+    this.trackCurrentItemStart();
 
     this.metrics.record({
       type: 'bulk_action',
@@ -856,9 +904,8 @@ export class ReviewController {
     });
     this.notify();
 
-    return correctResults;
+    return results;
   }
-
   private async doBulkStatusTransition(
     toStatus: ReviewStatus,
     reason: string,
@@ -915,12 +962,13 @@ export class ReviewController {
 
     // Remove consumed items from the queue
     this.items = this.items.filter(i => !consumedIds.has(i.reviewItem.id));
-    this.selectedIndices.clear();
+    this.selectedIds.clear();
 
     // Clamp currentIndex
     if (this.currentIndex >= this.items.length) {
       this.currentIndex = Math.max(0, this.items.length - 1);
     }
+    this.trackCurrentItemStart();
 
     this.metrics.record({
       type: 'bulk_action',
@@ -938,6 +986,7 @@ export class ReviewController {
     if (this.items.length === 0) return;
     if (this.currentIndex < this.items.length - 1) {
       this.currentIndex++;
+      this.trackCurrentItemStart();
       this.notify();
     }
   }
@@ -945,21 +994,24 @@ export class ReviewController {
   private doSelectPrevious(): void {
     if (this.currentIndex > 0) {
       this.currentIndex--;
+      this.trackCurrentItemStart();
       this.notify();
     }
   }
 
   private doToggleSelection(index: number): void {
-    if (this.selectedIndices.has(index)) {
-      this.selectedIndices.delete(index);
+    if (index < 0 || index >= this.items.length) return;
+    const id = this.items[index].reviewItem.id;
+    if (this.selectedIds.has(id)) {
+      this.selectedIds.delete(id);
     } else {
-      this.selectedIndices.add(index);
+      this.selectedIds.add(id);
     }
     this.notify();
   }
 
   private doClearSelection(): void {
-    this.selectedIndices.clear();
+    this.selectedIds.clear();
     this.notify();
   }
 
@@ -988,9 +1040,33 @@ export class ReviewController {
   }
 
   private getSelectedItems(): ReviewQueueItem[] {
-    return [...this.selectedIndices]
-      .filter(i => i < this.items.length)
-      .map(i => this.items[i]);
+    return this.items.filter(i => this.selectedIds.has(i.reviewItem.id));
+  }
+
+  /** Record the current timestamp for the current item (latency metrics). */
+  private trackCurrentItemStart(): void {
+    if (this.currentIndex < this.items.length) {
+      this.itemReviewStartTimes.set(
+        this.items[this.currentIndex].reviewItem.id,
+        Date.now(),
+      );
+    }
+  }
+
+  /** Compute latency from when the item was first presented. */
+  private computeLatencyMs(item: ReviewQueueItem): number {
+    const startTime = this.itemReviewStartTimes.get(item.reviewItem.id);
+    return startTime != null ? Date.now() - startTime : 0;
+  }
+
+  /** Remove selected IDs that no longer exist in the current queue. */
+  private purgeStaleSelections(): void {
+    const currentIds = new Set(this.items.map(i => i.reviewItem.id));
+    for (const id of this.selectedIds) {
+      if (!currentIds.has(id)) {
+        this.selectedIds.delete(id);
+      }
+    }
   }
 
   private async transitionItem(
@@ -1024,7 +1100,6 @@ export class ReviewController {
       this.items[idx] = this.buildQueueItemSync(updated);
     }
   }
-
   /** Remove the current item from the queue and advance to the next. */
   private advanceAfterAction(): void {
     // Save the consumed item ID for potential undo
@@ -1035,6 +1110,8 @@ export class ReviewController {
     if (this.currentIndex >= this.items.length) {
       this.currentIndex = Math.max(0, this.items.length - 1);
     }
+    this.trackCurrentItemStart();
+    this.purgeStaleSelections();
     this.notify();
   }
 

@@ -817,4 +817,533 @@ describe('ReviewItem lifecycle', () => {
       }
     });
   });
+
+  // =======================================================================
+  // Final approver persistence
+  // =======================================================================
+
+  describe('final approver persistence', () => {
+    it('persists the approving actor in approvedBy when reviewersRequired is 1', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fap1',
+        transactionId: 't-fap1',
+        reviewersRequired: 1,
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+
+      const approved = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      expect(approved.status).toBe('approved');
+      expect(approved.approvedBy).toContain(ACTOR_ALICE);
+
+      // Verify from a fresh fetch too
+      const fetched = await store.getReviewItem(item.id);
+      expect(fetched!.approvedBy).toContain(ACTOR_ALICE);
+    });
+
+    it('persists all approving actors in approvedBy when multiple are required', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fap2',
+        transactionId: 't-fap2',
+        reviewersRequired: 2,
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+
+      const afterAlice = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      expect(afterAlice.approvedBy).toEqual([ACTOR_ALICE]);
+
+      const afterBob = await store.transitionReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: afterAlice.version });
+      expect(afterBob.status).toBe('approved');
+      expect(afterBob.approvedBy).toEqual([ACTOR_ALICE, ACTOR_BOB]);
+    });
+
+    it('approvedBy survives store reopen with file database', async () => {
+      const dbPath = `${os.tmpdir()}/review-approve-${Date.now()}.sqlite`;
+      try {
+        const store1 = new SqliteWorkflowStore(dbPath);
+        const item = await store1.createReviewItem({
+          ...BASE_CREATE,
+          budgetId: 'b-fap3',
+          transactionId: 't-fap3',
+          reviewersRequired: 2,
+        });
+        await store1.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+        await store1.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+        await store1.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+        await store1.transitionReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: 4 });
+        store1.close();
+
+        const store2 = new SqliteWorkflowStore(dbPath);
+        const fetched = await store2.getReviewItem(item.id);
+        expect(fetched!.approvedBy).toEqual([ACTOR_ALICE, ACTOR_BOB]);
+        store2.close();
+      } finally {
+        try { fs.unlinkSync(dbPath); } catch { /* ignore */ }
+      }
+    });
+  });
+
+  // =======================================================================
+  // Atomic partial approval
+  // =======================================================================
+
+  describe('atomic partial approval', () => {
+    it('records both approvedBy update and audit action for partial approval', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-apa1',
+        transactionId: 't-apa1',
+        reviewersRequired: 2,
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+
+      const afterAlice = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      expect(afterAlice.approvedBy).toEqual([ACTOR_ALICE]);
+
+      const actions = await store.getReviewActions(item.id);
+      const firstPartialRecord = actions.find(a => a.actor === ACTOR_ALICE);
+      expect(firstPartialRecord).toBeDefined();
+      expect(firstPartialRecord!.toStatus).toBe('pending_review'); // stayed same
+    });
+
+    it('mutiple partial approvals each record the correct approvedBy state', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-apa2',
+        transactionId: 't-apa2',
+        reviewersRequired: 3,
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+
+      const a1 = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      expect(a1.approvedBy).toEqual([ACTOR_ALICE]);
+
+      const a2 = await store.transitionReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: a1.version });
+      expect(a2.approvedBy).toEqual([ACTOR_ALICE, ACTOR_BOB]);
+    });
+  });
+
+  // =======================================================================
+  // Superseding successor links
+  // =======================================================================
+
+  describe('superseding successor', () => {
+    it('records supersededBy when transitioning with supersededBy parameter', async () => {
+      const item1 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-ss1',
+        transactionId: 't-ss1',
+      });
+      const item2 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-ss2',
+        transactionId: 't-ss2',
+      });
+
+      const s1 = await store.transitionReviewItem(item1.id, {
+        toStatus: 'superseded',
+        actor: 'system',
+        reason: 'Superseded by newer',
+        expectedVersion: 1,
+        supersededBy: item2.id,
+      });
+      expect(s1.status).toBe('superseded');
+      expect(s1.supersededBy).toBe(item2.id);
+
+      // Verify from fresh fetch
+      const fetched = await store.getReviewItem(item1.id);
+      expect(fetched!.supersededBy).toBe(item2.id);
+      expect(fetched!.supersededReason).toBe('Superseded by newer');
+    });
+
+    it('supersededBy persists across store reopen', async () => {
+      const dbPath = `${os.tmpdir()}/review-ss-${Date.now()}.sqlite`;
+      try {
+        const store1 = new SqliteWorkflowStore(dbPath);
+        const item1 = await store1.createReviewItem({
+          ...BASE_CREATE,
+          budgetId: 'b-ss3',
+          transactionId: 't-ss3',
+        });
+        await store1.transitionReviewItem(item1.id, {
+          toStatus: 'superseded',
+          actor: 'system',
+          reason: 'Stale',
+          expectedVersion: 1,
+          supersededBy: 'successor-id-123',
+        });
+        store1.close();
+
+        const store2 = new SqliteWorkflowStore(dbPath);
+        const fetched = await store2.getReviewItem(item1.id);
+        expect(fetched!.supersededBy).toBe('successor-id-123');
+        expect(fetched!.supersededReason).toBe('Stale');
+        store2.close();
+      } finally {
+        try { fs.unlinkSync(dbPath); } catch { /* ignore */ }
+      }
+    });
+  });
+
+  // =======================================================================
+  // Fresh snapshot supersession — newer transactionVersion replaces old
+  // =======================================================================
+
+  describe('fresh snapshot supersession', () => {
+    it('creates a new item and supersedes the old one when transactionVersion is higher', async () => {
+      const oldItem = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fresh',
+        transactionId: 't-fresh',
+        transactionVersion: 1,
+      });
+      expect(oldItem.status).toBe('discovered');
+
+      tickSync();
+
+      const newItem = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fresh',
+        transactionId: 't-fresh',
+        transactionVersion: 2,
+        provenance: 're-classify',
+      });
+      expect(newItem.id).not.toBe(oldItem.id);
+      expect(newItem.status).toBe('discovered');
+      expect(newItem.transactionVersion).toBe(2);
+      expect(newItem.provenance).toBe('re-classify');
+
+      // Old item should be superseded with successor link
+      const fetchedOld = await store.getReviewItem(oldItem.id);
+      expect(fetchedOld!.status).toBe('superseded');
+      expect(fetchedOld!.supersededBy).toBe(newItem.id);
+      expect(fetchedOld!.supersededReason).toBeDefined();
+
+      // Audit action for supersession
+      const oldActions = await store.getReviewActions(oldItem.id);
+      const supersedeAction = oldActions.find(a => a.toStatus === 'superseded');
+      expect(supersedeAction).toBeDefined();
+      expect(supersedeAction!.metadata).toEqual({ newItemId: newItem.id });
+    });
+
+    it('returns existing item when transactionVersion is equal or lower', async () => {
+      const first = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fresh2',
+        transactionId: 't-fresh2',
+        transactionVersion: 3,
+      });
+      expect(first.version).toBe(1);
+
+      // Same version — idempotent
+      const second = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fresh2',
+        transactionId: 't-fresh2',
+        transactionVersion: 3,
+        provenance: 'should-be-ignored',
+      });
+      expect(second.id).toBe(first.id);
+
+      // Lower version — idempotent
+      const third = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fresh2',
+        transactionId: 't-fresh2',
+        transactionVersion: 1,
+        provenance: 'also-ignored',
+      });
+      expect(third.id).toBe(first.id);
+    });
+
+    it('superseded item is no longer returned by findReviewByIssue', async () => {
+      await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fresh3',
+        transactionId: 't-fresh3',
+        transactionVersion: 1,
+      });
+
+      await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-fresh3',
+        transactionId: 't-fresh3',
+        transactionVersion: 2,
+      });
+
+      const found = await store.findReviewByIssue(
+        'b-fresh3',
+        't-fresh3',
+        BASE_CREATE.categoryId,
+        BASE_CREATE.classifier,
+      );
+      expect(found).not.toBeNull();
+      expect(found!.transactionVersion).toBe(2);
+    });
+  });
+
+  // =======================================================================
+  // Bulk — missing IDs in transitionReviewItems
+  // =======================================================================
+
+  describe('bulk missing IDs', () => {
+    it('returns a result for each requested ID including missing ones', async () => {
+      const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-bulk1', transactionId: 't-bulk1' });
+
+      const results = await store.transitionReviewItems(
+        [item.id, 'nonexistent-id'],
+        'superseded',
+        'system',
+      );
+
+      expect(results.length).toBe(2);
+      expect(results[0].itemId).toBe(item.id);
+      expect(results[0].success).toBe(true);
+      expect(results[1].itemId).toBe('nonexistent-id');
+      expect(results[1].success).toBe(false);
+      expect(results[1].error).toBeDefined();
+    });
+
+    it('returns failure for every ID when all are missing', async () => {
+      const results = await store.transitionReviewItems(
+        ['missing-1', 'missing-2'],
+        'superseded',
+        'system',
+      );
+
+      expect(results.length).toBe(2);
+      expect(results[0].success).toBe(false);
+      expect(results[0].error).toBe('Not found');
+      expect(results[1].success).toBe(false);
+      expect(results[1].error).toBe('Not found');
+    });
+
+    it('includes missing IDs among results even when some items exist', async () => {
+      const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-bulk2', transactionId: 't-bulk2' });
+
+      const results = await store.transitionReviewItems(
+        ['missing-a', item.id, 'missing-b'],
+        'superseded',
+        'system',
+      );
+
+      expect(results.length).toBe(3);
+      expect(results[0].itemId).toBe('missing-a');
+      expect(results[0].success).toBe(false);
+      expect(results[1].itemId).toBe(item.id);
+      expect(results[1].success).toBe(true);
+      expect(results[2].itemId).toBe('missing-b');
+      expect(results[2].success).toBe(false);
+    });
+  });
+
+  // =======================================================================
+  // Concurrent access — optimistic locking with two connections
+  // =======================================================================
+
+  describe('concurrent access', () => {
+    it('two stores on same file — partial approval bumps version, stale expectedVersion fails', async () => {
+      const dbPath = `${os.tmpdir()}/review-conc1-${Date.now()}.sqlite`;
+      try {
+        const initStore = new SqliteWorkflowStore(dbPath);
+        const item = await initStore.createReviewItem({
+          ...BASE_CREATE,
+          budgetId: 'b-conc1',
+          transactionId: 't-conc1',
+          reviewersRequired: 2,
+        });
+        // Advance to pending_review
+        await initStore.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+        await initStore.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+        initStore.close();
+
+        const store1 = new SqliteWorkflowStore(dbPath);
+        const store2 = new SqliteWorkflowStore(dbPath);
+
+        // Both see version 3, pending_review
+        // store1 does partial approval (Alice), bumps version to 4, stays pending_review
+        const afterAlice = await store1.transitionReviewItem(item.id, {
+          ...APPROVE_ALICE,
+          expectedVersion: 3,
+        });
+        expect(afterAlice.version).toBe(4);
+        expect(afterAlice.status).toBe('pending_review');
+
+        // store2 tries with stale expectedVersion 3 (still valid status but wrong version) — should fail
+        await expect(
+          store2.transitionReviewItem(item.id, {
+            ...APPROVE_BOB,
+            expectedVersion: 3,
+          }),
+        ).rejects.toThrow(/version|conflict/i);
+
+        store1.close();
+        store2.close();
+      } finally {
+        try { fs.unlinkSync(dbPath); } catch { /* ignore */ }
+      }
+    });
+
+    it('two stores — one writer transitions, other cannot use stale expectedVersion on status-changing transition', async () => {
+      const dbPath = `${os.tmpdir()}/review-conc2-${Date.now()}.sqlite`;
+      try {
+        const initStore = new SqliteWorkflowStore(dbPath);
+        const item = await initStore.createReviewItem({
+          ...BASE_CREATE,
+          budgetId: 'b-conc2',
+          transactionId: 't-conc2',
+          reviewersRequired: 1,
+        });
+        initStore.close();
+
+        const store1 = new SqliteWorkflowStore(dbPath);
+        const store2 = new SqliteWorkflowStore(dbPath);
+
+        // Both see version 1, discovered. store1 transitions.
+        const t1 = await store1.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+        expect(t1.version).toBe(2);
+        expect(t1.status).toBe('suggestion_generated');
+
+        // store2 tries to generate with version 1 — fromStatus would be 'suggestion_generated'
+        // and toStatus is 'suggestion_generated', so idempotent check catches it.
+        // That's correct — it means the transition already happened.
+        // For a "stale expectedVersion" test, we need a non-idempotent target.
+        // store2 tries to supersede with expectedVersion 1 (stale):
+        await expect(
+          store2.transitionReviewItem(item.id, {
+            toStatus: 'superseded',
+            actor: 'system',
+            reason: 'Stale',
+            expectedVersion: 1,
+          }),
+        ).rejects.toThrow(/version|conflict/i);
+
+        store1.close();
+        store2.close();
+      } finally {
+        try { fs.unlinkSync(dbPath); } catch { /* ignore */ }
+      }
+    });
+  });
+
+  // =======================================================================
+  // Full audit persistence
+  // =======================================================================
+
+  describe('full audit persistence', () => {
+    it('all audit fields are fully populated and survive reopen', async () => {
+      const dbPath = `${os.tmpdir()}/review-audit-${Date.now()}.sqlite`;
+      try {
+        const store1 = new SqliteWorkflowStore(dbPath);
+        const item = await store1.createReviewItem({
+          ...BASE_CREATE,
+          budgetId: 'b-audit1',
+          transactionId: 't-audit1',
+        });
+        await store1.transitionReviewItem(item.id, {
+          toStatus: 'pending_review',
+          actor: 'system',
+          reason: 'Auto-promote',
+          metadata: { source: 'scheduler' },
+          expectedVersion: 1,
+        });
+        await store1.transitionReviewItem(item.id, {
+          ...APPROVE_ALICE,
+          expectedVersion: 2,
+        });
+        store1.close();
+
+        const store2 = new SqliteWorkflowStore(dbPath);
+        const actions = await store2.getReviewActions(item.id);
+        expect(actions.length).toBe(2);
+
+        // First action: discovered -> pending_review
+        const action0 = actions[0];
+        expect(action0.reviewItemId).toBe(item.id);
+        expect(action0.fromStatus).toBe('discovered');
+        expect(action0.toStatus).toBe('pending_review');
+        expect(action0.actor).toBe('system');
+        expect(action0.reason).toBe('Auto-promote');
+        expect(action0.metadata).toEqual({ source: 'scheduler' });
+        expect(action0.id).toBeDefined();
+        expect(action0.createdAt).toBeDefined();
+
+        // Second action: pending_review -> approved
+        const action1 = actions[1];
+        expect(action1.reviewItemId).toBe(item.id);
+        expect(action1.fromStatus).toBe('pending_review');
+        expect(action1.toStatus).toBe('approved');
+        expect(action1.actor).toBe(ACTOR_ALICE);
+        expect(action1.reason).toBe('Looks correct');
+        expect(action1.metadata).toEqual({});
+        expect(action1.id).toBeDefined();
+        expect(action1.createdAt).toBeDefined();
+
+        store2.close();
+      } finally {
+        try { fs.unlinkSync(dbPath); } catch { /* ignore */ }
+      }
+    });
+
+    it('audit timestamps are in strict chronological order', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-audit2',
+        transactionId: 't-audit2',
+      });
+
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+
+      const actions = await store.getReviewActions(item.id);
+      expect(actions.length).toBe(3);
+      for (let i = 1; i < actions.length; i++) {
+        const prev = new Date(actions[i - 1].createdAt).getTime();
+        const curr = new Date(actions[i].createdAt).getTime();
+        expect(curr).toBeGreaterThanOrEqual(prev);
+      }
+    });
+  });
+
+  // =======================================================================
+  // createReviewItem is idempotent for equal transactionVersion
+  // =======================================================================
+
+  describe('idempotent create with transactionVersion', () => {
+    it('returns existing item when transactionVersion is the same', async () => {
+      const first = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-idem1',
+        transactionId: 't-idem1',
+        transactionVersion: 5,
+      });
+      const second = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-idem1',
+        transactionId: 't-idem1',
+        transactionVersion: 5,
+      });
+      expect(second.id).toBe(first.id);
+    });
+
+    it('returns existing item when no transactionVersion provided (defaults to 1)', async () => {
+      const first = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-idem2',
+        transactionId: 't-idem2',
+      });
+      const second = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-idem2',
+        transactionId: 't-idem2',
+      });
+      expect(second.id).toBe(first.id);
+    });
+  });
 });

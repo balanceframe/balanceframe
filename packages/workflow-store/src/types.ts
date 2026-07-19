@@ -204,6 +204,11 @@ export interface TransitionReviewInput {
   readonly metadata?: Record<string, unknown>;
   /** Expected optimistic-lock version; must match current item version. */
   readonly expectedVersion: number;
+  /**
+   * When transitioning to `superseded`, the ID of the review item that
+   * supersedes this one (establishes the successor link).
+   */
+  readonly supersededBy?: string;
 }
 
 /** An audited action recording a review-item status transition. */

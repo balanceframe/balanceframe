@@ -218,6 +218,18 @@ function mockProtocol(): {
 function baseInput(overrides: Partial<CommandInput> = {}): CommandInput {
   return {
     args: [],
+    mode: 'reviewAndApply',
+    actorId: 'usr_test',
+    requestId: 'req_test',
+    ledger: { mockLedger: true },
+    freshness: null,
+    ...overrides,
+  };
+}
+
+function observeInput(overrides: Partial<CommandInput> = {}): CommandInput {
+  return {
+    args: [],
     mode: 'observe',
     actorId: 'usr_test',
     requestId: 'req_test',
@@ -366,77 +378,171 @@ describe('routeCommand — observe mode blocks review actions', () => {
 // ---------------------------------------------------------------------------
 
 describe('ReviewActionResult — envelope field presence', () => {
-  it('has all core envelope fields', () => {
-    const result: ReviewActionResult = {
-      reviewId: 'rev_001',
-      action: 'approved',
-      fromStatus: 'pending_review',
-      toStatus: 'approved',
-      timestamp: '2026-07-19T00:00:00Z',
-      correlationId: 'corr_001',
-      actorId: 'usr_test',
-      reversible: true,
-      nextItemId: 'rev_next',
-    };
-    expect(result.reviewId).toBe('rev_001');
-    expect(result.action).toMatch(/^(approved|corrected|rejected|skipped|undone)$/);
-    expect(typeof result.reversible).toBe('boolean');
-    expect(typeof result.nextItemId).toBe('string');
-    expect(result.correlationId).toBeTruthy();
-    expect(result.fromStatus).toBeTruthy();
-    expect(result.toStatus).toBeTruthy();
+  it('has all core envelope fields from handler output', async () => {
+    const { protocol } = mockProtocol();
+    const input = baseInput({ analysisProtocol: protocol });
+    const envelope = await reviewApproveAnalysis(input, 'rev_001');
+
+    expect(envelope.status).toBe('ok');
+    expect(envelope.result).toBeTruthy();
+    expect(envelope.result.reviewId).toBe('rev_001');
+    expect(envelope.result.action).toMatch(/^(approved|corrected|rejected|skipped|undone)$/);
+    expect(typeof envelope.result.reversible).toBe('boolean');
+    expect(typeof envelope.result.nextItemId).toBe('string');
+    expect(envelope.result.correlationId).toBeTruthy();
+    expect(envelope.result.fromStatus).toBeTruthy();
+    expect(envelope.result.toStatus).toBeTruthy();
+    expect(envelope.authorization).toBeTruthy();
+    expect(envelope.schemaVersion).toBeTruthy();
   });
 
-  it('nextItemId can be null (end of queue)', () => {
-    const result: ReviewActionResult = {
-      reviewId: 'rev_end',
-      action: 'skipped',
-      fromStatus: 'pending_review',
-      toStatus: 'skipped',
-      timestamp: '2026-07-19T00:00:00Z',
-      correlationId: 'corr_end',
-      actorId: 'usr_test',
-      reversible: false,
-      nextItemId: null,
-    };
-    expect(result.nextItemId).toBeNull();
+  it('nextItemId can be null (end of queue)', async () => {
+    const { protocol } = mockProtocol();
+    const input = baseInput({ analysisProtocol: protocol });
+    const envelope = await reviewCorrectAnalysis(input, 'rev_end', 'cat_xyz');
+
+    expect(envelope.status).toBe('ok');
+    expect(envelope.result.nextItemId).toBeNull();
   });
 });
 
 describe('ReviewBulkActionResult — envelope field presence', () => {
-  it('aggregates per-item results', () => {
-    const result: ReviewBulkActionResult = {
-      total: 3,
-      succeeded: 2,
-      failed: 1,
-      results: [
-        { reviewId: 'rev_a', action: 'approved', status: 'ok', fromStatus: 'pending_review', toStatus: 'approved' },
-        { reviewId: 'rev_b', action: 'approved', status: 'ok', fromStatus: 'pending_review', toStatus: 'approved' },
-        { reviewId: 'rev_c', action: 'approved', status: 'error', fromStatus: 'pending_review', toStatus: 'pending_review', error: 'Stale conflict' },
-      ],
-    };
-    expect(result.total).toBe(3);
-    expect(result.succeeded).toBe(2);
-    expect(result.failed).toBe(1);
-    expect(result.results[2].error).toBe('Stale conflict');
+  it('aggregates per-item results from handler output', async () => {
+    const { protocol } = mockProtocol();
+    const input = baseInput({ analysisProtocol: protocol });
+    const ids = ['rev_a', 'rev_b', 'rev_c'];
+    const envelope = await reviewApproveBulkAnalysis(input, ids);
+
+    expect(envelope.status).toBe('ok');
+    expect(envelope.result.total).toBe(3);
+    expect(envelope.result.succeeded).toBe(3);
+    expect(envelope.result.failed).toBe(0);
+    expect(envelope.result.results).toHaveLength(3);
+    expect(envelope.result.results[0].status).toBe('ok');
   });
 });
 
 describe('ReviewGroupResult — envelope field presence', () => {
-  it('contains homogeneous items with aggregate totals', () => {
-    const result: ReviewGroupResult = {
-      items: [
-        mockReviewItem({ reviewId: 'rev_a' }),
-        mockReviewItem({ reviewId: 'rev_b' }),
-      ],
-      homogeneous: true,
-      totalAmount: mockMoney('10000', 'USD'),
-      itemCount: 2,
-    };
-    expect(result.items).toHaveLength(2);
-    expect(result.homogeneous).toBe(true);
-    expect(result.itemCount).toBe(2);
+  it('contains homogeneous items with aggregate totals from handler output', async () => {
+    const { protocol } = mockProtocol();
+    const input = baseInput({ analysisProtocol: protocol });
+    const ids = ['rev_a', 'rev_b'];
+    const envelope = await reviewGroupAnalysis(input, ids);
+
+    expect(envelope.status).toBe('ok');
+    expect(envelope.result.items).toHaveLength(2);
+    expect(envelope.result.homogeneous).toBe(true);
+    expect(envelope.result.itemCount).toBe(2);
+    expect(envelope.result.totalAmount).toBeTruthy();
   });
+});
+
+// ---------------------------------------------------------------------------
+// Observe mode blocks review action analysis handlers
+// ---------------------------------------------------------------------------
+
+describe('review handler — observe mode blocks review actions', () => {
+  const cases: Array<{
+    name: string;
+    call: (input: CommandInput) => Promise<ResponseEnvelope>;
+  }> = [
+    { name: 'approve', call: (i) => reviewApproveAnalysis(i, 'rev_test') },
+    { name: 'correct', call: (i) => reviewCorrectAnalysis(i, 'rev_test', 'cat_test') },
+    { name: 'reject', call: (i) => reviewRejectAnalysis(i, 'rev_test') },
+    { name: 'skip', call: (i) => reviewSkipAnalysis(i, 'rev_test') },
+    { name: 'undo', call: (i) => reviewUndoAnalysis(i, 'rev_test') },
+    { name: 'approve-bulk', call: (i) => reviewApproveBulkAnalysis(i, ['rev_test']) },
+    { name: 'group', call: (i) => reviewGroupAnalysis(i, ['rev_test']) },
+  ];
+
+  for (const { name, call } of cases) {
+    it(`'${name}' returns write_rejected in observe mode`, async () => {
+      const { protocol } = mockProtocol();
+      const input = observeInput({ analysisProtocol: protocol });
+      const envelope = await call(input);
+      expect(envelope.status).toBe('error');
+      expect(envelope.error!.code).toBe('write_rejected');
+      expect(envelope.error!.reasonCodes).toContain(ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Provider failure tests for all review actions
+// ---------------------------------------------------------------------------
+
+function throwingProtocol(): AnalysisProtocol {
+  return {
+    async pendingReview() { return {} as PendingReviewResult; },
+    async reviewShow() { return {} as ReviewDetailResult; },
+    async budgetSummary() { return {} as BudgetSummaryResult; },
+    async reviewApprove() { throw new Error('Provider unreachable'); },
+    async reviewCorrect() { throw new Error('Provider unreachable'); },
+    async reviewReject() { throw new Error('Provider unreachable'); },
+    async reviewSkip() { throw new Error('Provider unreachable'); },
+    async reviewUndo() { throw new Error('Provider unreachable'); },
+    async reviewApproveBulk() { throw new Error('Provider unreachable'); },
+    async reviewGroup() { throw new Error('Provider unreachable'); },
+  };
+}
+
+describe('review handler — provider failure returns analysis_failed', () => {
+  const cases: Array<{
+    name: string;
+    call: (input: CommandInput) => Promise<ResponseEnvelope>;
+  }> = [
+    { name: 'approve', call: (i) => reviewApproveAnalysis(i, 'rev_test') },
+    { name: 'correct', call: (i) => reviewCorrectAnalysis(i, 'rev_test', 'cat_test') },
+    { name: 'reject', call: (i) => reviewRejectAnalysis(i, 'rev_test') },
+    { name: 'skip', call: (i) => reviewSkipAnalysis(i, 'rev_test') },
+    { name: 'undo', call: (i) => reviewUndoAnalysis(i, 'rev_test') },
+    { name: 'approve-bulk', call: (i) => reviewApproveBulkAnalysis(i, ['rev_test']) },
+    { name: 'group', call: (i) => reviewGroupAnalysis(i, ['rev_test']) },
+  ];
+
+  for (const { name, call } of cases) {
+    it(`'${name}' returns analysis_failed when protocol throws`, async () => {
+      const input = baseInput({ analysisProtocol: throwingProtocol() });
+      const envelope = await call(input);
+      expect(envelope.status).toBe('error');
+      expect(envelope.error!.code).toBe('analysis_failed');
+      expect(envelope.error!.message).toContain('Provider unreachable');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Analysis-only protocol compatibility
+// ---------------------------------------------------------------------------
+
+describe('Analysis-only protocol compatibility', () => {
+  const analysisOnlyProtocol: AnalysisProtocol = {
+    async pendingReview() { return {} as PendingReviewResult; },
+    async reviewShow() { return {} as ReviewDetailResult; },
+    async budgetSummary() { return {} as BudgetSummaryResult; },
+  };
+
+  const cases: Array<{
+    name: string;
+    call: (input: CommandInput) => Promise<ResponseEnvelope>;
+  }> = [
+    { name: 'approve', call: (i) => reviewApproveAnalysis(i, 'rev_test') },
+    { name: 'correct', call: (i) => reviewCorrectAnalysis(i, 'rev_test', 'cat_test') },
+    { name: 'reject', call: (i) => reviewRejectAnalysis(i, 'rev_test') },
+    { name: 'skip', call: (i) => reviewSkipAnalysis(i, 'rev_test') },
+    { name: 'undo', call: (i) => reviewUndoAnalysis(i, 'rev_test') },
+    { name: 'approve-bulk', call: (i) => reviewApproveBulkAnalysis(i, ['rev_test']) },
+    { name: 'group', call: (i) => reviewGroupAnalysis(i, ['rev_test']) },
+  ];
+
+  for (const { name, call } of cases) {
+    it(`'${name}' returns no_analysis_protocol when review method is missing`, async () => {
+      const input = baseInput({ analysisProtocol: analysisOnlyProtocol });
+      const envelope = await call(input);
+      expect(envelope.status).toBe('error');
+      expect(envelope.error!.code).toBe('no_analysis_protocol');
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -728,23 +834,44 @@ describe('Review action error guard parity', () => {
 // ---------------------------------------------------------------------------
 
 describe('Review action options propagation', () => {
-  it('passes options to protocol.reviewApprove', async () => {
+  it('passes options to protocol.reviewApprove with actorId and requestId merged', async () => {
     const { protocol, calls } = mockProtocol();
     const input = baseInput({ analysisProtocol: protocol });
     await reviewApproveAnalysis(input, 'rev_abc', { message: 'Looks good' });
 
-    expect(calls.reviewApprove[0]).toMatchObject({
-      options: { message: 'Looks good' },
+    expect(calls.reviewApprove).toHaveLength(1);
+    const opts = calls.reviewApprove[0] as { options?: Record<string, unknown> };
+    expect(opts.options).toMatchObject({
+      message: 'Looks good',
+      actorId: 'usr_test',
+      requestId: 'req_test',
     });
   });
 
-  it('passes reason to protocol.reviewReject', async () => {
+  it('passes reason to protocol.reviewReject with actorId and requestId merged', async () => {
     const { protocol, calls } = mockProtocol();
     const input = baseInput({ analysisProtocol: protocol });
     await reviewRejectAnalysis(input, 'rev_abc', { reason: 'wrong_category' });
 
-    expect(calls.reviewReject[0]).toMatchObject({
-      options: { reason: 'wrong_category' },
+    expect(calls.reviewReject).toHaveLength(1);
+    const opts = calls.reviewReject[0] as { options?: Record<string, unknown> };
+    expect(opts.options).toMatchObject({
+      reason: 'wrong_category',
+      actorId: 'usr_test',
+      requestId: 'req_test',
+    });
+  });
+
+  it('merges actorId and requestId even when no user options provided', async () => {
+    const { protocol, calls } = mockProtocol();
+    const input = baseInput({ analysisProtocol: protocol });
+    await reviewSkipAnalysis(input, 'rev_abc');
+
+    expect(calls.reviewSkip).toHaveLength(1);
+    const opts = calls.reviewSkip[0] as { options?: Record<string, unknown> };
+    expect(opts.options).toMatchObject({
+      actorId: 'usr_test',
+      requestId: 'req_test',
     });
   });
 });

@@ -29,6 +29,7 @@ import {
   type ConnectionMode,
   type AnalysisProtocol,
   type LifecycleCallbacks,
+  ApplicationError,
   okResponse,
   errorResponse,
   ErrorInfo,
@@ -695,6 +696,16 @@ export async function main(
         throw new Error(`Unhandled command: ${routed.command}`);
     }
   } catch (err) {
+    if (err instanceof ApplicationError) {
+      const info = new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      });
+      const envelope = errorResponse(requestId, info);
+      return JSON.stringify(envelope, null, 2);
+    }
     if (err instanceof Error) {
       const info = new ErrorInfo({
         code: 'cli_error',
