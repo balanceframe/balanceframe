@@ -22,6 +22,13 @@ import type {
   FailureRecord,
   EnqueueJobInput,
   WorkflowStore,
+  ReviewItem,
+  ReviewStatus,
+  ReviewAction,
+  ReviewListOptions,
+  TransitionReviewInput,
+  CreateReviewItemInput,
+  TransitionReviewResult,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -75,6 +82,72 @@ function rowToFailure(row: FailureRow): FailureRecord {
   };
 }
 
+/** Map a raw DB row to a typed ReviewItem. */
+function rowToReviewItem(row: ReviewItemRow): ReviewItem {
+  return {
+    id: row.id,
+    suggestionId: row.suggestion_id,
+    budgetId: row.budget_id,
+    transactionId: row.transaction_id,
+    categoryId: row.category_id,
+    classifier: row.classifier,
+    promptVersion: row.prompt_version,
+    transactionVersion: row.transaction_version,
+    status: row.status as ReviewStatus,
+    correlationId: row.correlation_id,
+    assignedReviewerId: row.assigned_reviewer_id,
+    approvedBy: JSON.parse(row.approved_by) as string[],
+    reviewersRequired: row.reviewers_required,
+    priority: row.priority,
+    evidence: JSON.parse(row.evidence) as Record<string, unknown>,
+    provenance: row.provenance,
+    supersededBy: row.superseded_by,
+    supersededReason: row.superseded_reason,
+    freshnessExpiresAt: row.freshness_expires_at,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Map a raw DB row to a typed ReviewAction. */
+function rowToReviewAction(row: ReviewActionRow): ReviewAction {
+  return {
+    id: row.id,
+    reviewItemId: row.review_item_id,
+    fromStatus: row.from_status as ReviewStatus,
+    toStatus: row.to_status as ReviewStatus,
+    actor: row.actor,
+    reason: row.reason,
+    metadata: JSON.parse(row.metadata) as Record<string, unknown>,
+    createdAt: row.created_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Review transition validation
+// ---------------------------------------------------------------------------
+
+/** Allowed transitions between review statuses. */
+const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
+  discovered: ['suggestion_generated', 'pending_review', 'superseded'],
+  suggestion_generated: ['pending_review', 'skipped', 'superseded'],
+  pending_review: ['approved', 'rejected', 'skipped', 'superseded'],
+  approved: ['correcting', 'pending_review', 'superseded'],
+  correcting: ['applied', 'apply_failed', 'pending_review', 'superseded'],
+  applied: ['superseded'],
+  apply_failed: ['correcting', 'pending_review', 'superseded'],
+  rejected: ['superseded'],
+  skipped: ['superseded'],
+  superseded: [],
+};
+
+/** Statuses for which `pending_review` is an undo, not a forward transition. */
+const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting'];
+
+/** Terminal statuses that cannot transition forward. */
+const TERMINAL_STATUSES: ReviewStatus[] = ['applied', 'apply_failed', 'rejected', 'skipped', 'superseded'];
+
 // ---------------------------------------------------------------------------
 // Row shapes (internal, matching DB schema)
 // ---------------------------------------------------------------------------
@@ -102,6 +175,42 @@ interface JobRow {
   claim_expires_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface ReviewItemRow {
+  id: string;
+  suggestion_id: string | null;
+  budget_id: string;
+  transaction_id: string;
+  category_id: string;
+  classifier: string;
+  prompt_version: string;
+  transaction_version: number;
+  status: string;
+  correlation_id: string | null;
+  assigned_reviewer_id: string | null;
+  approved_by: string;
+  reviewers_required: number;
+  priority: number;
+  evidence: string;
+  provenance: string;
+  superseded_by: string | null;
+  superseded_reason: string | null;
+  freshness_expires_at: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ReviewActionRow {
+  id: string;
+  review_item_id: string;
+  from_status: string;
+  to_status: string;
+  actor: string;
+  reason: string | null;
+  metadata: string;
+  created_at: string;
 }
 
 interface FailureRow {
@@ -146,6 +255,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectLatestFailure: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectPendingJobs: null as unknown as ReturnType<DatabaseType['prepare']>,
     failJobStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertReviewItem: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectReviewItem: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectReviewByIssue: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReviewItems: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReviewItemsByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReviewItemsByCorrelation: null as unknown as ReturnType<DatabaseType['prepare']>,
+    transitionReviewItemStale: null as unknown as ReturnType<DatabaseType['prepare']>,
+    transitionReviewItemUpdate: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertReviewAction: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectReviewActions: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateApprovedBy: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectReviewItemStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectReviewItemsByIds: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
@@ -211,6 +333,55 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
       CREATE INDEX IF NOT EXISTS idx_failures_job
         ON failure_records(job_id);
+
+      CREATE TABLE IF NOT EXISTS review_items (
+        id                   TEXT PRIMARY KEY,
+        suggestion_id        TEXT,
+        budget_id            TEXT NOT NULL,
+        transaction_id       TEXT NOT NULL,
+        category_id          TEXT NOT NULL,
+        classifier           TEXT NOT NULL,
+        prompt_version       TEXT NOT NULL DEFAULT '',
+        transaction_version  INTEGER NOT NULL DEFAULT 0,
+        status               TEXT NOT NULL DEFAULT 'discovered',
+        correlation_id       TEXT,
+        assigned_reviewer_id TEXT,
+        approved_by          TEXT NOT NULL DEFAULT '[]',
+        reviewers_required   INTEGER NOT NULL DEFAULT 1,
+        priority             INTEGER NOT NULL DEFAULT 0,
+        evidence             TEXT NOT NULL DEFAULT '{}',
+        provenance           TEXT NOT NULL,
+        superseded_by        TEXT,
+        superseded_reason    TEXT,
+        freshness_expires_at TEXT,
+        version              INTEGER NOT NULL DEFAULT 1,
+        created_at           TEXT NOT NULL,
+        updated_at           TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_review_items_status
+        ON review_items(status);
+
+      CREATE INDEX IF NOT EXISTS idx_review_items_correlation
+        ON review_items(correlation_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_review_items_active_issue
+        ON review_items(budget_id, transaction_id, category_id, classifier)
+        WHERE status != 'superseded';
+
+      CREATE TABLE IF NOT EXISTS review_actions (
+        id               TEXT PRIMARY KEY,
+        review_item_id   TEXT NOT NULL REFERENCES review_items(id),
+        from_status      TEXT NOT NULL,
+        to_status        TEXT NOT NULL,
+        actor            TEXT NOT NULL,
+        reason           TEXT,
+        metadata         TEXT NOT NULL DEFAULT '{}',
+        created_at       TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_review_actions_item
+        ON review_actions(review_item_id);
     `);
   }
 
@@ -358,6 +529,109 @@ export class SqliteWorkflowStore implements WorkflowStore {
       SELECT * FROM candidate_jobs
        WHERE status = 'pending'
        ORDER BY created_at ASC
+    `);
+
+    // ── Review items ───────────────────────────────────────────────────
+
+    this.stmt.insertReviewItem = this.db.prepare(`
+      INSERT INTO review_items (id, suggestion_id, budget_id, transaction_id,
+                                category_id, classifier, prompt_version,
+                                transaction_version, status, correlation_id,
+                                assigned_reviewer_id, approved_by,
+                                reviewers_required, priority, evidence,
+                                provenance, superseded_by, superseded_reason,
+                                freshness_expires_at, version, created_at,
+                                updated_at)
+      VALUES (@id, @suggestionId, @budgetId, @transactionId,
+              @categoryId, @classifier, @promptVersion,
+              @transactionVersion, @status, @correlationId,
+              @assignedReviewerId, @approvedBy,
+              @reviewersRequired, @priority, @evidence,
+              @provenance, @supersededBy, @supersededReason,
+              @freshnessExpiresAt, @version, @createdAt,
+              @updatedAt)
+      ON CONFLICT(budget_id, transaction_id, category_id, classifier)
+        WHERE status != 'superseded'
+        DO NOTHING
+      RETURNING *
+    `);
+
+    this.stmt.selectReviewItem = this.db.prepare(`
+      SELECT * FROM review_items WHERE id = ?
+    `);
+
+    this.stmt.selectReviewByIssue = this.db.prepare(`
+      SELECT * FROM review_items
+       WHERE budget_id = @budgetId
+         AND transaction_id = @transactionId
+         AND category_id = @categoryId
+         AND classifier = @classifier
+         AND status != 'superseded'
+       LIMIT 1
+    `);
+
+    this.stmt.listReviewItems = this.db.prepare(`
+      SELECT * FROM review_items
+       WHERE 1=1
+       ORDER BY
+         CASE WHEN status IN ('applied', 'apply_failed', 'rejected', 'skipped', 'superseded') THEN 1 ELSE 0 END ASC,
+         priority DESC,
+         created_at ASC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listReviewItemsByStatus = this.db.prepare(`
+      SELECT * FROM review_items
+       WHERE status = @status
+       ORDER BY priority DESC, created_at ASC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listReviewItemsByCorrelation = this.db.prepare(`
+      SELECT * FROM review_items
+       WHERE correlation_id = @correlationId
+       ORDER BY created_at ASC
+    `);
+
+    this.stmt.transitionReviewItemUpdate = this.db.prepare(`
+      UPDATE review_items
+         SET status = @toStatus,
+             superseded_reason = @reason,
+             updated_at = @now,
+             version = version + 1
+       WHERE id = @id
+         AND status = @fromStatus
+         AND version = @expectedVersion
+    `);
+
+    this.stmt.updateApprovedBy = this.db.prepare(`
+      UPDATE review_items
+         SET approved_by = @approvedBy,
+             updated_at = @now,
+             version = CASE WHEN @isNew THEN version + 1 ELSE version END
+       WHERE id = @id
+         AND version = @expectedVersion
+    `);
+
+    this.stmt.insertReviewAction = this.db.prepare(`
+      INSERT INTO review_actions (id, review_item_id, from_status, to_status,
+                                  actor, reason, metadata, created_at)
+      VALUES (@id, @reviewItemId, @fromStatus, @toStatus,
+              @actor, @reason, @metadata, @createdAt)
+    `);
+
+    this.stmt.selectReviewActions = this.db.prepare(`
+      SELECT * FROM review_actions
+       WHERE review_item_id = ?
+       ORDER BY created_at ASC
+    `);
+
+    this.stmt.selectReviewItemStatus = this.db.prepare(`
+      SELECT id, status, version, approved_by FROM review_items WHERE id = ?
+    `);
+
+    this.stmt.selectReviewItemsByIds = this.db.prepare(`
+      SELECT id, status, version, approved_by FROM review_items WHERE id = ?
     `);
   }
 
@@ -619,5 +893,309 @@ export class SqliteWorkflowStore implements WorkflowStore {
   ): Promise<CandidateJob | null> {
     const row = this.stmt.selectJobByCandidate.get({ jobType, candidateId }) as JobRow | undefined;
     return row ? rowToJob(row) : null;
+  }
+
+  // ── Review lifecycle ──────────────────────────────────────────────
+
+  async createReviewItem(input: CreateReviewItemInput): Promise<ReviewItem> {
+    const id = randomUUID();
+    const now = nowISO();
+
+    // Idempotent insert — the unique partial index prevents duplicates
+    // for non-superseded items sharing the same issue key.
+    const row = this.stmt.insertReviewItem.get({
+      id,
+      suggestionId: input.suggestionId ?? null,
+      budgetId: input.budgetId,
+      transactionId: input.transactionId,
+      categoryId: input.categoryId,
+      classifier: input.classifier,
+      promptVersion: input.promptVersion ?? '',
+      transactionVersion: input.transactionVersion ?? 1,
+      status: 'discovered',
+      correlationId: input.correlationId ?? null,
+      assignedReviewerId: input.assignedReviewerId ?? null,
+      approvedBy: '[]',
+      reviewersRequired: input.reviewersRequired ?? 1,
+      priority: input.priority ?? 0,
+      evidence: JSON.stringify(input.evidence ?? {}),
+      provenance: input.provenance,
+      supersededBy: null,
+      supersededReason: null,
+      freshnessExpiresAt: input.freshnessExpiresAt ?? null,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    }) as ReviewItemRow | undefined;
+
+    if (!row) {
+      // Duplicate issue key — fetch the existing active item
+      const existing = this.stmt.selectReviewByIssue.get({
+        budgetId: input.budgetId,
+        transactionId: input.transactionId,
+        categoryId: input.categoryId,
+        classifier: input.classifier,
+      }) as ReviewItemRow | undefined;
+      if (!existing) throw new Error('Failed to create or retrieve review item');
+      return rowToReviewItem(existing);
+    }
+
+    return rowToReviewItem(row);
+  }
+
+  async getReviewItem(id: string): Promise<ReviewItem | null> {
+    const row = this.stmt.selectReviewItem.get(id) as ReviewItemRow | undefined;
+    return row ? rowToReviewItem(row) : null;
+  }
+
+  async findReviewByIssue(
+    budgetId: string,
+    transactionId: string,
+    categoryId: string,
+    classifier: string,
+  ): Promise<ReviewItem | null> {
+    const row = this.stmt.selectReviewByIssue.get({
+      budgetId, transactionId, categoryId, classifier,
+    }) as ReviewItemRow | undefined;
+    return row ? rowToReviewItem(row) : null;
+  }
+
+  async listReviewItems(options?: ReviewListOptions): Promise<ReviewItem[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+
+    let rows: ReviewItemRow[];
+    if (options?.status) {
+      rows = this.stmt.listReviewItemsByStatus.all({
+        status: options.status,
+        limit,
+        offset,
+      }) as ReviewItemRow[];
+    } else {
+      rows = this.stmt.listReviewItems.all({ limit, offset }) as ReviewItemRow[];
+    }
+    return rows.map(rowToReviewItem);
+  }
+
+  async listReviewItemsByCorrelation(correlationId: string): Promise<ReviewItem[]> {
+    const rows = this.stmt.listReviewItemsByCorrelation.all({ correlationId }) as ReviewItemRow[];
+    return rows.map(rowToReviewItem);
+  }
+
+  async transitionReviewItem(
+    id: string,
+    input: TransitionReviewInput,
+  ): Promise<ReviewItem> {
+    const now = nowISO();
+    const current = this.stmt.selectReviewItemStatus.get(id) as { id: string; status: string; version: number; approved_by: string } | undefined;
+    if (!current) throw new Error(`Review item ${id} not found`);
+
+    const fromStatus = current.status as ReviewStatus;
+    const toStatus = input.toStatus;
+
+    // Idempotent: already at target status
+    if (fromStatus === toStatus) {
+      const full = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+      return rowToReviewItem(full);
+    }
+
+    // Validate transition
+    if (fromStatus === 'superseded') {
+      throw new Error(`Cannot transition from superseded status`);
+    }
+    const allowed = REVIEW_TRANSITIONS[fromStatus];
+    if (!allowed.includes(toStatus)) {
+      throw new Error(
+        `Cannot transition review item ${id} from '${fromStatus}' to '${toStatus}'`,
+      );
+    }
+
+    // Special handling for two-reviewer approval
+    if (toStatus === 'approved') {
+      const approvedBy: string[] = JSON.parse(current.approved_by) as string[];
+      if (approvedBy.includes(input.actor)) {
+        // Same actor approving again — idempotent, return current item
+        const full = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+        return rowToReviewItem(full);
+      }
+      approvedBy.push(input.actor);
+
+      // Need the full item to check reviewersRequired
+      const fullRow = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+      const needed = fullRow.reviewers_required;
+
+      if (approvedBy.length < needed) {
+        // Not enough reviewers yet — just record the approval, stay in current status
+        const updatedBy = JSON.stringify(approvedBy);
+        const result = this.stmt.updateApprovedBy.run({
+          id,
+          approvedBy: updatedBy,
+          now,
+          expectedVersion: input.expectedVersion,
+          isNew: 1, // increment version since we added a reviewer
+        });
+
+        if (result.changes === 0) {
+          throw new Error(`Version conflict on review item ${id}: expected ${input.expectedVersion}`);
+        }
+
+        // Record action for the approval step (even though status didn't change)
+        this.stmt.insertReviewAction.run({
+          id: randomUUID(),
+          reviewItemId: id,
+          fromStatus: fromStatus,
+          toStatus: fromStatus, // stayed same
+          actor: input.actor,
+          reason: input.reason ?? `Approved by ${input.actor} (${approvedBy.length}/${needed} reviewers)`,
+          metadata: JSON.stringify(input.metadata ?? {}),
+          createdAt: now,
+        });
+
+        const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+        return rowToReviewItem(updated);
+      }
+      // Else: enough reviewers — fall through to the full transition below
+    }
+
+    // Perform the transition atomically
+    const actionId = randomUUID();
+    const txn = this.db.transaction(() => {
+      const result = this.stmt.transitionReviewItemUpdate.run({
+        id,
+        fromStatus,
+        toStatus,
+        expectedVersion: input.expectedVersion,
+        reason: toStatus === 'superseded' ? (input.reason ?? null) : null,
+        now,
+      });
+
+      if (result.changes === 0) {
+        // Version conflict or state changed
+        throw new Error(
+          `Version conflict on review item ${id}: expected ${input.expectedVersion}, ` +
+          `current version may have changed`,
+        );
+      }
+
+      this.stmt.insertReviewAction.run({
+        id: actionId,
+        reviewItemId: id,
+        fromStatus,
+        toStatus,
+        actor: input.actor,
+        reason: input.reason ?? null,
+        metadata: JSON.stringify(input.metadata ?? {}),
+        createdAt: now,
+      });
+    });
+
+    txn();
+
+    const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+    return rowToReviewItem(updated);
+  }
+
+  async transitionReviewItems(
+    ids: string[],
+    toStatus: ReviewStatus,
+    actor: string,
+    reason?: string,
+  ): Promise<TransitionReviewResult[]> {
+    if (ids.length === 0) return [];
+
+    // Read current statuses for all items
+    const items = ids.map(id => {
+      const row = this.stmt.selectReviewItemsByIds.get(id) as { id: string; status: string; version: number } | undefined;
+      return row ? { id: row.id, status: row.status as ReviewStatus, version: row.version } : null;
+    }).filter((x): x is NonNullable<typeof x> => x !== null);
+
+    // Heterogeneous group check: all must share the same current status
+    const firstStatus = items[0]?.status;
+    if (!firstStatus) {
+      return ids.map(id => ({
+        itemId: id,
+        success: false,
+        item: null,
+        error: 'Not found',
+      }));
+    }
+
+    if (!items.every(i => i.status === firstStatus)) {
+      throw new Error(
+        `Heterogeneous group: all items must have the same current status ` +
+        `(found items with statuses: ${[...new Set(items.map(i => i.status))].join(', ')})`,
+      );
+    }
+
+    // Validate the transition for this status group
+    const allowed = REVIEW_TRANSITIONS[firstStatus];
+    if (!allowed.includes(toStatus)) {
+      throw new Error(
+        `Cannot transition from '${firstStatus}' to '${toStatus}'`,
+      );
+    }
+
+    // Transition each item atomically, collecting per-item results
+    const results: TransitionReviewResult[] = [];
+
+    for (const item of items) {
+      try {
+        const transitioned = await this.transitionReviewItem(item.id, {
+          toStatus,
+          actor,
+          reason,
+          expectedVersion: item.version,
+        });
+        results.push({
+          itemId: item.id,
+          success: true,
+          item: transitioned,
+          error: null,
+        });
+      } catch (err) {
+        results.push({
+          itemId: item.id,
+          success: false,
+          item: null,
+          error: (err as Error).message,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  async undoReviewTransition(
+    id: string,
+    actor: string,
+    reason?: string,
+    expectedVersion?: number,
+  ): Promise<ReviewItem> {
+    const current = this.stmt.selectReviewItemStatus.get(id) as { id: string; status: string; version: number } | undefined;
+    if (!current) throw new Error(`Review item ${id} not found`);
+
+    const fromStatus = current.status as ReviewStatus;
+
+    // Only approved -> pending_review and correcting -> pending_review are reversible
+    if (!UNDO_SOURCES.includes(fromStatus)) {
+      throw new Error(
+        `Cannot undo from '${fromStatus}': only ${UNDO_SOURCES.join(', ')} support undo`,
+      );
+    }
+
+    const version = expectedVersion ?? current.version;
+
+    return this.transitionReviewItem(id, {
+      toStatus: 'pending_review',
+      actor,
+      reason: reason ?? `Undo from '${fromStatus}'`,
+      metadata: { undo: true, previousStatus: fromStatus },
+      expectedVersion: version,
+    });
+  }
+
+  async getReviewActions(reviewItemId: string): Promise<ReviewAction[]> {
+    const rows = this.stmt.selectReviewActions.all(reviewItemId) as ReviewActionRow[];
+    return rows.map(rowToReviewAction);
   }
 }

@@ -42,7 +42,18 @@ importers:
 
   apps/server: {}
 
-  apps/web: {}
+  apps/web:
+    dependencies:
+      '@balanceframe/workflow-store':
+        specifier: workspace:*
+        version: link:../../packages/workflow-store
+    devDependencies:
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@20.19.43)
 
   crates/node-binding:
     devDependencies:
