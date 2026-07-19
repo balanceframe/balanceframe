@@ -8,10 +8,10 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Build and test
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  linux:
+    name: Linux x86_64 (full suite)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -23,17 +23,86 @@ jobs:
       - name: Enable Nix binary cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Validate the flake
+      - name: Validate the flake and development shell
         run: nix flake check --print-build-logs
 
-      - name: Build, lint, and test the workspace
+      - name: Install dependencies
+        run: nix develop --command pnpm install --frozen-lockfile
+
+      - name: Build workspace
+        run: nix develop --command pnpm build
+
+      - name: Typecheck workspace
+        run: nix develop --command pnpm typecheck
+
+      - name: Lint workspace
+        run: nix develop --command pnpm lint
+
+      - name: Run JavaScript and TypeScript tests
+        run: nix develop --command pnpm test
+
+      - name: Run Rust tests
+        run: nix develop --command cargo test --workspace
+
+      - name: Run Rust clippy
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+  portable:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS x86_64
+            runner: macos-13
+          - name: macOS ARM64
+            runner: macos-14
+          - name: Windows x86_64
+            runner: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace
+        run: pnpm build
+
+      - name: Typecheck workspace
+        run: pnpm typecheck
+
+      - name: Lint workspace
+        run: pnpm lint
+
+      - name: Run portable JavaScript and TypeScript tests
         run: |
-          nix develop --command bash -euo pipefail -c '
-            pnpm install --frozen-lockfile
-            pnpm build
-            pnpm typecheck
-            pnpm lint
-            pnpm test
-            cargo test --workspace
-            cargo clippy --workspace --all-targets -- -D warnings
-          '
+          pnpm --filter @balanceframe/actual-adapter test
+          pnpm --filter @balanceframe/application test
+          pnpm --filter @balanceframe/cli test
+          pnpm --filter @balanceframe/test-contract test
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Run Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
