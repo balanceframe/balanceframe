@@ -10,9 +10,21 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
-  getActualClient, requireEnv, withActualClient,
+  getActualClient, requireEnv, withActualClient, cleanupBudget,
 } from './helpers';
-import { getBudgets, createBudget } from './actual-client.js';
+import { getBudgets, createBudget, downloadBudget } from './actual-client.js';
+
+// ---- Helpers ---------------------------------------------------------------
+
+/** Tracks budget IDs created during a test for cleanup in afterEach. */
+const createdBudgets: Array<{ budgetId: string; groupId: string }> = [];
+
+afterEach(async () => {
+  while (createdBudgets.length > 0) {
+    const b = createdBudgets.pop()!;
+    await cleanupBudget(b.budgetId, b.groupId).catch(() => {});
+  }
+});
 
 // ---- Setup / Teardown -----------------------------------------------------
 
@@ -76,9 +88,11 @@ describe('01 — Connection & Budget Discovery', () => {
       });
       expect(id).toBeDefined();
       expect(groupId).toBeDefined();
+      createdBudgets.push({ budgetId: id, groupId });
       const after = await getBudgets();
       const afterNames = after.map((b: { name?: string }) => b.name ?? '');
       expect(after.length).toBeGreaterThanOrEqual(before.length);
+      expect(afterNames).toContain(`Connection-Test-Disposable-${id.slice(0, 8)}`);
     });
   });
 
@@ -93,6 +107,35 @@ describe('01 — Connection & Budget Discovery', () => {
       });
       expect(id).toBeDefined();
       expect(groupId).toBeDefined();
+      createdBudgets.push({ budgetId: id, groupId });
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Proof: Encrypted budget connection
+  // ------------------------------------------------------------------
+  it('should connect to an encrypted budget with password', async () => {
+    await withActualClient(async () => {
+      const { id: budgetId, groupId } = await createBudget({
+        name: `Encrypted-Conn-${Date.now()}`,
+        avoidUpload: false,
+      });
+      createdBudgets.push({ budgetId, groupId });
+
+      // Download with encryption password — this proves the client can
+      // complete a password-protected handshake against the server.
+      await expect(
+        downloadBudget(groupId, budgetId, { password: secretKey }),
+      ).resolves.toBeUndefined();
+
+      // After the password‑authenticated download the budget is loaded
+      // into the client. Verify it is discoverable in the budget list.
+      const budgets = await getBudgets();
+      const match = budgets.find(
+        (b: { id?: string }) => b.id === budgetId,
+      );
+      expect(match).toBeDefined();
+      expect((match as Record<string, unknown>)?.name).toContain('Encrypted-Conn-');
     });
   });
 

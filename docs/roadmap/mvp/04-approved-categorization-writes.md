@@ -28,7 +28,7 @@ The responsive web application is implemented with **Vue 3 and Nuxt 4**, using t
 
 - Adapt the existing framework-neutral `ReviewController` and shared application services rather than replacing or duplicating their state machines in Vue, Pinia, or components.
 - Keep the browser UI as a thin presentation adapter over immutable state and typed results. Keyboard, touch, CLI, and web actions must use the same capability-layer semantics and versioned contracts.
-- Server routes authenticate and validate transport requests, then call the TypeScript application layer. They must not expose Actual credentials, raw Actual methods, N-API calls, or alternate mutation paths.
+- Server routes authenticate and validate transport requests, then call the persisted workflow store (`SqliteWorkflowStore`) through thin server utilities. The `@balanceframe/application` layer owns CLI routing, lifecycle orchestration, and envelope wrapping; in-flight mutation routes use the store directly and fail closed with `STORE_UNAVAILABLE` (503) when the store cannot initialize. Routes must not expose Actual credentials, raw Actual methods, N-API calls, or alternate mutation paths. Categorization execution remains a no-op (`categorizationExecuted: false`) in Phase 4's observe‑only implementation — actual ledger writes are deferred until Phase 5.
 - Display exact proposal details, payload hash, policy version, expiry, provenance, correlation ID, and classified recovery state. The UI must never treat an API acknowledgement as verified completion.
 - Nuxt UI components must make approval, stale, unauthorized, superseded, failed, recovering, and verified-applied states distinct and accessible; component defaults never replace server authorization or policy decisions.
 

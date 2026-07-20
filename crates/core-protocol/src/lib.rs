@@ -900,6 +900,10 @@ pub fn verify_mutation(
     snapshot: &ProtocolSnapshot,
 ) -> VerificationResult {
     let mut reason_codes: Vec<String> = Vec::new();
+    // Collect *failure* reason codes separately so that diagnostic
+    // observations (e.g. category_already_matches) do not cause a
+    // false `verified: false` result.
+    let mut failure_codes: Vec<String> = Vec::new();
 
     // Transaction still exists and still has the expected current category
     let tx = match snapshot
@@ -909,10 +913,10 @@ pub fn verify_mutation(
     {
         Some(tx) => tx,
         None => {
-            reason_codes.push("transaction_not_found".into());
+            failure_codes.push("transaction_not_found".into());
             return VerificationResult {
                 verified: false,
-                reason_codes,
+                reason_codes: failure_codes,
                 message: Some(format!(
                     "Transaction {} no longer exists",
                     plan.transaction_id
@@ -923,7 +927,7 @@ pub fn verify_mutation(
 
     // Precondition: current category in snapshot matches plan expectation
     if tx.category_id != plan.current_category_id {
-        reason_codes.push("category_changed".into());
+        failure_codes.push("category_changed".into());
     }
 
     // Proposed category already matches — diagnostic observation, not an error
@@ -937,19 +941,22 @@ pub fn verify_mutation(
         .iter()
         .any(|c| c.id == plan.proposed_category_id && !c.deleted);
     if !cat_exists {
-        reason_codes.push("proposed_category_not_found".into());
+        failure_codes.push("proposed_category_not_found".into());
     }
 
-    let empty = reason_codes.is_empty();
-    if empty {
+    let verified = failure_codes.is_empty();
+    // Append failure codes after observations (failure codes come second so
+    // a consumer scanning for the first failure sees it after diagnostics).
+    reason_codes.extend(failure_codes);
+    if verified {
         reason_codes.push("postcondition_verified".into());
     }
 
     let reasons = reason_codes.clone();
     VerificationResult {
-        verified: empty,
+        verified,
         reason_codes,
-        message: if empty {
+        message: if verified {
             None
         } else {
             Some(format!("Verification failed: {:?}", reasons))
