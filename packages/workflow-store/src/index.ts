@@ -37,6 +37,7 @@ export type {
   TransitionReviewInput,
   TransitionReviewResult,
   ReviewListOptions,
+  ListProposalsOptions,
   CategorizationProposal,
   ProposalOperation,
   ProposalApproval,

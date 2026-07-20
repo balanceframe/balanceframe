@@ -215,6 +215,156 @@ describe('CategorizationProposal', () => {
     });
   });
 
+  describe('listProposals', () => {
+    it('returns empty array when no proposals exist', async () => {
+      const results = await store.listProposals();
+      expect(results).toEqual([]);
+    });
+
+    it('returns empty array when no proposals exist with superseded filter', async () => {
+      const active = await store.listProposals({ superseded: false });
+      expect(active).toEqual([]);
+
+      const superseded = await store.listProposals({ superseded: true });
+      expect(superseded).toEqual([]);
+    });
+
+    it('returns all proposals ordered by creation time descending', async () => {
+      const p1 = await store.createProposal(BASE_PROPOSAL);
+      tickSync();
+      const p2 = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: DIFFERENT_HASH,
+        transactionId: 'txn-002',
+        categoryId: 'cat-utilities',
+      });
+      tickSync();
+      const p3 = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: '3333333333333333333333333333333333333333333333333333333333333333',
+        transactionId: 'txn-003',
+        categoryId: 'cat-entertainment',
+      });
+
+      const results = await store.listProposals();
+      expect(results).toHaveLength(3);
+      // Most recent first
+      expect(results[0].id).toBe(p3.id);
+      expect(results[1].id).toBe(p2.id);
+      expect(results[2].id).toBe(p1.id);
+    });
+
+    it('returns only non-superseded proposals when superseded=false', async () => {
+      const p1 = await store.createProposal(BASE_PROPOSAL);
+      tickSync();
+      const p2 = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: DIFFERENT_HASH,
+        transactionId: 'txn-002',
+        categoryId: 'cat-utilities',
+      });
+
+      await store.supersedeProposal(p1.id);
+
+      const active = await store.listProposals({ superseded: false });
+      expect(active).toHaveLength(1);
+      expect(active[0].id).toBe(p2.id);
+    });
+
+    it('returns only superseded proposals when superseded=true', async () => {
+      const p1 = await store.createProposal(BASE_PROPOSAL);
+      tickSync();
+      const p2 = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: DIFFERENT_HASH,
+        transactionId: 'txn-002',
+        categoryId: 'cat-utilities',
+      });
+
+      await store.supersedeProposal(p1.id);
+
+      const superseded = await store.listProposals({ superseded: true });
+      expect(superseded).toHaveLength(1);
+      expect(superseded[0].id).toBe(p1.id);
+    });
+
+    it('filters by budgetId', async () => {
+      const pAlpha = await store.createProposal(BASE_PROPOSAL); // budget-alpha
+      tickSync();
+      const pBeta = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: DIFFERENT_HASH,
+        transactionId: 'txn-beta',
+        categoryId: 'cat-beta',
+        budgetId: 'budget-beta',
+      });
+
+      const alphaResults = await store.listProposals({ budgetId: 'budget-alpha' });
+      expect(alphaResults).toHaveLength(1);
+      expect(alphaResults[0].id).toBe(pAlpha.id);
+
+      const betaResults = await store.listProposals({ budgetId: 'budget-beta' });
+      expect(betaResults).toHaveLength(1);
+      expect(betaResults[0].id).toBe(pBeta.id);
+    });
+
+    it('combines budgetId and superseded filters', async () => {
+      const p1 = await store.createProposal(BASE_PROPOSAL); // budget-alpha
+      tickSync();
+      const p2 = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: DIFFERENT_HASH,
+        transactionId: 'txn-002',
+        categoryId: 'cat-utilities',
+      });
+
+      await store.supersedeProposal(p1.id);
+
+      const activeInAlpha = await store.listProposals({
+        budgetId: 'budget-alpha',
+        superseded: false,
+      });
+      expect(activeInAlpha).toHaveLength(1);
+      expect(activeInAlpha[0].id).toBe(p2.id);
+
+      const supersededInAlpha = await store.listProposals({
+        budgetId: 'budget-alpha',
+        superseded: true,
+      });
+      expect(supersededInAlpha).toHaveLength(1);
+      expect(supersededInAlpha[0].id).toBe(p1.id);
+    });
+
+    it('respects limit and offset pagination', async () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        const p = await store.createProposal({
+          ...BASE_PROPOSAL,
+          payloadHash: `${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}`,
+          transactionId: `txn-paginate-${i}`,
+        });
+        ids.unshift(p.id); // prepend because created_at DESC
+        tickSync();
+      }
+
+      const page1 = await store.listProposals({ limit: 3, offset: 0 });
+      expect(page1).toHaveLength(3);
+      expect(page1[0].id).toBe(ids[0]);
+      expect(page1[1].id).toBe(ids[1]);
+      expect(page1[2].id).toBe(ids[2]);
+
+      const page2 = await store.listProposals({ limit: 3, offset: 3 });
+      expect(page2).toHaveLength(3);
+      expect(page2[0].id).toBe(ids[3]);
+      expect(page2[1].id).toBe(ids[4]);
+      expect(page2[2].id).toBe(ids[5]);
+
+      const page4 = await store.listProposals({ limit: 3, offset: 9 });
+      expect(page4).toHaveLength(1);
+      expect(page4[0].id).toBe(ids[9]);
+    });
+  });
+
   // =======================================================================
   // ProposalApproval lifecycle
   // =======================================================================

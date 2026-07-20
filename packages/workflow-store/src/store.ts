@@ -40,6 +40,7 @@ import type {
   CreateApprovalInput,
   CreateIdempotencyInput,
   AppendAuditInput,
+  ListProposalsOptions,
   AuthorizationDisposition,
   AuthorizationResult,
   MembershipStatus,
@@ -434,6 +435,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectActiveProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
     supersedeProposalStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listProposals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listProposalsActive: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listProposalsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listProposalsByBudgetActive: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listProposalsSuperseded: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listProposalsSupersededByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertApproval: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectApproval: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectActiveApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1009,6 +1016,49 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     this.stmt.selectProposalStatus = this.db.prepare(`
       SELECT superseded_at FROM categorization_proposals WHERE id = ?
+    `);
+
+    this.stmt.listProposals = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listProposalsActive = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+       WHERE superseded_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listProposalsByBudget = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+       WHERE budget_id = @budgetId
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listProposalsByBudgetActive = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND superseded_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listProposalsSuperseded = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+       WHERE superseded_at IS NOT NULL
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listProposalsSupersededByBudget = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND superseded_at IS NOT NULL
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
     `);
 
     this.stmt.markExpiredApprovals = this.db.prepare(`
@@ -1851,6 +1901,46 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const updated = this.stmt.selectProposal.get(id) as ProposalRow;
     return rowToProposal(updated);
+  }
+
+  async listProposals(options?: ListProposalsOptions): Promise<CategorizationProposal[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+    const hasBudget = options?.budgetId != null;
+
+    let rows: ProposalRow[];
+
+    if (hasBudget) {
+      if (options?.superseded === false) {
+        rows = this.stmt.listProposalsByBudgetActive.all({
+          budgetId: options.budgetId,
+          limit,
+          offset,
+        }) as ProposalRow[];
+      } else if (options?.superseded === true) {
+        rows = this.stmt.listProposalsSupersededByBudget.all({
+          budgetId: options.budgetId,
+          limit,
+          offset,
+        }) as ProposalRow[];
+      } else {
+        rows = this.stmt.listProposalsByBudget.all({
+          budgetId: options.budgetId,
+          limit,
+          offset,
+        }) as ProposalRow[];
+      }
+    } else {
+      if (options?.superseded === false) {
+        rows = this.stmt.listProposalsActive.all({ limit, offset }) as ProposalRow[];
+      } else if (options?.superseded === true) {
+        rows = this.stmt.listProposalsSuperseded.all({ limit, offset }) as ProposalRow[];
+      } else {
+        rows = this.stmt.listProposals.all({ limit, offset }) as ProposalRow[];
+      }
+    }
+
+    return rows.map(rowToProposal);
   }
 
   // ── Proposal approval lifecycle ───────────────────────────────────

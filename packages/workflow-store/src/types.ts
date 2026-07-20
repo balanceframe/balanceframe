@@ -246,6 +246,18 @@ export interface ReviewListOptions {
   readonly offset?: number;
 }
 
+/** Options for listing categorization proposals. */
+export interface ListProposalsOptions {
+  /** Filter by superseded state. Omit for all. */
+  readonly superseded?: boolean;
+  /** Filter by budget ID. Omit for all budgets. */
+  readonly budgetId?: string;
+  /** Maximum number of proposals to return (default 50). */
+  readonly limit?: number;
+  /** Number of proposals to skip. */
+  readonly offset?: number;
+}
+
 // ---------------------------------------------------------------------------
 // WorkflowStore — public persistence contract
 // ---------------------------------------------------------------------------
@@ -457,6 +469,11 @@ export interface WorkflowStore {
     transactionId: string,
     operation: ProposalOperation,
   ): Promise<CategorizationProposal | null>;
+
+  /**
+   * List categorization proposals ordered by creation time descending.
+   */
+  listProposals(options?: ListProposalsOptions): Promise<CategorizationProposal[]>;
 
   /**
    * Supersede a proposal (and cascade-supersede its approvals).

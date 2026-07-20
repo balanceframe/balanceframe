@@ -1,26 +1,42 @@
 /**
- * GET /api/proposal — list proposals.
+ * GET /api/proposal — list categorization proposals.
  *
- * Returns a JSON envelope with an empty proposals array.
- * Schema follows the application layer's ProposalListResult type:
- *   { proposals: ProposalListItem[], total: number }
+ * Queries persisted proposals from the workflow store.
+ * Returns non-superseded proposals ordered by creation time descending.
+ *
+ * Response envelope:
+ *   { proposals: CategorizationProposal[], total: number }
  */
-export default defineEventHandler(async (event) => {
-  const requestId = crypto.randomUUID();
-  const auth = event.context.auth as { authenticated: boolean } | undefined;
 
-  return {
-    schemaVersion: '1',
-    requestId,
-    status: 'ok',
-    dataFreshness: null,
-    authorization: auth
-      ? { actorId: 'web-user', capability: 'observe', allowed: true }
-      : null,
-    result: {
-      proposals: [],
-      total: 0,
-    },
-    error: null,
-  };
+import type { CategorizationProposal } from '@balanceframe/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
+
+export default defineEventHandler(async (event) => {
+  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const requestId = crypto.randomUUID();
+
+  const wf = getWorkflowStore(event);
+  if ('error' in wf) {
+    setResponseStatus(event, 503);
+    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+  }
+
+  try {
+    const proposals = await wf.store.listProposals({ superseded: false });
+
+    return okEnvelope(
+      { proposals, total: proposals.length },
+      authInfo,
+      requestId,
+    );
+  } catch (e) {
+    setResponseStatus(event, 500);
+    return errorEnvelope(
+      'LIST_FAILED',
+      e instanceof Error ? e.message : String(e),
+      authInfo,
+      false,
+      requestId,
+    );
+  }
 });
