@@ -5,6 +5,7 @@
   "type": "module",
   "description": "BalanceFrame web frontend — responsive review surface/controller for transaction categorization",
   "scripts": {
+    "coverage": "vitest run --coverage",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -12,6 +13,8 @@
     "@balanceframe/workflow-store": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^3.0.0",
     "typescript": "^5.0.0",
     "vitest": "^3.0.0"
   }

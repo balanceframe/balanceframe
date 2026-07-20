@@ -21,6 +21,22 @@ export default defineConfig({
 
     // Fail fast on integration test regression.
     bail: 1,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'lcov', 'json'],
+      reportsDirectory: '../../../coverage/js/actual-integration',
+      include: ['src/**'],
+      exclude: [
+        'test/**',
+        '**/*.test.ts',
+        '**/*.spec.ts',
+        '**/__tests__/**',
+        '**/fixtures/**',
+        '**/node_modules/**',
+        'dist/**',
+        'build/**',
+      ],
+    },
 
     // Live proofs are deterministic and must not mask failures with retries.
     retry: 0,

@@ -1,18 +1,15 @@
 import { defineConfig } from 'vitest/config';
-import { resolve } from 'path';
-
-const srcDir = resolve(__dirname, '../../packages/workflow-store/src');
 
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/**/*.test.ts'],
+    include: ['*.test.ts'],
     testTimeout: 10_000,
     bail: 1,
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'lcov', 'json'],
-      reportsDirectory: '../../coverage/js/web',
+      reportsDirectory: '../../coverage/js/test-contract',
       include: ['src/**'],
       exclude: [
         'test/**',
@@ -25,11 +22,5 @@ export default defineConfig({
         'build/**',
       ],
     },
-    globals: true,
-  },
-  resolve: {
-    alias: [
-      { find: '@balanceframe/workflow-store', replacement: srcDir },
-    ],
   },
 });

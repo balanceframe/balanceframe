@@ -5,15 +5,17 @@
   "type": "module",
   "description": "Actual Budget API integration tests for BalanceFrame",
   "scripts": {
+    "coverage": "vitest run --coverage",
+    "pretest": "./setup-fixture-server.sh",
+    "setup": "./setup-fixture-server.sh",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:ui": "vitest --ui",
-    "setup": "./setup-fixture-server.sh",
-    "pretest": "./setup-fixture-server.sh"
+    "test:ui": "vitest --ui"
   },
   "devDependencies": {
     "@actual-app/api": "^26.7.0",
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^3.0.0",
     "dotenv": "^16.4.0",
     "vitest": "^3.0.0"
   }
