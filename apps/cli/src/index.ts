@@ -224,26 +224,53 @@ export function parseArgs(argv: string[]): ParseResult {
   }
 
   if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'correct') {
-    const reviewId = cleanArgs[2];
-    if (!reviewId || reviewId.startsWith('--')) {
+    // Review ID and optional category ID are positional; category can also
+    // be provided via --category-id at any position.  Only known flags may
+    // appear after the first positional value.
+    let reviewId: string | undefined;
+    let categoryId: string | undefined;
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      if (a === '--category-id') {
+        if (!remaining[i + 1] || remaining[i + 1].startsWith('--')) {
+          return {
+            ok: false,
+            error: { code: 'missing_category_value', message: '--category-id requires a value.' },
+          };
+        }
+        categoryId = remaining[i + 1];
+        remaining.splice(i, 2);
+        i -= 1;
+      } else if (!a.startsWith('--') && !reviewId) {
+        reviewId = a;
+        remaining.splice(i, 1);
+        i -= 1;
+      } else if (!a.startsWith('--') && !categoryId) {
+        categoryId = a;
+        remaining.splice(i, 1);
+        i -= 1;
+      }
+    }
+
+    if (!reviewId) {
       return {
         ok: false,
         error: { code: 'missing_review_id', message: 'reviews correct requires a REVIEW_ID argument.' },
       };
     }
-    const categoryId = cleanArgs[3];
-    if (!categoryId || categoryId.startsWith('--')) {
+    if (!categoryId) {
       return {
         ok: false,
-        error: { code: 'missing_category_id', message: 'reviews correct requires a CATEGORY_ID argument.' },
+        error: { code: 'missing_category_id', message: 'reviews correct requires a CATEGORY_ID argument (provide it positionally or via --category-id).' },
       };
     }
-    if (cleanArgs.length > 4) {
+    if (remaining.length > 0) {
       return {
         ok: false,
         error: {
           code: 'trailing_args',
-          message: `Unexpected arguments after category ID: ${cleanArgs.slice(4).join(' ')}`,
+          message: `Unexpected arguments: ${remaining.join(' ')}`,
         },
       };
     }
