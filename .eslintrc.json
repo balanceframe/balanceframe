@@ -14,7 +14,11 @@
   "globals": {
     "defineAppConfig": "readonly",
     "defineNuxtConfig": "readonly",
-    "KeyboardEvent": "readonly"
+    "KeyboardEvent": "readonly",
+    "defineEventHandler": "readonly",
+    "useRuntimeConfig": "readonly",
+    "getHeader": "readonly",
+    "setResponseStatus": "readonly"
   },
   "rules": {
     "no-unused-vars": "off",

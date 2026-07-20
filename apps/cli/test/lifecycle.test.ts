@@ -8,6 +8,7 @@ import type {
   ExportResult,
   DisconnectResult,
   RemovalResult,
+  DeletionResult,
 } from '@balanceframe/application';
 
 // ---------------------------------------------------------------------------
@@ -54,17 +55,34 @@ interface LifecycleTracker {
   exportCallCount: number;
   disconnectCallCount: number;
   removeCallCount: number;
+  deleteDataCallCount: number;
   exportResult: ExportResult;
   disconnectResult: DisconnectResult;
   removalResult: RemovalResult;
+  deletionResult: DeletionResult;
 }
 
 function createLifecycleTracker(): LifecycleTracker {
+  const deletionResult: DeletionResult = {
+    actorId: 'usr_test',
+    scope: 'connection',
+    recordsDeleted: 3,
+    recordsRetained: 0,
+    retentionReasons: [],
+    revokedCredentials: 2,
+    revokedDelegations: 0,
+    cancelledJobs: 1,
+    backupRetentionStatus: 'retained',
+    actualNonMutation: false,
+    correlationId: 'corr_del_001',
+    failures: [],
+  };
   const tracker: LifecycleTracker = {
     callbacks: null as unknown as LifecycleCallbacks,
     exportCallCount: 0,
     disconnectCallCount: 0,
     removeCallCount: 0,
+    deleteDataCallCount: 0,
     exportResult: {
       exportedAt: '2026-07-18T10:00:00Z',
       budgetName: 'My Budget',
@@ -88,6 +106,7 @@ function createLifecycleTracker(): LifecycleTracker {
         'Project-side filtering does not reduce the broad access held by the connector. ' +
         'Ensure your Actual server and backups have appropriate security.',
     },
+    deletionResult,
   };
 
   tracker.callbacks = {
@@ -102,6 +121,10 @@ function createLifecycleTracker(): LifecycleTracker {
     async doRemoveConnection(_ledger) {
       tracker.removeCallCount++;
       return tracker.removalResult;
+    },
+    async doDeleteData(_ledger, _scope) {
+      tracker.deleteDataCallCount++;
+      return tracker.deletionResult;
     },
   };
 
@@ -290,5 +313,58 @@ describe('CLI lifecycle — authorization', () => {
       capability: 'disconnect',
       allowed: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// delete-data tests
+// ---------------------------------------------------------------------------
+
+describe('CLI lifecycle — delete-data', () => {
+  it('calls doDeleteData callback with valid scope and returns success envelope', async () => {
+    const t = createLifecycleTracker();
+    const result = await main(['delete-data', '--scope', 'connection'], {
+      actorId: 'usr_test',
+      requestId: 'req_del',
+      mode: 'managedAutomation',
+      ledger: { mockLedger: true },
+      lifecycleCallbacks: t.callbacks,
+    });
+
+    expect(t.deleteDataCallCount).toBe(1);
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.scope).toBe('connection');
+    expect(parsed.result.recordsDeleted).toBe(3);
+    expect(parsed.result.correlationId).toBe('corr_del_001');
+  });
+
+  it('rejects delete-data in observe mode and does not call callback', async () => {
+    const t = createLifecycleTracker();
+    const result = await main(['delete-data', '--scope', 'connection'], {
+      actorId: 'usr_test',
+      requestId: 'req_del_obs',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      lifecycleCallbacks: t.callbacks,
+    });
+
+    expect(t.deleteDataCallCount).toBe(0);
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('write_rejected');
+  });
+
+  it('rejects delete-data without lifecycle callbacks', async () => {
+    const result = await main(['delete-data', '--scope', 'connection'], {
+      actorId: 'usr_test',
+      requestId: 'req_del_nc',
+      mode: 'managedAutomation',
+      ledger: { mockLedger: true },
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('no_lifecycle_callbacks');
   });
 });

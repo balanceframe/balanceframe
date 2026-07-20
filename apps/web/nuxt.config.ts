@@ -21,4 +21,11 @@ export default defineNuxtConfig({
     /** Authenticated query/command endpoints only. */
     preset: 'node-server',
   },
+
+  runtimeConfig: {
+    apiToken: '',
+    public: {
+      apiBase: '',
+    },
+  },
 });

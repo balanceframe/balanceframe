@@ -36,6 +36,32 @@
         </div>
       </div>
 
+      <!-- Proposal metadata -->
+      <div class="border-t pt-3 border-neutral-200 dark:border-neutral-700">
+        <div class="grid grid-cols-2 gap-2 text-sm">
+          <div v-if="item.evidence.correlationId">
+            <span class="text-xs text-gray-500 dark:text-gray-400">Correlation ID</span>
+            <p class="font-mono text-xs mt-0.5">{{ item.evidence.correlationId }}</p>
+          </div>
+          <div v-if="item.evidence.promptVersion">
+            <span class="text-xs text-gray-500 dark:text-gray-400">Prompt version</span>
+            <p class="font-medium text-xs mt-0.5">{{ item.evidence.promptVersion }}</p>
+          </div>
+          <div>
+            <span class="text-xs text-gray-500 dark:text-gray-400">Recovery state</span>
+            <div class="mt-0.5">
+              <UBadge
+                :color="statusBadgeColor"
+                variant="solid"
+                size="sm"
+              >
+                {{ recoveryStateLabel }}
+              </UBadge>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Category change preview -->
       <div class="border-t pt-3 border-neutral-200 dark:border-neutral-700">
         <div class="flex items-center gap-2 text-sm">
@@ -124,6 +150,21 @@ const statusBadgeColor = computed(() => {
     case 'applied':        return 'success';
     case 'apply_failed':   return 'error';
     default:               return 'neutral';
+  }
+});
+});
+
+const recoveryStateLabel = computed(() => {
+  switch (props.item.reviewItem.status) {
+    case 'pending_review': return 'Awaiting review';
+    case 'approved':       return 'Approved';
+    case 'correcting':     return 'Recovering';
+    case 'superseded':     return 'Superseded';
+    case 'skipped':        return 'Skipped';
+    case 'rejected':       return 'Rejected';
+    case 'applied':        return 'Verified applied';
+    case 'apply_failed':   return 'Failed';
+    default:               return props.item.reviewItem.status;
   }
 });
 

@@ -83,6 +83,8 @@ export const ReasonCodes = {
   INSUFFICIENT_CAPABILITY: 'insufficient_capability',
   /** Member scope does not cover the required scope. */
   INSUFFICIENT_SCOPE: 'insufficient_scope',
+  /** Backup must be verified before first mutation. */
+  BACKUP_NOT_VERIFIED: 'backup_not_verified',
 } as const;
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,8 @@ export interface ReviewEvidence {
   readonly provenance: string;
   readonly freshness: string | null;
   readonly changePreview: ChangePreview;
+  readonly correlationId: string | null;
+  readonly promptVersion: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +428,8 @@ function extractEvidence(item: ReviewItem): ReviewEvidence {
       toCategory: item.categoryId,
       affectsEnvelope: fromCategory !== item.categoryId,
     },
+    correlationId: item.correlationId,
+    promptVersion: item.promptVersion,
   };
 }
 

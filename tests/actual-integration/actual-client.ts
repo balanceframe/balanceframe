@@ -27,6 +27,14 @@ interface ActualClient {
   send(_method: string, _args?: unknown): Promise<unknown>;
 }
 
+/**
+ * Send a raw message to the Actual API client.
+ * Caller MUST have called `init()` first.
+ */
+export async function send(method: string, args?: unknown): Promise<unknown> {
+  return requireClient().send(method, args);
+}
+
 
 function requireClient(): ActualClient {
   if (!internal) {

@@ -126,6 +126,7 @@ export function parseArgs(argv: string[]): ParseResult {
     '--action': true,
     '--from': true,
     '--to': true,
+    '--scope': true,
   };
   const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -489,6 +490,47 @@ export function parseArgs(argv: string[]): ParseResult {
     };
   }
 
+  if (cleanArgs[0] === 'delete-data') {
+    const scopeIndex = cleanArgs.indexOf('--scope');
+    if (scopeIndex === -1) {
+      return {
+        ok: false,
+        error: { code: 'missing_scope', message: 'delete-data requires a --scope flag.' },
+      };
+    }
+    const scopeValue = cleanArgs[scopeIndex + 1];
+    if (!scopeValue || scopeValue.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_scope_value', message: '--scope requires a value.' },
+      };
+    }
+    const VALID_SCOPES = ['connection', 'space', 'user', 'provider', 'workflow', 'notification'];
+    if (!VALID_SCOPES.includes(scopeValue)) {
+      return {
+        ok: false,
+        error: { code: 'invalid_scope', message: `Invalid scope "${scopeValue}". Must be one of: connection, space, user, provider, workflow, notification.` },
+      };
+    }
+    // Check for unexpected extra arguments
+    const cleanWithoutScope = cleanArgs.filter((_, i) => i !== scopeIndex && i !== scopeIndex + 1);
+    if (cleanWithoutScope.length > 1) {
+      return {
+        ok: false,
+        error: { code: 'trailing_args', message: `Unexpected arguments after 'delete-data': ${cleanWithoutScope.slice(1).join(' ')}` },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'delete-data',
+        format,
+        args: normalized,
+        options: { scope: scopeValue },
+      },
+    };
+  }
+
   // -----------------------------------------------------------------------
   // Proposal commands
   // -----------------------------------------------------------------------
@@ -665,7 +707,7 @@ export function parseArgs(argv: string[]): ParseResult {
  * the returned context reflects the operation name so callers can audit it.
  */
 function modeAuthorization(mode: ConnectionMode, actorId: string, operation: string): AuthorizationContext {
-  if (operation === 'remove-connection' && mode === 'observe') {
+  if ((operation === 'remove-connection' || operation === 'delete-data') && mode === 'observe') {
     return AuthorizationContext.denied(actorId, operation);
   }
   return { actorId, capability: operation, allowed: true };
@@ -891,6 +933,53 @@ export async function main(
             message,
             retryable: true,
             reasonCodes: ['remove_connection_error'],
+          });
+          return JSON.stringify(errorResponse(requestId, info), null, 2);
+        }
+      }
+
+      case 'delete-data': {
+        const callbacks = commandInput.lifecycleCallbacks;
+        if (!callbacks) {
+          const info = new ErrorInfo({
+            code: 'no_lifecycle_callbacks',
+            message: 'Delete-data command requires lifecycle callbacks. Not connected?',
+            retryable: true,
+            reasonCodes: ['missing_ledger_config'],
+          });
+          return JSON.stringify(errorResponse(requestId, info), null, 2);
+        }
+        if (!ledger) {
+          const info = new ErrorInfo({
+            code: 'not_connected',
+            message: 'No ledger connected. Use a connect command first.',
+            retryable: true,
+            reasonCodes: ['missing_ledger_config'],
+          });
+          return JSON.stringify(errorResponse(requestId, info), null, 2);
+        }
+        // Enforce mode authorization — destructive operation blocked in Observe
+        if (mode === 'observe') {
+          const info = new ErrorInfo({
+            code: 'write_rejected',
+            message: 'delete-data requires write authorization and is not available in observe mode.',
+            retryable: false,
+            reasonCodes: ['observe_mode_write_blocked'],
+          });
+          return JSON.stringify(errorResponse(requestId, info), null, 2);
+        }
+        try {
+          const scope = cmd.options?.scope;
+          const result = await callbacks.doDeleteData(ledger, scope!);
+          const envelope = okResponse(requestId, null, modeAuthorization(mode, actorId, 'delete-data'), result);
+          return JSON.stringify(envelope, null, 2);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const info = new ErrorInfo({
+            code: 'delete_data_failed',
+            message,
+            retryable: true,
+            reasonCodes: ['delete_data_error'],
           });
           return JSON.stringify(errorResponse(requestId, info), null, 2);
         }

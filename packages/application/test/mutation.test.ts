@@ -447,6 +447,38 @@ describe('CategorizationMutationService', () => {
     });
   });
 
+
+  // =========================================================================
+  // Backup verification
+  // =========================================================================
+
+  describe('backup verification', () => {
+    it('proceeds normally when requireBackupVerification is false (default)', async () => {
+      // Default service (no options) — should proceed without checking
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(true);
+      expect(store.queryAuditRecords).not.toHaveBeenCalled();
+    });
+
+    it('rejects execution when no backup audit record exists and requireBackupVerification is true', async () => {
+      store.queryAuditRecords.mockResolvedValue([]);
+      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const result = await svc.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toEqual(['backup_not_verified']);
+      expect(result.message).toBe(
+        'Backup must be verified before the first mutation. Run a backup verification command first.',
+      );
+    });
+
+    it('proceeds when backup audit record exists and requireBackupVerification is true', async () => {
+      store.queryAuditRecords.mockResolvedValue([{ id: 'audit_backup_001' } as AuditRecord]);
+      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const result = await svc.execute(makeInput());
+      expect(result.success).toBe(true);
+    });
+  });
+
   // =========================================================================
   // Authorization — membership, capability, scope
   // =========================================================================

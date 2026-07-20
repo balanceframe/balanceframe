@@ -126,17 +126,27 @@
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import { ReviewController } from '../src/review.js';
 import { useReviewController } from '../composables/useReviewController';
+import { useApiReviewController } from '../composables/useApiReviewController';
 import { useReviewActions } from '../composables/useReviewActions';
+import type { ReviewControllerAdapter } from '../types/review-client';
 
-// ── Controller initialisation ─────────────────────────────────────────
-// The controller is the sole state authority — Nuxt never duplicates it.
-// In production the store path and actor come from auth context.
-const store = new SqliteWorkflowStore(':memory:');
-const controller = new ReviewController(store, {
-  actorId: 'web-user',
-  pageSize: 50,
-});
-const adapter = useReviewController(controller);
+// ── Mode selection ──────────────────────────────────────────────────
+// When runtimeConfig.public.apiBase is configured, use Nitro API routes.
+// Otherwise fall back to the in-memory WorkflowStore (development/legacy).
+const config = useRuntimeConfig();
+const apiBase = config.public.apiBase;
+
+let adapter: ReviewControllerAdapter;
+if (apiBase) {
+  adapter = useApiReviewController(apiBase);
+} else {
+  const store = new SqliteWorkflowStore(':memory:');
+  const controller = new ReviewController(store, {
+    actorId: 'web-user',
+    pageSize: 50,
+  });
+  adapter = useReviewController(controller);
+}
 const actions = useReviewActions(adapter);
 
 // Focus the hidden keyboard input so shortcuts work on page load.
@@ -146,7 +156,7 @@ onMounted(() => {
   load();
 });
 
-// ── Helpers ────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
 
 const currentCount = computed(() => adapter.state.items.length);
 

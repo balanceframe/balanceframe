@@ -149,15 +149,29 @@ const CAPABILITY_EXECUTE = 'categorization:execute';
 const STALE_SNAPSHOT_MS = 3_600_000; // 1 hour
 
 // ---------------------------------------------------------------------------
+// Service options
+// ---------------------------------------------------------------------------
+
+export interface MutationServiceOptions {
+  /** When true, require a backup-verification audit record before executing. */
+  requireBackupVerification?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // CategorizationMutationService
 // ---------------------------------------------------------------------------
 
 export class CategorizationMutationService {
+  private readonly requireBackupVerification: boolean;
+
   constructor(
     private readonly store: WorkflowStore,
     private readonly ledger: BudgetLedger,
     private readonly rust: RustMutationProtocol,
-  ) {}
+    options?: MutationServiceOptions,
+  ) {
+    this.requireBackupVerification = options?.requireBackupVerification ?? false;
+  }
 
   /**
    * Execute a categorization proposal end-to-end.
@@ -210,6 +224,22 @@ export class CategorizationMutationService {
 
     if (proposal.supersededAt) {
       return this.fail(baseResult, 'proposal_superseded', 'Proposal has been superseded', input);
+    }
+
+    // =====================================================================
+    // 1b. Backup verification — require recent backup-verification audit
+    // =====================================================================
+
+    if (this.requireBackupVerification) {
+      const backupVerified = await this.checkBackupVerified();
+      if (!backupVerified) {
+        return this.fail(
+          baseResult,
+          'backup_not_verified',
+          'Backup must be verified before the first mutation. Run a backup verification command first.',
+          input,
+        );
+      }
     }
 
     // =====================================================================
@@ -570,6 +600,15 @@ export class CategorizationMutationService {
       reasonCodes: [code],
       message,
     };
+  }
+
+  /**
+   * Check whether a backup-verification audit record exists.
+   * @returns `true` if at least one backup-verification record exists, `false` otherwise.
+   */
+  private async checkBackupVerified(): Promise<boolean> {
+    const records = await this.store.queryAuditRecords('backup_verification', 1);
+    return records.length > 0;
   }
 
   /**

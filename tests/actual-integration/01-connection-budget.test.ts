@@ -12,8 +12,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import {
   getActualClient, requireEnv, withActualClient,
 } from './helpers';
-import { init, shutdown, getBudgets, getAccounts,
-         createBudget } from './actual-client.js';
+import { getBudgets, createBudget } from './actual-client.js';
 
 // ---- Setup / Teardown -----------------------------------------------------
 
@@ -121,4 +120,5 @@ describe('01 — Connection & Budget Discovery', () => {
       });
     }
   });
+
 });

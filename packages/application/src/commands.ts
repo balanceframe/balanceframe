@@ -171,6 +171,8 @@ export interface LifecycleCallbacks {
   doDisconnect(ledger: unknown): Promise<DisconnectResult>;
   /** Remove connection: like disconnect but also removes all cached data. */
   doRemoveConnection(ledger: unknown): Promise<RemovalResult>;
+  /** Delete project data scoped to a specific domain. */
+  doDeleteData(ledger: unknown, scope: string): Promise<DeletionResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +272,7 @@ const WRITE_COMMAND_PREFIXES: Array<{ prefix: string[]; capability: string }> = 
   { prefix: ['proposals', 'create'], capability: 'proposal.create' },
   { prefix: ['proposals', 'approve'], capability: 'proposal.approve' },
   { prefix: ['proposals', 'execute'], capability: 'proposal.execute' },
+  { prefix: ['delete-data'], capability: 'data.delete' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -319,6 +322,7 @@ const KNOWN_COMMANDS: Array<{
   { args: ['disconnect'], command: 'disconnect', route: 'lifecycle' },
   { args: ['export'], command: 'export', route: 'export' },
   { args: ['remove-connection'], command: 'remove-connection', route: 'lifecycle' },
+  { args: ['delete-data'], command: 'delete-data', route: 'lifecycle' },
 ];
 
 function argsMatch(pattern: string[], args: string[]): boolean {
@@ -491,6 +495,25 @@ export interface RemovalResult {
 
 export interface RemovalOutput {
   envelope: ResponseEnvelope<RemovalResult>;
+}
+
+export interface DeletionResult {
+  actorId: string;
+  scope: string;
+  recordsDeleted: number;
+  recordsRetained: number;
+  retentionReasons: string[];
+  revokedCredentials: number;
+  revokedDelegations: number;
+  cancelledJobs: number;
+  backupRetentionStatus: string;
+  actualNonMutation: boolean;
+  correlationId: string;
+  failures: string[];
+}
+
+export interface DeletionOutput {
+  envelope: ResponseEnvelope<DeletionResult>;
 }
 // ---------------------------------------------------------------------------
 // Review action result types
