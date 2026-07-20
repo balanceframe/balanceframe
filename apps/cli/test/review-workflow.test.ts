@@ -254,6 +254,34 @@ describe('parseArgs — review action arity', () => {
     if (result.ok) return;
     expect(result.error.code).toBe('trailing_args');
   });
+
+  it('rejects reviews approve-bulk with non-review ID strings', () => {
+    const result = parseArgs(['reviews', 'approve-bulk', 'random_string', 'rev_abc']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_review_id');
+  });
+
+  it('rejects reviews group with non-review ID strings', () => {
+    const result = parseArgs(['reviews', 'group', 'foo', 'bar']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_review_id');
+  });
+
+  it('rejects reviews approve-bulk with mixed valid and invalid IDs', () => {
+    const result = parseArgs(['reviews', 'approve-bulk', 'rev_abc', 'not_an_id']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_review_id');
+  });
+
+  it('accepts reviews approve-bulk with valid IDs only', () => {
+    const result = parseArgs(['reviews', 'approve-bulk', 'rev_a', 'rev_b', 'rev_c']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.ids).toEqual(['rev_a', 'rev_b', 'rev_c']);
+  });
 });
 
 // ---------------------------------------------------------------------------
