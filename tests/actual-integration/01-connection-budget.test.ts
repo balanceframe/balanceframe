@@ -8,7 +8,7 @@
  *   4. Connect to both encrypted and unencrypted budgets
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import {
   getActualClient, requireEnv, withActualClient, cleanupBudget,
 } from './helpers';
