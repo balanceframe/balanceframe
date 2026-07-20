@@ -181,3 +181,4 @@ coordination. See the [full roadmap](docs/roadmap/overview.md) for details.
 
 Copyright 2026 BalanceFrame contributors. Licensed under the Apache License,
 Version 2.0. See [LICENSE](LICENSE) for the full license text.
+
