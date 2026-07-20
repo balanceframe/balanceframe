@@ -82,8 +82,9 @@ describe('01 — Connection & Budget Discovery', () => {
   it('should create a budget and find it in the budget list', async () => {
     await withActualClient(async () => {
       const before = await getBudgets();
+      const name = `Connection-Test-Disposable-${Date.now()}`;
       const { id, groupId } = await createBudget({
-        name: `Connection-Test-Disposable-${Date.now()}`,
+        name,
         avoidUpload: false,
       });
       expect(id).toBeDefined();
@@ -92,7 +93,7 @@ describe('01 — Connection & Budget Discovery', () => {
       const after = await getBudgets();
       const afterNames = after.map((b: { name?: string }) => b.name ?? '');
       expect(after.length).toBeGreaterThanOrEqual(before.length);
-      expect(afterNames).toContain(`Connection-Test-Disposable-${id.slice(0, 8)}`);
+      expect(afterNames).toContain(name);
     });
   });
 
