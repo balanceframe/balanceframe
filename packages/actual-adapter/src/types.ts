@@ -239,15 +239,41 @@ export type MutationResult =
  * Result of a setTransactionCategory call.
  * Includes verification of the post-write state and idempotency tracking.
  */
-export interface SetCategoryResult {
+export type SetCategoryResult = SetCategorySuccess | SetCategoryFailure;
+
+export interface SetCategorySuccess {
   success: true;
   transactionId: LedgerId;
   previousCategoryId: LedgerId | null;
   newCategoryId: LedgerId;
   idempotencyKey: string;
-  /** Whether post-write re-read confirmed the change. */
-  verified: boolean;
+  /** Post-write re-read confirmed the change. */
+  verified: true;
 }
+
+export interface SetCategoryFailure {
+  success: false;
+  error: string;
+  code: SetCategoryErrorCode;
+  /** Present when the transaction was identified before the error. */
+  transactionId?: LedgerId;
+  /** Present when the previous category was determined. */
+  previousCategoryId?: LedgerId | null;
+  /** Present when a category was proposed. */
+  newCategoryId?: LedgerId;
+  /** Present when the write was attempted but verification failed. */
+  idempotencyKey?: string;
+  /** Always false or absent on failure. */
+  verified?: false;
+}
+
+export type SetCategoryErrorCode =
+  | 'VERIFICATION_FAILED'
+  | 'BUDGET_NOT_SELECTED'
+  | 'CATEGORY_NOT_FOUND'
+  | 'CATEGORY_DELETED'
+  | 'TRANSACTION_NOT_FOUND'
+  | 'PRECONDITION_MISMATCH';
 
 // ---------------------------------------------------------------------------
 // Rule proposal (for future mutation phases)

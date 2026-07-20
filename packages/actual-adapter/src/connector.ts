@@ -393,7 +393,7 @@ export class ActualConnector implements BudgetLedger {
   }
 
   // -------------------------------------------------------------------------
-  // Mutation stubs (Observe mode rejects all writes)
+  // Mutation stubs (rejected in all modes — not yet implemented)
   // -------------------------------------------------------------------------
 
   async importTransactions(
@@ -401,8 +401,11 @@ export class ActualConnector implements BudgetLedger {
     _transactions: ImportTransaction[],
     _options?: ImportOptions,
   ): Promise<ImportResult> {
-    this.assertMutationAllowed('importTransactions');
-    return { success: true, errors: [], importedCount: 0 };
+    this.assertInitialized();
+    throw new Error(
+      'importTransactions() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
   async updateTransaction(
@@ -410,16 +413,22 @@ export class ActualConnector implements BudgetLedger {
     _patch: TransactionPatch,
     _precondition?: MutationPrecondition,
   ): Promise<MutationResult> {
-    this.assertMutationAllowed('updateTransaction');
-    return { success: true, id: _transactionId };
+    this.assertInitialized();
+    throw new Error(
+      'updateTransaction() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
   async createRule(
     _proposal: RuleProposal,
     _precondition?: MutationPrecondition,
   ): Promise<MutationResult> {
-    this.assertMutationAllowed('createRule');
-    return { success: true, id: '' };
+    this.assertInitialized();
+    throw new Error(
+      'createRule() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
   async setBudgetAmount(
@@ -428,8 +437,11 @@ export class ActualConnector implements BudgetLedger {
     _amount: number,
     _precondition?: MutationPrecondition,
   ): Promise<MutationResult> {
-    this.assertMutationAllowed('setBudgetAmount');
-    return { success: true, id: _categoryId };
+    this.assertInitialized();
+    throw new Error(
+      'setBudgetAmount() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
 
@@ -440,52 +452,114 @@ export class ActualConnector implements BudgetLedger {
   ): Promise<SetCategoryResult> {
     this.assertMutationAllowed('setTransactionCategory');
 
-    // Read current transaction state to check precondition
-    const allAccounts = await this.client.getAccounts();
-    const activeAccounts = allAccounts.filter(a => !a.closed);
-    let tx: TransactionEntity | null = null;
-    for (const account of activeAccounts) {
-      const txns = await this.client.getTransactions(account.id, '1970-01-01', '2099-12-31');
-      const found = txns.find(t => t.id === transactionId);
-      if (found) {
-        tx = found;
-        break;
+    // Require an explicitly selected budget
+    if (!this._budgetInfo) {
+      return {
+        success: false,
+        error: 'No budget selected. Call selectBudget() before mutating transactions.',
+        code: 'BUDGET_NOT_SELECTED',
+      } as SetCategoryResult;
+    }
+
+    // Serialize the read/check/update/reread under the budget lock
+    return this.withCacheLock(this._budgetInfo.id, async (): Promise<SetCategoryResult> => {
+      // Read current transaction state to check precondition
+      const allAccounts = await this.client.getAccounts();
+      const activeAccounts = allAccounts.filter(a => !a.closed);
+      let tx: TransactionEntity | null = null;
+      for (const account of activeAccounts) {
+        const txns = await this.client.getTransactions(account.id, '1970-01-01', '2099-12-31');
+        const found = txns.find(t => t.id === transactionId);
+        if (found) {
+          tx = found;
+          break;
+        }
       }
-    }
-    if (!tx) {
-      throw new Error(`Transaction ${transactionId} not found`);
-    }
+      if (!tx) {
+        return {
+          success: false,
+          error: `Transaction ${transactionId} not found`,
+          code: 'TRANSACTION_NOT_FOUND',
+        } as SetCategoryResult;
+      }
 
-    // Verify precondition: current category must match expected value
-    const actualCategory = tx.category ?? null;
-    if (actualCategory !== currentCategoryId) {
-      throw new Error(
-        `Category precondition mismatch for transaction ${transactionId}: ` +
-        `expected currentCategoryId=${JSON.stringify(currentCategoryId)}, ` +
-        `actual=${JSON.stringify(actualCategory)}`,
-      );
-    }
+      // Verify precondition: current category must match expected value
+      const actualCategory = tx.category ?? null;
+      if (actualCategory !== currentCategoryId) {
+        return {
+          success: false,
+          error: `Category precondition mismatch for transaction ${transactionId}: ` +
+            `expected currentCategoryId=${JSON.stringify(currentCategoryId)}, ` +
+            `actual=${JSON.stringify(actualCategory)}`,
+          code: 'PRECONDITION_MISMATCH',
+          transactionId,
+          previousCategoryId: actualCategory,
+        } as SetCategoryResult;
+      }
 
-    // Generate idempotency key for replay detection
-    const idempotencyKey = `${transactionId}_${proposedCategoryId}_${Date.now()}_${randomUUID()}`;
+      // Validate the proposed category exists in this budget
+      const allCats = (await this.client.getCategories({ hidden: true })) as APICategoryEntity[];
+      const proposedCat = allCats.find(c => c.id === proposedCategoryId);
+      if (!proposedCat) {
+        return {
+          success: false,
+          error: `Proposed category ${proposedCategoryId} does not exist in this budget`,
+          code: 'CATEGORY_NOT_FOUND',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+        } as SetCategoryResult;
+      }
 
-    // Call Actual update API with the new category
-    await this.client.updateTransaction(transactionId, { category: proposedCategoryId });
+      // Tombstone categories are deleted, not just hidden
+      const proposedCatWithMeta = proposedCat as APICategoryEntity & { tombstone?: boolean };
+      if (proposedCatWithMeta.tombstone) {
+        return {
+          success: false,
+          error: `Proposed category ${proposedCategoryId} is deleted (tombstone) and cannot be assigned`,
+          code: 'CATEGORY_DELETED',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+        } as SetCategoryResult;
+      }
 
-    // Re-read the transaction to verify the postcondition
-    const reReads = await this.client.getTransactions(tx.account, '1970-01-01', '2099-12-31');
-    const reReadTx = reReads.find(t => t.id === transactionId);
-    const reReadCategory = reReadTx?.category ?? null;
-    const verified = reReadCategory === proposedCategoryId;
+      // Generate idempotency key for replay detection
+      const idempotencyKey = `${transactionId}_${proposedCategoryId}_${Date.now()}_${randomUUID()}`;
 
-    return {
-      success: true,
-      transactionId,
-      previousCategoryId: actualCategory,
-      newCategoryId: proposedCategoryId,
-      idempotencyKey,
-      verified,
-    };
+      // Call Actual update API with the new category
+      await this.client.updateTransaction(transactionId, { category: proposedCategoryId });
+
+      // Re-read the transaction to verify the postcondition
+      const reReads = await this.client.getTransactions(tx.account, '1970-01-01', '2099-12-31');
+      const reReadTx = reReads.find(t => t.id === transactionId);
+      const reReadCategory = reReadTx?.category ?? null;
+      const verified = reReadCategory === proposedCategoryId;
+
+      if (!verified) {
+        return {
+          success: false,
+          error: `Post-write verification failed for transaction ${transactionId}: ` +
+            `expected category=${JSON.stringify(proposedCategoryId)}, ` +
+            `actual=${JSON.stringify(reReadCategory)}`,
+          code: 'VERIFICATION_FAILED',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+          idempotencyKey,
+          verified: false,
+        } as SetCategoryResult;
+      }
+
+      return {
+        success: true,
+        transactionId,
+        previousCategoryId: actualCategory,
+        newCategoryId: proposedCategoryId,
+        idempotencyKey,
+        verified: true,
+      } as SetCategoryResult;
+    });
   }
   // -------------------------------------------------------------------------
   // Lifecycle

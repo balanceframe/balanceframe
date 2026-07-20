@@ -319,6 +319,92 @@ describe('ActualConnector', () => {
   });
 
   // ==========================================================================
+  // 1c. Write-mode rejection — unimplemented methods throw in every mode
+  // ==========================================================================
+
+  describe('write-mode rejection of unimplemented methods', () => {
+    it('should reject importTransactions in write-enabled mode', async () => {
+      const mock = createMockClient();
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-unimpl-import',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      mock.addTransactions = vi.fn();
+      await expect(
+        writeConnector.importTransactions('a1', [], {}),
+      ).rejects.toThrow(/not yet implemented/i);
+      expect(mock.addTransactions).not.toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+
+    it('should reject updateTransaction in write-enabled mode', async () => {
+      const mock = createMockClient();
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-unimpl-update',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      mock.updateTransaction = vi.fn();
+      await expect(
+        writeConnector.updateTransaction('tx1', { notes: 'test' }),
+      ).rejects.toThrow(/not yet implemented/i);
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+
+    it('should reject createRule in write-enabled mode', async () => {
+      const mock = createMockClient();
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-unimpl-rule',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      mock.createRule = vi.fn();
+      await expect(
+        writeConnector.createRule({ name: 'test', conditions: [], actions: [] }),
+      ).rejects.toThrow(/not yet implemented/i);
+      expect(mock.createRule).not.toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+
+    it('should reject setBudgetAmount in write-enabled mode', async () => {
+      const mock = createMockClient();
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-unimpl-budget',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      mock.setBudgetAmount = vi.fn();
+      await expect(
+        writeConnector.setBudgetAmount('2026-07', 'c1', 50000),
+      ).rejects.toThrow(/not yet implemented/i);
+      expect(mock.setBudgetAmount).not.toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+  });
+
+  // ==========================================================================
   // 2. Cache isolation — per-budget directories, no cross-leakage
   // ==========================================================================
 
@@ -2276,13 +2362,16 @@ describe('ActualConnector', () => {
 
   describe('setTransactionCategory', () => {
     it('should update category in write-enabled mode and return verified result', async () => {
+      const transactions = mockTransactions.map(t => ({ ...t }));
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(transactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
       const writeConnector = new ActualConnector({
-        client: createMockClient({
-          getAccounts: vi.fn().mockResolvedValue(mockAccounts),
-          getTransactions: vi.fn().mockResolvedValue(mockTransactions),
-          getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
-          getBudgets: vi.fn().mockResolvedValue(mockFiles),
-        }),
+        client: mock,
         credentialStore: new NullCredentialStore(),
         mode: 'reviewAndApply',
         cacheDir: '/tmp/bf-write-test',
@@ -2292,28 +2381,48 @@ describe('ActualConnector', () => {
         serverUrl: 'http://test:5006',
         secretKey: 'test',
       });
-      // tx1 has category 'c1', update to 'c2' with precondition 'c1'
+      await writeConnector.selectBudget('budget_1');
+
+      // Make updateTransaction persist the category change into the transactions array
+      // so the re-read returns the updated category.
+      mock.updateTransaction = vi.fn().mockImplementation(
+        (id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find(t => t.id === id);
+          if (tx && typeof fields.category === 'string') {
+            tx.category = fields.category;
+          }
+          return Promise.resolve(undefined);
+        },
+      );
+
       const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
       expect(result.success).toBe(true);
-      expect(result.transactionId).toBe('tx1');
-      expect(result.previousCategoryId).toBe('c1');
-      expect(result.newCategoryId).toBe('c2');
-      expect(result.idempotencyKey).toBeTruthy();
-      expect(typeof result.idempotencyKey).toBe('string');
-      // verified reflects mock re-read data; separate test covers the re-read path
-      expect(typeof result.verified).toBe('boolean');
+      if (result.success) {
+        expect(result.transactionId).toBe('tx1');
+        expect(result.previousCategoryId).toBe('c1');
+        expect(result.newCategoryId).toBe('c2');
+        expect(result.idempotencyKey).toBeTruthy();
+        expect(typeof result.idempotencyKey).toBe('string');
+        expect(result.verified).toBe(true);
+      }
+
+      // Exactly one call to updateTransaction with the correct args
+      expect(mock.updateTransaction).toHaveBeenCalledTimes(1);
+      expect(mock.updateTransaction).toHaveBeenCalledWith('tx1', { category: 'c2' });
 
       await writeConnector.disconnect();
     });
 
-    it('should reject stale precondition when current category does not match', async () => {
+    it('should return failure on precondition mismatch', async () => {
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
       const writeConnector = new ActualConnector({
-        client: createMockClient({
-          getAccounts: vi.fn().mockResolvedValue(mockAccounts),
-          getTransactions: vi.fn().mockResolvedValue(mockTransactions),
-          getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
-          getBudgets: vi.fn().mockResolvedValue(mockFiles),
-        }),
+        client: mock,
         credentialStore: new NullCredentialStore(),
         mode: 'reviewAndApply',
         cacheDir: '/tmp/bf-stale-test',
@@ -2323,23 +2432,36 @@ describe('ActualConnector', () => {
         serverUrl: 'http://test:5006',
         secretKey: 'test',
       });
+      await writeConnector.selectBudget('budget_1');
+
+      mock.updateTransaction = vi.fn();
 
       // tx1 has category 'c1', but we say it's 'c2' — precondition mismatch
-      await expect(
-        writeConnector.setTransactionCategory('tx1', 'c3', 'c2'),
-      ).rejects.toThrow(/precondition mismatch/i);
+      const result = await writeConnector.setTransactionCategory('tx1', 'c3', 'c2');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('PRECONDITION_MISMATCH');
+        expect(result.error).toContain('precondition mismatch');
+        expect(result.transactionId).toBe('tx1');
+        expect(result.previousCategoryId).toBe('c1');
+      }
+
+      // No client mutation call on precondition failure
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
 
       await writeConnector.disconnect();
     });
 
-    it('should throw when transaction is not found', async () => {
+    it('should return failure when transaction is not found', async () => {
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      // getTransactions defaults to empty array from createMockClient
       const writeConnector = new ActualConnector({
-        client: createMockClient({
-          getAccounts: vi.fn().mockResolvedValue(mockAccounts),
-          getTransactions: vi.fn().mockResolvedValue(mockTransactions),
-          getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
-          getBudgets: vi.fn().mockResolvedValue(mockFiles),
-        }),
+        client: mock,
         credentialStore: new NullCredentialStore(),
         mode: 'reviewAndApply',
         cacheDir: '/tmp/bf-notfound-test',
@@ -2349,10 +2471,18 @@ describe('ActualConnector', () => {
         serverUrl: 'http://test:5006',
         secretKey: 'test',
       });
+      await writeConnector.selectBudget('budget_1');
 
-      await expect(
-        writeConnector.setTransactionCategory('nonexistent', 'c1', null),
-      ).rejects.toThrow(/not found/i);
+      mock.updateTransaction = vi.fn();
+
+      const result = await writeConnector.setTransactionCategory('nonexistent', 'c1', null);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('TRANSACTION_NOT_FOUND');
+        expect(result.error).toContain('not found');
+      }
+
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
 
       await writeConnector.disconnect();
     });
@@ -2378,34 +2508,25 @@ describe('ActualConnector', () => {
     });
 
     it('should verify postcondition by re-reading the transaction', async () => {
-      // Use separate mock to control re-read
       let calls = 0;
       const txnsForReRead = [
-        // First call (initial read): tx1 has category c1
-        [{
-          id: 'tx1',
-          account: 'a1',
-          category: 'c1',
-        } as TransactionEntity],
-        // Second call (re-read after update): tx1 now has category c2
-        [{
-          id: 'tx1',
-          account: 'a1',
-          category: 'c2',
-        } as TransactionEntity],
+        [{ id: 'tx1', account: 'a1', category: 'c1' } as TransactionEntity],
+        [{ id: 'tx1', account: 'a1', category: 'c2' } as TransactionEntity],
       ];
 
-      const writeConnector = new ActualConnector({
-        client: createMockClient({
-          getAccounts: vi.fn().mockResolvedValue(mockAccounts),
-          getTransactions: vi.fn().mockImplementation(() => {
-            const result = txnsForReRead[calls] ?? txnsForReRead[0]!;
-            calls++;
-            return Promise.resolve(result);
-          }),
-          getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
-          getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockImplementation(() => {
+          const result = txnsForReRead[calls] ?? txnsForReRead[0]!;
+          calls++;
+          return Promise.resolve(result);
         }),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
         credentialStore: new NullCredentialStore(),
         mode: 'reviewAndApply',
         cacheDir: '/tmp/bf-verify-test',
@@ -2415,16 +2536,249 @@ describe('ActualConnector', () => {
         serverUrl: 'http://test:5006',
         secretKey: 'test',
       });
+      await writeConnector.selectBudget('budget_1');
+
+      // Reset counter after selectBudget (which does not call getTransactions)
+      calls = 0;
 
       const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
 
       expect(result.success).toBe(true);
-      expect(result.verified).toBe(true);
-      expect(result.previousCategoryId).toBe('c1');
-      expect(result.newCategoryId).toBe('c2');
+      if (result.success) {
+        expect(result.verified).toBe(true);
+        expect(result.previousCategoryId).toBe('c1');
+        expect(result.newCategoryId).toBe('c2');
+      }
 
       // Should have called getTransactions exactly twice (read + re-read)
       expect(calls).toBe(2);
+
+      await writeConnector.disconnect();
+    });
+
+    it('should fail when no budget is selected', async () => {
+      const mock = createMockClient();
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-nobudget-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      // Intentionally skip selectBudget — _budgetInfo stays null
+
+      mock.updateTransaction = vi.fn();
+      mock.getCategories = vi.fn();
+
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('BUDGET_NOT_SELECTED');
+      }
+
+      // No client mutation or category calls should occur
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
+      expect(mock.getCategories).not.toHaveBeenCalled();
+
+      await writeConnector.disconnect();
+    });
+
+    it('should fail when proposed category does not exist', async () => {
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-cat-notfound-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      mock.updateTransaction = vi.fn();
+
+      // 'nonexistent' is not in mockCategories
+      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('CATEGORY_NOT_FOUND');
+        expect(result.error).toContain('does not exist');
+      }
+
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
+
+      await writeConnector.disconnect();
+    });
+
+    it('should fail when proposed category is deleted (tombstone)', async () => {
+      const categoriesWithDeleted: APICategoryEntity[] = [
+        ...mockCategories,
+        {
+          id: 'c_deleted',
+          name: 'Deleted Cat',
+          group_id: 'g1',
+          is_income: false,
+          hidden: false,
+          tombstone: true,
+        } as APICategoryEntity,
+      ];
+
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions),
+        getCategories: vi.fn().mockResolvedValue(categoriesWithDeleted),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-tombstone-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      mock.updateTransaction = vi.fn();
+
+      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('CATEGORY_DELETED');
+        expect(result.error).toContain('tombstone');
+      }
+
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
+
+      await writeConnector.disconnect();
+    });
+
+    it('should fail when post-write verification does not match', async () => {
+      let calls = 0;
+      const txnsForReRead = [
+        [{ id: 'tx1', account: 'a1', category: 'c1' } as TransactionEntity],
+        [{ id: 'tx1', account: 'a1', category: 'c1' } as TransactionEntity],
+      ];
+
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockImplementation(() => {
+          const result = txnsForReRead[calls] ?? txnsForReRead[0]!;
+          calls++;
+          return Promise.resolve(result);
+        }),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-verif-fail-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      calls = 0;
+
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('VERIFICATION_FAILED');
+        expect(result.transactionId).toBe('tx1');
+        expect(result.previousCategoryId).toBe('c1');
+        expect(result.newCategoryId).toBe('c2');
+        expect(result.idempotencyKey).toBeTruthy();
+        expect(result.verified).toBe(false);
+      }
+
+      // updateTransaction was called (the write happened) but re-read shows old category
+      expect(mock.updateTransaction).toHaveBeenCalledTimes(1);
+      expect(mock.updateTransaction).toHaveBeenCalledWith('tx1', { category: 'c2' });
+
+      // Two getTransactions calls: initial read + re-read
+      expect(calls).toBe(2);
+
+      await writeConnector.disconnect();
+    });
+
+    it('should serialize concurrent setTransactionCategory calls under the budget lock', async () => {
+      const transactions = mockTransactions.map(t => ({ ...t }));
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(transactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-lock-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      // updateTransaction persists category changes so verification passes
+      mock.updateTransaction = vi.fn().mockImplementation(
+        (id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find(t => t.id === id);
+          if (tx && typeof fields.category === 'string') {
+            tx.category = fields.category;
+          }
+          return Promise.resolve(undefined);
+        },
+      );
+
+      const order: number[] = [];
+
+      // Two concurrent calls on DIFFERENT transactions so precondition doesn't
+      // become stale. tx1 starts c1 → c2; tx2 starts c2 → c1.
+      const p1 = writeConnector.setTransactionCategory('tx1', 'c2', 'c1').then(r => {
+        order.push(1);
+        return r;
+      });
+      const p2 = writeConnector.setTransactionCategory('tx2', 'c1', 'c2').then(r => {
+        order.push(2);
+        return r;
+      });
+
+      const [r1, r2] = await Promise.all([p1, p2]);
+
+      expect(r1.success).toBe(true);
+      expect(r2.success).toBe(true);
+      // Second call completes after first (lock serialization)
+      expect(order).toEqual([1, 2]);
+
+      // Two updateTransaction calls (one per setTransactionCategory call)
+      expect(mock.updateTransaction).toHaveBeenCalledTimes(2);
 
       await writeConnector.disconnect();
     });
