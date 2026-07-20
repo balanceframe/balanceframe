@@ -6,6 +6,7 @@
  * request body (prevents spoofing).
  */
 
+import { readBody } from 'h3';
 import {
   getWorkflowStore,
   getActorId,
