@@ -8,8 +8,8 @@
  * shapes results into CLI envelope outputs.
  */
 
-import { ReasonCodes } from './errors.js';
 
+import { ReasonCodes, ApplicationError } from './errors.js';
 import {
   okResponse,
   errorResponse,
@@ -637,13 +637,21 @@ export async function proposalCreateAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.proposalCreate(ledger, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'proposal.create'), result);
   } catch (err) {
+    if (err instanceof ApplicationError) {
+      return errorResponse(requestId, new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      }));
+    }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
       code: 'analysis_failed',
       message,
-      retryable: true,
+      retryable: false,
       reasonCodes: ['analysis_error'],
     });
     return errorResponse(requestId, errInfo);
@@ -744,13 +752,21 @@ export async function proposalApproveAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.proposalApprove(ledger, proposalId, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'proposal.approve'), result);
   } catch (err) {
+    if (err instanceof ApplicationError) {
+      return errorResponse(requestId, new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      }));
+    }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
       code: 'analysis_failed',
       message,
-      retryable: true,
+      retryable: false,
       reasonCodes: ['analysis_error'],
     });
     return errorResponse(requestId, errInfo);
@@ -783,13 +799,21 @@ export async function proposalExecuteAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.proposalExecute(ledger, proposalId, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'proposal.execute'), result);
   } catch (err) {
+    if (err instanceof ApplicationError) {
+      return errorResponse(requestId, new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      }));
+    }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
       code: 'analysis_failed',
       message,
-      retryable: true,
+      retryable: false,
       reasonCodes: ['analysis_error'],
     });
     return errorResponse(requestId, errInfo);
