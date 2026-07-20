@@ -116,6 +116,34 @@ nix flake check
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 
+### Coverage
+
+```bash
+# Full coverage (JS/TS + Rust) from the Nix development environment
+nix develop --command just coverage
+```
+
+**Report locations** (relative to project root):
+
+| Layer | Report | Path |
+|-------|--------|------|
+| JS/TS | LCOV (per package) | `coverage/js/<package>/lcov.info` |
+| JS/TS | JSON (per package) | `coverage/js/<package>/coverage-final.json` |
+| Rust | LCOV (workspace) | `coverage/rust/lcov.info` |
+| All | Machine-readable index | `coverage/summary.json` |
+
+**Inclusion/exclusion:**
+
+- JS/TS coverage includes `src/**` source files only; tests, fixtures, build
+  output (`dist/`), and `node_modules/` are excluded.
+- Rust coverage includes all workspace crates; dependencies and the `target/`
+  directory are excluded by `cargo llvm-cov`.
+
+**Coverage thresholds:** JS/TS and Rust are measured and reported independently.
+No unified project-wide percentage is calculated. Existing policy targets are
+documented in `AGENTS.md`; CI currently publishes reports without enforcing
+those targets, so the first baseline can be reviewed before adding gates.
+
 ## Project Status
 
 BalanceFrame is in **pre-release planning and implementation.** The roadmap
@@ -153,3 +181,4 @@ coordination. See the [full roadmap](docs/roadmap/overview.md) for details.
 
 Copyright 2026 BalanceFrame contributors. Licensed under the Apache License,
 Version 2.0. See [LICENSE](LICENSE) for the full license text.
+

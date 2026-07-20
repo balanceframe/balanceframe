@@ -16,6 +16,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
+coverage/
 tests/actual-integration/.actual-server-data/
 tests/actual-integration/.seed-budget.mjs
 tests/actual-integration/.env.test

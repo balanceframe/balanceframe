@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "coverage": "vitest run --coverage --exclude test/build-smoke.test.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^1.0.0",
     "vitest": "^1.0.0"
   }
 }

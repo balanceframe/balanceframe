@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "coverage": "vitest run --coverage",
     "test": "vitest run"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^1.0.0",
     "vitest": "^1.0.0"
   }
 }

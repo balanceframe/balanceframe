@@ -9,8 +9,10 @@ let
     clippy
     rust-analyzer
     cargo-nextest
+    cargo-llvm-cov
     cargo-audit
     cargo-deny
+    llvmPackages.llvm
   ];
 
   # Node.js + package manager bootstrap
@@ -60,6 +62,7 @@ in
     "rust-analyzer"
     "cargo-nextest"
     "cargo-audit"
+    "cargo-llvm-cov"
     "cargo-deny"
     "node"
     "npm"

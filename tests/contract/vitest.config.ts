@@ -3,13 +3,13 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/**/*.test.ts'],
+    include: ['*.test.ts'],
     testTimeout: 10_000,
     bail: 1,
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'lcov', 'json'],
-      reportsDirectory: '../../coverage/js/protocol-generated',
+      reportsDirectory: '../../coverage/js/test-contract',
       include: ['src/**'],
       exclude: [
         'test/**',

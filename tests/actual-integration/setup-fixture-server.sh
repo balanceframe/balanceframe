@@ -177,70 +177,77 @@ ensure_fixture_data() {
 
     mkdir -p "$FIXTURE_DIR"
 
-    # Generate representative fixture data with sample accounts, categories, payees, and transactions
+    # Generate representative fixture data using the canonical protocol shape
     cat > "$FIXTURE_DATA_FILE" << 'FIXX'
 {
-  "metadata": {
-    "name": "BalanceFrame Representative Fixture",
-    "version": "1.0.0",
-    "description": "Representative test fixture for BalanceFrame integration tests"
-  },
+  "schemaVersion": "1",
+  "actualVersion": "25.1.0",
+  "snapshotDate": "2026-07-15T00:00:00Z",
   "accounts": [
-    { "name": "Checking", "type": "checking", "offbudget": false, "closed": false },
-    { "name": "Savings", "type": "savings", "offbudget": false, "closed": false },
-    { "name": "Credit Card", "type": "credit", "offbudget": true, "closed": false },
-    { "name": "Cash", "type": "other", "offbudget": true, "closed": false }
+    { "id": "a_1", "name": "Checking Account", "accountType": "checking", "offBudget": false, "isClosed": false },
+    { "id": "a_2", "name": "Savings Account", "accountType": "savings", "offBudget": false, "isClosed": false },
+    { "id": "a_3", "name": "Credit Card", "accountType": "creditCard", "offBudget": false, "isClosed": false },
+    { "id": "a_4", "name": "Cash Wallet", "accountType": "cash", "offBudget": true, "isClosed": false },
+    { "id": "a_5", "name": "Investment Portfolio", "accountType": "investment", "offBudget": true, "isClosed": false },
+    { "id": "a_6", "name": "Car Loan", "accountType": "loan", "offBudget": false, "isClosed": false }
   ],
-  "categoryGroups": [
-    {
-      "name": "Fixed Expenses",
-      "categories": [
-        { "name": "Rent", "isIncome": false, "hidden": false },
-        { "name": "Utilities", "isIncome": false, "hidden": false },
-        { "name": "Insurance", "isIncome": false, "hidden": false }
-      ]
-    },
-    {
-      "name": "Variable Expenses",
-      "categories": [
-        { "name": "Groceries", "isIncome": false, "hidden": false },
-        { "name": "Dining Out", "isIncome": false, "hidden": false },
-        { "name": "Entertainment", "isIncome": false, "hidden": false },
-        { "name": "Transportation", "isIncome": false, "hidden": false }
-      ]
-    },
-    {
-      "name": "Income",
-      "categories": [
-        { "name": "Salary", "isIncome": true, "hidden": false },
-        { "name": "Freelance", "isIncome": true, "hidden": false }
-      ]
-    }
+  "categories": [
+    { "id": "cat_1", "name": "Rent / Mortgage", "groupName": "Housing", "isIncome": false },
+    { "id": "cat_2", "name": "Groceries", "groupName": "Food", "isIncome": false },
+    { "id": "cat_3", "name": "Dining Out", "groupName": "Food", "isIncome": false },
+    { "id": "cat_4", "name": "Gas / Fuel", "groupName": "Transportation", "isIncome": false },
+    { "id": "cat_5", "name": "Public Transit", "groupName": "Transportation", "isIncome": false },
+    { "id": "cat_6", "name": "Electric Bill", "groupName": "Utilities", "isIncome": false },
+    { "id": "cat_7", "name": "Water Bill", "groupName": "Utilities", "isIncome": false },
+    { "id": "cat_8", "name": "Internet", "groupName": "Utilities", "isIncome": false },
+    { "id": "cat_9", "name": "Streaming Services", "groupName": "Entertainment", "isIncome": false },
+    { "id": "cat_10", "name": "Movie / Events", "groupName": "Entertainment", "isIncome": false },
+    { "id": "cat_11", "name": "Pharmacy", "groupName": "Healthcare", "isIncome": false },
+    { "id": "cat_12", "name": "Doctor Visit", "groupName": "Healthcare", "isIncome": false },
+    { "id": "cat_13", "name": "Emergency Savings", "groupName": "Savings", "isIncome": false },
+    { "id": "cat_deleted", "name": "Old Category", "groupName": "Savings", "isIncome": false, "deleted": true },
+    { "id": "cat_15", "name": "Business Travel", "groupName": "Transportation", "isIncome": false },
+    { "id": "cat_16", "name": "Gifts", "groupName": "Entertainment", "isIncome": false }
   ],
   "payees": [
-    { "name": "Acme Corp", "transferAcct": null },
-    { "name": "Landlord LLC", "transferAcct": null },
-    { "name": "Power Company", "transferAcct": null },
-    { "name": "Supermarket Chain", "transferAcct": null },
-    { "name": "Online Retailer", "transferAcct": null },
-    { "name": "Employer Inc", "transferAcct": null }
+    { "id": "pay_1", "name": "AMAZON MKTPLACE", "transferAccountId": null },
+    { "id": "pay_2", "name": "Amazon Marketplace", "transferAccountId": null },
+    { "id": "pay_3", "name": "Whole Foods", "transferAccountId": null },
+    { "id": "pay_4", "name": "Shell Gas Station", "transferAccountId": null },
+    { "id": "pay_5", "name": "City Electric Co", "transferAccountId": null },
+    { "id": "pay_6", "name": "Netflix", "transferAccountId": null },
+    { "id": "pay_7", "name": "Spotify", "transferAccountId": null },
+    { "id": "pay_8", "name": "Landlord Property Mgmt", "transferAccountId": null },
+    { "id": "pay_9", "name": "Starbucks", "transferAccountId": null },
+    { "id": "pay_10", "name": "Target", "transferAccountId": null },
+    { "id": "pay_11", "name": "CVS Pharmacy", "transferAccountId": null },
+    { "id": "pay_12", "name": "Uber", "transferAccountId": null },
+    { "id": "pay_13", "name": "Home Depot", "transferAccountId": null },
+    { "id": "pay_14", "name": "Costco Wholesale", "transferAccountId": null },
+    { "id": "pay_15", "name": "Best Buy", "transferAccountId": null },
+    { "id": "pay_16", "name": "ATM Withdrawal", "transferAccountId": null },
+    { "id": "pay_17", "name": "Direct Deposit - Employer", "transferAccountId": null },
+    { "id": "pay_18", "name": "Checking <> Credit Card", "transferAccountId": "a_3" },
+    { "id": "pay_19", "name": "Checking <> Savings", "transferAccountId": "a_2" },
+    { "id": "pay_20", "name": "Checking <> Loan", "transferAccountId": "a_6" },
+    { "id": "pay_21", "name": "Comcast Cable", "transferAccountId": null },
+    { "id": "pay_22", "name": "City Water Dept", "transferAccountId": null }
   ],
   "transactions": [
-    { "account": "Checking", "date": "2025-01-15", "amount": -250000, "payee": "Landlord LLC", "category": "Rent", "notes": "January rent", "cleared": true },
-    { "account": "Checking", "date": "2025-01-16", "amount": -8500, "payee": "Power Company", "category": "Utilities", "notes": "Electric bill", "cleared": true },
-    { "account": "Checking", "date": "2025-01-17", "amount": -62340, "payee": "Supermarket Chain", "category": "Groceries", "notes": "Weekly groceries", "cleared": true },
-    { "account": "Checking", "date": "2025-01-18", "amount": -3500, "payee": "Online Retailer", "category": "Entertainment", "notes": "Subscription", "cleared": true },
-    { "account": "Checking", "date": "2025-01-20", "amount": 500000, "payee": "Employer Inc", "category": "Salary", "notes": "Monthly salary", "cleared": true },
-    { "account": "Checking", "date": "2025-01-21", "amount": -3200, "payee": "Online Retailer", "category": "Transportation", "notes": "Bus pass", "cleared": false },
-    { "account": "Savings", "date": "2025-01-20", "amount": 100000, "payee": "Employer Inc", "category": "Salary", "notes": "Savings transfer", "cleared": true },
-    { "account": "Credit Card", "date": "2025-01-22", "amount": -15000, "payee": "Supermarket Chain", "category": "Groceries", "notes": "Credit card groceries", "cleared": true }
+    { "id": "tx_000", "accountId": "a_1", "date": "2026-07-09", "payeeName": "Whole Foods", "categoryName": "Groceries", "amount": { "minorUnits": "-1500", "currency": "USD" }, "cleared": true, "notes": "Weekly groceries" },
+    { "id": "tx_001", "accountId": "a_2", "date": "2026-07-08", "payeeName": "Shell Gas Station", "categoryName": "Gas / Fuel", "amount": { "minorUnits": "-2300", "currency": "USD" }, "cleared": true, "notes": null },
+    { "id": "tx_002", "accountId": "a_3", "date": "2026-07-12", "payeeName": "City Electric Co", "categoryName": "Utilities", "amount": { "minorUnits": "-3500", "currency": "USD" }, "cleared": true, "notes": null },
+    { "id": "tx_003", "accountId": "a_1", "date": "2026-07-11", "payeeName": "Netflix", "categoryName": "Entertainment", "amount": { "minorUnits": "-4200", "currency": "USD" }, "cleared": true, "notes": null },
+    { "id": "tx_004", "accountId": "a_1", "date": "2026-07-15", "payeeName": "Direct Deposit - Employer", "categoryName": null, "amount": { "minorUnits": "500000", "currency": "USD" }, "cleared": true, "notes": "Monthly salary" },
+    { "id": "tx_005", "accountId": "a_1", "date": "2026-07-10", "payeeName": "Starbucks", "categoryName": "Dining Out", "amount": { "minorUnits": "-750", "currency": "USD" }, "cleared": true, "notes": null },
+    { "id": "tx_006", "accountId": "a_4", "date": "2026-07-14", "payeeName": "ATM Withdrawal", "categoryName": null, "amount": { "minorUnits": "-20000", "currency": "USD" }, "cleared": true, "notes": null },
+    { "id": "tx_007", "accountId": "a_1", "date": "2026-07-12", "payeeName": "Checking <> Credit Card", "categoryName": null, "amount": { "minorUnits": "-150000", "currency": "USD" }, "cleared": true, "notes": "Credit card payment" },
+    { "id": "tx_008", "accountId": "a_6", "date": "2026-07-15", "payeeName": "Checking <> Loan", "categoryName": null, "amount": { "minorUnits": "-50000", "currency": "USD" }, "cleared": true, "notes": "Loan installment" }
   ],
-  "rules": [
-    { "stage": null, "conditionsOp": "and", "conditions": [{ "field": "payee", "op": "is", "value": "Supermarket Chain" }], "actions": [{ "field": "category", "op": "set", "value": "Groceries" }] }
-  ],
-  "schedules": [
-    { "name": "Monthly Rent", "type": "bill", "amount": -250000, "startDate": "2025-01-01", "frequency": "monthly", "payee": "Landlord LLC" }
-  ]
+  "rules": [],
+  "schedules": [],
+  "budgets": [],
+  "tags": []
 }
 FIXX
     ok "Fixture data created at $FIXTURE_DATA_FILE"
@@ -349,9 +356,43 @@ SEED_SCRIPT="$SCRIPT_DIR/.seed-budget.mjs"
 create_seed_script() {
   info "Creating seed script..."
 
-  cat > "$SEED_SCRIPT" << 'SEED'
+cat > "$SEED_SCRIPT" << 'SEED'
 import * as actualApi from '@actual-app/api';
 import { readFileSync } from 'fs';
+
+// Map canonical protocol accountType to Actual API account type
+function mapAccountType(t) {
+  switch (t) {
+    case 'checking': return 'checking';
+    case 'savings': return 'savings';
+    case 'creditCard': return 'credit';
+    case 'cash':
+    case 'investment':
+    case 'loan':
+    case 'other': return 'other';
+    default: return 'other';
+  }
+}
+
+// Helper: resolve a category-group ID from createCategoryGroup return value.
+// The API may return a string ID directly, or empty — in which case we
+// refresh the group list and locate the newly created group by name.
+async function resolveGroupId(name, directResult) {
+  if (directResult && typeof directResult === 'string' && directResult.length > 0) {
+    return directResult;
+  }
+  // Fallback: look up the group we just created
+  const groups = await actualApi.getCategoryGroups();
+  const found = groups.find((g) => g.name === name);
+  if (!found || !found.id) {
+    throw new Error(
+      `Actual did not create category group "${name}" `
+      + `(createCategoryGroup returned ${JSON.stringify(directResult)}, `
+      + `getCategoryGroups returned ${JSON.stringify(groups.map((g) => ({ id: g.id, name: g.name })))})`
+    );
+  }
+  return found.id;
+}
 
 async function main() {
   const serverUrl = process.env.ACTUAL_SERVER_URL;
@@ -366,17 +407,46 @@ async function main() {
     dataDir: process.env.SEED_DATA_DIR,
   });
 
+  // Create budget and resolve identity
   await client.send('create-budget', {
     budgetName,
     avoidUpload: false,
   });
   const budgets = await actualApi.getBudgets();
-  const budget = budgets.find((candidate) => candidate.name === budgetName);
-  if (!budget) {
-    throw new Error(`Created budget "${budgetName}" was not returned by the server`);
+
+  // getBudgets() may return separate local and cloud entries for the same budget.
+  // Prefer cloudBudget.cloudFileId (the remote listing identifier) first, then
+  // cloudBudget.id, then localBudget?.id — because a fresh Actual client exposes
+  // the cloud file UUID as cloudFileId when id is absent from the remote response.
+  // ActualConnector.discoverBudgets uses cloudFileId as the public identifier,
+  // so this ordering matches discoverBudgets for a freshly-seeded setup.
+  const localBudget = budgets.find(
+    (c) => c.name === budgetName && 'id' in c && Boolean(c.id),
+  );
+  const cloudBudget = budgets.find(
+    (c) => c.name === budgetName && Boolean(c.groupId),
+  );
+  if (!cloudBudget) {
+    throw new Error(
+      `Created budget "${budgetName}" was not fully synchronized with the server. Cloud entry missing.`,
+    );
   }
-  const { id: budgetId, groupId } = budget;
-  console.log(JSON.stringify({ status: 'budget_created', budgetId, groupId, name: budgetName }));
+  // Resolve the budget ID the same way ActualConnector.discoverBudgets does:
+  // cloudFileId ?? id ?? '' — cloudBudget.cloudFileId (remote UUID) takes priority
+  // because a fresh setup only has cloudFileId as the true public identifier.
+  const resolvedBudgetId =
+    cloudBudget.cloudFileId ?? cloudBudget.id ?? localBudget?.id ?? '';
+  if (!resolvedBudgetId) {
+    throw new Error(
+      `Could not resolve a budget ID for "${budgetName}" `
+      + `(cloudBudget.id=${JSON.stringify(cloudBudget?.id)}, `
+      + `cloudFileId=${JSON.stringify(cloudBudget?.cloudFileId)}, `
+      + `localBudget.id=${JSON.stringify(localBudget?.id)})`,
+    );
+  }
+  const groupId = cloudBudget.groupId;
+
+  console.log(JSON.stringify({ status: 'budget_created', budgetId: resolvedBudgetId, groupId, name: budgetName }));
 
   // Load fixture data
   let fixture;
@@ -384,17 +454,59 @@ async function main() {
     fixture = JSON.parse(readFileSync(fixturePath, 'utf-8'));
   } catch (e) {
     // If no fixture file, create minimal structure
-    fixture = { accounts: [], categoryGroups: [], payees: [], transactions: [], rules: [], schedules: [] };
+    fixture = {
+      accounts: [], categories: [], categoryGroups: [], payees: [],
+      transactions: [], rules: [], schedules: [],
+    };
   }
 
-  // Create category groups with categories
-  if (fixture.categoryGroups) {
+  // ---- Categories (canonical flat or legacy grouped) ----
+  if (fixture.categories && fixture.categories.length > 0) {
+    // Canonical protocol shape: flat categories with groupName field.
+    // Group by groupName and create one category group per distinct name.
+    const groupByName = {};
+    for (const cat of fixture.categories) {
+      if (cat.deleted) continue;
+      if (!groupByName[cat.groupName]) {
+        groupByName[cat.groupName] = await resolveGroupId(
+          cat.groupName,
+          await actualApi.createCategoryGroup({ name: cat.groupName }),
+        );
+      }
+      // Ensure the group id resolved to a non-empty value before creating the category.
+      if (!groupByName[cat.groupName]) {
+        throw new Error(
+          `Category group "${cat.groupName}" has no resolved group_id; `
+          + `createCategoryGroup result was ${JSON.stringify(groupByName[cat.groupName])}`
+        );
+      }
+
+      await actualApi.createCategory({
+        name: cat.name,
+        group_id: groupByName[cat.groupName],
+        isIncome: cat.isIncome || false,
+        hidden: false,
+      });
+    }
+  } else if (fixture.categoryGroups) {
+    // Legacy inline fixture shape: nested categoryGroups
     for (const group of fixture.categoryGroups) {
-      const groupId = await actualApi.createCategoryGroup({ name: group.name });
+      const resolvedId = await resolveGroupId(
+        group.name,
+        await actualApi.createCategoryGroup({ name: group.name }),
+      );
       for (const cat of (group.categories || [])) {
+        // Ensure the group id resolved to a non-empty value before creating the category.
+        if (!resolvedId) {
+          throw new Error(
+            `Category group "${group.name}" has no resolved group_id; `
+            + `createCategoryGroup result was ${JSON.stringify(resolvedId)}`
+          );
+        }
+
         await actualApi.createCategory({
           name: cat.name,
-          groupId: groupId,
+          group_id: resolvedId,
           isIncome: cat.isIncome || false,
           hidden: cat.hidden || false,
         });
@@ -402,53 +514,109 @@ async function main() {
     }
   }
 
-  // Create accounts
+  // ---- Accounts (canonical fields or legacy fields) ----
   if (fixture.accounts) {
     for (const acct of fixture.accounts) {
-      await actualApi.createAccount({
-        name: acct.name,
-        type: acct.type,
-        offbudget: acct.offbudget || false,
-        closed: acct.closed || false,
-      });
+      // Canonical: accountType / offBudget / isClosed  |  Legacy: type / offbudget / closed
+      const type = acct.accountType
+        ? mapAccountType(acct.accountType)
+        : (acct.type || 'other');
+      const offbudget = (acct.offBudget !== undefined) ? acct.offBudget : (acct.offbudget || false);
+      const closed = (acct.isClosed !== undefined) ? acct.isClosed : (acct.closed || false);
+      await actualApi.createAccount({ name: acct.name, type, offbudget, closed });
     }
   }
 
-  // Create payees
+  // Build name-based and fixture-id based maps after entity creation
+  const accounts = await actualApi.getAccounts();
+  const accountByName = {};
+  const acctIdByFixId = {};
+  for (const a of accounts) {
+    const aName = (a).name;
+    accountByName[aName] = a.id;
+  }
+  for (const fa of (fixture.accounts || [])) {
+    if (fa.name && accountByName[fa.name]) {
+      acctIdByFixId[fa.id] = accountByName[fa.name];
+    }
+  }
+
+  // ---- Payees (canonical with transferAccountId or legacy with transferAcct) ----
   if (fixture.payees) {
     for (const payee of fixture.payees) {
-      await actualApi.createPayee({
-        name: payee.name,
-        transferAcct: payee.transferAcct || null,
-      });
+      let transferAcct = null;
+      if (payee.transferAccountId) {
+        // Canonical: fixture-id reference → resolve to actual account ID
+        transferAcct = acctIdByFixId[payee.transferAccountId] || null;
+      } else if (payee.transferAcct) {
+        // Legacy: direct value
+        transferAcct = payee.transferAcct;
+      }
+      await actualApi.createPayee({ name: payee.name, transferAcct });
     }
   }
 
-  // Get accounts and payees for transaction mapping
-  const accounts = await actualApi.getAccounts();
-  const payees = await actualApi.getPayees();
-  const categories = await actualApi.getCategories();
+  // Build name-based payee and category maps
+  const payeeByName = {};
+  for (const p of await actualApi.getPayees()) payeeByName[p.name] = p.id;
+  const catByName = {};
+  for (const c of await actualApi.getCategories()) catByName[c.name] = c.id;
+  // Also build fixture-id → name maps for canonical transaction resolution
+  const payeeNameByFixId = {};
+  for (const fp of (fixture.payees || [])) payeeNameByFixId[fp.id] = fp.name;
+  const catNameByFixId = {};
+  for (const fc of (fixture.categories || [])) catNameByFixId[fc.id] = fc.name;
 
-  const accountMap = {};
-  for (const a of accounts) accountMap[a.name] = a.id;
-  const payeeMap = {};
-  for (const p of payees) payeeMap[p.name] = p.id;
-  const categoryMap = {};
-  for (const c of categories) categoryMap[c.name] = c.id;
-
-  // Add transactions
+  // ---- Transactions (canonical or legacy shape) ----
   if (fixture.transactions) {
-    for (const txnData of fixture.transactions) {
-      const acctId = accountMap[txnData.account];
+    for (const txn of fixture.transactions) {
+      // Resolve account: canonical accountId → fix-id map, or legacy account name
+      let acctId;
+      if (txn.accountId) {
+        acctId = acctIdByFixId[txn.accountId];
+      } else {
+        acctId = accountByName[txn.account];
+      }
       if (!acctId) continue;
 
+      // Resolve payee: canonical payeeName, or legacy payee name string
+      let payee = null;
+      if (txn.payeeName) {
+        payee = payeeByName[txn.payeeName] || null;
+      } else if (txn.payee) {
+        payee = payeeByName[txn.payee] || txn.payee;
+      } else if (txn.payeeId) {
+        const name = payeeNameByFixId[txn.payeeId];
+        if (name) payee = payeeByName[name] || null;
+      }
+
+      // Resolve category: canonical categoryName, or legacy category name string
+      let category = null;
+      if (txn.categoryName) {
+        category = catByName[txn.categoryName] || null;
+      } else if (txn.category) {
+        category = catByName[txn.category] || txn.category;
+      } else if (txn.categoryId) {
+        const name = catNameByFixId[txn.categoryId];
+        if (name) category = catByName[name] || null;
+      }
+
+      // Parse amount: canonical Money { minorUnits: string, currency } or legacy integer
+      let amount = 0;
+      if (txn.amount != null && typeof txn.amount === 'object' && txn.amount.minorUnits != null) {
+        amount = parseInt(txn.amount.minorUnits, 10);
+        if (Number.isNaN(amount)) amount = 0;
+      } else if (typeof txn.amount === 'number') {
+        amount = txn.amount;
+      }
+
       await actualApi.addTransactions(acctId, [{
-        date: txnData.date,
-        amount: txnData.amount,
-        payee: payeeMap[txnData.payee] || txnData.payee,
-        category: categoryMap[txnData.category] || txnData.category,
-        notes: txnData.notes || '',
-        cleared: txnData.cleared !== false,
+        date: txn.date,
+        amount,
+        payee,
+        category,
+        notes: txn.notes || '',
+        cleared: txn.cleared !== false,
       }]);
     }
   }
@@ -468,24 +636,30 @@ async function main() {
   // Create schedules
   if (fixture.schedules) {
     for (const schedule of fixture.schedules) {
+      let payee = null;
+      if (schedule.payeeName) {
+        payee = payeeByName[schedule.payeeName] || null;
+      } else if (schedule.payee) {
+        payee = payeeByName[schedule.payee] || schedule.payee;
+      }
       await actualApi.createSchedule({
         name: schedule.name,
         type: schedule.type || 'bill',
         amount: schedule.amount || 0,
         startDate: schedule.startDate,
         frequency: schedule.frequency || 'monthly',
-        payee: payeeMap[schedule.payee] || schedule.payee,
+        payee,
       });
     }
   }
 
-  // Sync to server
+  // Sync to server so the seeded data is uploaded
   await actualApi.sync();
 
   await actualApi.shutdown();
   console.log(JSON.stringify({
     status: 'seeded',
-    budgetId,
+    budgetId: resolvedBudgetId,
     groupId,
     serverUrl: process.env.ACTUAL_SERVER_URL,
     budgetName,
@@ -498,7 +672,7 @@ main().catch((err) => {
 });
 SEED
   ok "Seed script created"
-}
+ }
 
 seed_budget() {
   info "Creating and seeding test budget..."

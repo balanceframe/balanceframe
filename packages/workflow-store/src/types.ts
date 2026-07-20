@@ -104,6 +104,149 @@ export interface FailureRecord {
 }
 
 // ---------------------------------------------------------------------------
+// ReviewItem — lifecycle of a human-review workflow record
+// ---------------------------------------------------------------------------
+
+/** Lifecycle status of a review item. */
+export type ReviewStatus =
+  | 'discovered'
+  | 'suggestion_generated'
+  | 'pending_review'
+  | 'approved'
+  | 'correcting'
+  | 'applied'
+  | 'apply_failed'
+  | 'rejected'
+  | 'skipped'
+  | 'superseded';
+
+/** A review item tracking one candidate through the review-apply lifecycle. */
+export interface ReviewItem {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Link to the source suggestion, if one was generated. */
+  readonly suggestionId: string | null;
+  readonly budgetId: string;
+  readonly transactionId: string;
+  /** The proposed (or applied) category. */
+  readonly categoryId: string;
+  /** Classifier identity that produced the suggestion. */
+  readonly classifier: string;
+  /** Semantic version of the prompt / model used. */
+  readonly promptVersion: string;
+  /** Monotonic version of the transaction snapshot at classification time. */
+  readonly transactionVersion: number;
+  /** Current lifecycle status. */
+  readonly status: ReviewStatus;
+  /** Opaque correlation ID for grouping related review items. */
+  readonly correlationId: string | null;
+  /** Reviewer assigned to this item, if any. */
+  readonly assignedReviewerId: string | null;
+  /** Actors who have approved this review item (ordered). */
+  readonly approvedBy: string[];
+  /** How many distinct reviewers are required for approval. */
+  readonly reviewersRequired: number;
+  /** Priority value (higher = more urgent). */
+  readonly priority: number;
+  /** Evidence payload from the classifier (free-form). */
+  readonly evidence: Record<string, unknown>;
+  /** Provenance description of how this item was created. */
+  readonly provenance: string;
+  /** ID of the review item that superseded this one, or null. */
+  readonly supersededBy: string | null;
+  /** Human-readable reason for supersession, or null. */
+  readonly supersededReason: string | null;
+  /** ISO-8601 timestamp after which this item is considered stale, or null. */
+  readonly freshnessExpiresAt: string | null;
+  /** Monotonic optimistic-lock version, incremented on each transition. */
+  readonly version: number;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+  /** ISO-8601 last-update timestamp. */
+  readonly updatedAt: string;
+}
+
+/** Input to create a new review item. */
+export interface CreateReviewItemInput {
+  /** Suggestion ID if a suggestion has already been generated. */
+  readonly suggestionId?: string;
+  readonly budgetId: string;
+  readonly transactionId: string;
+  readonly categoryId: string;
+  readonly classifier: string;
+  readonly promptVersion?: string;
+  readonly transactionVersion?: number;
+  /** Shared correlation ID for batching. */
+  readonly correlationId?: string;
+  /** Pre-assigned reviewer. */
+  readonly assignedReviewerId?: string;
+  /** Number of distinct reviewers needed for approval (default 1). */
+  readonly reviewersRequired?: number;
+  /** Priority (higher = first in list). */
+  readonly priority?: number;
+  /** Classifier evidence payload. */
+  readonly evidence?: Record<string, unknown>;
+  /** How this item was discovered. */
+  readonly provenance: string;
+  /** ISO-8601 timestamp after which this item is considered stale. */
+  readonly freshnessExpiresAt?: string;
+}
+
+/** Input describing a single status transition. */
+export interface TransitionReviewInput {
+  /** Target status. */
+  readonly toStatus: ReviewStatus;
+  /** Actor performing the transition (email, system ID, etc.). */
+  readonly actor: string;
+  /** Human-readable reason for the transition. */
+  readonly reason?: string;
+  /** Free-form metadata attached to this transition. */
+  readonly metadata?: Record<string, unknown>;
+  /** Expected optimistic-lock version; must match current item version. */
+  readonly expectedVersion: number;
+  /**
+   * When transitioning to `superseded`, the ID of the review item that
+   * supersedes this one (establishes the successor link).
+   */
+  readonly supersededBy?: string;
+}
+
+/** An audited action recording a review-item status transition. */
+export interface ReviewAction {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Owning review item. */
+  readonly reviewItemId: string;
+  /** Status prior to the transition. */
+  readonly fromStatus: ReviewStatus;
+  /** Status after the transition. */
+  readonly toStatus: ReviewStatus;
+  /** Actor who performed the transition. */
+  readonly actor: string;
+  /** Human-readable reason. */
+  readonly reason: string | null;
+  /** Free-form metadata. */
+  readonly metadata: Record<string, unknown>;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/** Result of a single item in a bulk transition. */
+export interface TransitionReviewResult {
+  readonly itemId: string;
+  readonly success: boolean;
+  readonly item: ReviewItem | null;
+  readonly error: string | null;
+}
+
+/** Options for listing review items. */
+export interface ReviewListOptions {
+  readonly status?: ReviewStatus;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+// ---------------------------------------------------------------------------
 // WorkflowStore — public persistence contract
 // ---------------------------------------------------------------------------
 
@@ -211,4 +354,85 @@ export interface WorkflowStore {
     jobType: string,
     candidateId: string,
   ): Promise<CandidateJob | null>;
+
+  // ── Review lifecycle ──────────────────────────────────────────────
+
+  /**
+   * Create a new review item in `discovered` status.
+   *
+   * Idempotent: if an active (non-superseded) item already exists for the
+   * same `(budgetId, transactionId, categoryId, classifier)` key, the
+   * existing item is returned unchanged.
+   */
+  createReviewItem(input: CreateReviewItemInput): Promise<ReviewItem>;
+
+  /** Retrieve a single review item by ID, or null. */
+  getReviewItem(id: string): Promise<ReviewItem | null>;
+
+  /**
+   * Find the active (non-superseded) review item for the given issue
+   * key, or null.
+   */
+  findReviewByIssue(
+    budgetId: string,
+    transactionId: string,
+    categoryId: string,
+    classifier: string,
+  ): Promise<ReviewItem | null>;
+
+  /**
+   * List review items ordered by priority (highest first), then creation
+   * time.
+   */
+  listReviewItems(options?: ReviewListOptions): Promise<ReviewItem[]>;
+
+  /** Return all review items sharing a correlation ID. */
+  listReviewItemsByCorrelation(correlationId: string): Promise<ReviewItem[]>;
+
+  /**
+   * Transition a single review item to a new status.
+   *
+   * The transition is validated against the allowed state machine. If the
+   * current status equals `toStatus`, the call is idempotent.
+   *
+   * @throws If the transition is not allowed or the expectedVersion
+   *         optimistic lock fails.
+   */
+  transitionReviewItem(
+    id: string,
+    input: TransitionReviewInput,
+  ): Promise<ReviewItem>;
+
+  /**
+   * Bulk-transition multiple review items to the same target status.
+   *
+   * All items MUST have the same current status (heterogeneous groups are
+   * rejected). Each item is transitioned atomically; results report
+   * per-item success or failure. Version conflicts are reported per-item
+   * without aborting the batch.
+   */
+  transitionReviewItems(
+    ids: string[],
+    toStatus: ReviewStatus,
+    actor: string,
+    reason?: string,
+  ): Promise<TransitionReviewResult[]>;
+
+  /**
+   * Undo the last reversible transition.
+   *
+   * Reversible transitions: `approved -> pending_review`,
+   * `correcting -> pending_review`. Creates an audit action for the undo.
+   *
+   * @throws If the current status does not have a reversible transition.
+   */
+  undoReviewTransition(
+    id: string,
+    actor: string,
+    reason?: string,
+    expectedVersion?: number,
+  ): Promise<ReviewItem>;
+
+  /** Return all audit actions for a review item, ordered by creation. */
+  getReviewActions(reviewItemId: string): Promise<ReviewAction[]>;
 }

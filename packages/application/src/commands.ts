@@ -25,6 +25,27 @@ import type { Money } from '@balanceframe/protocol-generated';
  * Each method receives the opaque `ledger` handle — the implementation casts
  * it to the concrete ledger/adapter type it expects.
  */
+// ---------------------------------------------------------------------------
+// Review action options
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for a review action submitted via CLI or web.
+ * Provides optional context (message, reason) for the transition.
+ */
+export interface ReviewActionOptions {
+  /** User-provided message or note for the action. */
+  message?: string;
+  /** Reason code or text (e.g. 'wrong_category', 'duplicate'). */
+  reason?: string;
+  /** Actor ID for provenance tracking. */
+  actorId?: string;
+  /** Request ID for correlation. */
+  requestId?: string;
+  /** Correlation ID for audit trail. */
+  correlationId?: string;
+}
+
 export interface AnalysisProtocol {
   /** Analyze pending uncategorized transactions from the ledger snapshot. */
   pendingReview(
@@ -35,6 +56,60 @@ export interface AnalysisProtocol {
   reviewShow(ledger: unknown, reviewId: string): Promise<ReviewDetailResult>;
   /** Generate a budget summary from ledger data. */
   budgetSummary(ledger: unknown): Promise<BudgetSummaryResult>;
+
+  // -----------------------------------------------------------------------
+  // Review action methods — lifecycle transitions for review items
+  // -----------------------------------------------------------------------
+
+  /** Approve a pending review item. */
+  reviewApprove?(
+    ledger: unknown,
+    reviewId: string,
+    options?: ReviewActionOptions,
+  ): Promise<ReviewActionResult>;
+
+  /** Correct a review item with a specific category. */
+  reviewCorrect?(
+    ledger: unknown,
+    reviewId: string,
+    categoryId: string,
+    options?: ReviewActionOptions,
+  ): Promise<ReviewActionResult>;
+
+  /** Reject a pending review item's suggestion. */
+  reviewReject?(
+    ledger: unknown,
+    reviewId: string,
+    options?: ReviewActionOptions,
+  ): Promise<ReviewActionResult>;
+
+  /** Skip a review item for later. */
+  reviewSkip?(
+    ledger: unknown,
+    reviewId: string,
+    options?: ReviewActionOptions,
+  ): Promise<ReviewActionResult>;
+
+  /** Undo the last transition on a review item (where reversible). */
+  reviewUndo?(
+    ledger: unknown,
+    reviewId: string,
+    options?: ReviewActionOptions,
+  ): Promise<ReviewActionResult>;
+
+  /** Approve multiple review items in bulk. */
+  reviewApproveBulk?(
+    ledger: unknown,
+    reviewIds: string[],
+    options?: ReviewActionOptions,
+  ): Promise<ReviewBulkActionResult>;
+
+  /** Group homogeneous review evidence. */
+  reviewGroup?(
+    ledger: unknown,
+    reviewIds: string[],
+    options?: ReviewActionOptions,
+  ): Promise<ReviewGroupResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +215,15 @@ const WRITE_COMMAND_PREFIXES: Array<{ prefix: string[]; capability: string }> = 
   { prefix: ['rules', 'update'], capability: 'rule.update' },
   { prefix: ['budget', 'set-amount'], capability: 'budget.set_amount' },
   { prefix: ['payees', 'rename'], capability: 'payee.rename' },
+
+  // Review actions
+  { prefix: ['reviews', 'approve'], capability: 'review.approve' },
+  { prefix: ['reviews', 'correct'], capability: 'review.correct' },
+  { prefix: ['reviews', 'reject'], capability: 'review.reject' },
+  { prefix: ['reviews', 'skip'], capability: 'review.skip' },
+  { prefix: ['reviews', 'undo'], capability: 'review.undo' },
+  { prefix: ['reviews', 'approve-bulk'], capability: 'review.approve_bulk' },
+  { prefix: ['reviews', 'group'], capability: 'review.group' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -165,6 +249,15 @@ const KNOWN_COMMANDS: Array<{
   { args: ['transactions', 'pending-review'], command: 'transactions.pending-review', route: 'analysis' },
   { args: ['reviews', 'show'], command: 'reviews.show', route: 'analysis' },
   { args: ['budget', 'summary'], command: 'budget.summary', route: 'analysis' },
+
+  // Review action commands
+  { args: ['reviews', 'approve'], command: 'reviews.approve', route: 'analysis' },
+  { args: ['reviews', 'correct'], command: 'reviews.correct', route: 'analysis' },
+  { args: ['reviews', 'reject'], command: 'reviews.reject', route: 'analysis' },
+  { args: ['reviews', 'skip'], command: 'reviews.skip', route: 'analysis' },
+  { args: ['reviews', 'undo'], command: 'reviews.undo', route: 'analysis' },
+  { args: ['reviews', 'approve-bulk'], command: 'reviews.approve-bulk', route: 'analysis' },
+  { args: ['reviews', 'group'], command: 'reviews.group', route: 'analysis' },
 
   // Lifecycle commands
   { args: ['disconnect'], command: 'disconnect', route: 'lifecycle' },
@@ -346,4 +439,69 @@ export interface RemovalResult {
 
 export interface RemovalOutput {
   envelope: ResponseEnvelope<RemovalResult>;
+}
+// ---------------------------------------------------------------------------
+// Review action result types
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a single review action transition.
+ */
+export interface ReviewActionResult {
+  reviewId: string;
+  /** The action that was performed (approved, corrected, rejected, skipped, undone). */
+  action: string;
+  /** Status before the transition. */
+  fromStatus: string;
+  /** Status after the transition. */
+  toStatus: string;
+  /** ISO timestamp of the action. */
+  timestamp: string;
+  /** Correlation ID for audit/provenance. */
+  correlationId: string;
+  /** Actor who performed the action. */
+  actorId: string;
+  /** Whether this action can be undone. */
+  reversible: boolean;
+  /** Next review item ID for immediate progression, or null if end of queue. */
+  nextItemId: string | null;
+}
+
+export interface ReviewActionOutput {
+  envelope: ResponseEnvelope<ReviewActionResult>;
+}
+
+/**
+ * Result of bulk-approving multiple review items.
+ */
+export interface ReviewBulkActionResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: Array<{
+    reviewId: string;
+    action: string;
+    status: 'ok' | 'error';
+    fromStatus?: string;
+    toStatus?: string;
+    error?: string;
+  }>;
+}
+
+export interface ReviewBulkActionOutput {
+  envelope: ResponseEnvelope<ReviewBulkActionResult>;
+}
+
+/**
+ * Result of grouping review items with homogeneous evidence.
+ */
+export interface ReviewGroupResult {
+  items: ReviewDetailResult[];
+  homogeneous: boolean;
+  totalAmount: Money;
+  itemCount: number;
+}
+
+export interface ReviewGroupOutput {
+  envelope: ResponseEnvelope<ReviewGroupResult>;
 }

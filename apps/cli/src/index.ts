@@ -17,11 +17,19 @@ import {
   routeCommand,
   pendingReviewAnalysis,
   reviewShowAnalysis,
+  reviewApproveAnalysis,
+  reviewCorrectAnalysis,
+  reviewRejectAnalysis,
+  reviewSkipAnalysis,
+  reviewUndoAnalysis,
+  reviewApproveBulkAnalysis,
+  reviewGroupAnalysis,
   budgetSummaryAnalysis,
   type CommandInput,
   type ConnectionMode,
   type AnalysisProtocol,
   type LifecycleCallbacks,
+  ApplicationError,
   okResponse,
   errorResponse,
   ErrorInfo,
@@ -40,12 +48,13 @@ export interface CliCommand {
   format: string;
   /** Raw argument tokens. */
   args: string[];
-  /** Review ID for 'reviews show' commands. */
+  /** Review ID for single-item review commands. */
   reviewId?: string;
+  /** Category ID for 'correct' action. */
+  categoryId?: string;
+  /** Multiple review IDs for bulk/group commands. */
+  ids?: string[];
 }
-
-// ---------------------------------------------------------------------------
-// Parse result — stable error envelope data, never throws
 // ---------------------------------------------------------------------------
 
 export type ParseResult =
@@ -159,6 +168,194 @@ export function parseArgs(argv: string[]): ParseResult {
         format,
         args: normalized,
         reviewId,
+      },
+    };
+  }
+
+  // Review action commands
+  if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'approve') {
+    const reviewId = cleanArgs[2];
+    if (!reviewId || reviewId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_review_id', message: 'reviews approve requires a REVIEW_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after review ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'reviews.approve',
+        format,
+        args: normalized,
+        reviewId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'correct') {
+    const reviewId = cleanArgs[2];
+    if (!reviewId || reviewId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_review_id', message: 'reviews correct requires a REVIEW_ID argument.' },
+      };
+    }
+    const categoryId = cleanArgs[3];
+    if (!categoryId || categoryId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_category_id', message: 'reviews correct requires a CATEGORY_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 4) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after category ID: ${cleanArgs.slice(4).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'reviews.correct',
+        format,
+        args: normalized,
+        reviewId,
+        categoryId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'reject') {
+    const reviewId = cleanArgs[2];
+    if (!reviewId || reviewId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_review_id', message: 'reviews reject requires a REVIEW_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after review ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'reviews.reject',
+        format,
+        args: normalized,
+        reviewId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'skip') {
+    const reviewId = cleanArgs[2];
+    if (!reviewId || reviewId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_review_id', message: 'reviews skip requires a REVIEW_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after review ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'reviews.skip',
+        format,
+        args: normalized,
+        reviewId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'undo') {
+    const reviewId = cleanArgs[2];
+    if (!reviewId || reviewId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_review_id', message: 'reviews undo requires a REVIEW_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after review ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'reviews.undo',
+        format,
+        args: normalized,
+        reviewId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'approve-bulk') {
+    const ids = cleanArgs.slice(2).filter(a => !a.startsWith('--'));
+    if (ids.length < 1) {
+      return {
+        ok: false,
+        error: { code: 'missing_review_ids', message: 'reviews approve-bulk requires at least one REVIEW_ID.' },
+      };
+    }
+    // No trailing non-flag arguments beyond the IDs
+    return {
+      ok: true,
+      cmd: {
+        command: 'reviews.approve-bulk',
+        format,
+        args: normalized,
+        ids,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'group') {
+    const ids = cleanArgs.slice(2).filter(a => !a.startsWith('--'));
+    if (ids.length < 1) {
+      return {
+        ok: false,
+        error: { code: 'missing_review_ids', message: 'reviews group requires at least one REVIEW_ID.' },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'reviews.group',
+        format,
+        args: normalized,
+        ids,
       },
     };
   }
@@ -337,6 +534,41 @@ export async function main(
         return JSON.stringify(envelope, null, 2);
       }
 
+      case 'reviews.approve': {
+        const envelope = await reviewApproveAnalysis(commandInput, cmd.reviewId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'reviews.correct': {
+        const envelope = await reviewCorrectAnalysis(commandInput, cmd.reviewId!, cmd.categoryId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'reviews.reject': {
+        const envelope = await reviewRejectAnalysis(commandInput, cmd.reviewId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'reviews.skip': {
+        const envelope = await reviewSkipAnalysis(commandInput, cmd.reviewId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'reviews.undo': {
+        const envelope = await reviewUndoAnalysis(commandInput, cmd.reviewId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'reviews.approve-bulk': {
+        const envelope = await reviewApproveBulkAnalysis(commandInput, cmd.ids!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'reviews.group': {
+        const envelope = await reviewGroupAnalysis(commandInput, cmd.ids!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
       case 'budget.summary': {
         const envelope = await budgetSummaryAnalysis(commandInput);
         return JSON.stringify(envelope, null, 2);
@@ -464,6 +696,16 @@ export async function main(
         throw new Error(`Unhandled command: ${routed.command}`);
     }
   } catch (err) {
+    if (err instanceof ApplicationError) {
+      const info = new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      });
+      const envelope = errorResponse(requestId, info);
+      return JSON.stringify(envelope, null, 2);
+    }
     if (err instanceof Error) {
       const info = new ErrorInfo({
         code: 'cli_error',

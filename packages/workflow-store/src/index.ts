@@ -30,4 +30,11 @@ export type {
   FailureRecord,
   EnqueueJobInput,
   WorkflowStore,
+  ReviewItem,
+  ReviewStatus,
+  ReviewAction,
+  CreateReviewItemInput,
+  TransitionReviewInput,
+  TransitionReviewResult,
+  ReviewListOptions,
 } from './types.js';

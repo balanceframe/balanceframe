@@ -14,6 +14,7 @@
     "./credentials": "./src/credentials.ts"
   },
   "scripts": {
+    "coverage": "vitest run --coverage",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -25,6 +26,7 @@
   "devDependencies": {
     "@actual-app/core": "^26.7.0",
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^1.0.0",
     "vitest": "^1.0.0"
   }
 }

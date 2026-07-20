@@ -43,6 +43,16 @@ jobs:
       - name: Run Rust tests
         run: nix develop --command cargo test --workspace
 
+      - name: Run code coverage
+        run: nix develop --command just coverage
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: coverage/
+          retention-days: 14
+
       - name: Run Rust clippy
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
