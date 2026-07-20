@@ -185,8 +185,14 @@ export default defineEventHandler(async (event) => {
 
   // 3a. No token configured.
   if (!configuredToken) {
-    // Explicit development bypass (runtimeConfig.devBypassAuth or NUXY_DEV_BYPASS_AUTH env).
-    if (config.devBypassAuth) return;
+    // Explicit development bypass.
+    // Accepts: runtimeConfig.devBypassAuth, NUXT_DEV_BYPASS_AUTH,
+    //          or BALANCEFRAME_DEV_BYPASS_AUTH env var.
+    const bypassAuth =
+      (config.devBypassAuth as boolean | string) ||
+      process.env.BALANCEFRAME_DEV_BYPASS_AUTH ||
+      false;
+    if (bypassAuth) return;
 
     // Fail closed — return 503 Service Unavailable.
     setResponseStatus(event, 503);
