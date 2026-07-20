@@ -2,9 +2,16 @@
  * Vue composable that implements the ReviewControllerAdapter interface
  * by calling Nitro API endpoints instead of using a local WorkflowStore.
  *
- * When the API is not yet wired to real data, the adapter manages an
- * empty default state.  Once the server routes serve real review items
- * the adapter will populate state from the API responses.
+ * Accepts an optional session credential callback — never reads a private
+ * server token from runtimeConfig.public nor hard-codes an actor identity.
+ * Same-origin credentials are always sent; a Bearer token is added when
+ * a getSessionToken function is provided.
+ *
+ * Response envelopes are validated before result consumption. Result-level
+ * failures propagate to adapter error state. Actions with no current item
+ * are rejected early. Unsupported operations return explicit failures.
+ * After a successful action the consumed item is removed from the local
+ * queue.
  */
 
 import { ref, shallowRef } from 'vue';
@@ -100,7 +107,20 @@ interface ApiEnvelope<T> {
 // Composable
 // ---------------------------------------------------------------------------
 
-export function useApiReviewController(baseUrl: string): ReviewControllerAdapter {
+export interface ApiReviewControllerOptions {
+  /**
+   * Optional callback that returns a Bearer token for the Authorization
+   * header.  The adapter never reads a token from runtimeConfig.public or
+   * stores credentials in reactive state — it calls this function just
+   * before each fetch.  Return null or omit to rely on same-origin cookies.
+   */
+  getSessionToken?: () => string | null;
+}
+
+export function useApiReviewController(
+  baseUrl: string,
+  options?: ApiReviewControllerOptions,
+): ReviewControllerAdapter {
   // ── Reactive state ──────────────────────────────────────────────
   const state = shallowRef<ReviewSurfaceState>(createDefaultState());
   const loading = ref(false);
@@ -111,7 +131,53 @@ export function useApiReviewController(baseUrl: string): ReviewControllerAdapter
 
   // ── Helpers ─────────────────────────────────────────────────────
 
-  /** Generic API call returning the envelope's result. */
+  /** Build headers including optional session credential. */
+  function buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const token = options?.getSessionToken?.() ?? null;
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
+  }
+
+  /**
+   * Parse a JSON response body into an ApiEnvelope.
+   * Throws on malformed (non-JSON, missing status) responses.
+   */
+  async function parseEnvelope<T>(res: Response): Promise<ApiEnvelope<T>> {
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error(
+        `Invalid response: non-JSON body (HTTP ${res.status})`,
+      );
+    }
+
+    if (!body || typeof body !== 'object') {
+      throw new Error(
+        `Invalid response: empty body (HTTP ${res.status})`,
+      );
+    }
+
+    const envelope = body as Record<string, unknown>;
+
+    if (
+      typeof envelope.status !== 'string' ||
+      (envelope.status !== 'ok' && envelope.status !== 'error')
+    ) {
+      throw new Error(
+        `Invalid response envelope: missing or invalid status field`,
+      );
+    }
+
+    return body as ApiEnvelope<T>;
+  }
+
+  /** Generic API call returning the envelope. */
   async function callApi<T>(
     path: string,
     method: string = 'GET',
@@ -120,14 +186,25 @@ export function useApiReviewController(baseUrl: string): ReviewControllerAdapter
     const url = `${api}${path}`;
     const res = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildHeaders(),
+      credentials: 'same-origin',
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`API error (${res.status}): ${text || res.statusText}`);
+
+    const envelope = await parseEnvelope<T>(res);
+
+    if (!res.ok && envelope.status === 'error') {
+      throw new Error(
+        envelope.error?.message ?? `HTTP ${res.status}`,
+      );
     }
-    return res.json();
+
+    if (!res.ok) {
+      // Non-JSON or unusual HTTP error
+      throw new Error(`API error (${res.status})`);
+    }
+
+    return envelope;
   }
 
   /** Perform a single-item action via the API and return a WebActionResult. */
@@ -138,13 +215,27 @@ export function useApiReviewController(baseUrl: string): ReviewControllerAdapter
     loading.value = true;
     error.value = null;
 
-    const currentId = state.value.currentItem?.reviewItem.id ?? '<no-current>';
+    const currentItem = state.value.currentItem;
+    if (!currentItem) {
+      const result: WebActionResult = {
+        itemId: '<no-current>',
+        success: false,
+        error: 'No current item to act on',
+      };
+      error.value = result.error;
+      loading.value = false;
+      return result;
+    }
+
+    const currentId = currentItem.reviewItem.id;
 
     try {
+      // The server derives actor identity from the auth context, never
+      // from the request body — do not send an actorId here.
       const envelope = await callApi<SingleActionResult>(
         `/api/review/${actionName}`,
         'POST',
-        { reviewId: currentId, actorId: 'web-user', ...extraBody },
+        { reviewId: currentId, ...extraBody },
       );
 
       if (envelope.status === 'error' || envelope.error) {
@@ -153,10 +244,44 @@ export function useApiReviewController(baseUrl: string): ReviewControllerAdapter
         return { itemId: currentId, success: false, error: msg };
       }
 
+      // Validate the result envelope
+      const result = envelope.result;
+      if (!result || typeof result !== 'object') {
+        const msg = 'Invalid action result envelope';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      // Propagate result-level failures
+      if (!result.success) {
+        const msg = result.error ?? 'Action failed';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      // ── Success path — update state ────────────────────────────
+      // Remove the processed item from the local queue and advance
+      // to the next item or to empty.
+      const items = state.value.items;
+      const index = state.value.currentIndex;
+      const newItems = [...items];
+      newItems.splice(index, 1);
+
+      const nextIndex = newItems.length > 0
+        ? Math.min(index, newItems.length - 1)
+        : -1;
+
+      state.value = {
+        ...state.value,
+        items: newItems,
+        currentIndex: nextIndex,
+        currentItem: newItems[nextIndex] ?? null,
+      };
+
       return {
-        itemId: envelope.result?.itemId ?? currentId,
-        success: envelope.result?.success ?? true,
-        error: envelope.result?.error ?? null,
+        itemId: result.itemId ?? currentId,
+        success: true,
+        error: null,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -176,12 +301,21 @@ export function useApiReviewController(baseUrl: string): ReviewControllerAdapter
       const envelope = await callApi<ReviewListResult>('/api/review');
 
       if (envelope.status === 'error') {
-        throw new Error(envelope.error?.message ?? 'Failed to load review items');
+        throw new Error(
+          envelope.error?.message ?? 'Failed to load review items',
+        );
       }
 
-      const items = envelope.result?.items ?? [];
-      const total = envelope.result?.total ?? items.length;
-      const currentItem = items.length > 0 ? items[0] : null;
+      // Validate result shape
+      const result = envelope.result;
+      if (!result || typeof result !== 'object') {
+        throw new Error('Invalid review list envelope: missing result');
+      }
+
+      const items = Array.isArray(result.items) ? result.items : [];
+      const total =
+        typeof result.total === 'number' ? result.total : items.length;
+      const currentItem = items.length > 0 ? items[0]! : null;
 
       state.value = {
         items,
@@ -236,26 +370,71 @@ export function useApiReviewController(baseUrl: string): ReviewControllerAdapter
   }
 
   async function undo(): Promise<WebActionResult> {
-    // Undo is not yet wired to an API endpoint — return no-op success.
-    return { itemId: state.value.currentItem?.reviewItem.id ?? '<no-current>', success: true, error: null };
+    // Undo is not supported by the API — return explicit failure
+    // rather than a no-op success.
+    const currentId =
+      state.value.currentItem?.reviewItem.id ?? '<no-current>';
+    const msg = 'Undo is not supported by the API';
+    error.value = msg;
+    return { itemId: currentId, success: false, error: msg };
   }
 
   // ── Bulk actions ────────────────────────────────────────────────
 
   async function bulkApprove(): Promise<WebBulkActionResult> {
-    return { results: [], consumedCount: 0, errorCount: 0 };
+    return {
+      results: [
+        {
+          itemId: '<bulk>',
+          success: false,
+          error: 'Bulk operations are not supported by the API',
+        },
+      ],
+      consumedCount: 0,
+      errorCount: 1,
+    };
   }
 
   async function bulkCorrect(_categoryId: string): Promise<WebBulkActionResult> {
-    return { results: [], consumedCount: 0, errorCount: 0 };
+    return {
+      results: [
+        {
+          itemId: '<bulk>',
+          success: false,
+          error: 'Bulk operations are not supported by the API',
+        },
+      ],
+      consumedCount: 0,
+      errorCount: 1,
+    };
   }
 
   async function bulkReject(): Promise<WebBulkActionResult> {
-    return { results: [], consumedCount: 0, errorCount: 0 };
+    return {
+      results: [
+        {
+          itemId: '<bulk>',
+          success: false,
+          error: 'Bulk operations are not supported by the API',
+        },
+      ],
+      consumedCount: 0,
+      errorCount: 1,
+    };
   }
 
   async function bulkSkip(): Promise<WebBulkActionResult> {
-    return { results: [], consumedCount: 0, errorCount: 0 };
+    return {
+      results: [
+        {
+          itemId: '<bulk>',
+          success: false,
+          error: 'Bulk operations are not supported by the API',
+        },
+      ],
+      consumedCount: 0,
+      errorCount: 1,
+    };
   }
 
   // ── Navigation ──────────────────────────────────────────────────
@@ -267,7 +446,7 @@ export function useApiReviewController(baseUrl: string): ReviewControllerAdapter
     state.value = {
       ...state.value,
       currentIndex: next,
-      currentItem: items[next],
+      currentItem: items[next] ?? null,
       selectedIndices: [],
     };
   }
