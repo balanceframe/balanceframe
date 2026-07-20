@@ -44,6 +44,12 @@ export interface ReviewActionOptions {
   requestId?: string;
   /** Correlation ID for audit trail. */
   correlationId?: string;
+  /** Category ID for proposal create or review correct. */
+  categoryId?: string;
+  /** Transaction ID for proposal create. */
+  transactionId?: string;
+  /** Operation type for proposal create (e.g. 'set_category'). */
+  operation?: string;
 }
 
 export interface AnalysisProtocol {

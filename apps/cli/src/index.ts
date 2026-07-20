@@ -36,6 +36,7 @@ import {
   type AnalysisProtocol,
   type LifecycleCallbacks,
   type AuditQueryOptions,
+  type ReviewActionOptions,
   ApplicationError,
   okResponse,
   errorResponse,
@@ -127,6 +128,9 @@ export function parseArgs(argv: string[]): ParseResult {
     '--from': true,
     '--to': true,
     '--scope': true,
+    '--message': true,
+    '--reason': true,
+    '--operation': true,
   };
   const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -372,14 +376,23 @@ export function parseArgs(argv: string[]): ParseResult {
   }
 
   if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'approve-bulk') {
-    const ids = cleanArgs.slice(2).filter(a => !a.startsWith('--'));
+    const ids: string[] = [];
+    for (const a of cleanArgs.slice(2)) {
+      if (a.startsWith('--')) continue; // skip flags (already validated by KNOWN_FLAGS check)
+      if (!a.startsWith('rev_')) {
+        return {
+          ok: false,
+          error: { code: 'invalid_review_id', message: `Invalid review ID: "${a}". Review IDs must start with "rev_".` },
+        };
+      }
+      ids.push(a);
+    }
     if (ids.length < 1) {
       return {
         ok: false,
         error: { code: 'missing_review_ids', message: 'reviews approve-bulk requires at least one REVIEW_ID.' },
       };
     }
-    // No trailing non-flag arguments beyond the IDs
     return {
       ok: true,
       cmd: {
@@ -392,7 +405,17 @@ export function parseArgs(argv: string[]): ParseResult {
   }
 
   if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'group') {
-    const ids = cleanArgs.slice(2).filter(a => !a.startsWith('--'));
+    const ids: string[] = [];
+    for (const a of cleanArgs.slice(2)) {
+      if (a.startsWith('--')) continue;
+      if (!a.startsWith('rev_')) {
+        return {
+          ok: false,
+          error: { code: 'invalid_review_id', message: `Invalid review ID: "${a}". Review IDs must start with "rev_".` },
+        };
+      }
+      ids.push(a);
+    }
     if (ids.length < 1) {
       return {
         ok: false,
@@ -536,12 +559,31 @@ export function parseArgs(argv: string[]): ParseResult {
   // -----------------------------------------------------------------------
 
   if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'create') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--category-id') { const v = nextVal(); if (v) { options['category-id'] = v; i++; } }
+      else if (a === '--transaction-id') { const v = nextVal(); if (v) { options['transaction-id'] = v; i++; } }
+      else if (a === '--message') { const v = nextVal(); if (v) { options.message = v; i++; } }
+      else if (a === '--reason') { const v = nextVal(); if (v) { options.reason = v; i++; } }
+      else if (a === '--operation') { const v = nextVal(); if (v) { options.operation = v; i++; } }
+      else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: { code: 'trailing_args', message: `Unexpected argument after 'proposals create': ${a}` },
+        };
+      }
+    }
     return {
       ok: true,
       cmd: {
         command: 'proposals.create',
         format,
         args: normalized,
+        options,
       },
     };
   }
@@ -656,25 +698,44 @@ export function parseArgs(argv: string[]): ParseResult {
 
   if (cleanArgs[0] === 'audit' && cleanArgs[1] === 'query') {
     const options: Record<string, string> = {};
-    const extractFlag = (flag: string): string | undefined => {
-      const idx = cleanArgs.indexOf(flag);
-      if (idx === -1 || idx >= cleanArgs.length - 1) return undefined;
-      return cleanArgs[idx + 1];
-    };
-    const limit = extractFlag('--limit');
-    const offset = extractFlag('--offset');
-    const actorId = extractFlag('--actor-id');
-    const entityId = extractFlag('--entity-id');
-    const action = extractFlag('--action');
-    const from = extractFlag('--from');
-    const to = extractFlag('--to');
-    if (limit) options.limit = limit;
-    if (offset) options.offset = offset;
-    if (actorId) options['actor-id'] = actorId;
-    if (entityId) options['entity-id'] = entityId;
-    if (action) options.action = action;
-    if (from) options.from = from;
-    if (to) options.to = to;
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--limit') { const v = nextVal(); if (v !== undefined) { options.limit = v; i++; } }
+      else if (a === '--offset') { const v = nextVal(); if (v !== undefined) { options.offset = v; i++; } }
+      else if (a === '--actor-id') { const v = nextVal(); if (v !== undefined) { options['actor-id'] = v; i++; } }
+      else if (a === '--entity-id') { const v = nextVal(); if (v !== undefined) { options['entity-id'] = v; i++; } }
+      else if (a === '--action') { const v = nextVal(); if (v !== undefined) { options.action = v; i++; } }
+      else if (a === '--from') { const v = nextVal(); if (v !== undefined) { options.from = v; i++; } }
+      else if (a === '--to') { const v = nextVal(); if (v !== undefined) { options.to = v; i++; } }
+      else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: { code: 'trailing_args', message: `Unexpected argument after 'audit query': ${a}` },
+        };
+      }
+    }
+    // Validate numeric arguments
+    if (options.limit !== undefined) {
+      const n = Number(options.limit);
+      if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+        return {
+          ok: false,
+          error: { code: 'invalid_limit', message: `--limit must be a finite non-negative integer, got "${options.limit}"` },
+        };
+      }
+    }
+    if (options.offset !== undefined) {
+      const n = Number(options.offset);
+      if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+        return {
+          ok: false,
+          error: { code: 'invalid_offset', message: `--offset must be a finite non-negative integer, got "${options.offset}"` },
+        };
+      }
+    }
     return {
       ok: true,
       cmd: {
@@ -986,7 +1047,13 @@ export async function main(
       }
 
       case 'proposals.create': {
-        const envelope = await proposalCreateAnalysis(commandInput);
+        const proposalOptions: ReviewActionOptions = {};
+        if (cmd.options?.['category-id']) proposalOptions.categoryId = cmd.options['category-id'];
+        if (cmd.options?.['transaction-id']) proposalOptions.transactionId = cmd.options['transaction-id'];
+        if (cmd.options?.message) proposalOptions.message = cmd.options.message;
+        if (cmd.options?.reason) proposalOptions.reason = cmd.options.reason;
+        if (cmd.options?.operation) proposalOptions.operation = cmd.options.operation;
+        const envelope = await proposalCreateAnalysis(commandInput, proposalOptions);
         return JSON.stringify(envelope, null, 2);
       }
 

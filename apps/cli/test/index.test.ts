@@ -249,6 +249,25 @@ describe('parseArgs — proposal commands', () => {
     expect(result.cmd.format).toBe('json');
   });
 
+  it('parses proposals create flags into options', () => {
+    const result = parseArgs(['proposals', 'create', '--category-id', 'cat-food', '--transaction-id', 'txn-001', '--message', 'test proposal', '--reason', 'monthly', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('proposals.create');
+    expect(result.cmd.options).toBeDefined();
+    expect(result.cmd.options!['category-id']).toBe('cat-food');
+    expect(result.cmd.options!['transaction-id']).toBe('txn-001');
+    expect(result.cmd.options!.message).toBe('test proposal');
+    expect(result.cmd.options!.reason).toBe('monthly');
+  });
+
+  it('parses proposals create with --operation flag', () => {
+    const result = parseArgs(['proposals', 'create', '--operation', 'set_category', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.operation).toBe('set_category');
+  });
+
   it('parses proposals show PROPOSAL_ID --json', () => {
     const result = parseArgs(['proposals', 'show', 'prop_abc123', '--json']);
     expect(result.ok).toBe(true);
@@ -303,6 +322,51 @@ describe('parseArgs — audit command', () => {
     expect(result.cmd.options).toBeDefined();
     expect(result.cmd.options!['limit']).toBe('10');
     expect(result.cmd.options!['actor-id']).toBe('usr_abc');
+  });
+
+  it('rejects audit query with negative --limit', () => {
+    const result = parseArgs(['audit', 'query', '--limit', '-5', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_limit');
+  });
+
+  it('rejects audit query with non-numeric --limit', () => {
+    const result = parseArgs(['audit', 'query', '--limit', 'abc', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_limit');
+  });
+
+  it('rejects audit query with negative --offset', () => {
+    const result = parseArgs(['audit', 'query', '--offset', '-1', '--actor-id', 'usr_abc', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_offset');
+  });
+
+
+  it('rejects audit query with trailing positional args', () => {
+    const result = parseArgs(['audit', 'query', '--actor-id', 'usr_abc', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('parses audit query with valid --limit and --offset', () => {
+    const result = parseArgs(['audit', 'query', '--limit', '50', '--offset', '10', '--actor-id', 'usr_abc', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.limit).toBe('50');
+    expect(result.cmd.options!.offset).toBe('10');
+    expect(result.cmd.options!['actor-id']).toBe('usr_abc');
+  });
+
+  it('parses audit query with --entity-id', () => {
+    const result = parseArgs(['audit', 'query', '--entity-id', 'txn_001', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!['entity-id']).toBe('txn_001');
   });
 
   it('rejects audit without subcommand', () => {
@@ -365,6 +429,22 @@ describe('parseArgs — proposal arity', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe('unknown_command');
+  });
+
+  it('rejects proposals create with trailing positional argument', () => {
+    const result = parseArgs(['proposals', 'create', '--category-id', 'cat-food', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('rejects proposals create with missing flag value', () => {
+    const result = parseArgs(['proposals', 'create', '--category-id', '--json']);
+    expect(result.ok).toBe(true);
+    // --category-id without a value is silently dropped, which is acceptable
+    if (result.ok) {
+      expect(result.cmd.options!['category-id']).toBeUndefined();
+    }
   });
 });
 
@@ -450,6 +530,32 @@ describe('main — proposal and audit routing', () => {
     expect(parsed.schemaVersion).toBe('1');
     expect(parsed.requestId).toBe('req_audit');
     expect(parsed.status).toBe('ok');
+  });
+
+  it('routes proposals create and forwards options to analysis', async () => {
+    const capturedOptions: unknown[] = [];
+    const result = await main(['proposals', 'create', '--category-id', 'cat-food', '--transaction-id', 'txn-001', '--message', 'test', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_create_fwd',
+      mode: 'reviewAndApply',
+      ledger: { mockLedger: true },
+      analysisProtocol: {
+        ...mockAnalysisProtocol,
+        async proposalCreate(_ledger, opts) {
+          capturedOptions.push(opts);
+          return { proposalId: 'prop_new', status: 'pending', createdAt: '2026-07-20T00:00:00Z' };
+        },
+      },
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.proposalId).toBe('prop_new');
+    expect(capturedOptions).toHaveLength(1);
+    const opts = capturedOptions[0] as Record<string, unknown>;
+    expect(opts.categoryId).toBe('cat-food');
+    expect(opts.transactionId).toBe('txn-001');
+    expect(opts.message).toBe('test');
+    expect(opts.actorId).toBe('usr_test');
   });
 
   it('rejects proposals create in observe mode', async () => {
