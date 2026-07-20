@@ -235,6 +235,20 @@ export type MutationResult =
   | { success: true; id: LedgerId }
   | { success: false; error: string; code: string };
 
+/**
+ * Result of a setTransactionCategory call.
+ * Includes verification of the post-write state and idempotency tracking.
+ */
+export interface SetCategoryResult {
+  success: true;
+  transactionId: LedgerId;
+  previousCategoryId: LedgerId | null;
+  newCategoryId: LedgerId;
+  idempotencyKey: string;
+  /** Whether post-write re-read confirmed the change. */
+  verified: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Rule proposal (for future mutation phases)
 // ---------------------------------------------------------------------------
@@ -324,6 +338,12 @@ export interface BudgetLedger {
     amount: number,
     precondition?: MutationPrecondition,
   ): Promise<MutationResult>;
+
+  setTransactionCategory(
+    transactionId: LedgerId,
+    proposedCategoryId: LedgerId,
+    currentCategoryId: LedgerId | null,
+  ): Promise<SetCategoryResult>;
 
   // ---- Lifecycle ----
 

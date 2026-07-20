@@ -235,3 +235,265 @@ describe('main — executable routing', () => {
     expect(parsed.error.code).toBe('unknown_command');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Proposal command parsing
+// ---------------------------------------------------------------------------
+
+describe('parseArgs — proposal commands', () => {
+  it('parses proposals create --category-id CAT --transaction-id TXN --json', () => {
+    const result = parseArgs(['proposals', 'create', '--category-id', 'cat-food', '--transaction-id', 'txn-001', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('proposals.create');
+    expect(result.cmd.format).toBe('json');
+  });
+
+  it('parses proposals show PROPOSAL_ID --json', () => {
+    const result = parseArgs(['proposals', 'show', 'prop_abc123', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('proposals.show');
+    expect(result.cmd.proposalId).toBe('prop_abc123');
+  });
+
+  it('parses proposals approve PROPOSAL_ID --json', () => {
+    const result = parseArgs(['proposals', 'approve', 'prop_abc123', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('proposals.approve');
+    expect(result.cmd.proposalId).toBe('prop_abc123');
+  });
+
+  it('parses proposals execute PROPOSAL_ID --json', () => {
+    const result = parseArgs(['proposals', 'execute', 'prop_abc123', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('proposals.execute');
+    expect(result.cmd.proposalId).toBe('prop_abc123');
+  });
+
+  it('parses proposals list --json', () => {
+    const result = parseArgs(['proposals', 'list', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('proposals.list');
+    expect(result.cmd.format).toBe('json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Audit command parsing
+// ---------------------------------------------------------------------------
+
+describe('parseArgs — audit command', () => {
+  it('parses audit query --json', () => {
+    const result = parseArgs(['audit', 'query', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('audit.query');
+    expect(result.cmd.format).toBe('json');
+  });
+
+  it('parses audit query with flags --json', () => {
+    const result = parseArgs(['audit', 'query', '--limit', '10', '--actor-id', 'usr_abc', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('audit.query');
+    expect(result.cmd.options).toBeDefined();
+    expect(result.cmd.options!['limit']).toBe('10');
+    expect(result.cmd.options!['actor-id']).toBe('usr_abc');
+  });
+
+  it('rejects audit without subcommand', () => {
+    const result = parseArgs(['audit']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('unknown_command');
+  });
+
+  it('rejects audit unknown subcommand', () => {
+    const result = parseArgs(['audit', 'list']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('unknown_command');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Proposal argument arity and errors
+// ---------------------------------------------------------------------------
+
+describe('parseArgs — proposal arity', () => {
+  it('rejects proposals show without PROPOSAL_ID', () => {
+    const result = parseArgs(['proposals', 'show', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_proposal_id');
+  });
+
+  it('rejects proposals approve without PROPOSAL_ID', () => {
+    const result = parseArgs(['proposals', 'approve', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_proposal_id');
+  });
+
+  it('rejects proposals execute without PROPOSAL_ID', () => {
+    const result = parseArgs(['proposals', 'execute', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_proposal_id');
+  });
+
+  it('rejects trailing args after proposals show PROPOSAL_ID', () => {
+    const result = parseArgs(['proposals', 'show', 'prop_abc', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('rejects trailing args after proposals list', () => {
+    const result = parseArgs(['proposals', 'list', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('rejects unknown proposals subcommand', () => {
+    const result = parseArgs(['proposals', 'delete', 'prop_abc', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('unknown_command');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Executable routing — main() produces a JSON envelope for proposal/audit
+// ---------------------------------------------------------------------------
+
+describe('main — proposal and audit routing', () => {
+  const mockAnalysisProtocol = {
+    async pendingReview() {
+      return {
+        uncategorizedCount: 0,
+        totalUncategorizedAmount: { minorUnits: '0', currency: 'USD' },
+        candidates: [],
+        oldestUncategorizedDate: null,
+        healthState: 'unknown',
+        blockers: [],
+      };
+    },
+    async reviewShow() {
+      return { reviewId: '', generatedAt: '', status: 'not_found', description: '', totalAmount: { minorUnits: '0', currency: 'USD' }, itemCount: 0, items: [] };
+    },
+    async budgetSummary() {
+      return { month: '', totalBudgeted: { minorUnits: '0', currency: 'USD' }, totalSpent: { minorUnits: '0', currency: 'USD' }, totalRemaining: { minorUnits: '0', currency: 'USD' }, categories: [] };
+    },
+    async proposalCreate() {
+      return { proposalId: 'prop_new', status: 'pending', createdAt: '2026-07-20T00:00:00Z' };
+    },
+    async proposalShow() {
+      return { proposalId: 'prop_abc', status: 'pending', createdAt: '2026-07-20T00:00:00Z', description: 'test', proposer: 'usr_test', totalAmount: { minorUnits: '0', currency: 'USD' }, itemCount: 0, items: [] };
+    },
+    async proposalApprove() {
+      return { proposalId: 'prop_abc', action: 'approved', fromStatus: 'pending', toStatus: 'approved', timestamp: '2026-07-20T00:00:00Z' };
+    },
+    async proposalExecute() {
+      return { proposalId: 'prop_abc', action: 'executed', fromStatus: 'approved', toStatus: 'executed', timestamp: '2026-07-20T00:00:00Z' };
+    },
+    async proposalList() {
+      return { proposals: [], total: 0 };
+    },
+    async auditQuery() {
+      return { entries: [], total: 0 };
+    },
+  };
+
+  it('routes proposals list and returns json envelope', async () => {
+    const result = await main(['proposals', 'list', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_prop_list',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_prop_list');
+    expect(parsed.status).toBe('ok');
+  });
+
+  it('routes proposals show and returns json envelope', async () => {
+    const result = await main(['proposals', 'show', 'prop_abc', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_prop_show',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_prop_show');
+    expect(parsed.status).toBe('ok');
+  });
+
+  it('routes audit query and returns json envelope', async () => {
+    const result = await main(['audit', 'query', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_audit',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_audit');
+    expect(parsed.status).toBe('ok');
+  });
+
+  it('rejects proposals create in observe mode', async () => {
+    const result = await main(['proposals', 'create', '--category-id', 'cat-food', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_create_obs',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      analysisProtocol: {
+        ...mockAnalysisProtocol,
+        async proposalCreate() {
+          return { proposalId: 'prop_new', status: 'pending', createdAt: '2026-07-20T00:00:00Z' };
+        },
+      },
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('write_rejected');
+    expect(parsed.requestId).toBe('req_create_obs');
+  });
+
+  it('rejects proposals approve in observe mode', async () => {
+    const result = await main(['proposals', 'approve', 'prop_abc', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_appr_obs',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('write_rejected');
+  });
+
+  it('rejects proposals execute in observe mode', async () => {
+    const result = await main(['proposals', 'execute', 'prop_abc', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_exec_obs',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('write_rejected');
+  });
+});

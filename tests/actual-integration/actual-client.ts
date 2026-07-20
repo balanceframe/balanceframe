@@ -27,6 +27,7 @@ interface ActualClient {
   send(_method: string, _args?: unknown): Promise<unknown>;
 }
 
+
 function requireClient(): ActualClient {
   if (!internal) {
     throw new Error('Actual API client is not initialized');
@@ -91,14 +92,14 @@ export async function createBudget(options: BudgetOptions): Promise<BudgetIdenti
   const localBudget = budgets.find(
     (candidate) => candidate.name === budgetName && 'id' in candidate && Boolean(candidate.id),
   );
-  const remoteBudget = budgets.find(
+  const cloudBudget = budgets.find(
     (candidate) => candidate.name === budgetName && Boolean(candidate.groupId),
   );
-  if (!localBudget || !('id' in localBudget) || !localBudget.id || !remoteBudget?.groupId) {
+  if (!localBudget || !('id' in localBudget) || !localBudget.id || !cloudBudget?.groupId) {
     throw new Error(`Created budget "${budgetName}" was not fully synchronized with Actual`);
   }
 
-  return { id: localBudget.id, groupId: remoteBudget.groupId };
+  return { id: localBudget.id, groupId: cloudBudget.groupId };
 }
 interface LegacyQueryFilter {
   field: string;

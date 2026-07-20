@@ -921,8 +921,14 @@ pub fn verify_mutation(
         }
     };
 
+    // Precondition: current category in snapshot matches plan expectation
     if tx.category_id != plan.current_category_id {
         reason_codes.push("category_changed".into());
+    }
+
+    // Proposed category already matches — diagnostic observation, not an error
+    if tx.category_id == Some(plan.proposed_category_id.clone()) {
+        reason_codes.push("category_already_matches".into());
     }
 
     // Proposed category still exists and is not deleted
@@ -935,6 +941,10 @@ pub fn verify_mutation(
     }
 
     let empty = reason_codes.is_empty();
+    if empty {
+        reason_codes.push("postcondition_verified".into());
+    }
+
     let reasons = reason_codes.clone();
     VerificationResult {
         verified: empty,

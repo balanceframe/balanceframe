@@ -11,6 +11,11 @@
     "sourceType": "module"
   },
   "ignorePatterns": ["dist", "target", "node_modules", "*.js", "*.mjs", "*.cjs"],
+  "globals": {
+    "defineAppConfig": "readonly",
+    "defineNuxtConfig": "readonly",
+    "KeyboardEvent": "readonly"
+  },
   "rules": {
     "no-unused-vars": "off",
     "no-redeclare": "off"

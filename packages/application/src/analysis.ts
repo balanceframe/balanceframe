@@ -8,6 +8,8 @@
  * shapes results into CLI envelope outputs.
  */
 
+import { ReasonCodes } from './errors.js';
+
 import {
   okResponse,
   errorResponse,
@@ -32,6 +34,17 @@ import type {
   ReviewGroupResult,
   ReviewActionOptions,
   AnalysisProtocol,
+  ProposalCreateOutput,
+  ProposalCreateResult,
+  ProposalShowOutput,
+  ProposalDetailResult,
+  ProposalActionOutput,
+  ProposalActionResult,
+  ProposalListOutput,
+  ProposalListResult,
+  AuditQueryOutput,
+  AuditQueryResult,
+  AuditQueryOptions,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -520,6 +533,384 @@ export async function reviewGroupAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.reviewGroup(ledger, reviewIds, mergedOptions);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Proposal analysis handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared guard checks for proposal action analysis.
+ * Returns a tagged result — `{ ok: false, envelope }` on guard failure,
+ * or `{ ok: true, ... }` to proceed.
+ *
+ * Deterministic guards:
+ * - No ledger → not_connected
+ * - Stale snapshot data → proposal_stale
+ * - No analysis protocol → missing_analysis_protocol
+ * - Observe mode → observe_mode_write_blocked
+ */
+async function guardProposalAction(
+  input: CommandInput,
+): Promise<
+  | { ok: true; requestId: string; actorId: string; ledger: unknown; freshness: DataFreshness | null; analysisProtocol: AnalysisProtocol }
+  | { ok: false; envelope: ResponseEnvelope<never> }
+> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return { ok: false, envelope: errorResponse(requestId, err) };
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'proposal_stale',
+      message: 'Proposal data is stale. Reconnect or refresh before proceeding.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.PROPOSAL_STALE],
+    });
+    return { ok: false, envelope: errorResponse(requestId, err) };
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return { ok: false, envelope: errorResponse(requestId, err) };
+  }
+
+  if (input.mode === 'observe') {
+    const err = new ErrorInfo({
+      code: 'write_rejected',
+      message: 'Write operation is not permitted in Observe mode. Proposal mutations require a write-enabled mode.',
+      retryable: false,
+      reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
+    });
+    return { ok: false, envelope: errorResponse(requestId, err) };
+  }
+
+  return { ok: true, requestId, actorId, ledger, freshness, analysisProtocol };
+}
+
+/**
+ * Create a new proposal from CLI arguments.
+ * Delegates to the Rust protocol for the actual creation.
+ */
+export async function proposalCreateAnalysis(
+  input: CommandInput,
+  options?: ReviewActionOptions,
+): Promise<ProposalCreateOutput['envelope']> {
+  const guarded = await guardProposalAction(input);
+  if (!guarded.ok) return guarded.envelope;
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
+
+  if (!analysisProtocol.proposalCreate) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Proposal action not available: the protocol does not support proposal creation.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.proposalCreate(ledger, mergedOptions);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+/**
+ * Show a specific proposal by ID.
+ * Delegates to the Rust protocol for details.
+ */
+export async function proposalShowAnalysis(
+  input: CommandInput,
+  proposalId: string,
+): Promise<ProposalShowOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'proposal_stale',
+      message: 'Proposal data is stale. Reconnect or refresh before proceeding.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.PROPOSAL_STALE],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol.proposalShow) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Proposal show not available: the protocol does not support proposal details.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.proposalShow(ledger, proposalId);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+/**
+ * Approve a proposal.
+ * Delegates to the Rust protocol for the actual transition.
+ * The protocol enforces guard behavior: proposal not found, approval
+ * expiry/consumption/supersession, payload mismatch, inactive membership,
+ * capability/scope failure.
+ */
+export async function proposalApproveAnalysis(
+  input: CommandInput,
+  proposalId: string,
+  options?: ReviewActionOptions,
+): Promise<ProposalActionOutput['envelope']> {
+  const guarded = await guardProposalAction(input);
+  if (!guarded.ok) return guarded.envelope;
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
+
+  if (!analysisProtocol.proposalApprove) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Proposal action not available: the protocol does not support proposal approval.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.proposalApprove(ledger, proposalId, mergedOptions);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+/**
+ * Execute an approved proposal.
+ * Delegates to the Rust protocol for the actual execution.
+ */
+export async function proposalExecuteAnalysis(
+  input: CommandInput,
+  proposalId: string,
+  options?: ReviewActionOptions,
+): Promise<ProposalActionOutput['envelope']> {
+  const guarded = await guardProposalAction(input);
+  if (!guarded.ok) return guarded.envelope;
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = guarded;
+
+  if (!analysisProtocol.proposalExecute) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Proposal action not available: the protocol does not support proposal execution.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.proposalExecute(ledger, proposalId, mergedOptions);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+/**
+ * List proposals.
+ * Uses the read-only path (no guard needed for write-blocked checks).
+ */
+export async function proposalListAnalysis(
+  input: CommandInput,
+): Promise<ProposalListOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'proposal_stale',
+      message: 'Proposal data is stale. Reconnect or refresh before proceeding.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.PROPOSAL_STALE],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol.proposalList) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Proposal list not available: the protocol does not support proposal listing.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.proposalList(ledger);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+/**
+ * Query the audit trail.
+ */
+export async function auditQueryAnalysis(
+  input: CommandInput,
+  query?: AuditQueryOptions,
+): Promise<AuditQueryOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_snapshot',
+      message: 'Snapshot data is stale. Reconnect or re-download before analysis.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_SNAPSHOT],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol.auditQuery) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Audit query not available: the protocol does not support audit trail queries.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.auditQuery(ledger, query);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

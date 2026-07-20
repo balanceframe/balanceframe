@@ -25,10 +25,17 @@ import {
   reviewApproveBulkAnalysis,
   reviewGroupAnalysis,
   budgetSummaryAnalysis,
+  proposalCreateAnalysis,
+  proposalShowAnalysis,
+  proposalApproveAnalysis,
+  proposalExecuteAnalysis,
+  proposalListAnalysis,
+  auditQueryAnalysis,
   type CommandInput,
   type ConnectionMode,
   type AnalysisProtocol,
   type LifecycleCallbacks,
+  type AuditQueryOptions,
   ApplicationError,
   okResponse,
   errorResponse,
@@ -54,8 +61,11 @@ export interface CliCommand {
   categoryId?: string;
   /** Multiple review IDs for bulk/group commands. */
   ids?: string[];
+  /** Proposal ID for proposal show/approve/execute commands. */
+  proposalId?: string;
+  /** Extra command options parsed from flags (proposals create, audit query). */
+  options?: Record<string, string>;
 }
-// ---------------------------------------------------------------------------
 
 export type ParseResult =
   | { ok: true; cmd: CliCommand }
@@ -104,8 +114,20 @@ export function parseArgs(argv: string[]): ParseResult {
     };
   }
 
-  // Validate flags — only --json is recognised
-  const unknownFlags = normalized.filter(a => a.startsWith('--') && a !== '--json');
+  // Known flags accepted across all commands
+  const KNOWN_FLAGS: Record<string, true> = {
+    '--json': true,
+    '--category-id': true,
+    '--transaction-id': true,
+    '--limit': true,
+    '--offset': true,
+    '--actor-id': true,
+    '--entity-id': true,
+    '--action': true,
+    '--from': true,
+    '--to': true,
+  };
+  const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
     return {
       ok: false,
@@ -440,6 +462,161 @@ export function parseArgs(argv: string[]): ParseResult {
     };
   }
 
+  // -----------------------------------------------------------------------
+  // Proposal commands
+  // -----------------------------------------------------------------------
+
+  if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'create') {
+    return {
+      ok: true,
+      cmd: {
+        command: 'proposals.create',
+        format,
+        args: normalized,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'show') {
+    const proposalId = cleanArgs[2];
+    if (!proposalId || proposalId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_proposal_id', message: 'proposals show requires a PROPOSAL_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after proposal ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'proposals.show',
+        format,
+        args: normalized,
+        proposalId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'approve') {
+    const proposalId = cleanArgs[2];
+    if (!proposalId || proposalId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_proposal_id', message: 'proposals approve requires a PROPOSAL_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after proposal ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'proposals.approve',
+        format,
+        args: normalized,
+        proposalId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'execute') {
+    const proposalId = cleanArgs[2];
+    if (!proposalId || proposalId.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_proposal_id', message: 'proposals execute requires a PROPOSAL_ID argument.' },
+      };
+    }
+    if (cleanArgs.length > 3) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after proposal ID: ${cleanArgs.slice(3).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'proposals.execute',
+        format,
+        args: normalized,
+        proposalId,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'list') {
+    if (cleanArgs.length > 2) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'proposals list': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'proposals.list',
+        format,
+        args: normalized,
+      },
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Audit commands
+  // -----------------------------------------------------------------------
+
+  if (cleanArgs[0] === 'audit' && cleanArgs[1] === 'query') {
+    const options: Record<string, string> = {};
+    const extractFlag = (flag: string): string | undefined => {
+      const idx = cleanArgs.indexOf(flag);
+      if (idx === -1 || idx >= cleanArgs.length - 1) return undefined;
+      return cleanArgs[idx + 1];
+    };
+    const limit = extractFlag('--limit');
+    const offset = extractFlag('--offset');
+    const actorId = extractFlag('--actor-id');
+    const entityId = extractFlag('--entity-id');
+    const action = extractFlag('--action');
+    const from = extractFlag('--from');
+    const to = extractFlag('--to');
+    if (limit) options.limit = limit;
+    if (offset) options.offset = offset;
+    if (actorId) options['actor-id'] = actorId;
+    if (entityId) options['entity-id'] = entityId;
+    if (action) options.action = action;
+    if (from) options.from = from;
+    if (to) options.to = to;
+    return {
+      ok: true,
+      cmd: {
+        command: 'audit.query',
+        format,
+        args: normalized,
+        options,
+      },
+    };
+  }
+
   return {
     ok: false,
     error: {
@@ -690,6 +867,44 @@ export async function main(
           });
           return JSON.stringify(errorResponse(requestId, info), null, 2);
         }
+      }
+
+      case 'proposals.create': {
+        const envelope = await proposalCreateAnalysis(commandInput);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'proposals.show': {
+        const envelope = await proposalShowAnalysis(commandInput, cmd.proposalId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'proposals.approve': {
+        const envelope = await proposalApproveAnalysis(commandInput, cmd.proposalId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'proposals.execute': {
+        const envelope = await proposalExecuteAnalysis(commandInput, cmd.proposalId!);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'proposals.list': {
+        const envelope = await proposalListAnalysis(commandInput);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'audit.query': {
+        const queryOptions: Record<string, unknown> = {};
+        if (cmd.options?.limit) queryOptions.limit = parseInt(cmd.options.limit, 10);
+        if (cmd.options?.offset) queryOptions.offset = parseInt(cmd.options.offset, 10);
+        if (cmd.options?.action) queryOptions.action = cmd.options.action;
+        if (cmd.options?.['actor-id']) queryOptions.actorId = cmd.options['actor-id'];
+        if (cmd.options?.['entity-id']) queryOptions.entityId = cmd.options['entity-id'];
+        if (cmd.options?.from) queryOptions.from = cmd.options.from;
+        if (cmd.options?.to) queryOptions.to = cmd.options.to;
+        const envelope = await auditQueryAnalysis(commandInput, queryOptions as AuditQueryOptions);
+        return JSON.stringify(envelope, null, 2);
       }
 
       default:

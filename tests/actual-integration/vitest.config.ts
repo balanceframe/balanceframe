@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 
+
 loadEnv({ path: resolve(__dirname, '.env.test') });
 
 export default defineConfig({
@@ -13,6 +14,7 @@ export default defineConfig({
 
     // Node environment — no DOM needed.
     environment: 'node',
+    setupFiles: [resolve(__dirname, 'setup.ts')],
 
     // Actual's embedded API owns process-global services, and the fixture
     // server rate-limits concurrent authentication. Run live proof files
@@ -50,6 +52,7 @@ export default defineConfig({
 
     // Env: load .env.test if present (created by setup-fixture-server.sh).
     env: {
+      NODE_ENV: 'production',
       // These can be overridden by .env.test or environment.
       ACTUAL_SERVER_URL: process.env.ACTUAL_SERVER_URL || 'http://localhost:5006',
       ACTUAL_SECRET_KEY: process.env.ACTUAL_SECRET_KEY || '',

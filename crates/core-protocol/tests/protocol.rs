@@ -402,6 +402,81 @@ fn test_verify_mutation_valid() {
     assert!(result.verified);
 }
 
+#[test]
+fn test_verify_mutation_emits_postcondition_verified() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1.0".into(),
+        actual_version: "2026.07.01".into(),
+        snapshot_date: "2026-07-17T00:00:00Z".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 5000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+
+    let plan = MutationPlan {
+        plan_id: "plan_test".into(),
+        transaction_id: "tx1".into(),
+        current_category_id: None,
+        proposed_category_id: "cat1".into(),
+        hash: "abc".into(),
+        postconditions: vec![],
+    };
+
+    let result = verify_mutation(&plan, &snapshot);
+    assert!(result.verified);
+    assert!(
+        result.reason_codes.contains(&"postcondition_verified".to_string()),
+        "Expected postcondition_verified in reason_codes: {:?}",
+        result.reason_codes
+    );
+}
+
+#[test]
+fn test_verify_mutation_category_already_matches() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1.0".into(),
+        actual_version: "2026.07.01".into(),
+        snapshot_date: "2026-07-17T00:00:00Z".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), 5000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+
+    let plan = MutationPlan {
+        plan_id: "plan_test".into(),
+        transaction_id: "tx1".into(),
+        current_category_id: Some("cat1".into()),
+        proposed_category_id: "cat1".into(),
+        hash: "abc".into(),
+        postconditions: vec![],
+    };
+
+    let result = verify_mutation(&plan, &snapshot);
+    // Transaction already has the proposed category so verification succeeds,
+    // but the reason_codes should include category_already_matches as a diagnostic.
+    assert!(
+        result.reason_codes.contains(&"category_already_matches".to_string()),
+        "Expected category_already_matches in reason_codes: {:?}",
+        result.reason_codes
+    );
+}
+
 // ---------------------------------------------------------------------------
 // i64::MIN must not panic or silently wrap
 // ---------------------------------------------------------------------------

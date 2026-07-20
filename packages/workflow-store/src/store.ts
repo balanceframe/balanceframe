@@ -29,6 +29,20 @@ import type {
   TransitionReviewInput,
   CreateReviewItemInput,
   TransitionReviewResult,
+  CategorizationProposal,
+  ProposalOperation,
+  ApprovalStatus,
+  ProposalApproval,
+  IdempotencyRecord,
+  AuditRecord,
+  AuditClassification,
+  CreateProposalInput,
+  CreateApprovalInput,
+  CreateIdempotencyInput,
+  AppendAuditInput,
+  AuthorizationDisposition,
+  AuthorizationResult,
+  MembershipStatus,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -121,6 +135,83 @@ function rowToReviewAction(row: ReviewActionRow): ReviewAction {
     reason: row.reason,
     metadata: JSON.parse(row.metadata) as Record<string, unknown>,
     createdAt: row.created_at,
+  };
+}
+
+/** Map a raw DB row to a typed CategorizationProposal. */
+function rowToProposal(row: ProposalRow): CategorizationProposal {
+  return {
+    id: row.id,
+    operation: row.operation as ProposalOperation,
+    budgetId: row.budget_id,
+    transactionId: row.transaction_id,
+    categoryId: row.category_id,
+    payloadHash: row.payload_hash,
+    policyVersion: row.policy_version,
+    preconditions: row.preconditions,
+    expiresAt: row.expires_at,
+    actorId: row.actor_id,
+    provenance: row.provenance,
+    providerModel: row.provider_model,
+    correlationId: row.correlation_id,
+    supersededAt: row.superseded_at,
+    createdAt: row.created_at,
+  };
+}
+
+/** Map a raw DB row to a typed ProposalApproval. */
+function rowToApproval(row: ApprovalRow): ProposalApproval {
+  return {
+    id: row.id,
+    proposalId: row.proposal_id,
+    payloadHash: row.payload_hash,
+    actorId: row.actor_id,
+    status: row.status as ApprovalStatus,
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at,
+    supersededAt: row.superseded_at,
+    createdAt: row.created_at,
+  };
+}
+
+/** Map a raw DB row to a typed IdempotencyRecord. */
+function rowToIdempotency(row: IdempotencyRow): IdempotencyRecord {
+  return {
+    idempotencyKey: row.idempotency_key,
+    proposalId: row.proposal_id,
+    operation: row.operation as ProposalOperation,
+    executedAt: row.executed_at,
+    completed: row.completed !== 0,
+    serialisedEffect: row.serialised_effect,
+    errorMessage: row.error_message,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Map a raw DB row to a typed AuditRecord. */
+function rowToAudit(row: AuditRow): AuditRecord {
+  return {
+    id: row.id,
+    classification: row.classification as AuditClassification,
+    timestamp: row.timestamp,
+    actorId: row.actor_id,
+    operation: row.operation as ProposalOperation | null,
+    proposalId: row.proposal_id,
+    payloadHash: row.payload_hash,
+    budgetId: row.budget_id,
+    backendIds: row.backend_ids,
+    policyVersion: row.policy_version,
+    authorizationDisposition: row.authorization_disposition
+      ? (JSON.parse(row.authorization_disposition) as AuthorizationDisposition)
+      : null,
+    idempotencyKey: row.idempotency_key,
+    expectedPriorState: row.expected_prior_state,
+    observedResultState: row.observed_result_state,
+    providerModel: row.provider_model,
+    correlationId: row.correlation_id,
+    requestId: row.request_id,
+    result: row.result,
+    isError: row.is_error !== 0,
   };
 }
 
@@ -221,6 +312,76 @@ interface FailureRow {
   created_at: string;
 }
 
+interface ProposalRow {
+  id: string;
+  operation: string;
+  budget_id: string;
+  transaction_id: string;
+  category_id: string;
+  payload_hash: string;
+  policy_version: string;
+  preconditions: string;
+  expires_at: string;
+  actor_id: string;
+  provenance: string;
+  provider_model: string | null;
+  correlation_id: string | null;
+  superseded_at: string | null;
+  created_at: string;
+}
+
+interface ApprovalRow {
+  id: string;
+  proposal_id: string;
+  payload_hash: string;
+  actor_id: string;
+  status: string;
+  expires_at: string;
+  consumed_at: string | null;
+  superseded_at: string | null;
+  created_at: string;
+}
+
+interface IdempotencyRow {
+  idempotency_key: string;
+  proposal_id: string;
+  operation: string;
+  executed_at: string;
+  completed: number;
+  serialised_effect: string;
+  error_message: string | null;
+  updated_at: string;
+}
+
+interface AuditRow {
+  id: string;
+  classification: string;
+  timestamp: string;
+  actor_id: string;
+  operation: string | null;
+  proposal_id: string | null;
+  payload_hash: string | null;
+  budget_id: string | null;
+  backend_ids: string;
+  policy_version: string | null;
+  authorization_disposition: string | null;
+  idempotency_key: string | null;
+  expected_prior_state: string | null;
+  observed_result_state: string | null;
+  provider_model: string | null;
+  correlation_id: string | null;
+  request_id: string | null;
+  result: string;
+  is_error: number;
+}
+
+interface ActorMembershipRow {
+  actor_id: string;
+  status: string;
+  capabilities: string;
+  scope: string;
+}
+
 // ---------------------------------------------------------------------------
 // SqliteWorkflowStore
 // ---------------------------------------------------------------------------
@@ -269,6 +430,28 @@ export class SqliteWorkflowStore implements WorkflowStore {
     updateApprovedBy: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectReviewItemStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectReviewItemsByIds: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectActiveProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
+    supersedeProposalStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertApproval: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectApproval: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectActiveApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    consumeApprovalStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    supersedeProposalApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectProposalStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertIdempotency: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectIdempotency: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectIdempotencyByProposalOp: null as unknown as ReturnType<DatabaseType['prepare']>,
+    completeIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertAudit: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectAuditByClassification: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectAuditByProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectAuditCount: null as unknown as ReturnType<DatabaseType['prepare']>,
+    upsertActorMembershipStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectActorMembership: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectExpiredApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    markExpiredApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
@@ -383,6 +566,96 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
       CREATE INDEX IF NOT EXISTS idx_review_actions_item
         ON review_actions(review_item_id);
+
+      CREATE TABLE IF NOT EXISTS categorization_proposals (
+        id               TEXT PRIMARY KEY,
+        operation        TEXT NOT NULL,
+        budget_id        TEXT NOT NULL,
+        transaction_id   TEXT NOT NULL,
+        category_id      TEXT NOT NULL,
+        payload_hash     TEXT NOT NULL,
+        policy_version   TEXT NOT NULL,
+        preconditions    TEXT NOT NULL,
+        expires_at       TEXT NOT NULL,
+        actor_id         TEXT NOT NULL,
+        provenance       TEXT NOT NULL,
+        provider_model   TEXT,
+        correlation_id   TEXT,
+        superseded_at    TEXT,
+        created_at       TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_proposals_active_target
+        ON categorization_proposals(budget_id, transaction_id, operation)
+        WHERE superseded_at IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_payload_unique
+        ON categorization_proposals(budget_id, transaction_id, operation, payload_hash);
+
+      CREATE TABLE IF NOT EXISTS proposal_approvals (
+        id            TEXT PRIMARY KEY,
+        proposal_id   TEXT NOT NULL REFERENCES categorization_proposals(id),
+        payload_hash  TEXT NOT NULL,
+        actor_id      TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'active',
+        expires_at    TEXT NOT NULL,
+        consumed_at   TEXT,
+        superseded_at TEXT,
+        created_at    TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_approvals_proposal
+        ON proposal_approvals(proposal_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_actor
+        ON proposal_approvals(proposal_id, actor_id)
+        WHERE status = 'active';
+
+      CREATE TABLE IF NOT EXISTS idempotency_records (
+        idempotency_key   TEXT PRIMARY KEY,
+        proposal_id       TEXT NOT NULL,
+        operation         TEXT NOT NULL,
+        executed_at       TEXT NOT NULL,
+        completed         INTEGER NOT NULL DEFAULT 0,
+        serialised_effect TEXT NOT NULL,
+        error_message     TEXT,
+        updated_at        TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS audit_records (
+        id                       TEXT PRIMARY KEY,
+        classification           TEXT NOT NULL,
+        timestamp                TEXT NOT NULL,
+        actor_id                 TEXT NOT NULL,
+        operation                TEXT,
+        proposal_id              TEXT,
+        payload_hash             TEXT,
+        budget_id                TEXT,
+        backend_ids              TEXT NOT NULL DEFAULT '[]',
+        policy_version           TEXT,
+        authorization_disposition TEXT,
+        idempotency_key          TEXT,
+        expected_prior_state     TEXT,
+        observed_result_state    TEXT,
+        provider_model           TEXT,
+        correlation_id           TEXT,
+        request_id               TEXT,
+        result                   TEXT NOT NULL,
+        is_error                 INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_classification
+        ON audit_records(classification);
+
+      CREATE INDEX IF NOT EXISTS idx_audit_proposal
+        ON audit_records(proposal_id);
+
+      CREATE TABLE IF NOT EXISTS actor_memberships (
+        actor_id     TEXT PRIMARY KEY,
+        status       TEXT NOT NULL DEFAULT 'active',
+        capabilities TEXT NOT NULL DEFAULT '[]',
+        scope        TEXT NOT NULL DEFAULT '*'
+      );
     `);
   }
 
@@ -648,7 +921,189 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.stmt.selectReviewItemsByIds = this.db.prepare(`
       SELECT id, status, version, approved_by FROM review_items WHERE id = ?
     `);
+
+    // ── Proposals ──────────────────────────────────────────────────────
+
+    this.stmt.insertProposal = this.db.prepare(`
+      INSERT INTO categorization_proposals (id, operation, budget_id, transaction_id,
+                                            category_id, payload_hash, policy_version,
+                                            preconditions, expires_at, actor_id,
+                                            provenance, provider_model, correlation_id,
+                                            superseded_at, created_at)
+      VALUES (@id, @operation, @budgetId, @transactionId,
+              @categoryId, @payloadHash, @policyVersion,
+              @preconditions, @expiresAt, @actorId,
+              @provenance, @providerModel, @correlationId,
+              @supersededAt, @createdAt)
+      ON CONFLICT(budget_id, transaction_id, operation, payload_hash)
+        DO NOTHING
+      RETURNING *
+    `);
+
+    this.stmt.selectProposal = this.db.prepare(`
+      SELECT * FROM categorization_proposals WHERE id = ?
+    `);
+
+    this.stmt.selectActiveProposal = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND transaction_id = @transactionId
+         AND operation = @operation
+         AND superseded_at IS NULL
+       ORDER BY created_at DESC
+       LIMIT 1
+    `);
+
+    this.stmt.supersedeProposalStmt = this.db.prepare(`
+      UPDATE categorization_proposals
+         SET superseded_at = @now
+       WHERE id = @id
+    `);
+
+    // ── Approvals ─────────────────────────────────────────────────────
+
+    this.stmt.insertApproval = this.db.prepare(`
+      INSERT INTO proposal_approvals (id, proposal_id, payload_hash, actor_id,
+                                      status, expires_at, consumed_at,
+                                      superseded_at, created_at)
+      VALUES (@id, @proposalId, @payloadHash, @actorId,
+              'active', @expiresAt, NULL,
+              NULL, @createdAt)
+      ON CONFLICT(proposal_id, actor_id)
+        WHERE status = 'active'
+        DO NOTHING
+      RETURNING *
+    `);
+
+    this.stmt.selectApproval = this.db.prepare(`
+      SELECT * FROM proposal_approvals WHERE id = ?
+    `);
+
+    this.stmt.selectActiveApprovals = this.db.prepare(`
+      SELECT * FROM proposal_approvals
+       WHERE proposal_id = @proposalId
+         AND status = 'active'
+         AND expires_at > @now
+         AND consumed_at IS NULL
+         AND superseded_at IS NULL
+       ORDER BY created_at ASC
+    `);
+
+    this.stmt.consumeApprovalStmt = this.db.prepare(`
+      UPDATE proposal_approvals
+         SET status = 'consumed',
+             consumed_at = @now
+       WHERE id = @id
+         AND status = 'active'
+         AND consumed_at IS NULL
+         AND expires_at > @now
+    `);
+
+    this.stmt.supersedeProposalApprovals = this.db.prepare(`
+      UPDATE proposal_approvals
+         SET status = 'superseded',
+             superseded_at = @now
+       WHERE proposal_id = @proposalId
+         AND status = 'active'
+    `);
+
+    this.stmt.selectProposalStatus = this.db.prepare(`
+      SELECT superseded_at FROM categorization_proposals WHERE id = ?
+    `);
+
+    this.stmt.markExpiredApprovals = this.db.prepare(`
+      UPDATE proposal_approvals
+         SET status = 'expired'
+       WHERE status = 'active'
+         AND expires_at <= @now
+    `);
+
+    this.stmt.selectExpiredApprovals = this.db.prepare(`
+      SELECT id FROM proposal_approvals
+       WHERE status = 'active'
+         AND expires_at <= @now
+    `);
+
+    // ── Idempotency ───────────────────────────────────────────────────
+
+    this.stmt.insertIdempotency = this.db.prepare(`
+      INSERT INTO idempotency_records (idempotency_key, proposal_id, operation,
+                                       executed_at, completed, serialised_effect,
+                                       error_message, updated_at)
+      VALUES (@idempotencyKey, @proposalId, @operation,
+              @executedAt, 0, @serialisedEffect,
+              NULL, @updatedAt)
+    `);
+
+    this.stmt.selectIdempotency = this.db.prepare(`
+      SELECT * FROM idempotency_records WHERE idempotency_key = ?
+    `);
+
+    this.stmt.selectIdempotencyByProposalOp = this.db.prepare(`
+      SELECT * FROM idempotency_records WHERE proposal_id = @proposalId AND operation = @operation
+    `);
+
+    this.stmt.completeIdempotencyStmt = this.db.prepare(`
+      UPDATE idempotency_records
+         SET completed = 1,
+             error_message = @errorMessage,
+             updated_at = @now
+       WHERE idempotency_key = @key
+    `);
+
+    // ── Audit ─────────────────────────────────────────────────────────
+
+    this.stmt.insertAudit = this.db.prepare(`
+      INSERT INTO audit_records (id, classification, timestamp, actor_id,
+                                 operation, proposal_id, payload_hash,
+                                 budget_id, backend_ids, policy_version,
+                                 authorization_disposition, idempotency_key,
+                                 expected_prior_state, observed_result_state,
+                                 provider_model, correlation_id, request_id,
+                                 result, is_error)
+      VALUES (@id, @classification, @timestamp, @actorId,
+              @operation, @proposalId, @payloadHash,
+              @budgetId, @backendIds, @policyVersion,
+              @authorizationDisposition, @idempotencyKey,
+              @expectedPriorState, @observedResultState,
+              @providerModel, @correlationId, @requestId,
+              @result, @isError)
+    `);
+
+    this.stmt.selectAuditByClassification = this.db.prepare(`
+      SELECT * FROM audit_records
+       WHERE (@classification IS NULL OR classification = @classification)
+       ORDER BY timestamp DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectAuditByProposal = this.db.prepare(`
+      SELECT * FROM audit_records
+       WHERE proposal_id = @proposalId
+       ORDER BY timestamp DESC
+       LIMIT @limit
+    `);
+
+    this.stmt.selectAuditCount = this.db.prepare(`
+      SELECT COUNT(*) as count FROM audit_records
+    `);
+
+    // ── Actor memberships ──────────────────────────────────────────────
+
+    this.stmt.upsertActorMembershipStmt = this.db.prepare(`
+      INSERT INTO actor_memberships (actor_id, status, capabilities, scope)
+      VALUES (@actorId, @status, @capabilities, @scope)
+      ON CONFLICT(actor_id) DO UPDATE SET
+        status = @status,
+        capabilities = @capabilities,
+        scope = @scope
+    `);
+
+    this.stmt.selectActorMembership = this.db.prepare(`
+      SELECT * FROM actor_memberships WHERE actor_id = ?
+    `);
   }
+
 
 
   // ── Suggestion lifecycle ───────────────────────────────────────────
@@ -1315,5 +1770,449 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async getReviewActions(reviewItemId: string): Promise<ReviewAction[]> {
     const rows = this.stmt.selectReviewActions.all(reviewItemId) as ReviewActionRow[];
     return rows.map(rowToReviewAction);
+  }
+
+  // ── Categorization proposal lifecycle ─────────────────────────────
+
+  async createProposal(input: CreateProposalInput): Promise<CategorizationProposal> {
+    const id = randomUUID();
+    const now = nowISO();
+
+    const row = this.stmt.insertProposal.get({
+      id,
+      operation: input.operation,
+      budgetId: input.budgetId,
+      transactionId: input.transactionId,
+      categoryId: input.categoryId,
+      payloadHash: input.payloadHash,
+      policyVersion: input.policyVersion,
+      preconditions: input.preconditions,
+      expiresAt: input.expiresAt,
+      actorId: input.actorId,
+      provenance: input.provenance,
+      providerModel: input.providerModel ?? null,
+      correlationId: input.correlationId ?? null,
+      supersededAt: null,
+      createdAt: now,
+    }) as ProposalRow | undefined;
+
+    if (!row) {
+      // Duplicate (same target + payload_hash) — fetch existing
+      const existing = this.stmt.selectActiveProposal.get({
+        budgetId: input.budgetId,
+        transactionId: input.transactionId,
+        operation: input.operation,
+      }) as ProposalRow | undefined;
+      if (existing) return rowToProposal(existing);
+      // Fallback: fetch by payload unique key
+      const byPayload = this.stmt.selectProposal.all('') as ProposalRow[];
+      const match = byPayload.find(r =>
+        r.budget_id === input.budgetId &&
+        r.transaction_id === input.transactionId &&
+        r.operation === input.operation &&
+        r.payload_hash === input.payloadHash
+      );
+      if (match) return rowToProposal(match);
+      throw new Error('Failed to create or retrieve proposal');
+    }
+
+    return rowToProposal(row);
+  }
+
+  async getProposal(id: string): Promise<CategorizationProposal | null> {
+    const row = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
+    return row ? rowToProposal(row) : null;
+  }
+
+  async findActiveProposal(
+    budgetId: string,
+    transactionId: string,
+    operation: ProposalOperation,
+  ): Promise<CategorizationProposal | null> {
+    const row = this.stmt.selectActiveProposal.get({
+      budgetId, transactionId, operation,
+    }) as ProposalRow | undefined;
+    return row ? rowToProposal(row) : null;
+  }
+
+  async supersedeProposal(id: string): Promise<CategorizationProposal> {
+    const existing = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
+    if (!existing) throw new Error(`Proposal ${id} not found`);
+    if (existing.superseded_at) {
+      // Already superseded — idempotent
+      return rowToProposal(existing);
+    }
+
+    const now = nowISO();
+    this.db.transaction(() => {
+      this.stmt.supersedeProposalStmt.run({ id, now });
+      this.stmt.supersedeProposalApprovals.run({ proposalId: id, now });
+    })();
+
+    const updated = this.stmt.selectProposal.get(id) as ProposalRow;
+    return rowToProposal(updated);
+  }
+
+  // ── Proposal approval lifecycle ───────────────────────────────────
+
+  async createApproval(input: CreateApprovalInput): Promise<ProposalApproval> {
+    // Validate proposal exists and is not superseded
+    const proposalRow = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+    if (!proposalRow) throw new Error(`Proposal ${input.proposalId} not found`);
+    if (proposalRow.superseded_at) throw new Error(`Proposal ${input.proposalId} is superseded`);
+
+    // Validate payload hash matches proposal
+    if (input.payloadHash !== proposalRow.payload_hash) {
+      throw new Error(`Payload hash mismatch: approval hash ${input.payloadHash} does not match proposal hash ${proposalRow.payload_hash}`);
+    }
+
+    // Validate expiry is in the future
+    if (new Date(input.expiresAt) <= new Date()) {
+      throw new Error(`Approval expiry ${input.expiresAt} is in the past`);
+    }
+
+    const id = randomUUID();
+    const now = nowISO();
+
+    const row = this.stmt.insertApproval.get({
+      id,
+      proposalId: input.proposalId,
+      payloadHash: input.payloadHash,
+      actorId: input.actorId,
+      expiresAt: input.expiresAt,
+      createdAt: now,
+    }) as ApprovalRow | undefined;
+
+    if (!row) {
+      // Idempotent: existing active approval for (proposalId, actorId)
+      const existing = this.stmt.selectActiveApprovals.all({
+        proposalId: input.proposalId,
+        now: nowISO(),
+      }) as ApprovalRow[];
+      const match = existing.find(a => a.actor_id === input.actorId);
+      if (match) return rowToApproval(match);
+      // If no active match found, the conflict is with a consumed/expired one — fetch by direct query
+      const allRows = this.stmt.selectApproval.all('') as ApprovalRow[];
+      const actorApproval = allRows.find(a => a.proposal_id === input.proposalId && a.actor_id === input.actorId);
+      if (actorApproval) return rowToApproval(actorApproval);
+      throw new Error('Failed to create approval');
+    }
+
+    return rowToApproval(row);
+  }
+
+  async getApproval(id: string): Promise<ProposalApproval | null> {
+    const row = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
+    return row ? rowToApproval(row) : null;
+  }
+
+  async findActiveApprovals(proposalId: string): Promise<ProposalApproval[]> {
+    // First mark any expired approvals
+    const now = nowISO();
+    this.stmt.markExpiredApprovals.run({ now });
+
+    const rows = this.stmt.selectActiveApprovals.all({ proposalId, now }) as ApprovalRow[];
+    return rows.map(rowToApproval);
+  }
+
+  async consumeApproval(id: string): Promise<ProposalApproval> {
+    const existing = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
+    if (!existing) throw new Error(`Approval ${id} not found`);
+
+    if (existing.consumed_at) throw new Error(`Approval ${id} already consumed at ${existing.consumed_at}`);
+    if (existing.superseded_at) throw new Error(`Approval ${id} is superseded`);
+
+    // Check proposal is not superseded
+    const proposalRow = this.stmt.selectProposal.get(existing.proposal_id) as ProposalRow | undefined;
+    if (!proposalRow) throw new Error(`Proposal ${existing.proposal_id} not found`);
+    if (proposalRow.superseded_at) throw new Error(`Proposal ${existing.proposal_id} is superseded — cannot consume its approval`);
+
+    // Check expiry
+    const now = nowISO();
+    if (new Date(existing.expires_at) <= new Date()) {
+      throw new Error(`Approval ${id} expired at ${existing.expires_at}`);
+    }
+
+    const result = this.stmt.consumeApprovalStmt.run({ id, now });
+    if (result.changes === 0) {
+      throw new Error(`Approval ${id} could not be consumed (concurrent state change)`);
+    }
+
+    const updated = this.stmt.selectApproval.get(id) as ApprovalRow;
+    return rowToApproval(updated);
+  }
+
+  async verifyApprovalForExecution(
+    proposalId: string,
+    payloadHash: string,
+  ): Promise<string | null> {
+    // Check proposal exists
+    const proposalRow = this.stmt.selectProposal.get(proposalId) as ProposalRow | undefined;
+    if (!proposalRow) return `Proposal ${proposalId} not found`;
+
+    // Check proposal is not superseded
+    if (proposalRow.superseded_at) return `Proposal ${proposalId} was superseded at ${proposalRow.superseded_at}`;
+
+    // Check payload hash matches
+    if (payloadHash !== proposalRow.payload_hash) {
+      return `Payload hash mismatch: expected ${proposalRow.payload_hash}, got ${payloadHash}`;
+    }
+
+    // Find active approvals
+    const now = nowISO();
+    this.stmt.markExpiredApprovals.run({ now });
+    const activeApprovals = this.stmt.selectActiveApprovals.all({ proposalId, now }) as ApprovalRow[];
+
+    if (activeApprovals.length === 0) {
+      return `No active approvals found for proposal ${proposalId}`;
+    }
+
+    return null;
+  }
+
+  // ── Idempotency records ───────────────────────────────────────────
+
+  async createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyRecord> {
+    const now = nowISO();
+
+    // Check if key already exists
+    const existing = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined;
+    if (existing) {
+      if (existing.proposal_id !== input.proposalId || existing.operation !== input.operation) {
+        throw new Error(
+          `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
+          `already recorded for proposal ${existing.proposal_id} (op: ${existing.operation}), ` +
+          `cannot reuse with proposal ${input.proposalId} (op: ${input.operation})`,
+        );
+      }
+      if (existing.serialised_effect !== input.serialisedEffect) {
+        throw new Error(
+          `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
+          `serialised effect differs from original`,
+        );
+      }
+      return rowToIdempotency(existing);
+    }
+
+    this.stmt.insertIdempotency.run({
+      idempotencyKey: input.idempotencyKey,
+      proposalId: input.proposalId,
+      operation: input.operation,
+      executedAt: now,
+      serialisedEffect: input.serialisedEffect,
+      updatedAt: now,
+    });
+
+    const row = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow;
+    return rowToIdempotency(row);
+  }
+
+  async getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null> {
+    const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow | undefined;
+    return row ? rowToIdempotency(row) : null;
+  }
+
+  async completeIdempotencyRecord(
+    key: string,
+    errorMessage?: string | null,
+  ): Promise<IdempotencyRecord> {
+    const now = nowISO();
+    this.stmt.completeIdempotencyStmt.run({ key, errorMessage: errorMessage ?? null, now });
+    const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow;
+    return rowToIdempotency(row);
+  }
+
+  // ── Audit records (append-only) ───────────────────────────────────
+
+  async appendAuditRecord(input: AppendAuditInput): Promise<AuditRecord> {
+    const id = randomUUID();
+    const now = nowISO();
+
+    const authDispositionJson = input.authorizationDisposition
+      ? JSON.stringify(input.authorizationDisposition)
+      : null;
+
+    this.stmt.insertAudit.run({
+      id,
+      classification: input.classification,
+      timestamp: now,
+      actorId: input.actorId,
+      operation: input.operation ?? null,
+      proposalId: input.proposalId ?? null,
+      payloadHash: input.payloadHash ?? null,
+      budgetId: input.budgetId ?? null,
+      backendIds: input.backendIds ?? '[]',
+      policyVersion: input.policyVersion ?? null,
+      authorizationDisposition: authDispositionJson,
+      idempotencyKey: input.idempotencyKey ?? null,
+      expectedPriorState: input.expectedPriorState ?? null,
+      observedResultState: input.observedResultState ?? null,
+      providerModel: input.providerModel ?? null,
+      correlationId: input.correlationId ?? null,
+      requestId: input.requestId ?? null,
+      result: input.result,
+      isError: input.isError ? 1 : 0,
+    });
+
+    const row = this.stmt.selectAuditByProposal.all({ proposalId: id ?? '', limit: 1 }) as AuditRow[];
+    // Fetch by scanning recent — simplest with no index on id
+    const allRows = (this.stmt.selectAuditCount.get as () => { count: number })();
+    const rows = this.stmt.selectAuditByClassification.all({
+      classification: null,
+      limit: 1,
+      offset: 0,
+    }) as AuditRow[];
+    // Actually, let's construct from what we have
+    const resultRecord: AuditRecord = {
+      id,
+      classification: input.classification,
+      timestamp: now,
+      actorId: input.actorId,
+      operation: input.operation ?? null,
+      proposalId: input.proposalId ?? null,
+      payloadHash: input.payloadHash ?? null,
+      budgetId: input.budgetId ?? null,
+      backendIds: input.backendIds ?? '[]',
+      policyVersion: input.policyVersion ?? null,
+      authorizationDisposition: input.authorizationDisposition ?? null,
+      idempotencyKey: input.idempotencyKey ?? null,
+      expectedPriorState: input.expectedPriorState ?? null,
+      observedResultState: input.observedResultState ?? null,
+      providerModel: input.providerModel ?? null,
+      correlationId: input.correlationId ?? null,
+      requestId: input.requestId ?? null,
+      result: input.result,
+      isError: input.isError ?? false,
+    };
+    return resultRecord;
+  }
+
+  async queryAuditRecords(
+    classification?: AuditClassification,
+    limit?: number,
+    offset?: number,
+  ): Promise<AuditRecord[]> {
+    const rows = this.stmt.selectAuditByClassification.all({
+      classification: classification ?? null,
+      limit: limit ?? 50,
+      offset: offset ?? 0,
+    }) as AuditRow[];
+    return rows.map(rowToAudit);
+  }
+
+  async queryAuditRecordsByProposal(
+    proposalId: string,
+    limit?: number,
+  ): Promise<AuditRecord[]> {
+    const rows = this.stmt.selectAuditByProposal.all({
+      proposalId,
+      limit: limit ?? 50,
+    }) as AuditRow[];
+    return rows.map(rowToAudit);
+  }
+
+  // ── Authorization ─────────────────────────────────────────────────
+
+  async evaluateAuthorization(
+    actorId: string,
+    capability: string,
+    scope: string,
+    policyVersion: string,
+  ): Promise<AuthorizationResult> {
+    const row = this.stmt.selectActorMembership.get(actorId) as ActorMembershipRow | undefined;
+
+    if (!row) {
+      return {
+        allowed: false,
+        disposition: { kind: 'denied', reason: 'Actor not found in membership registry' },
+        actorId,
+        membershipStatus: 'unknown',
+        capability,
+        scope,
+        policyVersion,
+        reason: 'Actor is not a registered member',
+      };
+    }
+
+    if (row.status !== 'active') {
+      return {
+        allowed: false,
+        disposition: { kind: 'denied', reason: `Member status is '${row.status}', not 'active'` },
+        actorId,
+        membershipStatus: row.status as MembershipStatus,
+        capability,
+        scope,
+        policyVersion,
+        reason: `Member is ${row.status}, requires active membership`,
+      };
+    }
+
+    const capabilities = JSON.parse(row.capabilities) as string[];
+    if (!capabilities.includes(capability)) {
+      return {
+        allowed: false,
+        disposition: { kind: 'denied', reason: `Missing capability '${capability}'` },
+        actorId,
+        membershipStatus: 'active',
+        capability,
+        scope,
+        policyVersion,
+        reason: `Actor lacks required capability '${capability}'`,
+      };
+    }
+
+    if (row.scope !== '*' && row.scope !== scope) {
+      return {
+        allowed: false,
+        disposition: { kind: 'denied', reason: `Scope '${row.scope}' does not cover required scope '${scope}'` },
+        actorId,
+        membershipStatus: 'active',
+        capability,
+        scope,
+        policyVersion,
+        reason: `Actor scope '${row.scope}' does not include '${scope}'`,
+      };
+    }
+
+    return {
+      allowed: true,
+      disposition: { kind: 'authorized_without_approval' },
+      actorId,
+      membershipStatus: 'active',
+      capability,
+      scope,
+      policyVersion,
+      reason: 'Authorized',
+    };
+  }
+
+  async upsertActorMembership(
+    actorId: string,
+    status: MembershipStatus,
+    capabilities: string[],
+    scope: string,
+  ): Promise<void> {
+    this.stmt.upsertActorMembershipStmt.run({
+      actorId,
+      status,
+      capabilities: JSON.stringify(capabilities),
+      scope,
+    });
+  }
+
+  async getActorMembership(actorId: string): Promise<{
+    actorId: string;
+    status: MembershipStatus;
+    capabilities: string[];
+    scope: string;
+  } | null> {
+    const row = this.stmt.selectActorMembership.get(actorId) as ActorMembershipRow | undefined;
+    if (!row) return null;
+    return {
+      actorId: row.actor_id,
+      status: row.status as MembershipStatus,
+      capabilities: JSON.parse(row.capabilities) as string[],
+      scope: row.scope,
+    };
   }
 }

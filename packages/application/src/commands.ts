@@ -110,6 +110,47 @@ export interface AnalysisProtocol {
     reviewIds: string[],
     options?: ReviewActionOptions,
   ): Promise<ReviewGroupResult>;
+
+  // -----------------------------------------------------------------------
+  // Proposal and audit methods
+  // -----------------------------------------------------------------------
+
+  /** Create a new proposal. */
+  proposalCreate?(
+    ledger: unknown,
+    options?: ReviewActionOptions,
+  ): Promise<ProposalCreateResult>;
+
+  /** Show a proposal by ID. */
+  proposalShow?(
+    ledger: unknown,
+    proposalId: string,
+  ): Promise<ProposalDetailResult>;
+
+  /** Approve a proposal. */
+  proposalApprove?(
+    ledger: unknown,
+    proposalId: string,
+    options?: ReviewActionOptions,
+  ): Promise<ProposalActionResult>;
+
+  /** Execute an approved proposal. */
+  proposalExecute?(
+    ledger: unknown,
+    proposalId: string,
+    options?: ReviewActionOptions,
+  ): Promise<ProposalActionResult>;
+
+  /** List pending proposals. */
+  proposalList?(
+    ledger: unknown,
+  ): Promise<ProposalListResult>;
+
+  /** Query the audit trail. */
+  auditQuery?(
+    ledger: unknown,
+    query?: AuditQueryOptions,
+  ): Promise<AuditQueryResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +265,11 @@ const WRITE_COMMAND_PREFIXES: Array<{ prefix: string[]; capability: string }> = 
   { prefix: ['reviews', 'undo'], capability: 'review.undo' },
   { prefix: ['reviews', 'approve-bulk'], capability: 'review.approve_bulk' },
   { prefix: ['reviews', 'group'], capability: 'review.group' },
+
+  // Proposal actions
+  { prefix: ['proposals', 'create'], capability: 'proposal.create' },
+  { prefix: ['proposals', 'approve'], capability: 'proposal.approve' },
+  { prefix: ['proposals', 'execute'], capability: 'proposal.execute' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -256,18 +302,24 @@ const KNOWN_COMMANDS: Array<{
   { args: ['reviews', 'reject'], command: 'reviews.reject', route: 'analysis' },
   { args: ['reviews', 'skip'], command: 'reviews.skip', route: 'analysis' },
   { args: ['reviews', 'undo'], command: 'reviews.undo', route: 'analysis' },
-  { args: ['reviews', 'approve-bulk'], command: 'reviews.approve-bulk', route: 'analysis' },
   { args: ['reviews', 'group'], command: 'reviews.group', route: 'analysis' },
+  { args: ['reviews', 'approve-bulk'], command: 'reviews.approve-bulk', route: 'analysis' },
+
+  // Proposal commands
+  { args: ['proposals', 'create'], command: 'proposals.create', route: 'analysis' },
+  { args: ['proposals', 'show'], command: 'proposals.show', route: 'analysis' },
+  { args: ['proposals', 'approve'], command: 'proposals.approve', route: 'analysis' },
+  { args: ['proposals', 'execute'], command: 'proposals.execute', route: 'analysis' },
+  { args: ['proposals', 'list'], command: 'proposals.list', route: 'analysis' },
+
+  // Audit commands
+  { args: ['audit', 'query'], command: 'audit.query', route: 'analysis' },
 
   // Lifecycle commands
   { args: ['disconnect'], command: 'disconnect', route: 'lifecycle' },
   { args: ['export'], command: 'export', route: 'export' },
   { args: ['remove-connection'], command: 'remove-connection', route: 'lifecycle' },
 ];
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function argsMatch(pattern: string[], args: string[]): boolean {
   if (pattern.length > args.length) return false;
@@ -504,4 +556,119 @@ export interface ReviewGroupResult {
 
 export interface ReviewGroupOutput {
   envelope: ResponseEnvelope<ReviewGroupResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Proposal result types
+// ---------------------------------------------------------------------------
+
+export interface ProposalActionOptions {
+  /** User-provided message or note for the proposal action. */
+  message?: string;
+  /** Reason code or text (e.g. 'wrong_category', 'duplicate'). */
+  reason?: string;
+  /** Actor ID for provenance tracking. */
+  actorId?: string;
+  /** Request ID for correlation. */
+  requestId?: string;
+  /** Correlation ID for audit trail. */
+  correlationId?: string;
+}
+
+/** Result of creating a proposal. */
+export interface ProposalCreateResult {
+  proposalId: string;
+  status: string;
+  createdAt: string;
+  summary: string;
+}
+
+export interface ProposalCreateOutput {
+  envelope: ResponseEnvelope<ProposalCreateResult>;
+}
+
+/** Detailed result of a proposal lookup. */
+export interface ProposalDetailResult {
+  proposalId: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  summary: string;
+  /** Payload hash for integrity verification. */
+  payloadHash: string;
+  approvals: Array<{
+    memberId: string;
+    approvedAt: string;
+    status: string;
+  }>;
+  /** Whether the current member has approved. */
+  approvedByCurrentMember: boolean;
+}
+
+export interface ProposalShowOutput {
+  envelope: ResponseEnvelope<ProposalDetailResult>;
+}
+
+/** Result of a proposal action (approve, execute). */
+export interface ProposalActionResult {
+  proposalId: string;
+  action: string;
+  fromStatus: string;
+  toStatus: string;
+  timestamp: string;
+  actorId: string;
+}
+
+export interface ProposalActionOutput {
+  envelope: ResponseEnvelope<ProposalActionResult>;
+}
+
+/** Result of listing proposals. */
+export interface ProposalListItem {
+  proposalId: string;
+  status: string;
+  createdAt: string;
+  summary: string;
+  approvalCount: number;
+  requiredApprovals: number;
+}
+
+export interface ProposalListResult {
+  proposals: ProposalListItem[];
+  total: number;
+}
+
+export interface ProposalListOutput {
+  envelope: ResponseEnvelope<ProposalListResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Audit result types
+// ---------------------------------------------------------------------------
+
+export interface AuditQueryOptions {
+  limit?: number;
+  offset?: number;
+  actorId?: string;
+  entityType?: string;
+  entityId?: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  timestamp: string;
+  actorId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: string;
+}
+
+export interface AuditQueryResult {
+  entries: AuditEntry[];
+  total: number;
+}
+
+export interface AuditQueryOutput {
+  envelope: ResponseEnvelope<AuditQueryResult>;
 }

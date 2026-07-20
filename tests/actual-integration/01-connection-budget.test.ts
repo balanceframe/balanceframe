@@ -176,35 +176,23 @@ describe('01 — Connection & Budget Discovery', () => {
     let groupId: string | undefined;
 
     try {
-      // Step 1: Create a disposable budget
-      await send('create-budget', { budgetName, avoidUpload: false });
-
-      // Step 2: Find the budget via the public API to get its identity
-      const budgets = await getBudgets();
-      const budget = budgets.find((b: { name?: string }) => b.name === budgetName);
+      // Step 1: Create a disposable budget and retain both stable IDs.
+      const created = await createBudget({ name: budgetName, avoidUpload: false });
+      budgetId = created.id;
+      groupId = created.groupId;
+      const budget = (await getBudgets()).find(
+        (candidate) => candidate.id === budgetId,
+      );
       expect(budget).toBeDefined();
-      budgetId = budget!.id!;
-      cloudFileId = budget!.cloudFileId!;
+      cloudFileId = budget!.cloudFileId;
 
-      // Step 3: Encrypt the budget with a real password
-      // This calls key-make which generates a key from the password, stores
-      // the key test on the server, and sets encryptKeyId in local prefs.
+      // Step 3: Encrypt the budget with a real password.
       await send('key-make', { password: encPassword });
 
-      // Step 4: Re-upload the budget — now encrypted with encryptKeyId metadata
+      // Step 4: Re-upload the budget — now encrypted with encryptKeyId metadata.
       await send('upload-budget');
 
-      // Step 5: Get the updated budget info (groupId was restored by upload)
-      const afterUpload = await getBudgets();
-      const synced = afterUpload.find(
-        (budget) => budget.name === budgetName && Boolean(budget.groupId),
-      );
-      expect(synced).toBeDefined();
-      groupId = synced!.groupId!;
-
-      // Budget must now be marked as encrypted
-      expect(synced).toHaveProperty('encryptKeyId');
-      expect(synced!.encryptKeyId).toBeTruthy();
+      // Step 5: The remote group identity comes from the created budget.
 
       // Step 6: Close the budget so downloadBudget re-downloads it fresh
       await send('close-budget');

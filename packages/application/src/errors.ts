@@ -54,6 +54,35 @@ export const ReasonCodes = {
   REVIEW_NOT_FOUND: 'review_not_found',
   /** Analysis protocol (Rust bindings) is not available. */
   MISSING_ANALYSIS_PROTOCOL: 'missing_analysis_protocol',
+
+  // -----------------------------------------------------------------------
+  // Proposal/approval reason codes
+  // -----------------------------------------------------------------------
+
+  /** Proposal was not found. */
+  PROPOSAL_NOT_FOUND: 'proposal_not_found',
+  /** Proposal was superseded. */
+  PROPOSAL_SUPERSEDED: 'proposal_superseded',
+  /** Proposal data is stale (freshness threshold exceeded). */
+  PROPOSAL_STALE: 'proposal_stale',
+  /** Approval has expired. */
+  APPROVAL_EXPIRED: 'approval_expired',
+  /** Approval has already been consumed. */
+  APPROVAL_CONSUMED: 'approval_consumed',
+  /** Approval was superseded. */
+  APPROVAL_SUPERSEDED: 'approval_superseded',
+  /** Approval was not found. */
+  APPROVAL_NOT_FOUND: 'approval_not_found',
+  /** Payload hash does not match expected value. */
+  PAYLOAD_HASH_MISMATCH: 'payload_hash_mismatch',
+  /** Idempotency replay mismatch (different proposalId/operation/effect). */
+  IDEMPOTENCY_REPLAY_MISMATCH: 'idempotency_replay_mismatch',
+  /** Member is not active. */
+  MEMBER_INACTIVE: 'member_inactive',
+  /** Member lacks the required capability. */
+  INSUFFICIENT_CAPABILITY: 'insufficient_capability',
+  /** Member scope does not cover the required scope. */
+  INSUFFICIENT_SCOPE: 'insufficient_scope',
 } as const;
 
 // ---------------------------------------------------------------------------
