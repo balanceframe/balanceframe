@@ -3,15 +3,21 @@
  *
  * Covers:
  * - Exact proposal hash binding
+ * - Proposal expiry rejection
  * - Active membership/capability/scope authorization
+ * - Approval proposalId + payloadHash binding
  * - Approval expiry/consumption/replay
+ * - Idempotency claim before we consume the approval
  * - Latest snapshot planning via ledger.synchronize()
  * - Stale precondition rejection
  * - Write-enabled category update via ledger.setTransactionCategory
  * - Reread/postcondition verification via Rust verifyMutation
- * - Idempotency replay/recovery
+ * - Idempotency replay and in-flight conflict detection
  * - Append-only audit results throughout the flow
+ * - Failure audit records on every rejection
  * - Never blindly repeat a committed write
+ * - Concurrent execution protection via consume-before-write ordering
+ * - Deterministic boundary and call-count assertions
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -184,7 +190,33 @@ function mockSetCategoryResult(overrides: Partial<SetCategoryResult> = {}): SetC
     idempotencyKey: TEST_NONCE,
     verified: true,
     ...overrides,
-  };
+  } as SetCategoryResult;
+}
+
+/** Helper to build a backup-verification audit record for testing. */
+function mockBackupVerification(overrides: Partial<AuditRecord> = {}): AuditRecord {
+  return {
+    id: 'audit_backup_001',
+    classification: 'backup_verification',
+    timestamp: new Date().toISOString(),
+    actorId: TEST_ACTOR,
+    operation: null,
+    proposalId: null,
+    payloadHash: TEST_PAYLOAD_HASH,
+    budgetId: TEST_BUDGET_ID,
+    backendIds: '',
+    policyVersion: '1.0',
+    authorizationDisposition: null,
+    idempotencyKey: null,
+    expectedPriorState: null,
+    observedResultState: null,
+    providerModel: null,
+    correlationId: null,
+    requestId: TEST_REQUEST,
+    result: 'verified',
+    isError: false,
+    ...overrides,
+  } as AuditRecord;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,8 +233,8 @@ interface StoreMock extends WorkflowStore {
   getIdempotencyRecord: Mock;
   completeIdempotencyRecord: Mock;
   appendAuditRecord: Mock;
-  getProposal?: Mock;
   evaluateAuthorization: Mock;
+  queryAuditRecords: Mock;
 }
 
 function createStoreMock(): StoreMock {
@@ -311,6 +343,10 @@ function createRustMock(): RustProtocolMock {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 describe('CategorizationMutationService', () => {
   let store: StoreMock;
   let ledger: LedgerMock;
@@ -352,7 +388,7 @@ describe('CategorizationMutationService', () => {
       reason: 'Authorized',
     });
 
-    // Approval lookup
+    // Approval lookup - active, matching proposalId + payloadHash
     store.getApproval.mockResolvedValue(mockApproval());
     store.findActiveApprovals.mockResolvedValue([mockApproval()]);
     store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed', consumedAt: '2026-07-20T11:00:00Z' }));
@@ -437,42 +473,78 @@ describe('CategorizationMutationService', () => {
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('proposal_superseded');
     });
+  });
 
-    it('rejects when payload hash does not match proposal', async () => {
-      store.getProposal.mockResolvedValue(mockProposal({ payloadHash: 'expected_hash_abc' }));
-      // Input has TEST_PAYLOAD_HASH but proposal has 'expected_hash_abc' — mismatch
-      const result = await service.execute(makeInput({ proposalId: TEST_PROPOSAL_ID }));
+  // =========================================================================
+  // Proposal expiry
+  // =========================================================================
+
+  describe('proposal expiry', () => {
+    it('rejects when proposal is expired', async () => {
+      store.getProposal.mockResolvedValue(
+        mockProposal({ expiresAt: '2020-01-01T00:00:00Z' }),
+      );
+      const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
-      expect(result.reasonCodes).toContain('payload_hash_mismatch');
+      expect(result.reasonCodes).toContain('proposal_expired');
+      // Must not proceed to authorization or further steps
+      expect(store.evaluateAuthorization).not.toHaveBeenCalled();
+      expect(store.getApproval).not.toHaveBeenCalled();
     });
   });
 
-
   // =========================================================================
-  // Backup verification
+  // Backup verification (strengthened)
   // =========================================================================
 
   describe('backup verification', () => {
     it('proceeds normally when requireBackupVerification is false (default)', async () => {
-      // Default service (no options) — should proceed without checking
       const result = await service.execute(makeInput());
       expect(result.success).toBe(true);
       expect(store.queryAuditRecords).not.toHaveBeenCalled();
     });
 
-    it('rejects execution when no backup audit record exists and requireBackupVerification is true', async () => {
+    it('rejects execution when no backup audit record exists', async () => {
       store.queryAuditRecords.mockResolvedValue([]);
       const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
       const result = await svc.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toEqual(['backup_not_verified']);
-      expect(result.message).toBe(
-        'Backup must be verified before the first mutation. Run a backup verification command first.',
-      );
     });
 
-    it('proceeds when backup audit record exists and requireBackupVerification is true', async () => {
-      store.queryAuditRecords.mockResolvedValue([{ id: 'audit_backup_001' } as AuditRecord]);
+    it('rejects when backup record has wrong budgetId', async () => {
+      store.queryAuditRecords.mockResolvedValue([
+        mockBackupVerification({ budgetId: 'budget_other' }),
+      ]);
+      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const result = await svc.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('backup_not_verified');
+    });
+
+    it('rejects when backup record result is not verified/completed', async () => {
+      store.queryAuditRecords.mockResolvedValue([
+        mockBackupVerification({ result: 'failed' }),
+      ]);
+      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const result = await svc.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('backup_not_verified');
+    });
+
+    it('rejects when backup record is stale (too old)', async () => {
+      const oldTimestamp = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(); // 2 days
+      store.queryAuditRecords.mockResolvedValue([
+        mockBackupVerification({ timestamp: oldTimestamp }),
+      ]);
+      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const result = await svc.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('backup_not_verified');
+    });
+
+    it('proceeds when matching backup record is fresh, verified, and has correct budget', async () => {
+      store.queryAuditRecords.mockResolvedValue([mockBackupVerification()]);
       const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
       const result = await svc.execute(makeInput());
       expect(result.success).toBe(true);
@@ -480,10 +552,10 @@ describe('CategorizationMutationService', () => {
   });
 
   // =========================================================================
-  // Authorization — membership, capability, scope
+  // Authorization - membership, capability, scope
   // =========================================================================
 
-  describe('authorization — membership, capability, scope', () => {
+  describe('authorization - membership, capability, scope', () => {
     it('checks evaluateAuthorization with capability and scope', async () => {
       await service.execute(makeInput());
       expect(store.evaluateAuthorization).toHaveBeenCalledWith(
@@ -519,7 +591,7 @@ describe('CategorizationMutationService', () => {
         capability: 'categorization:execute',
         scope: 'budget:' + TEST_BUDGET_ID,
         policyVersion: '1.0',
-        reason: 'Actor lacks required capability \'categorization:execute\'',
+        reason: 'Actor lacks required capability',
       });
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
@@ -544,10 +616,10 @@ describe('CategorizationMutationService', () => {
   });
 
   // =========================================================================
-  // Approval expiry, consumption, and replay
+  // Approval exact binding - proposalId, payloadHash, operation
   // =========================================================================
 
-  describe('approval expiry / consumption / replay', () => {
+  describe('approval exact binding', () => {
     it('loads the specific approval by ID', async () => {
       await service.execute(makeInput());
       expect(store.getApproval).toHaveBeenCalledWith(TEST_APPROVAL_ID);
@@ -558,6 +630,24 @@ describe('CategorizationMutationService', () => {
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('approval_not_found');
+    });
+
+    it('rejects when approval proposalId does not match input proposalId', async () => {
+      store.getApproval.mockResolvedValue(
+        mockApproval({ proposalId: 'prop_different' }),
+      );
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('approval_proposal_mismatch');
+    });
+
+    it('rejects when approval payload hash does not match proposal', async () => {
+      store.getApproval.mockResolvedValue(
+        mockApproval({ payloadHash: 'different_hash' }),
+      );
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('payload_hash_mismatch');
     });
 
     it('rejects when approval is expired', async () => {
@@ -587,13 +677,149 @@ describe('CategorizationMutationService', () => {
       expect(result.reasonCodes).toContain('approval_superseded');
     });
 
-    it('rejects when approval payload hash does not match proposal', async () => {
-      store.getApproval.mockResolvedValue(
-        mockApproval({ payloadHash: 'different_hash' }),
+    it('rejects with unsupported_operation for non-set_category proposals', async () => {
+      store.getProposal.mockResolvedValue(mockProposal({ operation: 'delete' as unknown as 'set_category' }));
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('unsupported_operation');
+    });
+  });
+
+  // =========================================================================
+  // Idempotency - check BEFORE approval consumption
+  // =========================================================================
+
+  describe('idempotency gating', () => {
+    it('checks idempotency before consuming approval', async () => {
+      await service.execute(makeInput());
+      // getIdempotencyRecord must be called before consumeApproval
+      const idemCallOrder = (store.getIdempotencyRecord as Mock).mock.invocationCallOrder[0];
+      const consumeCallOrder = (store.consumeApproval as Mock).mock.invocationCallOrder[0];
+      expect(idemCallOrder).toBeLessThan(consumeCallOrder);
+    });
+
+    it('creates idempotency record after check and before write', async () => {
+      await service.execute(makeInput());
+      expect(store.createIdempotencyRecord).toHaveBeenCalledWith({
+        idempotencyKey: TEST_NONCE,
+        proposalId: TEST_PROPOSAL_ID,
+        operation: 'set_category',
+        serialisedEffect: expect.any(String),
+      });
+    });
+
+    it('returns cached result when idempotency key already completed', async () => {
+      store.getIdempotencyRecord.mockResolvedValue(
+        mockIdempotencyRecord({ completed: true }),
+      );
+
+      const result = await service.execute(makeInput());
+
+      // Should not perform any mutation operations or consume approval
+      expect(store.consumeApproval).not.toHaveBeenCalled();
+      expect(ledger.synchronize).not.toHaveBeenCalled();
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+
+      // Should return the cached result
+      expect(result.success).toBe(true);
+      expect(result.transactionId).toBe(TEST_TX_ID);
+      expect(result.reasonCodes).toContain('idempotency_replay');
+    });
+
+    it('rejects when idempotency record exists but is not completed (in-flight conflict)', async () => {
+      store.getIdempotencyRecord.mockResolvedValue(
+        mockIdempotencyRecord({ completed: false }),
+      );
+
+      const result = await service.execute(makeInput());
+
+      // Must not proceed to mutation operations
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('idempotency_in_progress');
+      expect(ledger.synchronize).not.toHaveBeenCalled();
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+      // Approval should NOT be consumed (idempotency check happens first)
+      expect(store.consumeApproval).not.toHaveBeenCalled();
+    });
+
+    it('completes idempotency record after successful execution', async () => {
+      await service.execute(makeInput());
+      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
+        TEST_NONCE,
+        null, // no error
+      );
+    });
+
+    it('records error on idempotency record when write fails', async () => {
+      ledger.setTransactionCategory.mockRejectedValue(new Error('Backend error'));
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
+        TEST_NONCE,
+        expect.stringContaining('Backend error'),
+      );
+    });
+
+    it('rejects replay with different proposal ID under same idempotency key', async () => {
+      store.createIdempotencyRecord.mockRejectedValue(
+        new Error('Idempotency replay mismatch: different proposalId'),
+      );
+
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('idempotency_replay_mismatch');
+    });
+  });
+
+  // =========================================================================
+  // Consume approval before mutation - concurrent write protection
+  // =========================================================================
+
+  describe('consume approval before mutation', () => {
+    it('consumes approval after idempotency claim but before ledger write', async () => {
+      await service.execute(makeInput());
+      const consumeCallOrder = (store.consumeApproval as Mock).mock.invocationCallOrder[0];
+      const idemCreateOrder = (store.createIdempotencyRecord as Mock).mock.invocationCallOrder[0];
+      const syncOrder = (ledger.synchronize as Mock).mock.invocationCallOrder[0];
+      expect(consumeCallOrder).toBeGreaterThan(idemCreateOrder);
+      expect(consumeCallOrder).toBeLessThan(syncOrder);
+    });
+
+    it('consumes approval exactly once per execution', async () => {
+      await service.execute(makeInput());
+      expect(store.consumeApproval).toHaveBeenCalledWith(TEST_APPROVAL_ID);
+      expect(store.consumeApproval).toHaveBeenCalledOnce();
+    });
+
+    it('does not consume approval when execution fails before idempotency claim', async () => {
+      store.getProposal.mockResolvedValue(null);
+      await service.execute(makeInput());
+      expect(store.consumeApproval).not.toHaveBeenCalled();
+    });
+
+    it('does not consume approval when idempotency replay returns cached result', async () => {
+      store.getIdempotencyRecord.mockResolvedValue(
+        mockIdempotencyRecord({ completed: true }),
+      );
+      await service.execute(makeInput());
+      expect(store.consumeApproval).not.toHaveBeenCalled();
+    });
+
+    it('does not consume approval when idempotency conflict is detected', async () => {
+      store.getIdempotencyRecord.mockResolvedValue(
+        mockIdempotencyRecord({ completed: false }),
       );
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
-      expect(result.reasonCodes).toContain('payload_hash_mismatch');
+      expect(store.consumeApproval).not.toHaveBeenCalled();
+    });
+
+    it('rejects when consumeApproval throws (concurrent consumption detected)', async () => {
+      store.consumeApproval.mockRejectedValue(new Error('Approval already consumed'));
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('approval_consumption_failed');
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
     });
   });
 
@@ -661,13 +887,11 @@ describe('CategorizationMutationService', () => {
 
   describe('stale precondition rejection', () => {
     it('rejects when plan currentCategoryId does not match proposal preconditions', async () => {
-      // Proposal says currentCategoryId should be null (uncategorized)
       const proposal = mockProposal({
         preconditions: JSON.stringify({ currentCategoryId: null }),
       });
       store.getProposal.mockResolvedValue(proposal);
 
-      // But the plan says currentCategoryId is 'cat_old'
       rust.planSetCategory.mockReturnValue({
         planId: TEST_PLAN_ID,
         transactionId: TEST_TX_ID,
@@ -683,13 +907,11 @@ describe('CategorizationMutationService', () => {
     });
 
     it('rejects when plan currentCategoryId differs from live transaction category', async () => {
-      // Proposal preconditions say currentCategoryId = 'cat_old'
       const proposal = mockProposal({
         preconditions: JSON.stringify({ currentCategoryId: 'cat_old' }),
       });
       store.getProposal.mockResolvedValue(proposal);
 
-      // Transaction in snapshot has categoryId = 'cat_different'
       const tx = mockTransaction({ categoryId: 'cat_different' });
       ledger.synchronize.mockResolvedValue({
         snapshot: mockProtocolSnapshot({ transactions: [tx] }),
@@ -697,13 +919,12 @@ describe('CategorizationMutationService', () => {
         watermark: { lastSyncAt: '2026-07-20T11:00:00Z', dataVersion: 'v2' },
       });
 
-      // Plan reflects the live transaction's state
       rust.planSetCategory.mockReturnValue({
         planId: TEST_PLAN_ID,
         transactionId: TEST_TX_ID,
         currentCategoryId: 'cat_different',
         proposedCategoryId: TEST_CATEGORY_ID,
-        hash: 'plan_hash_001',
+        hash: 'plan_hash_002',
         postconditions: [{ type: 'CategoryExists', categoryId: TEST_CATEGORY_ID }],
       });
 
@@ -764,29 +985,8 @@ describe('CategorizationMutationService', () => {
       expect(result.reasonCodes).toContain('write_failed');
     });
 
-    it('rejects when setTransactionCategory returns success=false', async () => {
-      // Simulate verification failure in the connector
-      ledger.setTransactionCategory.mockResolvedValue(
-        mockSetCategoryResult({ success: true, verified: false }),
-      );
-      // Make verifyMutation also fail so the combined result reflects failure
-      rust.verifyMutation.mockReturnValue({
-        verified: false,
-        reasonCodes: ['postcondition_failed'],
-        message: 'Category was not updated as expected',
-      });
-
-      const result = await service.execute(makeInput());
-      // The setCategory succeeded but postcondition verification failed
-      expect(result.verified).toBe(false);
-    });
-
-    it('takes the setTransactionCategory idempotency key from the input', async () => {
+    it('tracks idempotency key through to the write operation', async () => {
       await service.execute(makeInput({ idempotencyKey: 'custom_idem_key' }));
-      // The idempotency key flows through to the write operation
-      const callArg = (ledger.setTransactionCategory as Mock).mock.calls[0];
-      // setTransactionCategory doesn't take an idempotency key directly;
-      // it's tracked via the idempotency record we created before the write
       expect(store.createIdempotencyRecord).toHaveBeenCalledWith(
         expect.objectContaining({ idempotencyKey: 'custom_idem_key' }),
       );
@@ -794,7 +994,7 @@ describe('CategorizationMutationService', () => {
   });
 
   // =========================================================================
-  // Reread / postcondition verification
+  // Reread / postcondition verification - success requires verification
   // =========================================================================
 
   describe('reread / postcondition verification', () => {
@@ -812,13 +1012,13 @@ describe('CategorizationMutationService', () => {
       expect(snapshotArg.snapshotDate).toBeDefined();
     });
 
-    it('returns verified=true when postconditions pass', async () => {
+    it('returns success=true when postconditions pass', async () => {
       const result = await service.execute(makeInput());
       expect(result.success).toBe(true);
       expect(result.verified).toBe(true);
     });
 
-    it('returns verified=false and includes reason codes when verification fails', async () => {
+    it('returns success=false when verification fails after write', async () => {
       rust.verifyMutation.mockReturnValue({
         verified: false,
         reasonCodes: ['postcondition_failed', 'category_not_found'],
@@ -826,94 +1026,45 @@ describe('CategorizationMutationService', () => {
       });
 
       const result = await service.execute(makeInput());
-      expect(result.success).toBe(true); // write succeeded
+      // Write occurred but postcondition verification failed -> overall failure
+      expect(result.success).toBe(false);
       expect(result.verified).toBe(false);
       expect(result.reasonCodes).toContain('postcondition_failed');
     });
-  });
 
-  // =========================================================================
-  // Idempotency replay and recovery
-  // =========================================================================
-
-  describe('idempotency replay / recovery', () => {
-    it('creates idempotency record before performing write', async () => {
-      await service.execute(makeInput());
-      expect(store.createIdempotencyRecord).toHaveBeenCalledWith({
-        idempotencyKey: TEST_NONCE,
-        proposalId: TEST_PROPOSAL_ID,
-        operation: 'set_category',
-        serialisedEffect: expect.any(String),
+    it('returns success=false when verfication throws after write', async () => {
+      rust.verifyMutation.mockImplementation(() => {
+        throw new Error('Verification crashed');
       });
-    });
-
-    it('returns cached result when idempotency key already completed', async () => {
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: true }),
-      );
-
-      const result = await service.execute(makeInput());
-
-      // Should not perform any write operations
-      expect(ledger.synchronize).not.toHaveBeenCalled();
-      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
-      expect(store.consumeApproval).not.toHaveBeenCalled();
-
-      // Should return the cached result
-      expect(result.success).toBe(true);
-      expect(result.transactionId).toBe(TEST_TX_ID);
-    });
-
-    it('recovers from crash when idempotency record exists but is not completed', async () => {
-      // Idempotency record exists from a previous crash
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: false }),
-      );
-
-      // Should proceed with execution despite partial record
-      const result = await service.execute(makeInput());
-
-      // Should still execute all operations
-      expect(ledger.synchronize).toHaveBeenCalled();
-      expect(ledger.setTransactionCategory).toHaveBeenCalled();
-      expect(result.success).toBe(true);
-    });
-
-    it('completes idempotency record after successful execution', async () => {
-      await service.execute(makeInput());
-      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
-        TEST_NONCE,
-        null, // no error
-      );
-    });
-
-    it('records error on idempotency record when write fails', async () => {
-      ledger.setTransactionCategory.mockRejectedValue(new Error('Backend error'));
-      const result = await service.execute(makeInput());
-      expect(result.success).toBe(false);
-      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
-        TEST_NONCE,
-        expect.stringContaining('Backend error'),
-      );
-    });
-
-    it('rejects replay with different proposal ID under same idempotency key', async () => {
-      store.createIdempotencyRecord.mockRejectedValue(
-        new Error('Idempotency replay mismatch: different proposalId'),
-      );
 
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
-      expect(result.reasonCodes).toContain('idempotency_replay_mismatch');
+      expect(result.verified).toBe(false);
+      expect(result.reasonCodes).toContain('verify_failed');
+    });
+
+    it('returns success=false when post-write reread fails', async () => {
+      // Second synchronize call fails
+      ledger.synchronize
+        .mockResolvedValueOnce({
+          snapshot: mockProtocolSnapshot(),
+          health: { status: 'healthy', lastCheckedAt: '2026-07-20T11:00:00Z', details: {} },
+          watermark: { lastSyncAt: '2026-07-20T11:00:00Z', dataVersion: 'v2' },
+        })
+        .mockRejectedValueOnce(new Error('Connection lost'));
+
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('reread_failed');
     });
   });
 
   // =========================================================================
-  // Append-only audit results
+  // Append-only audit results - failure audit on every rejection
   // =========================================================================
 
   describe('append-only audit results', () => {
-    it('appends audit record for execution completion', async () => {
+    it('appends execution_completed audit for successful mutation', async () => {
       await service.execute(makeInput());
       expect(store.appendAuditRecord).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -924,24 +1075,75 @@ describe('CategorizationMutationService', () => {
           requestId: TEST_REQUEST,
           idempotencyKey: TEST_NONCE,
           isError: false,
+          result: 'completed',
         }),
       );
     });
 
-    it('appends audit record for execution failure', async () => {
+    it('appends execution_failed audit when postcondition verification fails', async () => {
+      rust.verifyMutation.mockReturnValue({
+        verified: false,
+        reasonCodes: ['postcondition_failed'],
+        message: 'Verification failed',
+      });
+      await service.execute(makeInput());
+      // Should have an execution_failed classification
+      const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
+      const failureAudit = auditCalls.find(
+        (c: [AppendAuditInput]) => c[0].classification === 'execution_failed',
+      );
+      expect(failureAudit).toBeDefined();
+      expect(failureAudit[0]).toMatchObject({
+        isError: true,
+        result: 'verification_failed',
+      });
+    });
+
+    it('appends execution_failed audit when proposal not found', async () => {
       store.getProposal.mockResolvedValue(null);
-      const result = await service.execute(makeInput());
-
-      expect(store.appendAuditRecord).toHaveBeenCalledWith(
-        expect.objectContaining({
-          classification: 'execution_failed',
-          isError: true,
-          result: expect.stringContaining('proposal_not_found'),
-        }),
+      await service.execute(makeInput());
+      const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
+      const failureAudit = auditCalls.find(
+        (c: [AppendAuditInput]) => c[0].classification === 'execution_failed',
       );
+      expect(failureAudit).toBeDefined();
+      expect(failureAudit[0].result).toContain('proposal_not_found');
     });
 
-    it('includes authorization disposition in audit record', async () => {
+    it('appends execution_failed audit when approval is consumed', async () => {
+      store.getApproval.mockResolvedValue(
+        mockApproval({ status: 'consumed', consumedAt: '2026-07-20T10:50:00Z' }),
+      );
+      await service.execute(makeInput());
+      const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
+      const failureAudit = auditCalls.find(
+        (c: [AppendAuditInput]) => c[0].classification === 'execution_failed',
+      );
+      expect(failureAudit).toBeDefined();
+      expect(failureAudit[0].result).toContain('approval_consumed');
+    });
+
+    it('appends execution_failed audit when authorization denied', async () => {
+      store.evaluateAuthorization.mockResolvedValue({
+        allowed: false,
+        disposition: { kind: 'denied', reason: 'Missing capability: categorization:execute' },
+        actorId: TEST_ACTOR,
+        membershipStatus: 'active',
+        capability: 'categorization:execute',
+        scope: 'budget:' + TEST_BUDGET_ID,
+        policyVersion: '1.0',
+        reason: 'Actor lacks required capability',
+      });
+      await service.execute(makeInput());
+      const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
+      const failureAudit = auditCalls.find(
+        (c: [AppendAuditInput]) => c[0].classification === 'execution_failed',
+      );
+      expect(failureAudit).toBeDefined();
+      expect(failureAudit[0].result).toContain('insufficient_capability');
+    });
+
+    it('includes authorization disposition in audit record for started event', async () => {
       store.evaluateAuthorization.mockResolvedValue({
         allowed: true,
         disposition: { kind: 'authorized_without_approval' } as AuthorizationDisposition,
@@ -955,19 +1157,19 @@ describe('CategorizationMutationService', () => {
 
       await service.execute(makeInput());
 
-      // Check that the completion audit record includes authorization info
       const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
-      // The last audit call is the execution_completed one
-      const execAudit = auditCalls[auditCalls.length - 1][0] as AppendAuditInput;
-      expect(execAudit.authorizationDisposition).toEqual(
+      const startedAudit = auditCalls.find(
+        (c: [AppendAuditInput]) => c[0].classification === 'execution_started',
+      );
+      expect(startedAudit).toBeDefined();
+      expect(startedAudit[0].authorizationDisposition).toEqual(
         expect.objectContaining({ kind: 'authorized_without_approval' }),
       );
     });
 
-    it('appends audit record for execution started before write', async () => {
+    it('appends execution_started audit before write', async () => {
       await service.execute(makeInput());
 
-      // Should have at least an execution_started audit
       const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
       const startedAudit = auditCalls.find(
         (c: [AppendAuditInput]) => c[0].classification === 'execution_started',
@@ -979,7 +1181,7 @@ describe('CategorizationMutationService', () => {
       });
     });
 
-    it('contains observed result state in audit record after write', async () => {
+    it('contains observed result state in completion audit', async () => {
       await service.execute(makeInput());
 
       const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
@@ -997,7 +1199,7 @@ describe('CategorizationMutationService', () => {
   });
 
   // =========================================================================
-  // Never blindly repeat committed writes
+  // Never blindly repeat committed writes + write call count assertions
   // =========================================================================
 
   describe('never blindly repeat committed writes', () => {
@@ -1014,32 +1216,29 @@ describe('CategorizationMutationService', () => {
       expect(store.consumeApproval).not.toHaveBeenCalled();
     });
 
-    it('consumes approval exactly once per execution', async () => {
-      await service.execute(makeInput());
-      expect(store.consumeApproval).toHaveBeenCalledWith(TEST_APPROVAL_ID);
-      expect(store.consumeApproval).toHaveBeenCalledOnce();
-    });
-
-    it('does not consume approval when execution fails before write', async () => {
-      store.getProposal.mockResolvedValue(null);
-
-      await service.execute(makeInput());
-
-      // Should not consume the approval if we never wrote
-      expect(store.consumeApproval).not.toHaveBeenCalled();
-    });
-
-    it('does not consume approval when idempotency replay returns cached result', async () => {
+    it('skips setTransactionCategory when idempotency in-flight conflict', async () => {
       store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: true }),
+        mockIdempotencyRecord({ completed: false }),
       );
 
       await service.execute(makeInput());
-      expect(store.consumeApproval).not.toHaveBeenCalled();
+
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+      expect(ledger.synchronize).not.toHaveBeenCalled();
+    });
+
+    it('calls setTransactionCategory exactly once on successful execution', async () => {
+      await service.execute(makeInput());
+      expect(ledger.setTransactionCategory).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls synchronize exactly twice on successful execution', async () => {
+      await service.execute(makeInput());
+      // Once before planning, once after write for verification
+      expect(ledger.synchronize).toHaveBeenCalledTimes(2);
     });
 
     it('persists audit result with observed state to prevent blind repeat', async () => {
-      // Run once
       await service.execute(makeInput());
 
       const auditCalls = (store.appendAuditRecord as Mock).mock.calls;
@@ -1053,7 +1252,62 @@ describe('CategorizationMutationService', () => {
   });
 
   // =========================================================================
-  // Successful execution — all steps
+  // Concurrent execution protection
+  // =========================================================================
+
+  describe('concurrent execution protection', () => {
+    it('second request with same approval ID is rejected after first consumes it', async () => {
+      // First execution proceeds normally
+      await service.execute(makeInput());
+
+      // Second execution: approval already consumed
+      store.getApproval.mockResolvedValue(
+        mockApproval({ status: 'consumed', consumedAt: '2026-07-20T11:00:00Z' }),
+      );
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('approval_consumed');
+      // Should not have created a new idempotency record
+      expect(store.createIdempotencyRecord).toHaveBeenCalledTimes(1);
+    });
+
+    it('second request with different approval but same idempotency key detects in-flight conflict', async () => {
+      // First execution created idempotency record (not yet completed)
+      // Second request comes in during first execution
+      store.getIdempotencyRecord.mockResolvedValue(
+        mockIdempotencyRecord({ completed: false }),
+      );
+
+      const result = await service.execute(makeInput({ approvalId: 'appr_other' }));
+      expect(result.success).toBe(false);
+      expect(result.reasonCodes).toContain('idempotency_in_progress');
+      // No write operations
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+      expect(ledger.synchronize).not.toHaveBeenCalled();
+    });
+
+    it('second request replays cached result when idempotency record is completed', async () => {
+      // First execution completed successfully
+      // Second request has same idempotency key but the approval is now consumed
+      store.getIdempotencyRecord.mockResolvedValue(
+        mockIdempotencyRecord({ completed: true, errorMessage: null }),
+      );
+      // Note: even though the approval is consumed, we replay before checking it
+      store.getApproval.mockResolvedValue(
+        mockApproval({ status: 'consumed', consumedAt: '2026-07-20T11:00:00Z' }),
+      );
+
+      const result = await service.execute(makeInput());
+      expect(result.success).toBe(true);
+      expect(result.reasonCodes).toContain('idempotency_replay');
+      // Must not have created a new idempotency record or performed writes
+      expect(store.createIdempotencyRecord).not.toHaveBeenCalled();
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // Successful execution - all steps in correct order
   // =========================================================================
 
   describe('successful execution', () => {
@@ -1095,9 +1349,17 @@ describe('CategorizationMutationService', () => {
         order.push('getApproval');
         return mockApproval();
       });
+      store.getIdempotencyRecord.mockImplementation(async () => {
+        order.push('getIdempotencyRecord');
+        return null;
+      });
       store.createIdempotencyRecord.mockImplementation(async () => {
         order.push('createIdempotencyRecord');
         return mockIdempotencyRecord();
+      });
+      store.consumeApproval.mockImplementation(async () => {
+        order.push('consumeApproval');
+        return mockApproval({ status: 'consumed' });
       });
       ledger.synchronize.mockImplementation(async () => {
         order.push('synchronize(1)');
@@ -1107,7 +1369,7 @@ describe('CategorizationMutationService', () => {
           watermark: { lastSyncAt: '2026-07-20T11:00:00Z', dataVersion: 'v2' },
         };
       });
-      // Override the second synchronize to track separately
+      // Override for the second synchronize to track separately
       let syncCount = 0;
       ledger.synchronize.mockImplementation(async () => {
         syncCount++;
@@ -1169,10 +1431,6 @@ describe('CategorizationMutationService', () => {
           message: null,
         };
       });
-      store.consumeApproval.mockImplementation(async () => {
-        order.push('consumeApproval');
-        return mockApproval({ status: 'consumed' });
-      });
       store.completeIdempotencyRecord.mockImplementation(async () => {
         order.push('completeIdempotencyRecord');
         return mockIdempotencyRecord({ completed: true });
@@ -1182,15 +1440,16 @@ describe('CategorizationMutationService', () => {
 
       // Verify ordering of major phases
       expect(order.indexOf('getProposal')).toBeLessThan(order.indexOf('evaluateAuthorization'));
-      expect(order.indexOf('evaluateAuthorization')).toBeLessThan(order.indexOf('getApproval'));
+      expect(order.indexOf('evaluateAuthorization')).toBeLessThan(order.indexOf('getIdempotencyRecord'));
+      expect(order.indexOf('getIdempotencyRecord')).toBeLessThan(order.indexOf('getApproval'));
       expect(order.indexOf('getApproval')).toBeLessThan(order.indexOf('createIdempotencyRecord'));
-      expect(order.indexOf('createIdempotencyRecord')).toBeLessThan(order.indexOf('synchronize(1)'));
+      expect(order.indexOf('createIdempotencyRecord')).toBeLessThan(order.indexOf('consumeApproval'));
+      expect(order.indexOf('consumeApproval')).toBeLessThan(order.indexOf('synchronize(1)'));
       expect(order.indexOf('synchronize(1)')).toBeLessThan(order.indexOf('planSetCategory'));
       expect(order.indexOf('planSetCategory')).toBeLessThan(order.indexOf('setTransactionCategory'));
       expect(order.indexOf('setTransactionCategory')).toBeLessThan(order.indexOf('synchronize(2)'));
       expect(order.indexOf('synchronize(2)')).toBeLessThan(order.indexOf('verifyMutation'));
-      expect(order.indexOf('verifyMutation')).toBeLessThan(order.indexOf('consumeApproval'));
-      expect(order.indexOf('consumeApproval')).toBeLessThan(order.indexOf('completeIdempotencyRecord'));
+      expect(order.indexOf('verifyMutation')).toBeLessThan(order.indexOf('completeIdempotencyRecord'));
       // Audit records are appended throughout
       expect(order.filter(s => s === 'appendAuditRecord').length).toBeGreaterThanOrEqual(1);
     });

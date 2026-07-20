@@ -61,6 +61,8 @@ export const ReasonCodes = {
 
   /** Proposal was not found. */
   PROPOSAL_NOT_FOUND: 'proposal_not_found',
+  /** Proposal has expired (expiresAt is in the past). */
+  PROPOSAL_EXPIRED: 'proposal_expired',
   /** Proposal was superseded. */
   PROPOSAL_SUPERSEDED: 'proposal_superseded',
   /** Proposal data is stale (freshness threshold exceeded). */
@@ -73,10 +75,18 @@ export const ReasonCodes = {
   APPROVAL_SUPERSEDED: 'approval_superseded',
   /** Approval was not found. */
   APPROVAL_NOT_FOUND: 'approval_not_found',
+  /** Approval proposal ID does not match the input proposal. */
+  APPROVAL_PROPOSAL_MISMATCH: 'approval_proposal_mismatch',
+  /** Approval consumption failed (already consumed or store error). */
+  APPROVAL_CONSUMPTION_FAILED: 'approval_consumption_failed',
+  /** Unsupported proposal operation. */
+  UNSUPPORTED_OPERATION: 'unsupported_operation',
   /** Payload hash does not match expected value. */
   PAYLOAD_HASH_MISMATCH: 'payload_hash_mismatch',
   /** Idempotency replay mismatch (different proposalId/operation/effect). */
   IDEMPOTENCY_REPLAY_MISMATCH: 'idempotency_replay_mismatch',
+  /** Idempotency key is already in use by an in-progress execution. */
+  IDEMPOTENCY_IN_PROGRESS: 'idempotency_in_progress',
   /** Member is not active. */
   MEMBER_INACTIVE: 'member_inactive',
   /** Member lacks the required capability. */

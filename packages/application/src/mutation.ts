@@ -1,31 +1,33 @@
 /**
  * CategorizationMutationService — orchestrates the proposal-driven
- * set-category lifecycle with full idempotency, authorization, approval,
- * snapshot planning, write enforcement via BudgetLedger, post-write
- * verification via Rust, and append-only audit trail persistence.
+ * lifecycle for set-category mutations.
  *
- * ## Dependencies (injected)
- * - {@link WorkflowStore} — proposals, approvals, idempotency, audit, authorization
- * - {@link BudgetLedger} — synchronize (latest snapshot), setTransactionCategory
- * - {@link RustMutationProtocol} — planSetCategory, verifyMutation
+ * Implements at-most-once execution with idempotency gating, approval
+ * consumption before the Actual write, and post-write verification.
+ * A mutation is reported as successful ONLY when the write completes
+ * AND postcondition verification confirms the change.
  *
- * ## Lifecycle
- * 1. Load proposal — verify existence, not superseded, hash integrity
- * 2. Authorization — evaluate actor membership, capability, scope
- * 3. Approval — verify active, not expired/consumed/superseded, hash match
- * 4. Idempotency — check for past completion (replay) or crash recovery
- * 5. Snapshot — latest `synchronize()` from ledger
- * 6. Plan — Rust `planSetCategory` produces a MutationPlan
- * 7. Precondition — verify plan state matches proposal expectations
- * 8. Write — `setTransactionCategory` through ledger only
- * 9. Reread — fresh `synchronize()` for postcondition verification
- * 10. Verify — Rust `verifyMutation` checks postconditions
- * 11. Consume — mark approval as consumed (one-time)
- * 12. Idempotency — mark record completed (or record failure)
- * 13. Audit — append execution result with observed state
+ * Flow summary:
+ *   1. Load proposal — verifies existence, not superseded, not expired
+ *   2. Backup verification (optional) — recent successful backup_verification
+ *      audit record with matching budgetId
+ *   3. Authorization — membership, capability, scope
+ *   4. Load approval — exact proposalId + payloadHash binding,
+ *      operation check, status checks (active, not consumed/expired/superseded)
+ *   5. Consume approval — one-time lock preventing concurrent execution
+ *   6. Idempotency claim — create record; completed → replay;
+ *      in-flight → conflict; else proceed
+ *   7. Audit: execution started
+ *   8. Latest snapshot via ledger.synchronize()
+ *   9. Plan via Rust planSetCategory
+ *  10. Stale precondition check
+ *  11. Write via ledger.setTransactionCategory
+ *  12. Reread + Rust verifyMutation
+ *  13. Complete idempotency record (error if verification failed)
+ *  14. Append completion/failure audit
+ *  15. Return result — success = verified
  *
- * The service NEVER repeats a committed write — idempotency replay returns
- * the cached result without touching the ledger or approval store.
+ * @module mutation
  */
 
 import type {
@@ -76,11 +78,6 @@ export interface VerificationResult {
 // Rust protocol surface — the two functions the service needs
 // ---------------------------------------------------------------------------
 
-/**
- * Synchronous protocol interface for Rust-backed set-category operations.
- * The actual node-binding may serialize/deserialize JSON internally;
- * this interface works with native objects.
- */
 export interface RustMutationProtocol {
   /** Plan a set-category mutation from a transaction + category. */
   planSetCategory(transaction: Transaction, category: Category): MutationPlan;
@@ -142,24 +139,24 @@ export interface ExecuteCategorizationResult {
 const CAPABILITY_EXECUTE = 'categorization:execute';
 
 // ---------------------------------------------------------------------------
-// Staleness threshold
+// Staleness / freshness thresholds (ms)
 // ---------------------------------------------------------------------------
 
-/** Snapshots older than this threshold (ms) are rejected as stale. */
+/** Snapshots older than this threshold are rejected as stale. */
 const STALE_SNAPSHOT_MS = 3_600_000; // 1 hour
+
+/** Max age for a backup-verification audit record to be considered recent. */
+const BACKUP_VERIFICATION_FRESHNESS_MS = 86_400_000; // 24 hours
 
 // ---------------------------------------------------------------------------
 // Service options
 // ---------------------------------------------------------------------------
 
 export interface MutationServiceOptions {
-  /** When true, require a backup-verification audit record before executing. */
+  /** When true, require a recent successful backup-verification audit record
+   *  with matching budgetId before executing. */
   requireBackupVerification?: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// CategorizationMutationService
-// ---------------------------------------------------------------------------
 
 export class CategorizationMutationService {
   private readonly requireBackupVerification: boolean;
@@ -173,14 +170,35 @@ export class CategorizationMutationService {
     this.requireBackupVerification = options?.requireBackupVerification ?? false;
   }
 
-  /**
+/**
    * Execute a categorization proposal end-to-end.
    *
+   * Flow summary:
+   *   1. Load proposal — verifies existence, not superseded, not expired
+   *   2. Backup verification (optional) — recent successful backup_verification
+   *      audit record with matching budgetId
+   *   3. Authorization — membership, capability, scope
+   *   4. Load approval — exact proposalId + payloadHash binding,
+   *      operation check, status checks (active, not consumed/expired/superseded)
+   *   5. Idempotency claim — create record; completed → replay;
+   *      in-flight → conflict; else proceed
+   *   6. Consume approval — one-time lock preventing concurrent execution
+   *   7. Audit: execution started
+   *   8. Latest snapshot via ledger.synchronize()
+   *   9. Plan via Rust planSetCategory
+   *  10. Stale precondition check
+   *  11. Write via ledger.setTransactionCategory
+   *  12. Reread + Rust verifyMutation
+   *  13. Complete idempotency record (error if verification failed)
+   *  14. Append completion/failure audit
+   *  15. Return result — success = verified
+   *
    * @returns An {@link ExecuteCategorizationResult} describing the outcome.
-   *          The caller MUST check `.success` and `.verified` for the
+   *          The caller MUST check both `.success` and `.verified` for the
    *          full picture — a write may succeed but postcondition
    *          verification may fail.
    */
+
   async execute(input: ExecuteCategorizationInput): Promise<ExecuteCategorizationResult> {
     const baseResult: ExecuteCategorizationResult = {
       success: false,
@@ -196,7 +214,7 @@ export class CategorizationMutationService {
     };
 
     // =====================================================================
-    // 1. Load proposal — verify existence, supersession, hash binding
+    // 1. Load proposal — verify existence, supersession, expiry
     // =====================================================================
 
     const proposal = await this.store.getProposal(input.proposalId);
@@ -223,16 +241,25 @@ export class CategorizationMutationService {
     }
 
     if (proposal.supersededAt) {
+      await this.appendFailureAudit(input, proposal, null, 'proposal_superseded');
       return this.fail(baseResult, 'proposal_superseded', 'Proposal has been superseded', input);
     }
 
+    // Check proposal expiry
+    if (new Date(proposal.expiresAt).getTime() <= Date.now()) {
+      await this.appendFailureAudit(input, proposal, null, 'proposal_expired');
+      return this.fail(baseResult, 'proposal_expired', 'Proposal has expired', input);
+    }
+
     // =====================================================================
-    // 1b. Backup verification — require recent backup-verification audit
+    // 2. Backup verification — require recent successful backup_verification
+    //    audit record with matching budgetId
     // =====================================================================
 
     if (this.requireBackupVerification) {
-      const backupVerified = await this.checkBackupVerified();
-      if (!backupVerified) {
+      const backupOk = await this.checkBackupVerified(proposal.budgetId);
+      if (!backupOk) {
+        await this.appendFailureAudit(input, proposal, null, 'backup_not_verified');
         return this.fail(
           baseResult,
           'backup_not_verified',
@@ -243,7 +270,7 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // 2. Authorization — membership, capability, scope
+    // 3. Authorization — membership, capability, scope
     // =====================================================================
 
     const auth = await this.store.evaluateAuthorization(
@@ -259,70 +286,109 @@ export class CategorizationMutationService {
       if (auth.disposition.kind === 'denied') {
         reasonMsg = auth.disposition.reason;
       }
+      await this.appendFailureAudit(input, proposal, auth, code);
       return this.fail(baseResult, code, reasonMsg, input);
     }
 
     // =====================================================================
-    // 3. Load approval — verify active, not expired/consumed/superseded,
-    //    payload hash matches proposal
+    // 4. Idempotency check — completed → replay cached result;
+    //    in-flight → conflict; else proceed to approval
     // =====================================================================
-
-    const approval = await this.store.getApproval(input.approvalId);
-    if (!approval) {
-      return this.fail(baseResult, 'approval_not_found', 'Approval not found', input);
-    }
-
-    if (approval.payloadHash !== proposal.payloadHash) {
-      return this.fail(baseResult, 'payload_hash_mismatch',
-        'Approval payload hash does not match proposal', input);
-    }
-
-    if (approval.status === 'consumed') {
-      return this.fail(baseResult, 'approval_consumed', 'Approval has already been consumed', input);
-    }
-
-    if (approval.status === 'expired' || new Date(approval.expiresAt).getTime() <= Date.now()) {
-      return this.fail(baseResult, 'approval_expired', 'Approval has expired', input);
-    }
-
-    if (approval.status === 'superseded') {
-      return this.fail(baseResult, 'approval_superseded', 'Approval has been superseded', input);
-    }
-
-    // =====================================================================
-    // 4. Idempotency check — completed → replay cached result
-    // =====================================================================
-
-    const existingIdem = await this.store.getIdempotencyRecord(input.idempotencyKey);
-    if (existingIdem) {
-      if (existingIdem.completed) {
-        // Replay: return the cached result without touching ledger
-        return this.replayResult(existingIdem, input);
-      }
-      // Crash recovery: record exists but wasn't completed — resume execution
-    }
-
-    // Reserve the idempotency key
     const serialisedEffect = JSON.stringify({
       transactionId: proposal.transactionId,
       newCategoryId: proposal.categoryId,
     });
 
+
+    const existingIdem = await this.store.getIdempotencyRecord(input.idempotencyKey);
+    if (existingIdem) {
+      if (existingIdem.completed) {
+        // Replay: return the cached result without touching ledger or approval
+        return this.replayResult(existingIdem, input);
+      }
+      // In-flight: another execution is using this key — return conflict
+      await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
+      return this.fail(baseResult, 'idempotency_in_progress',
+        'Execution with this idempotency key is already in progress', input);
+    }
+
+    // =====================================================================
+    // 5. Load approval — verify active, exact proposal ID binding,
+    //    payload hash match, operation supported, status checks
+    // =====================================================================
+
+    const approval = await this.store.getApproval(input.approvalId);
+    if (!approval) {
+      await this.appendFailureAudit(input, proposal, auth, 'approval_not_found');
+      return this.fail(baseResult, 'approval_not_found', 'Approval not found', input);
+    }
+
+    // Bind approval to the exact proposal ID
+    if (approval.proposalId !== input.proposalId) {
+      await this.appendFailureAudit(input, proposal, auth, 'approval_proposal_mismatch');
+      return this.fail(baseResult, 'approval_proposal_mismatch',
+        'Approval proposal ID does not match the input proposal', input);
+    }
+
+    // Bind approval payload hash to proposal payload hash
+    if (approval.payloadHash !== proposal.payloadHash) {
+      await this.appendFailureAudit(input, proposal, auth, 'payload_hash_mismatch');
+      return this.fail(baseResult, 'payload_hash_mismatch',
+        'Approval payload hash does not match proposal', input);
+    }
+
+    // Verify operation is supported
+    if (proposal.operation !== 'set_category') {
+      await this.appendFailureAudit(input, proposal, auth, 'unsupported_operation');
+      return this.fail(baseResult, 'unsupported_operation',
+        `Proposal operation "${proposal.operation}" is not supported`, input);
+    }
+
+    if (approval.status === 'consumed') {
+      await this.appendFailureAudit(input, proposal, auth, 'approval_consumed');
+      return this.fail(baseResult, 'approval_consumed', 'Approval has already been consumed', input);
+    }
+
+    if (approval.status === 'expired' || new Date(approval.expiresAt).getTime() <= Date.now()) {
+      await this.appendFailureAudit(input, proposal, auth, 'approval_expired');
+      return this.fail(baseResult, 'approval_expired', 'Approval has expired', input);
+    }
+
+    if (approval.status === 'superseded') {
+      await this.appendFailureAudit(input, proposal, auth, 'approval_superseded');
+      return this.fail(baseResult, 'approval_superseded', 'Approval has been superseded', input);
+    }
+
+    // =====================================================================
+    // 6. Create idempotency record (reserve the key for this execution)
+    // =====================================================================
+
     try {
       await this.store.createIdempotencyRecord({
         idempotencyKey: input.idempotencyKey,
         proposalId: input.proposalId,
-        operation: 'set_category',
+        operation: proposal.operation,
         serialisedEffect,
       });
     } catch (err) {
+      await this.appendFailureAudit(input, proposal, auth, 'idempotency_replay_mismatch');
       return this.fail(baseResult, 'idempotency_replay_mismatch',
         err instanceof Error ? err.message : 'Idempotency record creation failed',
         input);
     }
 
     // =====================================================================
-    // 5. Audit: execution started
+    // 7. Consume approval BEFORE mutation — one-time lock preventing
+    //    concurrent execution from both writing with the same approval
+    // =====================================================================
+
+    try {
+      await this.store.consumeApproval(input.approvalId);
+    } catch (err) {
+      await this.appendFailureAudit(input, proposal, auth, 'approval_consumption_failed');
+      return this.fail(baseResult, 'approval_consumption_failed',
+        err instanceof Error ? err.message : 'Failed to consume approval', input);
+    }
     // =====================================================================
 
     let auditStarted: AuditRecord | null = null;
@@ -330,7 +396,7 @@ export class CategorizationMutationService {
       auditStarted = await this.store.appendAuditRecord({
         classification: 'execution_started',
         actorId: input.actorId,
-        operation: 'set_category',
+        operation: proposal.operation,
         proposalId: input.proposalId,
         payloadHash: proposal.payloadHash,
         budgetId: proposal.budgetId,
@@ -347,7 +413,7 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // 6. Latest snapshot via ledger.synchronize()
+    // 8. Latest snapshot via ledger.synchronize()
     // =====================================================================
 
     let snapshotResult: LedgerSnapshotResult;
@@ -355,6 +421,8 @@ export class CategorizationMutationService {
       snapshotResult = await this.ledger.synchronize();
     } catch (err) {
       await this.recordFailure(input, err);
+      await this.appendFailureAudit(input, proposal, auth,
+        err instanceof Error ? err.message : 'sync_failed');
       return this.fail(baseResult, 'sync_failed',
         err instanceof Error ? err.message : 'Synchronization failed', input);
     }
@@ -364,6 +432,7 @@ export class CategorizationMutationService {
     // Staleness check
     if (Date.now() - new Date(snapshot.snapshotDate).getTime() > STALE_SNAPSHOT_MS) {
       await this.recordFailure(input, new Error('Snapshot data is stale'));
+      await this.appendFailureAudit(input, proposal, auth, 'stale_snapshot');
       return this.fail(baseResult, 'stale_snapshot', 'Snapshot data is stale', input);
     }
 
@@ -371,6 +440,7 @@ export class CategorizationMutationService {
     const tx = snapshot.transactions.find(t => t.id === proposal.transactionId);
     if (!tx) {
       await this.recordFailure(input, new Error('Transaction not found in latest snapshot'));
+      await this.appendFailureAudit(input, proposal, auth, 'transaction_not_found');
       return this.fail(baseResult, 'transaction_not_found',
         'Transaction not found in latest snapshot', input);
     }
@@ -379,12 +449,13 @@ export class CategorizationMutationService {
     const cat = snapshot.categories.find(c => c.id === proposal.categoryId);
     if (!cat) {
       await this.recordFailure(input, new Error('Category not found in latest snapshot'));
+      await this.appendFailureAudit(input, proposal, auth, 'category_not_found');
       return this.fail(baseResult, 'category_not_found',
         'Category not found in latest snapshot', input);
     }
 
     // =====================================================================
-    // 7. Plan via Rust planSetCategory
+    // 9. Plan via Rust planSetCategory
     // =====================================================================
 
     let plan: MutationPlan;
@@ -392,22 +463,25 @@ export class CategorizationMutationService {
       plan = this.rust.planSetCategory(tx, cat);
     } catch (err) {
       await this.recordFailure(input, err);
+      await this.appendFailureAudit(input, proposal, auth,
+        err instanceof Error ? err.message : 'plan_failed');
       return this.fail(baseResult, 'plan_failed',
         err instanceof Error ? err.message : 'Mutation planning failed', input);
     }
 
     // =====================================================================
-    // 8. Stale precondition check
+    // 10. Stale precondition check
     // =====================================================================
 
     const preconditionCheck = this.checkPreconditions(proposal, plan);
     if (!preconditionCheck.ok) {
       await this.recordFailure(input, new Error(preconditionCheck.reason));
+      await this.appendFailureAudit(input, proposal, auth, 'precondition_mismatch');
       return this.fail(baseResult, 'precondition_mismatch', preconditionCheck.reason, input);
     }
 
     // =====================================================================
-    // 9. Write via ledger.setTransactionCategory
+    // 11. Write via ledger.setTransactionCategory
     // =====================================================================
 
     let writeResult: SetCategoryResult;
@@ -423,9 +497,15 @@ export class CategorizationMutationService {
       return this.fail(baseResult, 'write_failed',
         err instanceof Error ? err.message : 'Write operation failed', input);
     }
+    if (!writeResult.success) {
+      await this.recordFailure(input, new Error(writeResult.error));
+      await this.auditFailure(input, proposal, auth, new Error(writeResult.error));
+      return this.fail(baseResult, 'write_failed', writeResult.error, input);
+    }
+
 
     // =====================================================================
-    // 10. Reread via fresh synchronize + Rust verifyMutation
+    // 12. Reread via fresh synchronize + Rust verifyMutation
     // =====================================================================
 
     let rereadSnapshot: ProtocolSnapshot;
@@ -435,6 +515,7 @@ export class CategorizationMutationService {
     } catch (err) {
       // Write happened but we can't verify — still need to record outcome
       await this.recordFailure(input, err);
+      await this.appendFailureAudit(input, proposal, auth, 'reread_failed');
       return this.fail(baseResult, 'reread_failed',
         err instanceof Error ? err.message : 'Post-write reread failed', input);
     }
@@ -454,18 +535,7 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // 11. Consume approval
-    // =====================================================================
-
-    try {
-      await this.store.consumeApproval(input.approvalId);
-    } catch {
-      // Non-fatal: approval already consumed or expired — execution still valid
-      verifyReasonCodes.push('approval_consumption_failed');
-    }
-
-    // =====================================================================
-    // 12. Complete idempotency record
+    // 13. Complete idempotency record (with error if verification failed)
     // =====================================================================
 
     if (!verified) {
@@ -484,7 +554,7 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // 13. Append completion audit
+    // 14. Append completion or failure audit
     // =====================================================================
 
     const allReasonCodes = [...verifyReasonCodes];
@@ -500,7 +570,7 @@ export class CategorizationMutationService {
       auditCompleted = await this.store.appendAuditRecord({
         classification: verified ? 'execution_completed' : 'execution_failed',
         actorId: input.actorId,
-        operation: 'set_category',
+        operation: proposal.operation,
         proposalId: input.proposalId,
         payloadHash: proposal.payloadHash,
         budgetId: proposal.budgetId,
@@ -521,14 +591,14 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // Return result
+    // 15. Return result — success requires verified postconditions
     // =====================================================================
 
     return {
-      success: true,
-      transactionId: writeResult.transactionId,
-      previousCategoryId: writeResult.previousCategoryId,
-      newCategoryId: writeResult.newCategoryId,
+      success: verified,
+      transactionId: writeResult.transactionId ?? null,
+      previousCategoryId: writeResult.previousCategoryId ?? null,
+      newCategoryId: writeResult.newCategoryId ?? null,
       verified,
       planId: plan.planId,
       idempotencyKey: input.idempotencyKey,
@@ -603,12 +673,27 @@ export class CategorizationMutationService {
   }
 
   /**
-   * Check whether a backup-verification audit record exists.
-   * @returns `true` if at least one backup-verification record exists, `false` otherwise.
+   * Check whether a recent, successful backup-verification audit record
+   * exists for the given budgetId. The record must:
+   *   - Have classification 'backup_verification'
+   *   - Have result 'verified' or 'completed'
+   *   - Have budgetId matching the proposal's budget
+   *   - Be within the freshness window (BACKUP_VERIFICATION_FRESHNESS_MS)
+   *
+   * @returns `true` if at least one matching record exists, `false` otherwise.
    */
-  private async checkBackupVerified(): Promise<boolean> {
-    const records = await this.store.queryAuditRecords('backup_verification', 1);
-    return records.length > 0;
+  private async checkBackupVerified(budgetId: string): Promise<boolean> {
+    const records = await this.store.queryAuditRecords('backup_verification', 10);
+    for (const record of records) {
+      // Must be a successful verification
+      if (record.result !== 'verified' && record.result !== 'completed') continue;
+      // Must match the budget being mutated
+      if (record.budgetId !== budgetId) continue;
+      // Must be recent
+      if (Date.now() - new Date(record.timestamp).getTime() > BACKUP_VERIFICATION_FRESHNESS_MS) continue;
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -624,7 +709,7 @@ export class CategorizationMutationService {
   }
 
   /**
-   * Append an execution_failed audit record (best-effort).
+   * Append an execution_failed audit record after a write error (best-effort).
    */
   private async auditFailure(
     input: ExecuteCategorizationInput,
@@ -636,7 +721,7 @@ export class CategorizationMutationService {
       await this.store.appendAuditRecord({
         classification: 'execution_failed',
         actorId: input.actorId,
-        operation: 'set_category',
+        operation: proposal.operation,
         proposalId: input.proposalId,
         payloadHash: proposal.payloadHash,
         budgetId: proposal.budgetId,
@@ -646,6 +731,37 @@ export class CategorizationMutationService {
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
         result: err instanceof Error ? err.message : String(err),
+        isError: true,
+      });
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  /**
+   * Append an execution_failed audit record for early rejections where
+   * auth or even the full proposal may not be available (best-effort).
+   */
+  private async appendFailureAudit(
+    input: ExecuteCategorizationInput,
+    proposal: CategorizationProposal | null,
+    auth: AuthorizationResult | null,
+    result: string,
+  ): Promise<void> {
+    try {
+      await this.store.appendAuditRecord({
+        classification: 'execution_failed',
+        actorId: input.actorId,
+        operation: proposal?.operation ?? 'set_category',
+        proposalId: input.proposalId,
+        payloadHash: proposal?.payloadHash ?? null,
+        budgetId: proposal?.budgetId ?? null,
+        policyVersion: proposal?.policyVersion ?? null,
+        authorizationDisposition: auth?.disposition ?? null,
+        idempotencyKey: input.idempotencyKey,
+        correlationId: input.correlationId ?? null,
+        requestId: input.requestId,
+        result,
         isError: true,
       });
     } catch {
