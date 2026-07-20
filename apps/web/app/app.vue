@@ -8,3 +8,7 @@
 // Root application shell — Nuxt UI v4 wraps every page.
 // ReviewController and authentication are wired per-page via composables.
 </script>
+<style>
+@import "tailwindcss";
+@import "@nuxt/ui";
+</style>
