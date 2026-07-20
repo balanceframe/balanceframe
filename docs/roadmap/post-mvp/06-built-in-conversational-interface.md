@@ -15,7 +15,7 @@ Offer conversation as an optional accessibility and explanation surface over the
 - Maintain a versioned first-party Skill alongside the CLI. It uses JSON, checks freshness, distinguishes advice/proposal/approval/execution, uses stable IDs, displays exact amount/category/effect/expiry/uncertainty, never reuses changed approval, respects egress policy, and never claims success without confirmed output.
 - Publish a narrow JSON CLI for people, scripts, and external agents; commands pass through application services and policy. Prohibit `actual raw-query`, `invoke-method`, and `shell` escape hatches.
 - Add optional Hermes adapter; do not require Hermes or MCP. Later trusted HTTP/webhooks/optional contributed MCP may use the same narrow contracts.
-- Preserve responsive web and CLI parity for review, reconciliation, and approval. Saved views, filters, preferences, metadata, reviews, approvals, provenance, rules, and policy are documented/exportable.
+- Preserve responsive web and CLI parity for review, reconciliation, and approval. The web surface remains Vue 3 + Nuxt 4 with Nuxt UI v4; saved views, filters, preferences, metadata, reviews, approvals, provenance, rules, and policy are documented/exportable. Optional future WebAssembly 3.0 previews remain read-only and non-authoritative.
 
 ## Skill and CLI contract detail
 
