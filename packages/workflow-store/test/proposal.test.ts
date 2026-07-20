@@ -168,6 +168,26 @@ describe('CategorizationProposal', () => {
       const fetched = await store.getProposal('nonexistent-id');
       expect(fetched).toBeNull();
     });
+
+    it('returns the exact proposal by (budgetId, transactionId, operation, payloadHash) on idempotent retry with multiple proposals for same target', async () => {
+      // Create first proposal with SAMPLE_HASH
+      const first = await store.createProposal(BASE_PROPOSAL);
+      tickSync();
+
+      // Create a second proposal with a different hash for the same target
+      const second = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: DIFFERENT_HASH,
+        categoryId: 'cat-utilities',
+      });
+      expect(second.id).not.toBe(first.id);
+
+      // Retry the first proposal — must return the first one, not the second
+      const retry = await store.createProposal(BASE_PROPOSAL);
+      expect(retry.id).toBe(first.id);
+      expect(retry.payloadHash).toBe(SAMPLE_HASH);
+      expect(retry.categoryId).toBe('cat-food');
+    });
   });
 
   describe('findActiveProposal', () => {
@@ -417,6 +437,23 @@ describe('CategorizationProposal', () => {
       ).rejects.toThrow(/superseded/i);
     });
 
+    it('rejects approval when proposal is expired', async () => {
+      // Use a unique payload hash so this doesn't conflict with the beforeEach proposal
+      const expiredProposal = await store.createProposal({
+        ...BASE_PROPOSAL,
+        payloadHash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        transactionId: 'txn-expired',
+        expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
+      });
+      await expect(
+        store.createApproval({
+          ...BASE_APPROVAL,
+          proposalId: expiredProposal.id,
+        }),
+      ).rejects.toThrow(/expir/i);
+    });
+
+
     it('rejects approval for nonexistent proposal', async () => {
       await expect(
         store.createApproval({ ...BASE_APPROVAL, proposalId: 'nonexistent' }),
@@ -430,6 +467,38 @@ describe('CategorizationProposal', () => {
 
       expect(second.id).toBe(first.id);
       expect(second.status).toBe('active');
+    });
+
+    it('rejects re-issuing approval when a consumed approval already exists for the same proposal and actor', async () => {
+      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId });
+      await store.consumeApproval(a.id);
+
+      await expect(
+        store.createApproval({ ...BASE_APPROVAL, proposalId }),
+      ).rejects.toThrow(/cannot be re-issued/i);
+    });
+
+    it('rejects re-issuing approval when a superseded approval already exists for the same proposal and actor', async () => {
+      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId });
+      await store.supersedeProposal(proposalId); // cascades to supersede the approval and proposal
+
+      await expect(
+        store.createApproval({ ...BASE_APPROVAL, proposalId }),
+      ).rejects.toThrow(/superseded/i);
+    });
+
+    it('rejects re-issuing approval when an expired approval already exists for the same proposal and actor', async () => {
+      const shortExpiry = new Date(Date.now() + 50).toISOString();
+      const a = await store.createApproval({
+        ...BASE_APPROVAL,
+        proposalId,
+        expiresAt: shortExpiry,
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      await expect(
+        store.createApproval({ ...BASE_APPROVAL, proposalId }),
+      ).rejects.toThrow(/cannot be re-issued/i);
     });
   });
 

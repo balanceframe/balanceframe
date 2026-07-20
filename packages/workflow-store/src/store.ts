@@ -434,6 +434,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     insertProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectActiveProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectProposalByExactKey: null as unknown as ReturnType<DatabaseType['prepare']>,
     supersedeProposalStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
     listProposals: null as unknown as ReturnType<DatabaseType['prepare']>,
     listProposalsActive: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -445,6 +446,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectApproval: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectActiveApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
     consumeApprovalStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectApprovalByProposalActor: null as unknown as ReturnType<DatabaseType['prepare']>,
     supersedeProposalApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectProposalStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertIdempotency: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -617,6 +619,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_actor
         ON proposal_approvals(proposal_id, actor_id)
         WHERE status = 'active';
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_proposal_actor
+        ON proposal_approvals(proposal_id, actor_id);
 
       CREATE TABLE IF NOT EXISTS idempotency_records (
         idempotency_key   TEXT PRIMARY KEY,
@@ -961,6 +966,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
        LIMIT 1
     `);
 
+    this.stmt.selectProposalByExactKey = this.db.prepare(`
+      SELECT * FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND transaction_id = @transactionId
+         AND operation = @operation
+         AND payload_hash = @payloadHash
+       LIMIT 1
+    `);
+
     this.stmt.supersedeProposalStmt = this.db.prepare(`
       UPDATE categorization_proposals
          SET superseded_at = @now
@@ -977,7 +991,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
               'active', @expiresAt, NULL,
               NULL, @createdAt)
       ON CONFLICT(proposal_id, actor_id)
-        WHERE status = 'active'
         DO NOTHING
       RETURNING *
     `);
@@ -1074,6 +1087,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
          AND expires_at <= @now
     `);
 
+    this.stmt.selectApprovalByProposalActor = this.db.prepare(`
+      SELECT * FROM proposal_approvals
+       WHERE proposal_id = @proposalId AND actor_id = @actorId
+       LIMIT 1
+    `);
+
     // ── Idempotency ───────────────────────────────────────────────────
 
     this.stmt.insertIdempotency = this.db.prepare(`
@@ -1083,6 +1102,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
       VALUES (@idempotencyKey, @proposalId, @operation,
               @executedAt, 0, @serialisedEffect,
               NULL, @updatedAt)
+      ON CONFLICT(idempotency_key) DO NOTHING
+      RETURNING *
     `);
 
     this.stmt.selectIdempotency = this.db.prepare(`
@@ -1847,22 +1868,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }) as ProposalRow | undefined;
 
     if (!row) {
-      // Duplicate (same target + payload_hash) — fetch existing
-      const existing = this.stmt.selectActiveProposal.get({
+      // Duplicate (same target + payload_hash) — fetch existing by exact key
+      const existing = this.stmt.selectProposalByExactKey.get({
         budgetId: input.budgetId,
         transactionId: input.transactionId,
         operation: input.operation,
+        payloadHash: input.payloadHash,
       }) as ProposalRow | undefined;
       if (existing) return rowToProposal(existing);
-      // Fallback: fetch by payload unique key
-      const byPayload = this.stmt.selectProposal.all('') as ProposalRow[];
-      const match = byPayload.find(r =>
-        r.budget_id === input.budgetId &&
-        r.transaction_id === input.transactionId &&
-        r.operation === input.operation &&
-        r.payload_hash === input.payloadHash
-      );
-      if (match) return rowToProposal(match);
       throw new Error('Failed to create or retrieve proposal');
     }
 
@@ -1945,18 +1958,24 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Proposal approval lifecycle ───────────────────────────────────
 
+
   async createApproval(input: CreateApprovalInput): Promise<ProposalApproval> {
     // Validate proposal exists and is not superseded
     const proposalRow = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
     if (!proposalRow) throw new Error(`Proposal ${input.proposalId} not found`);
     if (proposalRow.superseded_at) throw new Error(`Proposal ${input.proposalId} is superseded`);
 
+    // Validate proposal has not expired
+    if (new Date(proposalRow.expires_at) <= new Date()) {
+      throw new Error(`Proposal ${input.proposalId} expired at ${proposalRow.expires_at}`);
+    }
+
     // Validate payload hash matches proposal
     if (input.payloadHash !== proposalRow.payload_hash) {
       throw new Error(`Payload hash mismatch: approval hash ${input.payloadHash} does not match proposal hash ${proposalRow.payload_hash}`);
     }
 
-    // Validate expiry is in the future
+    // Validate approval expiry is in the future
     if (new Date(input.expiresAt) <= new Date()) {
       throw new Error(`Approval expiry ${input.expiresAt} is in the past`);
     }
@@ -1974,17 +1993,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }) as ApprovalRow | undefined;
 
     if (!row) {
-      // Idempotent: existing active approval for (proposalId, actorId)
-      const existing = this.stmt.selectActiveApprovals.all({
+      // Check if any approval (in any state) already exists for this (proposalId, actorId)
+      const existingAny = this.stmt.selectApprovalByProposalActor.get({
         proposalId: input.proposalId,
-        now: nowISO(),
-      }) as ApprovalRow[];
-      const match = existing.find(a => a.actor_id === input.actorId);
-      if (match) return rowToApproval(match);
-      // If no active match found, the conflict is with a consumed/expired one — fetch by direct query
-      const allRows = this.stmt.selectApproval.all('') as ApprovalRow[];
-      const actorApproval = allRows.find(a => a.proposal_id === input.proposalId && a.actor_id === input.actorId);
-      if (actorApproval) return rowToApproval(actorApproval);
+        actorId: input.actorId,
+      }) as ApprovalRow | undefined;
+
+      if (existingAny) {
+        if (existingAny.status === 'active') {
+          // Check if the existing active approval has actually expired
+          if (new Date(existingAny.expires_at) <= new Date()) {
+            throw new Error(
+              `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
+              `already exists with status 'active' (expired at ${existingAny.expires_at}) and cannot be re-issued`,
+            );
+          }
+          // Active and not expired — idempotent return
+          return rowToApproval(existingAny);
+        }
+        // Reject re-issuance — a consumed/expired/superseded approval already exists
+        throw new Error(
+          `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
+          `already exists with status '${existingAny.status}' and cannot be re-issued`,
+        );
+      }
+
       throw new Error('Failed to create approval');
     }
 
@@ -2017,6 +2050,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (!proposalRow) throw new Error(`Proposal ${existing.proposal_id} not found`);
     if (proposalRow.superseded_at) throw new Error(`Proposal ${existing.proposal_id} is superseded — cannot consume its approval`);
 
+    // Check proposal has not expired
+    if (new Date(proposalRow.expires_at) <= new Date()) {
+      throw new Error(`Proposal ${existing.proposal_id} expired at ${proposalRow.expires_at} — cannot consume its approval`);
+    }
+
     // Check expiry
     const now = nowISO();
     if (new Date(existing.expires_at) <= new Date()) {
@@ -2043,6 +2081,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // Check proposal is not superseded
     if (proposalRow.superseded_at) return `Proposal ${proposalId} was superseded at ${proposalRow.superseded_at}`;
 
+    // Check proposal has not expired
+    if (new Date(proposalRow.expires_at) <= new Date()) {
+      return `Proposal ${proposalId} expired at ${proposalRow.expires_at}`;
+    }
+
     // Check payload hash matches
     if (payloadHash !== proposalRow.payload_hash) {
       return `Payload hash mismatch: expected ${proposalRow.payload_hash}, got ${payloadHash}`;
@@ -2065,36 +2108,39 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyRecord> {
     const now = nowISO();
 
-    // Check if key already exists
-    const existing = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined;
-    if (existing) {
-      if (existing.proposal_id !== input.proposalId || existing.operation !== input.operation) {
-        throw new Error(
-          `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
-          `already recorded for proposal ${existing.proposal_id} (op: ${existing.operation}), ` +
-          `cannot reuse with proposal ${input.proposalId} (op: ${input.operation})`,
-        );
-      }
-      if (existing.serialised_effect !== input.serialisedEffect) {
-        throw new Error(
-          `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
-          `serialised effect differs from original`,
-        );
-      }
-      return rowToIdempotency(existing);
-    }
-
-    this.stmt.insertIdempotency.run({
+    // Atomic claim: INSERT with ON CONFLICT DO NOTHING — eliminates SELECT-then-INSERT race
+    const row = this.stmt.insertIdempotency.get({
       idempotencyKey: input.idempotencyKey,
       proposalId: input.proposalId,
       operation: input.operation,
       executedAt: now,
       serialisedEffect: input.serialisedEffect,
       updatedAt: now,
-    });
+    }) as IdempotencyRow | undefined;
 
-    const row = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow;
-    return rowToIdempotency(row);
+    if (row) {
+      // Fresh insert succeeded
+      return rowToIdempotency(row);
+    }
+
+    // Key already exists — validate ownership against the existing record
+    const existing = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow;
+
+    if (existing.proposal_id !== input.proposalId || existing.operation !== input.operation) {
+      throw new Error(
+        `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
+        `already recorded for proposal ${existing.proposal_id} (op: ${existing.operation}), ` +
+        `cannot reuse with proposal ${input.proposalId} (op: ${input.operation})`,
+      );
+    }
+    if (existing.serialised_effect !== input.serialisedEffect) {
+      throw new Error(
+        `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
+        `serialised effect differs from original`,
+      );
+    }
+
+    return rowToIdempotency(existing);
   }
 
   async getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null> {
