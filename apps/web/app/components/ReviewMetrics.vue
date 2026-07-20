@@ -36,7 +36,7 @@
 </template>
 
 <script setup lang="ts">
-import type { ReviewMetricsSnapshot } from '../src/review.js';
+import type { ReviewMetricsSnapshot } from '../../src/review.js';
 
 defineProps<{
   metrics: ReviewMetricsSnapshot;

@@ -123,30 +123,30 @@
 </template>
 
 <script setup lang="ts">
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-import { ReviewController } from '../src/review.js';
-import { useReviewController } from '../composables/useReviewController';
-import { useApiReviewController } from '../composables/useApiReviewController';
-import { useReviewActions } from '../composables/useReviewActions';
-import type { ReviewControllerAdapter } from '../types/review-client';
+/**
+ * Review transactions page.
+ *
+ * REQUIRES runtimeConfig.public.apiBase to be configured. When the API
+ * backend is absent the page renders a non-operational error state — it
+ * NEVER falls back to an in-memory SqliteWorkflowStore or exposes mutation
+ * controls without a remote backend.
+ */
+import { useApiReviewController } from '../../composables/useApiReviewController';
+import { createUnavailableAdapter } from '../../composables/createUnavailableAdapter';
+import { useReviewActions } from '../../composables/useReviewActions';
 
 // ── Mode selection ──────────────────────────────────────────────────
 // When runtimeConfig.public.apiBase is configured, use Nitro API routes.
-// Otherwise fall back to the in-memory WorkflowStore (development/legacy).
+// Otherwise render a non-operational state with no mutation controls.
 const config = useRuntimeConfig();
 const apiBase = config.public.apiBase;
 
-let adapter: ReviewControllerAdapter;
-if (apiBase) {
-  adapter = useApiReviewController(apiBase);
-} else {
-  const store = new SqliteWorkflowStore(':memory:');
-  const controller = new ReviewController(store, {
-    actorId: 'web-user',
-    pageSize: 50,
-  });
-  adapter = useReviewController(controller);
-}
+// Session auth is provided by the HttpOnly balanceframe_session cookie sent
+// automatically with same-origin fetch requests — no Bearer token needed.
+const adapter = apiBase
+  ? useApiReviewController(apiBase)
+  : createUnavailableAdapter();
+
 const actions = useReviewActions(adapter);
 
 // Focus the hidden keyboard input so shortcuts work on page load.

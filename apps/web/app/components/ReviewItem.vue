@@ -132,7 +132,7 @@
 </template>
 
 <script setup lang="ts">
-import type { ReviewQueueItem, ReviewSurfaceState } from '../src/review.js';
+import type { ReviewQueueItem, ReviewSurfaceState } from '../../src/review.js';
 
 const props = defineProps<{
   item: ReviewQueueItem;
@@ -151,7 +151,6 @@ const statusBadgeColor = computed(() => {
     case 'apply_failed':   return 'error';
     default:               return 'neutral';
   }
-});
 });
 
 const recoveryStateLabel = computed(() => {

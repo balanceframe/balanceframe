@@ -48,7 +48,7 @@
 </template>
 
 <script setup lang="ts">
-import type { ReviewQueueItem, ReviewStatus } from '../src/review.js';
+import type { ReviewQueueItem, ReviewStatus } from '../../src/review.js';
 import { computed } from 'vue';
 
 const props = defineProps<{
@@ -74,7 +74,7 @@ function queueItemClass(idx: number): Record<string, boolean> {
   };
 }
 
-function statusColor(status: ReviewStatus): string {
+function statusColor(status: ReviewStatus): 'primary' | 'success' | 'warning' | 'neutral' | 'error' {
   switch (status) {
     case 'pending_review': return 'primary';
     case 'approved':       return 'success';
