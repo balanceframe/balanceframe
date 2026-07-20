@@ -271,6 +271,7 @@ export class ActualConnector implements BudgetLedger {
     }
 
     const budgetId = this._budgetInfo.id;
+    const groupId = this._budgetInfo.groupId;
 
     await this.withCacheLock(budgetId, async () => {
       const cache = this.getOrCreateCache(budgetId);
@@ -288,7 +289,7 @@ export class ActualConnector implements BudgetLedger {
       if (this.mode === 'observe') {
         // Re-download budget data; password may be required for encrypted budgets
         const creds = await this.credStore.load();
-        await this.client.downloadBudget(this._budgetInfo.groupId, { password: creds?.budgetPassword ?? undefined });
+        await this.client.downloadBudget(groupId, { password: creds?.budgetPassword ?? undefined });
       } else {
         await this.client.sync();
       }
