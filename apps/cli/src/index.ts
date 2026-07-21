@@ -32,6 +32,9 @@ import {
   proposalListAnalysis,
   auditQueryAnalysis,
   ruleCreateAnalysis,
+  ruleListAnalysis,
+  ruleShowAnalysis,
+  ruleUpdateAnalysis,
   type CommandInput,
   type ConnectionMode,
   type AnalysisProtocol,
@@ -65,6 +68,8 @@ export interface CliCommand {
   ids?: string[];
   /** Proposal ID for proposal show/approve/execute commands. */
   proposalId?: string;
+  /** Rule ID for rule show command. */
+  ruleId?: string;
   /** Extra command options parsed from flags (proposals create, audit query). */
   options?: Record<string, string>;
 }
@@ -1097,6 +1102,35 @@ export async function main(
         if (cmd.options?.['transaction-id']) ruleOptions.transactionId = cmd.options['transaction-id'];
         if (cmd.options?.operation) ruleOptions.operation = cmd.options.operation;
         const envelope = await ruleCreateAnalysis(commandInput, ruleOptions);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.list': {
+        const envelope = await ruleListAnalysis(commandInput);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.show': {
+        if (!cmd.ruleId) {
+          const info = new ErrorInfo({
+            code: 'missing_rule_id',
+            message: 'Rule ID is required. Use --rule-id or pass it as the first argument.',
+            retryable: false,
+            reasonCodes: ['missing_rule_id'],
+          });
+          return JSON.stringify(errorResponse(commandInput.requestId ?? 'cli', info), null, 2);
+        }
+        const envelope = await ruleShowAnalysis(commandInput, cmd.ruleId);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.update': {
+        const updateOptions: ReviewActionOptions = {};
+        if (cmd.options?.['name']) updateOptions.message = cmd.options['name'];
+        if (cmd.options?.['active']) updateOptions.reason = cmd.options['active'];
+        if (cmd.options?.['category-id']) updateOptions.categoryId = cmd.options['category-id'];
+        if (cmd.options?.['rule-id']) updateOptions.message = cmd.options['rule-id'];
+        const envelope = await ruleUpdateAnalysis(commandInput, updateOptions);
         return JSON.stringify(envelope, null, 2);
       }
 
