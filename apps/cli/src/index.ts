@@ -1079,8 +1079,8 @@ export async function main(
 
       case 'audit.query': {
         const queryOptions: Record<string, unknown> = {};
-        if (cmd.options?.limit) queryOptions.limit = parseInt(cmd.options.limit, 10);
-        if (cmd.options?.offset) queryOptions.offset = parseInt(cmd.options.offset, 10);
+        if (cmd.options?.limit) queryOptions.limit = Number(cmd.options.limit);
+        if (cmd.options?.offset) queryOptions.offset = Number(cmd.options.offset);
         if (cmd.options?.action) queryOptions.action = cmd.options.action;
         if (cmd.options?.['actor-id']) queryOptions.actorId = cmd.options['actor-id'];
         if (cmd.options?.['entity-id']) queryOptions.entityId = cmd.options['entity-id'];

@@ -382,6 +382,41 @@ describe('parseArgs — audit command', () => {
     if (result.ok) return;
     expect(result.error.code).toBe('unknown_command');
   });
+
+  it('parses audit query --limit with exponent notation (1e1)', () => {
+    const result = parseArgs(['audit', 'query', '--limit', '1e1', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.limit).toBe('1e1');
+  });
+
+  it('parses audit query --offset with hex notation (0xA)', () => {
+    const result = parseArgs(['audit', 'query', '--offset', '0xA', '--actor-id', 'usr_test', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.offset).toBe('0xA');
+  });
+
+  it('parses audit query --limit 0x10 (hex)', () => {
+    const result = parseArgs(['audit', 'query', '--limit', '0x10', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.limit).toBe('0x10');
+  });
+
+  it('rejects audit query --limit decimal (1.5)', () => {
+    const result = parseArgs(['audit', 'query', '--limit', '1.5', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_limit');
+  });
+
+  it('rejects audit query --offset decimal (3.14)', () => {
+    const result = parseArgs(['audit', 'query', '--offset', '3.14', '--actor-id', 'usr_test', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('invalid_offset');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -530,6 +565,29 @@ describe('main — proposal and audit routing', () => {
     expect(parsed.schemaVersion).toBe('1');
     expect(parsed.requestId).toBe('req_audit');
     expect(parsed.status).toBe('ok');
+  });
+
+  it('routes audit query with exponent/hex limit and offset and forwards as numbers', async () => {
+    const capturedOptions: unknown[] = [];
+    const result = await main(['audit', 'query', '--limit', '1e1', '--offset', '0xA', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_audit_num',
+      mode: 'observe',
+      ledger: { mockLedger: true },
+      analysisProtocol: {
+        ...mockAnalysisProtocol,
+        async auditQuery(_ledger, opts) {
+          capturedOptions.push(opts);
+          return { entries: [], total: 0 };
+        },
+      },
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(capturedOptions).toHaveLength(1);
+    const opts = capturedOptions[0] as Record<string, unknown>;
+    expect(opts.limit).toBe(10);
+    expect(opts.offset).toBe(10);
   });
 
   it('routes proposals create and forwards options to analysis', async () => {
