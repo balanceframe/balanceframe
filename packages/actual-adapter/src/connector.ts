@@ -526,9 +526,25 @@ export class ActualConnector implements BudgetLedger {
 
       // Generate idempotency key for replay detection
       const idempotencyKey = `${transactionId}_${proposedCategoryId}_${Date.now()}_${randomUUID()}`;
-
       // Call Actual update API with the new category
       await this.client.updateTransaction(transactionId, { category: proposedCategoryId });
+
+      // Persist changes to the server before re-reading — if sync fails, the
+      // mutation may not have been persisted so we report failure rather than
+      // returning a misleading success.
+      try {
+        await this.client.sync();
+      } catch {
+        return {
+          success: false,
+          error: `Sync failed after updating transaction ${transactionId}: the mutation may not have been persisted`,
+          code: 'SYNC_FAILED',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+          idempotencyKey,
+        } as SetCategoryResult;
+      }
 
       // Re-read the transaction to verify the postcondition
       const reReads = await this.client.getTransactions(tx.account, '1970-01-01', '2099-12-31');

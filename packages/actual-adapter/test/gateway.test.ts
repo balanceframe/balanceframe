@@ -2556,6 +2556,56 @@ describe('ActualConnector', () => {
       await writeConnector.disconnect();
     });
 
+    it('should call sync after updateTransaction and return failure if sync fails', async () => {
+      let updateTxCalled = false;
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        updateTransaction: vi.fn().mockImplementation(() => {
+          updateTxCalled = true;
+          return Promise.resolve(undefined);
+        }),
+        sync: vi.fn().mockRejectedValue(new Error('Server unreachable')),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-sync-fail-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+
+      // updateTransaction was called (the write happened)
+      expect(mock.updateTransaction).toHaveBeenCalledTimes(1);
+      expect(mock.updateTransaction).toHaveBeenCalledWith('tx1', { category: 'c2' });
+
+      // sync was called
+      expect(mock.sync).toHaveBeenCalledTimes(1);
+
+      // But the result is failure because sync threw
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('SYNC_FAILED');
+        expect(result.error).toContain('Sync failed');
+        expect(result.transactionId).toBe('tx1');
+        expect(result.previousCategoryId).toBe('c1');
+        expect(result.newCategoryId).toBe('c2');
+        expect(result.idempotencyKey).toBeTruthy();
+      }
+
+      await writeConnector.disconnect();
+    });
+
     it('should fail when no budget is selected', async () => {
       const mock = createMockClient();
       const writeConnector = new ActualConnector({
