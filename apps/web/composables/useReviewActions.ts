@@ -19,6 +19,7 @@ import type { ReviewControllerAdapter } from '../types/review-client';
 export function useReviewActions(
   adapter: ReviewControllerAdapter,
   onCorrect?: () => void,
+  onProposeRule?: () => void,
 ) {
   /**
    * Map a KeyboardEvent to a review action.  Returns true when the event
@@ -83,8 +84,15 @@ export function useReviewActions(
         return false;
     }
   }
+  /**
+   * Trigger the onProposeRule callback, if provided.
+   */
+  function proposeRule(): void {
+    onProposeRule?.();
+  }
 
   return {
     handleKeyboard,
+    proposeRule,
   };
 }

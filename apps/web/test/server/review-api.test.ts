@@ -386,6 +386,21 @@ describe('buildReviewQueueItem evidence enrichment', () => {
       '2026-06-01T00:00:00.000Z',
     );
 
+    // Rule candidates derived from history
+    expect(queueItem.evidence.ruleCandidates).toHaveLength(2);
+    expect(queueItem.evidence.ruleCandidates[0]).toEqual({
+      merchant: 'Coffee Shop Inc.',
+      currentCategory: 'cat-food',
+      matchCount: 3,
+      consistency: 0.75,
+    });
+    expect(queueItem.evidence.ruleCandidates[1]).toEqual({
+      merchant: 'Coffee Shop Inc.',
+      currentCategory: 'cat-dining',
+      matchCount: 1,
+      consistency: 0.25,
+    });
+
     // Freshness (falls through from item.freshnessExpiresAt, which is null)
     expect(queueItem.evidence.freshness).toBeNull();
 
@@ -413,6 +428,7 @@ describe('buildReviewQueueItem evidence enrichment', () => {
     expect(queueItem.evidence.amount).toBe(0);
     expect(queueItem.evidence.alternatives).toEqual([]);
     expect(queueItem.evidence.history).toEqual([]);
+    expect(queueItem.evidence.ruleCandidates).toEqual([]);
 
     // currentCategory falls back to item.categoryId when evidence.currentCategory absent
     expect(queueItem.evidence.currentCategory).toBe(item.categoryId);

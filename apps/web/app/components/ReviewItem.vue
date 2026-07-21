@@ -127,6 +127,32 @@
           </div>
         </div>
       </div>
+      <!-- Rule candidates -->
+      <div
+        v-if="item.evidence.ruleCandidates.length > 0"
+        class="border-t pt-3 border-neutral-200 dark:border-neutral-700"
+      >
+        <span class="block text-xs text-gray-500 dark:text-gray-400 mb-2">
+          Create rule
+        </span>
+        <div class="space-y-2">
+          <div
+            v-for="(rc, i) in item.evidence.ruleCandidates"
+            :key="i"
+            class="flex items-center justify-between rounded-md border border-neutral-200 dark:border-neutral-700 px-3 py-2"
+          >
+            <div class="text-sm">
+              <span class="font-medium">{{ rc.merchant }}</span>
+              <span class="text-gray-400 mx-1">&rarr;</span>
+              <UBadge color="primary" variant="soft" size="sm">{{ rc.currentCategory }}</UBadge>
+            </div>
+            <div class="flex items-center gap-3 text-xs text-gray-400">
+              <span>{{ rc.matchCount }} matches</span>
+              <span>{{ (rc.consistency * 100).toFixed(0) }}% consistent</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </UCard>
 </template>

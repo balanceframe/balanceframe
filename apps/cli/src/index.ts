@@ -134,9 +134,13 @@ export function parseArgs(argv: string[]): ParseResult {
     '--from': true,
     '--to': true,
     '--scope': true,
+    '--operation': true,
     '--message': true,
     '--reason': true,
-    '--operation': true,
+    '--name': true,
+    '--payee': true,
+    '--active': true,
+    '--rule-id': true,
   };
   const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -749,6 +753,98 @@ export function parseArgs(argv: string[]): ParseResult {
         format,
         args: normalized,
         options,
+      },
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Rule commands
+  // -----------------------------------------------------------------------
+
+  if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'create') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--name') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--name requires a value.' } }; options.name = v; i++; }
+      else if (a === '--payee') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--payee requires a value.' } }; options.payee = v; i++; }
+      else if (a === '--category-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--category-id requires a value.' } }; options['category-id'] = v; i++; }
+      else if (a === '--transaction-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' } }; options['transaction-id'] = v; i++; }
+      else if (a === '--operation') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--operation requires a value.' } }; options.operation = v; i++; }
+      else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: { code: 'trailing_args', message: `Unexpected argument after 'rules create': ${a}` },
+        };
+      }
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'rules.create',
+        format,
+        args: normalized,
+        options,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'list') {
+    if (cleanArgs.length > 2) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'rules list': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'rules.list',
+        format,
+        args: normalized,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'show') {
+    let ruleId: string | undefined;
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      if (a === '--rule-id') {
+        if (!remaining[i + 1] || remaining[i + 1].startsWith('--')) {
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--rule-id requires a value.' },
+          };
+        }
+        ruleId = remaining[i + 1];
+        i++;
+      } else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: { code: 'trailing_args', message: `Unexpected argument after 'rules show': ${a}` },
+        };
+      }
+    }
+    if (!ruleId) {
+      return {
+        ok: false,
+        error: { code: 'missing_rule_id', message: 'rules show requires --rule-id.' },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'rules.show',
+        format,
+        args: normalized,
+        ruleId,
       },
     };
   }

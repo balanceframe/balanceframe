@@ -758,4 +758,122 @@ describe('RuleMutationService', () => {
     const plan = planRuleMutation(rust, input, snapshot);
     expect(plan).toEqual(expectedPlan);
   });
+
+  // -----------------------------------------------------------------------
+  // Error: approval expired
+  // -----------------------------------------------------------------------
+
+  it('should fail when approval has expired status', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(
+      mockApproval({ status: 'expired' }),
+    );
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('approval_expired');
+    expect(result.approvalId).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // Error: approval superseded
+  // -----------------------------------------------------------------------
+
+  it('should fail when approval has superseded status', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(
+      mockApproval({ status: 'superseded' }),
+    );
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('approval_superseded');
+    expect(result.approvalId).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // Error: stale snapshot from synchronize
+  // -----------------------------------------------------------------------
+
+  it('should fail when synchronize returns a stale snapshot', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_002' } as AuditRecord);
+
+    const snapshot = mockProtocolSnapshot({
+      snapshotDate: '2020-01-01T00:00:00Z',
+    });
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+    rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('stale_snapshot');
+  });
+
+  // -----------------------------------------------------------------------
+  // Error: plan creation failure (Rust throws)
+  // -----------------------------------------------------------------------
+
+  it('should fail when Rust planCreateRule throws', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_003' } as AuditRecord);
+
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+    rust.planCreateRule.mockImplementation(() => {
+      throw new Error('Rust protocol unavailable');
+    });
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('plan_failed');
+  });
+
+  // -----------------------------------------------------------------------
+  // Error: approval consumption failure
+  // -----------------------------------------------------------------------
+
+  it('should fail when store.consumeApproval throws', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockRejectedValue(new Error('Consumption conflict'));
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('approval_consumption_failed');
+  });
 });
