@@ -196,3 +196,45 @@ export interface Suggestion {
   /** Historical categorization records considered. */
   history?: HistoryRecord[];
 }
+
+// ---------------------------------------------------------------------------
+// Rule Candidate / Simulation — deterministic learning output from Rust (camelCase)
+// ---------------------------------------------------------------------------
+
+/** A single rule candidate produced by the rule-generation engine. */
+export interface RuleCandidate {
+  /** Identifier of the generated rule. */
+  ruleId: string;
+  /** Human-readable name of the rule. */
+  ruleName: string;
+  /** Identifier of the category the rule would assign. */
+  proposedCategoryId: string;
+  /** Human-readable name of the proposed category. */
+  proposedCategoryName: string;
+  /** Number of transactions that would match this rule. */
+  matchingTxCount: number;
+  /** Human-readable explanation for why this rule was generated. */
+  reason: string;
+}
+
+/** A single transaction example illustrating what a rule simulation would change. */
+export interface SimulationExample {
+  /** Identifier of the transaction. */
+  transactionId: string;
+  /** Payee name of the transaction. */
+  payeeName: string;
+  /** Monetary amount of the transaction (string to avoid floating-point precision loss across the napi boundary). */
+  amount: string;
+  /** Identifier of the category currently assigned. */
+  currentCategoryId: string;
+  /** Whether applying the rule would change the category. */
+  wouldChange: boolean;
+}
+
+/** Result of simulating a set of rule candidates against historical transactions. */
+export interface RuleSimulationResult {
+  /** Distribution of proposed categories across matching transactions. */
+  categoryDistribution: Record<string, number>;
+  /** Per-transaction examples illustrating the simulation outcome. */
+  examples: SimulationExample[];
+}
