@@ -20,8 +20,12 @@ import {
   getActorId,
   buildAuthorizationInfo,
   performReviewAction,
+  buildReviewQueueItem,
 } from '../../server/utils/workflow-store';
-import type { EventWithContext } from '../../server/utils/workflow-store';
+import type {
+  EventWithContext,
+  ClassificationHistoryEntry,
+} from '../../server/utils/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -306,5 +310,113 @@ describe('error envelope consistency', () => {
     const outcome = await performReviewAction(store, 'no-such-id', 'approve', ACTOR);
     expect(outcome.success).toBe(false);
     expect(outcome.error).toBe('Review item not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: buildReviewQueueItem — evidence enrichment
+// ---------------------------------------------------------------------------
+
+describe('buildReviewQueueItem evidence enrichment', () => {
+  let store: SqliteWorkflowStore;
+
+  beforeEach(() => {
+    store = new SqliteWorkflowStore(':memory:');
+  });
+
+  it('populates all rendering-critical evidence fields from a non-empty item', async () => {
+    const evidence: Record<string, unknown> = {
+      originalName: 'COFFEE SHOP #42',
+      normalizedMerchant: 'Coffee Shop Inc.',
+      account: 'Checking (1234)',
+      amount: 12.50,
+      currentCategory: 'cat-food',
+      alternatives: ['cat-dining', 'cat-entertainment'],
+      history: [
+        { categoryId: 'cat-food', count: 3, lastClassified: '2026-06-01T00:00:00.000Z' },
+        { categoryId: 'cat-dining', count: 1, lastClassified: '2026-05-15T00:00:00.000Z' },
+      ],
+    };
+
+    const item = await seedPendingReview(store, {
+      transactionId: 'txn-evidence-test',
+      evidence,
+      provenance: 'classifier-v2',
+      correlationId: 'corr-abc-123',
+    });
+
+    const queueItem = buildReviewQueueItem(item);
+
+    // --- Fields rendered by ReviewItem.vue ---
+    expect(queueItem.reviewItem).toBe(item);
+
+    // Head: normalizedMerchant
+    expect(queueItem.evidence.normalizedMerchant).toBe('Coffee Shop Inc.');
+
+    // Transaction details grid: originalImportedName, account, amount, provenance
+    expect(queueItem.evidence.originalImportedName).toBe('COFFEE SHOP #42');
+    expect(queueItem.evidence.account).toBe('Checking (1234)');
+    expect(queueItem.evidence.amount).toBe(12.50);
+    expect(queueItem.evidence.provenance).toBe('classifier-v2');
+
+    // Proposal metadata: correlationId, promptVersion
+    expect(queueItem.evidence.correlationId).toBe('corr-abc-123');
+    expect(queueItem.evidence.promptVersion).toBe(item.promptVersion);
+
+    // Category change preview: fromCategory, toCategory, affectsEnvelope
+    expect(queueItem.evidence.currentCategory).toBe('cat-food');
+    expect(queueItem.evidence.suggestedCategory).toBe(item.categoryId);
+    expect(queueItem.evidence.changePreview.fromCategory).toBe('cat-food');
+    expect(queueItem.evidence.changePreview.toCategory).toBe(item.categoryId);
+    expect(queueItem.evidence.changePreview.affectsEnvelope).toBe(
+      'cat-food' !== item.categoryId,
+    );
+
+    // Alternatives list
+    expect(queueItem.evidence.alternatives).toEqual([
+      'cat-dining',
+      'cat-entertainment',
+    ]);
+
+    // History entries
+    expect(queueItem.evidence.history).toHaveLength(2);
+    expect(queueItem.evidence.history[0].categoryId).toBe('cat-food');
+    expect(queueItem.evidence.history[0].count).toBe(3);
+    expect(queueItem.evidence.history[0].lastClassified).toBe(
+      '2026-06-01T00:00:00.000Z',
+    );
+
+    // Freshness (falls through from item.freshnessExpiresAt, which is null)
+    expect(queueItem.evidence.freshness).toBeNull();
+
+    // Homogeneity defaults
+    expect(queueItem.homogeneity.sameMerchant).toBe(false);
+    expect(queueItem.homogeneity.sameAmount).toBe(false);
+    expect(queueItem.homogeneity.sameClassifier).toBe(false);
+    expect(queueItem.homogeneity.sameCategory).toBe(false);
+
+    // Actionable
+    expect(queueItem.actionable).toBe(true);
+  });
+
+  it('falls back to safe defaults when classifier evidence is absent', async () => {
+    const item = await seedPendingReview(store, {
+      transactionId: 'txn-no-evidence',
+    });
+
+    const queueItem = buildReviewQueueItem(item);
+
+    // Without evidence payload, falls back to item fields
+    expect(queueItem.evidence.originalImportedName).toBe('txn-no-evidence');
+    expect(queueItem.evidence.normalizedMerchant).toBe('txn-no-evidence');
+    expect(queueItem.evidence.account).toBe('');
+    expect(queueItem.evidence.amount).toBe(0);
+    expect(queueItem.evidence.alternatives).toEqual([]);
+    expect(queueItem.evidence.history).toEqual([]);
+
+    // currentCategory falls back to item.categoryId when evidence.currentCategory absent
+    expect(queueItem.evidence.currentCategory).toBe(item.categoryId);
+    expect(queueItem.evidence.changePreview.fromCategory).toBe(item.categoryId);
+    expect(queueItem.evidence.changePreview.affectsEnvelope).toBe(false);
   });
 });

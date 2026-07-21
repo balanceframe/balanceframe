@@ -27,24 +27,41 @@ import { dirname } from 'node:path';
 /**
  * Server-side ReviewQueueItem type.
  *
- * Mirrors the envelope shape the GET /api/review handler constructs.
- * Defined server-side to avoid depending on the client `src/review.ts`
- * module, which does not resolve under Nitro's module resolution.
+ * Mirrors the complete ReviewEvidence shape consumed by the client
+ * (ReviewItem.vue renders originalImportedName, normalizedMerchant,
+ * account, amount, provenance, changePreview.fromCategory/toCategory/
+ * affectsEnvelope, alternatives, history, and other evidence fields).
+ *
+ * Built from the persisted ReviewItem via buildReviewQueueItem().
+ * Defined server-side to avoid depending on client `src/review.ts`,
+ * which does not resolve under Nitro's module resolution.
  */
+export interface ClassificationHistoryEntry {
+  readonly categoryId: string;
+  readonly count: number;
+  readonly lastClassified: string;
+}
+
 export interface ReviewQueueItem {
   readonly reviewItem: ReviewItem;
   readonly evidence: {
-    readonly historicalClassifications: readonly unknown[];
+    readonly originalImportedName: string;
+    readonly normalizedMerchant: string;
+    readonly account: string;
+    readonly amount: number;
+    readonly currentCategory: string;
+    readonly suggestedCategory: string;
+    readonly alternatives: readonly string[];
+    readonly history: readonly ClassificationHistoryEntry[];
+    readonly provenance: string;
+    readonly freshness: string | null;
     readonly changePreview: {
-      readonly budgetId: string;
-      readonly transactionId: string;
-      readonly currentCategoryId: string | null;
-      readonly proposedCategoryId: string | null;
-      readonly transactionDate: string | null;
-      readonly merchantName: string | null;
-      readonly amount: number | null;
-      readonly description: string | null;
+      readonly fromCategory: string;
+      readonly toCategory: string;
+      readonly affectsEnvelope: boolean;
     };
+    readonly correlationId: string | null;
+    readonly promptVersion: string;
   };
   readonly homogeneity: {
     readonly sameMerchant: boolean;
@@ -53,6 +70,82 @@ export interface ReviewQueueItem {
     readonly sameCategory: boolean;
   };
   readonly actionable: boolean;
+}
+
+/**
+ * Build a complete ReviewQueueItem from persisted review data.
+ *
+ * Enriches the item with evidence derived from the classifier payload
+ * (`item.evidence` Record) and deterministic safe defaults where the
+ * persisted data lacks enrichment.  Mirrors the client-side
+ * `extractEvidence()` logic in `src/review.ts` so that the API response
+ * is immediately render-compatible without client-side re-derivation.
+ *
+ * @param item - a persisted ReviewItem (may carry classifier evidence)
+ */
+export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
+  const pay = item.evidence as Record<string, unknown> | undefined;
+
+  const originalImportedName: string =
+    typeof pay?.originalName === 'string'
+      ? pay.originalName
+      : item.transactionId;
+
+  const normalizedMerchant: string =
+    typeof pay?.normalizedMerchant === 'string'
+      ? pay.normalizedMerchant
+      : item.transactionId;
+
+  const account: string =
+    typeof pay?.account === 'string' ? pay.account : '';
+
+  const amount: number =
+    typeof pay?.amount === 'number' ? pay.amount : 0;
+
+  const alternativesList: readonly string[] =
+    Array.isArray(pay?.alternatives)
+      ? (pay.alternatives as string[])
+      : [];
+
+  const historyList: readonly ClassificationHistoryEntry[] =
+    Array.isArray(pay?.history)
+      ? (pay.history as ClassificationHistoryEntry[])
+      : [];
+
+  const fromCategory: string =
+    typeof pay?.currentCategory === 'string'
+      ? pay.currentCategory
+      : item.categoryId;
+
+  return {
+    reviewItem: item,
+    evidence: {
+      originalImportedName,
+      normalizedMerchant,
+      account,
+      amount,
+      currentCategory: fromCategory,
+      suggestedCategory: item.categoryId,
+      alternatives: alternativesList,
+      history: historyList,
+      provenance: item.provenance,
+      freshness: item.freshnessExpiresAt,
+      changePreview: {
+        fromCategory,
+        toCategory: item.categoryId,
+        affectsEnvelope: fromCategory !== item.categoryId,
+      },
+      correlationId: item.correlationId,
+      promptVersion: item.promptVersion,
+    },
+    homogeneity: {
+      sameMerchant: false,
+      sameAmount: false,
+      sameClassifier: false,
+      sameCategory: false,
+    },
+    actionable: item.status === 'pending_review',
+  };
 }
 
 // ---------------------------------------------------------------------------

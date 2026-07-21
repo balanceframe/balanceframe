@@ -2,18 +2,19 @@
  * GET /api/review — list pending review items.
  *
  * Queries persisted state from the workflow store.  Returns items whose
- * status is `pending_review` (the actionable queue).  Evidence enrichment
- * and homogeneity checks are performed client-side by ReviewController.
+ * status is `pending_review` (the actionable queue).  Each item carries
+ * the complete ReviewEvidence shape populated from persisted classifier
+ * payload data via buildReviewQueueItem(), with deterministic safe
+ * defaults where enrichment is absent.
  *
  * Response envelope matches ReviewListResult:
  *   { items: ReviewQueueItem[], total: number }
- * Each item carries the raw ReviewItem data with default evidence/homogeneity
- * stubs.  The client composable passes these through as-is.
  */
 
 import type { ReviewItem } from '@balanceframe/workflow-store';
 import {
   getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
+  buildReviewQueueItem,
 } from '../../utils/workflow-store';
 import type { ReviewQueueItem } from '../../utils/workflow-store';
 
@@ -29,29 +30,7 @@ export default defineEventHandler(async (event) => {
   try {
     const items = await wf.store.listReviewItems({ status: 'pending_review' });
 
-    const queueItems: ReviewQueueItem[] = items.map((item: ReviewItem) => ({
-      reviewItem: item,
-      evidence: {
-        historicalClassifications: [],
-        changePreview: {
-          budgetId: item.budgetId,
-          transactionId: item.transactionId,
-          currentCategoryId: null,
-          proposedCategoryId: item.categoryId,
-          transactionDate: null,
-          merchantName: null,
-          amount: null,
-          description: null,
-        },
-      },
-      homogeneity: {
-        sameMerchant: false,
-        sameAmount: false,
-        sameClassifier: false,
-        sameCategory: false,
-      },
-      actionable: item.status === 'pending_review',
-    }));
+    const queueItems: ReviewQueueItem[] = items.map(buildReviewQueueItem);
 
     return okEnvelope(
       { items: queueItems, total: queueItems.length },
