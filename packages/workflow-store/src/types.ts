@@ -677,7 +677,7 @@ export interface CreateProposalInput {
 /** Input to create a new rule proposal. */
 export interface CreateRuleProposalInput {
   /** The operation — always 'create_rule' for this input. */
-  readonly operation: ProposalOperation;
+  readonly operation: 'create_rule';
   /** Budget this rule targets. */
   readonly budgetId: string;
   /** The transaction being proposed for change, or null for rule-only proposals. */

@@ -52,11 +52,22 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
+  // Look up the review item to get its budget context
+  let budgetId = '';
+  try {
+    const reviewItem = await wf.store.getReviewItem(reviewId);
+    if (reviewItem) {
+      budgetId = reviewItem.budgetId;
+    }
+  } catch {
+    // Non-fatal — proceed with empty budgetId
+  }
+
   try {
     const proposal = await wf.store.createProposal({
       operation: 'create_rule',
-      budgetId: '',
-      transactionId: reviewId,
+      budgetId,
+      transactionId: '__rule__',
       categoryId,
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',

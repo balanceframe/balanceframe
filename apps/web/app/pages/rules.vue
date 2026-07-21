@@ -146,13 +146,13 @@ async function handleSelect(id: string) {
   selectedRule.value = null;
 
   try {
-    const res = await $fetch<ApiEnvelope<{ rule: RuleShowResult }>>(`/api/rule/${id}`, {
+    const res = await $fetch<ApiEnvelope<RuleShowResult>>(`/api/rule/${id}`, {
       baseURL: apiBase || undefined,
       credentials: 'same-origin',
     });
 
     if (res.status === 'ok' && res.result) {
-      selectedRule.value = res.result.rule;
+      selectedRule.value = res.result;
     } else {
       error.value = res.error?.message ?? 'Failed to load rule';
     }

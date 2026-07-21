@@ -785,7 +785,7 @@ export class RuleMutationService {
     let ruleId: string | null = null;
     try {
       const effect = JSON.parse(idem.serialisedEffect);
-      ruleId = effect.ruleId ?? null;
+      ruleId = effect.ruleId ?? effect.ruleName ?? null;
     } catch {
       // Ignore parse failures
     }
