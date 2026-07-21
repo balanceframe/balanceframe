@@ -24,9 +24,10 @@ typecheck:
 lint:
     pnpm lint
 
-# Run all JavaScript/TypeScript workspace tests.
+# Run all JavaScript/TypeScript workspace tests serially because the Actual
+# integration client and native SQLite bindings use process-global state.
 test-js:
-    pnpm test
+    pnpm -r --workspace-concurrency=1 test
 
 # Run all Rust tests.
 test-rust:
