@@ -5,8 +5,10 @@
  * Authorization (spaces, capabilities, approvals, delegation) is owned by
  * BalanceFrame and enforced independently.
  *
- * Database: SQLite (better-sqlite3), path configurable via
- * `BALANCEFRAME_AUTH_DB_PATH` env var (default `./data/auth.db`).
+ * Database: SQLite (better-sqlite3), path configurable via environment.
+ * Priority: NUXT_AUTH_DB_PATH > BALANCEFRAME_AUTH_DB_PATH > ./data/auth.db.
+ * NUXT_AUTH_DB_PATH is the Nuxt runtimeConfig.authDbPath env override
+ * convention; BALANCEFRAME_AUTH_DB_PATH is the legacy fallback.
  *
  * Schema migrations are handled by `server/plugins/auth-migration.ts`.
  */
@@ -17,9 +19,9 @@ import { apiKey } from '@better-auth/api-key';
 
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { resolveAuthDbPath } from './auth-db-path';
 
-const AUTH_DB_PATH =
-  process.env.BALANCEFRAME_AUTH_DB_PATH || './data/auth.db';
+const AUTH_DB_PATH = resolveAuthDbPath();
 
 // Ensure the parent directory exists — better-sqlite3 cannot create it.
 mkdirSync(dirname(AUTH_DB_PATH), { recursive: true });
