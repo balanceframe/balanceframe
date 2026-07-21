@@ -29,8 +29,11 @@ const db = new Database(AUTH_DB_PATH);
 // Enable WAL mode for better concurrent read performance.
 db.pragma('journal_mode = WAL');
 
+const BASE_URL = process.env.BETTER_AUTH_URL || 'http://localhost:3000';
+
 export const auth = betterAuth({
   database: db,
+  baseURL: BASE_URL,
 
   emailAndPassword: {
     enabled: true,
