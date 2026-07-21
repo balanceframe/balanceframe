@@ -42,8 +42,6 @@ crates/node-binding/index.d.ts
 ehthumbs.db
 Thumbs.db
 
-# ---- General ----
-*.log
-*.pid
-*.tmp
-*~
+
+# ---- Runtime data ----
+/data/
