@@ -383,6 +383,7 @@ export class CategorizationMutationService {
     try {
       await this.store.consumeApproval(input.approvalId);
     } catch (err) {
+      await this.recordFailure(input, err);
       await this.appendFailureAudit(input, proposal, auth, 'approval_consumption_failed');
       return this.fail(baseResult, 'approval_consumption_failed',
         err instanceof Error ? err.message : 'Failed to consume approval', input);

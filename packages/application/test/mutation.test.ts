@@ -826,6 +826,42 @@ describe('CategorizationMutationService', () => {
       expect(result.reasonCodes).toContain('approval_consumption_failed');
       expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
     });
+
+    it('completes idempotency record with error when consumeApproval fails, so retry gets cached failure not in-progress', async () => {
+      // First call: consumeApproval throws
+      store.consumeApproval.mockRejectedValue(new Error('Approval already consumed'));
+      const firstResult = await service.execute(makeInput());
+      expect(firstResult.success).toBe(false);
+      expect(firstResult.reasonCodes).toContain('approval_consumption_failed');
+
+      // idempotency record should have been completed with the error
+      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
+        TEST_NONCE,
+        expect.stringContaining('Approval already consumed'),
+      );
+
+      // Second call with same idempotency key: createIdempotencyRecord returns existing completed record
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({
+          completed: true,
+          errorMessage: 'Approval already consumed',
+        }),
+        isOwner: false,
+      });
+
+      const secondResult = await service.execute(makeInput());
+
+      // Should get cached failure, NOT idempotency_in_progress
+      expect(secondResult.success).toBe(false);
+      expect(secondResult.reasonCodes).toContain('idempotency_replay');
+      expect(secondResult.reasonCodes).not.toContain('idempotency_in_progress');
+      expect(secondResult.message).toBe('Approval already consumed');
+      expect(secondResult.verified).toBe(false);
+
+      // Must not hit any mutation or approval operations
+      expect(store.consumeApproval).toHaveBeenCalledTimes(1); // only the first call
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+    });
   });
 
   // =========================================================================
