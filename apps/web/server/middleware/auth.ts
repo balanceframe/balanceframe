@@ -150,8 +150,8 @@ export default defineEventHandler(async (event) => {
 
   // 4. Dev bypass (local development only).
   if (
-    (config.devBypassAuth as boolean | string) ||
-    process.env.BALANCEFRAME_DEV_BYPASS_AUTH
+    config.devBypassAuth === true ||
+    process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true'
   ) {
     const actorId = (config.authActorId as string) || 'dev-bypass';
     setAuthContext(event, actorId);

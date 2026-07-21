@@ -286,6 +286,10 @@ describe('auth middleware — actor identity', () => {
 describe('auth middleware — dev bypass', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('sets auth context with dev-bypass actorId when devBypassAuth is true', async () => {
@@ -305,6 +309,44 @@ describe('auth middleware — dev bypass', () => {
   it('still returns 503 when devBypassAuth is false and no token', async () => {
     mockGetRequestPath.mockReturnValue('/api/review');
     const event = mockEvent({ context: { runtimeConfig: { devBypassAuth: false } } });
+
+    const result = await handler(event);
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
+    const env = asErrorEnvelope(result);
+    expect(env.error.code).toBe('SERVICE_UNAVAILABLE');
+  });
+
+  it('bypasses auth when env BALANCEFRAME_DEV_BYPASS_AUTH is "true"', async () => {
+    vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'true');
+    mockGetRequestPath.mockReturnValue('/api/review');
+    const event = mockEvent();
+
+    const result = await handler(event);
+
+    expect(result).toBeUndefined();
+    expect(mockSetResponseStatus).not.toHaveBeenCalled();
+    expect(event.context.auth).toEqual({
+      authenticated: true,
+      actorId: 'dev-bypass',
+    });
+  });
+
+  it('rejects env BALANCEFRAME_DEV_BYPASS_AUTH when value is "false" string', async () => {
+    vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'false');
+    mockGetRequestPath.mockReturnValue('/api/review');
+    const event = mockEvent();
+
+    const result = await handler(event);
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
+    const env = asErrorEnvelope(result);
+    expect(env.error.code).toBe('SERVICE_UNAVAILABLE');
+  });
+
+  it('rejects config devBypassAuth when value is "false" string', async () => {
+    mockGetRequestPath.mockReturnValue('/api/review');
+    const event = mockEvent({ context: { runtimeConfig: { devBypassAuth: 'false' } } });
 
     const result = await handler(event);
 
