@@ -50,6 +50,24 @@ function tickSync(): void {
   while (Date.now() === start) { /* spin */ }
 }
 
+/**
+ * Bypass createProposal validation to force a proposal's expires_at in the DB.
+ * Accesses private `db` property — intentional test seam.
+ */
+function forceProposalExpiry(store: SqliteWorkflowStore, proposalId: string, expiresAt: string): void {
+  const s = store as unknown as { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } };
+  s.db.prepare('UPDATE categorization_proposals SET expires_at = ? WHERE id = ?').run(expiresAt, proposalId);
+}
+
+/**
+ * Bypass createApproval validation to force an approval's expires_at in the DB.
+ * Accesses private `db` property — intentional test seam.
+ */
+function forceApprovalExpiry(store: SqliteWorkflowStore, approvalId: string, expiresAt: string): void {
+  const s = store as unknown as { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } };
+  s.db.prepare('UPDATE proposal_approvals SET expires_at = ? WHERE id = ?').run(expiresAt, approvalId);
+}
+
 const SAMPLE_HASH = 'abc123def4567890abcdef1234567890abcdef1234567890abcdef1234567890';
 const DIFFERENT_HASH = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
@@ -188,6 +206,34 @@ describe('CategorizationProposal', () => {
       expect(retry.payloadHash).toBe(SAMPLE_HASH);
       expect(retry.categoryId).toBe('cat-food');
     });
+
+    it('rejects malformed expiresAt', async () => {
+      await expect(
+        store.createProposal({
+          ...BASE_PROPOSAL,
+          expiresAt: 'not-a-valid-date',
+        }),
+      ).rejects.toThrow(/expiresAt/i);
+    });
+
+    it('rejects past expiresAt', async () => {
+      await expect(
+        store.createProposal({
+          ...BASE_PROPOSAL,
+          expiresAt: '2020-01-01T00:00:00.000Z',
+        }),
+      ).rejects.toThrow(/expiresAt/i);
+    });
+
+    it('rejects expiresAt at the current moment (non-future boundary)', async () => {
+      await expect(
+        store.createProposal({
+          ...BASE_PROPOSAL,
+          expiresAt: new Date().toISOString(),
+        }),
+      ).rejects.toThrow(/expiresAt/i);
+    });
+
   });
 
   describe('findActiveProposal', () => {
@@ -438,17 +484,18 @@ describe('CategorizationProposal', () => {
     });
 
     it('rejects approval when proposal is expired', async () => {
-      // Use a unique payload hash so this doesn't conflict with the beforeEach proposal
-      const expiredProposal = await store.createProposal({
+      // Create a proposal with valid expiry, then force it to past via DB bypass
+      const validProposal = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
         transactionId: 'txn-expired',
-        expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
       });
+      forceProposalExpiry(store, validProposal.id, '2020-01-01T00:00:00.000Z');
+
       await expect(
         store.createApproval({
           ...BASE_APPROVAL,
-          proposalId: expiredProposal.id,
+          proposalId: validProposal.id,
         }),
       ).rejects.toThrow(/expir/i);
     });
@@ -615,6 +662,47 @@ describe('CategorizationProposal', () => {
     it('rejects consuming a nonexistent approval', async () => {
       await expect(store.consumeApproval('nonexistent')).rejects.toThrow(/not found/i);
     });
+
+    it('rejects consuming an approval when proposal has past expires_at (deterministic)', async () => {
+      const p = await store.createProposal(BASE_PROPOSAL);
+      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-past@example.com' });
+
+      // Force proposal expires_at to a fixed past timestamp
+      forceProposalExpiry(store, p.id, '2020-01-01T00:00:00.000Z');
+
+      await expect(store.consumeApproval(a.id)).rejects.toThrow(/expir/i);
+    });
+
+    it('rejects consuming an approval when proposal has invalid expires_at', async () => {
+      const p = await store.createProposal(BASE_PROPOSAL);
+      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-invalid@example.com' });
+
+      // Force proposal expires_at to a malformed string
+      forceProposalExpiry(store, p.id, 'garbage-timestamp');
+
+      await expect(store.consumeApproval(a.id)).rejects.toThrow(/expir/i);
+    });
+
+    it('rejects consuming an approval with past expires_at (deterministic)', async () => {
+      const p = await store.createProposal(BASE_PROPOSAL);
+      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-approval-past@example.com' });
+
+      // Force approval expires_at to a fixed past timestamp
+      forceApprovalExpiry(store, a.id, '2020-01-01T00:00:00.000Z');
+
+      await expect(store.consumeApproval(a.id)).rejects.toThrow(/expir/i);
+    });
+
+    it('rejects consuming an approval with invalid expires_at', async () => {
+      const p = await store.createProposal(BASE_PROPOSAL);
+      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-approval-invalid@example.com' });
+
+      // Force approval expires_at to a malformed string
+      forceApprovalExpiry(store, a.id, 'garbage-timestamp');
+
+      await expect(store.consumeApproval(a.id)).rejects.toThrow(/expir/i);
+    });
+
   });
 
   describe('verifyApprovalForExecution', () => {
@@ -668,6 +756,29 @@ describe('CategorizationProposal', () => {
       expect(rejection).not.toBeNull();
       expect(rejection!.toLowerCase()).toContain('approv');
     });
+
+    it('rejects when proposal has past expires_at (deterministic)', async () => {
+      const p = await store.createProposal(BASE_PROPOSAL);
+      await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id });
+
+      forceProposalExpiry(store, p.id, '2020-01-01T00:00:00.000Z');
+
+      const rejection = await store.verifyApprovalForExecution(p.id, SAMPLE_HASH);
+      expect(rejection).not.toBeNull();
+      expect(rejection!.toLowerCase()).toContain('expir');
+    });
+
+    it('rejects when proposal has invalid expires_at', async () => {
+      const p = await store.createProposal(BASE_PROPOSAL);
+      await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id });
+
+      forceProposalExpiry(store, p.id, 'garbage-timestamp');
+
+      const rejection = await store.verifyApprovalForExecution(p.id, SAMPLE_HASH);
+      expect(rejection).not.toBeNull();
+      expect(rejection!.toLowerCase()).toContain('expir');
+    });
+
   });
 
   // =======================================================================

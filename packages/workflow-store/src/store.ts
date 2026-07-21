@@ -56,6 +56,12 @@ function nowISO(): string {
   return new Date().toISOString();
 }
 
+/** Returns true if the ISO-8601 string is invalid or represents a moment <= now. */
+function isExpired(isoString: string): boolean {
+  const parsed = new Date(isoString);
+  return isNaN(parsed.getTime()) || parsed <= new Date();
+}
+
 /** Map a raw DB row to a typed Suggestion. */
 function rowToSuggestion(row: SuggestionRow): Suggestion {
   return {
@@ -1846,8 +1852,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Categorization proposal lifecycle ─────────────────────────────
 
+
   async createProposal(input: CreateProposalInput): Promise<CategorizationProposal> {
     const id = randomUUID();
+
+    // Validate expiresAt
+    const expiresAtDate = new Date(input.expiresAt);
+    if (isNaN(expiresAtDate.getTime())) {
+      throw new Error(`Invalid expiresAt: '${input.expiresAt}' is not a valid ISO-8601 timestamp`);
+    }
+    if (expiresAtDate <= new Date()) {
+      throw new Error(`expiresAt '${input.expiresAt}' is in the past`);
+    }
     const now = nowISO();
 
     const row = this.stmt.insertProposal.get({
@@ -1967,7 +1983,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (proposalRow.superseded_at) throw new Error(`Proposal ${input.proposalId} is superseded`);
 
     // Validate proposal has not expired
-    if (new Date(proposalRow.expires_at) <= new Date()) {
+    if (isExpired(proposalRow.expires_at)) {
       throw new Error(`Proposal ${input.proposalId} expired at ${proposalRow.expires_at}`);
     }
 
@@ -1977,7 +1993,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }
 
     // Validate approval expiry is in the future
-    if (new Date(input.expiresAt) <= new Date()) {
+    if (isExpired(input.expiresAt)) {
       throw new Error(`Approval expiry ${input.expiresAt} is in the past`);
     }
 
@@ -2003,7 +2019,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       if (existingAny) {
         if (existingAny.status === 'active') {
           // Check if the existing active approval has actually expired
-          if (new Date(existingAny.expires_at) <= new Date()) {
+          if (isExpired(existingAny.expires_at)) {
             throw new Error(
               `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
               `already exists with status 'active' (expired at ${existingAny.expires_at}) and cannot be re-issued`,
@@ -2052,13 +2068,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (proposalRow.superseded_at) throw new Error(`Proposal ${existing.proposal_id} is superseded — cannot consume its approval`);
 
     // Check proposal has not expired
-    if (new Date(proposalRow.expires_at) <= new Date()) {
+    if (isExpired(proposalRow.expires_at)) {
       throw new Error(`Proposal ${existing.proposal_id} expired at ${proposalRow.expires_at} — cannot consume its approval`);
     }
 
     // Check expiry
     const now = nowISO();
-    if (new Date(existing.expires_at) <= new Date()) {
+    if (isExpired(existing.expires_at)) {
       throw new Error(`Approval ${id} expired at ${existing.expires_at}`);
     }
 
@@ -2083,7 +2099,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (proposalRow.superseded_at) return `Proposal ${proposalId} was superseded at ${proposalRow.superseded_at}`;
 
     // Check proposal has not expired
-    if (new Date(proposalRow.expires_at) <= new Date()) {
+    if (isExpired(proposalRow.expires_at)) {
       return `Proposal ${proposalId} expired at ${proposalRow.expires_at}`;
     }
 
