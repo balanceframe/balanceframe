@@ -130,6 +130,9 @@ importers:
 
   packages/application:
     dependencies:
+      '@balanceframe/native':
+        specifier: workspace:*
+        version: link:../../crates/node-binding
       '@balanceframe/protocol-generated':
         specifier: workspace:*
         version: link:../protocol-generated
