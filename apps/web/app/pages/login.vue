@@ -4,18 +4,46 @@
       <template #header>
         <h1 class="text-2xl font-bold">BalanceFrame</h1>
         <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Sign in to continue
+          {{ isSignUp ? 'Create an account' : 'Sign in to continue' }}
         </p>
       </template>
 
+      <!-- Tab toggle -->
+      <div class="flex gap-0 mb-6 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+        <button
+          :class="[
+            'flex-1 py-2 text-sm font-medium transition-colors',
+            !isSignUp
+              ? 'bg-primary-500 text-white'
+              : 'bg-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800',
+          ]"
+          @click="isSignUp = false"
+        >
+          Sign in
+        </button>
+        <button
+          :class="[
+            'flex-1 py-2 text-sm font-medium transition-colors',
+            isSignUp
+              ? 'bg-primary-500 text-white'
+              : 'bg-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800',
+          ]"
+          @click="isSignUp = true"
+        >
+          Create account
+        </button>
+      </div>
+
+      <!-- Sign in form -->
       <UForm
-        :state="{ email, password }"
+        v-if="!isSignUp"
+        :state="{ email: signInEmail, password: signInPassword }"
         class="space-y-4"
-        @submit="handleLogin"
+        @submit="handleSignIn"
       >
         <UFormField label="Email" name="email" required>
           <UInput
-            v-model="email"
+            v-model="signInEmail"
             type="email"
             placeholder="you@example.com"
             autocomplete="email"
@@ -25,7 +53,7 @@
 
         <UFormField label="Password" name="password" required>
           <UInput
-            v-model="password"
+            v-model="signInPassword"
             type="password"
             placeholder="&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;"
             autocomplete="current-password"
@@ -34,79 +62,70 @@
         </UFormField>
 
         <UAlert
-          v-if="error"
+          v-if="signInError"
           color="error"
           variant="soft"
-          :title="error"
+          :title="signInError"
           icon="i-heroicons-exclamation-triangle"
         />
 
-        <div class="flex flex-col gap-2">
-          <UButton
-            type="submit"
-            :loading="loading"
-            label="Sign in"
-            size="lg"
-            class="w-full"
-          />
-          <UButton
-            variant="outline"
-            label="Create account"
-            size="lg"
-            class="w-full"
-            @click="showRegister = !showRegister"
-          />
-        </div>
+        <UButton
+          type="submit"
+          :loading="signInLoading"
+          label="Sign in"
+          size="lg"
+          class="w-full"
+        />
       </UForm>
 
+      <!-- Sign up form -->
       <UForm
-        v-if="showRegister"
-        :state="{ name, email, password }"
-        class="space-y-4 mt-6 pt-6 border-t border-gray-200 dark:border-gray-700"
-        @submit="handleRegister"
+        v-else
+        :state="{ name: signUpName, email: signUpEmail, password: signUpPassword }"
+        class="space-y-4"
+        @submit="handleSignUp"
       >
-        <p class="text-sm font-medium text-gray-600 dark:text-gray-400">
-          Create a new account
-        </p>
-
         <UFormField label="Name" name="name" required>
           <UInput
-            v-model="name"
+            v-model="signUpName"
             type="text"
             placeholder="Your name"
+            autocomplete="name"
             class="w-full"
           />
         </UFormField>
 
         <UFormField label="Email" name="email" required>
           <UInput
-            v-model="email"
+            v-model="signUpEmail"
             type="email"
             placeholder="you@example.com"
+            autocomplete="email"
             class="w-full"
           />
         </UFormField>
 
         <UFormField label="Password" name="password" required>
           <UInput
-            v-model="password"
+            v-model="signUpPassword"
             type="password"
             placeholder="&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;"
+            autocomplete="new-password"
             class="w-full"
           />
         </UFormField>
 
         <UAlert
-          v-if="registerError"
+          v-if="signUpError"
           color="error"
           variant="soft"
-          :title="registerError"
+          :title="signUpError"
           icon="i-heroicons-exclamation-triangle"
         />
 
         <UButton
           type="submit"
-          :loading="registering"
+          :loading="signUpLoading"
           label="Create account"
           size="lg"
           class="w-full"
@@ -120,53 +139,59 @@
 /**
  * Login / registration page.
  *
- * First-time users create an account.  Returning users sign in.
- * Already-authenticated users are redirected to /review via the
- * global route middleware, so we do not check session here.
+ * Toggles between Sign in and Create account tabs.
+ * Already-authenticated users are redirected to /review by the global
+ * route middleware, so we do not check session here.
  */
 
 import { authClient } from '../../lib/auth-client';
 
-const email = ref('');
-const password = ref('');
-const name = ref('');
-const error = ref('');
-const registerError = ref('');
-const loading = ref(false);
-const registering = ref(false);
-const showRegister = ref(false);
+const isSignUp = ref(false);
 
-async function handleLogin() {
-  loading.value = true;
-  error.value = '';
+// Sign-in form
+const signInEmail = ref('');
+const signInPassword = ref('');
+const signInError = ref('');
+const signInLoading = ref(false);
+
+// Sign-up form
+const signUpName = ref('');
+const signUpEmail = ref('');
+const signUpPassword = ref('');
+const signUpError = ref('');
+const signUpLoading = ref(false);
+
+async function handleSignIn() {
+  signInLoading.value = true;
+  signInError.value = '';
 
   const { error: authError } = await authClient.signIn.email({
-    email: email.value,
-    password: password.value,
+    email: signInEmail.value,
+    password: signInPassword.value,
   });
 
   if (authError) {
-    error.value = authError.message || 'Sign in failed';
-    loading.value = false;
+    signInError.value = authError.message || 'Sign in failed';
+    signInLoading.value = false;
     return;
   }
 
   await navigateTo('/review');
 }
 
-async function handleRegister() {
-  registering.value = true;
-  registerError.value = '';
+async function handleSignUp() {
+  signUpLoading.value = true;
+  signUpError.value = '';
 
   const { error: authError } = await authClient.signUp.email({
-    name: name.value,
-    email: email.value,
-    password: password.value,
+    name: signUpName.value,
+    email: signUpEmail.value,
+    password: signUpPassword.value,
   });
 
   if (authError) {
-    registerError.value = authError.message || 'Registration failed';
-    registering.value = false;
+    signUpError.value = authError.message || 'Registration failed';
+    signUpLoading.value = false;
     return;
   }
 
