@@ -475,10 +475,9 @@ describe('parseArgs — proposal arity', () => {
 
   it('rejects proposals create with missing flag value', () => {
     const result = parseArgs(['proposals', 'create', '--category-id', '--json']);
-    expect(result.ok).toBe(true);
-    // --category-id without a value is silently dropped, which is acceptable
-    if (result.ok) {
-      expect(result.cmd.options!['category-id']).toBeUndefined();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('missing_flag_value');
     }
   });
 });

@@ -565,11 +565,11 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--category-id') { const v = nextVal(); if (v) { options['category-id'] = v; i++; } }
-      else if (a === '--transaction-id') { const v = nextVal(); if (v) { options['transaction-id'] = v; i++; } }
-      else if (a === '--message') { const v = nextVal(); if (v) { options.message = v; i++; } }
-      else if (a === '--reason') { const v = nextVal(); if (v) { options.reason = v; i++; } }
-      else if (a === '--operation') { const v = nextVal(); if (v) { options.operation = v; i++; } }
+      if (a === '--category-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--category-id requires a value.' } }; options['category-id'] = v; i++; }
+      else if (a === '--transaction-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' } }; options['transaction-id'] = v; i++; }
+      else if (a === '--message') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--message requires a value.' } }; options.message = v; i++; }
+      else if (a === '--reason') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--reason requires a value.' } }; options.reason = v; i++; }
+      else if (a === '--operation') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--operation requires a value.' } }; options.operation = v; i++; }
       else if (!a.startsWith('--')) {
         return {
           ok: false,
