@@ -35,6 +35,12 @@ test-rust:
 # Run the complete project test suite.
 test: test-js test-rust
 
+
+# Start a local Actual fixture server and seed a test budget.
+# Run 'source tests/actual-integration/.env.test' afterwards to pick up connection vars.
+setup-fixture:
+    cd tests/actual-integration && ./setup-fixture-server.sh
+
 # Run Rust formatting checks.
 fmt-rust:
     cargo fmt --all -- --check
