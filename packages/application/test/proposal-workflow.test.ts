@@ -296,6 +296,7 @@ describe('proposalCreateAnalysis', () => {
 
     expect(calls.proposalCreate).toHaveLength(1);
     expect(calls.proposalCreate[0]).toMatchObject({ ledger: input.ledger });
+    expect(calls.proposalCreate[0].options).toMatchObject({ actorId: 'usr_test', requestId: 'req_prop' });
     expect(envelope.status).toBe('ok');
     expect(envelope.result).toBeTruthy();
     expect(envelope.result!.proposalId).toBe('prop_new');
@@ -337,6 +338,24 @@ describe('proposalCreateAnalysis', () => {
     expect(envelope.error!.retryable).toBe(false);
     expect(envelope.error!.reasonCodes).toContain('proposal_not_found');
   });
+  it('forwards explicit review options into protocol', async () => {
+    const { protocol, calls } = mockProposalProtocol();
+    const input = baseProposalInput({ analysisProtocol: protocol });
+    const reviewOptions: ReviewActionOptions = {
+      correlationId: 'corr_create',
+      message: 'Create for testing',
+    };
+    const envelope = await proposalCreateAnalysis(input, reviewOptions);
+
+    expect(calls.proposalCreate).toHaveLength(1);
+    expect(calls.proposalCreate[0].options).toMatchObject({
+      actorId: 'usr_test',
+      requestId: 'req_prop',
+      correlationId: 'corr_create',
+      message: 'Create for testing',
+    });
+    expect(envelope.status).toBe('ok');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -351,6 +370,7 @@ describe('proposalApproveAnalysis', () => {
 
     expect(calls.proposalApprove).toHaveLength(1);
     expect(calls.proposalApprove[0]).toMatchObject({ ledger: input.ledger, proposalId: 'prop_abc' });
+    expect(calls.proposalApprove[0].options).toMatchObject({ actorId: 'usr_test', requestId: 'req_prop' });
     expect(envelope.status).toBe('ok');
     expect(envelope.result!.proposalId).toBe('prop_abc');
     expect(envelope.result!.action).toBe('approved');
@@ -471,6 +491,24 @@ describe('proposalApproveAnalysis', () => {
     expect(envelope.error!.retryable).toBe(false);
     expect(envelope.error!.reasonCodes).toEqual(['analysis_error']);
   });
+  it('forwards explicit review options into protocol', async () => {
+    const { protocol, calls } = mockProposalProtocol();
+    const input = baseProposalInput({ analysisProtocol: protocol });
+    const reviewOptions: ReviewActionOptions = {
+      correlationId: 'corr_approve',
+      message: 'Approving proposal',
+    };
+    const envelope = await proposalApproveAnalysis(input, 'prop_abc', reviewOptions);
+
+    expect(calls.proposalApprove).toHaveLength(1);
+    expect(calls.proposalApprove[0].options).toMatchObject({
+      actorId: 'usr_test',
+      requestId: 'req_prop',
+      correlationId: 'corr_approve',
+      message: 'Approving proposal',
+    });
+    expect(envelope.status).toBe('ok');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -485,6 +523,7 @@ describe('proposalExecuteAnalysis', () => {
 
     expect(calls.proposalExecute).toHaveLength(1);
     expect(calls.proposalExecute[0]).toMatchObject({ ledger: input.ledger, proposalId: 'prop_abc' });
+    expect(calls.proposalExecute[0].options).toMatchObject({ actorId: 'usr_test', requestId: 'req_prop' });
     expect(envelope.status).toBe('ok');
     expect(envelope.result!.proposalId).toBe('prop_abc');
     expect(envelope.result!.action).toBe('executed');
@@ -565,6 +604,24 @@ describe('proposalExecuteAnalysis', () => {
     expect(envelope.error!.message).toContain('Provider unreachable');
     expect(envelope.error!.retryable).toBe(false);
     expect(envelope.error!.reasonCodes).toEqual(['analysis_error']);
+  });
+  it('forwards explicit review options into protocol', async () => {
+    const { protocol, calls } = mockProposalProtocol();
+    const input = baseProposalInput({ analysisProtocol: protocol });
+    const reviewOptions: ReviewActionOptions = {
+      correlationId: 'corr_execute',
+      message: 'Executing proposal',
+    };
+    const envelope = await proposalExecuteAnalysis(input, 'prop_abc', reviewOptions);
+
+    expect(calls.proposalExecute).toHaveLength(1);
+    expect(calls.proposalExecute[0].options).toMatchObject({
+      actorId: 'usr_test',
+      requestId: 'req_prop',
+      correlationId: 'corr_execute',
+      message: 'Executing proposal',
+    });
+    expect(envelope.status).toBe('ok');
   });
 });
 
