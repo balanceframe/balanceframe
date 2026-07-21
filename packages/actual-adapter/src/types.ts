@@ -292,6 +292,8 @@ export interface AutomationRule {
 
 export interface RuleProposal {
   name: string;
+  stage?: 'pre' | 'post';
+  conditionsOp?: 'and' | 'or';
   conditions: unknown[];
   actions: unknown[];
 }

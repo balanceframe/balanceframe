@@ -157,6 +157,12 @@ export interface AnalysisProtocol {
     ledger: unknown,
     query?: AuditQueryOptions,
   ): Promise<AuditQueryResult>;
+
+  /** Create a new rule proposal. */
+  ruleCreate?(
+    ledger: unknown,
+    options?: ReviewActionOptions,
+  ): Promise<RuleCreateResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +326,9 @@ const KNOWN_COMMANDS: Array<{
   { args: ['proposals', 'approve'], command: 'proposals.approve', route: 'analysis' },
   { args: ['proposals', 'execute'], command: 'proposals.execute', route: 'analysis' },
   { args: ['proposals', 'list'], command: 'proposals.list', route: 'analysis' },
+  // Rule commands
+  { args: ['rules', 'create'], command: 'rules.create', route: 'analysis' },
+
 
   // Audit commands
   { args: ['audit', 'query'], command: 'audit.query', route: 'analysis' },
@@ -670,6 +679,24 @@ export interface ProposalListResult {
 export interface ProposalListOutput {
   envelope: ResponseEnvelope<ProposalListResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Rule result types
+// ---------------------------------------------------------------------------
+
+/** Result of creating a rule via proposal. */
+export interface RuleCreateResult {
+  ruleId: string;
+  name: string;
+  status: string;
+  createdAt: string;
+  correlationId: string;
+}
+
+export interface RuleCreateOutput {
+  envelope: ResponseEnvelope<RuleCreateResult>;
+}
+
 
 // ---------------------------------------------------------------------------
 // Audit result types

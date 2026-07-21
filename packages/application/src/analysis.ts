@@ -45,6 +45,8 @@ import type {
   AuditQueryOutput,
   AuditQueryResult,
   AuditQueryOptions,
+  RuleCreateOutput,
+  RuleCreateResult,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -942,6 +944,94 @@ export async function auditQueryAnalysis(
       code: 'analysis_failed',
       message,
       retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule create analysis handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new rule proposal.
+ * Delegates to the Rust protocol for the actual creation.
+ */
+export async function ruleCreateAnalysis(
+  input: CommandInput,
+  options?: ReviewActionOptions,
+): Promise<RuleCreateOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'rule_create_stale',
+      message: 'Snapshot data is stale. Reconnect or refresh before creating a rule.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.PROPOSAL_STALE],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (input.mode === 'observe') {
+    const err = new ErrorInfo({
+      code: 'write_rejected',
+      message: 'Write operation is not permitted in Observe mode. Rule creation requires a write-enabled mode.',
+      retryable: false,
+      reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol.ruleCreate) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Rule creation not available: the protocol does not support rule creation.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.ruleCreate(ledger, mergedOptions);
+    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'rule.create'), result);
+  } catch (err) {
+    if (err instanceof ApplicationError) {
+      return errorResponse(requestId, new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      }));
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: false,
       reasonCodes: ['analysis_error'],
     });
     return errorResponse(requestId, errInfo);

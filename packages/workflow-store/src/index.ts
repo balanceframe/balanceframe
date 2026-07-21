@@ -46,6 +46,7 @@ export type {
   AuditRecord,
   AuditClassification,
   CreateProposalInput,
+  CreateRuleProposalInput,
   CreateApprovalInput,
   CreateIdempotencyInput,
   AppendAuditInput,
