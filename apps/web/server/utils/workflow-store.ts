@@ -21,6 +21,8 @@ import type {
   ReviewListOptions,
   TransitionReviewResult,
 } from '@balanceframe/workflow-store';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 /**
  * Server-side ReviewQueueItem type.
@@ -97,7 +99,7 @@ export function getWorkflowStore(
   const dbPath: string =
     (config.workflowDbPath as string) ||
     process.env.BALANCEFRAME_WORKFLOW_DB_PATH ||
-    '';
+    './data/workflow.db';
 
   if (!dbPath) {
     storeError =
@@ -105,6 +107,14 @@ export function getWorkflowStore(
       'runtime config or BALANCEFRAME_WORKFLOW_DB_PATH env var.';
     return { error: storeError };
   }
+
+  // Ensure the parent directory exists — better-sqlite3 cannot create it.
+  try {
+    mkdirSync(dirname(dbPath), { recursive: true });
+  } catch {
+    // Directory creation failed — let the store constructor report the error.
+  }
+
 
   try {
     store = new SqliteWorkflowStore(dbPath);
