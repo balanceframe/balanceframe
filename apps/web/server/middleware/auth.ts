@@ -83,7 +83,12 @@ function safeEqual(provided: string, expected: string): boolean {
 }
 
 function readConfig(event: EventWithContext): Record<string, unknown> {
-  return event.context.runtimeConfig ?? {};
+  try {
+    return useRuntimeConfig(event) as Record<string, unknown>;
+  } catch {
+    // Unit tests and non-Nitro callers may not provide runtime config.
+    return event.context.runtimeConfig ?? {};
+  }
 }
 
 function setAuthContext(
