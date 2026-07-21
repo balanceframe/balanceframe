@@ -268,6 +268,7 @@ export interface SetCategoryFailure {
 }
 
 export type SetCategoryErrorCode =
+  | 'CATEGORY_DELETED'
   | 'VERIFICATION_FAILED'
   | 'BUDGET_NOT_SELECTED'
   | 'CATEGORY_NOT_FOUND'
