@@ -155,8 +155,7 @@ const apiBase = config.public.apiBase || (import.meta.client ? window.location.o
 const adapter = apiBase
   ? useApiReviewController(apiBase)
   : createUnavailableAdapter();
-
-const actions = useReviewActions(adapter);
+const actions = useReviewActions(adapter, promptAndCorrect);
 
 // Focus the hidden keyboard input so shortcuts work on page load.
 const keyboardInput = ref<HTMLInputElement | null>(null);

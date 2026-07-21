@@ -12,8 +12,14 @@ import type { ReviewControllerAdapter } from '../types/review-client';
  * Provides keyboard-friendly action helpers backed by the controller adapter.
  *
  * @param adapter - a {@link ReviewControllerAdapter} instance
+ * @param onCorrect - optional callback invoked when the user presses the
+ *   correct key (C/c). The component is expected to prompt for a category
+ *   and then call `adapter.correct(categoryId)`.
  */
-export function useReviewActions(adapter: ReviewControllerAdapter) {
+export function useReviewActions(
+  adapter: ReviewControllerAdapter,
+  onCorrect?: () => void,
+) {
   /**
    * Map a KeyboardEvent to a review action.  Returns true when the event
    * was handled (preventDefault already called).
@@ -38,10 +44,9 @@ export function useReviewActions(adapter: ReviewControllerAdapter) {
 
       case 'c':
       case 'C':
-        // Prompt for category — the UI layer supplies the category.
-        // This binding just flags intent; the component supplies the input.
         event.preventDefault();
-        return false;
+        onCorrect?.();
+        return true;
 
       case 'r':
       case 'R':
