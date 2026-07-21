@@ -136,10 +136,10 @@ import { createUnavailableAdapter } from '../../composables/createUnavailableAda
 import { useReviewActions } from '../../composables/useReviewActions';
 
 // ── Mode selection ──────────────────────────────────────────────────
-// When runtimeConfig.public.apiBase is configured, use Nitro API routes.
-// Otherwise render a non-operational state with no mutation controls.
+// Use the configured API base, falling back to the current origin for
+// same-origin SPA operation (the default with Better Auth on Nuxt).
 const config = useRuntimeConfig();
-const apiBase = config.public.apiBase;
+const apiBase = config.public.apiBase || (import.meta.client ? window.location.origin : '');
 
 // Session auth is provided by Better Auth's HttpOnly session cookie, sent
 // automatically with same-origin fetch requests — no Bearer token needed.
