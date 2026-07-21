@@ -1116,8 +1116,30 @@ pub fn verify_rule_mutation(
     plan: &CreateRulePlan,
     snapshot: &ProtocolSnapshot,
 ) -> VerificationResult {
+    use fc::normalize_merchant;
+
+    // Normalize both sides for payee_is comparison — plan_create_rule
+    // already normalizes the payee name to lowercase, but existing rules
+    // may have original casing.
+    let plan_trigger_value = plan.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    let plan_norm = normalize_merchant(plan_trigger_value);
+
     let exists = snapshot.rules.iter().any(|existing| {
-        existing.trigger == plan.trigger && existing.actions == plan.actions
+        // Compare actions exactly
+        if existing.actions != plan.actions {
+            return false;
+        }
+        // Compare triggers with normalization for payee_is type
+        if existing.trigger == plan.trigger {
+            return true;
+        }
+        // Allow normalized match for payee_is triggers
+        if existing.trigger.get("type").and_then(|v| v.as_str()) == Some("payee_is") {
+            let existing_val = existing.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            let existing_norm = normalize_merchant(existing_val);
+            return existing_norm == plan_norm;
+        }
+        false
     });
 
     if exists {

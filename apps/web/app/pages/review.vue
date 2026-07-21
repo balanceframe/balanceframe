@@ -195,6 +195,17 @@ function promptAndCorrect(category?: string) {
   if (cat) adapter.correct(cat);
 }
 
+function promptProposeRule(): void {
+  const current = adapter.state.currentItem;
+  if (!current) return;
+  const item = current.data;
+  const merchant = item.evidence.normalizedMerchant;
+  const categoryId = item.evidence.suggestedCategory;
+  if (merchant && categoryId) {
+    adapter.proposeRule(item.reviewItem.id, merchant, categoryId);
+  }
+}
+
 async function handleSignOut() {
   await authClient.signOut();
   await navigateTo('/');
