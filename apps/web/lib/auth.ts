@@ -1,0 +1,34 @@
+/**
+ * Better Auth server instance for BalanceFrame.
+ *
+ * Authentication is owned by Better Auth (users, sessions, credentials).
+ * Authorization (spaces, capabilities, approvals, delegation) is owned by
+ * BalanceFrame and enforced independently.
+ *
+ * Database: SQLite (better-sqlite3), path configurable via
+ * `BALANCEFRAME_AUTH_DB_PATH` env var (default `./data/auth.db`).
+ *
+ * Schema migrations are handled by `server/plugins/auth-migration.ts`.
+ */
+
+import { betterAuth } from 'better-auth';
+import Database from 'better-sqlite3';
+import { apiKey } from '@better-auth/api-key';
+
+const AUTH_DB_PATH =
+  process.env.BALANCEFRAME_AUTH_DB_PATH || './data/auth.db';
+
+const db = new Database(AUTH_DB_PATH);
+
+// Enable WAL mode for better concurrent read performance.
+db.pragma('journal_mode = WAL');
+
+export const auth = betterAuth({
+  database: db,
+
+  emailAndPassword: {
+    enabled: true,
+  },
+
+  plugins: [apiKey()],
+});

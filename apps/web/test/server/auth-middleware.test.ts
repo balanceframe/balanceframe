@@ -34,6 +34,30 @@ vi.mock('h3', () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Mock lib/auth — Better Auth is a heavy module with native bindings
+// that esbuild cannot transform.  The mock returns stubs that allow the
+// tests to focus on the legacy token fallback and route-scoping logic.
+// ---------------------------------------------------------------------------
+
+const { mockGetSession, mockVerifyApiKey } = vi.hoisted(() => ({
+  mockGetSession: vi.fn().mockResolvedValue(null),
+  mockVerifyApiKey: vi.fn().mockRejectedValue(new Error('not configured')),
+}));
+
+vi.mock('../../lib/auth', () => ({
+  auth: {
+    api: {
+      getSession: mockGetSession,
+      verifyApiKey: mockVerifyApiKey,
+    },
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// Mock h3 module — must be before importing the middleware
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Import module-under-test (after h3 mock is in place)
 // ---------------------------------------------------------------------------
 
@@ -264,7 +288,7 @@ describe('auth middleware — dev bypass', () => {
     vi.clearAllMocks();
   });
 
-  it('passes through when no token but devBypassAuth is true', async () => {
+  it('sets auth context with dev-bypass actorId when devBypassAuth is true', async () => {
     mockGetRequestPath.mockReturnValue('/api/review');
     const event = mockEvent({ context: { runtimeConfig: { devBypassAuth: true } } });
 
@@ -272,7 +296,10 @@ describe('auth middleware — dev bypass', () => {
 
     expect(result).toBeUndefined();
     expect(mockSetResponseStatus).not.toHaveBeenCalled();
-    expect(event.context.auth).toBeUndefined();
+    expect(event.context.auth).toEqual({
+      authenticated: true,
+      actorId: 'dev-bypass',
+    });
   });
 
   it('still returns 503 when devBypassAuth is false and no token', async () => {

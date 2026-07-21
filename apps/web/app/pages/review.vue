@@ -141,7 +141,7 @@ import { useReviewActions } from '../../composables/useReviewActions';
 const config = useRuntimeConfig();
 const apiBase = config.public.apiBase;
 
-// Session auth is provided by the HttpOnly balanceframe_session cookie sent
+// Session auth is provided by Better Auth's HttpOnly session cookie, sent
 // automatically with same-origin fetch requests — no Bearer token needed.
 const adapter = apiBase
   ? useApiReviewController(apiBase)
