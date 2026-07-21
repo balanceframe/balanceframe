@@ -119,13 +119,12 @@
       />
     </template>
 
-    <!-- Keyboard handler (invisible) -->
+    <!-- Keyboard handler (invisible) — holds initial focus on page load -->
     <input
       ref="keyboardInput"
       class="absolute opacity-0 w-0 h-0 pointer-events-none"
       aria-hidden="true"
       tabindex="-1"
-      @keydown="actions.handleKeyboard"
     />
   </UContainer>
 </template>
@@ -158,10 +157,26 @@ const adapter = apiBase
 const actions = useReviewActions(adapter, promptAndCorrect);
 
 // Focus the hidden keyboard input so shortcuts work on page load.
+// A document-level keydown listener ensures shortcuts remain active after
+// pointer-triggered actions (which would otherwise steal focus from the
+// hidden input).
 const keyboardInput = ref<HTMLInputElement | null>(null);
+function handleGlobalKeydown(event: KeyboardEvent) {
+  // Ignore events in editable elements to avoid interfering with typing.
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+  if (target.isContentEditable) return;
+  const tag = target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  actions.handleKeyboard(event);
+}
 onMounted(() => {
+  document.addEventListener('keydown', handleGlobalKeydown);
   keyboardInput.value?.focus();
   load();
+});
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleGlobalKeydown);
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────

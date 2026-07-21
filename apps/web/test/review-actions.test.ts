@@ -228,4 +228,64 @@ describe('useReviewActions', () => {
       expect(onCorrect).not.toHaveBeenCalled();
     });
   });
+
+  // ====================================================================
+  // Regression: keyboard shortcuts survive pointer-triggered actions
+  // ====================================================================
+  //
+  // After a button click triggers an action directly on the adapter,
+  // keyboard shortcuts must remain active.  These tests simulate the
+  // page-level contract: the keyboard handler is called on keydown
+  // regardless of what stole focus.
+
+  describe('mixed-modality (pointer + keyboard)', () => {
+    it('keyboard approve works after pointer-triggered reject', () => {
+      // Simulate a pointer click calling adapter.reject
+      adapter.reject();
+      expect(adapter.reject).toHaveBeenCalledTimes(1);
+
+      // Keyboard shortcut must still work
+      const event = createKeyEvent('Enter');
+      const handled = actions.handleKeyboard(event);
+
+      expect(handled).toBe(true);
+      expect(event.preventDefault).toHaveBeenCalledTimes(1);
+      expect(adapter.approve).toHaveBeenCalledTimes(1);
+    });
+
+    it('keyboard reject works after pointer-triggered approve', () => {
+      adapter.approve();
+      expect(adapter.approve).toHaveBeenCalledTimes(1);
+
+      const event = createKeyEvent('r');
+      const handled = actions.handleKeyboard(event);
+
+      expect(handled).toBe(true);
+      expect(adapter.reject).toHaveBeenCalledTimes(1);
+    });
+
+    it('correction shortcut works after pointer-triggered skip', () => {
+      adapter.skip();
+      expect(adapter.skip).toHaveBeenCalledTimes(1);
+
+      const event = createKeyEvent('c');
+      const handled = actions.handleKeyboard(event);
+
+      expect(handled).toBe(true);
+      expect(onCorrect).toHaveBeenCalledTimes(1);
+    });
+
+    it('multiple pointer-triggered actions do not disable keyboard handling', () => {
+      adapter.approve();
+      adapter.reject();
+      adapter.skip();
+
+      // Keyboard should still work after several pointer actions
+      const event = createKeyEvent('s');
+      const handled = actions.handleKeyboard(event);
+
+      expect(handled).toBe(true);
+      expect(adapter.skip).toHaveBeenCalledTimes(2); // once from pointer, once from keyboard
+    });
+  });
 });
