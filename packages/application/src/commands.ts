@@ -158,6 +158,23 @@ export interface AnalysisProtocol {
     query?: AuditQueryOptions,
   ): Promise<AuditQueryResult>;
 
+
+  /** List automation rules. */
+  ruleList?(
+    ledger: unknown,
+  ): Promise<RuleListResult>;
+
+  /** Show a single rule by ID. */
+  ruleShow?(
+    ledger: unknown,
+    ruleId: string,
+  ): Promise<RuleShowResult>;
+
+  /** Update a rule via proposal. */
+  ruleUpdate?(
+    ledger: unknown,
+    options?: ReviewActionOptions,
+  ): Promise<RuleCreateResult>;
   /** Create a new rule proposal. */
   ruleCreate?(
     ledger: unknown,
@@ -329,6 +346,9 @@ const KNOWN_COMMANDS: Array<{
   // Rule commands
   { args: ['rules', 'create'], command: 'rules.create', route: 'analysis' },
 
+  { args: ['rules', 'list'], command: 'rules.list', route: 'analysis' },
+  { args: ['rules', 'show'], command: 'rules.show', route: 'analysis' },
+  { args: ['rules', 'update'], command: 'rules.update', route: 'analysis' },
 
   // Audit commands
   { args: ['audit', 'query'], command: 'audit.query', route: 'analysis' },
@@ -693,9 +713,50 @@ export interface RuleCreateResult {
   correlationId: string;
 }
 
-export interface RuleCreateOutput {
-  envelope: ResponseEnvelope<RuleCreateResult>;
+/** List item for rule listing. */
+export interface RuleListItem {
+  id: string;
+  name: string;
+  order: number;
+  inactive: boolean;
 }
+
+/** Result of listing rules. */
+export interface RuleListResult {
+  items: RuleListItem[];
+}
+
+export interface RuleListOutput {
+  envelope: ResponseEnvelope<RuleListResult>;
+}
+
+/** Result of showing a rule detail. */
+export interface RuleShowResult {
+  id: string;
+  name: string;
+  order: number;
+  trigger: unknown;
+  actions: unknown;
+  inactive: boolean;
+}
+
+export interface RuleShowOutput {
+  envelope: ResponseEnvelope<RuleShowResult>;
+}
+
+/** Result of updating a rule via proposal. */
+export interface RuleUpdateResult {
+  ruleId: string;
+  name: string;
+  status: string;
+  createdAt: string;
+  correlationId: string;
+}
+
+export interface RuleUpdateOutput {
+  envelope: ResponseEnvelope<RuleUpdateResult>;
+}
+
 
 
 // ---------------------------------------------------------------------------
