@@ -704,15 +704,13 @@ seed_budget() {
 
 # ---- Step 6: Output environment variables ----------------------------------
 output_env() {
-  info "Generating environment configuration..."
-
   if [ "$DRY_RUN" = "1" ]; then
     cat << ENV
 # === Actual Integration Test Environment (DRY RUN) ===
 # The following would be exported:
-ACTUAL_SERVER_URL=$ACTUAL_SERVER_URL
-ACTUAL_SECRET_KEY=$ACTUAL_SECRET_KEY
-ACTUAL_BUDGET_NAME=$ACTUAL_BUDGET_NAME
+ACTUAL_SERVER_URL='$ACTUAL_SERVER_URL'
+ACTUAL_SECRET_KEY='$ACTUAL_SECRET_KEY'
+ACTUAL_BUDGET_NAME='$ACTUAL_BUDGET_NAME'
 ENV
     return
   fi
@@ -728,12 +726,20 @@ ENV
     return 1
   fi
 
+  # Shell-quote all values with printf %q (handles spaces, quotes, etc.)
+  local qs qk qb qg qn
+  printf -v qs "%q" "$ACTUAL_SERVER_URL"
+  printf -v qk "%q" "$ACTUAL_SECRET_KEY"
+  printf -v qb "%q" "$budget_id"
+  printf -v qg "%q" "$group_id"
+  printf -v qn "%q" "$ACTUAL_BUDGET_NAME"
+
   cat > "$SCRIPT_DIR/.env.test" << ENV
-ACTUAL_SERVER_URL=$ACTUAL_SERVER_URL
-ACTUAL_SECRET_KEY=$ACTUAL_SECRET_KEY
-ACTUAL_BUDGET_ID=$budget_id
-ACTUAL_GROUP_ID=$group_id
-ACTUAL_BUDGET_NAME=$ACTUAL_BUDGET_NAME
+ACTUAL_SERVER_URL=$qs
+ACTUAL_SECRET_KEY=$qk
+ACTUAL_BUDGET_ID=$qb
+ACTUAL_GROUP_ID=$qg
+ACTUAL_BUDGET_NAME=$qn
 ENV
 
   ok "Environment written to $SCRIPT_DIR/.env.test"

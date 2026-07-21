@@ -24,9 +24,10 @@ typecheck:
 lint:
     pnpm lint
 
-# Run all JavaScript/TypeScript workspace tests.
+# Run all JavaScript/TypeScript workspace tests serially because the Actual
+# integration client and native SQLite bindings use process-global state.
 test-js:
-    pnpm test
+    pnpm -r --workspace-concurrency=1 test
 
 # Run all Rust tests.
 test-rust:
@@ -34,6 +35,12 @@ test-rust:
 
 # Run the complete project test suite.
 test: test-js test-rust
+
+
+# Start a local Actual fixture server and seed a test budget.
+# Run 'source tests/actual-integration/.env.test' afterwards to pick up connection vars.
+setup-fixture:
+    cd tests/actual-integration && ./setup-fixture-server.sh
 
 # Run Rust formatting checks.
 fmt-rust:

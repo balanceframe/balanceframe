@@ -123,12 +123,12 @@ After the MVP, Rust expands in this order:
 
 1. Add affordability, protected-category, donor, and reallocation policy to Rust.
 2. Strengthen deterministic reconciliation and institution-behavior analysis.
-3. Compile pure Rust crates to WASM for non-authoritative local previews and offline analysis.
+3. Compile pure Rust crates to **WebAssembly 3.0** for non-authoritative local previews and offline analysis, after cross-target fixture parity is proven.
 4. Add canonical signed linked-space events, verification, and deterministic reducers.
 5. Build a Rust custom ledger in shadow mode and compare it with Actual.
 6. Adopt a Rust ledger daemon and Rust-owned ledger database only after differential validation and an explicit migration decision.
 
-TypeScript continues to own the product shell throughout these stages. The N-API protocol is service-shaped but not networked; it permits the native binding to become a local Rust-ledger protocol later without redesigning the TypeScript product application.
+TypeScript continues to own the product shell throughout these stages. The MVP web shell is **Vue 3 + Nuxt 4** with **Nuxt UI v4**. Nuxt/Nitro is deployed as the Node application server, while authenticated operational routes are client-rendered initially and use narrow application APIs. The framework-neutral web controller remains the source of truth for review state; Wasm is an optional read-only acceleration/reuse target, never a browser authority for authorization or ledger mutation.
 
 ## Completed
 
@@ -141,6 +141,8 @@ The following are completed **roadmap and planning decisions**, not implemented 
 - Money is checked integer minor units; protocol money is decimal-string minor units plus currency. IDs are opaque strings, timestamps are canonical UTC, all requests carry correlation IDs.
 - The MVP has no Rust daemon, Rust-owned database, custom ledger, automatic category/rule creation, model-initiated writes, broad chat, federation, MCP dependency, or hosted-service requirement.
 - Model-derived MVP ledger changes always receive `approval_required`. The shared typed-intent/proposal/authorization/mutation pipeline remains ready for later operational delegation without adding an agent-only write path.
+- **The web framework and component library are selected:** Vue 3 with Nuxt 4 and Nuxt UI v4. Nuxt is the presentation/runtime shell over the framework-neutral web controller and TypeScript application services; it is not an authorization or financial authority.
+
 
 ## Non-negotiable acceptance criteria
 
@@ -174,11 +176,9 @@ This roadmap defines the complete open-source, self-hosted BalanceFrame product 
 
 ### Architecture and compatibility
 
-- Keep one Rust–TypeScript modular-monolith repository. Strict TypeScript on Node.js remains the product/integration stack because it directly uses `@actual-app/api`; Rust is a broad embedded financial core, not an excuse to duplicate product logic.
-- The ledger port is capability-aware. Actual-specific response types stay inside the adapter, while stable backend IDs remain references. A future backend migration is deferred until evidence—not presumed product ambition—justifies it.
-- Rust protocol schemas, the N-API binding/toolchain, supported native platform matrix beyond container-first Linux x86-64/ARM64, TypeScript framework, SQLite/migration library, UI framework, Actual API/server compatibility policy, and detailed authentication behavior remain explicit evidence-backed choices rather than settled assumptions.
+- Rust protocol schemas, the N-API binding/toolchain, supported native platform matrix beyond container-first Linux x86-64/ARM64, Actual API/server compatibility policy, and detailed authentication behavior remain explicit evidence-backed choices rather than settled assumptions. The selected product web stack is Vue 3 + Nuxt 4 with Nuxt UI v4.
 - Every native call is immutable, coarse-grained, deterministic, independently testable, and versioned. Do not add a Rust crate per module before a stable API/portability boundary appears.
-- Design pure Rust modules for later WASM compilation for non-authoritative local previews and offline analysis. This is an aspiration for pure-core reuse, not an MVP requirement.
+- Design pure Rust modules for later **WebAssembly 3.0** compilation for non-authoritative local previews and offline analysis. Treat browser Wasm as untrusted client computation; it must not authorize, approve, mutate, audit, or verify Actual writes. This is post-MVP work, not an MVP requirement.
 - Initial self-hosted deployment target: one Actual container or user-supplied Actual server; one project application container; one project data volume; one Actual data volume when bundled; optional local model container; one configuration source or guided setup; built-in health checks and migrations; no broker, Kubernetes, fork, Git submodule, or microservice fleet.
 - Failure independence: Actual remains usable if the project is down; failed inference does not block imports or manual budgeting; a corrupt project metadata store does not corrupt Actual; disconnecting the project does not delete Actual records; project metadata is exportable.
 - Backup model: back up separately (1) Actual financial data, (2) project SQLite metadata/approvals/provenance/alert state/shared records, (3) version-controlled configuration, (4) encrypted secrets through a separate secret backup process. Restore tests must verify Actual opens/synchronizes, migrations succeed, ledger references resolve or fail visibly, queued writes do not replay, approvals remain consumed/expired, and CLI/UI can query restored state.
@@ -212,7 +212,7 @@ Track median review time; accepted and corrected suggestion rates; unresolved-ba
 ### Open questions requiring later evidence
 
 - Trademark clearance and brand-protection strategy for BalanceFrame.
-- Exact TypeScript framework, SQLite library, migration tool, and UI framework.
+- SQLite library and migration tool.
 - Exact N-API binding, schema-generation, TypeScript-generation, and native packaging toolchain after a thin vertical-slice proof.
 - Exact supported native platform/architecture matrix beyond initial container-first Linux x86-64 and ARM64.
 - Actual API/server compatibility policy.

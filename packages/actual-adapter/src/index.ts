@@ -42,6 +42,8 @@ export type {
   TransactionPatch,
   MutationPrecondition,
   MutationResult,
+  SetCategoryResult,
+
   AutomationRule,
   RuleProposal,
   BudgetInfo,

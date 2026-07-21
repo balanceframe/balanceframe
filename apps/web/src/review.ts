@@ -18,6 +18,7 @@ import type {
   TransitionReviewResult,
   TransitionReviewInput,
 } from '@balanceframe/workflow-store';
+export type { ReviewStatus };
 
 // ---------------------------------------------------------------------------
 // Evidence
@@ -50,6 +51,8 @@ export interface ReviewEvidence {
   readonly provenance: string;
   readonly freshness: string | null;
   readonly changePreview: ChangePreview;
+  readonly correlationId: string | null;
+  readonly promptVersion: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,8 +283,8 @@ class MetricsCollector {
     const medianReviewTimeMs =
       n > 0
         ? n % 2 === 1
-          ? sorted[Math.floor(n / 2)]
-          : (sorted[n / 2 - 1] + sorted[n / 2]) / 2
+          ? sorted[Math.floor(n / 2)]!
+          : (sorted[n / 2 - 1]! + sorted[n / 2]!) / 2
         : 0;
 
     const totalAccepted = approveEvents.length + correctEvents.length;
@@ -356,6 +359,16 @@ function checkHomogeneity(items: ReviewQueueItem[]): HomogeneityInfo {
   }
 
   const first = items[0];
+  if (!first) {
+    return {
+      homogeneous: true,
+      commonStatus: null,
+      commonCategory: null,
+      commonClassifier: null,
+      groupSize: 0,
+      conflictReason: null,
+    };
+  }
   const statuses = new Set(items.map(i => i.reviewItem.status));
   const categories = new Set(items.map(i => i.reviewItem.categoryId));
   const classifiers = new Set(items.map(i => i.reviewItem.classifier));
@@ -426,6 +439,8 @@ function extractEvidence(item: ReviewItem): ReviewEvidence {
       toCategory: item.categoryId,
       affectsEnvelope: fromCategory !== item.categoryId,
     },
+    correlationId: item.correlationId,
+    promptVersion: item.promptVersion,
   };
 }
 
@@ -543,7 +558,7 @@ export class ReviewController {
       // Track start time for the current item (latency metrics)
       if (this.currentIndex < this.items.length) {
         this.itemReviewStartTimes.set(
-          this.items[this.currentIndex].reviewItem.id,
+          this.items[this.currentIndex]!.reviewItem.id,
           Date.now(),
         );
       }
@@ -587,7 +602,7 @@ export class ReviewController {
   getState(): ReviewSurfaceState {
     const currentItem =
       this.items.length > 0 && this.currentIndex < this.items.length
-        ? this.items[this.currentIndex]
+        ? this.items[this.currentIndex]!
         : null;
 
     const selected = this.getSelectedItems();
@@ -829,8 +844,8 @@ export class ReviewController {
     }
 
     // Check category and classifier homogeneity (status may vary between pending_review and approved)
-    const firstCategory = selected[0].reviewItem.categoryId;
-    const firstClassifier = selected[0].reviewItem.classifier;
+    const firstCategory = selected[0]!.reviewItem.categoryId;
+    const firstClassifier = selected[0]!.reviewItem.classifier;
     const badItems = selected.filter(
       i => i.reviewItem.categoryId !== firstCategory || i.reviewItem.classifier !== firstClassifier,
     );
@@ -1001,7 +1016,7 @@ export class ReviewController {
 
   private doToggleSelection(index: number): void {
     if (index < 0 || index >= this.items.length) return;
-    const id = this.items[index].reviewItem.id;
+    const id = this.items[index]!.reviewItem.id;
     if (this.selectedIds.has(id)) {
       this.selectedIds.delete(id);
     } else {
@@ -1025,7 +1040,7 @@ export class ReviewController {
         false,
       );
     }
-    return this.items[this.currentIndex];
+    return this.items[this.currentIndex]!;
   }
 
   private requireHomogeneous(items: ReviewQueueItem[]): void {
@@ -1047,7 +1062,7 @@ export class ReviewController {
   private trackCurrentItemStart(): void {
     if (this.currentIndex < this.items.length) {
       this.itemReviewStartTimes.set(
-        this.items[this.currentIndex].reviewItem.id,
+        this.items[this.currentIndex]!.reviewItem.id,
         Date.now(),
       );
     }
@@ -1104,7 +1119,7 @@ export class ReviewController {
   private advanceAfterAction(): void {
     // Save the consumed item ID for potential undo
     if (this.currentIndex < this.items.length) {
-      this.lastActedItemId = this.items[this.currentIndex].reviewItem.id;
+      this.lastActedItemId = this.items[this.currentIndex]!.reviewItem.id;
     }
     this.items = this.items.filter((_, i) => i !== this.currentIndex);
     if (this.currentIndex >= this.items.length) {

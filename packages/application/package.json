@@ -4,14 +4,14 @@
   "private": true,
   "type": "module",
   "description": "Application orchestration layer",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/application/src/index.js",
+  "types": "dist/application/src/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
-    "./envelope": "./dist/envelope.js",
-    "./commands": "./dist/commands.js",
-    "./errors": "./dist/errors.js",
-    "./analysis": "./dist/analysis.js"
+    ".": "./dist/application/src/index.js",
+    "./envelope": "./dist/application/src/envelope.js",
+    "./commands": "./dist/application/src/commands.js",
+    "./errors": "./dist/application/src/errors.js",
+    "./analysis": "./dist/application/src/analysis.js"
   },
   "scripts": {
     "build": "tsc",

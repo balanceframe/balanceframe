@@ -22,6 +22,20 @@ typed human request or model-derived proposal
 ```
 
 The MVP policy always yields `approval_required` for model-derived ledger changes. `authorized_without_approval` exists in the protocol only for future separately authorized deterministic/delegated actions and is not enabled here.
+## Web application boundary
+
+The responsive web application is implemented with **Vue 3 and Nuxt 4**, using the latest **Nuxt UI v4** component library. Nuxt is the presentation/runtime shell, not a financial or authorization authority. The authenticated operational application is client-rendered initially (`ssr: false`); Nuxt/Nitro runs as the Node application server and exposes only narrow authenticated query/command endpoints.
+
+- Adapt the existing framework-neutral `ReviewController` and shared application services rather than replacing or duplicating their state machines in Vue, Pinia, or components.
+- Keep the browser UI as a thin presentation adapter over immutable state and typed results. Keyboard, touch, CLI, and web actions must use the same capability-layer semantics and versioned contracts.
+- Server routes authenticate and validate transport requests, then call the persisted workflow store (`SqliteWorkflowStore`) through thin server utilities. The `@balanceframe/application` layer owns CLI routing, lifecycle orchestration, and envelope wrapping; in-flight mutation routes use the store directly and fail closed with `STORE_UNAVAILABLE` (503) when the store cannot initialize. Routes must not expose Actual credentials, raw Actual methods, N-API calls, or alternate mutation paths. Categorization execution remains a no-op (`categorizationExecuted: false`) in Phase 4's observe‑only implementation — actual ledger writes are deferred until Phase 5.
+- Display exact proposal details, payload hash, policy version, expiry, provenance, correlation ID, and classified recovery state. The UI must never treat an API acknowledgement as verified completion.
+- Nuxt UI components must make approval, stale, unauthorized, superseded, failed, recovering, and verified-applied states distinct and accessible; component defaults never replace server authorization or policy decisions.
+
+WebAssembly is not a Phase 4 execution path. Future Wasm 3.0 work is limited to pure Rust, read-only, non-authoritative local previews or offline analysis over immutable snapshots. Browser Wasm must never execute Actual writes, approvals, authorization, audit mutations, or postcondition authority.
+
+Reference: [Nuxt UI v4](https://ui.nuxt.com/docs/getting-started).
+
 
 ## Deliverables
 

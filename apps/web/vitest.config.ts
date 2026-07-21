@@ -26,10 +26,15 @@ export default defineConfig({
       ],
     },
     globals: true,
+    env: {
+      // Use an in-memory SQLite database for Better Auth during tests.
+      BALANCEFRAME_AUTH_DB_PATH: ':memory:',
+    },
   },
-  resolve: {
-    alias: [
-      { find: '@balanceframe/workflow-store', replacement: srcDir },
-    ],
+  server: {
+    deps: {
+      // better-sqlite3 is a native addon — must not be bundled by Vite.
+      external: ['better-sqlite3'],
+    },
   },
 });

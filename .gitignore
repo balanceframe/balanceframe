@@ -17,6 +17,8 @@ yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
 coverage/
+.nuxt/
+.output/
 tests/actual-integration/.actual-server-data/
 tests/actual-integration/.seed-budget.mjs
 tests/actual-integration/.env.test
@@ -40,8 +42,11 @@ crates/node-binding/index.d.ts
 ehthumbs.db
 Thumbs.db
 
+
 # ---- General ----
 *.log
 *.pid
 *.tmp
-*~
+
+# ---- Runtime data ----
+data/

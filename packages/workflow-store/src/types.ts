@@ -246,6 +246,18 @@ export interface ReviewListOptions {
   readonly offset?: number;
 }
 
+/** Options for listing categorization proposals. */
+export interface ListProposalsOptions {
+  /** Filter by superseded state. Omit for all. */
+  readonly superseded?: boolean;
+  /** Filter by budget ID. Omit for all budgets. */
+  readonly budgetId?: string;
+  /** Maximum number of proposals to return (default 50). */
+  readonly limit?: number;
+  /** Number of proposals to skip. */
+  readonly offset?: number;
+}
+
 // ---------------------------------------------------------------------------
 // WorkflowStore — public persistence contract
 // ---------------------------------------------------------------------------
@@ -435,4 +447,394 @@ export interface WorkflowStore {
 
   /** Return all audit actions for a review item, ordered by creation. */
   getReviewActions(reviewItemId: string): Promise<ReviewAction[]>;
+
+  // ── Categorization proposal lifecycle ─────────────────────────────────
+
+  /**
+   * Create a new categorization proposal.
+   *
+   * Idempotent: if a proposal with the same `(budgetId, transactionId, operation,
+   * payloadHash)` already exists, the existing record is returned unchanged.
+   */
+  createProposal(input: CreateProposalInput): Promise<CategorizationProposal>;
+
+  /** Retrieve a single proposal by ID, or null. */
+  getProposal(id: string): Promise<CategorizationProposal | null>;
+
+  /**
+   * Find the active (non-superseded) proposal for a given target, or null.
+   */
+  findActiveProposal(
+    budgetId: string,
+    transactionId: string,
+    operation: ProposalOperation,
+  ): Promise<CategorizationProposal | null>;
+
+  /**
+   * List categorization proposals ordered by creation time descending.
+   */
+  listProposals(options?: ListProposalsOptions): Promise<CategorizationProposal[]>;
+
+  /**
+   * Supersede a proposal (and cascade-supersede its approvals).
+   *
+   * Idempotent on already-superseded proposals.
+   */
+  supersedeProposal(id: string): Promise<CategorizationProposal>;
+
+  // ── Proposal approval lifecycle ───────────────────────────────────
+
+  /**
+   * Create a one-time approval for a proposal.
+   *
+   * Validates: proposal exists and is not superseded, payload hash matches
+   * proposal, expiry is in the future. Idempotent for same
+   * `(proposalId, actorId)`.
+   */
+  createApproval(input: CreateApprovalInput): Promise<ProposalApproval>;
+
+  /** Retrieve a single approval by ID, or null. */
+  getApproval(id: string): Promise<ProposalApproval | null>;
+
+  /**
+   * Find all active (non-consumed, non-expired, non-superseded) approvals
+   * for a proposal.
+   */
+  findActiveApprovals(proposalId: string): Promise<ProposalApproval[]>;
+
+  /**
+   * Consume an approval (one-time use).
+   *
+   * @throws If the approval is already consumed, expired, superseded, or
+   *         its proposal is superseded.
+   */
+  consumeApproval(id: string): Promise<ProposalApproval>;
+
+  /**
+   * Verify that a proposal has at least one active approval for execution.
+   *
+   * @returns null if the proposal can be executed, or an error string
+   *          describing the reason it cannot.
+   */
+  verifyApprovalForExecution(
+    proposalId: string,
+    payloadHash: string,
+  ): Promise<string | null>;
+
+  // ── Idempotency records ───────────────────────────────────────────
+
+  /**
+   * Create an idempotency record for at-most-once execution.
+   *
+   * Rejects replay with different proposalId, operation, or serialisedEffect
+   * under the same idempotency key.
+   *
+   * @returns An {@link IdempotencyClaim} — the record and whether this
+   *          call is the owner (fresh insert).
+   */
+  createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyClaim>;
+
+  /** Retrieve an idempotency record by key, or null. */
+  getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null>;
+
+  /**
+   * Mark an idempotency record as completed.
+   *
+   * @param errorMessage Optional error message if the execution failed.
+   */
+  completeIdempotencyRecord(
+    key: string,
+    errorMessage?: string | null,
+  ): Promise<IdempotencyRecord>;
+
+  // ── Audit records (append-only) ───────────────────────────────────
+
+  /** Append a new audit record. */
+  appendAuditRecord(input: AppendAuditInput): Promise<AuditRecord>;
+
+  /**
+   * Query audit records, optionally filtered by classification.
+   * Ordered by timestamp descending.
+   */
+  queryAuditRecords(
+    classification?: AuditClassification,
+    limit?: number,
+    offset?: number,
+  ): Promise<AuditRecord[]>;
+
+  /**
+   * Query audit records for a specific proposal.
+   * Ordered by timestamp descending.
+   */
+  queryAuditRecordsByProposal(
+    proposalId: string,
+    limit?: number,
+  ): Promise<AuditRecord[]>;
+
+  // ── Authorization ─────────────────────────────────────────────────
+
+  /**
+   * Evaluate whether an actor is authorized for a given capability/scope.
+   *
+   * Checks: actor exists in membership registry, status is 'active',
+   * capabilities include the required capability, scope covers the required
+   * scope.
+   */
+  evaluateAuthorization(
+    actorId: string,
+    capability: string,
+    scope: string,
+    policyVersion: string,
+  ): Promise<AuthorizationResult>;
+
+  /**
+   * Upsert an actor's membership record.
+   *
+   * Creates or overwrites the actor's status, capabilities, and scope.
+   */
+  upsertActorMembership(
+    actorId: string,
+    status: MembershipStatus,
+    capabilities: string[],
+    scope: string,
+  ): Promise<void>;
+
+  /**
+   * Get an actor's membership record, or null if not registered.
+   */
+  getActorMembership(actorId: string): Promise<{
+    actorId: string;
+    status: MembershipStatus;
+    capabilities: string[];
+    scope: string;
+  } | null>;
+}
+
+// ---------------------------------------------------------------------------
+// CategorizationProposal — immutable proposal for a workflow action
+// ---------------------------------------------------------------------------
+
+/** Supported categorization proposal operations. */
+export type ProposalOperation = 'set_category';
+
+/**
+ * A categorized proposal for a transaction. Immutable once persisted.
+ * The payload hash binds the proposal to exact content — any change
+ * produces a distinct hash and thus a distinct proposal.
+ */
+export interface CategorizationProposal {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** The operation this proposal represents. */
+  readonly operation: ProposalOperation;
+  /** Budget this proposal targets. */
+  readonly budgetId: string;
+  /** The transaction being proposed for change. */
+  readonly transactionId: string;
+  /** The proposed new category. */
+  readonly categoryId: string;
+  /** Hex-encoded SHA-256 hash of the full proposal content. */
+  readonly payloadHash: string;
+  /** Policy version active when the proposal was created. */
+  readonly policyVersion: string;
+  /** JSON-encoded preconditions that must hold for execution. */
+  readonly preconditions: string;
+  /** ISO-8601 timestamp after which the proposal is no longer valid. */
+  readonly expiresAt: string;
+  /** The actor who authored this proposal. */
+  readonly actorId: string;
+  /** Provenance label (e.g. "model-derived", "manual"). */
+  readonly provenance: string;
+  /** Model identifier if AI-generated, null otherwise. */
+  readonly providerModel: string | null;
+  /** Optional correlation ID for grouping related proposals. */
+  readonly correlationId: string | null;
+  /** ISO-8601 timestamp when superseded, or null if active. */
+  readonly supersededAt: string | null;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/** Input to create a new categorization proposal. */
+export interface CreateProposalInput {
+  readonly operation: ProposalOperation;
+  readonly budgetId: string;
+  readonly transactionId: string;
+  readonly categoryId: string;
+  /** Hex-encoded SHA-256 hash of the full proposal content. */
+  readonly payloadHash: string;
+  readonly policyVersion: string;
+  /** JSON-encoded preconditions for execution. */
+  readonly preconditions: string;
+  /** ISO-8601 expiry timestamp. */
+  readonly expiresAt: string;
+  readonly actorId: string;
+  readonly provenance: string;
+  readonly providerModel?: string | null;
+  readonly correlationId?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// ProposalApproval — one-time authorization to execute a proposal
+// ---------------------------------------------------------------------------
+
+/** Lifecycle status of a proposal approval. */
+export type ApprovalStatus = 'active' | 'consumed' | 'expired' | 'superseded';
+
+/** An approval granting one-time authorization to execute a proposal. */
+export interface ProposalApproval {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** The proposal this approval is for. */
+  readonly proposalId: string;
+  /** Payload hash of the proposal at time of approval. */
+  readonly payloadHash: string;
+  /** The actor who granted this approval. */
+  readonly actorId: string;
+  /** Current status: 'active', 'consumed', 'expired', or 'superseded'. */
+  readonly status: string;
+  /** ISO-8601 expiry timestamp. */
+  readonly expiresAt: string;
+  /** ISO-8601 timestamp when consumed, or null. */
+  readonly consumedAt: string | null;
+  /** ISO-8601 timestamp when superseded, or null. */
+  readonly supersededAt: string | null;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/** Input to create a new proposal approval. */
+export interface CreateApprovalInput {
+  readonly proposalId: string;
+  /** Must match the proposal's payload hash exactly. */
+  readonly payloadHash: string;
+  readonly actorId: string;
+  /** ISO-8601 expiry timestamp (must be in the future). */
+  readonly expiresAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// IdempotencyRecord — at-most-once execution tracking
+// ---------------------------------------------------------------------------
+
+/** Record of an idempotent workflow operation. */
+export interface IdempotencyRecord {
+  readonly idempotencyKey: string;
+  readonly proposalId: string;
+  readonly operation: string;
+  readonly executedAt: string;
+  readonly completed: boolean;
+  /** Serialised effect of the execution. */
+  readonly serialisedEffect: string;
+  readonly errorMessage: string | null;
+  readonly updatedAt: string;
+}
+
+/** Input to create an idempotency record. */
+export interface CreateIdempotencyInput {
+  readonly idempotencyKey: string;
+  readonly proposalId: string;
+  readonly operation: string;
+  readonly serialisedEffect: string;
+}
+
+/**
+ * Result of claiming an idempotency record — indicates whether this
+ * invocation created the record (isOwner === true) or found an existing one.
+ */
+export interface IdempotencyClaim {
+  readonly record: IdempotencyRecord;
+  readonly isOwner: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// AuditRecord — append-only workflow audit trail
+// ---------------------------------------------------------------------------
+
+/**
+ * Classification label for audit records.
+ * Open-ended to allow extension; common values are defined as literals
+ * for documentation purposes.
+ */
+export type AuditClassification =
+  | 'proposal_created'
+  | 'approval_granted'
+  | 'approval_consumed'
+  | 'execution_started'
+  | 'execution_completed'
+  | 'execution_failed'
+  | 'proposal_superseded'
+  | 'authorization_check'
+  | (string & {});
+
+/** An append-only audit record. Immutable once written. */
+export interface AuditRecord {
+  readonly id: string;
+  readonly classification: string;
+  readonly timestamp: string;
+  readonly actorId: string;
+  readonly operation: string | null;
+  readonly proposalId: string | null;
+  readonly payloadHash: string | null;
+  readonly budgetId: string | null;
+  readonly backendIds: string;
+  readonly policyVersion: string | null;
+  readonly authorizationDisposition: AuthorizationDisposition | null;
+  readonly idempotencyKey: string | null;
+  readonly expectedPriorState: string | null;
+  readonly observedResultState: string | null;
+  readonly providerModel: string | null;
+  readonly correlationId: string | null;
+  readonly requestId: string | null;
+  readonly result: string;
+  readonly isError: boolean;
+}
+
+/** Input to append a new audit record. */
+export interface AppendAuditInput {
+  readonly classification: string;
+  readonly actorId: string;
+  readonly operation?: string | null;
+  readonly proposalId?: string | null;
+  readonly payloadHash?: string | null;
+  readonly budgetId?: string | null;
+  readonly backendIds?: string;
+  readonly policyVersion?: string | null;
+  readonly authorizationDisposition?: AuthorizationDisposition | null;
+  readonly idempotencyKey?: string | null;
+  readonly expectedPriorState?: string | null;
+  readonly observedResultState?: string | null;
+  readonly providerModel?: string | null;
+  readonly correlationId?: string | null;
+  readonly requestId?: string | null;
+  readonly result: string;
+  readonly isError?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Authorization types
+// ---------------------------------------------------------------------------
+
+/**
+ * Authorization disposition — the outcome of evaluating policy.
+ */
+export type AuthorizationDisposition =
+  | { kind: 'authorized_without_approval' }
+  | { kind: 'authorized_expired' }
+  | { kind: 'approval_required' }
+  | { kind: 'denied'; reason: string };
+
+/** Membership status for an actor in the workflow store. */
+export type MembershipStatus = 'active' | 'inactive' | 'suspended';
+
+/** Result of evaluating an actor's authorization for a capability/scope. */
+export interface AuthorizationResult {
+  readonly allowed: boolean;
+  readonly disposition: AuthorizationDisposition;
+  readonly actorId: string;
+  readonly membershipStatus: MembershipStatus | 'unknown';
+  readonly capability: string;
+  readonly scope: string;
+  readonly policyVersion: string;
+  readonly reason: string;
 }

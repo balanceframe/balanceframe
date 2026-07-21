@@ -33,6 +33,8 @@ export default defineConfig({
       '@balanceframe/actual-adapter/credentials': resolve(__dirname, '../actual-adapter/src/credentials.ts'),
       '@balanceframe/actual-adapter/connector': resolve(__dirname, '../actual-adapter/src/connector.ts'),
       '@balanceframe/actual-adapter/normalizer': resolve(__dirname, '../actual-adapter/src/normalizer.ts'),
+      '@balanceframe/workflow-store': resolve(__dirname, '../workflow-store/src'),
+      '@balanceframe/workflow-store/types': resolve(__dirname, '../workflow-store/src/types.ts'),
     },
   },
 });

@@ -15,6 +15,7 @@
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 import type {
   Account,
@@ -49,6 +50,8 @@ import type {
   TransactionPatch,
   MutationPrecondition,
   MutationResult,
+  SetCategoryResult,
+
   AutomationRule,
   RuleProposal,
   HealthReport,
@@ -390,7 +393,7 @@ export class ActualConnector implements BudgetLedger {
   }
 
   // -------------------------------------------------------------------------
-  // Mutation stubs (Observe mode rejects all writes)
+  // Mutation stubs (rejected in all modes — not yet implemented)
   // -------------------------------------------------------------------------
 
   async importTransactions(
@@ -398,8 +401,11 @@ export class ActualConnector implements BudgetLedger {
     _transactions: ImportTransaction[],
     _options?: ImportOptions,
   ): Promise<ImportResult> {
-    this.assertMutationAllowed('importTransactions');
-    return { success: true, errors: [], importedCount: 0 };
+    this.assertInitialized();
+    throw new Error(
+      'importTransactions() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
   async updateTransaction(
@@ -407,16 +413,22 @@ export class ActualConnector implements BudgetLedger {
     _patch: TransactionPatch,
     _precondition?: MutationPrecondition,
   ): Promise<MutationResult> {
-    this.assertMutationAllowed('updateTransaction');
-    return { success: true, id: _transactionId };
+    this.assertInitialized();
+    throw new Error(
+      'updateTransaction() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
   async createRule(
     _proposal: RuleProposal,
     _precondition?: MutationPrecondition,
   ): Promise<MutationResult> {
-    this.assertMutationAllowed('createRule');
-    return { success: true, id: '' };
+    this.assertInitialized();
+    throw new Error(
+      'createRule() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
   async setBudgetAmount(
@@ -425,10 +437,146 @@ export class ActualConnector implements BudgetLedger {
     _amount: number,
     _precondition?: MutationPrecondition,
   ): Promise<MutationResult> {
-    this.assertMutationAllowed('setBudgetAmount');
-    return { success: true, id: _categoryId };
+    this.assertInitialized();
+    throw new Error(
+      'setBudgetAmount() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
+
+  async setTransactionCategory(
+    transactionId: LedgerId,
+    proposedCategoryId: LedgerId,
+    currentCategoryId: LedgerId | null,
+  ): Promise<SetCategoryResult> {
+    this.assertMutationAllowed('setTransactionCategory');
+
+    // Require an explicitly selected budget
+    if (!this._budgetInfo) {
+      return {
+        success: false,
+        error: 'No budget selected. Call selectBudget() before mutating transactions.',
+        code: 'BUDGET_NOT_SELECTED',
+      } as SetCategoryResult;
+    }
+
+    // Serialize the read/check/update/reread under the budget lock
+    return this.withCacheLock(this._budgetInfo.id, async (): Promise<SetCategoryResult> => {
+      // Read current transaction state to check precondition
+      const allAccounts = await this.client.getAccounts();
+      const activeAccounts = allAccounts.filter(a => !a.closed);
+      let tx: TransactionEntity | null = null;
+      for (const account of activeAccounts) {
+        const txns = await this.client.getTransactions(account.id, '1970-01-01', '2099-12-31');
+        const found = txns.find(t => t.id === transactionId);
+        if (found) {
+          tx = found;
+          break;
+        }
+      }
+      if (!tx) {
+        return {
+          success: false,
+          error: `Transaction ${transactionId} not found`,
+          code: 'TRANSACTION_NOT_FOUND',
+        } as SetCategoryResult;
+      }
+
+      // Verify precondition: current category must match expected value
+      const actualCategory = tx.category ?? null;
+      if (actualCategory !== currentCategoryId) {
+        return {
+          success: false,
+          error: `Category precondition mismatch for transaction ${transactionId}: ` +
+            `expected currentCategoryId=${JSON.stringify(currentCategoryId)}, ` +
+            `actual=${JSON.stringify(actualCategory)}`,
+          code: 'PRECONDITION_MISMATCH',
+          transactionId,
+          previousCategoryId: actualCategory,
+        } as SetCategoryResult;
+      }
+
+      // Validate the proposed category exists in this budget
+      const allCats = (await this.client.getCategories({ hidden: true })) as APICategoryEntity[];
+      const proposedCat = allCats.find(c => c.id === proposedCategoryId);
+      if (!proposedCat) {
+        return {
+          success: false,
+          error: `Proposed category ${proposedCategoryId} does not exist in this budget`,
+          code: 'CATEGORY_NOT_FOUND',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+        } as SetCategoryResult;
+      }
+
+      // Tombstone categories are deleted, not just hidden
+      const proposedCatWithMeta = proposedCat as APICategoryEntity & { tombstone?: boolean };
+      if (proposedCatWithMeta.tombstone) {
+        return {
+          success: false,
+          error: `Proposed category ${proposedCategoryId} is deleted (tombstone) and cannot be assigned`,
+          code: 'CATEGORY_DELETED',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+        } as SetCategoryResult;
+      }
+
+      // Generate idempotency key for replay detection
+      const idempotencyKey = `${transactionId}_${proposedCategoryId}_${Date.now()}_${randomUUID()}`;
+      // Call Actual update API with the new category
+      await this.client.updateTransaction(transactionId, { category: proposedCategoryId });
+
+      // Persist changes to the server before re-reading — if sync fails, the
+      // mutation may not have been persisted so we report failure rather than
+      // returning a misleading success.
+      try {
+        await this.client.sync();
+      } catch {
+        return {
+          success: false,
+          error: `Sync failed after updating transaction ${transactionId}: the mutation may not have been persisted`,
+          code: 'SYNC_FAILED',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+          idempotencyKey,
+        } as SetCategoryResult;
+      }
+
+      // Re-read the transaction to verify the postcondition
+      const reReads = await this.client.getTransactions(tx.account, '1970-01-01', '2099-12-31');
+      const reReadTx = reReads.find(t => t.id === transactionId);
+      const reReadCategory = reReadTx?.category ?? null;
+      const verified = reReadCategory === proposedCategoryId;
+
+      if (!verified) {
+        return {
+          success: false,
+          error: `Post-write verification failed for transaction ${transactionId}: ` +
+            `expected category=${JSON.stringify(proposedCategoryId)}, ` +
+            `actual=${JSON.stringify(reReadCategory)}`,
+          code: 'VERIFICATION_FAILED',
+          transactionId,
+          previousCategoryId: actualCategory,
+          newCategoryId: proposedCategoryId,
+          idempotencyKey,
+          verified: false,
+        } as SetCategoryResult;
+      }
+
+      return {
+        success: true,
+        transactionId,
+        previousCategoryId: actualCategory,
+        newCategoryId: proposedCategoryId,
+        idempotencyKey,
+        verified: true,
+      } as SetCategoryResult;
+    });
+  }
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
@@ -460,7 +608,6 @@ export class ActualConnector implements BudgetLedger {
       this._serverVersion = versionResult.version;
     }
 
-    this._connectedAt = new Date().toISOString();
     this._initialized = true;
 
     // Hydrate watermarks from persistent store
@@ -718,12 +865,12 @@ export class ActualConnector implements BudgetLedger {
 
   private assertMutationAllowed(method: string): void {
     this.assertInitialized();
-    // Phase 1: all mutation methods are unsupported regardless of mode.
-    // Real write implementations arrive in a future phase.
-    throw new Error(
-      `Mutation rejected: ${method}() is not yet implemented in this adapter. ` +
-      `Mutation support will be added in a future phase.`,
-    );
+    if (this.mode === 'observe') {
+      throw new Error(
+        `Mutation rejected: ${method}() is not permitted in observe mode. ` +
+        `Switch to a write-enabled mode to perform mutations.`,
+      );
+    }
   }
 
   private cacheDirFor(key: string): string {

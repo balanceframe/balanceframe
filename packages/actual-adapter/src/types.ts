@@ -235,6 +235,47 @@ export type MutationResult =
   | { success: true; id: LedgerId }
   | { success: false; error: string; code: string };
 
+/**
+ * Result of a setTransactionCategory call.
+ * Includes verification of the post-write state and idempotency tracking.
+ */
+export type SetCategoryResult = SetCategorySuccess | SetCategoryFailure;
+
+export interface SetCategorySuccess {
+  success: true;
+  transactionId: LedgerId;
+  previousCategoryId: LedgerId | null;
+  newCategoryId: LedgerId;
+  idempotencyKey: string;
+  /** Post-write re-read confirmed the change. */
+  verified: true;
+}
+
+export interface SetCategoryFailure {
+  success: false;
+  error: string;
+  code: SetCategoryErrorCode;
+  /** Present when the transaction was identified before the error. */
+  transactionId?: LedgerId;
+  /** Present when the previous category was determined. */
+  previousCategoryId?: LedgerId | null;
+  /** Present when a category was proposed. */
+  newCategoryId?: LedgerId;
+  /** Present when the write was attempted but verification failed. */
+  idempotencyKey?: string;
+  /** Always false or absent on failure. */
+  verified?: false;
+}
+
+export type SetCategoryErrorCode =
+  | 'CATEGORY_DELETED'
+  | 'VERIFICATION_FAILED'
+  | 'BUDGET_NOT_SELECTED'
+  | 'CATEGORY_NOT_FOUND'
+  | 'SYNC_FAILED'
+  | 'TRANSACTION_NOT_FOUND'
+  | 'PRECONDITION_MISMATCH';
+
 // ---------------------------------------------------------------------------
 // Rule proposal (for future mutation phases)
 // ---------------------------------------------------------------------------
@@ -324,6 +365,12 @@ export interface BudgetLedger {
     amount: number,
     precondition?: MutationPrecondition,
   ): Promise<MutationResult>;
+
+  setTransactionCategory(
+    transactionId: LedgerId,
+    proposedCategoryId: LedgerId,
+    currentCategoryId: LedgerId | null,
+  ): Promise<SetCategoryResult>;
 
   // ---- Lifecycle ----
 

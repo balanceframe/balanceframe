@@ -45,6 +45,10 @@ export const AuthorizationContext = {
     return { actorId, capability: 'observe', allowed: true };
   },
 
+  mutation(actorId: string, capability: string): AuthorizationContext {
+    return { actorId, capability, allowed: true };
+  },
+
   denied(actorId: string, capability: string): AuthorizationContext {
     return { actorId, capability, allowed: false };
   },

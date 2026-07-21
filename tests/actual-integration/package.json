@@ -8,7 +8,7 @@
     "coverage": "vitest run --coverage",
     "pretest": "./setup-fixture-server.sh",
     "setup": "./setup-fixture-server.sh",
-    "test": "vitest run",
+    "test": "NODE_ENV=production vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
   },

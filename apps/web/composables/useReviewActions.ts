@@ -1,0 +1,90 @@
+/**
+ * Composable that exposes ReviewActionBindings as callable template helpers.
+ *
+ * Every action has identical semantics whether triggered by keyboard,
+ * touch, or programmatic invocation — no input modality duplicates
+ * business logic.
+ */
+
+import type { ReviewControllerAdapter } from '../types/review-client';
+
+/**
+ * Provides keyboard-friendly action helpers backed by the controller adapter.
+ *
+ * @param adapter - a {@link ReviewControllerAdapter} instance
+ * @param onCorrect - optional callback invoked when the user presses the
+ *   correct key (C/c). The component is expected to prompt for a category
+ *   and then call `adapter.correct(categoryId)`.
+ */
+export function useReviewActions(
+  adapter: ReviewControllerAdapter,
+  onCorrect?: () => void,
+) {
+  /**
+   * Map a KeyboardEvent to a review action.  Returns true when the event
+   * was handled (preventDefault already called).
+   *
+   * Key bindings (Nuxt-convention friendly):
+   *   Enter       — approve
+   *   KeyC        — correct (prompts for category)
+   *   KeyR        — reject
+   *   KeyS        — skip
+   *   KeyZ + ctrl — undo
+   *   ArrowDown   — selectNext
+   *   ArrowUp     — selectPrevious
+   */
+  function handleKeyboard(event: KeyboardEvent): boolean {
+    const { ctrlKey, key } = event;
+
+    switch (key) {
+      case 'Enter':
+        adapter.approve();
+        event.preventDefault();
+        return true;
+
+      case 'c':
+      case 'C':
+        event.preventDefault();
+        onCorrect?.();
+        return true;
+
+      case 'r':
+      case 'R':
+        adapter.reject();
+        event.preventDefault();
+        return true;
+
+      case 's':
+      case 'S':
+        adapter.skip();
+        event.preventDefault();
+        return true;
+
+      case 'z':
+      case 'Z':
+        if (ctrlKey) {
+          adapter.undo();
+          event.preventDefault();
+          return true;
+        }
+        return false;
+
+      case 'ArrowDown':
+        adapter.selectNext();
+        event.preventDefault();
+        return true;
+
+      case 'ArrowUp':
+        adapter.selectPrevious();
+        event.preventDefault();
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
+  return {
+    handleKeyboard,
+  };
+}

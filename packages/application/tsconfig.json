@@ -11,7 +11,15 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "baseUrl": ".",
+    "paths": {
+      "@balanceframe/actual-adapter": ["../actual-adapter/src"],
+      "@balanceframe/actual-adapter/*": ["../actual-adapter/src/*"],
+      "@balanceframe/workflow-store": ["../workflow-store/src"],
+      "@balanceframe/workflow-store/*": ["../workflow-store/src/*"],
+      "@balanceframe/protocol-generated": ["../protocol-generated/src"],
+      "@balanceframe/protocol-generated/*": ["../protocol-generated/src/*"]
+    }
   },
   "include": ["src"]
 }
