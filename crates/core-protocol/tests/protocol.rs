@@ -524,6 +524,54 @@ fn test_verify_mutation_empty_proposed_category() {
 }
 
 // ---------------------------------------------------------------------------
+// Regression: declared CategoryExists postcondition for a missing category
+// must cause verification to fail, even if proposed_category_id is valid.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_mutation_missing_postcondition_category() {
+    let snapshot = ProtocolSnapshot {
+        schema_version: "1.0".into(),
+        actual_version: "2026.07.01".into(),
+        snapshot_date: "2026-07-17T00:00:00Z".into(),
+        accounts: vec![],
+        transactions: vec![sample_transaction("tx1", None, 5000)],
+        categories: vec![sample_category("cat1", "Food", false)],
+        payees: vec![],
+        rules: vec![],
+        schedules: vec![],
+        budgets: vec![],
+        tags: vec![],
+        actual_downloaded_at: None,
+        encrypted: None,
+        bank_synced_at: None,
+    };
+
+    let plan = MutationPlan {
+        plan_id: "plan_test".into(),
+        transaction_id: "tx1".into(),
+        current_category_id: None,
+        proposed_category_id: "cat1".into(),
+        hash: "abc".into(),
+        postconditions: vec![Postcondition {
+            condition_type: PostconditionType::CategoryExists,
+            category_id: "cat_missing".into(),
+        }],
+    };
+
+    let result = verify_mutation(&plan, &snapshot);
+    assert!(
+        !result.verified,
+        "Missing declared postcondition must fail verification"
+    );
+    assert!(
+        result.reason_codes.contains(&"postcondition_not_met".to_string()),
+        "Expected postcondition_not_met in reason_codes: {:?}",
+        result.reason_codes
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Verify-mutation boundary: zero-amount transaction must not affect verification
 // ---------------------------------------------------------------------------
 

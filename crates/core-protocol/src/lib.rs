@@ -944,6 +944,21 @@ pub fn verify_mutation(
         failure_codes.push("proposed_category_not_found".into());
     }
 
+    // Evaluate declared postconditions independently of built-in checks.
+    for pc in &plan.postconditions {
+        match pc.condition_type {
+            PostconditionType::CategoryExists => {
+                let exists = snapshot
+                    .categories
+                    .iter()
+                    .any(|c| c.id == pc.category_id && !c.deleted);
+                if !exists {
+                    failure_codes.push("postcondition_not_met".into());
+                }
+            }
+        }
+    }
+
     let verified = failure_codes.is_empty();
     // Append failure codes after observations (failure codes come second so
     // a consumer scanning for the first failure sees it after diagnostics).
