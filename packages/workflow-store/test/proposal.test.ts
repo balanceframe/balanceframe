@@ -852,11 +852,27 @@ describe('CategorizationProposal', () => {
       await expect(
         store.createIdempotencyRecord({
           ...input,
-          operation: 'set_category', // same op, different proposal — covered above
-          // actually let's test different serialisedEffect
-          serialisedEffect: 'effect-different',
+          operation: 'execute',
         }),
       ).rejects.toThrow(/idempotency|replay/i);
+    });
+
+    it('handles concurrent idempotency claims via Promise.all (only one owner)', async () => {
+      const key = 'ik-concurrent-race';
+      const input: CreateIdempotencyInput = {
+        idempotencyKey: key,
+        proposalId: 'proposal-race',
+        operation: 'set_category',
+        serialisedEffect: 'race-effect',
+      };
+
+      const claims = await Promise.all(
+        Array.from({ length: 5 }, () => store.createIdempotencyRecord(input)),
+      );
+
+      const owners = claims.filter(c => c.isOwner);
+      expect(owners).toHaveLength(1);
+      expect(claims.every(c => c.record.idempotencyKey === key)).toBe(true);
     });
 
     it('returns null for nonexistent idempotency key', async () => {
@@ -901,6 +917,27 @@ describe('CategorizationProposal', () => {
       const completed = await store.completeIdempotencyRecord('ik-error', 'Postcondition verification failed');
       expect(completed.completed).toBe(true);
       expect(completed.errorMessage).toBe('Postcondition verification failed');
+    });
+
+    it('completes idempotency record after proposal expiry (execution boundary survives)', async () => {
+      const p = await store.createProposal(BASE_PROPOSAL);
+      await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id });
+
+      // Claim at the execution boundary
+      const claim = await store.createIdempotencyRecord({
+        idempotencyKey: 'ik-expiry-boundary',
+        proposalId: p.id,
+        operation: 'set_category',
+        serialisedEffect: 'boundary-effect',
+      });
+      expect(claim.isOwner).toBe(true);
+
+      // Force proposal to expire after the claim was made
+      forceProposalExpiry(store, p.id, '2020-01-01T00:00:00.000Z');
+
+      // Idempotency record completion is independent of proposal lifecycle
+      const completed = await store.completeIdempotencyRecord('ik-expiry-boundary');
+      expect(completed.completed).toBe(true);
     });
   });
 
