@@ -1,5 +1,6 @@
 use balanceframe_core_protocol::{
     analyze_deterministic,
+    analyze_rule_candidates,
     analyze_snapshot,
     find_categorization_candidates,
     plan_create_rule,
@@ -62,6 +63,35 @@ fn sample_transaction(id: &str, category_id: Option<&str>, amount: i64) -> Trans
         date: "2026-07-15".into(),
         payee_id: None,
         payee_name: Some("Test Payee".into()),
+        category_id: category_id.map(|s| s.into()),
+        category_name: None,
+        amount: Money::new(amount, "USD"),
+        cleared: true,
+        reconciled: false,
+        imported_id: None,
+        imported_payee: None,
+        notes: None,
+        tags: vec![],
+        transfer_account_id: None,
+        subtransactions: vec![],
+    }
+}
+
+/// Helper for the `analyze_rule_candidates` tests: creates a transaction with
+/// the given payee name and optional category.
+fn sample_tx(
+    id: &str,
+    payee_id: Option<&str>,
+    payee_name: &str,
+    category_id: Option<&str>,
+    amount: i64,
+) -> Transaction {
+    Transaction {
+        id: id.into(),
+        account_id: "acct1".into(),
+        date: "2026-07-15".into(),
+        payee_id: payee_id.map(|s| s.into()),
+        payee_name: Some(payee_name.into()),
         category_id: category_id.map(|s| s.into()),
         category_name: None,
         amount: Money::new(amount, "USD"),
@@ -332,11 +362,12 @@ fn test_plan_set_category() {
 
 #[test]
 fn test_simulate_rule() {
+    // `transaction_added` trigger matches all transactions
     let rule = Rule {
         id: "rule1".into(),
         name: "Auto-categorize".into(),
         order: 1,
-        trigger: serde_json::json!({}),
+        trigger: serde_json::json!({"type": "transaction_added"}),
         actions: serde_json::json!({}),
         inactive: false,
     };
@@ -347,8 +378,8 @@ fn test_simulate_rule() {
     ];
 
     let result = simulate_rule(&rule, &transactions);
-    assert_eq!(result.transactions_matched, 1);
-    assert_eq!(result.transactions_affected, vec!["tx1"]);
+    assert_eq!(result.transactions_matched, 2);
+    assert_eq!(result.transactions_affected, vec!["tx1", "tx2"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -2507,4 +2538,119 @@ fn test_plan_create_rule_idempotent() {
     assert_eq!(plan_a.hash, plan_b.hash);
     assert_eq!(plan_a.trigger, plan_b.trigger);
     assert_eq!(plan_a.actions, plan_b.actions);
+}
+
+// ---------------------------------------------------------------------------
+// Rule candidate generation — analyze_rule_candidates
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_analyze_rule_candidates_empty_snapshot() {
+    let snapshot = empty_snapshot();
+    let candidates = analyze_rule_candidates(&snapshot, 1);
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn test_analyze_rule_candidates_consistent_merchant() {
+    // sample_transaction uses payee_name "Test Payee" for all tx's,
+    // so two transactions with same category should match.
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            sample_transaction("tx1", Some("c1"), -500),
+            sample_transaction("tx2", Some("c1"), -550),
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].proposed_category_id, "c1");
+    assert_eq!(candidates[0].matching_tx_count, 2);
+    assert!(candidates[0].rule_id.is_empty(), "new-rule suggestion has no rule_id");
+}
+
+#[test]
+fn test_analyze_rule_candidates_below_threshold() {
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            sample_transaction("tx1", Some("c1"), -500),
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn test_analyze_rule_candidates_multiple_categories_dominant_wins() {
+    // Two categories for the same merchant; dominant c1 meets threshold 2
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx1", Some("c1"), -500)
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx2", Some("c1"), -550)
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx3", Some("c2"), -400)
+            },
+        ],
+        categories: vec![
+            sample_category("c1", "Food", false),
+            sample_category("c2", "Coffee", false),
+        ],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert_eq!(candidates.len(), 1, "dominant category Food should reach threshold");
+    assert_eq!(candidates[0].proposed_category_id, "c1");
+    assert_eq!(candidates[0].matching_tx_count, 2);
+}
+
+#[test]
+fn test_analyze_rule_candidates_only_categorized_counted() {
+    // Transactions without a category should not contribute to count
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx1", Some("c1"), -500)
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx2", None, -550) // uncategorized
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx3", Some("c1"), -600)
+            },
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert_eq!(candidates.len(), 1, "uncategorized tx excluded from count");
+    assert_eq!(candidates[0].matching_tx_count, 2);
+}
+
+#[test]
+fn test_analyze_rule_candidates_empty_payee_skipped() {
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            Transaction {
+                payee_name: None,
+                ..sample_transaction("tx1", Some("c1"), -500)
+            },
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 1);
+    assert!(candidates.is_empty(), "no payee should yield no candidates");
 }
