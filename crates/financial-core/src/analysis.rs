@@ -619,7 +619,7 @@ pub fn generate_rule_candidates(
 
     // Stable sort by descending matching_tx_count so the most consistent
     // candidates appear first.
-    candidates.sort_by(|a, b| b.matching_tx_count.cmp(&a.matching_tx_count));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.matching_tx_count));
     candidates
 }
 

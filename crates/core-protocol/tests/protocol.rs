@@ -77,34 +77,6 @@ fn sample_transaction(id: &str, category_id: Option<&str>, amount: i64) -> Trans
     }
 }
 
-/// Helper for the `analyze_rule_candidates` tests: creates a transaction with
-/// the given payee name and optional category.
-fn sample_tx(
-    id: &str,
-    payee_id: Option<&str>,
-    payee_name: &str,
-    category_id: Option<&str>,
-    amount: i64,
-) -> Transaction {
-    Transaction {
-        id: id.into(),
-        account_id: "acct1".into(),
-        date: "2026-07-15".into(),
-        payee_id: payee_id.map(|s| s.into()),
-        payee_name: Some(payee_name.into()),
-        category_id: category_id.map(|s| s.into()),
-        category_name: None,
-        amount: Money::new(amount, "USD"),
-        cleared: true,
-        reconciled: false,
-        imported_id: None,
-        imported_payee: None,
-        notes: None,
-        tags: vec![],
-        transfer_account_id: None,
-        subtransactions: vec![],
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Round-trip serialization of ProtocolSnapshot

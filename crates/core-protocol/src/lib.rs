@@ -1237,7 +1237,7 @@ pub fn simulate_rule(
 
             let dist_key = target_category
                 .clone()
-                .unwrap_or_else(|| String::new());
+                .unwrap_or_default();
             *category_distribution.entry(dist_key).or_insert(0) += 1;
 
             examples.push(SimulationExample {
