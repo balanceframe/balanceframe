@@ -2,16 +2,19 @@ use balanceframe_core_protocol::{
     analyze_deterministic,
     analyze_snapshot,
     find_categorization_candidates,
+    plan_create_rule,
     plan_set_category,
     simulate_rule,
     validate_provider_suggestion,
     validate_suggestion,
     verify_mutation,
+    verify_rule_mutation,
     AnalysisOptions,
     AnalysisRequest,
     DeterministicAnalysisRequest,
     InferencePolicy,
     MutationPlan,
+    PayeeCondition,
     Postcondition,
     PostconditionType,
     ProtocolSnapshot,
@@ -2358,4 +2361,150 @@ fn test_validate_provider_suggestion_local_only_no_provider() {
     assert!(!result.valid);
     assert!(result.reason_codes.contains(&"external_provider_not_allowed".into()),
         "LocalOnly must reject suggestions without an explicit 'local' provider");
+}
+
+// ---------------------------------------------------------------------------
+// Plan create rule
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_plan_create_rule() {
+    let snapshot = empty_snapshot();
+    let conditions = vec![PayeeCondition {
+        field: "imported_payee".into(),
+        operation: "is".into(),
+        value: "  Whole Foods  ".into(),
+    }];
+
+    let plan = plan_create_rule("Groceries", &conditions, "c1", &snapshot);
+
+    assert_eq!(plan.rule_name, "Groceries");
+    assert_eq!(plan.trigger["type"], "payee_is");
+    // Value must be normalized (trimmed, lowercased)
+    assert_eq!(plan.trigger["value"], "whole foods");
+    assert_eq!(plan.actions[0]["type"], "set_category");
+    assert_eq!(plan.actions[0]["value"], "c1");
+    assert_eq!(plan.conditions.len(), 1);
+    assert_eq!(plan.conditions[0].field, "imported_payee");
+    assert!(!plan.plan_id.is_empty());
+    assert!(!plan.hash.is_empty());
+}
+
+#[test]
+fn test_plan_create_rule_no_conditions() {
+    let snapshot = empty_snapshot();
+    let conditions: Vec<PayeeCondition> = vec![];
+
+    let plan = plan_create_rule("Empty", &conditions, "c1", &snapshot);
+
+    assert_eq!(plan.rule_name, "Empty");
+    // No conditions → empty-string normalized value
+    assert_eq!(plan.trigger["value"], "");
+    assert_eq!(plan.actions[0]["value"], "c1");
+    assert!(plan.conditions.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Verify rule mutation — no existing rule
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_rule_mutation_no_conflict() {
+    let snapshot = empty_snapshot(); // snapshot.rules is empty
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "is".into(),
+        value: "Target".into(),
+    }];
+
+    let plan = plan_create_rule("Target Rule", &conditions, "c1", &snapshot);
+    let result = verify_rule_mutation(&plan, &snapshot);
+
+    assert!(result.verified);
+    assert!(result.reason_codes.contains(&"rule_creation_verified".into()));
+    assert!(result.message.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Verify rule mutation — rule already exists
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_rule_mutation_already_exists() {
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "is".into(),
+        value: "Walmart".into(),
+    }];
+
+    let plan = plan_create_rule("Walmart Rule", &conditions, "c2", &empty_snapshot());
+
+    // Create a snapshot that already has a rule matching the plan trigger/actions
+    let mut snapshot = empty_snapshot();
+    snapshot.rules.push(Rule {
+        id: "existing-rule-1".into(),
+        name: "Existing Walmart".into(),
+        order: 0,
+        trigger: plan.trigger.clone(),
+        actions: plan.actions.clone(),
+        inactive: false,
+    });
+
+    let result = verify_rule_mutation(&plan, &snapshot);
+
+    assert!(!result.verified);
+    assert!(result.reason_codes.contains(&"rule_already_exists".into()));
+    assert!(result.message.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Verify rule mutation — different trigger does not conflict
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_rule_mutation_different_trigger_no_conflict() {
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "is".into(),
+        value: "Costco".into(),
+    }];
+
+    let plan = plan_create_rule("Costco Rule", &conditions, "c3", &empty_snapshot());
+
+    let mut snapshot = empty_snapshot();
+    // Add a rule with a DIFFERENT trigger
+    snapshot.rules.push(Rule {
+        id: "existing-rule-2".into(),
+        name: "Different".into(),
+        order: 0,
+        trigger: serde_json::json!({"type":"payee_is","value":"something_else"}),
+        actions: plan.actions.clone(),
+        inactive: false,
+    });
+
+    let result = verify_rule_mutation(&plan, &snapshot);
+    assert!(result.verified);
+    assert!(result.reason_codes.contains(&"rule_creation_verified".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Plan-create rule idempotency: same inputs produce identical plan
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_plan_create_rule_idempotent() {
+    let snapshot = empty_snapshot();
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "contains".into(),
+        value: "Amazon".into(),
+    }];
+
+    let plan_a = plan_create_rule("Amazon", &conditions, "c4", &snapshot);
+    let plan_b = plan_create_rule("Amazon", &conditions, "c4", &snapshot);
+
+    assert_eq!(plan_a.plan_id, plan_b.plan_id);
+    assert_eq!(plan_a.hash, plan_b.hash);
+    assert_eq!(plan_a.trigger, plan_b.trigger);
+    assert_eq!(plan_a.actions, plan_b.actions);
 }

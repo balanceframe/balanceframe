@@ -14,8 +14,8 @@ use serde::Deserialize;
 
 use balanceframe_core_protocol as cp;
 pub use balanceframe_core_protocol::{
-    AnalysisRequest, AnalysisResult, DeterministicAnalysisRequest,
-    DeterministicAnalysisResponse, MutationPlan, ProtocolSnapshot,
+    AnalysisRequest, AnalysisResult, CreateRulePlan, DeterministicAnalysisRequest,
+    DeterministicAnalysisResponse, MutationPlan, PayeeCondition, ProtocolSnapshot,
     RuleSimulationResult, Suggestion, ValidationResult, VerificationResult,
 };
 pub use balanceframe_financial_core::{Category, CategorizationCandidate, Rule, Transaction};
@@ -213,5 +213,57 @@ struct SimulateRuleInput {
 pub fn simulate_rule(input: String) -> napi::Result<String> {
     run::<SimulateRuleInput, RuleSimulationResult>(input, |sri| {
         Ok(cp::simulate_rule(&sri.rule, &sri.transactions))
+    })
+}
+
+// ===========================================================================
+// 7. plan_create_rule
+// ===========================================================================
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanCreateRuleInput {
+    rule_name: String,
+    payee_name: String,
+    category_id: String,
+    snapshot: ProtocolSnapshot,
+}
+
+/// Plan the creation of a new rule based on a payee name.
+/// Returns a CreateRulePlan describing the planned operation.
+#[napi]
+pub fn plan_create_rule(input: String) -> napi::Result<String> {
+    run::<PlanCreateRuleInput, CreateRulePlan>(input, |pci| {
+        let conditions = vec![PayeeCondition {
+            field: "payee".into(),
+            operation: "is".into(),
+            value: pci.payee_name,
+        }];
+        Ok(cp::plan_create_rule(
+            &pci.rule_name,
+            &conditions,
+            &pci.category_id,
+            &pci.snapshot,
+        ))
+    })
+}
+
+// ===========================================================================
+// 8. verify_rule_mutation
+// ===========================================================================
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyRuleMutationInput {
+    plan: CreateRulePlan,
+    snapshot: ProtocolSnapshot,
+}
+
+/// Verify that a rule creation plan is still valid against a snapshot.
+/// Returns { verified, reasonCodes, message }.
+#[napi]
+pub fn verify_rule_mutation(input: String) -> napi::Result<String> {
+    run::<VerifyRuleMutationInput, VerificationResult>(input, |vrmi| {
+        Ok(cp::verify_rule_mutation(&vrmi.plan, &vrmi.snapshot))
     })
 }

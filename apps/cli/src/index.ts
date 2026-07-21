@@ -31,6 +31,7 @@ import {
   proposalExecuteAnalysis,
   proposalListAnalysis,
   auditQueryAnalysis,
+  ruleCreateAnalysis,
   type CommandInput,
   type ConnectionMode,
   type AnalysisProtocol,
@@ -1084,9 +1085,18 @@ export async function main(
         if (cmd.options?.action) queryOptions.action = cmd.options.action;
         if (cmd.options?.['actor-id']) queryOptions.actorId = cmd.options['actor-id'];
         if (cmd.options?.['entity-id']) queryOptions.entityId = cmd.options['entity-id'];
-        if (cmd.options?.from) queryOptions.from = cmd.options.from;
-        if (cmd.options?.to) queryOptions.to = cmd.options.to;
         const envelope = await auditQueryAnalysis(commandInput, queryOptions as AuditQueryOptions);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.create': {
+        const ruleOptions: ReviewActionOptions = {};
+        if (cmd.options?.['name']) ruleOptions.message = cmd.options['name'];
+        if (cmd.options?.['payee']) ruleOptions.reason = cmd.options['payee'];
+        if (cmd.options?.['category-id']) ruleOptions.categoryId = cmd.options['category-id'];
+        if (cmd.options?.['transaction-id']) ruleOptions.transactionId = cmd.options['transaction-id'];
+        if (cmd.options?.operation) ruleOptions.operation = cmd.options.operation;
+        const envelope = await ruleCreateAnalysis(commandInput, ruleOptions);
         return JSON.stringify(envelope, null, 2);
       }
 

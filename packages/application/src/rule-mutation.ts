@@ -97,6 +97,79 @@ export interface RustRuleMutationProtocol {
   ): VerificationResult;
 }
 
+// Native implementation (calls @balanceframe/native N-API bindings at runtime)
+// The native addon is not available in all environments (CI, test runners).
+// We use runtime dynamic import so callers provide their own resolution.
+
+// @balanceframe/native is a napi-rs addon built from crates/node-binding.
+// The NativeBindings interface provides the type contract locally.
+// We avoid a static import because the package does not ship standard
+// TypeScript declarations — load the binary at runtime via createRequire.
+
+/** Shape of the @balanceframe/native module used at runtime. */
+interface NativeBindings {
+  planCreateRule(input: string): string;
+  verifyRuleMutation(input: string): string;
+  planSetCategory(input: string): string;
+  verifyMutation(input: string): string;
+  simulateRule(input: string): string;
+}
+
+let nativeBin: NativeBindings | null = null;
+
+async function getNative(): Promise<NativeBindings> {
+  if (!nativeBin) {
+    const { createRequire } = await import('node:module');
+    const require = createRequire(import.meta.url);
+    nativeBin = require('@balanceframe/native') as NativeBindings;
+  }
+  return nativeBin;
+}
+
+function getConditionValue(conditions: unknown[] | undefined): string {
+  const c = conditions?.[0];
+  if (c && typeof c === 'object' && 'value' in c) {
+    const v = (c as Record<string, unknown>).value;
+    return typeof v === 'string' ? v : '';
+  }
+  return '';
+}
+
+function getActionValue(actions: unknown[] | undefined): string {
+  const a = actions?.[0];
+  if (a && typeof a === 'object' && 'value' in a) {
+    const v = (a as Record<string, unknown>).value;
+    return typeof v === 'string' ? v : '';
+  }
+  return '';
+}
+
+/**
+ * Create a RustRuleMutationProtocol backed by the native @balanceframe/native addon.
+ * Uses lazy dynamic import so it can be stubbed in non-native environments.
+ * Throws if the native addon is not available.
+ */
+export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutationProtocol> {
+  const native = await getNative();
+  return {
+    planCreateRule(input, snapshot) {
+      const payeeName = getConditionValue(input.conditions) || input.name;
+      const categoryId = getActionValue(input.actions);
+      const json = native.planCreateRule(JSON.stringify({
+        ruleName: input.name,
+        payeeName,
+        categoryId,
+        snapshot,
+      }));
+      return JSON.parse(json) as RuleMutationPlan;
+    },
+    verifyRuleMutation(plan, snapshot) {
+      const json = native.verifyRuleMutation(JSON.stringify({ plan, snapshot }));
+      return JSON.parse(json) as VerificationResult;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Service input / result types
 // ---------------------------------------------------------------------------

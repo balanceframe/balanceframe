@@ -211,6 +211,40 @@ pub struct VerificationResult {
 }
 
 // ---------------------------------------------------------------------------
+// Rule planning types
+// ---------------------------------------------------------------------------
+
+/// A condition on a payee field used to match transactions for rule creation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayeeCondition {
+    /// The field to match (e.g. "payee", "imported_payee").
+    pub field: String,
+    /// The comparison operation (e.g. "is", "contains", "startsWith").
+    pub operation: String,
+    /// The value to compare against.
+    pub value: String,
+}
+
+/// A plan for creating a new categorization rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRulePlan {
+    /// Stable identifier for this plan.
+    pub plan_id: String,
+    /// Human-readable name for the rule.
+    pub rule_name: String,
+    /// Trigger condition as JSON (e.g. `{"type":"payee_is","value":"groceries"}`).
+    pub trigger: serde_json::Value,
+    /// Actions to apply as JSON (e.g. `[{"type":"set_category","value":"c1"}]`).
+    pub actions: serde_json::Value,
+    /// Content hash for integrity verification.
+    pub hash: String,
+    /// The payee conditions that generated this plan.
+    pub conditions: Vec<PayeeCondition>,
+}
+
+// ---------------------------------------------------------------------------
 // Deterministic analysis types
 // ---------------------------------------------------------------------------
 
@@ -979,6 +1013,87 @@ pub fn verify_mutation(
     }
 }
 
+
+
+/// Plan the creation of a new rule based on payee conditions and a target category.
+///
+/// Normalizes the first payee condition's value and produces a trigger/actions
+/// payload suitable for rule creation.
+pub fn plan_create_rule(
+    name: &str,
+    payee_conditions: &[PayeeCondition],
+    category_id: &str,
+    _snapshot: &ProtocolSnapshot,
+) -> CreateRulePlan {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Normalize the payee value from the first condition.  If there are no
+    // conditions we still produce a plan, but the trigger will be empty.
+    let normalized_payee = payee_conditions
+        .first()
+        .map(|c| c.value.trim().to_lowercase())
+        .unwrap_or_default();
+
+    let trigger = serde_json::json!({
+        "type": "payee_is",
+        "value": normalized_payee,
+    });
+
+    let actions = serde_json::json!([{
+        "type": "set_category",
+        "value": category_id,
+    }]);
+
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    for c in payee_conditions {
+        c.field.hash(&mut hasher);
+        c.operation.hash(&mut hasher);
+        c.value.hash(&mut hasher);
+    }
+    category_id.hash(&mut hasher);
+    let hash = format!("{:x}", hasher.finish());
+
+    CreateRulePlan {
+        plan_id: format!("rule_plan_{}", hash),
+        rule_name: name.to_string(),
+        trigger,
+        actions,
+        hash,
+        conditions: payee_conditions.to_vec(),
+    }
+}
+
+/// Verify that a rule creation plan does not conflict with existing rules.
+///
+/// Returns `verified: false` with reason code `rule_already_exists` when the
+/// snapshot already contains a rule whose trigger and actions match the plan.
+pub fn verify_rule_mutation(
+    plan: &CreateRulePlan,
+    snapshot: &ProtocolSnapshot,
+) -> VerificationResult {
+    let exists = snapshot.rules.iter().any(|existing| {
+        existing.trigger == plan.trigger && existing.actions == plan.actions
+    });
+
+    if exists {
+        VerificationResult {
+            verified: false,
+            reason_codes: vec!["rule_already_exists".into()],
+            message: Some(format!(
+                "A rule with trigger {:?} and actions {:?} already exists",
+                plan.trigger, plan.actions
+            )),
+        }
+    } else {
+        VerificationResult {
+            verified: true,
+            reason_codes: vec!["rule_creation_verified".into()],
+            message: None,
+        }
+    }
+}
 /// Simulate what would happen if a rule were applied to a set of transactions.
 pub fn simulate_rule(
     rule: &Rule,
