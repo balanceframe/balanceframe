@@ -675,25 +675,26 @@ describe('CategorizationProposal', () => {
   // =======================================================================
 
   describe('IdempotencyRecord', () => {
-    it('creates an idempotency record with all fields', async () => {
+    it('creates an idempotency record with all fields and ownership', async () => {
       const input: CreateIdempotencyInput = {
         idempotencyKey: 'ik-001',
         proposalId: 'proposal-001',
         operation: 'set_category',
         serialisedEffect: JSON.stringify({ category: 'cat-food' }),
       };
-      const record = await store.createIdempotencyRecord(input);
+      const claim = await store.createIdempotencyRecord(input);
 
-      expect(record.idempotencyKey).toBe('ik-001');
-      expect(record.proposalId).toBe('proposal-001');
-      expect(record.operation).toBe('set_category');
-      expect(record.completed).toBe(false);
-      expect(record.errorMessage).toBeNull();
-      expect(record.executedAt).toBeTypeOf('string');
-      expect(record.updatedAt).toBeTypeOf('string');
+      expect(claim.isOwner).toBe(true);
+      expect(claim.record.idempotencyKey).toBe('ik-001');
+      expect(claim.record.proposalId).toBe('proposal-001');
+      expect(claim.record.operation).toBe('set_category');
+      expect(claim.record.completed).toBe(false);
+      expect(claim.record.errorMessage).toBeNull();
+      expect(claim.record.executedAt).toBeTypeOf('string');
+      expect(claim.record.updatedAt).toBeTypeOf('string');
     });
 
-    it('returns existing record on idempotent retry with same content', async () => {
+    it('returns existing record with isOwner=false on idempotent retry with same content', async () => {
       const input: CreateIdempotencyInput = {
         idempotencyKey: 'ik-002',
         proposalId: 'proposal-002',
@@ -701,12 +702,14 @@ describe('CategorizationProposal', () => {
         serialisedEffect: JSON.stringify({ category: 'cat-food' }),
       };
       const first = await store.createIdempotencyRecord(input);
+      expect(first.isOwner).toBe(true);
       tickSync();
       const second = await store.createIdempotencyRecord(input);
 
-      expect(second.idempotencyKey).toBe(first.idempotencyKey);
-      expect(second.proposalId).toBe(first.proposalId);
-      expect(second.executedAt).toBe(first.executedAt);
+      expect(second.isOwner).toBe(false);
+      expect(second.record.idempotencyKey).toBe(first.record.idempotencyKey);
+      expect(second.record.proposalId).toBe(first.record.proposalId);
+      expect(second.record.executedAt).toBe(first.record.executedAt);
     });
 
     it('rejects replay with different proposalId under same idempotency key', async () => {
@@ -760,7 +763,7 @@ describe('CategorizationProposal', () => {
       const created = await store.createIdempotencyRecord(input);
       const fetched = await store.getIdempotencyRecord('ik-lookup');
       expect(fetched).not.toBeNull();
-      expect(fetched!.idempotencyKey).toBe(created.idempotencyKey);
+      expect(fetched!.idempotencyKey).toBe(created.record.idempotencyKey);
     });
 
     it('marks an idempotency record as completed', async () => {

@@ -33,6 +33,7 @@ import type {
   ProposalOperation,
   ApprovalStatus,
   ProposalApproval,
+  IdempotencyClaim,
   IdempotencyRecord,
   AuditRecord,
   AuditClassification,
@@ -2105,7 +2106,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Idempotency records ───────────────────────────────────────────
 
-  async createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyRecord> {
+  async createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyClaim> {
     const now = nowISO();
 
     // Atomic claim: INSERT with ON CONFLICT DO NOTHING — eliminates SELECT-then-INSERT race
@@ -2119,8 +2120,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }) as IdempotencyRow | undefined;
 
     if (row) {
-      // Fresh insert succeeded
-      return rowToIdempotency(row);
+      // Fresh insert succeeded — we own the claim
+      return { record: rowToIdempotency(row), isOwner: true };
     }
 
     // Key already exists — validate ownership against the existing record
@@ -2140,7 +2141,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       );
     }
 
-    return rowToIdempotency(existing);
+    return { record: rowToIdempotency(existing), isOwner: false };
   }
 
   async getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null> {

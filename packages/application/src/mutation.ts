@@ -34,6 +34,7 @@ import type {
   WorkflowStore,
   CategorizationProposal,
   IdempotencyRecord,
+  IdempotencyClaim,
   AuditRecord,
   AuthorizationResult,
 } from '@balanceframe/workflow-store';
@@ -291,26 +292,41 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // 4. Idempotency check — completed → replay cached result;
-    //    in-flight → conflict; else proceed to approval
+    // 4. Idempotency claim (atomic check-and-create) — completed → replay;
+    //    in-flight → conflict; owner → proceed to approval
     // =====================================================================
     const serialisedEffect = JSON.stringify({
       transactionId: proposal.transactionId,
       newCategoryId: proposal.categoryId,
     });
 
+    let idemClaim: IdempotencyClaim;
+    try {
+      idemClaim = await this.store.createIdempotencyRecord({
+        idempotencyKey: input.idempotencyKey,
+        proposalId: input.proposalId,
+        operation: proposal.operation,
+        serialisedEffect,
+      });
+    } catch (err) {
+      await this.appendFailureAudit(input, proposal, auth, 'idempotency_replay_mismatch');
+      return this.fail(baseResult, 'idempotency_replay_mismatch',
+        err instanceof Error ? err.message : 'Idempotency record creation failed',
+        input);
+    }
 
-    const existingIdem = await this.store.getIdempotencyRecord(input.idempotencyKey);
-    if (existingIdem) {
-      if (existingIdem.completed) {
+    if (!idemClaim.isOwner) {
+      if (idemClaim.record.completed) {
         // Replay: return the cached result without touching ledger or approval
-        return this.replayResult(existingIdem, input);
+        return this.replayResult(idemClaim.record, input);
       }
       // In-flight: another execution is using this key — return conflict
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
       return this.fail(baseResult, 'idempotency_in_progress',
         'Execution with this idempotency key is already in progress', input);
     }
+
+    // We own the claim — proceed with execution
 
     // =====================================================================
     // 5. Load approval — verify active, exact proposal ID binding,
@@ -360,25 +376,7 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // 6. Create idempotency record (reserve the key for this execution)
-    // =====================================================================
-
-    try {
-      await this.store.createIdempotencyRecord({
-        idempotencyKey: input.idempotencyKey,
-        proposalId: input.proposalId,
-        operation: proposal.operation,
-        serialisedEffect,
-      });
-    } catch (err) {
-      await this.appendFailureAudit(input, proposal, auth, 'idempotency_replay_mismatch');
-      return this.fail(baseResult, 'idempotency_replay_mismatch',
-        err instanceof Error ? err.message : 'Idempotency record creation failed',
-        input);
-    }
-
-    // =====================================================================
-    // 7. Consume approval BEFORE mutation — one-time lock preventing
+    // 6. Consume approval BEFORE mutation — one-time lock preventing
     //    concurrent execution from both writing with the same approval
     // =====================================================================
 

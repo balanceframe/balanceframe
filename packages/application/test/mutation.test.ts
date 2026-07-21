@@ -392,10 +392,11 @@ describe('CategorizationMutationService', () => {
     store.getApproval.mockResolvedValue(mockApproval());
     store.findActiveApprovals.mockResolvedValue([mockApproval()]);
     store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed', consumedAt: '2026-07-20T11:00:00Z' }));
-
-    // Idempotency: no previous record
-    store.getIdempotencyRecord.mockResolvedValue(null);
-    store.createIdempotencyRecord.mockResolvedValue(mockIdempotencyRecord({ completed: false }));
+    // Idempotency: fresh insert
+    store.createIdempotencyRecord.mockResolvedValue({
+      record: mockIdempotencyRecord({ completed: false }),
+      isOwner: true,
+    });
     store.completeIdempotencyRecord.mockResolvedValue(mockIdempotencyRecord({ completed: true }));
 
     // Ledger sync returns snapshot with our transaction
@@ -690,12 +691,12 @@ describe('CategorizationMutationService', () => {
   // =========================================================================
 
   describe('idempotency gating', () => {
-    it('checks idempotency before consuming approval', async () => {
+
+    it('creates idempotency record before consuming approval', async () => {
       await service.execute(makeInput());
-      // getIdempotencyRecord must be called before consumeApproval
-      const idemCallOrder = (store.getIdempotencyRecord as Mock).mock.invocationCallOrder[0];
+      const idemCreateOrder = (store.createIdempotencyRecord as Mock).mock.invocationCallOrder[0];
       const consumeCallOrder = (store.consumeApproval as Mock).mock.invocationCallOrder[0];
-      expect(idemCallOrder).toBeLessThan(consumeCallOrder);
+      expect(idemCreateOrder).toBeLessThan(consumeCallOrder);
     });
 
     it('creates idempotency record after check and before write', async () => {
@@ -709,9 +710,10 @@ describe('CategorizationMutationService', () => {
     });
 
     it('returns cached result when idempotency key already completed', async () => {
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: true }),
-      );
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: true }),
+        isOwner: false,
+      });
 
       const result = await service.execute(makeInput());
 
@@ -727,9 +729,10 @@ describe('CategorizationMutationService', () => {
     });
 
     it('rejects when idempotency record exists but is not completed (in-flight conflict)', async () => {
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: false }),
-      );
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: false }),
+        isOwner: false,
+      });
 
       const result = await service.execute(makeInput());
 
@@ -798,17 +801,19 @@ describe('CategorizationMutationService', () => {
     });
 
     it('does not consume approval when idempotency replay returns cached result', async () => {
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: true }),
-      );
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: true }),
+        isOwner: false,
+      });
       await service.execute(makeInput());
       expect(store.consumeApproval).not.toHaveBeenCalled();
     });
 
     it('does not consume approval when idempotency conflict is detected', async () => {
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: false }),
-      );
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: false }),
+        isOwner: false,
+      });
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(store.consumeApproval).not.toHaveBeenCalled();
@@ -1204,9 +1209,10 @@ describe('CategorizationMutationService', () => {
 
   describe('never blindly repeat committed writes', () => {
     it('skips setTransactionCategory when idempotency record indicates past completion', async () => {
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: true }),
-      );
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: true }),
+        isOwner: false,
+      });
 
       await service.execute(makeInput());
 
@@ -1217,15 +1223,17 @@ describe('CategorizationMutationService', () => {
     });
 
     it('skips setTransactionCategory when idempotency in-flight conflict', async () => {
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: false }),
-      );
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: false }),
+        isOwner: false,
+      });
 
       await service.execute(makeInput());
 
       expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
       expect(ledger.synchronize).not.toHaveBeenCalled();
     });
+
 
     it('calls setTransactionCategory exactly once on successful execution', async () => {
       await service.execute(makeInput());
@@ -1267,16 +1275,16 @@ describe('CategorizationMutationService', () => {
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('approval_consumed');
-      // Should not have created a new idempotency record
-      expect(store.createIdempotencyRecord).toHaveBeenCalledTimes(1);
+      // Both executions call createIdempotencyRecord
+      expect(store.createIdempotencyRecord).toHaveBeenCalledTimes(2);
     });
 
     it('second request with different approval but same idempotency key detects in-flight conflict', async () => {
-      // First execution created idempotency record (not yet completed)
-      // Second request comes in during first execution
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: false }),
-      );
+      // Simulate first execution in progress: idempotency key already claimed
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: false }),
+        isOwner: false,
+      });
 
       const result = await service.execute(makeInput({ approvalId: 'appr_other' }));
       expect(result.success).toBe(false);
@@ -1289,9 +1297,10 @@ describe('CategorizationMutationService', () => {
     it('second request replays cached result when idempotency record is completed', async () => {
       // First execution completed successfully
       // Second request has same idempotency key but the approval is now consumed
-      store.getIdempotencyRecord.mockResolvedValue(
-        mockIdempotencyRecord({ completed: true, errorMessage: null }),
-      );
+      store.createIdempotencyRecord.mockResolvedValue({
+        record: mockIdempotencyRecord({ completed: true, errorMessage: null }),
+        isOwner: false,
+      });
       // Note: even though the approval is consumed, we replay before checking it
       store.getApproval.mockResolvedValue(
         mockApproval({ status: 'consumed', consumedAt: '2026-07-20T11:00:00Z' }),
@@ -1300,8 +1309,8 @@ describe('CategorizationMutationService', () => {
       const result = await service.execute(makeInput());
       expect(result.success).toBe(true);
       expect(result.reasonCodes).toContain('idempotency_replay');
-      // Must not have created a new idempotency record or performed writes
-      expect(store.createIdempotencyRecord).not.toHaveBeenCalled();
+      // createIdempotencyRecord is called (it returns existing record),
+      // but no writes should happen
       expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
     });
   });
@@ -1349,13 +1358,12 @@ describe('CategorizationMutationService', () => {
         order.push('getApproval');
         return mockApproval();
       });
-      store.getIdempotencyRecord.mockImplementation(async () => {
-        order.push('getIdempotencyRecord');
-        return null;
-      });
       store.createIdempotencyRecord.mockImplementation(async () => {
         order.push('createIdempotencyRecord');
-        return mockIdempotencyRecord();
+        return {
+          record: mockIdempotencyRecord({ completed: false }),
+          isOwner: true,
+        };
       });
       store.consumeApproval.mockImplementation(async () => {
         order.push('consumeApproval');
@@ -1440,10 +1448,9 @@ describe('CategorizationMutationService', () => {
 
       // Verify ordering of major phases
       expect(order.indexOf('getProposal')).toBeLessThan(order.indexOf('evaluateAuthorization'));
-      expect(order.indexOf('evaluateAuthorization')).toBeLessThan(order.indexOf('getIdempotencyRecord'));
-      expect(order.indexOf('getIdempotencyRecord')).toBeLessThan(order.indexOf('getApproval'));
-      expect(order.indexOf('getApproval')).toBeLessThan(order.indexOf('createIdempotencyRecord'));
-      expect(order.indexOf('createIdempotencyRecord')).toBeLessThan(order.indexOf('consumeApproval'));
+      expect(order.indexOf('evaluateAuthorization')).toBeLessThan(order.indexOf('createIdempotencyRecord'));
+      expect(order.indexOf('createIdempotencyRecord')).toBeLessThan(order.indexOf('getApproval'));
+      expect(order.indexOf('getApproval')).toBeLessThan(order.indexOf('consumeApproval'));
       expect(order.indexOf('consumeApproval')).toBeLessThan(order.indexOf('synchronize(1)'));
       expect(order.indexOf('synchronize(1)')).toBeLessThan(order.indexOf('planSetCategory'));
       expect(order.indexOf('planSetCategory')).toBeLessThan(order.indexOf('setTransactionCategory'));

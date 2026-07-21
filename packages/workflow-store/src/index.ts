@@ -41,6 +41,7 @@ export type {
   CategorizationProposal,
   ProposalOperation,
   ProposalApproval,
+  IdempotencyClaim,
   IdempotencyRecord,
   AuditRecord,
   AuditClassification,

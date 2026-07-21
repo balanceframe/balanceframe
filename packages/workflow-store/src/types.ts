@@ -528,8 +528,11 @@ export interface WorkflowStore {
    *
    * Rejects replay with different proposalId, operation, or serialisedEffect
    * under the same idempotency key.
+   *
+   * @returns An {@link IdempotencyClaim} — the record and whether this
+   *          call is the owner (fresh insert).
    */
-  createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyRecord>;
+  createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyClaim>;
 
   /** Retrieve an idempotency record by key, or null. */
   getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null>;
@@ -733,6 +736,15 @@ export interface CreateIdempotencyInput {
   readonly proposalId: string;
   readonly operation: string;
   readonly serialisedEffect: string;
+}
+
+/**
+ * Result of claiming an idempotency record — indicates whether this
+ * invocation created the record (isOwner === true) or found an existing one.
+ */
+export interface IdempotencyClaim {
+  readonly record: IdempotencyRecord;
+  readonly isOwner: boolean;
 }
 
 // ---------------------------------------------------------------------------
