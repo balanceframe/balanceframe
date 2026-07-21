@@ -2,7 +2,15 @@
   <UContainer class="py-4">
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-xl font-bold">Review Transactions</h1>
-      <div class="flex gap-2">
+      <div class="flex items-center gap-2">
+        <UButton
+          variant="ghost"
+          color="neutral"
+          size="sm"
+          label="Sign out"
+          icon="i-heroicons-arrow-right-on-rectangle"
+          @click="handleSignOut"
+        />
         <UBadge
           v-if="adapter.loading"
           color="warning"
@@ -24,7 +32,7 @@
       </div>
     </div>
 
-    <!-- Error banner -->
+    <!-- Error state (API errors, not empty queue) -->
     <UAlert
       v-if="adapter.state.error"
       :title="adapter.state.error.code"
@@ -131,6 +139,7 @@
  * NEVER falls back to an in-memory SqliteWorkflowStore or exposes mutation
  * controls without a remote backend.
  */
+import { authClient } from '../../lib/auth-client';
 import { useApiReviewController } from '../../composables/useApiReviewController';
 import { createUnavailableAdapter } from '../../composables/createUnavailableAdapter';
 import { useReviewActions } from '../../composables/useReviewActions';
@@ -168,5 +177,10 @@ async function load() {
 function promptAndCorrect(category?: string) {
   const cat = category ?? prompt('Category ID:');
   if (cat) adapter.correct(cat);
+}
+
+async function handleSignOut() {
+  await authClient.signOut();
+  await navigateTo('/');
 }
 </script>
