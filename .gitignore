@@ -43,5 +43,10 @@ ehthumbs.db
 Thumbs.db
 
 
+# ---- General ----
+*.log
+*.pid
+*.tmp
+
 # ---- Runtime data ----
 /data/
