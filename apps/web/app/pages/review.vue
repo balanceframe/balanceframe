@@ -118,8 +118,7 @@
           @bulk-approve="adapter.bulkApprove()"
           @bulk-reject="adapter.bulkReject()"
           @bulk-skip="adapter.bulkSkip()"
-          @propose-rule="promptProposeRule"
-  @show-proposals="showProposalsModal = true"
+          @show-proposals="openProposalsModal"
           @reset-metrics="adapter.resetMetrics()"
           class="shrink-0"
         />
@@ -221,6 +220,11 @@ async function load() {
 
 const showProposalsModal = ref(false);
 const activeProposals = ref<CategorizationProposalListItem[]>([]);
+
+async function openProposalsModal(): Promise<void> {
+  await fetchProposals();
+  showProposalsModal.value = true;
+}
 
 async function fetchProposals(): Promise<void> {
   try {

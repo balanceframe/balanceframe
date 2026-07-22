@@ -109,7 +109,7 @@
       />
       <UButton
         v-if="proposalCount > 0"
-        label="Proposed rules"
+        :label="`Proposed rules (${proposalCount})`"
         color="primary"
         variant="outline"
         size="sm"
