@@ -12,6 +12,9 @@ setup-hooks:
 install:
     pnpm install --frozen-lockfile
 
+# Verify workspace package links and the native addon consumer path.
+link: install
+    pnpm --filter @balanceframe/application exec node -e "const native = require('@balanceframe/native'); if (typeof native.analyzeDeterministic !== 'function') process.exit(1);"
 # Build all buildable workspace packages.
 build:
     pnpm build
