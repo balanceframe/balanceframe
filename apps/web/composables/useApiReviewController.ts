@@ -179,7 +179,7 @@ export function useApiReviewController(
   options?: ApiReviewControllerOptions,
 ): ReviewControllerAdapter {
   // ── Reactive state ──────────────────────────────────────────────
-  const state = shallowRef<ReviewSurfaceState>(createDefaultState());
+  const state = ref<ReviewSurfaceState>(createDefaultState());
   const loading = ref(false);
   const error = ref<string | null>(null);
   /** ID of the most recently consumed item, for undo when queue resets. */
@@ -419,7 +419,63 @@ export function useApiReviewController(
   }
 
   async function correct(categoryId: string): Promise<WebActionResult> {
-    return doAction('correct', { categoryId });
+    const currentItem = state.value.currentItem;
+    if (!currentItem) {
+      const result: WebActionResult = {
+        itemId: '<no-current>',
+        success: false,
+        error: 'No current item to edit',
+      };
+      error.value = result.error;
+      return result;
+    }
+
+    const currentId = currentItem.reviewItem.id;
+    loading.value = true;
+    error.value = null;
+
+    try {
+      const envelope = await callApi<SingleActionResult>(
+        '/api/review/correct',
+        'POST',
+        { reviewId: currentId, categoryId },
+      );
+
+      if (envelope.status === 'error' || envelope.error) {
+        const msg = envelope.error?.message ?? 'Unknown error';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      const result = envelope.result;
+      if (!result || typeof result !== 'object') {
+        const msg = 'Invalid edit result envelope';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      if (!result.success) {
+        const msg = result.error ?? 'Edit failed';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      // Refresh the queue to show the updated item (still pending_review
+      // or correcting, not removed).
+      await fetchItems();
+
+      return {
+        itemId: result.itemId ?? currentId,
+        success: true,
+        error: null,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      error.value = msg;
+      return { itemId: currentId, success: false, error: msg };
+    } finally {
+      loading.value = false;
+    }
   }
 
   async function reject(): Promise<WebActionResult> {

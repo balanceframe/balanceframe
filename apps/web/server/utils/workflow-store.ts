@@ -69,6 +69,7 @@ export interface ReviewQueueItem {
       readonly affectsEnvelope: boolean;
     };
     readonly correlationId: string | null;
+    readonly categoryNames?: Record<string, string>;
     readonly promptVersion: string;
   };
   readonly homogeneity: {
@@ -134,7 +135,6 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
     typeof pay?.currentCategory === 'string' && pay.currentCategory
       ? pay.currentCategory
       : (item.categoryId || 'Uncategorized');
-
   const toCategory: string = item.categoryId || '—';
 
 
@@ -159,6 +159,7 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       },
       correlationId: item.correlationId,
       promptVersion: item.promptVersion,
+      categoryNames: (pay?.categoryNames as Record<string, string> | undefined) ?? undefined,
     },
     homogeneity: {
       sameMerchant: false,
@@ -166,7 +167,7 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       sameClassifier: false,
       sameCategory: false,
     },
-    actionable: item.status === 'pending_review',
+    actionable: item.status === 'pending_review' || item.status === 'correcting',
   };
 }
 
@@ -270,10 +271,10 @@ function statusForAction(action: string): ReviewStatus {
     case 'approve':
       return 'approved';
     case 'correct':
-      // Semantically: "approve with a different category".
-      // pending_review -> approved; the corrected categoryId is carried
-      // in the transition metadata so downstream processors can distinguish.
-      return 'approved';
+      // pending_review -> correcting; the corrected categoryId is carried
+      // in the transition metadata so downstream processors know which
+      // category the reviewer selected.
+      return 'correcting';
     case 'reject':
       return 'rejected';
     case 'skip':

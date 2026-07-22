@@ -757,16 +757,15 @@ describe('ReviewController', () => {
       });
     });
 
-    it('correct sends two-step transition for pending_review item', async () => {
+    it('correct sends single-step transition for pending_review item', async () => {
       await seedPendingReview(store);
       await controller.loadNextPage();
 
       const spy = vi.spyOn(store, 'transitionReviewItem');
       await controller.getBindings().correct('cat-transport');
 
-      expect(spy).toHaveBeenCalledTimes(2);
-      expect(spy.mock.calls[0][1]).toMatchObject({ toStatus: 'approved' });
-      expect(spy.mock.calls[1][1]).toMatchObject({ toStatus: 'correcting' });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1]).toMatchObject({ toStatus: 'correcting' });
     });
     it('skip sends the correct transition input to the store', async () => {
       await seedPendingReview(store);

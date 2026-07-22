@@ -27,8 +27,7 @@ export function useReviewActions(
    *
    * Key bindings (Nuxt-convention friendly):
    *   Enter       — approve
-   *   KeyC        — correct (prompts for category)
-   *   KeyR        — reject
+ *   KeyC        — edit category (opens correction modal)
    *   KeyS        — skip
    *   KeyZ + ctrl — undo
    *   ArrowDown   — selectNext

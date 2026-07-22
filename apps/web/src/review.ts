@@ -61,6 +61,7 @@ export interface ReviewEvidence {
   readonly freshness: string | null;
   readonly changePreview: ChangePreview;
   readonly correlationId: string | null;
+  readonly categoryNames?: Record<string, string>;
   readonly promptVersion: string;
 }
 
@@ -471,6 +472,7 @@ function extractEvidence(item: ReviewItem): ReviewEvidence {
 // Statuses qualifying as action-needing
 const ACTIONABLE_STATUSES: Partial<Record<ReviewStatus, true>> = {
   pending_review: true,
+  correcting: true,
 };
 
 /**
@@ -727,26 +729,18 @@ export class ReviewController {
     const latencyMs = this.computeLatencyMs(item);
     const status = item.reviewItem.status;
 
-    // Correction requires a two-step transition from pending_review:
-    // pending_review -> approved -> correcting
     if (status === 'pending_review') {
-      const approved = await this.store.transitionReviewItem(
-        item.reviewItem.id,
-        {
-          toStatus: 'approved',
-          actor: this.config.actorId,
-          reason: `Correcting to ${categoryId}`,
-          expectedVersion: item.reviewItem.version,
-        },
-      );
+      // Single-step: pending_review -> correcting (not auto-approved).
+      // The item stays in the queue for the reviewer to explicitly
+      // approve, reject, or skip.
       const updated = await this.store.transitionReviewItem(
         item.reviewItem.id,
         {
           toStatus: 'correcting',
           actor: this.config.actorId,
           reason: `Corrected to ${categoryId}`,
-          metadata: { correctedCategory: categoryId },
-          expectedVersion: approved.version,
+          metadata: { categoryId },
+          expectedVersion: item.reviewItem.version,
         },
       );
       this.replaceItem(item, updated);
@@ -757,7 +751,7 @@ export class ReviewController {
           toStatus: 'correcting',
           actor: this.config.actorId,
           reason: `Corrected to ${categoryId}`,
-          metadata: { correctedCategory: categoryId },
+          metadata: { categoryId },
           expectedVersion: item.reviewItem.version,
         },
       );
@@ -776,7 +770,6 @@ export class ReviewController {
       timestamp: new Date().toISOString(),
       latencyMs,
     });
-    this.advanceAfterAction();
   }
   private async doReject(): Promise<void> {
     const item = this.requireCurrentItem();
@@ -805,7 +798,8 @@ export class ReviewController {
   }
 
   private async doUndo(): Promise<void> {
-    if (!this.lastActedItemId) {
+    const targetId = this.lastActedItemId ?? this.items[this.currentIndex]?.reviewItem.id;
+    if (!targetId) {
       throw new ReviewActionError(
         'no_current',
         'No item to undo. Act on an item first.',
@@ -813,7 +807,7 @@ export class ReviewController {
       );
     }
 
-    const stored = await this.store.getReviewItem(this.lastActedItemId);
+    const stored = await this.store.getReviewItem(targetId);
     if (!stored) {
       throw new ReviewActionError(
         'not_found',
@@ -829,10 +823,15 @@ export class ReviewController {
       stored.version,
     );
 
-    // Build queue item and insert at current position
+    // If the item was consumed (lastActedItemId set), insert at current
+    // position. Otherwise it stayed in the queue after correct; update
+    // it in-place.
     const restored = this.buildQueueItemSync(updated);
-    this.items.splice(this.currentIndex, 0, restored);
-    // currentIndex now points to the restored item
+    if (this.lastActedItemId) {
+      this.items.splice(this.currentIndex, 0, restored);
+    } else {
+      this.items[this.currentIndex] = restored;
+    }
     this.trackCurrentItemStart();
     this.lastActedItemId = null;
 
@@ -841,9 +840,7 @@ export class ReviewController {
       itemId: stored.id,
       timestamp: new Date().toISOString(),
     });
-    this.notify();
   }
-
   // ── Bulk actions ─────────────────────────────────────────────────────
 
   private async doBulkApprove(): Promise<TransitionReviewResult[]> {

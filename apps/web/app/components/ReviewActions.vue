@@ -9,6 +9,7 @@
         icon="i-heroicons-check-circle"
         size="md"
         :disabled="!hasCurrent || loading"
+        :title="disabledReason('approve')"
         @click="$emit('approve')"
       />
       <UButton
@@ -18,6 +19,7 @@
         icon="i-heroicons-x-circle"
         size="md"
         :disabled="!hasCurrent || loading"
+        :title="disabledReason('reject')"
         @click="$emit('reject')"
       />
       <UButton
@@ -27,15 +29,17 @@
         icon="i-heroicons-forward"
         size="md"
         :disabled="!hasCurrent || loading"
+        :title="disabledReason('skip')"
         @click="$emit('skip')"
       />
       <UButton
-        label="Correct"
+        label="Edit"
         color="warning"
         variant="solid"
         icon="i-heroicons-pencil-square"
         size="md"
         :disabled="!hasCurrent || loading"
+        :title="disabledReason('edit')"
         @click="$emit('correct')"
       />
       <!-- Rule creation (visible when current item has candidates) -->
@@ -46,6 +50,7 @@
         variant="solid"
         icon="i-heroicons-sparkles"
         :disabled="!hasCurrent || loading"
+        :title="disabledReason('create rule')"
         @click="$emit('propose-rule')"
       />
 
@@ -107,7 +112,7 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
+const props = defineProps<{
   hasCurrent: boolean;
   hasSelection: boolean;
   loading: boolean;
@@ -128,5 +133,11 @@ defineEmits<{
   refresh: [];
   'reset-metrics': [];
 }>();
+
+function disabledReason(_action: string): string {
+  if (props.loading) return 'Action in progress…';
+  if (!props.hasCurrent) return 'No item selected — click a transaction in the queue.';
+  return '';
+}
 
 </script>

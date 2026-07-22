@@ -109,8 +109,8 @@
           :loading="adapter.loading"
           :metrics="adapter.state.metrics"
           :has-rule-candidates="!!adapter.state.currentItem?.evidence.ruleCandidates?.length"
+          @correct="openCorrectModal"
           @approve="adapter.approve()"
-          @correct="promptAndCorrect"
           @reject="adapter.reject()"
           @skip="adapter.skip()"
           @undo="adapter.undo()"
@@ -132,6 +132,14 @@
       aria-hidden="true"
       tabindex="-1"
     />
+
+<!-- Category correction modal -->
+<CategoryCorrectModal
+  :open="showCorrectModal"
+  :item="adapter.state.currentItem"
+  @confirm="onCorrectConfirm"
+  @cancel="onCorrectCancel"
+/>
   </UContainer>
 </template>
 
@@ -160,7 +168,7 @@ const apiBase = config.public.apiBase || (import.meta.client ? window.location.o
 const adapter = apiBase
   ? useApiReviewController(apiBase)
   : createUnavailableAdapter();
-const actions = useReviewActions(adapter, promptAndCorrect);
+const actions = useReviewActions(adapter, openCorrectModal);
 
 // Focus the hidden keyboard input so shortcuts work on page load.
 // A document-level keydown listener ensures shortcuts remain active after
@@ -198,9 +206,19 @@ async function load() {
   keyboardInput.value?.focus();
 }
 
-function promptAndCorrect(category?: string) {
-  const cat = category ?? prompt('Category ID:');
-  if (cat) adapter.correct(cat);
+const showCorrectModal = ref(false);
+
+function openCorrectModal(_category?: string) {
+  if (adapter.state.currentItem) showCorrectModal.value = true;
+}
+
+function onCorrectConfirm(categoryId: string) {
+  showCorrectModal.value = false;
+  adapter.correct(categoryId);
+}
+
+function onCorrectCancel() {
+  showCorrectModal.value = false;
 }
 
 function promptProposeRule(): void {

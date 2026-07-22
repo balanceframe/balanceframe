@@ -257,9 +257,9 @@ function rowToCorrection(row: CorrectionRow): CorrectionRecord {
 const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
   discovered: ['suggestion_generated', 'pending_review', 'superseded'],
   suggestion_generated: ['pending_review', 'skipped', 'superseded'],
-  pending_review: ['approved', 'rejected', 'skipped', 'superseded'],
+  pending_review: ['approved', 'correcting', 'rejected', 'skipped', 'superseded'],
   approved: ['correcting', 'applied', 'apply_failed', 'pending_review', 'superseded'],
-  correcting: ['applied', 'apply_failed', 'pending_review', 'superseded'],
+  correcting: ['applied', 'apply_failed', 'pending_review', 'superseded', 'rejected', 'skipped', 'approved'],
   applied: ['superseded'],
   apply_failed: ['correcting', 'pending_review', 'superseded'],
   rejected: ['superseded', 'pending_review'],
