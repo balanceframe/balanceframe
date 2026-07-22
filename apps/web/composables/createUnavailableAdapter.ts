@@ -92,6 +92,10 @@ export function createUnavailableAdapter(): ReviewControllerAdapter {
     // ── Single-item actions ───────────────────────────────────────────
     approve: () => Promise.resolve(errorResult),
     correct: (_categoryId: string) => Promise.resolve(errorResult),
+
+    // ── Rule creation ─────────────────────────────────────────────────
+    proposeRule: (_reviewId: string, _merchant: string, _categoryId: string) =>
+      Promise.resolve(errorResult),
     reject: () => Promise.resolve(errorResult),
     skip: () => Promise.resolve(errorResult),
     undo: () => Promise.resolve(errorResult),

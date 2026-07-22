@@ -198,11 +198,10 @@ function promptAndCorrect(category?: string) {
 function promptProposeRule(): void {
   const current = adapter.state.currentItem;
   if (!current) return;
-  const item = current.data;
-  const merchant = item.evidence.normalizedMerchant;
-  const categoryId = item.evidence.suggestedCategory;
+  const merchant = current.evidence.normalizedMerchant;
+  const categoryId = current.evidence.suggestedCategory;
   if (merchant && categoryId) {
-    adapter.proposeRule(item.reviewItem.id, merchant, categoryId);
+    adapter.proposeRule(current.reviewItem.id, merchant, categoryId);
   }
 }
 
