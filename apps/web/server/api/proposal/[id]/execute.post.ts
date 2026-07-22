@@ -6,7 +6,7 @@
  *   1. Load the proposal from the workflow store
  *   2. Validate it is not superseded or expired
  *   3. Extract `nativeRule` from the proposal's preconditions
- *   4. Connect to Actual via createDefaultConnectionManager
+ *   4. Connect to Actual via createMutationConnectionManager
  *   5. Call connector.createRule() with the native rule shape
  *   6. Perform a post-creation synchronize
  *   7. Supersede the proposal (prevents replay)
