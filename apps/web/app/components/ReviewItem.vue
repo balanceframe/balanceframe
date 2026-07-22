@@ -1,5 +1,8 @@
 <template>
-  <UCard>
+  <UCard
+    class="h-full min-h-0 flex flex-col"
+    :ui="{ body: 'flex flex-col flex-1 min-h-0' }"
+  >
     <template #header>
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-bold truncate">
@@ -15,7 +18,7 @@
       </div>
     </template>
 
-    <div class="space-y-3">
+    <div class="space-y-3 flex-1 overflow-y-auto min-h-0">
       <!-- Transaction details -->
       <div class="grid grid-cols-2 gap-2 text-sm">
         <div>

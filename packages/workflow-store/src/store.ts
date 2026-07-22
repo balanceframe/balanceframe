@@ -262,13 +262,13 @@ const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
   correcting: ['applied', 'apply_failed', 'pending_review', 'superseded'],
   applied: ['superseded'],
   apply_failed: ['correcting', 'pending_review', 'superseded'],
-  rejected: ['superseded'],
-  skipped: ['superseded'],
+  rejected: ['superseded', 'pending_review'],
+  skipped: ['superseded', 'pending_review'],
   superseded: [],
 };
 
 /** Statuses for which `pending_review` is an undo, not a forward transition. */
-const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting'];
+const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting', 'rejected', 'skipped'];
 
 /** Terminal statuses that cannot transition forward. */
 const TERMINAL_STATUSES: ReviewStatus[] = ['applied', 'apply_failed', 'rejected', 'skipped', 'superseded'];

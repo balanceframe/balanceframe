@@ -2,40 +2,42 @@
   <UCard>
     <div class="flex flex-wrap items-center gap-2">
       <!-- Single-item actions (always visible) -->
-      <UButtonGroup size="md">
-        <UButton
-          label="Approve"
-          color="success"
-          variant="solid"
-          icon="i-heroicons-check-circle"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('approve')"
-        />
-        <UButton
-          label="Reject"
-          color="error"
-          variant="solid"
-          icon="i-heroicons-x-circle"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('reject')"
-        />
-        <UButton
-          label="Skip"
-          color="neutral"
-          variant="solid"
-          icon="i-heroicons-forward"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('skip')"
-        />
-        <UButton
-          label="Correct"
-          color="warning"
-          variant="solid"
-          icon="i-heroicons-pencil-square"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('correct')"
-        />
-      </UButtonGroup>
+      <UButton
+        label="Approve"
+        color="success"
+        variant="solid"
+        icon="i-heroicons-check-circle"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        @click="$emit('approve')"
+      />
+      <UButton
+        label="Reject"
+        color="error"
+        variant="solid"
+        icon="i-heroicons-x-circle"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        @click="$emit('reject')"
+      />
+      <UButton
+        label="Skip"
+        color="neutral"
+        variant="solid"
+        icon="i-heroicons-forward"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        @click="$emit('skip')"
+      />
+      <UButton
+        label="Correct"
+        color="warning"
+        variant="solid"
+        icon="i-heroicons-pencil-square"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        @click="$emit('correct')"
+      />
       <!-- Rule creation (visible when current item has candidates) -->
       <UButton
         v-if="hasRuleCandidates"

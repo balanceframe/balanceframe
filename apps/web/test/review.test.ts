@@ -384,14 +384,13 @@ describe('ReviewController', () => {
       expect(stored?.status).toBe('pending_review');
     });
 
-    it('undo is rejected for non-reversible status (rejected)', async () => {
-      await seedPendingReview(store);
+    it('undo transitions rejected item back to pending_review', async () => {
+      const item = await seedPendingReview(store);
       await controller.loadNextPage();
       await controller.getBindings().reject();
-
-      await expect(controller.getBindings().undo()).rejects.toThrow(
-        /cannot undo|not reversible|undo/i,
-      );
+      await controller.getBindings().undo();
+      const stored = await store.getReviewItem(item.id);
+      expect(stored?.status).toBe('pending_review');
     });
   });
 

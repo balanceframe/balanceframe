@@ -131,9 +131,12 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
     : [];
 
   const fromCategory: string =
-    typeof pay?.currentCategory === 'string'
+    typeof pay?.currentCategory === 'string' && pay.currentCategory
       ? pay.currentCategory
-      : item.categoryId;
+      : (item.categoryId || 'Uncategorized');
+
+  const toCategory: string = item.categoryId || '—';
+
 
   return {
     reviewItem: item,
@@ -143,7 +146,7 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       account,
       amount,
       currentCategory: fromCategory,
-      suggestedCategory: item.categoryId,
+      suggestedCategory: item.categoryId || '—',
       alternatives: alternativesList,
       history: historyList,
       ruleCandidates,
@@ -151,8 +154,8 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       freshness: item.freshnessExpiresAt,
       changePreview: {
         fromCategory,
-        toCategory: item.categoryId,
-        affectsEnvelope: fromCategory !== item.categoryId,
+        toCategory,
+        affectsEnvelope: fromCategory !== toCategory,
       },
       correlationId: item.correlationId,
       promptVersion: item.promptVersion,
@@ -275,6 +278,8 @@ function statusForAction(action: string): ReviewStatus {
       return 'rejected';
     case 'skip':
       return 'skipped';
+    case 'undo':
+      return 'pending_review';
     default:
       throw new Error(`Unknown review action: ${action}`);
   }
@@ -298,7 +303,7 @@ export interface ActionOutcome {
  *
  * @param store   - an initialised WorkflowStore
  * @param reviewId - the review-item ID to act on
- * @param action  - one of 'approve', 'correct', 'reject', 'skip'
+ * @param action  - one of 'approve', 'correct', 'reject', 'skip', 'undo'
  * @param actorId - the authenticated actor identifier
  * @param categoryId - optional category for 'correct' action
  */
@@ -313,6 +318,21 @@ export async function performReviewAction(
   const item = await store.getReviewItem(reviewId);
   if (!item) {
     return { itemId: reviewId, success: false, error: 'Review item not found' };
+  }
+
+  // Undo is a reverse-transition that calls undoReviewTransition,
+  // not transitionReviewItem like the other actions.
+  if (action === 'undo') {
+    try {
+      const result = await store.undoReviewTransition(reviewId, actorId, 'Reversed by reviewer');
+      return { itemId: result.id, success: true, error: null };
+    } catch (e) {
+      return {
+        itemId: reviewId,
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
   }
 
   const toStatus = statusForAction(action);

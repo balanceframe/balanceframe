@@ -278,7 +278,10 @@ export async function createNativeAnalysisProtocol(
       }
       const input = JSON.stringify({
         snapshot,
-        options: {},
+        options: {
+          includePending: true,
+          includeCleared: true,
+        },
       });
       const raw = native.analyzeDeterministic(input);
       return mapDeterministicResponse(raw);

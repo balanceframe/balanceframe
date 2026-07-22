@@ -144,12 +144,13 @@ describe('useReviewActions', () => {
       expect(event.preventDefault).toHaveBeenCalledTimes(1);
     });
 
-    it('z without ctrl does nothing', () => {
+    it('z without ctrl calls adapter.undo and prevents default', () => {
       const event = createKeyEvent('z');
       const handled = actions.handleKeyboard(event);
 
-      expect(handled).toBe(false);
-      expect(adapter.undo).not.toHaveBeenCalled();
+      expect(handled).toBe(true);
+      expect(adapter.undo).toHaveBeenCalledTimes(1);
+      expect(event.preventDefault).toHaveBeenCalledTimes(1);
     });
 
     it('ctrl+z calls adapter.undo and prevents default', () => {

@@ -191,6 +191,9 @@ export interface ReviewActionBindings {
 
   /** Move focus to the previous item in the queue. */
   selectPrevious(): void;
+  /** Navigate to the item at the given index. */
+  selectIndex(index: number): void;
+
 
   /** Toggle selection of the item at the given index. */
   toggleSelection(index: number): void;
@@ -661,6 +664,7 @@ export class ReviewController {
       selectNext: () => this.doSelectNext(),
       selectPrevious: () => this.doSelectPrevious(),
       toggleSelection: (index: number) => this.doToggleSelection(index),
+      selectIndex: (index: number) => this.doSelectIndex(index),
       clearSelection: () => this.doClearSelection(),
       bulkApprove: () => this.doBulkApprove(),
       bulkCorrect: (categoryId: string) => this.doBulkCorrect(categoryId),
@@ -1033,6 +1037,15 @@ export class ReviewController {
       this.notify();
     }
   }
+
+  private doSelectIndex(index: number): void {
+    if (index < 0 || index >= this.items.length) return;
+    this.currentIndex = index;
+    this.trackCurrentItemStart();
+    this.selectedIds.clear();
+    this.notify();
+  }
+
 
   private doToggleSelection(index: number): void {
     if (index < 0 || index >= this.items.length) return;

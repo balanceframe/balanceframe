@@ -1,6 +1,6 @@
 <template>
-  <UContainer class="py-4">
-    <div class="flex items-center justify-between mb-4">
+  <UContainer class="h-dvh overflow-hidden flex flex-col py-4">
+    <div class="flex items-center justify-between mb-4 shrink-0">
       <h1 class="text-xl font-bold">Review Transactions</h1>
       <div class="flex items-center gap-2">
         <UButton
@@ -70,55 +70,59 @@
 
     <!-- Review queue and current-item detail -->
     <template v-if="adapter.state.currentItem">
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <!-- Queue sidebar -->
-        <div class="lg:col-span-1 order-2 lg:order-1">
-          <ReviewQueue
-            :items="adapter.state.items"
-            :current-index="adapter.state.currentIndex"
-            :selected-indices="adapter.state.selectedIndices"
-            :has-more="adapter.state.hasMore"
-            @select="adapter.toggleSelection($event)"
-            @load-more="load"
-          />
+      <div class="flex-1 min-h-0 flex flex-col">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
+          <!-- Queue sidebar -->
+          <div class="lg:col-span-1 flex flex-col min-h-0">
+            <ReviewQueue
+              :items="adapter.state.items"
+              :current-index="adapter.state.currentIndex"
+              :selected-indices="adapter.state.selectedIndices"
+              :has-more="adapter.state.hasMore"
+              @navigate="adapter.selectIndex($event)"
+              @toggle-selection="adapter.toggleSelection($event)"
+              @load-more="load"
+              class="flex-1"
+            />
+          </div>
+          <!-- Current item detail -->
+          <div class="lg:col-span-2 order-1 lg:order-2 flex flex-col min-h-0">
+            <ReviewItem
+              :item="adapter.state.currentItem"
+              :state="adapter.state"
+              class="flex-1"
+            />
+          </div>
         </div>
 
-        <!-- Current item detail -->
-        <div class="lg:col-span-2 order-1 lg:order-2">
-          <ReviewItem
-            :item="adapter.state.currentItem"
-            :state="adapter.state"
-          />
-        </div>
+        <!-- Session metrics stay above the pinned action footer. -->
+        <ReviewMetrics
+          v-if="adapter.state.metrics.resolvedCount > 0"
+          :metrics="adapter.state.metrics"
+          class="shrink-0 mt-4"
+        />
+
+        <!-- Action footer remains the last, visible row in the viewport. -->
+        <ReviewActions
+          :has-current="!!adapter.state.currentItem"
+          :has-selection="adapter.state.selectedIndices.length > 0"
+          :loading="adapter.loading"
+          :metrics="adapter.state.metrics"
+          :has-rule-candidates="!!adapter.state.currentItem?.evidence.ruleCandidates?.length"
+          @approve="adapter.approve()"
+          @correct="promptAndCorrect"
+          @reject="adapter.reject()"
+          @skip="adapter.skip()"
+          @undo="adapter.undo()"
+          @bulk-approve="adapter.bulkApprove()"
+          @bulk-reject="adapter.bulkReject()"
+          @bulk-skip="adapter.bulkSkip()"
+          @propose-rule="promptProposeRule"
+          @refresh="adapter.refresh()"
+          @reset-metrics="adapter.resetMetrics()"
+          class="shrink-0"
+        />
       </div>
-
-      <!-- Action bar -->
-      <ReviewActions
-        :has-current="!!adapter.state.currentItem"
-        :has-selection="adapter.state.selectedIndices.length > 0"
-        :loading="adapter.loading"
-        :metrics="adapter.state.metrics"
-        :has-rule-candidates="!!adapter.state.currentItem?.evidence.ruleCandidates?.length"
-        @approve="adapter.approve()"
-        @correct="promptAndCorrect"
-        @reject="adapter.reject()"
-        @skip="adapter.skip()"
-        @undo="adapter.undo()"
-        @bulk-approve="adapter.bulkApprove()"
-        @bulk-reject="adapter.bulkReject()"
-        @bulk-skip="adapter.bulkSkip()"
-        @propose-rule="promptProposeRule"
-        @refresh="adapter.refresh()"
-        @reset-metrics="adapter.resetMetrics()"
-        :class="{ 'mt-4': adapter.state.currentItem }"
-      />
-
-      <!-- Metrics summary -->
-      <ReviewMetrics
-        v-if="adapter.state.metrics.resolvedCount > 0"
-        :metrics="adapter.state.metrics"
-        class="mt-4"
-      />
     </template>
 
     <!-- Keyboard handler (invisible) — holds initial focus on page load -->
@@ -170,6 +174,10 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (target.isContentEditable) return;
   const tag = target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  // Don't steal browser shortcuts (Ctrl+C, Ctrl+A, etc.)
+  if (event.ctrlKey || event.metaKey) return;
+
   actions.handleKeyboard(event);
 }
 onMounted(() => {

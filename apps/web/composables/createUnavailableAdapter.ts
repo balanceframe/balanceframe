@@ -110,6 +110,7 @@ export function createUnavailableAdapter(): ReviewControllerAdapter {
     selectNext: () => {},
     selectPrevious: () => {},
     toggleSelection: (_index: number) => {},
+    selectIndex: (_index: number) => {},
     clearSelection: () => {},
 
     // ── Metrics ───────────────────────────────────────────────────────

@@ -101,6 +101,9 @@ export interface ReviewControllerAdapter {
 
   /** Move focus to the previous item. */
   selectPrevious(): void;
+  /** Navigate to the item at the given index. */
+  selectIndex(index: number): void;
+
 
   /** Toggle selection of the item at the given index. */
   toggleSelection(index: number): void;

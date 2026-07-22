@@ -165,6 +165,9 @@ export function useReviewController(
   function selectPrevious(): void {
     controller.getBindings().selectPrevious();
   }
+  function selectIndex(index: number): void {
+    controller.getBindings().selectIndex(index);
+  }
 
   function toggleSelection(index: number): void {
     controller.getBindings().toggleSelection(index);
@@ -215,6 +218,7 @@ export function useReviewController(
     bulkSkip,
     selectNext,
     selectPrevious,
+    selectIndex,
     toggleSelection,
     clearSelection,
     resetMetrics,

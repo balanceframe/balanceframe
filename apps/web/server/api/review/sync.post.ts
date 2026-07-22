@@ -26,6 +26,25 @@ export default defineEventHandler(async event => {
       connected.budget.id || connected.budget.groupId,
       result,
     );
+    // Transition all discovered items to pending_review so they appear
+    // in the actionable review queue. Items remain discovered only when
+    // they already exist with a newer version (idempotent dedup).
+    const discovered = await workflow.store.listReviewItems({ status: 'discovered' });
+    let transitioned = 0;
+    for (const item of discovered) {
+      try {
+        await workflow.store.transitionReviewItem(item.id, {
+          toStatus: 'pending_review',
+          actor: 'system',
+          reason: 'Auto-transition from sync: deterministic analysis complete',
+          expectedVersion: item.version,
+        });
+        transitioned += 1;
+      } catch {
+        // skip items that can't transition (e.g. version conflict with
+        // concurrent workflow)
+      }
+    }
     return okEnvelope(
       { synchronized: true, persisted, result },
       auth,

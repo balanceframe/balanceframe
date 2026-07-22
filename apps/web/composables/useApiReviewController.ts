@@ -182,6 +182,8 @@ export function useApiReviewController(
   const state = shallowRef<ReviewSurfaceState>(createDefaultState());
   const loading = ref(false);
   const error = ref<string | null>(null);
+  /** ID of the most recently consumed item, for undo when queue resets. */
+  const lastActedItemId = ref<string | null>(null);
 
   // Normalise the base URL (strip trailing slash).
   const api = baseUrl.replace(/\/+$/, '');
@@ -317,6 +319,8 @@ export function useApiReviewController(
       }
 
       // ── Success path — update state ────────────────────────────
+      // Save the consumed item ID so undo can target it later.
+      lastActedItemId.value = currentId;
       // Remove the processed item from the local queue and advance
       // to the next item or to empty.
       const items = state.value.items;
@@ -421,17 +425,65 @@ export function useApiReviewController(
   async function reject(): Promise<WebActionResult> {
     return doAction('reject');
   }
-
+  
   async function skip(): Promise<WebActionResult> {
     return doAction('skip');
   }
-
+  
   async function undo(): Promise<WebActionResult> {
-    const currentId =
-      state.value.currentItem?.reviewItem.id ?? '<no-current>';
-    const msg = 'Undo is not supported by the API';
-    error.value = msg;
-    return { itemId: currentId, success: false, error: msg };
+    const targetId = lastActedItemId.value ?? state.value.currentItem?.reviewItem.id ?? '<no-current>';
+    if (!lastActedItemId.value) {
+      const msg = 'No item to undo. Act on an item first.';
+      error.value = msg;
+      return { itemId: targetId, success: false, error: msg };
+    }
+  
+    loading.value = true;
+    error.value = null;
+  
+    try {
+      const envelope = await callApi<SingleActionResult>(
+        '/api/review/undo',
+        'POST',
+        { reviewId: targetId },
+      );
+  
+      if (envelope.status === 'error' || envelope.error) {
+        const msg = envelope.error?.message ?? 'Unknown error';
+        error.value = msg;
+        return { itemId: targetId, success: false, error: msg };
+      }
+  
+      const result = envelope.result;
+      if (!result || typeof result !== 'object') {
+        const msg = 'Invalid undo result envelope';
+        error.value = msg;
+        return { itemId: targetId, success: false, error: msg };
+      }
+  
+      if (!result.success) {
+        const msg = result.error ?? 'Undo failed';
+        error.value = msg;
+        return { itemId: targetId, success: false, error: msg };
+      }
+  
+      // Clear the tracked ID so the same undo can't be replayed,
+      // then refresh the queue to show the restored item.
+      lastActedItemId.value = null;
+      await fetchItems();
+  
+      return {
+        itemId: result.itemId ?? targetId,
+        success: true,
+        error: null,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      error.value = msg;
+      return { itemId: targetId, success: false, error: msg };
+    } finally {
+      loading.value = false;
+    }
   }
   
   async function proposeRule(
@@ -569,6 +621,18 @@ export function useApiReviewController(
     };
   }
 
+  function selectIndex(index: number): void {
+    const items = state.value.items;
+    if (index < 0 || index >= items.length) return;
+    state.value = {
+      ...state.value,
+      currentIndex: index,
+      currentItem: items[index] ?? null,
+      selectedIndices: [],
+    };
+  }
+
+
   function toggleSelection(index: number): void {
     const sel = [...state.value.selectedIndices];
     const pos = sel.indexOf(index);
@@ -631,6 +695,7 @@ export function useApiReviewController(
     bulkSkip,
     selectNext,
     selectPrevious,
+    selectIndex,
     toggleSelection,
     clearSelection,
     resetMetrics,

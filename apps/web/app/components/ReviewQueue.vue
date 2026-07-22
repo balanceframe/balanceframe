@@ -1,17 +1,20 @@
 <template>
-  <UCard>
+  <UCard
+    class="h-full min-h-0 flex flex-col"
+    :ui="{ body: 'flex flex-col flex-1 min-h-0' }"
+  >
     <template #header>
       <h2 class="font-semibold text-sm text-gray-600 dark:text-gray-400 uppercase tracking-wide">
         Queue
       </h2>
     </template>
 
-    <div class="space-y-1 max-h-96 overflow-y-auto">
+    <div class="space-y-1 flex-1 overflow-y-auto min-h-0">
       <button
         v-for="(item, idx) in items"
         :key="item.reviewItem.id"
         :class="queueItemClass(idx)"
-        @click="$emit('select', idx)"
+        @click="onItemClick(idx, $event)"
         :aria-current="idx === currentIndex ? 'true' : undefined"
       >
         <div class="flex items-center justify-between min-w-0">
@@ -58,10 +61,19 @@ const props = defineProps<{
   hasMore: boolean;
 }>();
 
-defineEmits<{
-  select: [index: number];
+const emit = defineEmits<{
+  navigate: [index: number];
+  'toggle-selection': [index: number];
   'load-more': [];
 }>();
+
+function onItemClick(idx: number, event: MouseEvent): void {
+  if (event.shiftKey) {
+    emit('toggle-selection', idx);
+    return;
+  }
+  emit('navigate', idx);
+}
 
 function queueItemClass(idx: number): Record<string, boolean> {
   const isCurrent = idx === props.currentIndex;

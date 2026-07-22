@@ -63,12 +63,10 @@ export function useReviewActions(
 
       case 'z':
       case 'Z':
-        if (ctrlKey) {
-          adapter.undo();
-          event.preventDefault();
-          return true;
-        }
-        return false;
+        adapter.undo();
+        event.preventDefault();
+        return true;
+
 
       case 'ArrowDown':
         adapter.selectNext();
