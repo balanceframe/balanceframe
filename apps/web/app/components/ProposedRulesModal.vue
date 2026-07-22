@@ -173,11 +173,10 @@ function formatDate(iso: string): string {
 // Actions
 // ---------------------------------------------------------------------------
 
-async function onAccept(proposalId: string) {
+async function onAccept(proposalId: string): Promise<void> {
   if (acceptingId.value) return;
   acceptingId.value = proposalId;
   try {
-    // Step 1: Explicitly approve the proposal
     const approveRes = await fetch(`/api/proposal/${proposalId}/approve`, {
       method: 'POST',
       credentials: 'same-origin',
@@ -185,34 +184,44 @@ async function onAccept(proposalId: string) {
     });
     if (!approveRes.ok) {
       const body = await approveRes.json().catch(() => ({}));
-      const msg = body?.error?.message ?? `Failed to approve proposal (HTTP ${approveRes.status})`;
-      console.error(msg);
-      emit('close');
+      console.error(body?.error?.message ?? `Failed to approve proposal (HTTP ${approveRes.status})`);
       return;
     }
 
-    // Step 2: Execute the approved proposal
-    const execRes = await fetch(`/api/proposal/${proposalId}/execute`, {
+    const executeRes = await fetch(`/api/proposal/${proposalId}/execute`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
     });
-    if (!execRes.ok) {
-      const body = await execRes.json().catch(() => ({}));
-      const msg = body?.error?.message ?? `Failed to execute proposal (HTTP ${execRes.status})`;
-      console.error(msg);
+    if (!executeRes.ok) {
+      const body = await executeRes.json().catch(() => ({}));
+      console.error(body?.error?.message ?? `Failed to execute proposal (HTTP ${executeRes.status})`);
       return;
     }
     emit('accepted', proposalId);
-  } catch (e) {
-    console.error('Failed to accept proposal:', e);
+  } catch (error) {
+    console.error('Failed to accept proposal:', error);
   } finally {
     acceptingId.value = null;
   }
 }
 
-function onDiscard(proposalId: string) {
-  emit('discarded', proposalId);
+async function onDiscard(proposalId: string): Promise<void> {
+  try {
+    const response = await fetch(`/api/proposal/${proposalId}/discard`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      console.error(body?.error?.message ?? `Failed to discard proposal (HTTP ${response.status})`);
+      return;
+    }
+    emit('discarded', proposalId);
+  } catch (error) {
+    console.error('Failed to discard proposal:', error);
+  }
 }
 
 function onClose() {

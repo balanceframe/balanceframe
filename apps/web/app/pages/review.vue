@@ -110,6 +110,7 @@
           :metrics="adapter.state.metrics"
           :has-rule-candidates="!!adapter.state.currentItem?.evidence.ruleCandidates?.length"
           @correct="openCorrectModal"
+          @propose-rule="promptProposeRule"
           @approve="adapter.approve()"
           @reject="adapter.reject()"
           @refresh="adapter.refresh()"
