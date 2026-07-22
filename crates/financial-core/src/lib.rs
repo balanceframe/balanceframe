@@ -13,8 +13,8 @@ pub mod reconciliation;
 pub mod snapshots;
 
 pub use analysis::{
-    run_deterministic_analysis, DeterministicAnalysis, HistoricalCorrection, RecurringCharge,
-    RepeatedMerchant, RuleCandidate, UncategorizedBacklog,
+    generate_rule_candidates, run_deterministic_analysis, DeterministicAnalysis,
+    HistoricalCorrection, RecurringCharge, RepeatedMerchant, RuleCandidate, UncategorizedBacklog,
 };
 pub use blockers::{Blocker, BlockerCollector, ReasonCode};
 pub use categorization::{

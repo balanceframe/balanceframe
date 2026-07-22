@@ -615,7 +615,7 @@ export interface WorkflowStore {
 // ---------------------------------------------------------------------------
 
 /** Supported categorization proposal operations. */
-export type ProposalOperation = 'set_category';
+export type ProposalOperation = 'set_category' | 'create_rule';
 
 /**
  * A categorized proposal for a transaction. Immutable once persisted.
@@ -661,6 +661,31 @@ export interface CreateProposalInput {
   readonly budgetId: string;
   readonly transactionId: string;
   readonly categoryId: string;
+  /** Hex-encoded SHA-256 hash of the full proposal content. */
+  readonly payloadHash: string;
+  readonly policyVersion: string;
+  /** JSON-encoded preconditions for execution. */
+  readonly preconditions: string;
+  /** ISO-8601 expiry timestamp. */
+  readonly expiresAt: string;
+  readonly actorId: string;
+  readonly provenance: string;
+  readonly providerModel?: string | null;
+  readonly correlationId?: string | null;
+}
+
+/** Input to create a new rule proposal. */
+export interface CreateRuleProposalInput {
+  /** The operation — always 'create_rule' for this input. */
+  readonly operation: 'create_rule';
+  /** Budget this rule targets. */
+  readonly budgetId: string;
+  /** The transaction being proposed for change, or null for rule-only proposals. */
+  readonly transactionId: string | null;
+  /** Rule action configuration (serializable JSON object). */
+  readonly action: Record<string, unknown>;
+  /** Rule condition / filter configuration (serializable JSON object). */
+  readonly conditions: Record<string, unknown>;
   /** Hex-encoded SHA-256 hash of the full proposal content. */
   readonly payloadHash: string;
   readonly policyVersion: string;

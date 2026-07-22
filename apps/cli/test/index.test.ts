@@ -660,3 +660,146 @@ describe('main — proposal and audit routing', () => {
     expect(parsed.error.code).toBe('write_rejected');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rule command parsing
+// ---------------------------------------------------------------------------
+
+describe('parseArgs — rule commands', () => {
+  it('parses rules.list correctly', () => {
+    const result = parseArgs(['rules', 'list']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('rules.list');
+    expect(result.cmd.format).toBe('json');
+  });
+
+  it('parses rules.create with options', () => {
+    const result = parseArgs(['rules', 'create', '--name', 'My Rule', '--payee', 'Amazon', '--category-id', 'cat-food']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('rules.create');
+    expect(result.cmd.options).toBeDefined();
+    expect(result.cmd.options!['name']).toBe('My Rule');
+    expect(result.cmd.options!['payee']).toBe('Amazon');
+    expect(result.cmd.options!['category-id']).toBe('cat-food');
+  });
+
+  it('parses rules.create with all options', () => {
+    const result = parseArgs(['rules', 'create', '--name', 'My Rule', '--payee', 'Amazon', '--category-id', 'cat-food', '--transaction-id', 'txn-001', '--operation', 'categorize']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('rules.create');
+    expect(result.cmd.options!['name']).toBe('My Rule');
+    expect(result.cmd.options!['payee']).toBe('Amazon');
+    expect(result.cmd.options!['category-id']).toBe('cat-food');
+    expect(result.cmd.options!['transaction-id']).toBe('txn-001');
+    expect(result.cmd.options!['operation']).toBe('categorize');
+  });
+
+  it('parses rules.show with ruleId flag', () => {
+    const result = parseArgs(['rules', 'show', '--rule-id', 'rule_abc']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('rules.show');
+    expect(result.cmd.ruleId).toBe('rule_abc');
+  });
+
+  it('rejects rules.show without ruleId', () => {
+    const result = parseArgs(['rules', 'show']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_rule_id');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Executable routing — main() produces a JSON envelope for rule commands
+// ---------------------------------------------------------------------------
+
+describe('main — rule routing', () => {
+  const mockRuleProtocol = {
+    async ruleCreate() {
+      return { ruleId: 'rule_new', name: 'My Rule', status: 'pending', createdAt: '2026-07-20T00:00:00Z', correlationId: 'corr_001' };
+    },
+    async ruleList() {
+      return { items: [] };
+    },
+    async ruleShow() {
+      return { id: 'rule_abc', name: 'Test Rule', order: 1, trigger: {}, actions: {}, inactive: false };
+    },
+  };
+
+  const rulesCreateLedger = { mockLedger: true, listRules: async () => [] };
+  const rulesListLedger = { mockLedger: true, listRules: async () => [] };
+  const rulesShowLedger = { mockLedger: true, listRules: async () => [{ id: 'rule_abc', name: 'Test Rule', order: 1, trigger: {}, actions: {}, inactive: false }] };
+
+  it('routes rules.create and returns ok envelope', async () => {
+    const capturedOptions: unknown[] = [];
+    const result = await main(['rules', 'create', '--name', 'My Rule', '--payee', 'Amazon', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_rule_create',
+      mode: 'reviewAndApply',
+      ledger: rulesCreateLedger,
+      analysisProtocol: {
+        ...mockRuleProtocol,
+        async ruleCreate(_ledger: unknown, opts: unknown) {
+          capturedOptions.push(opts);
+          return { ruleId: 'rule_new', name: 'My Rule', status: 'pending', createdAt: '2026-07-20T00:00:00Z', correlationId: 'corr_001' };
+        },
+      },
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_rule_create');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.ruleId).toBe('rule_new');
+    expect(capturedOptions).toHaveLength(1);
+    const opts = capturedOptions[0] as Record<string, unknown>;
+    expect(opts.message).toBe('My Rule');
+    expect(opts.reason).toBe('Amazon');
+  });
+
+  it('routes rules.list and returns list envelope', async () => {
+    const result = await main(['rules', 'list', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_rule_list',
+      mode: 'observe',
+      ledger: rulesListLedger,
+      analysisProtocol: mockRuleProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_rule_list');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.items).toEqual([]);
+  });
+
+  it('routes rules.show and forwards ruleId', async () => {
+    const result = await main(['rules', 'show', '--rule-id', 'rule_abc', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_rule_show',
+      mode: 'observe',
+      ledger: rulesShowLedger,
+      analysisProtocol: mockRuleProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_rule_show');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.id).toBe('rule_abc');
+  });
+
+  it('rejects rules.show missing ruleId', async () => {
+    const result = await main(['rules', 'show', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_rule_show_missing',
+      mode: 'observe',
+      ledger: rulesListLedger,
+      analysisProtocol: mockRuleProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('missing_rule_id');
+  });
+});

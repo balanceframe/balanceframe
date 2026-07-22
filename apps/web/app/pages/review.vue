@@ -98,6 +98,7 @@
         :has-selection="adapter.state.selectedIndices.length > 0"
         :loading="adapter.loading"
         :metrics="adapter.state.metrics"
+        :has-rule-candidates="!!adapter.state.currentItem?.evidence.ruleCandidates?.length"
         @approve="adapter.approve()"
         @correct="promptAndCorrect"
         @reject="adapter.reject()"
@@ -106,6 +107,7 @@
         @bulk-approve="adapter.bulkApprove()"
         @bulk-reject="adapter.bulkReject()"
         @bulk-skip="adapter.bulkSkip()"
+        @propose-rule="promptProposeRule"
         @refresh="adapter.refresh()"
         @reset-metrics="adapter.resetMetrics()"
         :class="{ 'mt-4': adapter.state.currentItem }"
@@ -191,6 +193,17 @@ async function load() {
 function promptAndCorrect(category?: string) {
   const cat = category ?? prompt('Category ID:');
   if (cat) adapter.correct(cat);
+}
+
+function promptProposeRule(): void {
+  const current = adapter.state.currentItem;
+  if (!current) return;
+  const item = current.data;
+  const merchant = item.evidence.normalizedMerchant;
+  const categoryId = item.evidence.suggestedCategory;
+  if (merchant && categoryId) {
+    adapter.proposeRule(item.reviewItem.id, merchant, categoryId);
+  }
 }
 
 async function handleSignOut() {

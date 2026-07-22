@@ -31,6 +31,14 @@ export interface ClassificationHistoryEntry {
   readonly lastClassified: string;
 }
 
+/** A candidate for automatic rule creation derived from classification history. */
+export interface RuleCandidate {
+  readonly merchant: string;
+  readonly currentCategory: string;
+  readonly matchCount: number;
+  readonly consistency: number;
+}
+
 /** What accepting the suggested category would change. */
 export interface ChangePreview {
   readonly fromCategory: string;
@@ -48,6 +56,7 @@ export interface ReviewEvidence {
   readonly suggestedCategory: string;
   readonly alternatives: readonly string[];
   readonly history: readonly ClassificationHistoryEntry[];
+  readonly ruleCandidates: readonly RuleCandidate[];
   readonly provenance: string;
   readonly freshness: string | null;
   readonly changePreview: ChangePreview;
@@ -418,6 +427,16 @@ function extractEvidence(item: ReviewItem): ReviewEvidence {
     ? (pay.history as ClassificationHistoryEntry[])
     : [];
 
+  const totalCount = historyList.reduce((sum, h) => sum + h.count, 0);
+  const ruleCandidates: RuleCandidate[] = totalCount > 0
+    ? historyList.map((h) => ({
+        merchant: normalizedMerchant,
+        currentCategory: h.categoryId,
+        matchCount: h.count,
+        consistency: h.count / totalCount,
+      }))
+    : [];
+
   const fromCategory =
     typeof pay?.currentCategory === 'string'
       ? pay.currentCategory
@@ -431,6 +450,7 @@ function extractEvidence(item: ReviewItem): ReviewEvidence {
     currentCategory: fromCategory,
     suggestedCategory: item.categoryId,
     alternatives: alternativesList,
+    ruleCandidates,
     history: historyList,
     provenance: item.provenance,
     freshness: item.freshnessExpiresAt,

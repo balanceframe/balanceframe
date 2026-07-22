@@ -31,6 +31,10 @@ import {
   proposalExecuteAnalysis,
   proposalListAnalysis,
   auditQueryAnalysis,
+  ruleCreateAnalysis,
+  ruleListAnalysis,
+  ruleShowAnalysis,
+  ruleUpdateAnalysis,
   type CommandInput,
   type ConnectionMode,
   type AnalysisProtocol,
@@ -64,6 +68,8 @@ export interface CliCommand {
   ids?: string[];
   /** Proposal ID for proposal show/approve/execute commands. */
   proposalId?: string;
+  /** Rule ID for rule show command. */
+  ruleId?: string;
   /** Extra command options parsed from flags (proposals create, audit query). */
   options?: Record<string, string>;
 }
@@ -128,9 +134,13 @@ export function parseArgs(argv: string[]): ParseResult {
     '--from': true,
     '--to': true,
     '--scope': true,
+    '--operation': true,
     '--message': true,
     '--reason': true,
-    '--operation': true,
+    '--name': true,
+    '--payee': true,
+    '--active': true,
+    '--rule-id': true,
   };
   const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -747,6 +757,98 @@ export function parseArgs(argv: string[]): ParseResult {
     };
   }
 
+  // -----------------------------------------------------------------------
+  // Rule commands
+  // -----------------------------------------------------------------------
+
+  if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'create') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--name') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--name requires a value.' } }; options.name = v; i++; }
+      else if (a === '--payee') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--payee requires a value.' } }; options.payee = v; i++; }
+      else if (a === '--category-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--category-id requires a value.' } }; options['category-id'] = v; i++; }
+      else if (a === '--transaction-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' } }; options['transaction-id'] = v; i++; }
+      else if (a === '--operation') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--operation requires a value.' } }; options.operation = v; i++; }
+      else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: { code: 'trailing_args', message: `Unexpected argument after 'rules create': ${a}` },
+        };
+      }
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'rules.create',
+        format,
+        args: normalized,
+        options,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'list') {
+    if (cleanArgs.length > 2) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'rules list': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'rules.list',
+        format,
+        args: normalized,
+      },
+    };
+  }
+
+  if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'show') {
+    let ruleId: string | undefined;
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      if (a === '--rule-id') {
+        if (!remaining[i + 1] || remaining[i + 1].startsWith('--')) {
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--rule-id requires a value.' },
+          };
+        }
+        ruleId = remaining[i + 1];
+        i++;
+      } else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: { code: 'trailing_args', message: `Unexpected argument after 'rules show': ${a}` },
+        };
+      }
+    }
+    if (!ruleId) {
+      return {
+        ok: false,
+        error: { code: 'missing_rule_id', message: 'rules show requires --rule-id.' },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'rules.show',
+        format,
+        args: normalized,
+        ruleId,
+      },
+    };
+  }
+
   return {
     ok: false,
     error: {
@@ -1084,9 +1186,47 @@ export async function main(
         if (cmd.options?.action) queryOptions.action = cmd.options.action;
         if (cmd.options?.['actor-id']) queryOptions.actorId = cmd.options['actor-id'];
         if (cmd.options?.['entity-id']) queryOptions.entityId = cmd.options['entity-id'];
-        if (cmd.options?.from) queryOptions.from = cmd.options.from;
-        if (cmd.options?.to) queryOptions.to = cmd.options.to;
         const envelope = await auditQueryAnalysis(commandInput, queryOptions as AuditQueryOptions);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.create': {
+        const ruleOptions: ReviewActionOptions = {};
+        if (cmd.options?.['name']) ruleOptions.message = cmd.options['name'];
+        if (cmd.options?.['payee']) ruleOptions.reason = cmd.options['payee'];
+        if (cmd.options?.['category-id']) ruleOptions.categoryId = cmd.options['category-id'];
+        if (cmd.options?.['transaction-id']) ruleOptions.transactionId = cmd.options['transaction-id'];
+        if (cmd.options?.operation) ruleOptions.operation = cmd.options.operation;
+        const envelope = await ruleCreateAnalysis(commandInput, ruleOptions);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.list': {
+        const envelope = await ruleListAnalysis(commandInput);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.show': {
+        if (!cmd.ruleId) {
+          const info = new ErrorInfo({
+            code: 'missing_rule_id',
+            message: 'Rule ID is required. Use --rule-id or pass it as the first argument.',
+            retryable: false,
+            reasonCodes: ['missing_rule_id'],
+          });
+          return JSON.stringify(errorResponse(commandInput.requestId ?? 'cli', info), null, 2);
+        }
+        const envelope = await ruleShowAnalysis(commandInput, cmd.ruleId);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'rules.update': {
+        const updateOptions: ReviewActionOptions = {};
+        if (cmd.options?.['name']) updateOptions.message = cmd.options['name'];
+        if (cmd.options?.['active']) updateOptions.reason = cmd.options['active'];
+        if (cmd.options?.['category-id']) updateOptions.categoryId = cmd.options['category-id'];
+        if (cmd.options?.['rule-id']) updateOptions.message = cmd.options['rule-id'];
+        const envelope = await ruleUpdateAnalysis(commandInput, updateOptions);
         return JSON.stringify(envelope, null, 2);
       }
 

@@ -129,7 +129,7 @@ pub fn run_deterministic_analysis(
     transactions: &[Transaction],
     categories: &[Category],
     payees: &[Payee],
-    rules: &[Rule],
+    _rules: &[Rule],
     schedules: &[Schedule],
     budgets: &[BudgetMonth],
     compatibility: CompatibilityMetadata,
@@ -340,7 +340,7 @@ pub fn run_deterministic_analysis(
     // -----------------------------------------------------------------------
     // 8. Rule candidates (uses filtered transactions)
     // -----------------------------------------------------------------------
-    let rule_candidates = build_rule_candidates(rules, &scoped_txns, categories);
+    let rule_candidates = generate_rule_candidates(&scoped_txns, categories, 2);
 
     // -----------------------------------------------------------------------
     // 9. Duplicate evidence (uses filtered transactions)
@@ -534,76 +534,95 @@ fn find_repeated_merchants(transactions: &[Transaction]) -> Vec<RepeatedMerchant
 }
 
 // ---------------------------------------------------------------------------
-// Rule candidate analysis
+// Rule candidate analysis — evidence‑based
 // ---------------------------------------------------------------------------
 
-fn build_rule_candidates(
-    rules: &[Rule],
+/// Analyze approved transaction history to find merchants consistently
+/// categorized to the same category across different transactions/accounts,
+/// above a `min_consistent_count` threshold.
+///
+/// This is the evidence‑based replacement for the old `build_rule_candidates`
+/// which only looked at existing rules.  The generated candidates are
+/// suggestions for *new* rules derived from observed historical behavior.
+pub fn generate_rule_candidates(
     transactions: &[Transaction],
     categories: &[Category],
+    min_consistent_count: u32,
 ) -> Vec<RuleCandidate> {
-    let mut candidates: Vec<RuleCandidate> = Vec::new();
+    // Group categorized transactions by normalized merchant name.
+    // Only consider transactions that have both a payee_name and a non‑empty category_id.
+    let mut merchant_cats: HashMap<String, HashMap<String, (String, u32)>> = HashMap::new();
+    // normalized_merchant → { category_id → (category_name, count) }
 
-    for rule in rules {
-        if rule.inactive {
+    for tx in transactions {
+        let payee = match &tx.payee_name {
+            Some(p) if !p.is_empty() => p,
+            _ => continue,
+        };
+        let cat_id = match &tx.category_id {
+            Some(c) if !c.is_empty() => c.clone(),
+            _ => continue,
+        };
+        let cat_name = tx
+            .category_name
+            .clone()
+            .unwrap_or_else(|| "Unknown".into());
+        let normalized = normalize_merchant(payee);
+        if normalized.is_empty() {
             continue;
         }
 
-        // Count uncategorized transactions that this rule could match.
-        // In Phase 1 we use a simple heuristic: count transactions that
-        // have no category and that have a payee name.
-        let matching_count = transactions
-            .iter()
-            .filter(|tx| {
-                (tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
-                    && tx.payee_name.is_some()
-            })
-            .count() as u32;
-
-        if matching_count == 0 {
-            continue;
+        let cat_map = merchant_cats.entry(normalized).or_default();
+        let entry = cat_map.entry(cat_id).or_insert_with(|| (cat_name.clone(), 0));
+        entry.1 += 1;
+        // Update category name if we now have a better one
+        if entry.0 == "Unknown" && cat_name != "Unknown" {
+            entry.0 = cat_name;
         }
-
-        // Try to extract a target category from the rule's actions
-        let (proposed_category_id, proposed_category_name) =
-            extract_target_category(&rule.actions, categories);
-
-        candidates.push(RuleCandidate {
-            rule_id: rule.id.clone(),
-            rule_name: rule.name.clone(),
-            proposed_category_id,
-            proposed_category_name,
-            matching_tx_count: matching_count,
-            reason: "Rule is active and could match uncategorized transactions".into(),
-        });
     }
 
-    // Also suggest deterministic rules from the data: if a normalized merchant
-    // always maps to the same category in history, suggest a rule.
-    candidates
-}
+    // Build a reverse lookup: category_id → category_name for any categories
+    // that weren't covered by transaction data.
+    let cat_name_lookup: HashMap<&str, &str> = categories
+        .iter()
+        .map(|c| (c.id.as_str(), c.name.as_str()))
+        .collect();
 
-/// Heuristic: look in the rule actions JSON for a `category` field.
-fn extract_target_category(
-    actions: &serde_json::Value,
-    categories: &[Category],
-) -> (String, String) {
-    if let Some(arr) = actions.as_array() {
-        for action in arr {
-            if let Some(obj) = action.as_object() {
-                if let Some(cat_id) = obj.get("category").and_then(|v| v.as_str()) {
-                    let name = categories
-                        .iter()
-                        .find(|c| c.id == cat_id)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_default();
-                    return (cat_id.to_string(), name);
-                }
+    let mut candidates: Vec<RuleCandidate> = Vec::new();
+
+    for (normalized_merchant, cat_map) in &merchant_cats {
+        // Find the dominant category for this merchant
+        let best = cat_map.iter().max_by_key(|(_, &(_, count))| count);
+        if let Some((cat_id, (cat_name_from_tx, count))) = &best {
+            if *count >= min_consistent_count {
+                // Prefer the official category name from the category list
+                let final_cat_name = cat_name_lookup
+                    .get(cat_id.as_str())
+                    .copied()
+                    .unwrap_or(cat_name_from_tx)
+                    .to_string();
+
+                candidates.push(RuleCandidate {
+                    rule_id: String::new(),
+                    rule_name: format!("Auto-rule for {}", normalized_merchant),
+                    proposed_category_id: cat_id.to_string(),
+                    proposed_category_name: final_cat_name,
+                    matching_tx_count: *count,
+                    reason: format!(
+                        "Merchant '{}' consistently categorized as '{}' across {} transaction(s)",
+                        normalized_merchant, cat_name_from_tx, count
+                    ),
+                });
             }
         }
     }
-    (String::new(), String::new())
+
+    // Stable sort by descending matching_tx_count so the most consistent
+    // candidates appear first.
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.matching_tx_count));
+    candidates
 }
+
 
 // ---------------------------------------------------------------------------
 // Recurring charge analysis
@@ -940,38 +959,114 @@ mod tests {
     }
 
     #[test]
-    fn test_rule_candidates_from_existing_rules() {
-        let rules = vec![Rule {
-            id: "r1".into(),
-            name: "Auto-categorize".into(),
-            order: 1,
-            trigger: serde_json::json!({}),
-            actions: serde_json::json!([{"category": "c1"}]),
-            inactive: false,
-        }];
+    fn test_generate_rule_candidates_consistent_merchant() {
+        // Two transactions from the same merchant, both categorized as "Food"
         let txs = vec![
-            sample_tx("tx1", "a1", Some("Some Payee"), None, None, -500, "2026-01-01", true),
+            sample_tx("tx1", "a1", Some("Starbucks"), Some("c1"), Some("Food"), -500, "2026-01-01", true),
+            sample_tx("tx2", "a2", Some("Starbucks"), Some("c1"), Some("Food"), -550, "2026-02-01", true),
         ];
         let cats = vec![sample_category("c1", "Food", false)];
-        let candidates = build_rule_candidates(&rules, &txs, &cats);
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].rule_id, "r1");
+        let candidates = generate_rule_candidates(&txs, &cats, 2);
+        assert_eq!(candidates.len(), 1, "should propose one rule for Starbucks");
+        assert_eq!(candidates[0].proposed_category_id, "c1");
+        assert_eq!(candidates[0].matching_tx_count, 2);
+        assert!(!candidates[0].reason.is_empty());
+        // rule_id is empty since this is a new-rule suggestion
+        assert!(candidates[0].rule_id.is_empty());
     }
 
     #[test]
-    fn test_inactive_rules_excluded() {
-        let rules = vec![Rule {
-            id: "r1".into(),
-            name: "Inactive".into(),
-            order: 1,
-            trigger: serde_json::json!({}),
-            actions: serde_json::json!([{"category": "c1"}]),
-            inactive: true,
-        }];
-        let candidates = build_rule_candidates(&rules, &[], &[]);
+    fn test_generate_rule_candidates_below_threshold() {
+        // Only one transaction — below min_consistent_count of 2
+        let txs = vec![
+            sample_tx("tx1", "a1", Some("Starbucks"), Some("c1"), Some("Food"), -500, "2026-01-01", true),
+        ];
+        let cats = vec![sample_category("c1", "Food", false)];
+        let candidates = generate_rule_candidates(&txs, &cats, 2);
+        assert!(candidates.is_empty(), "single transaction should not meet threshold");
+    }
+
+    #[test]
+    fn test_generate_rule_candidates_uncategorized_excluded() {
+        // Transaction without category should not contribute
+        let txs = vec![
+            sample_tx("tx1", "a1", Some("Starbucks"), None, None, -500, "2026-01-01", true),
+            sample_tx("tx2", "a2", Some("Starbucks"), None, None, -550, "2026-02-01", true),
+        ];
+        let cats = vec![sample_category("c1", "Food", false)];
+        let candidates = generate_rule_candidates(&txs, &cats, 1);
+        assert!(candidates.is_empty(), "uncategorized transactions should not produce candidates");
+    }
+
+    #[test]
+    fn test_generate_rule_candidates_no_payee_skipped() {
+        // Transaction without payee name should be skipped
+        let txs = vec![
+            sample_tx("tx1", "a1", None, Some("c1"), Some("Food"), -500, "2026-01-01", true),
+        ];
+        let cats = vec![sample_category("c1", "Food", false)];
+        let candidates = generate_rule_candidates(&txs, &cats, 1);
+        assert!(candidates.is_empty(), "no payee name should produce no candidates");
+    }
+
+    #[test]
+    fn test_generate_rule_candidates_multiple_categories() {
+        // Starbucks has 3 food and 1 coffee — dominant is food, above threshold 2
+        let txs = vec![
+            sample_tx("tx1", "a1", Some("Starbucks"), Some("c1"), Some("Food"), -500, "2026-01-01", true),
+            sample_tx("tx2", "a1", Some("Starbucks"), Some("c1"), Some("Food"), -550, "2026-02-01", true),
+            sample_tx("tx3", "a2", Some("Starbucks"), Some("c1"), Some("Food"), -600, "2026-03-01", true),
+            sample_tx("tx4", "a1", Some("Starbucks"), Some("c2"), Some("Coffee"), -400, "2026-04-01", true),
+        ];
+        let cats = vec![
+            sample_category("c1", "Food", false),
+            sample_category("c2", "Coffee", false),
+        ];
+        let candidates = generate_rule_candidates(&txs, &cats, 2);
+        assert_eq!(candidates.len(), 1, "dominant category Food should reach threshold");
+        assert_eq!(candidates[0].proposed_category_id, "c1");
+        assert_eq!(candidates[0].matching_tx_count, 3);
+    }
+
+    #[test]
+    fn test_generate_rule_candidates_different_merchants() {
+        let txs = vec![
+            sample_tx("tx1", "a1", Some("Starbucks"), Some("c1"), Some("Food"), -500, "2026-01-01", true),
+            sample_tx("tx2", "a1", Some("Starbucks"), Some("c1"), Some("Food"), -550, "2026-02-01", true),
+            sample_tx("tx3", "a1", Some("Amazon"), Some("c2"), Some("Shopping"), -2000, "2026-03-01", true),
+            sample_tx("tx4", "a1", Some("Amazon"), Some("c2"), Some("Shopping"), -2500, "2026-04-01", true),
+        ];
+        let cats = vec![
+            sample_category("c1", "Food", false),
+            sample_category("c2", "Shopping", false),
+        ];
+        let candidates = generate_rule_candidates(&txs, &cats, 2);
+        assert_eq!(candidates.len(), 2, "both merchants meet threshold");
+        // Should be sorted by count descending
+        assert_eq!(candidates[0].matching_tx_count, 2);
+        assert_eq!(candidates[1].matching_tx_count, 2);
+    }
+
+    #[test]
+    fn test_generate_rule_candidates_empty_transactions() {
+        let candidates = generate_rule_candidates(&[], &[], 1);
         assert!(candidates.is_empty());
     }
 
+    #[test]
+    fn test_generate_rule_candidates_merchant_normalization() {
+        // "The Home Depot" and "Home Depot" should normalize to same merchant
+        let txs = vec![
+            sample_tx("tx1", "a1", Some("The Home Depot"), Some("c1"), Some("Home Improvement"), -5000, "2026-01-01", true),
+            sample_tx("tx2", "a1", Some("Home Depot"), Some("c1"), Some("Home Improvement"), -10000, "2026-02-01", true),
+        ];
+        let cats = vec![sample_category("c1", "Home Improvement", false)];
+        let candidates = generate_rule_candidates(&txs, &cats, 2);
+        assert_eq!(candidates.len(), 1, "normalized merchants should merge");
+        assert!(candidates[0].rule_name.contains("home depot"));
+
+
+    }
     #[test]
     fn test_recurring_charges_identified() {
         let txs = vec![

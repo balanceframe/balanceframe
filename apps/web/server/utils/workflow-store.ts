@@ -42,6 +42,13 @@ export interface ClassificationHistoryEntry {
   readonly lastClassified: string;
 }
 
+export interface RuleCandidate {
+  readonly merchant: string;
+  readonly currentCategory: string;
+  readonly matchCount: number;
+  readonly consistency: number;
+}
+
 export interface ReviewQueueItem {
   readonly reviewItem: ReviewItem;
   readonly evidence: {
@@ -53,6 +60,7 @@ export interface ReviewQueueItem {
     readonly suggestedCategory: string;
     readonly alternatives: readonly string[];
     readonly history: readonly ClassificationHistoryEntry[];
+    readonly ruleCandidates: readonly RuleCandidate[];
     readonly provenance: string;
     readonly freshness: string | null;
     readonly changePreview: {
@@ -112,6 +120,16 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       ? (pay.history as ClassificationHistoryEntry[])
       : [];
 
+  const totalCount = historyList.reduce((sum, h) => sum + h.count, 0);
+  const ruleCandidates: RuleCandidate[] = totalCount > 0
+    ? historyList.map((h) => ({
+        merchant: normalizedMerchant,
+        currentCategory: h.categoryId,
+        matchCount: h.count,
+        consistency: h.count / totalCount,
+      }))
+    : [];
+
   const fromCategory: string =
     typeof pay?.currentCategory === 'string'
       ? pay.currentCategory
@@ -128,6 +146,7 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       suggestedCategory: item.categoryId,
       alternatives: alternativesList,
       history: historyList,
+      ruleCandidates,
       provenance: item.provenance,
       freshness: item.freshnessExpiresAt,
       changePreview: {

@@ -2,12 +2,12 @@
 
 use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{
-    Account, BudgetMonth, CandidateStatus, CategorizationCandidate, Category,
-    CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag,
-    Transaction,
+    normalize_merchant, Account, BudgetMonth, CandidateStatus, CategorizationCandidate,
+    Category, CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag, Transaction,
 };
 pub use balanceframe_financial_core::{InferencePolicy, Provenance};
 use balanceframe_financial_core as fc;
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -193,6 +193,26 @@ pub struct RuleSimulationResult {
     pub name: String,
     pub transactions_matched: u32,
     pub transactions_affected: Vec<String>,
+    /// Maps target category ID → count of matched transactions.
+    #[serde(default)]
+    pub category_distribution: HashMap<String, u32>,
+    /// Conflict messages when a rule overlaps with other rules.
+    #[serde(default)]
+    pub conflicts: Vec<String>,
+    /// Example transactions that would be affected.
+    #[serde(default)]
+    pub examples: Vec<SimulationExample>,
+}
+
+/// A single example of a transaction that a rule would match.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulationExample {
+    pub tx_id: String,
+    pub payee: Option<String>,
+    pub amount: fc::Money,
+    pub current_category: Option<String>,
+    pub would_change: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -208,6 +228,40 @@ pub struct VerificationResult {
     pub verified: bool,
     pub reason_codes: Vec<String>,
     pub message: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Rule planning types
+// ---------------------------------------------------------------------------
+
+/// A condition on a payee field used to match transactions for rule creation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayeeCondition {
+    /// The field to match (e.g. "payee", "imported_payee").
+    pub field: String,
+    /// The comparison operation (e.g. "is", "contains", "startsWith").
+    pub operation: String,
+    /// The value to compare against.
+    pub value: String,
+}
+
+/// A plan for creating a new categorization rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateRulePlan {
+    /// Stable identifier for this plan.
+    pub plan_id: String,
+    /// Human-readable name for the rule.
+    pub rule_name: String,
+    /// Trigger condition as JSON (e.g. `{"type":"payee_is","value":"groceries"}`).
+    pub trigger: serde_json::Value,
+    /// Actions to apply as JSON (e.g. `[{"type":"set_category","value":"c1"}]`).
+    pub actions: serde_json::Value,
+    /// Content hash for integrity verification.
+    pub hash: String,
+    /// The payee conditions that generated this plan.
+    pub conditions: Vec<PayeeCondition>,
 }
 
 // ---------------------------------------------------------------------------
@@ -630,6 +684,29 @@ pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> Determini
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Rule candidate analysis — protocol wrapper
+// ---------------------------------------------------------------------------
+
+/// Analyze approved transaction history in a snapshot to find merchants
+/// consistently categorized to the same category, above a
+/// `min_consistent_count` threshold.
+///
+/// This is a protocol-level wrapper around
+/// [`fc::analysis::generate_rule_candidates`] that extracts the relevant
+/// data from a [`ProtocolSnapshot`].
+pub fn analyze_rule_candidates(
+    snapshot: &ProtocolSnapshot,
+    min_consistent_count: u32,
+) -> Vec<fc::RuleCandidate> {
+    fc::generate_rule_candidates(
+        &snapshot.transactions,
+        &snapshot.categories,
+        min_consistent_count,
+    )
+}
+
 /// Find categorization candidates from a list of transactions.
 /// This is a protocol-level wrapper; it performs a simple check for
 /// transactions without a category.
@@ -979,23 +1056,197 @@ pub fn verify_mutation(
     }
 }
 
+
+
+/// Plan the creation of a new rule based on payee conditions and a target category.
+///
+/// Normalizes the first payee condition's value and produces a trigger/actions
+/// payload suitable for rule creation.
+pub fn plan_create_rule(
+    name: &str,
+    payee_conditions: &[PayeeCondition],
+    category_id: &str,
+    _snapshot: &ProtocolSnapshot,
+) -> CreateRulePlan {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Normalize the payee value from the first condition.  If there are no
+    // conditions we still produce a plan, but the trigger will be empty.
+    let normalized_payee = payee_conditions
+        .first()
+        .map(|c| c.value.trim().to_lowercase())
+        .unwrap_or_default();
+
+    let trigger = serde_json::json!({
+        "type": "payee_is",
+        "value": normalized_payee,
+    });
+
+    let actions = serde_json::json!([{
+        "type": "set_category",
+        "value": category_id,
+    }]);
+
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    for c in payee_conditions {
+        c.field.hash(&mut hasher);
+        c.operation.hash(&mut hasher);
+        c.value.hash(&mut hasher);
+    }
+    category_id.hash(&mut hasher);
+    let hash = format!("{:x}", hasher.finish());
+
+    CreateRulePlan {
+        plan_id: format!("rule_plan_{}", hash),
+        rule_name: name.to_string(),
+        trigger,
+        actions,
+        hash,
+        conditions: payee_conditions.to_vec(),
+    }
+}
+
+/// Verify that a rule creation plan does not conflict with existing rules.
+///
+/// Returns `verified: false` with reason code `rule_already_exists` when the
+/// snapshot already contains a rule whose trigger and actions match the plan.
+pub fn verify_rule_mutation(
+    plan: &CreateRulePlan,
+    snapshot: &ProtocolSnapshot,
+) -> VerificationResult {
+    use fc::normalize_merchant;
+
+    // Normalize both sides for payee_is comparison — plan_create_rule
+    // already normalizes the payee name to lowercase, but existing rules
+    // may have original casing.
+    let plan_trigger_value = plan.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    let plan_norm = normalize_merchant(plan_trigger_value);
+
+    let exists = snapshot.rules.iter().any(|existing| {
+        // Compare actions exactly
+        if existing.actions != plan.actions {
+            return false;
+        }
+        // Compare triggers with normalization for payee_is type
+        if existing.trigger == plan.trigger {
+            return true;
+        }
+        // Allow normalized match for payee_is triggers
+        if existing.trigger.get("type").and_then(|v| v.as_str()) == Some("payee_is") {
+            let existing_val = existing.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            let existing_norm = normalize_merchant(existing_val);
+            return existing_norm == plan_norm;
+        }
+        false
+    });
+
+    if exists {
+        VerificationResult {
+            verified: false,
+            reason_codes: vec!["rule_already_exists".into()],
+            message: Some(format!(
+                "A rule with trigger {:?} and actions {:?} already exists",
+                plan.trigger, plan.actions
+            )),
+        }
+    } else {
+        VerificationResult {
+            verified: true,
+            reason_codes: vec!["rule_creation_verified".into()],
+            message: None,
+        }
+    }
+}
+
 /// Simulate what would happen if a rule were applied to a set of transactions.
+///
+/// Evaluates the rule's trigger conditions against each transaction:
+/// - `payee_is` – normalized payee name comparison
+/// - `transaction_added` – matches all transactions
+/// - `amount_less_than` / `amount_greater_than` – compares `amount.minor_units` to the threshold
 pub fn simulate_rule(
     rule: &Rule,
     transactions: &[Transaction],
 ) -> RuleSimulationResult {
+    if rule.inactive {
+        return RuleSimulationResult {
+            rule_id: rule.id.clone(),
+            name: rule.name.clone(),
+            transactions_matched: 0,
+            transactions_affected: vec![],
+            category_distribution: HashMap::new(),
+            conflicts: vec![],
+            examples: vec![],
+        };
+    }
+
+    let trigger_type = rule
+        .trigger
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let trigger_value = rule.trigger.get("value");
+
+    // Extract target category ID from the actions, if present.
+    let target_category = extract_action_value(&rule.actions);
+
     let mut matched: u32 = 0;
     let mut affected: Vec<String> = Vec::new();
+    let mut category_distribution: HashMap<String, u32> = HashMap::new();
+    let conflicts: Vec<String> = Vec::new();
+    let mut examples: Vec<SimulationExample> = Vec::new();
 
     for tx in transactions {
-        // Simple simulation: check if the transaction is uncategorized and
-        // the rule is active.  A real implementation would evaluate the
-        // rule's trigger conditions against each transaction.
-        if !rule.inactive
-            && (tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
-        {
+        let matches = match trigger_type {
+            "payee_is" => {
+                let raw = trigger_value.and_then(|v| v.as_str()).unwrap_or("");
+                let norm_trigger = normalize_merchant(raw);
+                let norm_tx =
+                    normalize_merchant(tx.payee_name.as_deref().unwrap_or(""));
+                !norm_trigger.is_empty() && norm_trigger == norm_tx
+            }
+            "transaction_added" => true,
+            "amount_less_than" => {
+                let threshold = trigger_value
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(i64::MAX);
+                tx.amount.minor_units() < threshold
+            }
+            "amount_greater_than" => {
+                let threshold = trigger_value
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(i64::MIN);
+                tx.amount.minor_units() > threshold
+            }
+            _ => false,
+        };
+
+        if matches {
             matched += 1;
             affected.push(tx.id.clone());
+
+            // Determine if the category would change:
+            // if we know the target, compare; otherwise fall back to uncategorized check.
+            let would_change = if let Some(target) = &target_category {
+                tx.category_id.as_deref() != Some(target.as_str())
+            } else {
+                tx.category_id.is_none() || tx.category_id.as_deref() == Some("")
+            };
+
+            let dist_key = target_category
+                .clone()
+                .unwrap_or_default();
+            *category_distribution.entry(dist_key).or_insert(0) += 1;
+
+            examples.push(SimulationExample {
+                tx_id: tx.id.clone(),
+                payee: tx.payee_name.clone(),
+                amount: tx.amount.clone(),
+                current_category: tx.category_name.clone(),
+                would_change,
+            });
         }
     }
 
@@ -1004,7 +1255,27 @@ pub fn simulate_rule(
         name: rule.name.clone(),
         transactions_matched: matched,
         transactions_affected: affected,
+        category_distribution,
+        conflicts,
+        examples,
     }
+}
+
+/// Extract the `value` field (category ID) from a set-category action.
+/// Actions are a JSON array of `{"type":"set_category","value":"cat-id"}`.
+fn extract_action_value(actions: &serde_json::Value) -> Option<String> {
+    if let Some(arr) = actions.as_array() {
+        for action in arr {
+            if let Some(obj) = action.as_object() {
+                if let Some(cat) = obj.get("value").and_then(|v| v.as_str()) {
+                    if !cat.is_empty() {
+                        return Some(cat.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

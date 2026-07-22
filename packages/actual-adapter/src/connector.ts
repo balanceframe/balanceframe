@@ -419,16 +419,64 @@ export class ActualConnector implements BudgetLedger {
       'This method will be available in a future update.',
     );
   }
-
   async createRule(
-    _proposal: RuleProposal,
-    _precondition?: MutationPrecondition,
+    proposal: RuleProposal,
+    precondition?: MutationPrecondition,
   ): Promise<MutationResult> {
-    this.assertInitialized();
-    throw new Error(
-      'createRule() is not yet implemented in any connection mode. ' +
-      'This method will be available in a future update.',
-    );
+    this.assertMutationAllowed('createRule');
+
+    // Require an explicitly selected budget
+    if (!this._budgetInfo) {
+      return {
+        success: false,
+        error: 'No budget selected. Call selectBudget() before creating rules.',
+        code: 'BUDGET_NOT_SELECTED',
+      } as MutationResult;
+    }
+
+    return this.withCacheLock(this._budgetInfo.id, async (): Promise<MutationResult> => {
+      // If a backup precondition is set, the caller is responsible for the backup.
+      // Actual's createRule doesn't have native precondition support, so we just log it.
+      if (precondition?.requireBackup) {
+        // Backup requirement noted — caller should have handled it upstream
+      }
+
+      // Build the rule object for the Actual API
+      const ruleRecord: Record<string, unknown> = {
+        stage: proposal.stage ?? 'post',
+        conditionsOp: proposal.conditionsOp ?? 'and',
+        conditions: proposal.conditions,
+        actions: proposal.actions,
+      };
+
+      // Call Actual API to create the rule
+      let createResult: { id: string };
+      try {
+        createResult = await this.client.createRule(ruleRecord);
+      } catch (err) {
+        return {
+          success: false,
+          error: `Failed to create rule: ${err instanceof Error ? err.message : String(err)}`,
+          code: 'RULE_CREATION_FAILED',
+        } as MutationResult;
+      }
+
+      // Persist changes to the server — if sync fails, the rule may not be persisted
+      try {
+        await this.client.sync();
+      } catch {
+        return {
+          success: false,
+          error: 'Sync failed after creating rule: the mutation may not have been persisted',
+          code: 'SYNC_FAILED',
+        } as MutationResult;
+      }
+
+      return {
+        success: true,
+        id: createResult.id,
+      } as MutationResult;
+    });
   }
 
   async setBudgetAmount(

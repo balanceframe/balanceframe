@@ -20,6 +20,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@balanceframe/native": "workspace:*",
     "@balanceframe/protocol-generated": "workspace:*"
   },
   "devDependencies": {

@@ -36,6 +36,16 @@
           @click="$emit('correct')"
         />
       </UButtonGroup>
+      <!-- Rule creation (visible when current item has candidates) -->
+      <UButton
+        v-if="hasRuleCandidates"
+        label="Create rule"
+        color="primary"
+        variant="solid"
+        icon="i-heroicons-sparkles"
+        :disabled="!hasCurrent || loading"
+        @click="$emit('propose-rule')"
+      />
 
       <USeparator orientation="vertical" class="h-6" />
 
@@ -100,6 +110,7 @@ defineProps<{
   hasSelection: boolean;
   loading: boolean;
   metrics: unknown;
+  hasRuleCandidates: boolean;
 }>();
 
 defineEmits<{
@@ -111,7 +122,9 @@ defineEmits<{
   'bulk-approve': [];
   'bulk-reject': [];
   'bulk-skip': [];
+  'propose-rule': [];
   refresh: [];
   'reset-metrics': [];
 }>();
+
 </script>

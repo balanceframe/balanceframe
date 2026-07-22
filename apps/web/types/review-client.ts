@@ -57,23 +57,29 @@ export interface ReviewControllerAdapter {
   /** Reload the queue from scratch. */
   refresh(): Promise<void>;
 
-  // ── Single-item actions ────────────────────────────────────────────
 
+  // ── Single-item actions ────────────────────────────────────────────
+  
   /** Approve the current item. Returns the action result. */
   approve(): Promise<WebActionResult>;
-
+  
   /** Correct the current item to the given category. */
   correct(categoryId: string): Promise<WebActionResult>;
-
+  
   /** Reject the current item. */
   reject(): Promise<WebActionResult>;
-
+  
   /** Skip the current item. */
   skip(): Promise<WebActionResult>;
-
+  
   /** Undo the last reversible transition. */
   undo(): Promise<WebActionResult>;
-
+  
+  // ── Rule creation ──────────────────────────────────────────────────
+  
+  /** Propose a new automation rule for the given merchant and category. */
+  proposeRule(reviewId: string, merchant: string, categoryId: string): Promise<WebActionResult>;
+  
   // ── Bulk actions ───────────────────────────────────────────────────
 
   /** Bulk-approve all selected items. */

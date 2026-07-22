@@ -45,6 +45,13 @@ import type {
   AuditQueryOutput,
   AuditQueryResult,
   AuditQueryOptions,
+  RuleListItem,
+  RuleListResult,
+  RuleListOutput,
+  RuleShowResult,
+  RuleShowOutput,
+  RuleUpdateResult,
+  RuleUpdateOutput,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -56,7 +63,6 @@ import type {
  *
  * This is the **manual/no-model** path: it never calls a model provider.
  * Analysis values come from the injected ledger (which wraps the Rust
- * protocol via node-binding or direct TypeScript adapter calls).
  *
  * Returns a full response envelope. On error (stale data, no connection),
  * returns an error envelope.
@@ -942,6 +948,314 @@ export async function auditQueryAnalysis(
       code: 'analysis_failed',
       message,
       retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule create analysis handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new rule proposal.
+ * Delegates to the Rust protocol for the actual creation.
+ */
+export async function ruleCreateAnalysis(
+  input: CommandInput,
+  options?: ReviewActionOptions,
+): Promise<RuleUpdateOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'rule_create_stale',
+      message: 'Snapshot data is stale. Reconnect or refresh before creating a rule.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.PROPOSAL_STALE],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (input.mode === 'observe') {
+    const err = new ErrorInfo({
+      code: 'write_rejected',
+      message: 'Write operation is not permitted in Observe mode. Rule creation requires a write-enabled mode.',
+      retryable: false,
+      reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol.ruleCreate) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Rule creation not available: the protocol does not support rule creation.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.ruleCreate(ledger, mergedOptions);
+    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'rule.create'), result);
+  } catch (err) {
+    if (err instanceof ApplicationError) {
+      return errorResponse(requestId, new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      }));
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: false,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule list/show analysis handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * List automation rules.
+ * Uses the read-only path via the ledger directly.
+ */
+export async function ruleListAnalysis(
+  input: CommandInput,
+): Promise<RuleListOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'rule_stale',
+      message: 'Rule data is stale. Reconnect or refresh before proceeding.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_SNAPSHOT],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const rules: RuleListItem[] = await (ledger as any).listRules();
+    const result: RuleListResult = { items: rules };
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+/**
+ * Show a single rule by ID.
+ * Lists all rules and filters by the given ID.
+ */
+export async function ruleShowAnalysis(
+  input: CommandInput,
+  ruleId: string,
+): Promise<RuleShowOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'rule_stale',
+      message: 'Rule data is stale. Reconnect or refresh before proceeding.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_SNAPSHOT],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const allRules: RuleShowResult[] = await (ledger as any).listRules();
+    const rule = allRules.find(r => r.id === ruleId);
+    if (!rule) {
+      const err = new ErrorInfo({
+        code: 'rule_not_found',
+        message: `Rule not found: ${ruleId}`,
+        retryable: false,
+        reasonCodes: ['rule_not_found'],
+      });
+      return errorResponse(requestId, err);
+    }
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), rule);
+  } catch (err) {
+    if (err instanceof ApplicationError) {
+      return errorResponse(requestId, new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      }));
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule update analysis handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Update a rule via proposal.
+ * Delegates to the Rust protocol for the actual update proposal.
+ */
+export async function ruleUpdateAnalysis(
+  input: CommandInput,
+  options?: ReviewActionOptions,
+): Promise<RuleUpdateOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'rule_update_stale',
+      message: 'Snapshot data is stale. Reconnect or refresh before updating a rule.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.PROPOSAL_STALE],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Analysis protocol is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (input.mode === 'observe') {
+    const err = new ErrorInfo({
+      code: 'write_rejected',
+      message: 'Write operation is not permitted in Observe mode. Rule update requires a write-enabled mode.',
+      retryable: false,
+      reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol.ruleUpdate) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Rule update not available: the protocol does not support rule updates.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.MISSING_ANALYSIS_PROTOCOL],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
+    const result = await analysisProtocol.ruleUpdate(ledger, mergedOptions);
+    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'rule.update'), result);
+  } catch (err) {
+    if (err instanceof ApplicationError) {
+      return errorResponse(requestId, new ErrorInfo({
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+        reasonCodes: err.reasonCodes,
+      }));
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: false,
       reasonCodes: ['analysis_error'],
     });
     return errorResponse(requestId, errInfo);

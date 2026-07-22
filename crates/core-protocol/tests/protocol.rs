@@ -1,17 +1,21 @@
 use balanceframe_core_protocol::{
     analyze_deterministic,
+    analyze_rule_candidates,
     analyze_snapshot,
     find_categorization_candidates,
+    plan_create_rule,
     plan_set_category,
     simulate_rule,
     validate_provider_suggestion,
     validate_suggestion,
     verify_mutation,
+    verify_rule_mutation,
     AnalysisOptions,
     AnalysisRequest,
     DeterministicAnalysisRequest,
     InferencePolicy,
     MutationPlan,
+    PayeeCondition,
     Postcondition,
     PostconditionType,
     ProtocolSnapshot,
@@ -72,6 +76,7 @@ fn sample_transaction(id: &str, category_id: Option<&str>, amount: i64) -> Trans
         subtransactions: vec![],
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // Round-trip serialization of ProtocolSnapshot
@@ -329,11 +334,12 @@ fn test_plan_set_category() {
 
 #[test]
 fn test_simulate_rule() {
+    // `transaction_added` trigger matches all transactions
     let rule = Rule {
         id: "rule1".into(),
         name: "Auto-categorize".into(),
         order: 1,
-        trigger: serde_json::json!({}),
+        trigger: serde_json::json!({"type": "transaction_added"}),
         actions: serde_json::json!({}),
         inactive: false,
     };
@@ -344,8 +350,8 @@ fn test_simulate_rule() {
     ];
 
     let result = simulate_rule(&rule, &transactions);
-    assert_eq!(result.transactions_matched, 1);
-    assert_eq!(result.transactions_affected, vec!["tx1"]);
+    assert_eq!(result.transactions_matched, 2);
+    assert_eq!(result.transactions_affected, vec!["tx1", "tx2"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -2358,4 +2364,265 @@ fn test_validate_provider_suggestion_local_only_no_provider() {
     assert!(!result.valid);
     assert!(result.reason_codes.contains(&"external_provider_not_allowed".into()),
         "LocalOnly must reject suggestions without an explicit 'local' provider");
+}
+
+// ---------------------------------------------------------------------------
+// Plan create rule
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_plan_create_rule() {
+    let snapshot = empty_snapshot();
+    let conditions = vec![PayeeCondition {
+        field: "imported_payee".into(),
+        operation: "is".into(),
+        value: "  Whole Foods  ".into(),
+    }];
+
+    let plan = plan_create_rule("Groceries", &conditions, "c1", &snapshot);
+
+    assert_eq!(plan.rule_name, "Groceries");
+    assert_eq!(plan.trigger["type"], "payee_is");
+    // Value must be normalized (trimmed, lowercased)
+    assert_eq!(plan.trigger["value"], "whole foods");
+    assert_eq!(plan.actions[0]["type"], "set_category");
+    assert_eq!(plan.actions[0]["value"], "c1");
+    assert_eq!(plan.conditions.len(), 1);
+    assert_eq!(plan.conditions[0].field, "imported_payee");
+    assert!(!plan.plan_id.is_empty());
+    assert!(!plan.hash.is_empty());
+}
+
+#[test]
+fn test_plan_create_rule_no_conditions() {
+    let snapshot = empty_snapshot();
+    let conditions: Vec<PayeeCondition> = vec![];
+
+    let plan = plan_create_rule("Empty", &conditions, "c1", &snapshot);
+
+    assert_eq!(plan.rule_name, "Empty");
+    // No conditions → empty-string normalized value
+    assert_eq!(plan.trigger["value"], "");
+    assert_eq!(plan.actions[0]["value"], "c1");
+    assert!(plan.conditions.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Verify rule mutation — no existing rule
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_rule_mutation_no_conflict() {
+    let snapshot = empty_snapshot(); // snapshot.rules is empty
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "is".into(),
+        value: "Target".into(),
+    }];
+
+    let plan = plan_create_rule("Target Rule", &conditions, "c1", &snapshot);
+    let result = verify_rule_mutation(&plan, &snapshot);
+
+    assert!(result.verified);
+    assert!(result.reason_codes.contains(&"rule_creation_verified".into()));
+    assert!(result.message.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Verify rule mutation — rule already exists
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_rule_mutation_already_exists() {
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "is".into(),
+        value: "Walmart".into(),
+    }];
+
+    let plan = plan_create_rule("Walmart Rule", &conditions, "c2", &empty_snapshot());
+
+    // Create a snapshot that already has a rule matching the plan trigger/actions
+    let mut snapshot = empty_snapshot();
+    snapshot.rules.push(Rule {
+        id: "existing-rule-1".into(),
+        name: "Existing Walmart".into(),
+        order: 0,
+        trigger: plan.trigger.clone(),
+        actions: plan.actions.clone(),
+        inactive: false,
+    });
+
+    let result = verify_rule_mutation(&plan, &snapshot);
+
+    assert!(!result.verified);
+    assert!(result.reason_codes.contains(&"rule_already_exists".into()));
+    assert!(result.message.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Verify rule mutation — different trigger does not conflict
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_verify_rule_mutation_different_trigger_no_conflict() {
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "is".into(),
+        value: "Costco".into(),
+    }];
+
+    let plan = plan_create_rule("Costco Rule", &conditions, "c3", &empty_snapshot());
+
+    let mut snapshot = empty_snapshot();
+    // Add a rule with a DIFFERENT trigger
+    snapshot.rules.push(Rule {
+        id: "existing-rule-2".into(),
+        name: "Different".into(),
+        order: 0,
+        trigger: serde_json::json!({"type":"payee_is","value":"something_else"}),
+        actions: plan.actions.clone(),
+        inactive: false,
+    });
+
+    let result = verify_rule_mutation(&plan, &snapshot);
+    assert!(result.verified);
+    assert!(result.reason_codes.contains(&"rule_creation_verified".into()));
+}
+
+// ---------------------------------------------------------------------------
+// Plan-create rule idempotency: same inputs produce identical plan
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_plan_create_rule_idempotent() {
+    let snapshot = empty_snapshot();
+    let conditions = vec![PayeeCondition {
+        field: "payee".into(),
+        operation: "contains".into(),
+        value: "Amazon".into(),
+    }];
+
+    let plan_a = plan_create_rule("Amazon", &conditions, "c4", &snapshot);
+    let plan_b = plan_create_rule("Amazon", &conditions, "c4", &snapshot);
+
+    assert_eq!(plan_a.plan_id, plan_b.plan_id);
+    assert_eq!(plan_a.hash, plan_b.hash);
+    assert_eq!(plan_a.trigger, plan_b.trigger);
+    assert_eq!(plan_a.actions, plan_b.actions);
+}
+
+// ---------------------------------------------------------------------------
+// Rule candidate generation — analyze_rule_candidates
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_analyze_rule_candidates_empty_snapshot() {
+    let snapshot = empty_snapshot();
+    let candidates = analyze_rule_candidates(&snapshot, 1);
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn test_analyze_rule_candidates_consistent_merchant() {
+    // sample_transaction uses payee_name "Test Payee" for all tx's,
+    // so two transactions with same category should match.
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            sample_transaction("tx1", Some("c1"), -500),
+            sample_transaction("tx2", Some("c1"), -550),
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].proposed_category_id, "c1");
+    assert_eq!(candidates[0].matching_tx_count, 2);
+    assert!(candidates[0].rule_id.is_empty(), "new-rule suggestion has no rule_id");
+}
+
+#[test]
+fn test_analyze_rule_candidates_below_threshold() {
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            sample_transaction("tx1", Some("c1"), -500),
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn test_analyze_rule_candidates_multiple_categories_dominant_wins() {
+    // Two categories for the same merchant; dominant c1 meets threshold 2
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx1", Some("c1"), -500)
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx2", Some("c1"), -550)
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx3", Some("c2"), -400)
+            },
+        ],
+        categories: vec![
+            sample_category("c1", "Food", false),
+            sample_category("c2", "Coffee", false),
+        ],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert_eq!(candidates.len(), 1, "dominant category Food should reach threshold");
+    assert_eq!(candidates[0].proposed_category_id, "c1");
+    assert_eq!(candidates[0].matching_tx_count, 2);
+}
+
+#[test]
+fn test_analyze_rule_candidates_only_categorized_counted() {
+    // Transactions without a category should not contribute to count
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx1", Some("c1"), -500)
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx2", None, -550) // uncategorized
+            },
+            Transaction {
+                payee_name: Some("Starbucks".into()),
+                ..sample_transaction("tx3", Some("c1"), -600)
+            },
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 2);
+    assert_eq!(candidates.len(), 1, "uncategorized tx excluded from count");
+    assert_eq!(candidates[0].matching_tx_count, 2);
+}
+
+#[test]
+fn test_analyze_rule_candidates_empty_payee_skipped() {
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            Transaction {
+                payee_name: None,
+                ..sample_transaction("tx1", Some("c1"), -500)
+            },
+        ],
+        categories: vec![sample_category("c1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let candidates = analyze_rule_candidates(&snapshot, 1);
+    assert!(candidates.is_empty(), "no payee should yield no candidates");
 }

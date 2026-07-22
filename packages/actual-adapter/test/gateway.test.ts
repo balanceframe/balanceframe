@@ -363,22 +363,68 @@ describe('ActualConnector', () => {
       await writeConnector.disconnect();
     });
 
-    it('should reject createRule in write-enabled mode', async () => {
+    it('should create a rule in write-enabled mode and return the rule id', async () => {
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-rule-test',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      const result = await writeConnector.createRule({
+        name: 'Groceries rule',
+        stage: 'post',
+        conditionsOp: 'and',
+        conditions: [{ field: 'payee', op: 'is', value: 'p1' }],
+        actions: [{ op: 'set', field: 'category', value: 'c1' }],
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.id).toBe('new-rule-id');
+      }
+      expect(mock.createRule).toHaveBeenCalledTimes(1);
+      expect(mock.createRule).toHaveBeenCalledWith({
+        stage: 'post',
+        conditionsOp: 'and',
+        conditions: [{ field: 'payee', op: 'is', value: 'p1' }],
+        actions: [{ op: 'set', field: 'category', value: 'c1' }],
+      });
+      expect(mock.sync).toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+
+    it('should reject createRule without a selected budget', async () => {
       const mock = createMockClient();
       const writeConnector = new ActualConnector({
         client: mock,
         credentialStore: new NullCredentialStore(),
         mode: 'reviewAndApply',
-        cacheDir: '/tmp/bf-unimpl-rule',
+        cacheDir: '/tmp/bf-rule-nobudget',
       });
       await writeConnector.connect({
         serverUrl: 'http://test:5006',
         secretKey: 'test',
       });
       mock.createRule = vi.fn();
-      await expect(
-        writeConnector.createRule({ name: 'test', conditions: [], actions: [] }),
-      ).rejects.toThrow(/not yet implemented/i);
+      const result = await writeConnector.createRule({
+        name: 'test',
+        conditions: [],
+        actions: [],
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('BUDGET_NOT_SELECTED');
+      }
       expect(mock.createRule).not.toHaveBeenCalled();
       await writeConnector.disconnect();
     });

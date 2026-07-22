@@ -378,6 +378,54 @@ export function useApiReviewController(
     error.value = msg;
     return { itemId: currentId, success: false, error: msg };
   }
+  
+  async function proposeRule(
+    reviewId: string,
+    merchant: string,
+    categoryId: string,
+  ): Promise<WebActionResult> {
+    loading.value = true;
+    error.value = null;
+  
+    try {
+      const envelope = await callApi<SingleActionResult>(
+        '/api/review/propose-rule',
+        'POST',
+        { reviewId, merchant, categoryId },
+      );
+  
+      if (envelope.status === 'error' || envelope.error) {
+        const msg = envelope.error?.message ?? 'Unknown error';
+        error.value = msg;
+        return { itemId: reviewId, success: false, error: msg };
+      }
+  
+      const result = envelope.result;
+      if (!result || typeof result !== 'object') {
+        const msg = 'Invalid action result envelope';
+        error.value = msg;
+        return { itemId: reviewId, success: false, error: msg };
+      }
+  
+      if (!result.success) {
+        const msg = result.error ?? 'Rule proposal failed';
+        error.value = msg;
+        return { itemId: reviewId, success: false, error: msg };
+      }
+  
+      return {
+        itemId: result.itemId ?? reviewId,
+        success: true,
+        error: null,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      error.value = msg;
+      return { itemId: reviewId, success: false, error: msg };
+    } finally {
+      loading.value = false;
+    }
+  }
 
   // ── Bulk actions ────────────────────────────────────────────────
 
@@ -516,6 +564,7 @@ export function useApiReviewController(
     reject,
     skip,
     undo,
+    proposeRule,
     bulkApprove,
     bulkCorrect,
     bulkReject,
