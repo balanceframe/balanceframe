@@ -68,6 +68,14 @@ export default defineConfig({
         __dirname,
         '../../packages/actual-adapter/src',
       ),
+      '@balanceframe/workflow-store': resolve(
+        __dirname,
+        '../../packages/workflow-store/src',
+      ),
+      '@balanceframe/protocol-generated': resolve(
+        __dirname,
+        '../../packages/protocol-generated/src',
+      ),
     },
   },
 });

@@ -339,7 +339,7 @@ export class ActualConnector implements BudgetLedger {
     const payeeMap = buildPayeeNameMap(payees);
     const transferAcctMap = buildTransferAcctMap(payees);
     const categories = normalizeCategories(
-      (await this.client.getCategories({ hidden: true })) as APICategoryEntity[],
+      (await this.client.getCategories()) as APICategoryEntity[],
       await this.client.getCategoryGroups(),
     );
     const categoryMap = buildCategoryInfoMap(categories);
@@ -364,7 +364,7 @@ export class ActualConnector implements BudgetLedger {
 
   async listCategories(): Promise<Category[]> {
     this.assertInitialized();
-    const cats = (await this.client.getCategories({ hidden: true })) as APICategoryEntity[];
+    const cats = (await this.client.getCategories()) as APICategoryEntity[];
     const groups = await this.client.getCategoryGroups();
     return normalizeCategories(cats, groups);
   }
@@ -493,6 +493,30 @@ export class ActualConnector implements BudgetLedger {
   }
 
 
+  /**
+   * Set the category of a transaction by ID.
+   *
+   * Precondition:
+   *   `currentCategoryId` — expected current category from the caller.
+   *   - If non-null: MUST match Actual's current category or the call fails
+   *     with `PRECONDITION_MISMATCH` (stale-precondition protection).
+   *   - If null (unknown / review-item stored no category): Actual's current
+   *     category is accepted as-is and the mutation proceeds.
+   *
+   * Postcondition:
+   *   The transaction is updated in Actual, synced, and re-read to verify.
+   *   On success the result includes `previousCategoryId` (the value before
+   *   mutation), `newCategoryId`, `idempotencyKey`, and `verified: true`.
+   *
+   * Error conditions:
+   *   `PRECONDITION_MISMATCH` — non-null currentCategoryId does not match Actual
+   *   `TRANSACTION_NOT_FOUND` — transaction does not exist
+   *   `CATEGORY_NOT_FOUND` — proposed category does not exist in budget
+   *   `CATEGORY_DELETED` — proposed category is a tombstone (deleted)
+   *   `SYNC_FAILED` — the write succeeded but sync after it failed
+   *   `VERIFICATION_FAILED` — post-write re-read shows unexpected category
+   *   `BUDGET_NOT_SELECTED` — no budget selected via selectBudget()
+   */
   async setTransactionCategory(
     transactionId: LedgerId,
     proposedCategoryId: LedgerId,
@@ -532,8 +556,11 @@ export class ActualConnector implements BudgetLedger {
       }
 
       // Verify precondition: current category must match expected value
+      // When currentCategoryId is null (unknown/empty from review item), we
+      // accept Actual's current value and proceed. When non-null, a mismatch
+      // rejects with PRECONDITION_MISMATCH (stale-precondition protection).
       const actualCategory = tx.category ?? null;
-      if (actualCategory !== currentCategoryId) {
+      if (currentCategoryId !== null && actualCategory !== currentCategoryId) {
         return {
           success: false,
           error: `Category precondition mismatch for transaction ${transactionId}: ` +
@@ -546,7 +573,7 @@ export class ActualConnector implements BudgetLedger {
       }
 
       // Validate the proposed category exists in this budget
-      const allCats = (await this.client.getCategories({ hidden: true })) as APICategoryEntity[];
+      const allCats = (await this.client.getCategories()) as APICategoryEntity[];
       const proposedCat = allCats.find(c => c.id === proposedCategoryId);
       if (!proposedCat) {
         return {
@@ -998,7 +1025,7 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     const payees = normalizePayees(await this.client.getPayees());
     const categories = normalizeCategories(
-      (await this.client.getCategories({ hidden: true })) as APICategoryEntity[],
+      (await this.client.getCategories()) as APICategoryEntity[],
       await this.client.getCategoryGroups(),
     );
     const payeeMap = buildPayeeNameMap(payees);
