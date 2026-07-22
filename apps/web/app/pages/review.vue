@@ -221,13 +221,23 @@ function onCorrectCancel() {
   showCorrectModal.value = false;
 }
 
-function promptProposeRule(): void {
+async function promptProposeRule(): Promise<void> {
   const current = adapter.state.currentItem;
   if (!current) return;
   const merchant = current.evidence.normalizedMerchant;
-  const categoryId = current.evidence.suggestedCategory;
+  const categoryId = current.reviewItem.categoryId;
   if (merchant && categoryId) {
-    adapter.proposeRule(current.reviewItem.id, merchant, categoryId);
+    const result = await adapter.proposeRule(current.reviewItem.id, merchant, categoryId);
+    if (result.success) {
+      const toast = useToast();
+      toast.add({
+        title: 'Rule proposal created',
+        description: `${merchant} → ${categoryId}`,
+        icon: 'i-heroicons-sparkles',
+        color: 'success',
+        duration: 5000,
+      });
+    }
   }
 }
 

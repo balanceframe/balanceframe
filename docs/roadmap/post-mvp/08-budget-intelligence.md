@@ -109,3 +109,5 @@ Scenario-test fully funded purchase, safe reallocation, protected funds, stale s
 Notification scenarios: authorized and unauthorized recipients; membership/capability revocation between enqueue and delivery; aggregate-only and redacted scopes; verified versus revoked destinations; quiet-hour, rate-limit, digest, escalation, and suppression precedence; duplicate event/retry/crash recovery; provider acknowledgement versus failure; malformed callback; channel/provider outage; all-channels-disabled operation; no ledger mutation from notification acknowledgement/reply; audit completeness; and web/CLI status parity.
 
 **Exit:** deterministic scenarios confirm conservative analysis under stale, incomplete, duplicated, or ambiguously reconciled data; affected conclusions become visible `insufficient_data` blockers; and every notification is recipient-authorized, policy-redacted, idempotent, attributable, auditable, and independently failure-tolerant.
+ 
+**See also:** [Merchant Intelligence & Enrichment](11-merchant-intelligence-and-enrichment.md)
