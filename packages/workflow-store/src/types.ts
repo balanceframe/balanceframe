@@ -209,6 +209,23 @@ export interface TransitionReviewInput {
    * supersedes this one (establishes the successor link).
    */
   readonly supersededBy?: string;
+  // ── Correction evidence fields ─────────────────────────────────────────
+  // These are captured as structured history when transitioning to
+  // `approved` or `correcting`.
+  /** Normalized merchant name from the transaction payee. */
+  readonly merchant?: string;
+  /** Imported payee name from the transaction import data. */
+  readonly importedPayee?: string;
+  /** Account ID the transaction belongs to. */
+  readonly accountId?: string;
+  /** Direction — `'inflow'` or `'outflow'`. */
+  readonly direction?: string;
+  /** Transaction amount in minor units. */
+  readonly amount?: number;
+  /** Transaction date (ISO-8601). */
+  readonly date?: string;
+  /** Human-readable category name assigned by the correction. */
+  readonly categoryName?: string;
 }
 
 /** An audited action recording a review-item status transition. */
@@ -573,6 +590,27 @@ export interface WorkflowStore {
 
   // ── Authorization ─────────────────────────────────────────────────
 
+  // ── Correction history ────────────────────────────────────────────────
+
+  /**
+   * Query structured correction evidence recorded from approved/corrected
+   * review transitions.
+   *
+   * Corrections are append-only; the original suggestion is never mutated.
+   */
+  queryCorrectionHistory(
+    options?: CorrectionHistoryOptions,
+  ): Promise<CorrectionRecord[]>;
+
+  /**
+   * Find conflicting account / direction / category values across
+   * corrections for the same merchant.  Conflicts are flagged rather
+   * than collapsed, so callers can decide how to resolve them.
+   *
+   * @param limit  Maximum number of conflicts to return (default 50).
+   */
+  findCorrectionConflicts(limit?: number): Promise<CorrectionConflict[]>;
+
   /**
    * Evaluate whether an actor is authorized for a given capability/scope.
    *
@@ -608,6 +646,60 @@ export interface WorkflowStore {
     capabilities: string[];
     scope: string;
   } | null>;
+
+  // ── Lifecycle / administrative operations ─────────────────────────
+
+  /**
+   * Cancel all pending (unclaimed) jobs. Returns count cancelled.
+   * Processing and completed jobs are left untouched.
+   */
+  cancelPendingJobs(): Promise<number>;
+
+  /**
+   * Delete an actor's membership record. Returns true if a
+   * record was found and deleted.
+   */
+  deleteActorMembership(actorId: string): Promise<boolean>;
+
+  /**
+   * Record an export event for export-before-delete tracking.
+   * Overwrites any previous export record (only the most recent
+   * export is tracked).
+   */
+  recordExport(input: {
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  }): Promise<void>;
+
+  /**
+   * Get the most recent export record, or null if none exists.
+   */
+  getLastExport(): Promise<{
+    exportedAt: string;
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  } | null>;
+
+  /**
+   * Delete all records for a given lifecycle scope.
+   *
+   * Supported scopes: connection, space, user, provider, workflow,
+   * notification.
+   *
+   * @returns Deleted counts per entity type, plus retained records
+   *          count and reasons why certain records were preserved.
+   */
+  deleteScopeData(
+    scope: string,
+    options?: { actorId?: string },
+  ): Promise<{
+    deleted: Record<string, number>;
+    retained: { count: number; reasons: string[] };
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -837,6 +929,82 @@ export interface AppendAuditInput {
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CorrectionRecord — structured evidence from approved/corrected reviews
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured evidence captured when a review item transitions to
+ * `approved` or `correcting`.  Immutable once written.
+ */
+export interface CorrectionRecord {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** The review item that was approved or corrected. */
+  readonly reviewItemId: string;
+  /** Transaction this correction applies to. */
+  readonly transactionId: string;
+  /** Monotonic version of the transaction at time of correction. */
+  readonly transactionVersion: number;
+  /** Normalized merchant name from the transaction payee. */
+  readonly merchant: string | null;
+  /** Imported payee name from the transaction import data. */
+  readonly importedPayee: string | null;
+  /** Account ID the transaction belongs to. */
+  readonly accountId: string | null;
+  /** Direction — `'inflow'`, `'outflow'`, or null. */
+  readonly direction: string | null;
+  /** Transaction amount in minor units, or null. */
+  readonly amount: number | null;
+  /** Transaction date (ISO-8601), or null. */
+  readonly date: string | null;
+  /** The category that was approved or assigned. */
+  readonly categoryId: string;
+  /** Human-readable category name, or null. */
+  readonly categoryName: string | null;
+  /** Actor who performed the approval or correction. */
+  readonly actor: string;
+  /** Review status before this transition. */
+  readonly fromStatus: ReviewStatus;
+  /** Review status after this transition. */
+  readonly toStatus: ReviewStatus;
+  /** The review item ID that is the source of this correction. */
+  readonly sourceReviewId: string;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/**
+ * A detected conflict among corrections for the same merchant across
+ * different approved or corrected reviews.
+ */
+export interface CorrectionConflict {
+  /** The field that has conflicting values (`'account'`, `'direction'`, `'category'`). */
+  readonly field: 'account' | 'direction' | 'category';
+  /** The merchant name shared by the conflicting corrections. */
+  readonly merchant: string;
+  /** The distinct values found for this field across corrections. */
+  readonly values: string[];
+  /** IDs of the correction records that contribute to this conflict. */
+  readonly correctionIds: string[];
+}
+
+/** Options for querying correction history. */
+export interface CorrectionHistoryOptions {
+  /** Filter by review item ID. */
+  readonly reviewItemId?: string;
+  /** Filter by merchant name. */
+  readonly merchant?: string;
+  /** Filter by transaction ID. */
+  readonly transactionId?: string;
+  /** Filter by actor. */
+  readonly actor?: string;
+  /** Maximum number of records to return (default 50). */
+  readonly limit?: number;
+  /** Number of records to skip. */
+  readonly offset?: number;
+}
 // Authorization types
 // ---------------------------------------------------------------------------
 

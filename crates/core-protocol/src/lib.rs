@@ -297,6 +297,41 @@ pub type ProtocolTransaction = Transaction;
 pub type ProtocolCategory = Category;
 
 // ---------------------------------------------------------------------------
+// Correction history types — structured evidence for rule candidate analysis
+// ---------------------------------------------------------------------------
+
+/// Structured evidence from a single approved or corrected review transition.
+/// Mirrors the TS `CorrectionRecord` so callers can deserialize directly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionHistoryInput {
+    pub source_review_id: String,
+    pub transaction_id: String,
+    pub transaction_version: i64,
+    pub merchant: Option<String>,
+    pub imported_payee: Option<String>,
+    pub account_id: Option<String>,
+    pub direction: Option<String>,
+    pub amount: Option<i64>,
+    pub date: Option<String>,
+    pub category_id: String,
+    pub category_name: Option<String>,
+    pub actor: String,
+    pub from_status: String,
+    pub to_status: String,
+}
+
+/// A detected conflict among corrections for the same merchant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionConflictResult {
+    pub field: String,
+    pub merchant: String,
+    pub values: Vec<String>,
+    pub correction_ids: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Protocol functions
 // ---------------------------------------------------------------------------
 
@@ -707,6 +742,39 @@ pub fn analyze_rule_candidates(
     )
 }
 
+
+/// Analyze correction history to produce rule candidates with conflict
+/// detection.  Converts [`CorrectionHistoryInput`] records into
+/// [`fc::CorrectionEvidence`] and delegates to
+/// [`fc::analysis::generate_rule_candidates_from_corrections`].
+///
+/// When multiple corrections for the same merchant carry conflicting
+/// account, direction, or category values, the candidate's
+/// `conflict_reason` is populated rather than silently collapsing.
+pub fn analyze_rule_candidates_from_corrections(
+    corrections: &[CorrectionHistoryInput],
+    min_consistent_count: u32,
+) -> Vec<fc::RuleCandidate> {
+    let evidence: Vec<fc::CorrectionEvidence> = corrections
+        .iter()
+        .map(|c| fc::CorrectionEvidence {
+            source_review_id: c.source_review_id.clone(),
+            merchant: c.merchant.clone(),
+            imported_payee: c.imported_payee.clone(),
+            account_id: c.account_id.clone(),
+            direction: c.direction.clone(),
+            amount: c.amount,
+            date: c.date.clone(),
+            category_id: c.category_id.clone(),
+            category_name: c.category_name.clone(),
+            actor: c.actor.clone(),
+            from_status: c.from_status.clone(),
+            to_status: c.to_status.clone(),
+        })
+        .collect();
+
+    fc::generate_rule_candidates_from_corrections(&evidence, min_consistent_count)
+}
 /// Find categorization candidates from a list of transactions.
 /// This is a protocol-level wrapper; it performs a simple check for
 /// transactions without a category.

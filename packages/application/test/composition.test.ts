@@ -355,8 +355,8 @@ describe('createObserveComposition — analysis protocol', () => {
     const removeResult = await callbacks.doRemoveConnection(ledger);
     expect(removeResult.removed).toBe(true);
 
-    const deleteResult = await callbacks.doDeleteData(ledger, 'test-scope');
-    expect(deleteResult.scope).toBe('test-scope');
+    const deleteResult = await callbacks.doDeleteData(ledger, 'connection');
+    expect(deleteResult.scope).toBe('connection');
   });
 
 // ---------------------------------------------------------------------------

@@ -104,6 +104,63 @@ interface ApiEnvelope<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Proposal detail types (mirrors server-side shapes)
+// ---------------------------------------------------------------------------
+
+export interface SimulationExample {
+  readonly txId: string;
+  readonly payee: string | null;
+  readonly amount: { minorUnits: string; currency: string };
+  readonly currentCategory: string | null;
+  readonly wouldChange: boolean;
+}
+
+export interface SimulationEvidence {
+  readonly transactionsMatched: number;
+  readonly transactionsAffected: readonly string[];
+  readonly categoryDistribution: Record<string, number>;
+  readonly conflicts: readonly string[];
+  readonly examples: readonly SimulationExample[];
+  readonly simulatedAt: string;
+}
+
+export interface CategorizationProposalDetail {
+  readonly id: string;
+  readonly operation: string;
+  readonly budgetId: string;
+  readonly transactionId: string;
+  readonly categoryId: string;
+  readonly payloadHash: string;
+  readonly policyVersion: string;
+  readonly preconditions: string;
+  readonly expiresAt: string;
+  readonly actorId: string;
+  readonly provenance: string;
+  readonly providerModel: string | null;
+  readonly correlationId: string | null;
+  readonly supersededAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface ProposalDetailPayload {
+  readonly proposal: CategorizationProposalDetail;
+  readonly simulation: SimulationEvidence | null;
+  readonly stale: boolean;
+  readonly simulationStatus: 'present' | 'missing' | 'stale';
+}
+
+export interface ProposeRulePayload {
+  readonly proposalId: string;
+  readonly operation: string;
+  readonly merchant: string;
+  readonly categoryId: string;
+  readonly simulation: SimulationEvidence | null;
+  readonly simulationStatus: 'present' | 'missing';
+  readonly simulationWarning: string | null;
+  readonly message: string;
+}
+
+// ---------------------------------------------------------------------------
 // Composable
 // ---------------------------------------------------------------------------
 
@@ -370,8 +427,6 @@ export function useApiReviewController(
   }
 
   async function undo(): Promise<WebActionResult> {
-    // Undo is not supported by the API — return explicit failure
-    // rather than a no-op success.
     const currentId =
       state.value.currentItem?.reviewItem.id ?? '<no-current>';
     const msg = 'Undo is not supported by the API';
@@ -383,15 +438,21 @@ export function useApiReviewController(
     reviewId: string,
     merchant: string,
     categoryId: string,
-  ): Promise<WebActionResult> {
+    simulation?: SimulationEvidence,
+  ): Promise<WebActionResult & { simulationStatus?: string; simulationWarning?: string | null }> {
     loading.value = true;
     error.value = null;
   
     try {
+      const body: Record<string, unknown> = { reviewId, merchant, categoryId };
+      if (simulation) {
+        body.simulation = simulation;
+      }
+  
       const envelope = await callApi<SingleActionResult>(
         '/api/review/propose-rule',
         'POST',
-        { reviewId, merchant, categoryId },
+        body,
       );
   
       if (envelope.status === 'error' || envelope.error) {
@@ -400,23 +461,22 @@ export function useApiReviewController(
         return { itemId: reviewId, success: false, error: msg };
       }
   
-      const result = envelope.result;
+      const result = envelope.result as unknown as Record<string, unknown> | null;
       if (!result || typeof result !== 'object') {
         const msg = 'Invalid action result envelope';
         error.value = msg;
         return { itemId: reviewId, success: false, error: msg };
       }
   
-      if (!result.success) {
-        const msg = result.error ?? 'Rule proposal failed';
-        error.value = msg;
-        return { itemId: reviewId, success: false, error: msg };
-      }
+      const simStatus = typeof result.simulationStatus === 'string' ? result.simulationStatus : undefined;
+      const simWarning = typeof result.simulationWarning === 'string' ? result.simulationWarning : null;
   
       return {
-        itemId: result.itemId ?? reviewId,
+        itemId: (result.proposalId as string) ?? reviewId,
         success: true,
         error: null,
+        simulationStatus: simStatus,
+        simulationWarning: simWarning,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -426,7 +486,7 @@ export function useApiReviewController(
       loading.value = false;
     }
   }
-
+  
   // ── Bulk actions ────────────────────────────────────────────────
 
   async function bulkApprove(): Promise<WebBulkActionResult> {

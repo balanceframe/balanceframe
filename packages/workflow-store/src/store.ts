@@ -45,6 +45,9 @@ import type {
   AuthorizationDisposition,
   AuthorizationResult,
   MembershipStatus,
+  CorrectionRecord,
+  CorrectionConflict,
+  CorrectionHistoryOptions,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -223,6 +226,29 @@ function rowToAudit(row: AuditRow): AuditRecord {
   };
 }
 
+
+/** Map a raw DB row to a typed CorrectionRecord. */
+function rowToCorrection(row: CorrectionRow): CorrectionRecord {
+  return {
+    id: row.id,
+    reviewItemId: row.review_item_id,
+    transactionId: row.transaction_id,
+    transactionVersion: row.transaction_version,
+    merchant: row.merchant,
+    importedPayee: row.imported_payee,
+    accountId: row.account_id,
+    direction: row.direction,
+    amount: row.amount,
+    date: row.date,
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    actor: row.actor,
+    fromStatus: row.from_status as ReviewStatus,
+    toStatus: row.to_status as ReviewStatus,
+    sourceReviewId: row.source_review_id,
+    createdAt: row.created_at,
+  };
+}
 // ---------------------------------------------------------------------------
 // Review transition validation
 // ---------------------------------------------------------------------------
@@ -390,6 +416,26 @@ interface ActorMembershipRow {
   scope: string;
 }
 
+
+interface CorrectionRow {
+  id: string;
+  review_item_id: string;
+  transaction_id: string;
+  transaction_version: number;
+  merchant: string | null;
+  imported_payee: string | null;
+  account_id: string | null;
+  direction: string | null;
+  amount: number | null;
+  date: string | null;
+  category_id: string;
+  category_name: string | null;
+  actor: string;
+  from_status: string;
+  to_status: string;
+  source_review_id: string;
+  created_at: string;
+}
 // ---------------------------------------------------------------------------
 // SqliteWorkflowStore
 // ---------------------------------------------------------------------------
@@ -468,6 +514,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectActorMembership: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectExpiredApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
     markExpiredApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    cancelPendingJobsStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    deleteMembershipStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertExportRecordStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectLastExportStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertCorrection: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByReview: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByMerchant: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByTransaction: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectAllCorrections: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionConflicts: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionByReviewTransition: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
@@ -663,6 +721,38 @@ export class SqliteWorkflowStore implements WorkflowStore {
         is_error                 INTEGER NOT NULL DEFAULT 0
       );
 
+      CREATE TABLE IF NOT EXISTS review_corrections (
+        id                  TEXT PRIMARY KEY,
+        review_item_id      TEXT NOT NULL REFERENCES review_items(id),
+        transaction_id      TEXT NOT NULL,
+        transaction_version INTEGER NOT NULL DEFAULT 0,
+        merchant            TEXT,
+        imported_payee      TEXT,
+        account_id          TEXT,
+        direction           TEXT,
+        amount              INTEGER,
+        date                TEXT,
+        category_id         TEXT NOT NULL,
+        category_name       TEXT,
+        actor               TEXT NOT NULL,
+        from_status         TEXT NOT NULL,
+        to_status           TEXT NOT NULL,
+        source_review_id    TEXT NOT NULL,
+        created_at          TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_corrections_review
+        ON review_corrections(review_item_id);
+
+      CREATE INDEX IF NOT EXISTS idx_corrections_merchant
+        ON review_corrections(merchant);
+
+      CREATE INDEX IF NOT EXISTS idx_corrections_transaction
+        ON review_corrections(transaction_id);
+
+      CREATE INDEX IF NOT EXISTS idx_corrections_actor
+        ON review_corrections(actor);
+
       CREATE INDEX IF NOT EXISTS idx_audit_classification
         ON audit_records(classification);
 
@@ -674,6 +764,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
         status       TEXT NOT NULL DEFAULT 'active',
         capabilities TEXT NOT NULL DEFAULT '[]',
         scope        TEXT NOT NULL DEFAULT '*'
+      );
+
+      CREATE TABLE IF NOT EXISTS export_records (
+        id               TEXT PRIMARY KEY,
+        budget_name      TEXT NOT NULL,
+        export_path      TEXT NOT NULL,
+        account_count    INTEGER NOT NULL DEFAULT 0,
+        transaction_count INTEGER NOT NULL DEFAULT 0,
+        exported_at      TEXT NOT NULL
       );
     `);
   }
@@ -1166,6 +1265,88 @@ export class SqliteWorkflowStore implements WorkflowStore {
       SELECT COUNT(*) as count FROM audit_records
     `);
 
+
+    // ── Corrections ──────────────────────────────────────────────────────
+
+    this.stmt.insertCorrection = this.db.prepare(`
+      INSERT INTO review_corrections (id, review_item_id, transaction_id,
+                                      transaction_version, merchant, imported_payee,
+                                      account_id, direction, amount, date,
+                                      category_id, category_name, actor,
+                                      from_status, to_status, source_review_id,
+                                      created_at)
+      VALUES (@id, @reviewItemId, @transactionId,
+              @transactionVersion, @merchant, @importedPayee,
+              @accountId, @direction, @amount, @date,
+              @categoryId, @categoryName, @actor,
+              @fromStatus, @toStatus, @sourceReviewId,
+              @createdAt)
+    `);
+
+    this.stmt.selectCorrectionByReviewTransition = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE review_item_id = @reviewItemId
+         AND from_status = @fromStatus
+         AND to_status = @toStatus
+       LIMIT 1
+    `);
+
+    this.stmt.selectCorrectionsByReview = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE review_item_id = @reviewItemId
+       ORDER BY created_at ASC
+    `);
+
+    this.stmt.selectCorrectionsByMerchant = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE merchant = @merchant
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectCorrectionsByTransaction = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE transaction_id = @transactionId
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectCorrectionsByActor = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE actor = @actor
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectAllCorrections = this.db.prepare(`
+      SELECT * FROM review_corrections
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectCorrectionConflicts = this.db.prepare(`
+      WITH merchant_groups AS (
+        SELECT merchant, category_id AS value, 'category' AS field, id AS cid
+          FROM review_corrections
+         WHERE merchant IS NOT NULL
+         UNION ALL
+        SELECT merchant, direction, 'direction', id
+          FROM review_corrections
+         WHERE merchant IS NOT NULL AND direction IS NOT NULL
+         UNION ALL
+        SELECT merchant, account_id, 'account', id
+          FROM review_corrections
+         WHERE merchant IS NOT NULL AND account_id IS NOT NULL
+      )
+      SELECT field, merchant,
+             GROUP_CONCAT(DISTINCT value) AS values_json,
+             GROUP_CONCAT(DISTINCT cid) AS correction_ids
+        FROM merchant_groups
+       GROUP BY field, merchant
+      HAVING COUNT(DISTINCT value) > 1
+       ORDER BY merchant, field
+       LIMIT @limit
+    `);
     // ── Actor memberships ──────────────────────────────────────────────
 
     this.stmt.upsertActorMembershipStmt = this.db.prepare(`
@@ -1179,6 +1360,33 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     this.stmt.selectActorMembership = this.db.prepare(`
       SELECT * FROM actor_memberships WHERE actor_id = ?
+    `);
+
+    // ── Lifecycle ──────────────────────────────────────────────────────
+
+    this.stmt.cancelPendingJobsStmt = this.db.prepare(`
+      DELETE FROM candidate_jobs WHERE status = 'pending'
+    `);
+
+    this.stmt.deleteMembershipStmt = this.db.prepare(`
+      DELETE FROM actor_memberships WHERE actor_id = ?
+    `);
+
+    this.stmt.insertExportRecordStmt = this.db.prepare(`
+      DELETE FROM export_records
+    `);
+    // Re-insert as single-row tracking table
+    this.stmt.insertExportRecordStmt = this.db.prepare(`
+      INSERT INTO export_records (id, budget_name, export_path,
+                                   account_count, transaction_count,
+                                   exported_at)
+      VALUES (@id, @budgetName, @exportPath,
+              @accountCount, @transactionCount,
+              @exportedAt)
+    `);
+
+    this.stmt.selectLastExportStmt = this.db.prepare(`
+      SELECT * FROM export_records ORDER BY exported_at DESC LIMIT 1
     `);
   }
 
@@ -1722,6 +1930,34 @@ export class SqliteWorkflowStore implements WorkflowStore {
         metadata: JSON.stringify(input.metadata ?? {}),
         createdAt: now,
       });
+
+      // Record structured correction evidence for approve/correct transitions
+      // Each atomic status-changing transition produces exactly one correction
+      // record (the version check above guarantees the transition is unique).
+      if (toStatus === 'approved' || toStatus === 'correcting') {
+        const correctionId = randomUUID();
+        const fullRow = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+
+        this.stmt.insertCorrection.run({
+          id: correctionId,
+          reviewItemId: id,
+          transactionId: fullRow.transaction_id,
+          transactionVersion: fullRow.transaction_version,
+          merchant: input.merchant ?? null,
+          importedPayee: input.importedPayee ?? null,
+          accountId: input.accountId ?? null,
+          direction: input.direction ?? null,
+          amount: input.amount ?? null,
+          date: input.date ?? null,
+          categoryId: fullRow.category_id,
+          categoryName: input.categoryName ?? null,
+          actor: input.actor,
+          fromStatus,
+          toStatus,
+          sourceReviewId: id,
+          createdAt: now,
+        });
+      }
     });
 
     txn();
@@ -1850,6 +2086,45 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToReviewAction);
   }
 
+
+  // ── Correction history ──────────────────────────────────────────────
+
+  async queryCorrectionHistory(options?: CorrectionHistoryOptions): Promise<CorrectionRecord[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+
+    let rows: CorrectionRow[];
+
+    if (options?.reviewItemId) {
+      rows = this.stmt.selectCorrectionsByReview.all({ reviewItemId: options.reviewItemId }) as CorrectionRow[];
+    } else if (options?.merchant) {
+      rows = this.stmt.selectCorrectionsByMerchant.all({ merchant: options.merchant, limit, offset }) as CorrectionRow[];
+    } else if (options?.transactionId) {
+      rows = this.stmt.selectCorrectionsByTransaction.all({ transactionId: options.transactionId, limit, offset }) as CorrectionRow[];
+    } else if (options?.actor) {
+      rows = this.stmt.selectCorrectionsByActor.all({ actor: options.actor, limit, offset }) as CorrectionRow[];
+    } else {
+      rows = this.stmt.selectAllCorrections.all({ limit, offset }) as CorrectionRow[];
+    }
+
+    return rows.map(rowToCorrection);
+  }
+
+  async findCorrectionConflicts(limit: number = 50): Promise<CorrectionConflict[]> {
+    const rows = this.stmt.selectCorrectionConflicts.all({ limit }) as {
+      field: string;
+      merchant: string;
+      values_json: string;
+      correction_ids: string;
+    }[];
+
+    return rows.map(r => ({
+      field: r.field as 'account' | 'direction' | 'category',
+      merchant: r.merchant,
+      values: r.values_json.split(',').filter((v, i, a) => a.indexOf(v) === i), // dedupe
+      correctionIds: r.correction_ids.split(','),
+    }));
+  }
   // ── Categorization proposal lifecycle ─────────────────────────────
 
 
@@ -2366,6 +2641,142 @@ export class SqliteWorkflowStore implements WorkflowStore {
       status: row.status as MembershipStatus,
       capabilities: JSON.parse(row.capabilities) as string[],
       scope: row.scope,
+    };
+  }
+
+  // ── Lifecycle operations ──────────────────────────────────────────
+
+  async cancelPendingJobs(): Promise<number> {
+    const result = this.stmt.cancelPendingJobsStmt.run({});
+    return result.changes;
+  }
+
+  async deleteActorMembership(actorId: string): Promise<boolean> {
+    const result = this.stmt.deleteMembershipStmt.run(actorId);
+    return result.changes > 0;
+  }
+
+  async recordExport(input: {
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  }): Promise<void> {
+    const id = randomUUID();
+    const now = nowISO();
+    // Clear previous record then insert fresh one (single-row tracking)
+    this.db.prepare(`DELETE FROM export_records`).run();
+    this.stmt.insertExportRecordStmt.run({
+      id,
+      budgetName: input.budgetName,
+      exportPath: input.exportPath,
+      accountCount: input.accountCount,
+      transactionCount: input.transactionCount,
+      exportedAt: now,
+    });
+  }
+
+  async getLastExport(): Promise<{
+    exportedAt: string;
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  } | null> {
+    const row = this.stmt.selectLastExportStmt.get({}) as {
+      id: string;
+      budget_name: string;
+      export_path: string;
+      account_count: number;
+      transaction_count: number;
+      exported_at: string;
+    } | undefined;
+    if (!row) return null;
+    return {
+      exportedAt: row.exported_at,
+      budgetName: row.budget_name,
+      exportPath: row.export_path,
+      accountCount: row.account_count,
+      transactionCount: row.transaction_count,
+    };
+  }
+
+  async deleteScopeData(
+    scope: string,
+    options?: { actorId?: string },
+  ): Promise<{
+    deleted: Record<string, number>;
+    retained: { count: number; reasons: string[] };
+  }> {
+    const deleted: Record<string, number> = {};
+    const reasons: string[] = [];
+    const db = this.db;
+
+    switch (scope) {
+      case 'connection':
+      case 'space':
+        deleted.corrections = db.prepare('DELETE FROM review_corrections').run().changes;
+        deleted.reviewActions = db.prepare('DELETE FROM review_actions').run().changes;
+        deleted.reviewItems = db.prepare('DELETE FROM review_items').run().changes;
+        deleted.failures = db.prepare('DELETE FROM failure_records').run().changes;
+        deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
+        deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
+        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        deleted.auditRecords = db.prepare('DELETE FROM audit_records').run().changes;
+        deleted.memberships = db.prepare('DELETE FROM actor_memberships').run().changes;
+        deleted.exports = db.prepare('DELETE FROM export_records').run().changes;
+        deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
+        break;
+
+      case 'user':
+        if (options?.actorId) {
+          const a = options.actorId;
+          deleted.memberships = db.prepare('DELETE FROM actor_memberships WHERE actor_id = ?').run(a).changes;
+        } else {
+          reasons.push('No actorId provided for user-scope deletion');
+        }
+        break;
+
+      case 'workflow':
+        deleted.corrections = db.prepare('DELETE FROM review_corrections').run().changes;
+        deleted.reviewActions = db.prepare('DELETE FROM review_actions').run().changes;
+        deleted.reviewItems = db.prepare('DELETE FROM review_items').run().changes;
+        deleted.failures = db.prepare('DELETE FROM failure_records').run().changes;
+        deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
+        deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
+        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
+        break;
+
+      case 'provider':
+        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        break;
+
+      case 'notification':
+        reasons.push('Notification data scope has no corresponding storage tables');
+        break;
+
+      default:
+        reasons.push(`Unknown scope "${scope}": no data deleted`);
+    }
+
+    // Count retained records still present
+    let retainedCount = 0;
+    try {
+      const row = db.prepare('SELECT COUNT(*) as c FROM suggestions').get() as { c: number } | undefined;
+      if (row) retainedCount += row.c;
+    } catch { /* table may not exist */ }
+    try {
+      const row = db.prepare('SELECT COUNT(*) as c FROM candidate_jobs').get() as { c: number } | undefined;
+      if (row) retainedCount += row.c;
+    } catch { /* table may not exist */ }
+
+    return {
+      deleted,
+      retained: { count: retainedCount, reasons },
     };
   }
 }

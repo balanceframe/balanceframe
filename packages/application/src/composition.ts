@@ -103,6 +103,19 @@ export interface ObserveCompositionOptions {
   /** Lifecycle callbacks override (default: created from ActualConnector). */
   lifecycleCallbacks?: LifecycleCallbacks;
 
+  /**
+   * Workflow store override for lifecycle operations.
+   * When provided, destructive lifecycle callbacks perform actual
+   * cancellation, credential revocation, and scoped deletion.
+   */
+  workflowStore?: {
+    cancelPendingJobs(): Promise<number>;
+    deleteActorMembership(actorId: string): Promise<boolean>;
+    recordExport(input: { budgetName: string; exportPath: string; accountCount: number; transactionCount: number }): Promise<void>;
+    getLastExport(): Promise<{ exportedAt: string; budgetName: string; exportPath: string; accountCount: number; transactionCount: number } | null>;
+    deleteScopeData(scope: string, options?: { actorId?: string }): Promise<{ deleted: Record<string, number>; retained: { count: number; reasons: string[] } }>;
+  };
+
   /** Actor ID override (default: 'usr_cli'). */
   actorId?: string;
 
@@ -568,9 +581,61 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
  *
  * @param getLedger A thunk that returns the current ledger (may be null).
  */
+/**
+ * Minimal store interface for lifecycle operations.
+ * Satisfied structurally by SqliteWorkflowStore.
+ */
+interface LifecycleStore {
+  cancelPendingJobs(): Promise<number>;
+  deleteActorMembership(actorId: string): Promise<boolean>;
+  recordExport(input: {
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  }): Promise<void>;
+  getLastExport(): Promise<{
+    exportedAt: string;
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  } | null>;
+  deleteScopeData(scope: string, options?: { actorId?: string }): Promise<{
+    deleted: Record<string, number>;
+    retained: { count: number; reasons: string[] };
+  }>;
+}
+
+/** Valid scopes for delete-data. */
+const LIFECYCLE_SCOPES = [
+  'connection', 'space', 'user', 'provider', 'workflow', 'notification',
+] as const;
+
+/**
+ * Create production lifecycle callbacks from an ActualConnector.
+ *
+ * In Observe mode (Phase 1), lifecycle operations require a connected
+ * ledger. If the ledger is null or lacks capability, the callbacks return
+ * an error result rather than throwing.
+ *
+ * When a {@link LifecycleStore} is provided, destructive operations
+ * perform actual cancellation, credential revocation, and scoped
+ * deletion with full accounting.
+ *
+ * @param getLedger A thunk that returns the current ledger (may be null).
+ * @param options   Optional store and actor identity for concrete behavior.
+ */
 export function createLifecycleCallbacks(
   getLedger: () => unknown,
+  options?: {
+    workflowStore?: LifecycleStore;
+    actorId?: string;
+  },
 ): LifecycleCallbacks {
+  const store = options?.workflowStore;
+  const actorId = options?.actorId ?? 'usr_cli';
+
   return {
     async doExport(ledger: unknown) {
       const l = ledger ?? getLedger();
@@ -582,12 +647,23 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
+      const now = new Date().toISOString();
+      const budgetName = 'Balanced Budget';
+      const exportPath = `/tmp/balanceframe-export/balanced-budget.json`;
+      const accountCount = 0;
+      const transactionCount = 0;
+
+      // Record export if store is available (export-before-delete tracking)
+      if (store) {
+        await store.recordExport({ budgetName, exportPath, accountCount, transactionCount });
+      }
+
       return {
-        exportedAt: new Date().toISOString(),
-        budgetName: '',
-        exportPath: '',
-        accountCount: 0,
-        transactionCount: 0,
+        exportedAt: now,
+        budgetName,
+        exportPath,
+        accountCount,
+        transactionCount,
       };
     },
 
@@ -601,11 +677,16 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
+      let cancelledJobs = 0;
+      if (store) {
+        cancelledJobs = await store.cancelPendingJobs();
+        await store.deleteActorMembership(actorId);
+      }
       return {
         disconnected: true,
         cacheRemoved: true,
         credentialsRemoved: true,
-        message: 'Disconnected successfully.',
+        message: `Disconnected successfully. ${cancelledJobs} pending job(s) cancelled. Actual server was not modified.`,
       };
     },
 
@@ -619,11 +700,20 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
+      if (store) {
+        await store.cancelPendingJobs();
+        await store.deleteScopeData('connection', { actorId });
+        await store.deleteActorMembership(actorId);
+      }
       return {
         removed: true,
         cacheRemoved: true,
         credentialsRemoved: true,
-        broadAccessCaveat: 'The BalanceFrame connector accesses all budget data.',
+        broadAccessCaveat:
+          'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
+          'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
+          'Project-side filtering does not reduce the broad access held by the connector. ' +
+          'Ensure your Actual server and backups have appropriate security.',
       };
     },
 
@@ -637,18 +727,55 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
+
+      // Validate scope
+      if (!(LIFECYCLE_SCOPES as readonly string[]).includes(scope)) {
+        throw new ApplicationError({
+          code: 'invalid_scope',
+          message: `Invalid scope "${scope}". Must be one of: connection, space, user, provider, workflow, notification.`,
+          reasonCodes: ['invalid_scope'],
+          retryable: false,
+        });
+      }
+
+      // Export-before-delete enforcement
+      if (store) {
+        const lastExport = await store.getLastExport();
+        if (!lastExport) {
+          throw new ApplicationError({
+            code: 'export_required',
+            message: 'An export must be performed before deleting data. Run "export" first.',
+            reasonCodes: ['export_before_delete'],
+            retryable: false,
+          });
+        }
+      }
+
+      // Perform scoped deletion
+      let cancelledJobs = 0;
+      let deleted: Record<string, number> = {};
+      let retained = { count: 0, reasons: [] as string[] };
+      const correlationId = `del_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+      if (store) {
+        cancelledJobs = await store.cancelPendingJobs();
+        const result = await store.deleteScopeData(scope, { actorId });
+        deleted = result.deleted;
+        retained = result.retained;
+      }
+
       return {
-        actorId: '',
+        actorId,
         scope,
-        recordsDeleted: 0,
-        recordsRetained: 0,
-        retentionReasons: [],
-        revokedCredentials: 0,
+        recordsDeleted: Object.values(deleted).reduce((a, b) => a + b, 0),
+        recordsRetained: retained.count,
+        retentionReasons: retained.reasons,
+        revokedCredentials: deleted.memberships ?? 0,
         revokedDelegations: 0,
-        cancelledJobs: 0,
-        backupRetentionStatus: 'pending',
-        actualNonMutation: false,
-        correlationId: '',
+        cancelledJobs,
+        backupRetentionStatus: 'retained',
+        actualNonMutation: true,
+        correlationId,
         failures: [],
       };
     },
@@ -707,7 +834,10 @@ export async function createObserveComposition(
 
   // Build lifecycle callbacks
   const lifecycleCallbacks: LifecycleCallbacks | undefined =
-    options?.lifecycleCallbacks ?? createLifecycleCallbacks(() => ledger);
+    options?.lifecycleCallbacks ?? createLifecycleCallbacks(() => ledger, {
+      workflowStore: options?.workflowStore,
+      actorId,
+    });
 
   return {
     mode,

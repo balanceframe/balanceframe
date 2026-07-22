@@ -99,6 +99,46 @@ pub struct HistoricalCorrection {
 }
 
 // ---------------------------------------------------------------------------
+// CorrectionEvidence — structured evidence from approved/corrected reviews
+// ---------------------------------------------------------------------------
+
+/// Structured evidence captured from an approved or corrected review
+/// transition.  Each record represents one human approval or correction
+/// event, with the contextual state that was current at transition time.
+///
+/// When multiple corrections for the same merchant carry conflicting
+/// account / direction / category values, the rule candidate analysis
+/// flags rather than collapses the conflict.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionEvidence {
+    /// Source review item ID that produced this correction.
+    pub source_review_id: String,
+    /// Normalized merchant name from the transaction payee.
+    pub merchant: Option<String>,
+    /// Imported payee name from transaction import data.
+    pub imported_payee: Option<String>,
+    /// Account ID the transaction belongs to.
+    pub account_id: Option<String>,
+    /// Direction — `"inflow"` or `"outflow"`.
+    pub direction: Option<String>,
+    /// Transaction amount in minor units.
+    pub amount: Option<i64>,
+    /// Transaction date (ISO-8601).
+    pub date: Option<String>,
+    /// The category that was approved or assigned.
+    pub category_id: String,
+    /// Human-readable category name.
+    pub category_name: Option<String>,
+    /// Actor who performed the approval or correction.
+    pub actor: String,
+    /// Review status before this transition.
+    pub from_status: String,
+    /// Review status after this transition.
+    pub to_status: String,
+}
+
+// ---------------------------------------------------------------------------
 // DeterministicAnalysis
 // ---------------------------------------------------------------------------
 
@@ -672,6 +712,159 @@ pub fn generate_rule_candidates(
     candidates
 }
 
+
+/// Analyze correction evidence to produce rule candidates with contextual
+/// conflict detection.  Uses the same merchant-grouping logic as
+/// [`generate_rule_candidates`] but draws evidence from correction records
+/// instead of raw transactions.
+///
+/// When multiple corrections for the same merchant carry conflicting
+/// account, direction, or category values, the candidate is flagged with
+/// a `conflict_reason` rather than silently collapsing to one value.
+pub fn generate_rule_candidates_from_corrections(
+    corrections: &[CorrectionEvidence],
+    min_consistent_count: u32,
+) -> Vec<RuleCandidate> {
+    #[derive(Default)]
+    struct CorrectionContext {
+        cats: HashMap<String, (String, u32)>,
+        account_ids: HashSet<String>,
+        directions: HashSet<String>,
+        amounts: Vec<i64>,
+        dates: Vec<String>,
+        source_count: u32,
+    }
+
+    let mut merchant_data: HashMap<String, CorrectionContext> = HashMap::new();
+
+    for c in corrections {
+        let merchant = match &c.merchant {
+            Some(m) if !m.is_empty() => m.clone(),
+            _ => continue,
+        };
+
+        let ctx = merchant_data.entry(merchant).or_default();
+        let cat_name = c.category_name.clone().unwrap_or_else(|| "Unknown".into());
+        let entry = ctx.cats.entry(c.category_id.clone()).or_insert_with(|| (cat_name.clone(), 0));
+        entry.1 += 1;
+        if entry.0 == "Unknown" && cat_name != "Unknown" {
+            entry.0 = cat_name;
+        }
+
+        if let Some(aid) = &c.account_id {
+            ctx.account_ids.insert(aid.clone());
+        }
+        if let Some(dir) = &c.direction {
+            ctx.directions.insert(dir.clone());
+        }
+        if let Some(amt) = c.amount {
+            ctx.amounts.push(amt);
+        }
+        if let Some(d) = &c.date {
+            ctx.dates.push(d.clone());
+        }
+        ctx.source_count += 1;
+    }
+
+    let mut candidates: Vec<RuleCandidate> = Vec::new();
+
+    for (merchant, ctx) in &merchant_data {
+        let best = ctx.cats.iter().max_by_key(|(_, &(_, count))| count);
+        if let Some((cat_id, (cat_name_from_tx, count))) = best {
+            if *count >= min_consistent_count {
+                let mut account_ids: Vec<String> = ctx.account_ids.iter().cloned().collect();
+                account_ids.sort();
+
+                let amount_min = ctx.amounts.iter().min().copied();
+                let amount_max = ctx.amounts.iter().max().copied();
+
+                let date_earliest = ctx.dates.iter().min().cloned();
+                let date_latest = ctx.dates.iter().max().cloned();
+
+                let all_pos = ctx.amounts.iter().all(|&a| a >= 0);
+                let all_neg = ctx.amounts.iter().all(|&a| a <= 0);
+                let direction = if all_pos {
+                    "inflow".to_string()
+                } else if all_neg {
+                    "outflow".to_string()
+                } else {
+                    "mixed".to_string()
+                };
+
+                // --- Conflict detection ---
+                // Conflicts are flagged rather than collapsed.
+                let mut conflict_parts: Vec<String> = Vec::new();
+
+                if ctx.account_ids.len() > 1 {
+                    let mut accts: Vec<String> = ctx.account_ids.iter().cloned().collect();
+                    accts.sort();
+                    conflict_parts.push(format!(
+                        "Merchant '{}' corrected across accounts: [{}]",
+                        merchant,
+                        accts.join(", ")
+                    ));
+                }
+
+                if ctx.directions.len() > 1 {
+                    let mut dirs: Vec<String> = ctx.directions.iter().cloned().collect();
+                    dirs.sort();
+                    conflict_parts.push(format!(
+                        "Merchant '{}' corrected with mixed directions: [{}]",
+                        merchant,
+                        dirs.join(", ")
+                    ));
+                }
+
+                if ctx.cats.len() > 1 {
+                    let mut cats: Vec<String> = ctx.cats.keys().cloned().collect();
+                    cats.sort();
+                    conflict_parts.push(format!(
+                        "Merchant '{}' corrected to different categories: [{}]",
+                        merchant,
+                        cats.iter()
+                            .map(|cid| format!("{} ({})", cid, ctx.cats[cid].0))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+
+                let conflict_reason = if conflict_parts.is_empty() {
+                    None
+                } else {
+                    Some(conflict_parts.join("; "))
+                };
+
+                let is_merchant_only = account_ids.len() <= 1
+                    && direction == "outflow"
+                    && amount_min.zip(amount_max).map(|(mn,mx)| mn == mx).unwrap_or(true)
+                    && date_earliest.as_deref() == date_latest.as_deref();
+
+                candidates.push(RuleCandidate {
+                    rule_id: String::new(),
+                    rule_name: format!("Correction-rule for {}", merchant),
+                    proposed_category_id: cat_id.clone(),
+                    proposed_category_name: cat_name_from_tx.clone(),
+                    matching_tx_count: *count,
+                    reason: format!(
+                        "Merchant '{}' corrected to '{}' across {} correction(s)",
+                        merchant, cat_name_from_tx, ctx.source_count
+                    ),
+                    account_ids,
+                    direction,
+                    amount_min,
+                    amount_max,
+                    date_earliest,
+                    date_latest,
+                    is_merchant_only,
+                    conflict_reason,
+                });
+            }
+        }
+    }
+
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.matching_tx_count));
+    candidates
+}
 
 // ---------------------------------------------------------------------------
 // Recurring charge analysis
