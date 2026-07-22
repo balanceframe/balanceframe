@@ -900,6 +900,7 @@ export class RuleMutationService {
       auditRecordId: null,
       reasonCodes: ['idempotency_replay'],
       message: idem.errorMessage ?? undefined,
+      simulation: null,
     };
   }
 }
