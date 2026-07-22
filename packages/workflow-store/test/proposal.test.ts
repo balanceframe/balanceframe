@@ -144,6 +144,17 @@ describe('CategorizationProposal', () => {
       expect(second.payloadHash).toBe(SAMPLE_HASH);
     });
 
+    it('creates a fresh proposal after the previous identical proposal is superseded', async () => {
+      const first = await store.createProposal(BASE_PROPOSAL);
+      await store.supersedeProposal(first.id);
+
+      const second = await store.createProposal(BASE_PROPOSAL);
+
+      expect(second.id).not.toBe(first.id);
+      expect(second.supersededAt).toBeNull();
+      expect((await store.getProposal(first.id))!.supersededAt).not.toBeNull();
+    });
+
     it('creates a new proposal when payloadHash differs (changed content)', async () => {
       const first = await store.createProposal(BASE_PROPOSAL);
 

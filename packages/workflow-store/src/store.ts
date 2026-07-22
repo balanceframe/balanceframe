@@ -664,8 +664,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
         ON categorization_proposals(budget_id, transaction_id, operation)
         WHERE superseded_at IS NULL;
 
+      DROP INDEX IF EXISTS idx_proposals_payload_unique;
+
       CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_payload_unique
-        ON categorization_proposals(budget_id, transaction_id, operation, payload_hash);
+        ON categorization_proposals(budget_id, transaction_id, operation, payload_hash)
+        WHERE superseded_at IS NULL;
 
       CREATE TABLE IF NOT EXISTS proposal_approvals (
         id            TEXT PRIMARY KEY,
@@ -1053,7 +1056,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Proposals ──────────────────────────────────────────────────────
 
     this.stmt.insertProposal = this.db.prepare(`
-      INSERT INTO categorization_proposals (id, operation, budget_id, transaction_id,
+      INSERT OR IGNORE INTO categorization_proposals (id, operation, budget_id, transaction_id,
                                             category_id, payload_hash, policy_version,
                                             preconditions, expires_at, actor_id,
                                             provenance, provider_model, correlation_id,
@@ -1063,8 +1066,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
               @preconditions, @expiresAt, @actorId,
               @provenance, @providerModel, @correlationId,
               @supersededAt, @createdAt)
-      ON CONFLICT(budget_id, transaction_id, operation, payload_hash)
-        DO NOTHING
       RETURNING *
     `);
 
