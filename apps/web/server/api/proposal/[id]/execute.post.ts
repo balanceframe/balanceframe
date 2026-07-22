@@ -17,12 +17,10 @@
  *   404 — PROPOSAL_NOT_FOUND
  *   409 — PROPOSAL_SUPERSEDED / PROPOSAL_EXPIRED
  *   422 — NATIVE_RULE_MISSING
- *   503 — STORE_UNAVAILABLE / LEDGER_UNAVAILABLE
  *   500 — RULE_EXECUTION_FAILED
  */
 
 import { setResponseStatus } from 'h3';
-import { createDefaultConnectionManager } from '@balanceframe/application';
 import {
   getWorkflowStore,
   getActorId,
@@ -30,6 +28,7 @@ import {
   errorEnvelope,
   buildAuthorizationInfo,
 } from '../../../utils/workflow-store';
+import { createMutationConnectionManager } from '../../../utils/mutation-executor';
 
 // ---------------------------------------------------------------------------
 // Minimal ledger handle — mirrors the createRule contract from BudgetLedger
@@ -166,7 +165,7 @@ export default defineEventHandler(async (event) => {
     // -------------------------------------------------------------------
     // 4. Connect to Actual ledger
     // -------------------------------------------------------------------
-    const manager = createDefaultConnectionManager();
+    const manager = createMutationConnectionManager();
 
     let ledger: LedgerHandle;
     try {
