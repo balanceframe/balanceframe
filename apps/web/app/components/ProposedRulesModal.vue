@@ -177,14 +177,29 @@ async function onAccept(proposalId: string) {
   if (acceptingId.value) return;
   acceptingId.value = proposalId;
   try {
-    const res = await fetch(`/api/proposal/${proposalId}/execute`, {
+    // Step 1: Explicitly approve the proposal
+    const approveRes = await fetch(`/api/proposal/${proposalId}/approve`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      const msg = body?.error?.message ?? `Failed to execute proposal (HTTP ${res.status})`;
+    if (!approveRes.ok) {
+      const body = await approveRes.json().catch(() => ({}));
+      const msg = body?.error?.message ?? `Failed to approve proposal (HTTP ${approveRes.status})`;
+      console.error(msg);
+      emit('close');
+      return;
+    }
+
+    // Step 2: Execute the approved proposal
+    const execRes = await fetch(`/api/proposal/${proposalId}/execute`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!execRes.ok) {
+      const body = await execRes.json().catch(() => ({}));
+      const msg = body?.error?.message ?? `Failed to execute proposal (HTTP ${execRes.status})`;
       console.error(msg);
       return;
     }

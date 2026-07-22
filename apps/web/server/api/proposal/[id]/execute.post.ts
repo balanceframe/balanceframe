@@ -25,6 +25,7 @@ import { setResponseStatus } from 'h3';
 import { createDefaultConnectionManager } from '@balanceframe/application';
 import {
   getWorkflowStore,
+  getActorId,
   okEnvelope,
   errorEnvelope,
   buildAuthorizationInfo,
@@ -100,8 +101,43 @@ export default defineEventHandler(async (event) => {
     }
 
     // -------------------------------------------------------------------
-    // 3. Extract nativeRule from preconditions
+    // 3. Verify an active approval exists and consume it
     // -------------------------------------------------------------------
+    const actorId = getActorId(event);
+    const activeApprovals = await wf.store.findActiveApprovals(proposalId);
+
+    // Find an approval that matches this actor and the proposal's payload hash
+    const matchingApproval = activeApprovals.find(
+      (a) => a.actorId === actorId && a.payloadHash === proposal.payloadHash,
+    );
+
+    if (!matchingApproval) {
+      setResponseStatus(event, 403);
+      return errorEnvelope(
+        'PROPOSAL_NOT_APPROVED',
+        'This proposal has no active approval for the current actor. ' +
+          'Call POST /api/proposal/[id]/approve first to authorize execution.',
+        authInfo,
+        false,
+        requestId,
+      );
+    }
+
+    try {
+      await wf.store.consumeApproval(matchingApproval.id);
+    } catch (err) {
+      setResponseStatus(event, 409);
+      return errorEnvelope(
+        'APPROVAL_CONSUMPTION_FAILED',
+        err instanceof Error ? err.message : 'Failed to consume approval',
+        authInfo,
+        false,
+        requestId,
+      );
+    }
+
+    // -------------------------------------------------------------------
+    // 4. Extract nativeRule from preconditions
     let preconditionsObject: Record<string, unknown>;
     try {
       preconditionsObject = JSON.parse(proposal.preconditions) as Record<string, unknown>;
