@@ -689,8 +689,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         ON proposal_approvals(proposal_id, actor_id)
         WHERE status = 'active';
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_proposal_actor
-        ON proposal_approvals(proposal_id, actor_id);
+      DROP INDEX IF EXISTS idx_approvals_proposal_actor;
 
       CREATE TABLE IF NOT EXISTS idempotency_records (
         idempotency_key   TEXT PRIMARY KEY,
@@ -1101,14 +1100,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Approvals ─────────────────────────────────────────────────────
 
     this.stmt.insertApproval = this.db.prepare(`
-      INSERT INTO proposal_approvals (id, proposal_id, payload_hash, actor_id,
+      INSERT OR IGNORE INTO proposal_approvals (id, proposal_id, payload_hash, actor_id,
                                       status, expires_at, consumed_at,
                                       superseded_at, created_at)
       VALUES (@id, @proposalId, @payloadHash, @actorId,
               'active', @expiresAt, NULL,
               NULL, @createdAt)
-      ON CONFLICT(proposal_id, actor_id)
-        DO NOTHING
       RETURNING *
     `);
 
@@ -1207,6 +1204,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.stmt.selectApprovalByProposalActor = this.db.prepare(`
       SELECT * FROM proposal_approvals
        WHERE proposal_id = @proposalId AND actor_id = @actorId
+       ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, created_at DESC
        LIMIT 1
     `);
 
