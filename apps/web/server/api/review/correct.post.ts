@@ -6,7 +6,7 @@
  * request body (prevents spoofing).
  */
 
-import { readBody } from 'h3';
+import { readBody, defineEventHandler } from 'h3';
 import {
   getWorkflowStore,
   getActorId,
@@ -14,6 +14,8 @@ import {
   okEnvelope,
   errorEnvelope,
   buildAuthorizationInfo,
+  reviewAndApplyEnabled,
+  getReviewMutationExecutor,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -78,8 +80,79 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope(code, outcome.error ?? 'Unknown error', authInfo, false, requestId);
   }
 
+  // Check if reviewAndApply mode is enabled and an executor is available
+  if (reviewAndApplyEnabled(event)) {
+    const executor = getReviewMutationExecutor();
+    if (executor) {
+      const item = await wf.store.getReviewItem(reviewId);
+      if (!item) {
+        setResponseStatus(event, 404);
+        return errorEnvelope('NOT_FOUND', 'Review item not found after transition', authInfo, false, requestId);
+      }
+
+      const mutationResult = await executor(
+        { reviewId, actorId, requestId, categoryId },
+        wf.store,
+        item,
+      );
+
+      return okEnvelope(
+        {
+          itemId: outcome.itemId,
+          categoryId,
+          success: mutationResult.success,
+          error: mutationResult.error,
+          categorizationExecuted: true,
+          mutationStatus: mutationResult.mutationStatus,
+          applied: mutationResult.applied,
+          verified: mutationResult.verified,
+          stale: mutationResult.stale,
+          transactionId: mutationResult.transactionId,
+          previousCategoryId: mutationResult.previousCategoryId,
+          newCategoryId: mutationResult.newCategoryId,
+        },
+        authInfo,
+        requestId,
+      );
+    }
+
+    // reviewAndApply configured but no executor wired
+    return okEnvelope(
+      {
+        itemId: outcome.itemId,
+        categoryId,
+        success: true,
+        error: 'Mutation executor not available',
+        categorizationExecuted: false,
+        mutationStatus: 'denied',
+        applied: false,
+        verified: false,
+        stale: false,
+        transactionId: null,
+        previousCategoryId: null,
+        newCategoryId: null,
+      },
+      authInfo,
+      requestId,
+    );
+  }
+
+  // Observe mode — workflow transition only, no mutation
   return okEnvelope(
-    { itemId: outcome.itemId, categoryId, success: true, error: null, categorizationExecuted: false },
+    {
+      itemId: outcome.itemId,
+      categoryId,
+      success: true,
+      error: null,
+      categorizationExecuted: false,
+      mutationStatus: 'noop',
+      applied: false,
+      verified: false,
+      stale: false,
+      transactionId: null,
+      previousCategoryId: null,
+      newCategoryId: null,
+    },
     authInfo,
     requestId,
   );

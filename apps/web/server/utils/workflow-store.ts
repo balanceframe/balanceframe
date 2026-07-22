@@ -421,3 +421,86 @@ export function buildAuthorizationInfo(
     allowed: true,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Mutation service seam — typed bridge between web routes and the
+// CategorizationMutationService (in @balanceframe/application).  The web
+// layer does NOT depend on the application package; instead, the composition
+// root (or test harness) injects a ReviewMutationExecutor callback.
+//
+// reviewAndApply mode (enabled via runtimeConfig) makes approve/correct
+// actually write categorization mutations, not just transition workflow state.
+// ---------------------------------------------------------------------------
+
+/**
+ * Status values for the mutation phase of a review action.
+ *
+ * - `noop`       — no mutation was attempted (Observe mode).
+ * - `denied`     — reviewAndApply is configured but no executor is wired.
+ * - `applying`   — mutation is in progress (async / deferred).
+ * - `applied`    — mutation write succeeded (verification pending / not done).
+ * - `apply_failed` — mutation write failed.
+ * - `stale`      — mutation was not attempted because snapshot data is stale.
+ * - `verified`   — mutation write succeeded AND postcondition verification passed.
+ */
+export type MutationStatus = 'noop' | 'denied' | 'applying' | 'applied' | 'apply_failed' | 'stale' | 'verified';
+
+/** Input to the review mutation executor. */
+export interface ReviewMutationInput {
+  readonly reviewId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly categoryId?: string;
+  readonly correlationId?: string;
+}
+
+/** Result of a categorized mutation from the executor. */
+export interface ReviewMutationResult {
+  readonly mutationStatus: MutationStatus;
+  readonly success: boolean;
+  readonly applied: boolean;
+  readonly verified: boolean;
+  readonly stale: boolean;
+  readonly transactionId: string | null;
+  readonly previousCategoryId: string | null;
+  readonly newCategoryId: string | null;
+  readonly error: string | null;
+}
+
+/**
+ * Typed callback that performs the actual ledger mutation for a review action.
+ *
+ * The composition root (@balanceframe/application's CategorizationMutationService)
+ * wires this, so web routes never depend on application internals.
+ */
+export type ReviewMutationExecutor = (
+  input: ReviewMutationInput,
+  store: WorkflowStore,
+  item: ReviewItem,
+) => Promise<ReviewMutationResult>;
+
+/** Module-level executor — set by the composition root at startup. */
+let _mutationExecutor: ReviewMutationExecutor | null = null;
+
+/**
+ * Inject the mutation executor (called once by the composition root).
+ */
+export function setReviewMutationExecutor(fn: ReviewMutationExecutor | null): void {
+  _mutationExecutor = fn;
+}
+
+/**
+ * Get the currently registered mutation executor, or null.
+ */
+export function getReviewMutationExecutor(): ReviewMutationExecutor | null {
+  return _mutationExecutor;
+}
+
+/**
+ * Check whether reviewAndApply (mutation-enabled) mode is active for this
+ * request based on runtime configuration.
+ */
+export function reviewAndApplyEnabled(event: EventWithContext): boolean {
+  const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
+  return config?.reviewAndApply === true;
+}

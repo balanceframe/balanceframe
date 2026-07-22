@@ -12,3 +12,4 @@ export * from './commands.js';
 export * from './mutation.js';
 export * from './rule-mutation.js';
 export * from './analysis.js';
+export * from './composition.js';

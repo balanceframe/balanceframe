@@ -6,7 +6,7 @@
  * request body (prevents spoofing).
  */
 
-import { readBody } from 'h3';
+import { readBody, defineEventHandler } from 'h3';
 import {
   getWorkflowStore,
   getActorId,
@@ -66,8 +66,21 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope(code, outcome.error ?? 'Unknown error', authInfo, false, requestId);
   }
 
+  // Skip is workflow-only — no mutation even in reviewAndApply mode
   return okEnvelope(
-    { itemId: outcome.itemId, success: true, error: null, categorizationExecuted: false },
+    {
+      itemId: outcome.itemId,
+      success: true,
+      error: null,
+      categorizationExecuted: false,
+      mutationStatus: 'noop',
+      applied: false,
+      verified: false,
+      stale: false,
+      transactionId: null,
+      previousCategoryId: null,
+      newCategoryId: null,
+    },
     authInfo,
     requestId,
   );

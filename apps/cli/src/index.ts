@@ -48,6 +48,10 @@ import {
   type DataFreshness,
   AuthorizationContext,
 } from '@balanceframe/application';
+import {
+  createObserveComposition,
+  type ObserveComposition,
+} from '@balanceframe/application/composition';
 
 // ---------------------------------------------------------------------------
 // Parsed CLI command
@@ -904,6 +908,28 @@ export async function main(
   const ledger = opts?.ledger ?? null;
   const freshness: DataFreshness | null = opts?.freshness ?? null;
 
+  // When no opts are provided (production), fall back to the composition
+  // factory for analysisProtocol and lifecycleCallbacks. When opts are
+  // provided (test injection), preserve the caller's values — even when
+  // they are undefined — so the existing test seam for "no_analysis_protocol"
+  // error paths continues to function.
+  let analysisProtocol: AnalysisProtocol | undefined;
+  let lifecycleCallbacksVal: LifecycleCallbacks | undefined;
+
+  if (opts === undefined) {
+    try {
+      const composition = await createObserveComposition();
+      analysisProtocol = composition.analysisProtocol;
+      lifecycleCallbacksVal = composition.lifecycleCallbacks;
+    } catch {
+      // Composition failure is handled naturally: analysisProtocol remains
+      // undefined, producing a "no_analysis_protocol" error envelope.
+    }
+  } else {
+    analysisProtocol = opts.analysisProtocol;
+    lifecycleCallbacksVal = opts.lifecycleCallbacks;
+  }
+
   // Handle parse errors as stable JSON error envelopes — never throw
   const parsed = parseArgs(argv);
   if (!parsed.ok) {
@@ -924,8 +950,8 @@ export async function main(
     requestId,
     ledger,
     freshness,
-    analysisProtocol: opts?.analysisProtocol,
-    lifecycleCallbacks: opts?.lifecycleCallbacks,
+    analysisProtocol,
+    lifecycleCallbacks: lifecycleCallbacksVal,
   };
 
   try {
