@@ -31,10 +31,16 @@ import {
   okEnvelope,
   errorEnvelope,
   buildAuthorizationInfo,
+  setReviewMutationExecutorFactory,
+  getReviewMutationExecutorFromEvent,
+  applyReviewMutationWithTransition,
 } from '../../server/utils/workflow-store';
 import type {
   EventWithContext,
   ReviewMutationExecutor,
+  ReviewMutationExecutorFactory,
+  MutationTransitionResult,
+  ReviewStatus,
 } from '../../server/utils/workflow-store';
 
 // ---------------------------------------------------------------------------
@@ -603,5 +609,338 @@ describe('skip — workflow-only contract', () => {
     };
     expect(responseFields.mutationStatus).toBe('noop');
     expect(responseFields.categorizationExecuted).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Event-context factory injection
+// ---------------------------------------------------------------------------
+
+describe('event-context factory injection', () => {
+  let store: SqliteWorkflowStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setReviewMutationExecutor(null);
+    setReviewMutationExecutorFactory(null);
+    store = new SqliteWorkflowStore(':memory:');
+  });
+
+  it('factory creates executor from event context', async () => {
+    const ev = mockEvent({ authenticated: true, config: { reviewAndApply: true } });
+
+    const factory: ReviewMutationExecutorFactory = (event) => {
+      const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
+      if (!config?.reviewAndApply) return null;
+      return async (input, _store, _item) => ({
+        mutationStatus: 'verified' as const,
+        success: true,
+        applied: true,
+        verified: true,
+        stale: false,
+        transactionId: 'txn-factory-test',
+        previousCategoryId: null,
+        newCategoryId: 'cat-food',
+        error: null,
+      });
+    };
+
+    setReviewMutationExecutorFactory(factory);
+    const executor = getReviewMutationExecutorFromEvent(ev);
+
+    expect(executor).not.toBeNull();
+    const item = await seedPendingReview(store);
+    const result = await executor!(
+      { reviewId: item.id, actorId: ACTOR, requestId: 'test-factory' },
+      store,
+      item,
+    );
+
+    expect(result.mutationStatus).toBe('verified');
+    expect(result.verified).toBe(true);
+  });
+
+  it('factory returns null when reviewAndApply not enabled', async () => {
+    const ev = mockEvent({ authenticated: true });
+
+    const factory: ReviewMutationExecutorFactory = (event) => {
+      const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
+      if (!config?.reviewAndApply) return null;
+      return async () => ({
+        mutationStatus: 'verified' as const,
+        success: true,
+        applied: true,
+        verified: true,
+        stale: false,
+        transactionId: 'txn',
+        previousCategoryId: null,
+        newCategoryId: 'cat',
+        error: null,
+      });
+    };
+
+    setReviewMutationExecutorFactory(factory);
+    expect(getReviewMutationExecutorFromEvent(ev)).toBeNull();
+  });
+
+  it('falls back to module-level singleton when factory returns null', async () => {
+    const ev = mockEvent({ authenticated: true, config: { reviewAndApply: true } });
+    const singleton: ReviewMutationExecutor = async () => ({
+      mutationStatus: 'verified' as const,
+      success: true,
+      applied: true,
+      verified: true,
+      stale: false,
+      transactionId: 'txn-singleton',
+      previousCategoryId: null,
+      newCategoryId: 'cat',
+      error: null,
+    });
+
+    // Factory returns null, singleton is set
+    setReviewMutationExecutorFactory(() => null);
+    setReviewMutationExecutor(singleton);
+
+    const executor = getReviewMutationExecutorFromEvent(ev);
+    expect(executor).toBe(singleton);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Mutation state transitions (applying → applied / apply_failed)
+// ---------------------------------------------------------------------------
+
+describe('mutation state transitions', () => {
+  let store: SqliteWorkflowStore;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setReviewMutationExecutor(null);
+    setReviewMutationExecutorFactory(null);
+    store = new SqliteWorkflowStore(':memory:');
+  });
+
+  it('approve transitions item to applied after verified execution', async () => {
+    const item = await seedPendingReview(store);
+
+    // First transition to approved (as route handler does)
+    const outcome = await performReviewAction(store, item.id, 'approve', ACTOR);
+    expect(outcome.success).toBe(true);
+
+    const executor: ReviewMutationExecutor = async () => ({
+      mutationStatus: 'verified',
+      success: true,
+      applied: true,
+      verified: true,
+      stale: false,
+      transactionId: item.transactionId,
+      previousCategoryId: null,
+      newCategoryId: item.categoryId,
+      error: null,
+    });
+
+    const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
+      store,
+      item.id,
+      ACTOR,
+      executor,
+      'test-transition',
+    );
+
+    // Verify the transition result
+    expect(finalStatus).toBe('applied');
+    expect(mutationResult.mutationStatus).toBe('verified');
+
+    // Verify the item is now in applied state
+    const updated = await store.getReviewItem(item.id);
+    expect(updated).not.toBeNull();
+    expect(updated!.status).toBe('applied');
+  });
+
+  it('approve transitions item to apply_failed after failed execution', async () => {
+    const item = await seedPendingReview(store);
+
+    const outcome = await performReviewAction(store, item.id, 'approve', ACTOR);
+    expect(outcome.success).toBe(true);
+
+    const executor: ReviewMutationExecutor = async () => ({
+      mutationStatus: 'apply_failed',
+      success: false,
+      applied: false,
+      verified: false,
+      stale: false,
+      transactionId: null,
+      previousCategoryId: null,
+      newCategoryId: null,
+      error: 'Ledger write rejected',
+    });
+
+    const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
+      store,
+      item.id,
+      ACTOR,
+      executor,
+      'test-fail',
+    );
+
+    expect(finalStatus).toBe('apply_failed');
+    expect(mutationResult.success).toBe(false);
+    expect(mutationResult.error).toBe('Ledger write rejected');
+
+    const updated = await store.getReviewItem(item.id);
+    expect(updated!.status).toBe('apply_failed');
+  });
+
+  it('stale mutation maps to apply_failed state', async () => {
+    const item = await seedPendingReview(store);
+
+    const outcome = await performReviewAction(store, item.id, 'approve', ACTOR);
+    expect(outcome.success).toBe(true);
+
+    const executor: ReviewMutationExecutor = async () => ({
+      mutationStatus: 'stale',
+      success: false,
+      applied: false,
+      verified: false,
+      stale: true,
+      transactionId: null,
+      previousCategoryId: null,
+      newCategoryId: null,
+      error: 'Snapshot data is stale',
+    });
+
+    const { finalStatus } = await applyReviewMutationWithTransition(
+      store,
+      item.id,
+      ACTOR,
+      executor,
+      'test-stale',
+    );
+
+    expect(finalStatus).toBe('apply_failed');
+
+    const updated = await store.getReviewItem(item.id);
+    expect(updated!.status).toBe('apply_failed');
+  });
+
+  it('verification failure maps to apply_failed despite successful write', async () => {
+    const item = await seedPendingReview(store);
+
+    const outcome = await performReviewAction(store, item.id, 'approve', ACTOR);
+    expect(outcome.success).toBe(true);
+
+    // Write succeeded but postcondition verification failed
+    const executor: ReviewMutationExecutor = async () => ({
+      mutationStatus: 'applied',
+      success: true,
+      applied: true,
+      verified: false,
+      stale: false,
+      transactionId: item.transactionId,
+      previousCategoryId: null,
+      newCategoryId: item.categoryId,
+      error: 'Postcondition verification mismatch: expected category differs',
+    });
+
+    const { finalStatus } = await applyReviewMutationWithTransition(
+      store,
+      item.id,
+      ACTOR,
+      executor,
+      'test-unverified',
+    );
+
+    expect(finalStatus).toBe('apply_failed');
+
+    const updated = await store.getReviewItem(item.id);
+    expect(updated!.status).toBe('apply_failed');
+  });
+
+  it('Observe mode does not call executor and leaves item in approved', async () => {
+    const item = await seedPendingReview(store);
+
+    // Route handler in Observe mode just does performReviewAction
+    const outcome = await performReviewAction(store, item.id, 'approve', ACTOR);
+    expect(outcome.success).toBe(true);
+
+    // No executor is called in Observe mode
+    const updated = await store.getReviewItem(item.id);
+    expect(updated!.status).toBe('approved');
+  });
+
+  it('correct action passes categoryId and transitions to applied', async () => {
+    const item = await seedPendingReview(store);
+    const customCategory = 'cat-office';
+
+    const outcome = await performReviewAction(store, item.id, 'correct', ACTOR, customCategory);
+    expect(outcome.success).toBe(true);
+
+    let capturedCategoryId: string | undefined;
+    const executor: ReviewMutationExecutor = async (input) => {
+      capturedCategoryId = input.categoryId;
+      return {
+        mutationStatus: 'verified',
+        success: true,
+        applied: true,
+        verified: true,
+        stale: false,
+        transactionId: item.transactionId,
+        previousCategoryId: 'cat-food',
+        newCategoryId: customCategory,
+        error: null,
+      };
+    };
+
+    const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
+      store,
+      item.id,
+      ACTOR,
+      executor,
+      'test-correct',
+      customCategory,
+    );
+
+    expect(capturedCategoryId).toBe(customCategory);
+    expect(finalStatus).toBe('applied');
+    expect(mutationResult.newCategoryId).toBe(customCategory);
+
+    const updated = await store.getReviewItem(item.id);
+    expect(updated!.status).toBe('applied');
+  });
+
+  it('actor from auth context is passed to executor', async () => {
+    const item = await seedPendingReview(store);
+    const ev = mockEvent({ authenticated: true });
+    const actorId = getActorId(ev);
+
+    const outcome = await performReviewAction(store, item.id, 'approve', actorId);
+    expect(outcome.success).toBe(true);
+
+    let capturedActorId: string | undefined;
+    const executor: ReviewMutationExecutor = async (input) => {
+      capturedActorId = input.actorId;
+      return {
+        mutationStatus: 'verified',
+        success: true,
+        applied: true,
+        verified: true,
+        stale: false,
+        transactionId: item.transactionId,
+        previousCategoryId: null,
+        newCategoryId: item.categoryId,
+        error: null,
+      };
+    };
+
+    await applyReviewMutationWithTransition(
+      store,
+      item.id,
+      actorId,
+      executor,
+      'test-auth',
+    );
+
+    expect(capturedActorId).toBe(ACTOR);
+    expect(capturedActorId).not.toBe('anonymous');
   });
 });

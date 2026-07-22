@@ -59,6 +59,14 @@ pub struct RuleCandidate {
     pub proposed_category_name: String,
     pub matching_tx_count: u32,
     pub reason: String,
+    pub account_ids: Vec<String>,
+    pub direction: String,
+    pub amount_min: Option<i64>,
+    pub amount_max: Option<i64>,
+    pub date_earliest: Option<String>,
+    pub date_latest: Option<String>,
+    pub is_merchant_only: bool,
+    pub conflict_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -550,9 +558,16 @@ pub fn generate_rule_candidates(
     min_consistent_count: u32,
 ) -> Vec<RuleCandidate> {
     // Group categorized transactions by normalized merchant name.
-    // Only consider transactions that have both a payee_name and a non‑empty category_id.
-    let mut merchant_cats: HashMap<String, HashMap<String, (String, u32)>> = HashMap::new();
-    // normalized_merchant → { category_id → (category_name, count) }
+    // Track both category counts and contextual metadata for conflict detection.
+    #[derive(Default)]
+    struct MerchantContext {
+        cats: HashMap<String, (String, u32)>,
+        account_ids: HashSet<String>,
+        amounts: Vec<i64>,
+        dates: Vec<String>,
+    }
+
+    let mut merchant_data: HashMap<String, MerchantContext> = HashMap::new();
 
     for tx in transactions {
         let payee = match &tx.payee_name {
@@ -572,17 +587,18 @@ pub fn generate_rule_candidates(
             continue;
         }
 
-        let cat_map = merchant_cats.entry(normalized).or_default();
-        let entry = cat_map.entry(cat_id).or_insert_with(|| (cat_name.clone(), 0));
+        let ctx = merchant_data.entry(normalized).or_default();
+        let entry = ctx.cats.entry(cat_id).or_insert_with(|| (cat_name.clone(), 0));
         entry.1 += 1;
-        // Update category name if we now have a better one
         if entry.0 == "Unknown" && cat_name != "Unknown" {
             entry.0 = cat_name;
         }
+
+        ctx.account_ids.insert(tx.account_id.clone());
+        ctx.amounts.push(tx.amount.minor_units());
+        ctx.dates.push(tx.date.clone());
     }
 
-    // Build a reverse lookup: category_id → category_name for any categories
-    // that weren't covered by transaction data.
     let cat_name_lookup: HashMap<&str, &str> = categories
         .iter()
         .map(|c| (c.id.as_str(), c.name.as_str()))
@@ -590,17 +606,47 @@ pub fn generate_rule_candidates(
 
     let mut candidates: Vec<RuleCandidate> = Vec::new();
 
-    for (normalized_merchant, cat_map) in &merchant_cats {
-        // Find the dominant category for this merchant
-        let best = cat_map.iter().max_by_key(|(_, &(_, count))| count);
+    for (normalized_merchant, ctx) in &merchant_data {
+        let best = ctx.cats.iter().max_by_key(|(_, &(_, count))| count);
         if let Some((cat_id, (cat_name_from_tx, count))) = &best {
             if *count >= min_consistent_count {
-                // Prefer the official category name from the category list
                 let final_cat_name = cat_name_lookup
                     .get(cat_id.as_str())
                     .copied()
                     .unwrap_or(cat_name_from_tx)
                     .to_string();
+
+                let mut account_ids: Vec<String> = ctx.account_ids.iter().cloned().collect();
+                account_ids.sort();
+
+                let amount_min = ctx.amounts.iter().min().copied();
+                let amount_max = ctx.amounts.iter().max().copied();
+
+                let date_earliest = ctx.dates.iter().min().cloned();
+                let date_latest = ctx.dates.iter().max().cloned();
+
+                let all_pos = ctx.amounts.iter().all(|&a| a >= 0);
+                let all_neg = ctx.amounts.iter().all(|&a| a <= 0);
+                let direction = if all_pos {
+                    "inflow".to_string()
+                } else if all_neg {
+                    "outflow".to_string()
+                } else {
+                    "mixed".to_string()
+                };
+
+                let is_merchant_only = account_ids.len() <= 1
+                    && direction == "outflow"
+                    && amount_min.zip(amount_max).map(|(mn,mx)| mn == mx).unwrap_or(true)
+                    && date_earliest.as_deref() == date_latest.as_deref();
+
+                let conflict_reason = if direction == "mixed" {
+                    Some(format!("Merchant '{}' has both inflows and outflows", normalized_merchant))
+                } else if is_merchant_only {
+                    Some(format!("Merchant '{}' candidate is merchant-only — no account/direction/amount/date variance", normalized_merchant))
+                } else {
+                    None
+                };
 
                 candidates.push(RuleCandidate {
                     rule_id: String::new(),
@@ -608,17 +654,20 @@ pub fn generate_rule_candidates(
                     proposed_category_id: cat_id.to_string(),
                     proposed_category_name: final_cat_name,
                     matching_tx_count: *count,
-                    reason: format!(
-                        "Merchant '{}' consistently categorized as '{}' across {} transaction(s)",
-                        normalized_merchant, cat_name_from_tx, count
-                    ),
+                    reason: format!("Merchant '{}' consistently categorized as '{}' across {} transaction(s)", normalized_merchant, cat_name_from_tx, count),
+                    account_ids,
+                    direction,
+                    amount_min,
+                    amount_max,
+                    date_earliest,
+                    date_latest,
+                    is_merchant_only,
+                    conflict_reason,
                 });
             }
         }
     }
 
-    // Stable sort by descending matching_tx_count so the most consistent
-    // candidates appear first.
     candidates.sort_by_key(|b| std::cmp::Reverse(b.matching_tx_count));
     candidates
 }

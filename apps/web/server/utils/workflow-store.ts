@@ -504,3 +504,161 @@ export function reviewAndApplyEnabled(event: EventWithContext): boolean {
   const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
   return config?.reviewAndApply === true;
 }
+
+// ---------------------------------------------------------------------------
+// Factory-based executor creation (event-context-aware)
+// ---------------------------------------------------------------------------
+
+/**
+ * Factory type — creates a per-request ReviewMutationExecutor from the
+ * event context.  This allows the composition root to wire real services
+ * (BudgetLedger, CategorizationMutationService) without the web layer
+ * depending on @balanceframe/application or @balanceframe/actual-adapter.
+ */
+export type ReviewMutationExecutorFactory = (
+  event: EventWithContext,
+) => ReviewMutationExecutor | null;
+
+/** Module-level factory — set by the composition root at startup. */
+let _executorFactory: ReviewMutationExecutorFactory | null = null;
+
+/**
+ * Register an executor factory (called once by the composition root).
+ * Clears any previously set module-level factory.
+ */
+export function setReviewMutationExecutorFactory(
+  fn: ReviewMutationExecutorFactory | null,
+): void {
+  _executorFactory = fn;
+}
+
+/**
+ * Get the current executor factory, or null.
+ */
+export function getReviewMutationExecutorFactory(): ReviewMutationExecutorFactory | null {
+  return _executorFactory;
+}
+
+/**
+ * Resolve a mutation executor for the given event context.
+ *
+ * Priority:
+ * 1. Factory-based executor (per-request, from event context)
+ * 2. Module-level singleton (set via setReviewMutationExecutor)
+ *
+ * Returns null when no executor is available for this request.
+ */
+export function getReviewMutationExecutorFromEvent(
+  event: EventWithContext,
+): ReviewMutationExecutor | null {
+  if (_executorFactory) {
+    const fromFactory = _executorFactory(event);
+    if (fromFactory) return fromFactory;
+  }
+  return _mutationExecutor;
+}
+
+// ---------------------------------------------------------------------------
+// Mutation transition orchestration
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of executing a review mutation with workflow-state transitions.
+ */
+export interface MutationTransitionResult {
+  readonly mutationResult: ReviewMutationResult;
+  readonly finalStatus: ReviewStatus;
+}
+
+/**
+ * Execute a mutation with the applying → (applied | apply_failed) state
+ * transition semantics.
+ *
+ * Flow:
+ *   approved → applied (on verified success)
+ *   approved → apply_failed (on failure / stale / unverified)
+ *
+ * Maps stale and verification failures explicitly — a successful write
+ * that fails verification lands in apply_failed with metadata.
+ *
+ * @param store        — the workflow store
+ * @param reviewId     — the item to act on
+ * @param actorId      — authenticated actor
+ * @param executor     — the mutation executor callback
+ * @param requestId    — tracking ID
+ * @param categoryId   — optional category override (for 'correct')
+ * @param executionId  — optional correlation/execution ID
+ */
+export async function applyReviewMutationWithTransition(
+  store: WorkflowStore,
+  reviewId: string,
+  actorId: string,
+  executor: ReviewMutationExecutor,
+  requestId: string,
+  categoryId?: string,
+  executionId?: string,
+): Promise<MutationTransitionResult> {
+  // Read current item state (should be 'approved' after performReviewAction)
+  const item = await store.getReviewItem(reviewId);
+  if (!item) {
+    throw new Error(`Review item ${reviewId} not found before mutation`);
+  }
+
+  // Execute the mutation
+  const mutationResult = await executor(
+    { reviewId, actorId, requestId, categoryId, correlationId: executionId },
+    store,
+    item,
+  );
+
+  // Determine final workflow status based on the mutation result.
+  // Map stale and verification failures explicitly.
+  let finalStatus: ReviewStatus;
+  const metadata: Record<string, unknown> = {
+    mutationStatus: mutationResult.mutationStatus,
+    stale: mutationResult.stale,
+    transactionId: mutationResult.transactionId,
+  };
+
+  if (mutationResult.mutationStatus === 'denied') {
+    // Executor declined the operation — leave in approved (no change)
+    finalStatus = item.status;
+  } else if (mutationResult.verified) {
+    // Write + verification all passed
+    finalStatus = 'applied';
+    metadata.verified = true;
+  } else if (mutationResult.stale) {
+    // Explicit staleness mapping
+    finalStatus = 'apply_failed';
+    metadata.staleReason = 'snapshot_stale';
+    metadata.error = mutationResult.error;
+  } else if (mutationResult.applied && !mutationResult.verified) {
+    // Write happened but postcondition verification failed
+    finalStatus = 'apply_failed';
+    metadata.verificationFailed = true;
+    metadata.error = mutationResult.error;
+  } else {
+    // Generic failure
+    finalStatus = 'apply_failed';
+    metadata.error = mutationResult.error;
+  }
+
+  // Only issue a transition if the final status differs from current
+  if (finalStatus !== item.status) {
+    const itemBeforeTransition = await store.getReviewItem(reviewId);
+    if (!itemBeforeTransition) {
+      throw new Error(`Review item ${reviewId} not found for final transition`);
+    }
+    await store.transitionReviewItem(reviewId, {
+      toStatus: finalStatus,
+      actor: actorId,
+      expectedVersion: itemBeforeTransition.version,
+      metadata,
+    });
+  }
+
+  return { mutationResult, finalStatus };
+}
+
+/** Re-export ReviewStatus for route handler convenience. */
+export type { ReviewStatus } from '@balanceframe/workflow-store';

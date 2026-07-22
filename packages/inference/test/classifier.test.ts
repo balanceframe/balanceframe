@@ -18,6 +18,8 @@ import type {
   ClassificationResult,
   ClassifyRequest,
   Suggestion,
+  AuthoritativeLayer,
+  LayerResult,
 } from '../src/types';
 import type { ProviderAdapter } from '../src/providers/types';
 import { LocalProvider } from '../src/providers/local';
@@ -105,6 +107,17 @@ function classifyResult(overrides: Partial<ClassificationResult> = {}): Classifi
     rationale: 'Merchant is a known grocery chain',
     model: 'test-model-v1',
     ...overrides,
+  };
+}
+
+/** Creates a fake authoritative layer for testing. */
+function createFakeLayer(
+  layerId: string,
+  result: LayerResult,
+): AuthoritativeLayer {
+  return {
+    layerId,
+    resolve: vi.fn().mockResolvedValue(result),
   };
 }
 
@@ -868,7 +881,7 @@ describe('provider deadlines / cancellation', () => {
 // ---------------------------------------------------------------------------
 
 describe('category context in classify request', () => {
-  it('includes category names in request context', async () => {
+  it('includes category context fields in request with defaults', async () => {
     const classify = vi.fn().mockResolvedValue(classifyResult());
     const provider = createFakeLocalProvider({ classify });
     const orchestrator = new Orchestrator({
@@ -880,12 +893,251 @@ describe('category context in classify request', () => {
       }),
       redactor: createRedactor(),
       promptVersion: 'prompt-v1',
-      // No category context in config yet — this is a future enrichment
     });
     await orchestrator.classify([makeCandidate()]);
     const requestArg = classify.mock.calls[0][0];
+    expect(requestArg).toHaveProperty('allowedCategoryIds');
     expect(requestArg).toHaveProperty('categoryNames');
     expect(requestArg).toHaveProperty('categoryGroups');
+    // Defaults when candidate has no category context
+    expect(requestArg.allowedCategoryIds).toEqual([]);
+    expect(requestArg.categoryNames).toEqual({});
+    expect(requestArg.categoryGroups).toEqual({});
+  });
+
+  it('propagates category context from candidate to request', async () => {
+    const classify = vi.fn().mockResolvedValue(classifyResult());
+    const provider = createFakeLocalProvider({ classify });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    const candidate = makeCandidate({
+      allowedCategoryIds: ['cat_food_dining', 'cat_groceries', 'cat_transport'],
+      categoryNames: { cat_food_dining: 'Food & Dining', cat_groceries: 'Groceries' },
+      categoryGroups: { cat_food_dining: 'living', cat_groceries: 'living' },
+    });
+    await orchestrator.classify([candidate]);
+    const requestArg = classify.mock.calls[0][0];
+    expect(requestArg.allowedCategoryIds).toEqual(['cat_food_dining', 'cat_groceries', 'cat_transport']);
+    expect(requestArg.categoryNames).toEqual({ cat_food_dining: 'Food & Dining', cat_groceries: 'Groceries' });
+    expect(requestArg.categoryGroups).toEqual({ cat_food_dining: 'living', cat_groceries: 'living' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Authoritative layer resolution
+// ---------------------------------------------------------------------------
+
+describe('authoritative layer resolution', () => {
+  it('resolved outcome returns layer suggestion and skips provider', async () => {
+    const provider = createFakeLocalProvider({
+      classify: vi.fn().mockResolvedValue(classifyResult()),
+    });
+    const layer = createFakeLayer('rules', {
+      outcome: 'resolved',
+      categoryId: 'cat_housing',
+      rationale: 'Rent payment detected by rules engine',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    const suggestions = await orchestrator.classify([makeCandidate()]);
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0].proposedCategoryId).toBe('cat_housing');
+    expect(suggestions[0].rationale).toBe('Rent payment detected by rules engine');
+    expect(suggestions[0].provider).toBe('rules-layer');
+    expect(suggestions[0].model).toBe('');
+    expect(suggestions[0].errors).toHaveLength(0);
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it('unresolved outcome falls through to provider', async () => {
+    const classify = vi.fn().mockResolvedValue(classifyResult());
+    const provider = createFakeLocalProvider({ classify });
+    const layer = createFakeLayer('rules', {
+      outcome: 'unresolved',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    await orchestrator.classify([makeCandidate()]);
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(layer.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocked outcome returns error suggestion and skips provider', async () => {
+    const provider = createFakeLocalProvider({
+      classify: vi.fn().mockResolvedValue(classifyResult()),
+    });
+    const layer = createFakeLayer('compliance', {
+      outcome: 'blocked',
+      error: 'Transaction blocked by compliance rule',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    const suggestions = await orchestrator.classify([makeCandidate()]);
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0].proposedCategoryId).toBe('');
+    expect(suggestions[0].errors).toContain('Transaction blocked by compliance rule');
+    expect(suggestions[0].provider).toBe('compliance-layer');
+    expect(suggestions[0].model).toBe('');
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it('unavailable outcome falls through to next layer', async () => {
+    const classify = vi.fn().mockResolvedValue(classifyResult());
+    const provider = createFakeLocalProvider({ classify });
+    const layer1 = createFakeLayer('downstream', {
+      outcome: 'unavailable',
+    });
+    const layer2 = createFakeLayer('rules', {
+      outcome: 'unresolved',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer1, layer2],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    await orchestrator.classify([makeCandidate()]);
+    // Both layers ran, then fell through to provider
+    expect(layer1.resolve).toHaveBeenCalledTimes(1);
+    expect(layer2.resolve).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledTimes(1);
+  });
+
+  it('first resolved layer short-circuits remaining layers', async () => {
+    const provider = createFakeLocalProvider({
+      classify: vi.fn().mockResolvedValue(classifyResult()),
+    });
+    const layer1 = createFakeLayer('priority', {
+      outcome: 'resolved',
+      categoryId: 'cat_housing',
+    });
+    const layer2 = createFakeLayer('secondary', {
+      outcome: 'resolved',
+      categoryId: 'cat_transport',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer1, layer2],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    await orchestrator.classify([makeCandidate()]);
+    expect(layer1.resolve).toHaveBeenCalledTimes(1);
+    expect(layer2.resolve).not.toHaveBeenCalled();
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it('no layers configured works identically', async () => {
+    const classify = vi.fn().mockResolvedValue(classifyResult());
+    const provider = createFakeLocalProvider({ classify });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    await orchestrator.classify([makeCandidate()]);
+    expect(classify).toHaveBeenCalledTimes(1);
+  });
+
+  it('layer error treated as unavailable, falls through', async () => {
+    const classify = vi.fn().mockResolvedValue(classifyResult());
+    const provider = createFakeLocalProvider({ classify });
+    const layer = {
+      layerId: 'faulty',
+      resolve: vi.fn().mockRejectedValue(new Error('Layer crash')),
+    };
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    await orchestrator.classify([makeCandidate()]);
+    expect(layer.resolve).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocked outcome preserves deterministic evidence for manual review', async () => {
+    const provider = createFakeLocalProvider({
+      classify: vi.fn().mockResolvedValue(classifyResult()),
+    });
+    const layer = createFakeLayer('audit', {
+      outcome: 'blocked',
+      error: 'High-risk category blocked',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    const candidate = makeCandidate({
+      deterministicEvidence: { reasonCodes: ['high_risk_merchant'] },
+    });
+    const [suggestion] = await orchestrator.classify([candidate]);
+    expect(suggestion.deterministicEvidence).toEqual({ reasonCodes: ['high_risk_merchant'] });
+    expect(suggestion.transactionVersion).toBe('v2');
+    expect(suggestion.budgetId).toBe('budget_family');
   });
 });
 

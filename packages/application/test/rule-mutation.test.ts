@@ -25,6 +25,7 @@ import {
   type ExecuteRuleResult,
   type RuleProposalInput,
   type RuleMutationPlan,
+  type RuleSimulationResult,
   type RustRuleMutationProtocol,
 } from '../src/rule-mutation';
 import type {
@@ -182,6 +183,34 @@ function mockMutationResult(overrides: Partial<MutationResult> = {}): MutationRe
   } as MutationResult;
 }
 
+function mockRuleSimulationResult(overrides: Partial<RuleSimulationResult> = {}): RuleSimulationResult {
+  return {
+    ruleId: '',
+    name: TEST_RULE_NAME,
+    transactionsMatched: 3,
+    transactionsAffected: ['tx_001', 'tx_002', 'tx_003'],
+    categoryDistribution: { cat_groceries: 3 },
+    conflicts: [],
+    examples: [
+      {
+        txId: 'tx_001',
+        payee: 'Grocery Store',
+        amount: { minorUnits: '4500', currency: 'USD' },
+        currentCategory: null,
+        wouldChange: true,
+      },
+      {
+        txId: 'tx_002',
+        payee: 'Grocery Store',
+        amount: { minorUnits: '1230', currency: 'USD' },
+        currentCategory: 'cat_dining',
+        wouldChange: true,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Input builder
 // ---------------------------------------------------------------------------
@@ -333,12 +362,13 @@ function createLedgerMock(): LedgerMock {
 interface RustProtocolMock {
   planCreateRule: Mock;
   verifyRuleMutation: Mock;
+  simulateRule: Mock;
 }
-
 function createRustMock(): RustProtocolMock {
   return {
     planCreateRule: vi.fn(),
     verifyRuleMutation: vi.fn(),
+    simulateRule: vi.fn(),
   };
 }
 
@@ -385,6 +415,7 @@ describe('RuleMutationService', () => {
       reasonCodes: [],
       message: null,
     });
+    rust.simulateRule.mockReturnValue(mockRuleSimulationResult());
 
     ledger.createRule.mockResolvedValue(mockMutationResult());
 
@@ -417,6 +448,10 @@ describe('RuleMutationService', () => {
     expect(store.getApproval).toHaveBeenCalledWith(TEST_APPROVAL_ID);
     expect(store.consumeApproval).toHaveBeenCalledWith(TEST_APPROVAL_ID);
     expect(ledger.synchronize).toHaveBeenCalledTimes(2);
+    expect(rust.simulateRule).toHaveBeenCalled();
+    expect(result.simulation).not.toBeNull();
+    expect(result.simulation!.transactionsMatched).toBe(3);
+    expect(result.simulation!.conflicts).toEqual([]);
     expect(rust.planCreateRule).toHaveBeenCalled();
     expect(ledger.createRule).toHaveBeenCalledWith({
       name: TEST_RULE_NAME,
@@ -694,6 +729,7 @@ describe('RuleMutationService', () => {
     const snapshot = mockProtocolSnapshot();
     ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
     rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
+    rust.simulateRule.mockReturnValue(mockRuleSimulationResult());
 
     ledger.createRule.mockResolvedValue({
       success: false,
@@ -724,6 +760,7 @@ describe('RuleMutationService', () => {
     const snapshot = mockProtocolSnapshot();
     ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
     rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
+    rust.simulateRule.mockReturnValue(mockRuleSimulationResult());
     ledger.createRule.mockResolvedValue(mockMutationResult());
 
     // Reread returns a snapshot where the rule is missing
@@ -875,5 +912,99 @@ describe('RuleMutationService', () => {
 
     expect(result.success).toBe(false);
     expect(result.reasonCodes).toContain('approval_consumption_failed');
+  });
+
+  // -----------------------------------------------------------------------
+  // Simulation: should call simulateRule before rule creation
+  // -----------------------------------------------------------------------
+
+  it('should fail when simulateRule throws', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_004' } as AuditRecord);
+
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+    rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
+    rust.simulateRule.mockImplementation(() => {
+      throw new Error('Simulation engine unavailable');
+    });
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('simulation_failed');
+    expect(result.ruleId).toBeNull();
+    expect(result.simulation).toBeNull();
+    // Should not proceed to write
+    expect(ledger.createRule).not.toHaveBeenCalled();
+  });
+
+  // -----------------------------------------------------------------------
+  // Simulation: zero matching transactions
+  // -----------------------------------------------------------------------
+
+  it('should fail when simulation matches zero transactions', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_005' } as AuditRecord);
+
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+    rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
+    rust.simulateRule.mockReturnValue(mockRuleSimulationResult({ transactionsMatched: 0, transactionsAffected: [], examples: [] }));
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('simulation_no_matches');
+    expect(result.ruleId).toBeNull();
+    expect(result.simulation!.transactionsMatched).toBe(0);
+    // Should not proceed to write
+    expect(ledger.createRule).not.toHaveBeenCalled();
+  });
+
+  // -----------------------------------------------------------------------
+  // Simulation: conflicts surfaced
+  // -----------------------------------------------------------------------
+
+  it('should fail when simulation reveals conflicts', async () => {
+    store.getProposal.mockResolvedValue(mockProposal());
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_006' } as AuditRecord);
+
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+    rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
+    rust.simulateRule.mockReturnValue(mockRuleSimulationResult({
+      conflicts: ['Overlaps with existing rule "Auto-categorize dining"'],
+    }));
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('simulation_conflicts');
+    expect(result.ruleId).toBeNull();
+    expect(result.simulation!.conflicts.length).toBeGreaterThan(0);
+    // Should not proceed to write
+    expect(ledger.createRule).not.toHaveBeenCalled();
   });
 });

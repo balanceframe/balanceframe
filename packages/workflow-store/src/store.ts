@@ -232,7 +232,7 @@ const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
   discovered: ['suggestion_generated', 'pending_review', 'superseded'],
   suggestion_generated: ['pending_review', 'skipped', 'superseded'],
   pending_review: ['approved', 'rejected', 'skipped', 'superseded'],
-  approved: ['correcting', 'pending_review', 'superseded'],
+  approved: ['correcting', 'applied', 'apply_failed', 'pending_review', 'superseded'],
   correcting: ['applied', 'apply_failed', 'pending_review', 'superseded'],
   applied: ['superseded'],
   apply_failed: ['correcting', 'pending_review', 'superseded'],

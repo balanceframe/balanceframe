@@ -6,7 +6,7 @@
  * request body (prevents spoofing).
  */
 
-import { readBody, defineEventHandler } from 'h3';
+import { readBody, defineEventHandler, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   getActorId,
@@ -15,8 +15,10 @@ import {
   errorEnvelope,
   buildAuthorizationInfo,
   reviewAndApplyEnabled,
-  getReviewMutationExecutor,
+  getReviewMutationExecutorFromEvent,
+  applyReviewMutationWithTransition,
 } from '../../utils/workflow-store';
+import type { ReviewStatus } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'categorization:execute');
@@ -70,37 +72,45 @@ export default defineEventHandler(async (event) => {
 
   // Check if reviewAndApply mode is enabled and an executor is available
   if (reviewAndApplyEnabled(event)) {
-    const executor = getReviewMutationExecutor();
+    const executor = getReviewMutationExecutorFromEvent(event);
     if (executor) {
-      const item = await wf.store.getReviewItem(reviewId);
-      if (!item) {
-        setResponseStatus(event, 404);
-        return errorEnvelope('NOT_FOUND', 'Review item not found after transition', authInfo, false, requestId);
+      try {
+        const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
+          wf.store,
+          reviewId,
+          actorId,
+          executor,
+          requestId,
+        );
+
+        return okEnvelope(
+          {
+            itemId: outcome.itemId,
+            success: mutationResult.success,
+            error: mutationResult.error,
+            categorizationExecuted: true,
+            mutationStatus: mutationResult.mutationStatus,
+            applied: mutationResult.applied,
+            verified: mutationResult.verified,
+            stale: mutationResult.stale,
+            transactionId: mutationResult.transactionId,
+            previousCategoryId: mutationResult.previousCategoryId,
+            newCategoryId: mutationResult.newCategoryId,
+            finalStatus,
+          },
+          authInfo,
+          requestId,
+        );
+      } catch (e) {
+        setResponseStatus(event, 500);
+        return errorEnvelope(
+          'MUTATION_FAILED',
+          e instanceof Error ? e.message : String(e),
+          authInfo,
+          false,
+          requestId,
+        );
       }
-
-      const mutationResult = await executor(
-        { reviewId, actorId, requestId },
-        wf.store,
-        item,
-      );
-
-      return okEnvelope(
-        {
-          itemId: outcome.itemId,
-          success: mutationResult.success,
-          error: mutationResult.error,
-          categorizationExecuted: true,
-          mutationStatus: mutationResult.mutationStatus,
-          applied: mutationResult.applied,
-          verified: mutationResult.verified,
-          stale: mutationResult.stale,
-          transactionId: mutationResult.transactionId,
-          previousCategoryId: mutationResult.previousCategoryId,
-          newCategoryId: mutationResult.newCategoryId,
-        },
-        authInfo,
-        requestId,
-      );
     }
 
     // reviewAndApply configured but no executor wired

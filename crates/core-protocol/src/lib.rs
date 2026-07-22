@@ -1261,6 +1261,69 @@ pub fn simulate_rule(
     }
 }
 
+/// Simulate a rule creation plan against actual snapshot transactions.
+///
+/// Constructs a virtual [`Rule`] from the plan and delegates to
+/// [`simulate_rule`]. Also checks for conflicts with existing rules
+/// in the snapshot that share the same trigger condition or target category.
+pub fn simulate_create_rule_plan(
+    plan: &CreateRulePlan,
+    snapshot: &ProtocolSnapshot,
+) -> RuleSimulationResult {
+    let virtual_rule = Rule {
+        id: String::new(),
+        name: plan.rule_name.clone(),
+        order: 0,
+        trigger: plan.trigger.clone(),
+        actions: plan.actions.clone(),
+        inactive: false,
+    };
+    let mut result = simulate_rule(&virtual_rule, &snapshot.transactions);
+    result.rule_id = plan.plan_id.clone();
+
+    // Detect overlaps with existing rules in the snapshot
+    let normalized_trigger_value = plan
+        .trigger
+        .get("value")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase());
+    let planned_category = plan
+        .actions
+        .get(0)
+        .and_then(|a| a.get("value"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    for existing in &snapshot.rules {
+        if existing.inactive {
+            continue;
+        }
+        let existing_trigger_value = existing
+            .trigger
+            .get("value")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_lowercase());
+        let existing_category = extract_action_value(&existing.actions);
+        let same_trigger = matches!((&normalized_trigger_value, existing_trigger_value),
+            (Some(a), Some(b)) if *a == b);
+        let same_category = matches!((&planned_category, existing_category),
+            (Some(a), Some(b)) if *a == b);
+        if same_trigger && same_category {
+            result.conflicts.push(format!(
+                "Rule '{}' already matches this payee and sets the same category",
+                existing.name
+            ));
+        } else if same_trigger && !same_category {
+            result.conflicts.push(format!(
+                "Rule '{}' matches the same payee but sets a different category",
+                existing.name
+            ));
+        }
+    }
+
+    result
+}
+
 /// Extract the `value` field (category ID) from a set-category action.
 /// Actions are a JSON array of `{"type":"set_category","value":"cat-id"}`.
 fn extract_action_value(actions: &serde_json::Value) -> Option<String> {

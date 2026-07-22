@@ -80,6 +80,42 @@ export interface RuleMutationPlan {
 }
 
 // ---------------------------------------------------------------------------
+// Simulation types
+// ---------------------------------------------------------------------------
+
+/** An example transaction that a rule would match during simulation. */
+export interface SimulationExample {
+  /** Transaction ID. */
+  txId: string;
+  /** Payee name, if available. */
+  payee: string | null;
+  /** Transaction amount with minor units and currency. */
+  amount: { minorUnits: string; currency: string };
+  /** Current category name, if any. */
+  currentCategory: string | null;
+  /** Whether the rule would change the category. */
+  wouldChange: boolean;
+}
+
+/** Simulation evidence produced by the Rust simulateRule function. */
+export interface RuleSimulationResult {
+  /** Rule ID (empty for planned rules). */
+  ruleId: string;
+  /** Rule name. */
+  name: string;
+  /** Number of transactions that would be matched. */
+  transactionsMatched: number;
+  /** IDs of transactions that would be affected. */
+  transactionsAffected: string[];
+  /** Distribution of target categories. */
+  categoryDistribution: Record<string, number>;
+  /** Conflict messages when a rule overlaps with other rules. */
+  conflicts: string[];
+  /** Example transactions that would be affected. */
+  examples: SimulationExample[];
+}
+
+// ---------------------------------------------------------------------------
 // Rust protocol surface — rule-specific planning and verification
 // ---------------------------------------------------------------------------
 
@@ -95,6 +131,12 @@ export interface RustRuleMutationProtocol {
     plan: RuleMutationPlan,
     snapshot: ProtocolSnapshot,
   ): VerificationResult;
+
+  /** Simulate a rule against snapshot transactions and return evidence. */
+  simulateRule(
+    rule: { name: string; trigger: unknown; actions: unknown },
+    snapshot: ProtocolSnapshot,
+  ): RuleSimulationResult;
 }
 
 // Native implementation (calls @balanceframe/native N-API bindings at runtime)
@@ -167,6 +209,20 @@ export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutati
       const json = native.verifyRuleMutation(JSON.stringify({ plan, snapshot }));
       return JSON.parse(json) as VerificationResult;
     },
+    simulateRule(rule, snapshot) {
+      const json = native.simulateRule(JSON.stringify({
+        rule: {
+          id: '',
+          name: rule.name,
+          order: 0,
+          trigger: rule.trigger,
+          actions: rule.actions,
+          inactive: false,
+        },
+        transactions: snapshot.transactions,
+      }));
+      return JSON.parse(json) as RuleSimulationResult;
+     },
   };
 }
 
@@ -208,6 +264,8 @@ export interface ExecuteRuleResult {
   reasonCodes: string[];
   /** Human-readable message for failures or verification issues. */
   message?: string;
+  /** Simulation evidence from the Rust simulateRule call, or null on early rejection. */
+  simulation: RuleSimulationResult | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +335,7 @@ export class RuleMutationService {
       approvalId: null,
       auditRecordId: null,
       reasonCodes: [],
+      simulation: null,
     };
 
     // =====================================================================
@@ -511,8 +570,49 @@ export class RuleMutationService {
     }
 
     // =====================================================================
-    // 11. Write via ledger.createRule
+    // 11. Simulate the planned rule — must produce evidence, no conflicts
     // =====================================================================
+
+    let simulation: RuleSimulationResult;
+    try {
+      simulation = this.rust.simulateRule(
+        {
+          name: plan.ruleName,
+          trigger: plan.expectedOutcome.trigger,
+          actions: plan.expectedOutcome.actions,
+        },
+        snapshot,
+      );
+    } catch (err) {
+      await this.recordFailure(input, err);
+      await this.appendFailureAudit(input, proposal, auth,
+        err instanceof Error ? err.message : 'simulation_failed');
+      return this.fail(baseResult, 'simulation_failed',
+        err instanceof Error ? err.message : 'Rule simulation failed', input);
+    }
+
+    // Proposals cannot execute without simulation evidence
+    if (simulation.transactionsMatched === 0) {
+      baseResult.simulation = simulation;
+      await this.recordFailure(input, new Error('Rule would match zero transactions'));
+      await this.appendFailureAudit(input, proposal, auth, 'simulation_no_matches');
+      return this.fail(baseResult, 'simulation_no_matches',
+        'Rule simulation matched zero transactions — no evidence for execution', input);
+    }
+
+    // Surface conflicts from overlapping rules
+    if (simulation.conflicts.length > 0) {
+      baseResult.simulation = simulation;
+      await this.recordFailure(input, new Error('Simulation revealed conflicts'));
+      await this.appendFailureAudit(input, proposal, auth, 'simulation_conflicts');
+      return this.fail(baseResult, 'simulation_conflicts',
+        `Rule simulation revealed conflicts: ${simulation.conflicts.join('; ')}`, input);
+    }
+
+    // =====================================================================
+    // 12. Write via ledger.createRule
+    // =====================================================================
+
 
     let writeResult: MutationResult;
     try {
@@ -633,6 +733,7 @@ export class RuleMutationService {
       auditRecordId: auditCompleted?.id ?? auditStarted?.id ?? null,
       reasonCodes: allReasonCodes,
       message: verified ? undefined : (verifyMessage ?? 'Postcondition verification failed'),
+      simulation,
     };
   }
 
