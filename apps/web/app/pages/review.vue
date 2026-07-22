@@ -112,13 +112,14 @@
           @correct="openCorrectModal"
           @approve="adapter.approve()"
           @reject="adapter.reject()"
-          @skip="adapter.skip()"
+          @refresh="adapter.refresh()"
+  :proposal-count="activeProposals.length"
           @undo="adapter.undo()"
           @bulk-approve="adapter.bulkApprove()"
           @bulk-reject="adapter.bulkReject()"
           @bulk-skip="adapter.bulkSkip()"
           @propose-rule="promptProposeRule"
-          @refresh="adapter.refresh()"
+  @show-proposals="showProposalsModal = true"
           @reset-metrics="adapter.resetMetrics()"
           class="shrink-0"
         />
@@ -140,6 +141,15 @@
   @confirm="onCorrectConfirm"
   @cancel="onCorrectCancel"
 />
+
+<!-- Proposed rules modal -->
+<ProposedRulesModal
+  :open="showProposalsModal"
+  :proposals="activeProposals"
+  @close="showProposalsModal = false"
+  @accepted="handleProposalAccepted"
+  @discarded="handleProposalDiscarded"
+/>
   </UContainer>
 </template>
 
@@ -156,6 +166,8 @@ import { authClient } from '../../lib/auth-client';
 import { useApiReviewController } from '../../composables/useApiReviewController';
 import { createUnavailableAdapter } from '../../composables/createUnavailableAdapter';
 import { useReviewActions } from '../../composables/useReviewActions';
+import ProposedRulesModal from '../components/ProposedRulesModal.vue';
+import type { CategorizationProposalListItem } from '../components/ProposedRulesModal.vue';
 
 // ── Mode selection ──────────────────────────────────────────────────
 // Use the configured API base, falling back to the current origin for
@@ -192,6 +204,7 @@ onMounted(() => {
   document.addEventListener('keydown', handleGlobalKeydown);
   keyboardInput.value?.focus();
   load();
+  fetchProposals();
 });
 onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown);
@@ -204,6 +217,23 @@ const currentCount = computed(() => adapter.state.items.length);
 async function load() {
   await adapter.loadNextPage();
   keyboardInput.value?.focus();
+}
+
+const showProposalsModal = ref(false);
+const activeProposals = ref<CategorizationProposalListItem[]>([]);
+
+async function fetchProposals(): Promise<void> {
+  try {
+    const res = await fetch('/api/proposal', {
+      credentials: 'same-origin',
+    });
+    if (!res.ok) return;
+    const body = await res.json();
+    if (body.status === 'error') return;
+    activeProposals.value = body.result?.proposals ?? [];
+  } catch {
+    // Silently ignore fetch errors — the modal will show empty state
+  }
 }
 
 const showCorrectModal = ref(false);
@@ -235,10 +265,27 @@ async function promptProposeRule(): Promise<void> {
         description: `${merchant} → ${categoryId}`,
         icon: 'i-heroicons-sparkles',
         color: 'success',
-        duration: 5000,
+        duration: 10000,
+        actions: [{
+          label: 'Review proposal',
+          color: 'neutral',
+          onClick: () => { showProposalsModal.value = true; },
+        }],
       });
+      // Refresh proposals list so count is accurate
+      await fetchProposals();
     }
   }
+}
+
+async function handleProposalAccepted(_proposalId: string) {
+  showProposalsModal.value = false;
+  await adapter.refresh();
+  await fetchProposals();
+}
+
+async function handleProposalDiscarded(_proposalId: string) {
+  await fetchProposals();
 }
 
 async function handleSignOut() {

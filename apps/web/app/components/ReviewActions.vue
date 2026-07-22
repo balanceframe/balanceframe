@@ -107,6 +107,16 @@
         :disabled="loading"
         @click="$emit('refresh')"
       />
+      <UButton
+        v-if="proposalCount > 0"
+        label="Proposed rules"
+        color="primary"
+        variant="outline"
+        size="sm"
+        icon="i-heroicons-sparkles"
+        :disabled="loading"
+        @click="$emit('show-proposals')"
+      />
     </div>
   </UCard>
 </template>
@@ -118,6 +128,7 @@ const props = defineProps<{
   loading: boolean;
   metrics: unknown;
   hasRuleCandidates: boolean;
+  proposalCount: number;
 }>();
 
 defineEmits<{
@@ -130,6 +141,7 @@ defineEmits<{
   'bulk-reject': [];
   'bulk-skip': [];
   'propose-rule': [];
+  'show-proposals': [];
   refresh: [];
   'reset-metrics': [];
 }>();

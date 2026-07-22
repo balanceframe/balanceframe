@@ -17,13 +17,15 @@ import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } f
 // Types
 // ---------------------------------------------------------------------------
 
-/** A proposal list item enriched with simulation status. */
+/** A proposal list item enriched with simulation status and preconditions. */
 export interface CategorizationProposalListItem {
   readonly id: string;
   readonly operation: string;
   readonly budgetId: string;
   readonly transactionId: string;
   readonly categoryId: string;
+  /** JSON-encoded preconditions (includes merchant, source, reviewId, nativeRule, simulation). */
+  readonly preconditions: string;
   readonly expiresAt: string;
   readonly actorId: string;
   readonly provenance: string;
@@ -38,6 +40,7 @@ interface PreconditionsShape {
   merchant?: string;
   source?: string;
   reviewId?: string;
+  nativeRule?: unknown;
   simulation?: unknown;
 }
 
@@ -66,6 +69,7 @@ export default defineEventHandler(async (event) => {
         budgetId: p.budgetId,
         transactionId: p.transactionId,
         categoryId: p.categoryId,
+        preconditions: p.preconditions,
         expiresAt: p.expiresAt,
         actorId: p.actorId,
         provenance: p.provenance,

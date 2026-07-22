@@ -21,6 +21,7 @@ import {
   errorEnvelope,
   buildAuthorizationInfo,
 } from '../../utils/workflow-store';
+import crypto from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Inline simulation shape — mirrors RuleSimulationResult from
@@ -73,6 +74,13 @@ export default defineEventHandler(async (event) => {
   const reviewId = typeof body.reviewId === 'string' ? body.reviewId.trim() : '';
   const merchant = typeof body.merchant === 'string' ? body.merchant.trim() : '';
   const categoryId = typeof body.categoryId === 'string' ? body.categoryId.trim() : '';
+  const nativeRule = {
+    stage: null,
+    conditionsOp: 'and',
+    conditions: [{ field: 'payee_name', op: 'is', value: merchant }],
+    actions: [{ field: 'category', op: 'set', value: categoryId }],
+  };
+  const payloadHash = crypto.createHash('sha256').update(JSON.stringify(nativeRule)).digest('hex');
 
   if (!reviewId || !merchant || !categoryId) {
     setResponseStatus(event, 422);
@@ -129,6 +137,7 @@ export default defineEventHandler(async (event) => {
       merchant,
       source: 'review',
       reviewId,
+      nativeRule,
     };
     if (simulation) {
       preconditions.simulation = simulation;
@@ -139,7 +148,7 @@ export default defineEventHandler(async (event) => {
       budgetId,
       transactionId: '__rule__',
       categoryId,
-      payloadHash: crypto.randomUUID(),
+      payloadHash,
       policyVersion: '1.0',
       preconditions: JSON.stringify(preconditions),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
@@ -161,6 +170,9 @@ export default defineEventHandler(async (event) => {
         message: simulation
           ? `Rule proposal created. Simulation matched ${simulation.transactionsMatched} transaction(s).`
           : 'Rule proposal created. Use proposals.approve to authorize and proposals.execute to create the rule.',
+        conditions: nativeRule.conditions,
+        actions: nativeRule.actions,
+        rulePreview: `If payee_name is ${merchant}, set category to ${categoryId}`,
       },
       authInfo,
       requestId,
