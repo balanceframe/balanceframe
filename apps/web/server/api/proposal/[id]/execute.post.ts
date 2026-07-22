@@ -101,35 +101,22 @@ export default defineEventHandler(async (event) => {
     }
 
     // -------------------------------------------------------------------
-    // 3. Verify an active approval exists and consume it
-    // -------------------------------------------------------------------
+
+    // Approval is consumed only after the ledger mutation succeeds. Keeping
+    // it active during validation/connection/mutation lets transient ledger
+    // failures be retried without re-approval.
+
     const actorId = getActorId(event);
     const activeApprovals = await wf.store.findActiveApprovals(proposalId);
-
-    // Find an approval that matches this actor and the proposal's payload hash
     const matchingApproval = activeApprovals.find(
       (a) => a.actorId === actorId && a.payloadHash === proposal.payloadHash,
     );
-
     if (!matchingApproval) {
       setResponseStatus(event, 403);
       return errorEnvelope(
         'PROPOSAL_NOT_APPROVED',
         'This proposal has no active approval for the current actor. ' +
           'Call POST /api/proposal/[id]/approve first to authorize execution.',
-        authInfo,
-        false,
-        requestId,
-      );
-    }
-
-    try {
-      await wf.store.consumeApproval(matchingApproval.id);
-    } catch (err) {
-      setResponseStatus(event, 409);
-      return errorEnvelope(
-        'APPROVAL_CONSUMPTION_FAILED',
-        err instanceof Error ? err.message : 'Failed to consume approval',
         authInfo,
         false,
         requestId,
@@ -242,6 +229,35 @@ export default defineEventHandler(async (event) => {
     }
 
     // -------------------------------------------------------------------
+    // 7. Re-check and consume the approval after successful mutation
+    // -------------------------------------------------------------------
+    const activeApprovalsAfterMutation = await wf.store.findActiveApprovals(proposalId);
+    const matchingApprovalAfterMutation = activeApprovalsAfterMutation.find(
+      (a) => a.actorId === actorId && a.payloadHash === proposal.payloadHash,
+    );
+    if (!matchingApprovalAfterMutation) {
+      setResponseStatus(event, 403);
+      return errorEnvelope(
+        'PROPOSAL_NOT_APPROVED',
+        'This proposal has no active approval for the current actor.',
+        authInfo,
+        false,
+        requestId,
+      );
+    }
+    try {
+      await wf.store.consumeApproval(matchingApprovalAfterMutation.id);
+    } catch (err) {
+      setResponseStatus(event, 409);
+      return errorEnvelope(
+        'APPROVAL_CONSUMPTION_FAILED',
+        err instanceof Error ? err.message : 'Failed to consume approval',
+        authInfo,
+        false,
+        requestId,
+      );
+    }
+    // -------------------------------------------------------------------
     // 7. Supersede the proposal (prevents replay)
     // -------------------------------------------------------------------
     try {
@@ -261,6 +277,7 @@ export default defineEventHandler(async (event) => {
     );
   } catch (e) {
     setResponseStatus(event, 500);
+
     return errorEnvelope(
       'RULE_EXECUTION_FAILED',
       e instanceof Error ? e.message : String(e),

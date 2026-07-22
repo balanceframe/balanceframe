@@ -135,6 +135,7 @@ const emit = defineEmits<{
   close: [];
   accepted: [proposalId: string];
   discarded: [proposalId: string];
+  error: [message: string, retryable: boolean];
 }>();
 
 // ---------------------------------------------------------------------------
@@ -184,7 +185,9 @@ async function onAccept(proposalId: string): Promise<void> {
     });
     if (!approveRes.ok) {
       const body = await approveRes.json().catch(() => ({}));
-      console.error(body?.error?.message ?? `Failed to approve proposal (HTTP ${approveRes.status})`);
+      const message = body?.error?.message ?? `Failed to approve proposal (HTTP ${approveRes.status})`;
+      console.error(message);
+      emit('error', message, body?.error?.retryable === true);
       return;
     }
 
@@ -195,12 +198,16 @@ async function onAccept(proposalId: string): Promise<void> {
     });
     if (!executeRes.ok) {
       const body = await executeRes.json().catch(() => ({}));
-      console.error(body?.error?.message ?? `Failed to execute proposal (HTTP ${executeRes.status})`);
+      const message = body?.error?.message ?? `Failed to execute proposal (HTTP ${executeRes.status})`;
+      console.error(message);
+      emit('error', message, body?.error?.retryable === true);
       return;
     }
     emit('accepted', proposalId);
   } catch (error) {
-    console.error('Failed to accept proposal:', error);
+    const message = error instanceof Error ? error.message : 'Failed to accept proposal';
+    console.error(message);
+    emit('error', message, true);
   } finally {
     acceptingId.value = null;
   }

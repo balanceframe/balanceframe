@@ -149,6 +149,7 @@
   @close="showProposalsModal = false"
   @accepted="handleProposalAccepted"
   @discarded="handleProposalDiscarded"
+  @error="handleProposalError"
 />
   </UContainer>
 </template>
@@ -291,6 +292,18 @@ async function handleProposalAccepted(_proposalId: string) {
 
 async function handleProposalDiscarded(_proposalId: string) {
   await fetchProposals();
+}
+
+function handleProposalError(message: string, retryable: boolean): void {
+  const toast = useToast();
+  toast.add({
+    title: 'Rule activation failed',
+    description: retryable
+      ? `${message} Try again after fixing the connection.`
+      : message,
+    color: 'error',
+    duration: 10000,
+  });
 }
 
 async function handleSignOut() {
