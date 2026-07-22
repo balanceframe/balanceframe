@@ -13,3 +13,5 @@ export * from './mutation.js';
 export * from './rule-mutation.js';
 export * from './analysis.js';
 export * from './composition.js';
+export * from './connection-manager.js';
+export * from './review-persistence.js';

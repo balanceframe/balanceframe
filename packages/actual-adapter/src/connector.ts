@@ -12,7 +12,7 @@
  * - Broad-access caveat exposed as a constant.
  */
 
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -687,8 +687,8 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     const files = await this.client.getBudgets();
     return files.map(f => ({
-      id: f.id ?? f.cloudFileId ?? '',
-      groupId: f.groupId ?? '',
+      id: f.id ?? f.cloudFileId ?? f.groupId ?? '',
+      groupId: f.groupId ?? f.id ?? f.cloudFileId ?? '',
       name: f.name ?? 'Unnamed Budget',
       encrypted: f.hasKey ?? false,
     }));
@@ -700,7 +700,7 @@ export class ActualConnector implements BudgetLedger {
   async selectBudget(budgetId: string, password?: string): Promise<BudgetInfo> {
     this.assertInitialized();
     const budgets = await this.discoverBudgets();
-    const info = budgets.find(b => b.id === budgetId);
+    const info = budgets.find(b => b.id === budgetId || b.groupId === budgetId);
     if (!info) {
       throw new Error(`Budget "${budgetId}" not found on server`);
     }
@@ -931,6 +931,7 @@ export class ActualConnector implements BudgetLedger {
     if (!resolved.startsWith(baseResolved)) {
       throw new Error(`Cache path traversal blocked for key "${key}"`);
     }
+    mkdirSync(resolved, { recursive: true, mode: 0o700 });
     return resolved;
   }
 

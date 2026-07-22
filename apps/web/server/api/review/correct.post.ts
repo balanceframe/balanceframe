@@ -15,9 +15,8 @@ import {
   errorEnvelope,
   buildAuthorizationInfo,
   reviewAndApplyEnabled,
-  getReviewMutationExecutor,
+  getReviewMutationExecutorFromEvent,
 } from '../../utils/workflow-store';
-
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'categorization:execute');
   const requestId = crypto.randomUUID();
@@ -82,7 +81,7 @@ export default defineEventHandler(async (event) => {
 
   // Check if reviewAndApply mode is enabled and an executor is available
   if (reviewAndApplyEnabled(event)) {
-    const executor = getReviewMutationExecutor();
+    const executor = getReviewMutationExecutorFromEvent(event);
     if (executor) {
       const item = await wf.store.getReviewItem(reviewId);
       if (!item) {

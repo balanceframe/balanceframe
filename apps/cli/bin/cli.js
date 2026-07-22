@@ -4,4 +4,4 @@
 import { main } from '../dist/index.js';
 
 const result = await main(process.argv.slice(2));
-process.stdout.write(result + '\n');
+process.stdout.write(result + '\n', () => process.exit(0));

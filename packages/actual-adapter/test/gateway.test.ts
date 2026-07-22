@@ -843,6 +843,7 @@ describe('ActualConnector', () => {
       const budgets = await connector.discoverBudgets();
       expect(budgets).toHaveLength(1);
     });
+ 
   });
 
   // ==========================================================================

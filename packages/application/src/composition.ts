@@ -234,6 +234,16 @@ async function loadNativeBindings(
 // Native analysis protocol factory
 // ---------------------------------------------------------------------------
 
+function isSynchronizableLedger(
+  value: unknown,
+): value is { synchronize(): Promise<unknown> } {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'synchronize' in value &&
+    typeof value.synchronize === 'function'
+  );
+}
 /**
  * Create a production {@link AnalysisProtocol} backed by the
  * @balanceframe/native N-API addon.
@@ -258,10 +268,18 @@ export async function createNativeAnalysisProtocol(
       ledger: unknown,
       _freshness: DataFreshness | null,
     ): Promise<PendingReviewResult> {
-      // Production: synchronize ledger, build DeterministicAnalysisRequest,
-      // call native.analyzeDeterministic, map response to PendingReviewResult.
-      // The mapping layer is intentionally kept in this module.
-      const input = JSON.stringify({ snapshot: ledger, options: {} });
+      let snapshot: unknown = ledger;
+      if (isSynchronizableLedger(ledger)) {
+        const synchronized = await ledger.synchronize();
+        if (!synchronized || typeof synchronized !== 'object' || !('snapshot' in synchronized)) {
+          throw new Error('Ledger synchronization returned no snapshot.');
+        }
+        snapshot = synchronized.snapshot;
+      }
+      const input = JSON.stringify({
+        snapshot,
+        options: {},
+      });
       const raw = native.analyzeDeterministic(input);
       return mapDeterministicResponse(raw);
     },
@@ -550,20 +568,51 @@ export async function createNativeAnalysisProtocol(
  *
  * @internal
  */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : null;
+}
+
 function mapDeterministicResponse(raw: string): PendingReviewResult {
-  const parsed: Record<string, unknown> = JSON.parse(raw);
-
-  // Minimal mapping: if the native response has a status field, reflect it.
-  // Default to "unknown" for empty/unavailable snapshots.
-  const status =
-    typeof parsed.status === 'string' ? parsed.status : 'unknown';
-
+  const parsed = asRecord(JSON.parse(raw));
+  if (!parsed) throw new Error('Native deterministic response is not an object.');
+  const analysis = asRecord(parsed.analysis);
+  const backlog = asRecord(analysis?.uncategorizedBacklog);
+  const classifications = Array.isArray(analysis?.deterministicClassifications)
+    ? analysis.deterministicClassifications
+    : [];
+  const candidates = classifications.flatMap(value => {
+    const item = asRecord(value);
+    if (!item || typeof item.transactionId !== 'string' || typeof item.date !== 'string') return [];
+    const amount = asRecord(item.amount);
+    const reasons = Array.isArray(item.reasons)
+      ? item.reasons.flatMap(reason => {
+        const detail = asRecord(reason);
+        return detail && typeof detail.kind === 'string' && typeof detail.details === 'string'
+          ? [{ kind: detail.kind, details: detail.details }]
+          : [];
+      })
+      : [];
+    return [{
+      transactionId: item.transactionId,
+      amount: {
+        minorUnits: typeof amount?.minorUnits === 'string' ? amount.minorUnits : '0',
+        currency: typeof amount?.currency === 'string' ? amount.currency : 'USD',
+      },
+      payeeName: typeof item.payeeName === 'string' ? item.payeeName : null,
+      date: item.date,
+      reasons,
+    }];
+  });
+  const total = asRecord(backlog?.totalAmount);
   return {
-    uncategorizedCount: 0,
-    totalUncategorizedAmount: { minorUnits: '0', currency: 'USD' },
-    candidates: [],
-    oldestUncategorizedDate: null,
-    healthState: status === 'error' ? 'degraded' : 'unknown',
+    uncategorizedCount: typeof backlog?.count === 'number' ? backlog.count : candidates.length,
+    totalUncategorizedAmount: {
+      minorUnits: typeof total?.minorUnits === 'string' ? total.minorUnits : '0',
+      currency: typeof total?.currency === 'string' ? total.currency : 'USD',
+    },
+    candidates,
+    oldestUncategorizedDate: typeof backlog?.oldestDate === 'string' ? backlog.oldestDate : null,
+    healthState: parsed.status === 'error' ? 'degraded' : 'healthy',
     blockers: [],
   };
 }

@@ -31,6 +31,13 @@ describe('parseArgs', () => {
     expect(result.cmd.command).toBe('budget.summary');
     expect(result.cmd.format).toBe('json');
   });
+ 
+  it('parses budget list --json', () => {
+    const result = parseArgs(['budget', 'list', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('budget.list');
+  });
 
   it('parses export --json', () => {
     const result = parseArgs(['export', '--json']);
