@@ -30,9 +30,8 @@ export default defineEventHandler(async (event) => {
   try {
     const items = await wf.store.listReviewItems({ status: 'pending_review' });
     const correctingItems = await wf.store.listReviewItems({ status: 'correcting' });
-    const allItems = [...items, ...correctingItems];
+    const allItems = [...items, ...correctingItems].sort((a, b) => b.priority - a.priority);
     const queueItems: ReviewQueueItem[] = allItems.map(buildReviewQueueItem);
-
 
     return okEnvelope(
       { items: queueItems, total: queueItems.length },

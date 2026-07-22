@@ -448,6 +448,20 @@ export interface WorkflowStore {
   ): Promise<TransitionReviewResult[]>;
 
   /**
+   * Update the category assigned to a review item.
+   *
+   * Used after a correct/edit action to persist the reviewer's chosen
+   * category so downstream display (change preview, queue) reflects it.
+   *
+   * @throws If the item does not exist or the version lock fails.
+   */
+  updateReviewItemCategory(
+    id: string,
+    categoryId: string,
+    expectedVersion: number,
+  ): Promise<ReviewItem>;
+
+  /**
    * Undo the last reversible transition.
    *
    * Reversible transitions: `approved -> pending_review`,

@@ -177,7 +177,7 @@ const statusBadgeColor = computed(() => {
   switch (props.item.reviewItem.status) {
     case 'pending_review': return 'primary';
     case 'approved':       return 'success';
-    case 'correcting':     return 'warning';
+    case 'correcting':     return 'neutral';
     case 'superseded':     return 'neutral';
     case 'skipped':
     case 'rejected':       return 'error';
@@ -191,7 +191,7 @@ const recoveryStateLabel = computed(() => {
   switch (props.item.reviewItem.status) {
     case 'pending_review': return 'Awaiting review';
     case 'approved':       return 'Approved';
-    case 'correcting':     return 'Recovering';
+    case 'correcting':     return 'Edited';
     case 'superseded':     return 'Superseded';
     case 'skipped':        return 'Skipped';
     case 'rejected':       return 'Rejected';

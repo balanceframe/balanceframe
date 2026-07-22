@@ -27,7 +27,7 @@
             size="xs"
             class="shrink-0 ml-2"
           >
-            {{ item.reviewItem.status }}
+            {{ statusLabel(item.reviewItem.status) }}
           </UBadge>
         </div>
         <div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
@@ -90,11 +90,25 @@ function statusColor(status: ReviewStatus): 'primary' | 'success' | 'warning' | 
   switch (status) {
     case 'pending_review': return 'primary';
     case 'approved':       return 'success';
-    case 'correcting':     return 'warning';
+    case 'correcting':     return 'neutral';
     case 'superseded':     return 'neutral';
     case 'skipped':
     case 'rejected':       return 'error';
     default:               return 'neutral';
+  }
+}
+
+function statusLabel(status: ReviewStatus): string {
+  switch (status) {
+    case 'pending_review':   return 'Pending Review';
+    case 'approved':         return 'Approved';
+    case 'correcting':       return 'Edited';
+    case 'superseded':       return 'Superseded';
+    case 'skipped':          return 'Skipped';
+    case 'rejected':         return 'Rejected';
+    case 'applied':          return 'Applied';
+    case 'apply_failed':     return 'Apply Failed';
+    default:                 return status;
   }
 }
 

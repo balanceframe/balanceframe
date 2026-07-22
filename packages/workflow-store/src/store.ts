@@ -525,6 +525,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectCorrectionsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectAllCorrections: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectCorrectionConflicts: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateReviewItemCategory: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectCorrectionByReviewTransition: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
@@ -1015,6 +1016,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
          SET approved_by = @approvedBy,
              updated_at = @now,
              version = CASE WHEN @isNew THEN version + 1 ELSE version END
+       WHERE id = @id
+         AND version = @expectedVersion
+    `);
+
+    this.stmt.updateReviewItemCategory = this.db.prepare(`
+      UPDATE review_items
+         SET category_id = @categoryId,
+             updated_at = @now,
+             version = version + 1
        WHERE id = @id
          AND version = @expectedVersion
     `);
@@ -1961,6 +1971,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
 
     txn();
+
+    const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+    return rowToReviewItem(updated);
+  }
+
+  async updateReviewItemCategory(
+    id: string,
+    categoryId: string,
+    expectedVersion: number,
+  ): Promise<ReviewItem> {
+    const now = nowISO();
+    const result = this.stmt.updateReviewItemCategory.run({
+      id,
+      categoryId,
+      expectedVersion,
+      now,
+    });
+
+    if (result.changes === 0) {
+      throw new Error(`Version conflict on review item ${id}: expected ${expectedVersion}`);
+    }
 
     const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
     return rowToReviewItem(updated);

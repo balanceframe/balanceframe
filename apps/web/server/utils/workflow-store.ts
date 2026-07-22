@@ -335,7 +335,6 @@ export async function performReviewAction(
       };
     }
   }
-
   const toStatus = statusForAction(action);
 
   try {
@@ -346,6 +345,17 @@ export async function performReviewAction(
       metadata: categoryId ? { categoryId } : undefined,
     };
     const result = await store.transitionReviewItem(reviewId, input);
+
+    // After a correct action, also update the item's category_id so
+    // downstream display (change preview, queue) reflects the edit.
+    if (action === 'correct' && categoryId) {
+      await store.updateReviewItemCategory(
+        reviewId,
+        categoryId,
+        result.version,
+      );
+    }
+
     return { itemId: result.id, success: true, error: null };
   } catch (e) {
     return {
