@@ -78,7 +78,7 @@ compose-validate:
 
 # Verify that TAG matches the root package.json version (with 'v' prefix).
 # Exits nonzero on mismatch. Passes through valid pre-release tags.
-release-verify TAG:
+release-verify TAG="v$(jq -r '.version' package.json)":
     #!/usr/bin/env bash
     set -euo pipefail
     version="$(jq -r '.version' package.json)"
