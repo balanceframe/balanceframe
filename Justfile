@@ -76,9 +76,10 @@ docker-test:
 compose-validate:
     tests/deployment/compose-validate.sh
 
-# Verify that TAG matches the root package.json version (with 'v' prefix)
-# and that the tag has not already been released.
-# Exits nonzero on mismatch or if the tag already exists on the remote.
+# Verify that TAG matches the root package.json version (with 'v' prefix).
+# Locally, reject an already-pushed tag. In GitHub Actions, verify that the
+# triggering annotated tag resolves to the checked-out commit.
+# Exits nonzero on a version mismatch, reused tag, or mismatched CI tag commit.
 release-verify TAG:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -93,12 +94,19 @@ release-verify TAG:
     fi
     echo "OK: TAG '{{TAG}}' matches package.json version 'v$version'"
 
-    # Check that the tag does not already exist on the remote.
-    if git ls-remote --tags origin "refs/tags/{{TAG}}" | grep -q .; then
-      echo "ERROR: Tag '{{TAG}}' already exists on the remote." >&2
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      tag_commit="$(git ls-remote --tags origin "refs/tags/$ref^{}" | awk '{print $1}')"
+      if [[ -z "$tag_commit" || "$tag_commit" != "${GITHUB_SHA:-}" ]]; then
+        echo "ERROR: Annotated tag '$ref' does not resolve to the CI commit." >&2
+        exit 1
+      fi
+      echo "OK: Tag '$ref' resolves to the CI commit."
+    elif git ls-remote --tags origin "refs/tags/$ref" | grep -q .; then
+      echo "ERROR: Tag '$ref' already exists on the remote." >&2
       exit 1
+    else
+      echo "OK: Tag '$ref' has not been released yet."
     fi
-    echo "OK: Tag '{{TAG}}' has not been released yet."
 release-assets TAG DIGEST:
     scripts/release-assets.sh "{{TAG}}" "{{DIGEST}}"
 
