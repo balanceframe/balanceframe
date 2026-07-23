@@ -60,13 +60,13 @@ describe('EncryptedCredentialStore — corrupt vs missing', () => {
       serverUrl: 'http://localhost:5006',
       secretKey: 'my-secret',
     });
-    // Read the file and corrupt the payload
-    const files = readdirSync(dir, { withFileTypes: true })
-      .map(f => join(dir, f.name));
+    // Find and corrupt the .enc file specifically
+    const files = readdirSync(dir).filter(f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME);
     if (files.length > 0) {
-      const raw = JSON.parse(readFileSync(files[0]!, 'utf-8'));
+      const filePath = join(dir, files[0]);
+      const raw = JSON.parse(readFileSync(filePath, 'utf-8'));
       raw.payload.ciphertext = raw.payload.ciphertext.slice(0, -1) + '0';
-      writeFileSync(files[0]!, JSON.stringify(raw));
+      writeFileSync(filePath, JSON.stringify(raw));
     }
 
     const store2 = new EncryptedCredentialStore({ credentialDir: dir });
