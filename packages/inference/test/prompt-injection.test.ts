@@ -194,13 +194,13 @@ describe('provider auth metadata', () => {
     expect(provider.providerInfo.authType).toBe('api-key');
   });
 
-  it('defaults to api-key auth type when unset', () => {
+  it('defaults to bearer auth type when unset', () => {
     const provider = new OpenAIProvider({
       endpoint: 'https://api.openai.com/v1',
       apiKey: 'sk-test',
       model: 'gpt-4',
     });
-    expect(provider.providerInfo.authType).toBe('api-key');
+    expect(provider.providerInfo.authType).toBe('bearer');
   });
 
   it('reports external locality with proper auth metadata', () => {
@@ -210,7 +210,7 @@ describe('provider auth metadata', () => {
       model: 'gpt-4',
     });
     expect(provider.providerInfo.locality).toBe('external');
-    expect(provider.providerInfo.authType).toBe('api-key');
+    expect(provider.providerInfo.authType).toBe('bearer');
     expect(provider.providerInfo.endpoint).toBe('https://api.openai.com/v1');
   });
 

@@ -81,13 +81,13 @@ export class OpenAIProvider implements ProviderAdapter {
       locality: config.locality ?? 'external',
       supportedCapabilities: ['classification', 'merchantResearch'],
       endpoint: config.endpoint,
-      authType: config.authType === 'bearer' ? 'bearer' : 'api-key',
+      authType: config.authType ?? 'bearer',
       model: config.model,
     };
     this.endpoint = config.endpoint;
     this.apiKey = config.apiKey;
     this.model = config.model;
-    this.authType = config.authType === 'bearer' ? 'bearer' : 'api-key';
+    this.authType = config.authType ?? 'bearer';
     this.fetchFn = config.fetchFn ?? globalThis.fetch.bind(globalThis);
   }
 
