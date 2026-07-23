@@ -118,6 +118,9 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Build workspace
         run: pnpm build
 
