@@ -154,17 +154,3 @@ jobs:
             _release/${{ github.ref_name }}/CHECKSUMS
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-
-  # ---------------------------------------------------------------------------
-  # SLSA provenance — reusable workflow, must be a separate job
-  # ---------------------------------------------------------------------------
-  generate-slsa:
-    needs: verify
-    permissions:
-      id-token: write
-      contents: read
-      packages: read
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a # v2.1.0
-    with:
-      image: ghcr.io/${{ github.repository_owner }}/balanceframe
-      digest: ${{ needs.verify.outputs.digest }}
