@@ -3,7 +3,7 @@ import {
   createNativeAnalysisProtocol,
   persistPendingReviewResult,
 } from '@balanceframe/application';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError } from '../../utils/workflow-store';
 
 /** Structured sync result with per-item outcome counts. */
 export interface SyncReviewResult {
@@ -86,13 +86,8 @@ export default defineEventHandler(async event => {
 
     return okEnvelope(syncResult, auth, requestId);
   } catch (error) {
+    const safe = sanitizeError(error, requestId, 'SYNC_REVIEW_FAILED', true);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'SYNC_REVIEW_FAILED',
-      error instanceof Error ? error.message : String(error),
-      auth,
-      true,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, auth, safe.retryable, requestId);
   }
 });

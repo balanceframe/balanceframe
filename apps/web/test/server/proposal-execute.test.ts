@@ -57,21 +57,25 @@ vi.mock('@balanceframe/application', async (importOriginal) => {
   };
 });
 
-vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: vi.fn(() => ({ store: mockStore })),
-  getActorId: vi.fn(() => 'test-actor'),
-  okEnvelope: vi.fn((result, _auth, requestId) => ({
-    ok: true,
-    result,
-    requestId,
-  })),
-  errorEnvelope: vi.fn((code, message, _auth, retryable, requestId) => ({
-    ok: false,
-    error: { code, message, retryable },
-    requestId,
-  })),
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'rule.execute' })),
-}));
+vi.mock('../../server/utils/workflow-store', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../server/utils/workflow-store')>();
+  return {
+    ...mod,
+    getWorkflowStore: vi.fn(() => ({ store: mockStore })),
+    getActorId: vi.fn(() => 'test-actor'),
+    okEnvelope: vi.fn((result, _auth, requestId) => ({
+      ok: true,
+      result,
+      requestId,
+    })),
+    errorEnvelope: vi.fn((code, message, _auth, retryable, requestId) => ({
+      ok: false,
+      error: { code, message, retryable },
+      requestId,
+    })),
+    buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'rule.execute' })),
+  };
+});
 
 // Import must come after mocks
 import handler from '../../server/api/proposal/[id]/execute.post';

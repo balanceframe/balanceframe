@@ -702,18 +702,42 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
+      // Ledger must support snapshot export — reject hardcoded placeholders
+      if (!isSynchronizableLedger(l)) {
+        throw new ApplicationError({
+          code: 'export_not_implemented',
+          message: 'The connected ledger cannot provide a full budget snapshot for export. Run "export" with a compatible ledger.',
+          reasonCodes: ['export_not_implemented'],
+          retryable: false,
+        });
+      }
+
+      const syncResult = await l.synchronize();
+      if (!syncResult || typeof syncResult !== 'object' || !('snapshot' in syncResult)) {
+        throw new ApplicationError({
+          code: 'export_not_implemented',
+          message: 'Ledger synchronization returned no snapshot data.',
+          reasonCodes: ['export_not_implemented'],
+          retryable: false,
+        });
+      }
+      const syncContainer = syncResult as Record<string, unknown>;
+      const snapshot = syncContainer.snapshot as Record<string, unknown>;
+
 
       const now = new Date().toISOString();
       const budgetName = 'Balanced Budget';
 
-      // Build export content — a minimal budget manifest
+      // Build export content from the connected budget snapshot
       const exportData = {
         version: 1,
         exportedAt: now,
         source: 'balanceframe-observe',
         budgetName,
-        accounts: [] as unknown[],
-        transactions: [] as unknown[],
+        accounts: Array.isArray(snapshot.accounts) ? snapshot.accounts : [],
+        transactions: Array.isArray(snapshot.transactions) ? snapshot.transactions : [],
+        categories: Array.isArray(snapshot.categories) ? snapshot.categories : [],
+        payees: Array.isArray(snapshot.payees) ? snapshot.payees : [],
       };
 
       const content = JSON.stringify(exportData, null, 2);
@@ -738,8 +762,8 @@ export function createLifecycleCallbacks(
       await writeFile(bfvPath, `${sha256Hash}\n${contentBytes}\n`, 'utf-8');
 
       // Record export in store for export-before-delete tracking
-      const accountCount = 0;
-      const transactionCount = 0;
+      const accountCount = Array.isArray(snapshot.accounts) ? snapshot.accounts.length : 0;
+      const transactionCount = Array.isArray(snapshot.transactions) ? snapshot.transactions.length : 0;
       if (store) {
         await store.recordExport({ budgetName, exportPath, accountCount, transactionCount });
       }
@@ -847,6 +871,16 @@ export function createLifecycleCallbacks(
           code: 'export_required',
           message: 'An export must be performed before deleting data. Run "export" first.',
           reasonCodes: ['export_before_delete'],
+          retryable: false,
+        });
+      }
+
+      // Reject placeholder exports (zero accounts + zero transactions) — data safety
+      if ((lastExport.accountCount ?? 0) <= 0 && (lastExport.transactionCount ?? 0) <= 0) {
+        throw new ApplicationError({
+          code: 'export_not_implemented',
+          message: 'The existing export contains no budget data and cannot satisfy export-before-delete requirements. Run "export" with a compatible ledger.',
+          reasonCodes: ['export_not_implemented', 'export_before_delete'],
           retryable: false,
         });
       }

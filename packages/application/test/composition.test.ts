@@ -118,9 +118,84 @@ function mockProtocol(): {
   return { protocol, calls };
 }
 
-/** Create a mock ledger for testing. */
+/** Create a mock ledger for testing — synchronizable with a minimal snapshot. */
 function mockLedger(): unknown {
-  return { mockLedger: true };
+  return {
+    async synchronize() {
+      return {
+        snapshot: {
+          schemaVersion: '1',
+          actualVersion: '1.0.0',
+          snapshotDate: new Date().toISOString(),
+          actualDownloadedAt: null,
+          bankSyncedAt: null,
+          encrypted: false,
+          unlocked: true,
+          accounts: [
+            {
+              id: 'acct_1',
+              name: 'Checking',
+              accountType: 'checking' as const,
+              offBudget: false,
+              isClosed: false,
+              clearedBalance: { minorUnits: '50000', currency: 'USD' },
+              importedBalance: { minorUnits: '50000', currency: 'USD' },
+              mtid: null,
+            },
+          ],
+          transactions: [
+            {
+              id: 'tx_1',
+              accountId: 'acct_1',
+              date: '2026-07-01',
+              payeeId: 'payee_1',
+              payeeName: 'Amazon',
+              categoryId: 'cat_1',
+              categoryName: 'Shopping',
+              amount: { minorUnits: '-5000', currency: 'USD' },
+              cleared: true,
+              reconciled: false,
+              importedId: null,
+              importedPayee: null,
+              notes: null,
+              tags: [],
+              transferAccountId: null,
+              subtransactions: [],
+            },
+          ],
+          categories: [
+            {
+              id: 'cat_1',
+              name: 'Shopping',
+              groupName: 'Expenses',
+              isIncome: false,
+              mtid: null,
+              deleted: false,
+            },
+          ],
+          payees: [
+            {
+              id: 'payee_1',
+              name: 'Amazon',
+              transferAccountId: null,
+              mtid: null,
+            },
+          ],
+          rules: [],
+          schedules: [],
+          budgets: [],
+          tags: [],
+        },
+        health: { state: 'healthy' as const, checks: [] },
+        watermark: {
+          lastTransactionDate: null,
+          lastTransactionCount: 0,
+          lastSyncCompletedAt: null,
+          overlapDays: 3,
+        },
+      };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +429,8 @@ describe('createObserveComposition — analysis protocol', () => {
     expect(exportResult.exportedAt).toBeTruthy();
     expect(exportResult.byteSize).toBeGreaterThan(50);
     expect(exportResult.sha256Hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(exportResult.accountCount).toBeGreaterThan(0);
+    expect(exportResult.transactionCount).toBeGreaterThan(0);
     expect(exportResult.exportPath).toMatch(/\/tmp\/balanceframe-export\/budget-export-.+\.json$/);
 
     // Without a store, no cleanup was performed
@@ -370,6 +447,42 @@ describe('createObserveComposition — analysis protocol', () => {
     // Without a store, delete-data is rejected (both error messages contain "export" and "first")
     await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(
       /export.*first/i,
+    );
+  });
+
+  it('doExport throws export_not_implemented when ledger lacks synchronize', async () => {
+    const nonSyncLedger = { mockLedger: true, noSync: true };
+    const callbacks = createLifecycleCallbacks(() => nonSyncLedger);
+    await expect(callbacks.doExport(nonSyncLedger)).rejects.toThrowError(
+      /cannot provide a full budget snapshot/i,
+    );
+  });
+
+  it('doDeleteData rejects placeholder export with zero accounts and transactions', async () => {
+    const store = {
+      async cancelPendingJobs() { return 0; },
+      async deleteActorMembership() { return true; },
+      async recordExport() {},
+      async getLastExport() {
+        return {
+          exportedAt: new Date().toISOString(),
+          budgetName: 'Placeholder',
+          exportPath: '/tmp/placeholder-export.json',
+          accountCount: 0,
+          transactionCount: 0,
+        };
+      },
+      async deleteScopeData() {
+        return { deleted: { memberships: 0, jobs: 0, corrections: 0 }, retained: { count: 0, reasons: [] } };
+      },
+    };
+    const ledger = mockLedger();
+    const callbacks = createLifecycleCallbacks(
+      () => ledger,
+      { workflowStore: store, actorId: 'usr_placeholder' },
+    );
+    await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(
+      /no budget data/i,
     );
   });
 

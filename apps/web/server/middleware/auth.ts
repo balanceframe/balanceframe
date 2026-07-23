@@ -36,7 +36,15 @@ import type { EventWithContext } from '../utils/workflow-store';
 // ---------------------------------------------------------------------------
 
 // /api routes that do NOT require authentication — everything else is denied by default.
-const PUBLIC_API_ALLOWLIST = ['/api/health', '/api/auth'];
+const PUBLIC_API_ALLOWLIST = ['/api/health', '/api/health/ready', '/api/auth'];
+
+// Startup warning when dev bypass env var is active.
+if (process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true') {
+  console.warn(
+    '[auth] WARNING: Development auth bypass is ACTIVE via BALANCEFRAME_DEV_BYPASS_AUTH. ' +
+    'This should only be enabled in local development environments.',
+  );
+}
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -164,10 +172,23 @@ export default defineEventHandler(async (event) => {
     (config.apiToken as string) || process.env.BALANCEFRAME_API_TOKEN || '';
 
   // 4. Dev bypass (local development only).
-  if (
+  const nodeEnv = process.env.NODE_ENV;
+  const bypassRequested =
     config.devBypassAuth === true ||
-    process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true'
-  ) {
+    process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
+
+  if (bypassRequested) {
+    // Never honor bypass in production — guard against misconfiguration.
+    if (
+      !nodeEnv ||
+      (nodeEnv !== 'development' && nodeEnv !== 'test')
+    ) {
+      setResponseStatus(event, 503);
+      return serviceUnavailable(
+        'Dev bypass is not allowed in production. ' +
+        'Set NODE_ENV=development or NODE_ENV=test for local development.',
+      );
+    }
     const actorId = (config.authActorId as string) || 'dev-bypass';
     setAuthContext(event, actorId);
     return;

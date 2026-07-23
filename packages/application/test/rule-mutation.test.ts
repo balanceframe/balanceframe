@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
+import crypto from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Import service under test
@@ -682,6 +683,236 @@ describe('RuleMutationService', () => {
 
     expect(result.success).toBe(false);
     expect(result.reasonCodes).toContain('approval_consumed');
+  });
+
+  // -----------------------------------------------------------------------
+  // Rule shape validation — no degenerate defaults
+  // -----------------------------------------------------------------------
+
+  it('should fail when rule name is empty string', async () => {
+    store.getProposal.mockResolvedValue(
+      mockProposal({
+        preconditions: JSON.stringify({
+          name: '',
+          conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
+          actions: [{ type: 'set_category', value: 'cat_groceries' }],
+        }),
+      }),
+    );
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+  });
+
+  it('should fail when rule name is missing', async () => {
+    store.getProposal.mockResolvedValue(
+      mockProposal({
+        preconditions: JSON.stringify({
+          conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
+          actions: [{ type: 'set_category', value: 'cat_groceries' }],
+        }),
+      }),
+    );
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+  });
+
+  it('should fail when rule conditions are missing', async () => {
+    store.getProposal.mockResolvedValue(
+      mockProposal({
+        preconditions: JSON.stringify({
+          name: 'Test Rule',
+          actions: [{ type: 'set_category', value: 'cat_groceries' }],
+        }),
+      }),
+    );
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_001' } as AuditRecord);
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+  });
+
+  it('should fail when rule conditions is empty array', async () => {
+    store.getProposal.mockResolvedValue(
+      mockProposal({
+        preconditions: JSON.stringify({
+          name: 'Test Rule',
+          conditions: [],
+          actions: [{ type: 'set_category', value: 'cat_groceries' }],
+        }),
+      }),
+    );
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_001' } as AuditRecord);
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+  });
+
+  it('should fail when rule actions are missing', async () => {
+    store.getProposal.mockResolvedValue(
+      mockProposal({
+        preconditions: JSON.stringify({
+          name: 'Test Rule',
+          conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
+        }),
+      }),
+    );
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_001' } as AuditRecord);
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+  });
+
+  it('should fail when rule actions is empty array', async () => {
+    store.getProposal.mockResolvedValue(
+      mockProposal({
+        preconditions: JSON.stringify({
+          name: 'Test Rule',
+          conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
+          actions: [],
+        }),
+      }),
+    );
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(mockApproval());
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_001' } as AuditRecord);
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(false);
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+  });
+
+
+  it('should accept nativeRule-nested format and hash matches execution side', async () => {
+    const ruleName = 'Nested Format Rule';
+    const conditions = [{ field: 'payee_name', op: 'is', value: 'Some Store' }];
+    const actions = [{ type: 'set_category', value: 'cat_stuff' }];
+
+    // Build the normalized shape exactly as the propose-rule endpoint would
+    const normalizedRule = {
+      name: ruleName,
+      conditions,
+      actions,
+      conditionsOp: 'and' as const,
+    };
+    const expectedHash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify(normalizedRule))
+      .digest('hex');
+
+    const proposal = mockProposal({
+      payloadHash: expectedHash,
+      preconditions: JSON.stringify({
+        merchant: 'Some Store',
+        source: 'review',
+        reviewId: 'review_nested_001',
+        nativeRule: normalizedRule,
+      }),
+    });
+    store.getProposal.mockResolvedValue(proposal);
+    store.evaluateAuthorization.mockResolvedValue(allowedAuth());
+    store.createIdempotencyRecord.mockResolvedValue({
+      isOwner: true,
+      record: mockIdempotencyRecord(),
+    });
+    store.getApproval.mockResolvedValue(
+      mockApproval({ payloadHash: expectedHash }),
+    );
+    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_001' } as AuditRecord);
+
+    const snapshot = mockProtocolSnapshot();
+    ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
+
+    const plan = mockRuleMutationPlan({
+      ruleName,
+      expectedOutcome: {
+        name: ruleName,
+        trigger: conditions,
+        actions,
+      },
+    });
+    rust.planCreateRule.mockReturnValue(plan);
+    rust.verifyRuleMutation.mockReturnValue({
+      verified: true,
+      reasonCodes: [],
+      message: null,
+    });
+    rust.simulateRule.mockReturnValue(mockRuleSimulationResult({
+      name: ruleName,
+    }));
+
+    ledger.createRule.mockResolvedValue(mockMutationResult());
+    ledger.synchronize.mockResolvedValue({
+      snapshot: {
+        ...snapshot,
+        rules: [mockRule({ name: ruleName })],
+      },
+    } as LedgerSnapshotResult);
+
+    // Completion audit
+    store.appendAuditRecord.mockResolvedValue({ id: 'audit_completed_001' } as AuditRecord);
+
+    const result = await service.execute(defaultInput());
+
+    expect(result.success).toBe(true);
+    expect(result.ruleId).toBe(TEST_RULE_ID);
+
+    // Verify the hash stored in proposal matches what was passed to ledger.createRule
+    expect(ledger.createRule).toHaveBeenCalledWith({
+      name: ruleName,
+      conditions,
+      actions,
+      conditionsOp: 'and',
+    });
   });
 
   // -----------------------------------------------------------------------

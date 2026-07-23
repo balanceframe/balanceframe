@@ -18,6 +18,7 @@ import type {
   CreateReviewItemInput,
 } from '@balanceframe/workflow-store';
 import Database from 'better-sqlite3';
+import crypto from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Helpers — re-created from patterns in review-api.test.ts
@@ -556,4 +557,168 @@ it('rejects actor without approval before idempotency creation', async () => {
     serialisedEffect,
   });
   expect(claim.isOwner).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// normalizeRuleShape validation — duplicates the function from the endpoint
+// module to avoid a Nitro runtime dependency in tests.
+// ---------------------------------------------------------------------------
+
+interface NormalizedRuleShape {
+  readonly name: string;
+  readonly conditions: unknown[];
+  readonly actions: unknown[];
+  readonly conditionsOp?: 'and' | 'or';
+  readonly stage?: 'pre' | 'post';
+}
+
+function normalizeRuleShape(raw: unknown): NormalizedRuleShape {
+  if (raw === null || typeof raw !== 'object') {
+    throw new Error('Rule shape must be a non-null object');
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const ruleData: Record<string, unknown> =
+    obj.nativeRule && typeof obj.nativeRule === 'object'
+      ? obj.nativeRule as Record<string, unknown>
+      : obj;
+
+  const name = ruleData.name;
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new Error('Rule name is required and must be a non-empty string');
+  }
+
+  const conditions = ruleData.conditions;
+  if (!Array.isArray(conditions) || conditions.length === 0) {
+    throw new Error('Rule conditions are required and must be a non-empty array');
+  }
+
+  const actions = ruleData.actions;
+  if (!Array.isArray(actions) || actions.length === 0) {
+    throw new Error('Rule actions are required and must be a non-empty array');
+  }
+
+  const stageVal = ruleData.stage;
+  const stage: 'pre' | 'post' | undefined =
+    stageVal === 'pre' ? 'pre' :
+    stageVal === 'post' ? 'post' :
+    undefined;
+
+  return {
+    name: name.trim(),
+    conditions,
+    actions,
+    conditionsOp: ruleData.conditionsOp === 'or' ? 'or' : 'and',
+    ...(stage ? { stage } : {}),
+  };
+}
+
+describe('normalizeRuleShape', () => {
+  it('accepts a valid flat rule shape', () => {
+    const result = normalizeRuleShape({
+      name: 'Test Rule',
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+      actions: [{ type: 'set_category', value: 'cat_test' }],
+    });
+
+    expect(result.name).toBe('Test Rule');
+    expect(result.conditions).toHaveLength(1);
+    expect(result.actions).toHaveLength(1);
+    expect(result.conditionsOp).toBe('and');
+    expect(result.stage).toBeUndefined();
+  });
+
+  it('accepts a valid nativeRule-nested format', () => {
+    const result = normalizeRuleShape({
+      nativeRule: {
+        name: 'Nested Rule',
+        conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+        actions: [{ type: 'set_category', value: 'cat_test' }],
+      },
+    });
+
+    expect(result.name).toBe('Nested Rule');
+    expect(result.conditions).toHaveLength(1);
+    expect(result.actions).toHaveLength(1);
+  });
+
+  it('rejects null input', () => {
+    expect(() => normalizeRuleShape(null)).toThrow('Rule shape must be a non-null object');
+  });
+
+  it('rejects non-object input', () => {
+    expect(() => normalizeRuleShape('string')).toThrow('Rule shape must be a non-null object');
+  });
+
+  it('rejects empty name', () => {
+    expect(() => normalizeRuleShape({
+      name: '',
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+      actions: [{ type: 'set_category', value: 'cat_test' }],
+    })).toThrow('Rule name is required');
+  });
+
+  it('rejects missing name', () => {
+    expect(() => normalizeRuleShape({
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+      actions: [{ type: 'set_category', value: 'cat_test' }],
+    })).toThrow('Rule name is required');
+  });
+
+  it('rejects missing conditions', () => {
+    expect(() => normalizeRuleShape({
+      name: 'Test',
+      actions: [{ type: 'set_category', value: 'cat_test' }],
+    })).toThrow('Rule conditions are required');
+  });
+
+  it('rejects empty conditions array', () => {
+    expect(() => normalizeRuleShape({
+      name: 'Test',
+      conditions: [],
+      actions: [{ type: 'set_category', value: 'cat_test' }],
+    })).toThrow('Rule conditions are required');
+  });
+
+  it('rejects missing actions', () => {
+    expect(() => normalizeRuleShape({
+      name: 'Test',
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+    })).toThrow('Rule actions are required');
+  });
+
+  it('rejects empty actions array', () => {
+    expect(() => normalizeRuleShape({
+      name: 'Test',
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+      actions: [],
+    })).toThrow('Rule actions are required');
+  });
+
+  it('accepts stage=pre and conditionsOp=or', () => {
+    const result = normalizeRuleShape({
+      name: 'Pre Rule',
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+      actions: [{ type: 'set_category', value: 'cat_test' }],
+      conditionsOp: 'or',
+      stage: 'pre',
+    });
+
+    expect(result.conditionsOp).toBe('or');
+    expect(result.stage).toBe('pre');
+  });
+
+  it('normalized shape produces deterministic hash', () => {
+    const shape = normalizeRuleShape({
+      name: 'Hash Test Rule',
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Hash Store' }],
+      actions: [{ type: 'set_category', value: 'cat_hash' }],
+    });
+
+    const hash1 = crypto.createHash('sha256').update(JSON.stringify(shape)).digest('hex');
+    const hash2 = crypto.createHash('sha256').update(JSON.stringify(shape)).digest('hex');
+
+    expect(hash1).toBe(hash2);
+    expect(Object.keys(shape)).toEqual(['name', 'conditions', 'actions', 'conditionsOp']);
+  });
 });

@@ -459,6 +459,74 @@ export function buildAuthorizationInfo(
 }
 
 // ---------------------------------------------------------------------------
+// Error sanitization — prevent internal details from leaking to API clients
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of sanitizing a caught error for user-safe API responses.
+ */
+export interface SanitizedError {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+/**
+ * Strip filesystem paths, source references, and adapter-internal details
+ * from a raw error message, returning a user-safe summary.
+ */
+export function sanitizeErrorMessage(raw: string): string {
+  // Remove Unix filesystem paths: /path/to/file or /path/to/dir.ext
+  let safe = raw.replace(/\/(?:[^\s/]+\/)+[^\s/]*/g, '');
+  // Remove Windows filesystem paths: C:\path\to\file.ext
+  safe = safe.replace(/[A-Za-z]:\\(?:[^\s\\]+\\)*[^\s\\]*/g, '');
+  // Remove stack-frame trailers (Node/V8 stack lines)
+  safe = safe.replace(/\n\s*at\s.*$/s, '');
+  // Remove inline source references: (file.ts:42) or at file.ts:42:10
+  safe = safe.replace(/\s*\([\w./-]+\.\w+:\d+(?::\d+)?\)/, '');
+  // Remove error-type prefixes like "Error:" "TypeError:" at the start
+  safe = safe.replace(/^\w+Error:\s*/, '');
+  // Remove internal adapter/component names in parens: (ActualLedger)
+  safe = safe.replace(/\s*\([A-Z][a-zA-Z]*(?:Adapter|Ledger|Store|Service|Manager)\)/g, '');
+  // Collapse internal method/class references: ActualLedger.deleteRule
+  safe = safe.replace(/\b[A-Z][a-zA-Z0-9]*\.[a-z][a-zA-Z0-9]*/g, '');
+  return safe.trim() || 'An unexpected error occurred.';
+}
+
+/**
+ * Process a caught Error for safe API error responses.
+ *
+ * Logs the full error details (message + stack trace) with the correlation
+ * ID to the server log, then returns a user-safe structure whose `message`
+ * contains no filesystem paths, adapter internals, or source-level detail.
+ *
+ * @example
+ *   catch (err) {
+ *     const safe = sanitizeError(err, requestId, 'RULE_UPDATE_FAILED', true);
+ *     setResponseStatus(event, 500);
+ *     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+ *   }
+ */
+export function sanitizeError(
+  err: unknown,
+  requestId: string,
+  code: string,
+  retryable: boolean = false,
+): SanitizedError {
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error && err.stack ? `\n${err.stack}` : '';
+
+  // Log EVERYTHING with the correlation ID for server-side debugging
+  console.error(`[${requestId}] ${code}: ${rawMessage}${stack}`);
+
+  return {
+    code,
+    message: sanitizeErrorMessage(rawMessage),
+    retryable,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Mutation service seam — typed bridge between web routes and the
 // CategorizationMutationService (in @balanceframe/application).  The web
 // layer does NOT depend on the application package; instead, the composition

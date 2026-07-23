@@ -32,6 +32,7 @@ import {
   okEnvelope,
   errorEnvelope,
   buildAuthorizationInfo,
+  sanitizeError,
 } from '../../../utils/workflow-store';
 import { createMutationConnectionManager } from '../../../utils/mutation-executor';
 import {
@@ -223,14 +224,9 @@ export default defineEventHandler(async (event) => {
       const connected = await manager.restore();
       ledger = connected.connector as unknown as BudgetLedger;
     } catch (err) {
+      const safe = sanitizeError(err, requestId, 'LEDGER_UNAVAILABLE', true);
       setResponseStatus(event, 503);
-      return errorEnvelope(
-        'LEDGER_UNAVAILABLE',
-        `Failed to restore budget connection: ${err instanceof Error ? err.message : String(err)}`,
-        authInfo,
-        true,
-        requestId,
-      );
+      return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
     }
 
     // -------------------------------------------------------------------
@@ -245,12 +241,12 @@ export default defineEventHandler(async (event) => {
     try {
       rust = await createNativeRuleMutationProtocol();
     } catch (err) {
+      sanitizeError(err, requestId, 'NOT_IMPLEMENTED', false);
       setResponseStatus(event, 501);
       return errorEnvelope(
         'NOT_IMPLEMENTED',
         'Rule execution requires the native rule mutation protocol, ' +
-          'which is not available on this server. ' +
-          `(${err instanceof Error ? err.message : String(err)})`,
+          'which is not available on this server.',
         authInfo,
         false,
         requestId,
@@ -287,14 +283,9 @@ export default defineEventHandler(async (event) => {
         requestId,
       });
     } catch (err) {
+      const safe = sanitizeError(err, requestId, 'RULE_EXECUTION_FAILED', true);
       setResponseStatus(event, 500);
-      return errorEnvelope(
-        'RULE_EXECUTION_FAILED',
-        err instanceof Error ? err.message : String(err),
-        authInfo,
-        true,
-        requestId,
-      );
+      return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
     }
 
     // -------------------------------------------------------------------
@@ -363,14 +354,8 @@ export default defineEventHandler(async (event) => {
       requestId,
     );
   } catch (e) {
+    const safe = sanitizeError(e, requestId, 'RULE_EXECUTION_FAILED', false);
     setResponseStatus(event, 500);
-
-    return errorEnvelope(
-      'RULE_EXECUTION_FAILED',
-      e instanceof Error ? e.message : String(e),
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

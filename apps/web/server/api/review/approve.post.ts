@@ -17,6 +17,8 @@ import {
   reviewAndApplyEnabled,
   getReviewMutationExecutorFromEvent,
   applyReviewMutationWithTransition,
+  sanitizeError,
+  sanitizeErrorMessage,
 } from '../../utils/workflow-store';
 import type { ReviewStatus } from '../../utils/workflow-store';
 
@@ -66,8 +68,9 @@ export default defineEventHandler(async (event) => {
       status = 409;
       code = 'VERSION_CONFLICT';
     }
+    console.error(`[${requestId}] ${code}: ${outcome.error ?? 'Unknown error'}`);
     setResponseStatus(event, status);
-    return errorEnvelope(code, outcome.error ?? 'Unknown error', authInfo, false, requestId);
+    return errorEnvelope(code, sanitizeErrorMessage(outcome.error ?? 'Unknown error'), authInfo, false, requestId);
   }
 
   // Only invoke mutation when the item has reached full 'approved' status
@@ -105,14 +108,9 @@ export default defineEventHandler(async (event) => {
           requestId,
         );
       } catch (e) {
+        const safe = sanitizeError(e, requestId, 'MUTATION_FAILED', false);
         setResponseStatus(event, 500);
-        return errorEnvelope(
-          'MUTATION_FAILED',
-          e instanceof Error ? e.message : String(e),
-          authInfo,
-          false,
-          requestId,
-        );
+        return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
       }
     }
 

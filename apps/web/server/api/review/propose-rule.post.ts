@@ -1,7 +1,7 @@
 /**
  * POST /api/review/propose-rule — create a rule proposal from a review item.
  *
- * Accepts JSON body: { reviewId, merchant, categoryId, simulation? }.
+ * Accepts JSON body: { reviewId, merchant, categoryId, name?, simulation? }.
  * The optional `simulation` field carries simulation evidence from the
  * Rust simulateRule call (computed by the caller).  When present it is
  * stored in the proposal's precondition and validated for minimum matches.
@@ -56,6 +56,68 @@ function isValidSimulation(value: unknown): value is StoredSimulation {
 }
 
 // ---------------------------------------------------------------------------
+// Rule shape validation & normalization
+// ---------------------------------------------------------------------------
+
+export interface NormalizedRuleShape {
+  readonly name: string;
+  readonly conditions: unknown[];
+  readonly actions: unknown[];
+  readonly conditionsOp?: 'and' | 'or';
+  readonly stage?: 'pre' | 'post';
+}
+
+/**
+ * Validate and normalize a rule shape from raw input, supporting both
+ * flat format ({ name, conditions, actions }) and nativeRule-nested
+ * format ({ nativeRule: { name, conditions, actions } }).
+ *
+ * Throws a descriptive error when required fields are missing or invalid.
+ * The returned object has deterministic key ordering suitable for hashing.
+ */
+export function normalizeRuleShape(raw: unknown): NormalizedRuleShape {
+  if (raw === null || typeof raw !== 'object') {
+    throw new Error('Rule shape must be a non-null object');
+  }
+  const obj = raw as Record<string, unknown>;
+
+  // Support both flat format and nativeRule-nested format
+  const ruleData: Record<string, unknown> =
+    obj.nativeRule && typeof obj.nativeRule === 'object'
+      ? obj.nativeRule as Record<string, unknown>
+      : obj;
+
+  const name = ruleData.name;
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new Error('Rule name is required and must be a non-empty string');
+  }
+
+  const conditions = ruleData.conditions;
+  if (!Array.isArray(conditions) || conditions.length === 0) {
+    throw new Error('Rule conditions are required and must be a non-empty array');
+  }
+
+  const actions = ruleData.actions;
+  if (!Array.isArray(actions) || actions.length === 0) {
+    throw new Error('Rule actions are required and must be a non-empty array');
+  }
+
+  const stageVal = ruleData.stage;
+  const stage: 'pre' | 'post' | undefined =
+    stageVal === 'pre' ? 'pre' :
+    stageVal === 'post' ? 'post' :
+    undefined;
+
+  return {
+    name: name.trim(),
+    conditions,
+    actions,
+    conditionsOp: ruleData.conditionsOp === 'or' ? 'or' : 'and',
+    ...(stage ? { stage } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -74,13 +136,6 @@ export default defineEventHandler(async (event) => {
   const reviewId = typeof body.reviewId === 'string' ? body.reviewId.trim() : '';
   const merchant = typeof body.merchant === 'string' ? body.merchant.trim() : '';
   const categoryId = typeof body.categoryId === 'string' ? body.categoryId.trim() : '';
-  const nativeRule = {
-    stage: null,
-    conditionsOp: 'and',
-    conditions: [{ field: 'payee_name', op: 'is', value: merchant }],
-    actions: [{ field: 'category', op: 'set', value: categoryId }],
-  };
-  const payloadHash = crypto.createHash('sha256').update(JSON.stringify(nativeRule)).digest('hex');
 
   if (!reviewId || !merchant || !categoryId) {
     setResponseStatus(event, 422);
@@ -92,6 +147,38 @@ export default defineEventHandler(async (event) => {
       requestId,
     );
   }
+
+  // Derive a rule name from the body or construct one from merchant/category
+  const ruleName = typeof body.name === 'string' && body.name.trim().length > 0
+    ? body.name.trim()
+    : `Auto-rule: ${merchant} -> ${categoryId}`;
+
+  // Build the raw rule shape and normalize it once before hashing
+  const rawRule = {
+    name: ruleName,
+    conditionsOp: 'and',
+    conditions: [{ field: 'payee_name', op: 'is', value: merchant }],
+    actions: [{ field: 'category', op: 'set', value: categoryId }],
+  };
+
+  let normalizedRule: NormalizedRuleShape;
+  try {
+    normalizedRule = normalizeRuleShape(rawRule);
+  } catch (e) {
+    setResponseStatus(event, 422);
+    return errorEnvelope(
+      'INVALID_RULE_SHAPE',
+      e instanceof Error ? e.message : 'Invalid rule shape',
+      authInfo,
+      false,
+      requestId,
+    );
+  }
+
+  // Hash the exact normalized shape — this is what execution will produce
+  const payloadHash = crypto.createHash('sha256')
+    .update(JSON.stringify(normalizedRule))
+    .digest('hex');
 
   // Validate simulation evidence if provided
   const rawSimulation = body.simulation;
@@ -137,7 +224,7 @@ export default defineEventHandler(async (event) => {
       merchant,
       source: 'review',
       reviewId,
-      nativeRule,
+      nativeRule: normalizedRule,
     };
     if (simulation) {
       preconditions.simulation = simulation;
@@ -164,14 +251,15 @@ export default defineEventHandler(async (event) => {
         operation: 'create_rule',
         merchant,
         categoryId,
+        name: normalizedRule.name,
         simulation,
         simulationStatus: simulation ? 'present' as const : 'missing' as const,
         simulationWarning,
         message: simulation
           ? `Rule proposal created. Simulation matched ${simulation.transactionsMatched} transaction(s).`
           : 'Rule proposal created. Use proposals.approve to authorize and proposals.execute to create the rule.',
-        conditions: nativeRule.conditions,
-        actions: nativeRule.actions,
+        conditions: normalizedRule.conditions,
+        actions: normalizedRule.actions,
         rulePreview: `If payee_name is ${merchant}, set category to ${categoryId}`,
       },
       authInfo,

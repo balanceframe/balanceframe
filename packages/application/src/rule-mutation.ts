@@ -401,10 +401,17 @@ export class RuleMutationService {
     // =====================================================================
     // 3. Idempotency claim (atomic check-and-create)
     // =====================================================================
-
-    const serialisedEffect = JSON.stringify({
-      ruleName: this.extractRuleName(proposal),
-    });
+    let serialisedEffect: string;
+    try {
+      serialisedEffect = JSON.stringify({
+        ruleName: this.extractRuleName(proposal),
+      });
+    } catch (e) {
+      await this.appendFailureAudit(input, proposal, auth, 'invalid_preconditions');
+      return this.fail(baseResult, 'invalid_preconditions',
+        e instanceof Error ? e.message : 'Proposal preconditions are invalid',
+        input);
+    }
 
     let idemClaim: IdempotencyClaim;
     try {
@@ -547,7 +554,17 @@ export class RuleMutationService {
     //    snapshot, but precondition check happens before write)
     // =====================================================================
 
-    const ruleInput = this.extractRuleInput(proposal);
+    let ruleInput: RuleProposalInput;
+    try {
+      ruleInput = this.extractRuleInput(proposal);
+    } catch (e) {
+      await this.recordFailure(input, e);
+      await this.appendFailureAudit(input, proposal, auth,
+        e instanceof Error ? e.message : 'invalid_preconditions');
+      return this.fail(baseResult, 'invalid_preconditions',
+        e instanceof Error ? e.message : 'Proposal preconditions are invalid', input);
+    }
+
     let plan: RuleMutationPlan;
     try {
       plan = this.rust.planCreateRule(ruleInput, snapshot);
@@ -717,10 +734,6 @@ export class RuleMutationService {
       // Non-fatal
     }
 
-    // =====================================================================
-    // 15. Return result
-    // =====================================================================
-
     return {
       success: verified,
       ruleId,
@@ -734,42 +747,71 @@ export class RuleMutationService {
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Private helpers
-  // -------------------------------------------------------------------------
 
   /**
-   * Extract the rule name from proposal preconditions.
+   * Extract rule name from proposal preconditions.
+   * Supports both flat format ({ name }) and nativeRule-nested ({ nativeRule: { name } }).
+   * Throws when the name is missing or empty.
    */
   private extractRuleName(proposal: CategorizationProposal): string {
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(proposal.preconditions);
-      return parsed.name ?? 'unnamed_rule';
+      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
     } catch {
-      return 'unnamed_rule';
+      throw new Error('Proposal preconditions are not valid JSON');
     }
-  }
 
+    // Support both flat format and nativeRule-nested format
+    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
+      ? parsed.nativeRule as Record<string, unknown>
+      : parsed;
+
+    const name = ruleData.name;
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new Error('Rule name is required and must be a non-empty string');
+    }
+    return name.trim();
+  }
   /**
    * Extract rule input from proposal preconditions.
+   * Supports both flat format ({ name, conditions, actions }) and nativeRule-nested
+   * format ({ nativeRule: { name, conditions, actions } }).
+   * Throws when required fields are missing or degenerate.
    */
   private extractRuleInput(proposal: CategorizationProposal): RuleProposalInput {
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(proposal.preconditions);
-      return {
-        name: parsed.name ?? 'unnamed_rule',
-        conditions: parsed.conditions ?? [],
-        actions: parsed.actions ?? [],
-        budgetId: proposal.budgetId,
-      };
+      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
     } catch {
-      return {
-        name: 'unnamed_rule',
-        conditions: [],
-        actions: [],
-        budgetId: proposal.budgetId,
-      };
+      throw new Error('Proposal preconditions are not valid JSON');
     }
+
+    // Support both flat format and nativeRule-nested format
+    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
+      ? parsed.nativeRule as Record<string, unknown>
+      : parsed;
+
+    const name = ruleData.name;
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new Error('Rule name is required and must be a non-empty string');
+    }
+
+    const conditions = ruleData.conditions;
+    if (!Array.isArray(conditions) || conditions.length === 0) {
+      throw new Error('Rule conditions are required and must be a non-empty array');
+    }
+
+    const actions = ruleData.actions;
+    if (!Array.isArray(actions) || actions.length === 0) {
+      throw new Error('Rule actions are required and must be a non-empty array');
+    }
+
+    return {
+      name: name.trim(),
+      conditions,
+      actions,
+      budgetId: proposal.budgetId,
+    };
   }
 
   /**
@@ -904,38 +946,52 @@ export class RuleMutationService {
   /**
    * Build a RuleProposal for ledger.createRule from proposal preconditions,
    * supporting both flat format ({ name, conditions, actions, conditionsOp, stage })
-   * and nativeRule-nested format ({ nativeRule: { conditions, actions, conditionsOp, stage } }).
+   * and nativeRule-nested format ({ nativeRule: { name, conditions, actions, conditionsOp, stage } }).
    *
-   * Falls back to defaults when preconditions are unparseable.
+   * Throws when required fields are missing or degenerate, ensuring no
+   * default/unnamed rule reaches the ledger.
    */
   private buildRuleProposal(proposal: CategorizationProposal): RuleProposal {
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
-      // Support both flat format and nativeRule-nested format
-      const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
-        ? parsed.nativeRule as Record<string, unknown>
-        : parsed;
-
-      const stageVal = ruleData.stage;
-      const stage: 'pre' | 'post' | undefined =
-        stageVal === 'pre' ? 'pre' :
-        stageVal === 'post' ? 'post' :
-        undefined;
-
-      return {
-        name: (ruleData.name as string) ?? (parsed.name as string) ?? 'unnamed_rule',
-        conditions: Array.isArray(ruleData.conditions) ? ruleData.conditions : [],
-        actions: Array.isArray(ruleData.actions) ? ruleData.actions : [],
-        conditionsOp: (ruleData.conditionsOp as 'and' | 'or') ?? 'and',
-        stage,
-      };
+      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
     } catch {
-      return {
-        name: 'unnamed_rule',
-        conditions: [],
-        actions: [],
-      };
+      throw new Error('Proposal preconditions are not valid JSON');
     }
+
+    // Support both flat format and nativeRule-nested format
+    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
+      ? parsed.nativeRule as Record<string, unknown>
+      : parsed;
+
+    const name = ruleData.name;
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new Error('Rule name is required and must be a non-empty string');
+    }
+
+    const conditions = ruleData.conditions;
+    if (!Array.isArray(conditions) || conditions.length === 0) {
+      throw new Error('Rule conditions are required and must be a non-empty array');
+    }
+
+    const actions = ruleData.actions;
+    if (!Array.isArray(actions) || actions.length === 0) {
+      throw new Error('Rule actions are required and must be a non-empty array');
+    }
+
+    const stageVal = ruleData.stage;
+    const stage: 'pre' | 'post' | undefined =
+      stageVal === 'pre' ? 'pre' :
+      stageVal === 'post' ? 'post' :
+      undefined;
+
+    return {
+      name: name.trim(),
+      conditions,
+      actions,
+      conditionsOp: (ruleData.conditionsOp as 'and' | 'or') ?? 'and',
+      stage,
+    };
   }
 
  }

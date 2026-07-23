@@ -408,11 +408,56 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
     };
   }
 
+  /** Create a minimal synchronizable ledger with one account and one transaction. */
+  function mockSyncLedger(): unknown {
+    return {
+      async synchronize() {
+        return {
+          snapshot: {
+            schemaVersion: '1',
+            actualVersion: '1.0.0',
+            snapshotDate: new Date().toISOString(),
+            actualDownloadedAt: null,
+            bankSyncedAt: null,
+            encrypted: false,
+            unlocked: true,
+            accounts: [{
+              id: 'a1', name: 'Test Checking', accountType: 'checking' as const,
+              offBudget: false, isClosed: false,
+              clearedBalance: { minorUnits: '100000', currency: 'USD' },
+              importedBalance: { minorUnits: '100000', currency: 'USD' },
+              mtid: null,
+            }],
+            transactions: [{
+              id: 't1', accountId: 'a1',
+              date: '2026-07-15', payeeId: 'p1', payeeName: 'Test Store',
+              categoryId: 'c1', categoryName: 'Groceries',
+              amount: { minorUnits: '-2500', currency: 'USD' },
+              cleared: true, reconciled: false,
+              importedId: null, importedPayee: null,
+              notes: null, tags: [], transferAccountId: null, subtransactions: [],
+            }],
+            categories: [{
+              id: 'c1', name: 'Groceries', groupName: 'Food',
+              isIncome: false, mtid: null, deleted: false,
+            }],
+            payees: [{
+              id: 'p1', name: 'Test Store', transferAccountId: null, mtid: null,
+            }],
+            rules: [], schedules: [], budgets: [], tags: [],
+          },
+          health: { state: 'healthy' as const, checks: [] },
+          watermark: { lastTransactionDate: null, lastTransactionCount: 0, lastSyncCompletedAt: null, overlapDays: 3 },
+        };
+      },
+    };
+  }
+
   it('full export + delete-data succeeds with real artifact verification', async () => {
     const exportDir = await mkdtemp(join(tmpdir(), 'bf-test-'));
     try {
       const store = createTestStore();
-      const ledger = { mockLedger: true };
+      const ledger = mockSyncLedger();
       const callbacks = createLifecycleCallbacks(() => ledger, { workflowStore: store, actorId: 'usr_dtest' });
 
       const exportResult = await callbacks.doExport(ledger);
@@ -441,7 +486,7 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
     const exportDir = await mkdtemp(join(tmpdir(), 'bf-tamper-'));
     try {
       const store = createTestStore();
-      const ledger = { mockLedger: true };
+      const ledger = mockSyncLedger();
       const callbacks = createLifecycleCallbacks(() => ledger, { workflowStore: store, actorId: 'usr_dtest3' });
 
       // Perform export to create real files

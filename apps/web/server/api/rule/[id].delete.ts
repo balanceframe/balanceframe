@@ -14,7 +14,7 @@ import { setResponseStatus } from 'h3';
 import type { LedgerHandle, RuleOperationResult, RuleListItem } from '../../utils/rule-types';
 import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
-  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
+  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -39,14 +39,9 @@ export default defineEventHandler(async (event) => {
     const connected = await manager.restore();
     ledger = connected.connector as unknown as LedgerHandle;
   } catch (err) {
+    const safe = sanitizeError(err, requestId, 'LEDGER_UNAVAILABLE', true);
     setResponseStatus(event, 503);
-    return errorEnvelope(
-      'LEDGER_UNAVAILABLE',
-      `Cannot connect to Actual: ${err instanceof Error ? err.message : String(err)}`,
-      authInfo,
-      true,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 
   // Attempt the deletion on the ledger
@@ -54,14 +49,9 @@ export default defineEventHandler(async (event) => {
   try {
     mutateResult = await ledger.deleteRule(ruleId);
   } catch (err) {
+    const safe = sanitizeError(err, requestId, 'RULE_DELETE_FAILED', true);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'RULE_DELETE_FAILED',
-      err instanceof Error ? err.message : String(err),
-      authInfo,
-      true,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 
   if (!mutateResult.success) {

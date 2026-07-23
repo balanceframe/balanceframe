@@ -42,6 +42,33 @@ import type {
 import { resolveAuthDbPath } from '../../lib/auth-db-path';
 
 // ---------------------------------------------------------------------------
+// Mock h3 for auth middleware tests — must be before importing middleware
+// ---------------------------------------------------------------------------
+
+const { mockGetRequestPath, mockGetHeader, mockGetCookie, mockSetResponseStatus, mockSetHeader } = vi.hoisted(() => ({
+  mockGetRequestPath: vi.fn(),
+  mockGetHeader: vi.fn(),
+  mockGetCookie: vi.fn().mockReturnValue(undefined),
+  mockSetResponseStatus: vi.fn(),
+  mockSetHeader: vi.fn(),
+}));
+
+vi.mock('h3', () => ({
+  defineEventHandler: <T>(handler: T) => handler,
+  getRequestPath: mockGetRequestPath,
+  getHeader: mockGetHeader,
+  getCookie: mockGetCookie,
+  setResponseStatus: mockSetResponseStatus,
+  setHeader: mockSetHeader,
+}));
+
+// ---------------------------------------------------------------------------
+// Auth middleware — lazy import so h3 mock is in place
+// ---------------------------------------------------------------------------
+
+import authMiddleware from '../../server/middleware/auth';
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -705,5 +732,75 @@ describe('applyReviewMutationWithTransition — durable transitions', () => {
     const mutationAction = actions.find(a => a.toStatus === 'apply_failed');
     expect(mutationAction).toBeDefined();
     expect(mutationAction!.metadata).toHaveProperty('staleReason', 'snapshot_stale');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Production mode — dev bypass rejection
+// ---------------------------------------------------------------------------
+
+interface MockMiddlewareEvent {
+  context: {
+    runtimeConfig?: Record<string, unknown>;
+    auth?: { authenticated: boolean; actorId?: string };
+  };
+  body?: Record<string, unknown>;
+}
+
+function mockMiddlewareEvent(overrides?: Partial<MockMiddlewareEvent>): MockMiddlewareEvent {
+  return {
+    context: {},
+    ...overrides,
+  };
+}
+
+function asErrorEnvelope(v: unknown): {
+  status: string;
+  error: { code: string; message: string; reasonCodes: string[] };
+} {
+  const e = v as {
+    status: string;
+    error: { code: string; message: string; reasonCodes: string[] };
+  };
+  expect(e.status).toBe('error');
+  expect(e.error).toBeDefined();
+  return e;
+}
+
+describe('production mode — dev bypass rejection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('rejects dev bypass with 503 when NODE_ENV is production', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'true');
+    mockGetRequestPath.mockReturnValue('/api/review');
+    const event = mockMiddlewareEvent();
+
+    const handler = authMiddleware as (event: MockMiddlewareEvent) => Promise<unknown>;
+    const result = await handler(event);
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
+    const env = asErrorEnvelope(result);
+    expect(env.error.code).toBe('SERVICE_UNAVAILABLE');
+  });
+
+  it('rejects dev bypass with 503 when NODE_ENV is empty (unset)', async () => {
+    vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'true');
+    vi.stubEnv('NODE_ENV', '');
+    mockGetRequestPath.mockReturnValue('/api/review');
+    const event = mockMiddlewareEvent();
+
+    const handler = authMiddleware as (event: MockMiddlewareEvent) => Promise<unknown>;
+    const result = await handler(event);
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
+    const env = asErrorEnvelope(result);
+    expect(env.error.code).toBe('SERVICE_UNAVAILABLE');
   });
 });

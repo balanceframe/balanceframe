@@ -14,7 +14,7 @@ import { readBody, setResponseStatus } from 'h3';
 import type { LedgerHandle, RuleOperationResult, RuleShowResult } from '../../utils/rule-types';
 import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
-  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
+  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -56,14 +56,9 @@ export default defineEventHandler(async (event) => {
     const connected = await manager.restore();
     ledger = connected.connector as unknown as LedgerHandle;
   } catch (err) {
+    const safe = sanitizeError(err, requestId, 'LEDGER_UNAVAILABLE', true);
     setResponseStatus(event, 503);
-    return errorEnvelope(
-      'LEDGER_UNAVAILABLE',
-      `Cannot connect to Actual: ${err instanceof Error ? err.message : String(err)}`,
-      authInfo,
-      true,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 
   // Verify the rule exists before attempting the update
@@ -71,14 +66,9 @@ export default defineEventHandler(async (event) => {
   try {
     allRules = (await ledger.listRules()) as RuleShowResult[];
   } catch (err) {
+    const safe = sanitizeError(err, requestId, 'LEDGER_READ_FAILED', true);
     setResponseStatus(event, 503);
-    return errorEnvelope(
-      'LEDGER_READ_FAILED',
-      `Failed to read rules: ${err instanceof Error ? err.message : String(err)}`,
-      authInfo,
-      true,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 
   const existing = allRules.find((r) => r.id === ruleId);
@@ -92,14 +82,9 @@ export default defineEventHandler(async (event) => {
   try {
     mutateResult = await ledger.updateRule(ruleId, { inactive: body.inactive });
   } catch (err) {
+    const safe = sanitizeError(err, requestId, 'RULE_UPDATE_FAILED', true);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'RULE_UPDATE_FAILED',
-      err instanceof Error ? err.message : String(err),
-      authInfo,
-      true,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 
   if (!mutateResult.success) {
