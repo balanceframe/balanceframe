@@ -47,7 +47,9 @@ import {
   ErrorInfo,
   type DataFreshness,
   AuthorizationContext,
+  createObserveComposition,
 } from '@balanceframe/application';
+import { createDefaultConnectionManager, type ConnectionManager } from '@balanceframe/application';
 
 // ---------------------------------------------------------------------------
 // Parsed CLI command
@@ -141,23 +143,30 @@ export function parseArgs(argv: string[]): ParseResult {
     '--payee': true,
     '--active': true,
     '--rule-id': true,
+    '--budget-id': true,
   };
   const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
     return {
       ok: false,
-      error: {
-        code: 'unknown_flags',
-        message: `Unknown flags: ${unknownFlags.join(', ')}`,
-      },
+      error: { code: 'unknown_flags', message: `Unknown flags: ${unknownFlags.join(', ')}` },
     };
   }
 
   const hasJson = normalized.includes('--json');
-  const format = hasJson ? 'json' : 'json'; // always JSON in this phase
+  const format = hasJson ? 'json' : 'json';
   const cleanArgs = normalized.filter(a => a !== '--json');
 
   // Extract command path
+  if (cleanArgs[0] === 'connect') {
+    const budgetIndex = cleanArgs.indexOf('--budget-id');
+    const budgetId = budgetIndex >= 0 ? cleanArgs[budgetIndex + 1] : undefined;
+    if (!budgetId || budgetId.startsWith('--')) {
+      return { ok: false, error: { code: 'missing_budget_id', message: 'connect requires --budget-id BUDGET_ID.' } };
+    }
+    return { ok: true, cmd: { command: 'connect', format, args: normalized, options: { budgetId } } };
+  }
+
   if (
     cleanArgs[0] === 'transactions' &&
     cleanArgs[1] === 'pending-review'
@@ -443,6 +452,25 @@ export function parseArgs(argv: string[]): ParseResult {
     };
   }
 
+  if (cleanArgs[0] === 'budget' && cleanArgs[1] === 'list') {
+    if (cleanArgs.length > 2) {
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'budget list': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cmd: {
+        command: 'budget.list',
+        format,
+        args: normalized,
+      },
+    };
+  }
   if (cleanArgs[0] === 'budget' && cleanArgs[1] === 'summary') {
     if (cleanArgs.length > 2) {
       return {
@@ -880,6 +908,26 @@ function modeAuthorization(mode: ConnectionMode, actorId: string, operation: str
 // Main dispatcher (called from bin script or tests)
 // ---------------------------------------------------------------------------
 
+function freshnessFromSynchronization(
+  synchronization: unknown,
+): DataFreshness | null {
+  if (!synchronization || typeof synchronization !== 'object') return null;
+  const result = synchronization as {
+    snapshot?: {
+      actualDownloadedAt?: string | null;
+      bankSyncedAt?: string | null;
+    };
+  };
+  const downloadedAt = result.snapshot?.actualDownloadedAt ?? null;
+  const bankSyncedAt = result.snapshot?.bankSyncedAt ?? null;
+  return {
+    actualDownloadedAt: downloadedAt,
+    bankSyncedAt,
+    pendingTransactionsIncluded: true,
+    stalenessDays: 0,
+    isStale: false,
+  };
+}
 /**
  * Execute a CLI command and return a JSON envelope.
  *
@@ -901,10 +949,9 @@ export async function main(
   const mode: ConnectionMode = opts?.mode ?? 'observe';
   const actorId = opts?.actorId ?? 'usr_cli';
   const requestId = opts?.requestId ?? `req_${Date.now().toString(36)}`;
-  const ledger = opts?.ledger ?? null;
-  const freshness: DataFreshness | null = opts?.freshness ?? null;
+  let ledger = opts?.ledger ?? null;
+  let freshness: DataFreshness | null = opts?.freshness ?? null;
 
-  // Handle parse errors as stable JSON error envelopes — never throw
   const parsed = parseArgs(argv);
   if (!parsed.ok) {
     const info = new ErrorInfo({
@@ -917,6 +964,60 @@ export async function main(
   }
   const cmd = parsed.cmd;
 
+  let connectionManager: ConnectionManager | null = null;
+  if (opts === undefined) {
+    try {
+      connectionManager = createDefaultConnectionManager({ configPath: process.env.BALANCEFRAME_CONFIG_PATH });
+      if (cmd.command === 'budget.list') {
+        const budgets = await connectionManager.listBudgets();
+        return JSON.stringify(okResponse(requestId, null, AuthorizationContext.observe(actorId), {
+          budgets,
+        }), null, 2);
+      }
+      if (cmd.command === 'connect') {
+        const connected = await connectionManager.connect({ budgetId: cmd.options?.budgetId ?? '' });
+        return JSON.stringify(okResponse(requestId, null, AuthorizationContext.observe(actorId), {
+          connected: true,
+          budget: connected.budget,
+          synchronized: true,
+        }), null, 2);
+      }
+      const restored = await connectionManager.restore();
+      ledger = restored.connector;
+      freshness = freshnessFromSynchronization(restored.synchronization);
+    } catch (err) {
+      if (cmd.command === 'connect' || cmd.command === 'budget.list') {
+        const info = new ErrorInfo({
+          code: 'connection_failed',
+          message: err instanceof Error ? err.message : String(err),
+          retryable: true,
+          reasonCodes: ['connection_error'],
+        });
+        return JSON.stringify(errorResponse(requestId, info), null, 2);
+      }
+    }
+  }
+
+  // When no opts are provided (production), fall back to the composition
+  // factory. Test injection preserves explicitly supplied protocol/callbacks.
+  let analysisProtocol: AnalysisProtocol | undefined;
+  let lifecycleCallbacksVal: LifecycleCallbacks | undefined;
+  if (opts === undefined) {
+    try {
+      const composition = await createObserveComposition({
+        ledger,
+        freshness,
+      });
+      analysisProtocol = composition.analysisProtocol;
+      lifecycleCallbacksVal = composition.lifecycleCallbacks;
+    } catch {
+      // Composition failure is represented by the stable error envelope below.
+    }
+  } else {
+    analysisProtocol = opts.analysisProtocol;
+    lifecycleCallbacksVal = opts.lifecycleCallbacks;
+  }
+
   const commandInput: CommandInput = {
     args: cmd.args,
     mode,
@@ -924,8 +1025,8 @@ export async function main(
     requestId,
     ledger,
     freshness,
-    analysisProtocol: opts?.analysisProtocol,
-    lifecycleCallbacks: opts?.lifecycleCallbacks,
+    analysisProtocol,
+    lifecycleCallbacks: lifecycleCallbacksVal,
   };
 
   try {

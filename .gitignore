@@ -20,6 +20,17 @@ coverage/
 .nuxt/
 .output/
 tests/actual-integration/.actual-server-data/
+
+# ---- CI / container build ----
+.dockerignore
+!**/.dockerignore
+docker-compose.override.yml
+
+# ---- Environment files ----
+.env
+.env.*
+!.env.example
+
 tests/actual-integration/.seed-budget.mjs
 tests/actual-integration/.env.test
 crates/node-binding/balanceframe.node

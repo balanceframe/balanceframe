@@ -63,7 +63,7 @@ export interface RuleListItem {
   readonly inactive: boolean;
 }
 
-defineProps<{
+const props = defineProps<{
   items: readonly RuleListItem[];
   selectedId: string | null;
   loading: boolean;
@@ -76,8 +76,8 @@ defineEmits<{
 function listItemClass(id: string): Record<string, boolean> {
   return {
     'w-full text-left px-3 py-2 rounded-md transition-colors text-sm': true,
-    'bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700': selectedId === id,
-    'hover:bg-neutral-50 dark:hover:bg-neutral-800/50': selectedId !== id,
+    'bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700': props.selectedId === id,
+    'hover:bg-neutral-50 dark:hover:bg-neutral-800/50': props.selectedId !== id,
   };
 }
 </script>

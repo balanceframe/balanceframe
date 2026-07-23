@@ -1,6 +1,6 @@
 <template>
-  <UContainer class="py-4">
-    <div class="flex items-center justify-between mb-4">
+  <UContainer class="h-dvh overflow-hidden flex flex-col py-4">
+    <div class="flex items-center justify-between mb-4 shrink-0">
       <h1 class="text-xl font-bold">Review Transactions</h1>
       <div class="flex items-center gap-2">
         <UButton
@@ -28,6 +28,16 @@
           color="neutral"
           variant="solid"
           :label="`${currentCount} items`"
+        />
+        <UButton
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          icon="i-heroicons-arrow-path"
+          :label="syncing ? 'Syncing...' : 'Sync'"
+          :loading="syncing"
+          :disabled="syncing"
+          @click="handleSync"
         />
       </div>
     </div>
@@ -70,55 +80,60 @@
 
     <!-- Review queue and current-item detail -->
     <template v-if="adapter.state.currentItem">
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <!-- Queue sidebar -->
-        <div class="lg:col-span-1 order-2 lg:order-1">
-          <ReviewQueue
-            :items="adapter.state.items"
-            :current-index="adapter.state.currentIndex"
-            :selected-indices="adapter.state.selectedIndices"
-            :has-more="adapter.state.hasMore"
-            @select="adapter.toggleSelection($event)"
-            @load-more="load"
-          />
+      <div class="flex-1 min-h-0 flex flex-col">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
+          <!-- Queue sidebar -->
+          <div class="lg:col-span-1 flex flex-col min-h-0">
+            <ReviewQueue
+              :items="adapter.state.items"
+              :current-index="adapter.state.currentIndex"
+              :selected-indices="adapter.state.selectedIndices"
+              :has-more="adapter.state.hasMore"
+              @navigate="adapter.selectIndex($event)"
+              @toggle-selection="adapter.toggleSelection($event)"
+              @load-more="load"
+              class="flex-1"
+            />
+          </div>
+          <!-- Current item detail -->
+          <div class="lg:col-span-2 order-1 lg:order-2 flex flex-col min-h-0">
+            <ReviewItem
+              :item="adapter.state.currentItem"
+              :state="adapter.state"
+              class="flex-1"
+            />
+          </div>
         </div>
 
-        <!-- Current item detail -->
-        <div class="lg:col-span-2 order-1 lg:order-2">
-          <ReviewItem
-            :item="adapter.state.currentItem"
-            :state="adapter.state"
-          />
-        </div>
+        <!-- Session metrics stay above the pinned action footer. -->
+        <ReviewMetrics
+          v-if="adapter.state.metrics.resolvedCount > 0"
+          :metrics="adapter.state.metrics"
+          class="shrink-0 mt-4"
+        />
+
+        <!-- Action footer remains the last, visible row in the viewport. -->
+        <ReviewActions
+          :has-current="!!adapter.state.currentItem"
+          :has-selection="adapter.state.selectedIndices.length > 0"
+          :loading="adapter.loading"
+          :metrics="adapter.state.metrics"
+          :has-rule-candidates="!!adapter.state.currentItem?.evidence.ruleCandidates?.length"
+          @correct="openCorrectModal"
+          @propose-rule="promptProposeRule"
+          @approve="adapter.approve()"
+          @reject="adapter.reject()"
+          @refresh="adapter.refresh()"
+  :proposal-count="activeProposals.length"
+          @undo="adapter.undo()"
+          @bulk-approve="adapter.bulkApprove()"
+          @bulk-reject="adapter.bulkReject()"
+          @bulk-skip="adapter.bulkSkip()"
+          @show-proposals="openProposalsModal"
+          @reset-metrics="adapter.resetMetrics()"
+          class="shrink-0"
+        />
       </div>
-
-      <!-- Action bar -->
-      <ReviewActions
-        :has-current="!!adapter.state.currentItem"
-        :has-selection="adapter.state.selectedIndices.length > 0"
-        :loading="adapter.loading"
-        :metrics="adapter.state.metrics"
-        :has-rule-candidates="!!adapter.state.currentItem?.evidence.ruleCandidates?.length"
-        @approve="adapter.approve()"
-        @correct="promptAndCorrect"
-        @reject="adapter.reject()"
-        @skip="adapter.skip()"
-        @undo="adapter.undo()"
-        @bulk-approve="adapter.bulkApprove()"
-        @bulk-reject="adapter.bulkReject()"
-        @bulk-skip="adapter.bulkSkip()"
-        @propose-rule="promptProposeRule"
-        @refresh="adapter.refresh()"
-        @reset-metrics="adapter.resetMetrics()"
-        :class="{ 'mt-4': adapter.state.currentItem }"
-      />
-
-      <!-- Metrics summary -->
-      <ReviewMetrics
-        v-if="adapter.state.metrics.resolvedCount > 0"
-        :metrics="adapter.state.metrics"
-        class="mt-4"
-      />
     </template>
 
     <!-- Keyboard handler (invisible) — holds initial focus on page load -->
@@ -128,6 +143,24 @@
       aria-hidden="true"
       tabindex="-1"
     />
+
+<!-- Category correction modal -->
+<CategoryCorrectModal
+  :open="showCorrectModal"
+  :item="adapter.state.currentItem"
+  @confirm="onCorrectConfirm"
+  @cancel="onCorrectCancel"
+/>
+
+<!-- Proposed rules modal -->
+<ProposedRulesModal
+  :open="showProposalsModal"
+  :proposals="activeProposals"
+  @close="showProposalsModal = false"
+  @accepted="handleProposalAccepted"
+  @discarded="handleProposalDiscarded"
+  @error="handleProposalError"
+/>
   </UContainer>
 </template>
 
@@ -144,6 +177,8 @@ import { authClient } from '../../lib/auth-client';
 import { useApiReviewController } from '../../composables/useApiReviewController';
 import { createUnavailableAdapter } from '../../composables/createUnavailableAdapter';
 import { useReviewActions } from '../../composables/useReviewActions';
+import ProposedRulesModal from '../components/ProposedRulesModal.vue';
+import type { CategorizationProposalListItem } from '../components/ProposedRulesModal.vue';
 
 // ── Mode selection ──────────────────────────────────────────────────
 // Use the configured API base, falling back to the current origin for
@@ -156,7 +191,7 @@ const apiBase = config.public.apiBase || (import.meta.client ? window.location.o
 const adapter = apiBase
   ? useApiReviewController(apiBase)
   : createUnavailableAdapter();
-const actions = useReviewActions(adapter, promptAndCorrect);
+const actions = useReviewActions(adapter, openCorrectModal);
 
 // Focus the hidden keyboard input so shortcuts work on page load.
 // A document-level keydown listener ensures shortcuts remain active after
@@ -170,16 +205,26 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (target.isContentEditable) return;
   const tag = target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  // Suppress review shortcuts while a modal is open (Enter on modal
+  // buttons must not approve, C must not re-open correction, etc.)
+  if (modalOpen.value) return;
+
+  // Don't steal browser shortcuts (Ctrl+C, Ctrl+A, etc.) — except undo
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() !== 'z') return;
+
   actions.handleKeyboard(event);
 }
 onMounted(() => {
   document.addEventListener('keydown', handleGlobalKeydown);
   keyboardInput.value?.focus();
   load();
+  fetchProposals();
 });
 onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown);
 });
+const syncing = ref(false);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -190,19 +235,114 @@ async function load() {
   keyboardInput.value?.focus();
 }
 
-function promptAndCorrect(category?: string) {
-  const cat = category ?? prompt('Category ID:');
-  if (cat) adapter.correct(cat);
+const showProposalsModal = ref(false);
+const activeProposals = ref<CategorizationProposalListItem[]>([]);
+
+async function openProposalsModal(): Promise<void> {
+  await fetchProposals();
+  showProposalsModal.value = true;
 }
 
-function promptProposeRule(): void {
+async function fetchProposals(): Promise<void> {
+  try {
+    const res = await fetch('/api/proposal', {
+      credentials: 'same-origin',
+    });
+    if (!res.ok) return;
+    const body = await res.json();
+    if (body.status === 'error') return;
+    activeProposals.value = body.result?.proposals ?? [];
+  } catch {
+    // Silently ignore fetch errors — the modal will show empty state
+  }
+}
+
+const showCorrectModal = ref(false);
+
+function openCorrectModal(_category?: string) {
+  if (adapter.state.currentItem) showCorrectModal.value = true;
+}
+
+/** True when any modal overlay is visible — review shortcuts are suppressed. */
+const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
+
+function onCorrectConfirm(categoryId: string) {
+  showCorrectModal.value = false;
+  adapter.correct(categoryId);
+}
+
+function onCorrectCancel() {
+  showCorrectModal.value = false;
+}
+
+async function promptProposeRule(): Promise<void> {
   const current = adapter.state.currentItem;
   if (!current) return;
-  const item = current.data;
-  const merchant = item.evidence.normalizedMerchant;
-  const categoryId = item.evidence.suggestedCategory;
+  const merchant = current.evidence.normalizedMerchant;
+  const categoryId = current.reviewItem.categoryId;
   if (merchant && categoryId) {
-    adapter.proposeRule(item.reviewItem.id, merchant, categoryId);
+    const result = await adapter.proposeRule(current.reviewItem.id, merchant, categoryId);
+    if (result.success) {
+      const toast = useToast();
+      toast.add({
+        title: 'Rule proposal created',
+        description: `${merchant} → ${categoryId}`,
+        icon: 'i-heroicons-sparkles',
+        color: 'success',
+        duration: 10000,
+        actions: [{
+          label: 'Review proposal',
+          color: 'neutral',
+          onClick: () => { showProposalsModal.value = true; },
+        }],
+      });
+      // Refresh proposals list so count is accurate
+      await fetchProposals();
+    }
+  }
+}
+
+async function handleProposalAccepted(_proposalId: string) {
+  showProposalsModal.value = false;
+  await adapter.refresh();
+  await fetchProposals();
+}
+
+async function handleProposalDiscarded(_proposalId: string) {
+  await fetchProposals();
+}
+
+function handleProposalError(message: string, retryable: boolean): void {
+  const toast = useToast();
+  toast.add({
+    title: 'Rule activation failed',
+    description: retryable
+      ? `${message} Try again after fixing the connection.`
+      : message,
+    color: 'error',
+    duration: 10000,
+  });
+}
+
+async function handleSync() {
+  if (syncing.value) return;
+  syncing.value = true;
+  try {
+    const res = await fetch('/api/review/sync', { method: 'POST', credentials: 'same-origin' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const toast = useToast();
+      toast.add({ title: 'Sync complete', color: 'success', duration: 5000 });
+      await adapter.refresh();
+    } else {
+      const toast = useToast();
+      toast.add({ title: 'Sync failed', description: data.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+    }
+  } catch (e) {
+    const toast = useToast();
+    toast.add({ title: 'Sync failed', description: e instanceof Error ? e.message : 'Connection error', color: 'error', duration: 10000 });
+  } finally {
+    syncing.value = false;
   }
 }
 

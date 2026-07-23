@@ -1,0 +1,68 @@
+# ---- Git / version control ----
+.git/
+.gitattributes
+.gitignore
+.gitmodules
+.githooks/
+.mergify.yml
+
+# ---- CI / tooling ----
+.github/
+.cargo/
+.direnv/
+.editorconfig
+.env*
+.eslintrc.json
+.envrc
+.flake-env/
+.pre-commit-config.yaml
+.prettierrc
+
+# ---- Nix ----
+flake.lock
+flake.nix
+nix/
+result*
+*.drv
+
+# ---- Node / JS ----
+node_modules/
+.pnpm-store/
+
+# ---- Source maps / build artifacts ----
+**/*.map
+**/*.tsbuildinfo
+
+# ---- Documentation ----
+docs/
+*.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+AGENTS.md
+NOTICE
+THIRD_PARTY_NOTICES
+LICENSE
+SECURITY.md
+
+# ---- Tests ----
+tests/
+coverage/
+
+# ---- IDE / local dev ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.orig
+.DS_Store
+
+# ---- Development-only runtime ----
+data/
+*.log
+
+# ---- Scripts ----
+scripts/
+
+# ---- Protocol / schema fixtures (used at build time but not runtime) ----
+protocol/

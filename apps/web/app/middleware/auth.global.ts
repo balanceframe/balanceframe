@@ -21,7 +21,10 @@ export default defineNuxtRouteMiddleware(async (to) => {
   // Forward incoming Cookie during SSR so the session endpoint
   // can identify the user.  On the client, same-origin credentials
   // carry cookies automatically and useRequestHeaders is a no-op.
-  const fetchOptions: RequestInit & { headers?: Record<string, string> } = {
+  const fetchOptions: {
+    credentials: 'same-origin';
+    headers?: Record<string, string>;
+  } = {
     credentials: 'same-origin',
   };
   const reqHeaders = useRequestHeaders(['cookie']);

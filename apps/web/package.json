@@ -15,10 +15,13 @@
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {
+    "@balanceframe/application": "workspace:*",
+    "@balanceframe/actual-adapter": "workspace:*",
     "@balanceframe/workflow-store": "workspace:*",
     "@better-auth/api-key": "^1.6.23",
     "better-auth": "^1.6.23",
     "better-sqlite3": "^12.11.1",
+    "h3": "^1.15.11",
     "vue": "^3.5.0",
     "vue-router": "^4.5.0"
   },

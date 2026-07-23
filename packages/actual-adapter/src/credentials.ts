@@ -55,6 +55,17 @@ export interface CredentialStore {
   delete(): Promise<void>;
 }
 
+/**
+ * Thrown when stored credentials exist but are corrupt or tampered.
+ * Distinguished from "missing" (no credentials stored at all).
+ */
+export class CorruptCredentialError extends Error {
+  constructor(message: string, public readonly filePath?: string) {
+    super(message);
+    this.name = 'CorruptCredentialError';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Encryption constants
 // ---------------------------------------------------------------------------
@@ -303,12 +314,51 @@ export class EncryptedCredentialStore implements CredentialStore {
     this._activeUrl = credentials.serverUrl;
   }
 
+  private loadFromFile(filePath: string): ActualCredentials | null {
+    try {
+      const raw = readFileSync(filePath, 'utf-8');
+      const stored = JSON.parse(raw) as {
+        serverUrl?: unknown;
+        payload?: EncryptedPayload;
+        salt?: unknown;
+      };
+      if (typeof stored.serverUrl !== 'string' || !stored.payload || typeof stored.salt !== 'string') {
+        throw new CorruptCredentialError('Credential file has an invalid shape', filePath);
+      }
+      const derivedKey = this.getOrDeriveKey(Buffer.from(stored.salt, 'hex'));
+      const plaintext = decrypt(stored.payload, derivedKey, stored.serverUrl);
+      const parsed = JSON.parse(plaintext) as { secretKey?: unknown; budgetPassword?: unknown };
+      if (typeof parsed.secretKey !== 'string') {
+        throw new CorruptCredentialError('Credential payload has an invalid shape', filePath);
+      }
+      return {
+        serverUrl: stored.serverUrl,
+        secretKey: parsed.secretKey,
+        budgetPassword: typeof parsed.budgetPassword === 'string' ? parsed.budgetPassword : undefined,
+      };
+    } catch (error) {
+      if (error instanceof CorruptCredentialError) throw error;
+      if (error instanceof SyntaxError || error instanceof Error) {
+        throw new CorruptCredentialError('Credential file could not be decrypted or parsed', filePath);
+      }
+      throw error;
+    }
+  }
+
   async load(): Promise<ActualCredentials | null> {
     // 1. Try the active URL (from current.txt or in-memory cache)
     const activeUrl = this._activeUrl ?? this.readActiveUrl();
     if (activeUrl) {
-      const creds = this.loadFromFile(credentialFilePath(activeUrl, this._dir));
-      if (creds) return creds;
+      try {
+        const creds = this.loadFromFile(credentialFilePath(activeUrl, this._dir));
+        if (creds) return creds;
+      } catch (err) {
+        if (err instanceof CorruptCredentialError) {
+          // Corrupt active credential file — fall through to scan fallback
+        } else {
+          throw err;
+        }
+      }
     }
 
     // 2. Fallback: scan all .enc files (legacy support when current.txt is absent)
@@ -317,62 +367,22 @@ export class EncryptedCredentialStore implements CredentialStore {
         f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
       );
       for (const file of files) {
-        const creds = this.loadFromFile(resolve(this._dir, file));
-        if (creds) return creds;
+        try {
+          const creds = this.loadFromFile(resolve(this._dir, file));
+          if (creds) return creds;
+        } catch (err) {
+          if (err instanceof CorruptCredentialError) {
+            // Log corruption but continue scanning — next file may be valid
+            continue;
+          }
+          throw err;
+        }
       }
     } catch {
       // directory may not exist
     }
 
     return null;
-  }
-
-  /**
-   * Attempt to load and decrypt credentials from a single file.
-   * Returns null if the file is corrupt, tampered, or otherwise unreadable.
-   * Supports both V2 (AAD-bound payload) and V1 (legacy per-field) formats.
-   */
-  private loadFromFile(filePath: string): ActualCredentials | null {
-    try {
-      const raw = readFileSync(filePath, 'utf-8');
-      const stored: Record<string, unknown> = JSON.parse(raw);
-
-      // V2 format — unified payload with AAD binding
-      if (isV2Record(stored)) {
-        const salt = Buffer.from(stored.salt as string, 'hex');
-        const key = this.getOrDeriveKey(salt);
-        const payload = stored.payload as EncryptedPayload;
-        // If serverUrl was tampered, GCM auth check will throw here
-        const decrypted = decrypt(payload, key, stored.serverUrl as string);
-        const data = JSON.parse(decrypted) as {
-          secretKey: string;
-          budgetPassword?: string;
-        };
-        return {
-          serverUrl: stored.serverUrl as string,
-          secretKey: data.secretKey,
-          budgetPassword: data.budgetPassword ?? undefined,
-        };
-      }
-
-      // V1 legacy format — backward compatible, no AAD
-      if (isV1Record(stored)) {
-        const salt = Buffer.from(stored.salt as string, 'hex');
-        const key = this.getOrDeriveKey(salt);
-        const sk = stored.secretKey as EncryptedPayload;
-        return {
-          serverUrl: stored.serverUrl as string,
-          secretKey: decrypt(sk, key),
-          budgetPassword: stored.budgetPassword
-            ? decrypt(stored.budgetPassword as EncryptedPayload, key)
-            : undefined,
-        };
-      }
-
-      return null;
-    } catch {
-      return null;
-    }
   }
 
   has(): boolean {

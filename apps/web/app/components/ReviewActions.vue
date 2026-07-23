@@ -2,40 +2,46 @@
   <UCard>
     <div class="flex flex-wrap items-center gap-2">
       <!-- Single-item actions (always visible) -->
-      <UButtonGroup size="md">
-        <UButton
-          label="Approve"
-          color="success"
-          variant="solid"
-          icon="i-heroicons-check-circle"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('approve')"
-        />
-        <UButton
-          label="Reject"
-          color="error"
-          variant="solid"
-          icon="i-heroicons-x-circle"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('reject')"
-        />
-        <UButton
-          label="Skip"
-          color="neutral"
-          variant="solid"
-          icon="i-heroicons-forward"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('skip')"
-        />
-        <UButton
-          label="Correct"
-          color="warning"
-          variant="solid"
-          icon="i-heroicons-pencil-square"
-          :disabled="!hasCurrent || loading"
-          @click="$emit('correct')"
-        />
-      </UButtonGroup>
+      <UButton
+        label="Approve"
+        color="success"
+        variant="solid"
+        icon="i-heroicons-check-circle"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        :title="disabledReason('approve')"
+        @click="$emit('approve')"
+      />
+      <UButton
+        label="Reject"
+        color="error"
+        variant="solid"
+        icon="i-heroicons-x-circle"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        :title="disabledReason('reject')"
+        @click="$emit('reject')"
+      />
+      <UButton
+        label="Skip"
+        color="neutral"
+        variant="solid"
+        icon="i-heroicons-forward"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        :title="disabledReason('skip')"
+        @click="$emit('skip')"
+      />
+      <UButton
+        label="Edit"
+        color="warning"
+        variant="solid"
+        icon="i-heroicons-pencil-square"
+        size="md"
+        :disabled="!hasCurrent || loading"
+        :title="disabledReason('edit')"
+        @click="$emit('correct')"
+      />
       <!-- Rule creation (visible when current item has candidates) -->
       <UButton
         v-if="hasRuleCandidates"
@@ -44,6 +50,7 @@
         variant="solid"
         icon="i-heroicons-sparkles"
         :disabled="!hasCurrent || loading"
+        :title="disabledReason('create rule')"
         @click="$emit('propose-rule')"
       />
 
@@ -100,17 +107,28 @@
         :disabled="loading"
         @click="$emit('refresh')"
       />
+      <UButton
+        v-if="proposalCount > 0"
+        :label="`Proposed rules (${proposalCount})`"
+        color="primary"
+        variant="outline"
+        size="sm"
+        icon="i-heroicons-sparkles"
+        :disabled="loading"
+        @click="$emit('show-proposals')"
+      />
     </div>
   </UCard>
 </template>
 
 <script setup lang="ts">
-defineProps<{
+const props = defineProps<{
   hasCurrent: boolean;
   hasSelection: boolean;
   loading: boolean;
   metrics: unknown;
   hasRuleCandidates: boolean;
+  proposalCount: number;
 }>();
 
 defineEmits<{
@@ -123,8 +141,15 @@ defineEmits<{
   'bulk-reject': [];
   'bulk-skip': [];
   'propose-rule': [];
+  'show-proposals': [];
   refresh: [];
   'reset-metrics': [];
 }>();
+
+function disabledReason(_action: string): string {
+  if (props.loading) return 'Action in progress…';
+  if (!props.hasCurrent) return 'No item selected — click a transaction in the queue.';
+  return '';
+}
 
 </script>

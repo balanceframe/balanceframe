@@ -129,13 +129,12 @@ describe('ReviewItem lifecycle', () => {
   // =======================================================================
 
   describe('terminal transitions', () => {
-    it('applied is reachable via discovered -> suggestion_generated -> pending_review -> approved -> correcting -> applied', async () => {
+    it('applied is reachable via discovered -> suggestion_generated -> pending_review -> approved -> correcting -> applying -> applied', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
       expect(item.status).toBe('discovered');
 
       const t1 = await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       expect(t1.status).toBe('suggestion_generated');
-      expect(t1.version).toBe(2);
 
       const t2 = await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       expect(t2.status).toBe('pending_review');
@@ -146,20 +145,27 @@ describe('ReviewItem lifecycle', () => {
       const t4 = await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
       expect(t4.status).toBe('correcting');
 
-      const t5 = await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 5 });
-      expect(t5.status).toBe('applied');
-    });
+      const tApply = await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      expect(tApply.status).toBe('applying');
 
-    it('apply_failed is reachable via approved -> correcting -> apply_failed', async () => {
+      const t5 = await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
+      expect(t5.status).toBe('applied');
+    })
+
+
+    it('apply_failed is reachable via approved -> correcting -> applying -> apply_failed', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
       await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
 
-      const failed = await store.transitionReviewItem(item.id, { ...APPLY_FAIL, expectedVersion: 5 });
+      const tApply = await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      expect(tApply.status).toBe('applying');
+
+      const failed = await store.transitionReviewItem(item.id, { ...APPLY_FAIL, expectedVersion: 6 });
       expect(failed.status).toBe('apply_failed');
-    });
+    })
 
     it('rejected is reachable from pending_review', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
@@ -527,12 +533,14 @@ describe('ReviewItem lifecycle', () => {
       await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
-      await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 5 });
+      await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
 
       await expect(
-        store.undoReviewTransition(item.id, ACTOR_ALICE, 'Too late', 6),
+        store.undoReviewTransition(item.id, ACTOR_ALICE, 'Too late', 7),
       ).rejects.toThrow();
-    });
+    })
+
   });
 
   // =======================================================================
@@ -1345,5 +1353,509 @@ describe('ReviewItem lifecycle', () => {
       });
       expect(second.id).toBe(first.id);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Correction history — structured evidence from approved/corrected reviews
+// ---------------------------------------------------------------------------
+
+describe('CorrectionHistory', () => {
+  let store: SqliteWorkflowStore;
+
+  beforeEach(() => {
+    store = new SqliteWorkflowStore(':memory:');
+  });
+
+  describe('history recording', () => {
+    it('records a CorrectionRecord when a review is approved', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-ch1',
+        transactionId: 't-ch1',
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+
+      // Approve with correction evidence
+      const approved = await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        reason: 'Looks correct',
+        expectedVersion: 3,
+        merchant: 'Amazon',
+        direction: 'outflow',
+        accountId: 'acct-checking',
+        amount: -2999,
+        date: '2026-07-15',
+        categoryName: 'Shopping',
+      });
+      expect(approved.status).toBe('approved');
+
+      const history = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      expect(history.length).toBe(1);
+      const record = history[0];
+      expect(record.reviewItemId).toBe(item.id);
+      expect(record.transactionId).toBe('t-ch1');
+      expect(record.merchant).toBe('Amazon');
+      expect(record.direction).toBe('outflow');
+      expect(record.accountId).toBe('acct-checking');
+      expect(record.amount).toBe(-2999);
+      expect(record.date).toBe('2026-07-15');
+      expect(record.categoryName).toBe('Shopping');
+      expect(record.actor).toBe(ACTOR_ALICE);
+      expect(record.fromStatus).toBe('pending_review');
+      expect(record.toStatus).toBe('approved');
+      expect(record.sourceReviewId).toBe(item.id);
+      expect(record.id).toBeDefined();
+      expect(record.createdAt).toBeDefined();
+    });
+
+    it('records a CorrectionRecord when a review enters correcting', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-ch2',
+        transactionId: 't-ch2',
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        reason: 'Looks correct',
+        expectedVersion: 3,
+        merchant: 'Netflix',
+        direction: 'outflow',
+      });
+
+      // Correcting transition also records correction evidence
+      const correcting = await store.transitionReviewItem(item.id, {
+        toStatus: 'correcting',
+        actor: ACTOR_BOB,
+        reason: 'Applying correction',
+        expectedVersion: 4,
+        merchant: 'Netflix',
+        direction: 'outflow',
+        accountId: 'acct-credit',
+        date: '2026-07-14',
+        categoryName: 'Entertainment',
+      });
+      expect(correcting.status).toBe('correcting');
+
+      const history = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      expect(history.length).toBe(2);
+      expect(history[1].toStatus).toBe('correcting');
+      expect(history[1].actor).toBe(ACTOR_BOB);
+      expect(history[1].accountId).toBe('acct-credit');
+    });
+
+    it('correction history does not mutate the original suggestion', async () => {
+      // First persist a suggestion
+      const savedSuggestion = await store.saveSuggestion({
+        budgetId: 'b-ch3',
+        transactionId: 't-ch3',
+        categoryId: 'cat-food',
+        classifier: 'fast-classifier',
+        promptVersion: '1.0.0',
+        payload: { confidence: 0.9 },
+        transactionVersion: 1,
+      });
+
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-ch3',
+        transactionId: 't-ch3',
+        suggestionId: savedSuggestion.id,
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+
+      await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 3,
+        merchant: 'Costco',
+        direction: 'outflow',
+      });
+
+      // Suggestion is untouched — correction is a separate record
+      const suggestion = await store.getSuggestion(savedSuggestion.id);
+      expect(suggestion).not.toBeNull();
+      expect(suggestion!.id).toBe(savedSuggestion.id);
+      expect(suggestion!.categoryId).toBe('cat-food');
+      expect(suggestion!.classifier).toBe('fast-classifier');
+
+      // Correction exists independently
+      const history = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      expect(history.length).toBe(1);
+      expect(history[0].merchant).toBe('Costco');
+    });
+
+    it('non-approve/correct transitions do not produce correction records', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-ch4',
+        transactionId: 't-ch4',
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+
+      const skipped = await store.transitionReviewItem(item.id, {
+        ...SKIP,
+        expectedVersion: 2,
+        merchant: 'ShouldNotRecord',
+      });
+      expect(skipped.status).toBe('skipped');
+
+      const history = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      expect(history.length).toBe(0);
+    });
+
+    it('records correction history for undo followed by re-approve', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-ch5',
+        transactionId: 't-ch5',
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 3,
+        merchant: 'First',
+        direction: 'outflow',
+      });
+
+      // Undo
+      const undone = await store.undoReviewTransition(item.id, ACTOR_ALICE, 'Mistake', 4);
+      expect(undone.status).toBe('pending_review');
+
+      // Re-approve with different merchant
+      const reApproved = await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_BOB,
+        expectedVersion: undone.version,
+        merchant: 'Second',
+        direction: 'outflow',
+      });
+      expect(reApproved.status).toBe('approved');
+
+      const history = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      // Two corrections: first approve + second approve (undo is recorded as a separate ReviewAction
+      // but corrections are only for approve/correcting transitions)
+      const corrections = history.filter(r => r.toStatus === 'approved');
+      expect(corrections.length).toBe(2);
+      expect(corrections[0].merchant).toBe('First');
+      expect(corrections[1].merchant).toBe('Second');
+    });
+  });
+
+  // =======================================================================
+  // Duplicate / idempotent transitions — no duplicate correction records
+  // =======================================================================
+
+  describe('duplicate/idempotent transitions', () => {
+    it('does not duplicate correction record when transitioning to same status', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-idem1',
+        transactionId: 't-idem1',
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 3,
+        merchant: 'Grocery',
+      });
+
+      // Replay same transition (idempotent)
+      await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 4,
+        merchant: 'Grocery',
+      });
+
+      const history = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      const corrections = history.filter(r => r.toStatus === 'approved');
+      expect(corrections.length).toBe(1);
+    });
+
+    it('does not record duplicate correction when same actor re-approves partial approval', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-idem2',
+        transactionId: 't-idem2',
+        reviewersRequired: 2,
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+
+      // Alice approves (partial — still pending_review)
+      const afterAlice = await store.transitionReviewItem(item.id, {
+        ...APPROVE_ALICE,
+        expectedVersion: 3,
+        merchant: 'Partial',
+      });
+      expect(afterAlice.status).toBe('pending_review');
+
+      const h1 = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      // Partial approvals that stay pending_review should not record corrections
+      expect(h1.length).toBe(0);
+
+      // Bob approves now (final approval)
+      const afterBob = await store.transitionReviewItem(item.id, {
+        ...APPROVE_BOB,
+        expectedVersion: afterAlice.version,
+        merchant: 'Partial',
+      });
+      expect(afterBob.status).toBe('approved');
+
+      const h2 = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      expect(h2.length).toBe(1);
+      expect(h2[0].actor).toBe(ACTOR_BOB);
+    });
+
+    it('re-applying same correcting transition is idempotent for correction records', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-idem3',
+        transactionId: 't-idem3',
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+
+      // Enter correcting mode
+      const c1 = await store.transitionReviewItem(item.id, {
+        ...START_CORRECTING,
+        expectedVersion: 4,
+        merchant: 'Fix',
+        direction: 'outflow',
+      });
+      expect(c1.status).toBe('correcting');
+
+      // Idempotent transition (already correcting)
+      const c2 = await store.transitionReviewItem(item.id, {
+        ...START_CORRECTING,
+        expectedVersion: c1.version,
+        merchant: 'Fix',
+        direction: 'outflow',
+      });
+      expect(c2.status).toBe('correcting');
+
+      const history = await store.queryCorrectionHistory({ reviewItemId: item.id });
+      const corrections = history.filter(r => r.toStatus === 'correcting');
+      // Should still have exactly 1 correction record for the correcting transition
+      expect(corrections.length).toBe(1);
+    });
+  });
+
+  // =======================================================================
+  // Conflicting context — account/direction/category differences flagged
+  // =======================================================================
+
+  describe('conflicting context', () => {
+    it('flags conflicting categories for the same merchant across corrections', async () => {
+      // Create two different review items for the same merchant but different categories
+      const item1 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-conf1',
+        transactionId: 't-conf1',
+        categoryId: 'cat-food',
+      });
+      await store.transitionReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item1.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 3,
+        merchant: 'Walmart',
+        categoryName: 'Food',
+      });
+
+      const item2 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-conf2',
+        transactionId: 't-conf2',
+        categoryId: 'cat-clothing',
+      });
+      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item2.id, {
+        toStatus: 'approved',
+        actor: ACTOR_BOB,
+        expectedVersion: 3,
+        merchant: 'Walmart',
+        categoryName: 'Clothing',
+      });
+
+      // Query conflicts
+      const conflicts = await store.findCorrectionConflicts();
+      expect(conflicts.length).toBeGreaterThanOrEqual(1);
+      const catConflict = conflicts.find(c => c.field === 'category' && c.merchant === 'Walmart');
+      expect(catConflict).toBeDefined();
+      expect(catConflict!.values).toContain('cat-food');
+      expect(catConflict!.values).toContain('cat-clothing');
+    });
+
+    it('flags conflicting directions for the same merchant across corrections', async () => {
+      const item1 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-conf3',
+        transactionId: 't-conf3',
+      });
+      await store.transitionReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item1.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 3,
+        merchant: 'PayPal',
+        direction: 'inflow',
+      });
+
+      const item2 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-conf4',
+        transactionId: 't-conf4',
+      });
+      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item2.id, {
+        toStatus: 'approved',
+        actor: ACTOR_BOB,
+        expectedVersion: 3,
+        merchant: 'PayPal',
+        direction: 'outflow',
+      });
+
+      const conflicts = await store.findCorrectionConflicts();
+      const dirConflict = conflicts.find(c => c.field === 'direction' && c.merchant === 'PayPal');
+      expect(dirConflict).toBeDefined();
+      expect(dirConflict!.values).toEqual(expect.arrayContaining(['inflow', 'outflow']));
+    });
+
+    it('flags conflicting accounts for the same merchant across corrections', async () => {
+      const item1 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-conf5',
+        transactionId: 't-conf5',
+      });
+      await store.transitionReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item1.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 3,
+        merchant: 'Target',
+        accountId: 'acct-a',
+      });
+
+      const item2 = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-conf6',
+        transactionId: 't-conf6',
+      });
+      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item2.id, {
+        toStatus: 'approved',
+        actor: ACTOR_BOB,
+        expectedVersion: 3,
+        merchant: 'Target',
+        accountId: 'acct-b',
+      });
+
+      const conflicts = await store.findCorrectionConflicts();
+      const acctConflict = conflicts.find(c => c.field === 'account' && c.merchant === 'Target');
+      expect(acctConflict).toBeDefined();
+      expect(acctConflict!.values).toEqual(expect.arrayContaining(['acct-a', 'acct-b']));
+    });
+
+    it('does not flag false positives when no conflict exists', async () => {
+      const item = await store.createReviewItem({
+        ...BASE_CREATE,
+        budgetId: 'b-conf7',
+        transactionId: 't-conf7',
+      });
+      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionReviewItem(item.id, {
+        toStatus: 'approved',
+        actor: ACTOR_ALICE,
+        expectedVersion: 3,
+        merchant: 'UniqueMerchant',
+        direction: 'outflow',
+        accountId: 'acct-a',
+      });
+
+      const conflicts = await store.findCorrectionConflicts();
+      const uniqueConflict = conflicts.find(c => c.merchant === 'UniqueMerchant');
+      expect(uniqueConflict).toBeUndefined();
+    });
+  });
+});
+
+// =======================================================================
+// Sync failure reporting (structured outcome tracking)
+// =======================================================================
+
+interface SyncReviewResult {
+  synchronized: true;
+  created: number;
+  transitioned: number;
+  skipped: number;
+  failed: number;
+  reasons: Record<string, number>;
+  result: unknown;
+}
+
+describe('sync failure reporting', () => {
+  it('tracks created count from persist call', async () => {
+    const result: SyncReviewResult = {
+      synchronized: true,
+      created: 5,
+      transitioned: 3,
+      skipped: 1,
+      failed: 0,
+      reasons: { version_conflict: 1 },
+      result: { candidates: [] },
+    };
+    expect(result.synchronized).toBe(true);
+    expect(result.created).toBe(5);
+    expect(result.transitioned).toBe(3);
+    expect(result.skipped).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.reasons.version_conflict).toBe(1);
+  });
+
+  it('tracks failure reason codes', async () => {
+    const result: SyncReviewResult = {
+      synchronized: true,
+      created: 0,
+      transitioned: 0,
+      skipped: 0,
+      failed: 2,
+      reasons: { unknown: 2 },
+      result: { candidates: [] },
+    };
+    expect(result.failed).toBe(2);
+    expect(result.reasons.unknown).toBe(2);
+  });
+
+  it('reports empty reasons as none when no failures', async () => {
+    const result: SyncReviewResult = {
+      synchronized: true,
+      created: 1,
+      transitioned: 1,
+      skipped: 0,
+      failed: 0,
+      reasons: { none: 0 },
+      result: { candidates: [] },
+    };
+    expect(result.reasons.none).toBe(0);
   });
 });

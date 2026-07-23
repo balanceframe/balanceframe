@@ -1,5 +1,8 @@
 <template>
-  <UCard>
+  <UCard
+    class="h-full min-h-0 flex flex-col"
+    :ui="{ body: 'flex flex-col flex-1 min-h-0' }"
+  >
     <template #header>
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-bold truncate">
@@ -15,7 +18,7 @@
       </div>
     </template>
 
-    <div class="space-y-3">
+    <div class="space-y-3 flex-1 overflow-y-auto min-h-0">
       <!-- Transaction details -->
       <div class="grid grid-cols-2 gap-2 text-sm">
         <div>
@@ -62,12 +65,15 @@
         </div>
       </div>
 
-      <!-- Category change preview -->
-      <div class="border-t pt-3 border-neutral-200 dark:border-neutral-700">
+      <!-- Category change preview (hidden when unchanged) -->
+      <div
+        v-if="item.evidence.changePreview.fromCategory !== item.evidence.changePreview.toCategory"
+        class="border-t pt-3 border-neutral-200 dark:border-neutral-700"
+      >
         <div class="flex items-center gap-2 text-sm">
           <span class="text-gray-500 dark:text-gray-400">From</span>
           <UBadge color="neutral" variant="soft">
-            {{ item.evidence.changePreview.fromCategory }}
+            {{ displayName(item.evidence.changePreview.fromCategory) }}
           </UBadge>
           <span class="text-gray-400">&rarr;</span>
           <span class="text-gray-500 dark:text-gray-400">To</span>
@@ -75,7 +81,7 @@
             :color="item.evidence.changePreview.affectsEnvelope ? 'warning' : 'success'"
             variant="soft"
           >
-            {{ item.evidence.changePreview.toCategory }}
+            {{ displayName(item.evidence.changePreview.toCategory) }}
           </UBadge>
         </div>
       </div>
@@ -103,7 +109,7 @@
             variant="outline"
             size="sm"
           >
-            {{ alt }}
+            {{ displayName(alt) }}
           </UBadge>
         </div>
       </div>
@@ -122,34 +128,35 @@
             :key="h.categoryId + h.lastClassified"
             class="flex items-center justify-between text-xs"
           >
-            <span>{{ h.categoryId }}</span>
+            <span>{{ displayName(h.categoryId) }}</span>
             <span class="text-gray-400">{{ h.count }}x &middot; {{ formatDate(h.lastClassified) }}</span>
           </div>
         </div>
       </div>
+
       <!-- Rule candidates -->
       <div
         v-if="item.evidence.ruleCandidates.length > 0"
         class="border-t pt-3 border-neutral-200 dark:border-neutral-700"
       >
-        <span class="block text-xs text-gray-500 dark:text-gray-400 mb-2">
+        <span class="block text-xs text-gray-500 dark:text-gray-400 mb-1">
           Create rule
         </span>
         <div class="space-y-2">
           <div
-            v-for="(rc, i) in item.evidence.ruleCandidates"
-            :key="i"
-            class="flex items-center justify-between rounded-md border border-neutral-200 dark:border-neutral-700 px-3 py-2"
+            v-for="rc in item.evidence.ruleCandidates"
+            :key="rc.merchant + rc.currentCategory"
+            class="flex items-center justify-between px-2 py-1 rounded bg-neutral-50 dark:bg-neutral-800 text-xs"
           >
-            <div class="text-sm">
-              <span class="font-medium">{{ rc.merchant }}</span>
-              <span class="text-gray-400 mx-1">&rarr;</span>
-              <UBadge color="primary" variant="soft" size="sm">{{ rc.currentCategory }}</UBadge>
-            </div>
-            <div class="flex items-center gap-3 text-xs text-gray-400">
-              <span>{{ rc.matchCount }} matches</span>
-              <span>{{ (rc.consistency * 100).toFixed(0) }}% consistent</span>
-            </div>
+            <span>
+              {{ rc.merchant }}&rarr;
+              <span class="font-medium">{{ displayName(rc.currentCategory) }}</span>
+            </span>
+            <span class="text-gray-400">
+              {{ rc.matchCount }} match{{ rc.matchCount !== 1 ? 'es' : '' }}
+              &middot;
+              {{ Math.round(rc.consistency * 100) }}% consistent
+            </span>
           </div>
         </div>
       </div>
@@ -159,6 +166,7 @@
 
 <script setup lang="ts">
 import type { ReviewQueueItem, ReviewSurfaceState } from '../../src/review.js';
+import { computed } from 'vue';
 
 const props = defineProps<{
   item: ReviewQueueItem;
@@ -169,7 +177,7 @@ const statusBadgeColor = computed(() => {
   switch (props.item.reviewItem.status) {
     case 'pending_review': return 'primary';
     case 'approved':       return 'success';
-    case 'correcting':     return 'warning';
+    case 'correcting':     return 'neutral';
     case 'superseded':     return 'neutral';
     case 'skipped':
     case 'rejected':       return 'error';
@@ -183,7 +191,7 @@ const recoveryStateLabel = computed(() => {
   switch (props.item.reviewItem.status) {
     case 'pending_review': return 'Awaiting review';
     case 'approved':       return 'Approved';
-    case 'correcting':     return 'Recovering';
+    case 'correcting':     return 'Edited';
     case 'superseded':     return 'Superseded';
     case 'skipped':        return 'Skipped';
     case 'rejected':       return 'Rejected';
@@ -192,6 +200,11 @@ const recoveryStateLabel = computed(() => {
     default:               return props.item.reviewItem.status;
   }
 });
+
+function displayName(id: string | undefined | null): string {
+  if (!id) return '—';
+  return props.item.evidence.categoryNames?.[id] ?? id;
+}
 
 function formatAmount(amount: number): string {
   return new Intl.NumberFormat('en-US', {

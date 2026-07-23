@@ -11,7 +11,8 @@
     "./envelope": "./dist/application/src/envelope.js",
     "./commands": "./dist/application/src/commands.js",
     "./errors": "./dist/application/src/errors.js",
-    "./analysis": "./dist/application/src/analysis.js"
+    "./composition": "./dist/application/src/composition.js",
+    "./connection-manager": "./dist/application/src/connection-manager.js"
   },
   "scripts": {
     "build": "tsc",
@@ -21,6 +22,8 @@
   },
   "dependencies": {
     "@balanceframe/native": "workspace:*",
+    "@balanceframe/actual-adapter": "workspace:*",
+    "@balanceframe/workflow-store": "workspace:*",
     "@balanceframe/protocol-generated": "workspace:*"
   },
   "devDependencies": {

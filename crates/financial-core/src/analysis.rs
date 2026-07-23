@@ -59,6 +59,14 @@ pub struct RuleCandidate {
     pub proposed_category_name: String,
     pub matching_tx_count: u32,
     pub reason: String,
+    pub account_ids: Vec<String>,
+    pub direction: String,
+    pub amount_min: Option<i64>,
+    pub amount_max: Option<i64>,
+    pub date_earliest: Option<String>,
+    pub date_latest: Option<String>,
+    pub is_merchant_only: bool,
+    pub conflict_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +96,46 @@ pub struct HistoricalCorrection {
     pub category_name: String,
     pub change_count: usize,
     pub months: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// CorrectionEvidence — structured evidence from approved/corrected reviews
+// ---------------------------------------------------------------------------
+
+/// Structured evidence captured from an approved or corrected review
+/// transition.  Each record represents one human approval or correction
+/// event, with the contextual state that was current at transition time.
+///
+/// When multiple corrections for the same merchant carry conflicting
+/// account / direction / category values, the rule candidate analysis
+/// flags rather than collapses the conflict.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrectionEvidence {
+    /// Source review item ID that produced this correction.
+    pub source_review_id: String,
+    /// Normalized merchant name from the transaction payee.
+    pub merchant: Option<String>,
+    /// Imported payee name from transaction import data.
+    pub imported_payee: Option<String>,
+    /// Account ID the transaction belongs to.
+    pub account_id: Option<String>,
+    /// Direction — `"inflow"` or `"outflow"`.
+    pub direction: Option<String>,
+    /// Transaction amount in minor units.
+    pub amount: Option<i64>,
+    /// Transaction date (ISO-8601).
+    pub date: Option<String>,
+    /// The category that was approved or assigned.
+    pub category_id: String,
+    /// Human-readable category name.
+    pub category_name: Option<String>,
+    /// Actor who performed the approval or correction.
+    pub actor: String,
+    /// Review status before this transition.
+    pub from_status: String,
+    /// Review status after this transition.
+    pub to_status: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -550,9 +598,16 @@ pub fn generate_rule_candidates(
     min_consistent_count: u32,
 ) -> Vec<RuleCandidate> {
     // Group categorized transactions by normalized merchant name.
-    // Only consider transactions that have both a payee_name and a non‑empty category_id.
-    let mut merchant_cats: HashMap<String, HashMap<String, (String, u32)>> = HashMap::new();
-    // normalized_merchant → { category_id → (category_name, count) }
+    // Track both category counts and contextual metadata for conflict detection.
+    #[derive(Default)]
+    struct MerchantContext {
+        cats: HashMap<String, (String, u32)>,
+        account_ids: HashSet<String>,
+        amounts: Vec<i64>,
+        dates: Vec<String>,
+    }
+
+    let mut merchant_data: HashMap<String, MerchantContext> = HashMap::new();
 
     for tx in transactions {
         let payee = match &tx.payee_name {
@@ -572,17 +627,18 @@ pub fn generate_rule_candidates(
             continue;
         }
 
-        let cat_map = merchant_cats.entry(normalized).or_default();
-        let entry = cat_map.entry(cat_id).or_insert_with(|| (cat_name.clone(), 0));
+        let ctx = merchant_data.entry(normalized).or_default();
+        let entry = ctx.cats.entry(cat_id).or_insert_with(|| (cat_name.clone(), 0));
         entry.1 += 1;
-        // Update category name if we now have a better one
         if entry.0 == "Unknown" && cat_name != "Unknown" {
             entry.0 = cat_name;
         }
+
+        ctx.account_ids.insert(tx.account_id.clone());
+        ctx.amounts.push(tx.amount.minor_units());
+        ctx.dates.push(tx.date.clone());
     }
 
-    // Build a reverse lookup: category_id → category_name for any categories
-    // that weren't covered by transaction data.
     let cat_name_lookup: HashMap<&str, &str> = categories
         .iter()
         .map(|c| (c.id.as_str(), c.name.as_str()))
@@ -590,17 +646,47 @@ pub fn generate_rule_candidates(
 
     let mut candidates: Vec<RuleCandidate> = Vec::new();
 
-    for (normalized_merchant, cat_map) in &merchant_cats {
-        // Find the dominant category for this merchant
-        let best = cat_map.iter().max_by_key(|(_, &(_, count))| count);
+    for (normalized_merchant, ctx) in &merchant_data {
+        let best = ctx.cats.iter().max_by_key(|(_, &(_, count))| count);
         if let Some((cat_id, (cat_name_from_tx, count))) = &best {
             if *count >= min_consistent_count {
-                // Prefer the official category name from the category list
                 let final_cat_name = cat_name_lookup
                     .get(cat_id.as_str())
                     .copied()
                     .unwrap_or(cat_name_from_tx)
                     .to_string();
+
+                let mut account_ids: Vec<String> = ctx.account_ids.iter().cloned().collect();
+                account_ids.sort();
+
+                let amount_min = ctx.amounts.iter().min().copied();
+                let amount_max = ctx.amounts.iter().max().copied();
+
+                let date_earliest = ctx.dates.iter().min().cloned();
+                let date_latest = ctx.dates.iter().max().cloned();
+
+                let all_pos = ctx.amounts.iter().all(|&a| a >= 0);
+                let all_neg = ctx.amounts.iter().all(|&a| a <= 0);
+                let direction = if all_pos {
+                    "inflow".to_string()
+                } else if all_neg {
+                    "outflow".to_string()
+                } else {
+                    "mixed".to_string()
+                };
+
+                let is_merchant_only = account_ids.len() <= 1
+                    && direction == "outflow"
+                    && amount_min.zip(amount_max).map(|(mn,mx)| mn == mx).unwrap_or(true)
+                    && date_earliest.as_deref() == date_latest.as_deref();
+
+                let conflict_reason = if direction == "mixed" {
+                    Some(format!("Merchant '{}' has both inflows and outflows", normalized_merchant))
+                } else if is_merchant_only {
+                    Some(format!("Merchant '{}' candidate is merchant-only — no account/direction/amount/date variance", normalized_merchant))
+                } else {
+                    None
+                };
 
                 candidates.push(RuleCandidate {
                     rule_id: String::new(),
@@ -608,21 +694,185 @@ pub fn generate_rule_candidates(
                     proposed_category_id: cat_id.to_string(),
                     proposed_category_name: final_cat_name,
                     matching_tx_count: *count,
-                    reason: format!(
-                        "Merchant '{}' consistently categorized as '{}' across {} transaction(s)",
-                        normalized_merchant, cat_name_from_tx, count
-                    ),
+                    reason: format!("Merchant '{}' consistently categorized as '{}' across {} transaction(s)", normalized_merchant, cat_name_from_tx, count),
+                    account_ids,
+                    direction,
+                    amount_min,
+                    amount_max,
+                    date_earliest,
+                    date_latest,
+                    is_merchant_only,
+                    conflict_reason,
                 });
             }
         }
     }
 
-    // Stable sort by descending matching_tx_count so the most consistent
-    // candidates appear first.
     candidates.sort_by_key(|b| std::cmp::Reverse(b.matching_tx_count));
     candidates
 }
 
+
+/// Analyze correction evidence to produce rule candidates with contextual
+/// conflict detection.  Uses the same merchant-grouping logic as
+/// [`generate_rule_candidates`] but draws evidence from correction records
+/// instead of raw transactions.
+///
+/// When multiple corrections for the same merchant carry conflicting
+/// account, direction, or category values, the candidate is flagged with
+/// a `conflict_reason` rather than silently collapsing to one value.
+pub fn generate_rule_candidates_from_corrections(
+    corrections: &[CorrectionEvidence],
+    min_consistent_count: u32,
+) -> Vec<RuleCandidate> {
+    #[derive(Default)]
+    struct CorrectionContext {
+        cats: HashMap<String, (String, u32)>,
+        account_ids: HashSet<String>,
+        directions: HashSet<String>,
+        amounts: Vec<i64>,
+        dates: Vec<String>,
+        source_count: u32,
+    }
+
+    let mut merchant_data: HashMap<String, CorrectionContext> = HashMap::new();
+
+    for c in corrections {
+        let merchant = match &c.merchant {
+            Some(m) if !m.is_empty() => m.clone(),
+            _ => continue,
+        };
+
+        let ctx = merchant_data.entry(merchant).or_default();
+        let cat_name = c.category_name.clone().unwrap_or_else(|| "Unknown".into());
+        let entry = ctx.cats.entry(c.category_id.clone()).or_insert_with(|| (cat_name.clone(), 0));
+        entry.1 += 1;
+        if entry.0 == "Unknown" && cat_name != "Unknown" {
+            entry.0 = cat_name;
+        }
+
+        if let Some(aid) = &c.account_id {
+            ctx.account_ids.insert(aid.clone());
+        }
+        if let Some(dir) = &c.direction {
+            ctx.directions.insert(dir.clone());
+        }
+        if let Some(amt) = c.amount {
+            ctx.amounts.push(amt);
+        }
+        if let Some(d) = &c.date {
+            ctx.dates.push(d.clone());
+        }
+        ctx.source_count += 1;
+    }
+
+    let mut candidates: Vec<RuleCandidate> = Vec::new();
+
+    for (merchant, ctx) in &merchant_data {
+        let best = ctx.cats.iter().max_by_key(|(_, &(_, count))| count);
+        if let Some((cat_id, (cat_name_from_tx, count))) = best {
+            if *count >= min_consistent_count {
+                let mut account_ids: Vec<String> = ctx.account_ids.iter().cloned().collect();
+                account_ids.sort();
+
+                let amount_min = ctx.amounts.iter().min().copied();
+                let amount_max = ctx.amounts.iter().max().copied();
+
+                let date_earliest = ctx.dates.iter().min().cloned();
+                let date_latest = ctx.dates.iter().max().cloned();
+
+                let direction = if !ctx.amounts.is_empty() {
+                    let all_pos = ctx.amounts.iter().all(|&a| a >= 0);
+                    let all_neg = ctx.amounts.iter().all(|&a| a <= 0);
+                    if all_pos {
+                        "inflow".to_string()
+                    } else if all_neg {
+                        "outflow".to_string()
+                    } else {
+                        "mixed".to_string()
+                    }
+                } else if ctx.directions.len() == 1 {
+                    // No amounts recorded, but direction evidence is consistent
+                    ctx.directions.iter().next().unwrap().clone()
+                } else {
+                    // No amounts and no direction, or conflicting directions
+                    "mixed".to_string()
+                };
+
+                // --- Conflict detection ---
+                // Conflicts are flagged rather than collapsed.
+                let mut conflict_parts: Vec<String> = Vec::new();
+
+                if ctx.account_ids.len() > 1 {
+                    let mut accts: Vec<String> = ctx.account_ids.iter().cloned().collect();
+                    accts.sort();
+                    conflict_parts.push(format!(
+                        "Merchant '{}' corrected across accounts: [{}]",
+                        merchant,
+                        accts.join(", ")
+                    ));
+                }
+
+                if ctx.directions.len() > 1 {
+                    let mut dirs: Vec<String> = ctx.directions.iter().cloned().collect();
+                    dirs.sort();
+                    conflict_parts.push(format!(
+                        "Merchant '{}' corrected with mixed directions: [{}]",
+                        merchant,
+                        dirs.join(", ")
+                    ));
+                }
+
+                if ctx.cats.len() > 1 {
+                    let mut cats: Vec<String> = ctx.cats.keys().cloned().collect();
+                    cats.sort();
+                    conflict_parts.push(format!(
+                        "Merchant '{}' corrected to different categories: [{}]",
+                        merchant,
+                        cats.iter()
+                            .map(|cid| format!("{} ({})", cid, ctx.cats[cid].0))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+
+                let conflict_reason = if conflict_parts.is_empty() {
+                    None
+                } else {
+                    Some(conflict_parts.join("; "))
+                };
+
+                let is_merchant_only = account_ids.len() <= 1
+                    && direction == "outflow"
+                    && amount_min.zip(amount_max).map(|(mn,mx)| mn == mx).unwrap_or(true)
+                    && date_earliest.as_deref() == date_latest.as_deref();
+
+                candidates.push(RuleCandidate {
+                    rule_id: String::new(),
+                    rule_name: format!("Correction-rule for {}", merchant),
+                    proposed_category_id: cat_id.clone(),
+                    proposed_category_name: cat_name_from_tx.clone(),
+                    matching_tx_count: *count,
+                    reason: format!(
+                        "Merchant '{}' corrected to '{}' across {} correction(s)",
+                        merchant, cat_name_from_tx, ctx.source_count
+                    ),
+                    account_ids,
+                    direction,
+                    amount_min,
+                    amount_max,
+                    date_earliest,
+                    date_latest,
+                    is_merchant_only,
+                    conflict_reason,
+                });
+            }
+        }
+    }
+
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.matching_tx_count));
+    candidates
+}
 
 // ---------------------------------------------------------------------------
 // Recurring charge analysis
@@ -1511,5 +1761,116 @@ mod tests {
             &scope, "2026-07-18",
         );
         assert_eq!(result_a.repeated_merchants, result_b.repeated_merchants);
+    }
+
+    // -- correction direction with absent amounts --------------------------
+
+    #[test]
+    fn test_correction_candidate_direction_with_absent_amounts() {
+        // When correction amounts are absent, direction must be derived from
+        // recorded direction evidence, not falsely defaulted to "inflow".
+        let outflow_ev = CorrectionEvidence {
+            source_review_id: "r1".into(),
+            merchant: Some("Netflix".into()),
+            imported_payee: None,
+            account_id: Some("a1".into()),
+            direction: Some("outflow".into()),
+            amount: None,
+            date: Some("2026-01-15".into()),
+            category_id: "c1".into(),
+            category_name: Some("Subscriptions".into()),
+            actor: "user".into(),
+            from_status: "pending".into(),
+            to_status: "approved".into(),
+        };
+        let outflow_ev2 = CorrectionEvidence {
+            source_review_id: "r2".into(),
+            direction: Some("outflow".into()),
+            amount: None,
+            ..outflow_ev.clone()
+        };
+        // Two corrections, both missing amounts, both outflow → direction is outflow
+        let candidates = generate_rule_candidates_from_corrections(&[outflow_ev, outflow_ev2], 2);
+        assert_eq!(candidates.len(), 1, "should produce one candidate from outflow corrections");
+        assert_eq!(
+            candidates[0].direction, "outflow",
+            "direction must be outflow when amounts are absent but direction evidence is consistent; got '{}'",
+            candidates[0].direction
+        );
+    }
+
+    #[test]
+    fn test_correction_candidate_direction_without_amounts_or_direction() {
+        // When both amounts and direction evidence are absent, direction must
+        // be "mixed" (unknown) rather than falsely inflating to "inflow".
+        let ev = CorrectionEvidence {
+            source_review_id: "r1".into(),
+            merchant: Some("UnknownCo".into()),
+            imported_payee: None,
+            account_id: Some("a1".into()),
+            direction: None,
+            amount: None,
+            date: None,
+            category_id: "c2".into(),
+            category_name: Some("Misc".into()),
+            actor: "user".into(),
+            from_status: "pending".into(),
+            to_status: "approved".into(),
+        };
+        let ev2 = CorrectionEvidence {
+            source_review_id: "r2".into(),
+            ..ev.clone()
+        };
+        let candidates = generate_rule_candidates_from_corrections(&[ev, ev2], 2);
+        assert_eq!(candidates.len(), 1, "should produce one candidate");
+        assert_eq!(
+            candidates[0].direction, "mixed",
+            "direction must be mixed when both amounts and direction are absent; got '{}'",
+            candidates[0].direction
+        );
+    }
+
+    #[test]
+    fn test_correction_candidate_direction_with_mixed_direction_evidence_no_amounts() {
+        // Multiple conflicting direction values with no amounts → "mixed"
+        let inflow_ev = CorrectionEvidence {
+            source_review_id: "r1".into(),
+            merchant: Some("FlexCo".into()),
+            direction: Some("inflow".into()),
+            amount: None,
+            category_id: "c3".into(),
+            ..sample_correction_evidence()
+        };
+        let outflow_ev = CorrectionEvidence {
+            source_review_id: "r2".into(),
+            direction: Some("outflow".into()),
+            amount: None,
+            ..inflow_ev.clone()
+        };
+        let candidates = generate_rule_candidates_from_corrections(&[inflow_ev, outflow_ev], 2);
+        assert_eq!(candidates.len(), 1, "should produce one candidate from mixed direction");
+        assert_eq!(
+            candidates[0].direction, "mixed",
+            "direction must be mixed when direction evidence conflicts and amounts absent; got '{}'",
+            candidates[0].direction
+        );
+    }
+
+    /// Shared baseline for CorrectionEvidence used in direction tests.
+    fn sample_correction_evidence() -> CorrectionEvidence {
+        CorrectionEvidence {
+            source_review_id: String::new(),
+            merchant: None,
+            imported_payee: None,
+            account_id: None,
+            direction: None,
+            amount: None,
+            date: None,
+            category_id: String::new(),
+            category_name: None,
+            actor: "test".into(),
+            from_status: "pending".into(),
+            to_status: "approved".into(),
+        }
     }
 }

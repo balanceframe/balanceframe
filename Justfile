@@ -12,6 +12,9 @@ setup-hooks:
 install:
     pnpm install --frozen-lockfile
 
+# Verify workspace package links and the native addon consumer path.
+link: install
+    pnpm --filter @balanceframe/application exec node -e "const native = require('@balanceframe/native'); if (typeof native.analyzeDeterministic !== 'function') process.exit(1);"
 # Build all buildable workspace packages.
 build:
     pnpm build
@@ -58,7 +61,43 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # Run the local CI-equivalent checks.
-ci: install build typecheck lint test clippy
+
+# Build the production Docker image for testing.
+docker-build:
+    docker build -t balanceframe:test .
+
+# Run container integration tests against a built image.
+# Requires Docker and a previously built image (just docker-build).
+docker-test:
+    tests/deployment/container.test.sh
+
+# Validate Compose manifest structure and constraints.
+# Requires Docker Compose.
+compose-validate:
+    tests/deployment/compose-validate.sh
+
+# Verify that TAG matches the root package.json version (with 'v' prefix).
+# Exits nonzero on mismatch. Passes through valid pre-release tags.
+release-verify TAG:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="$(jq -r '.version' package.json)"
+    expected="v${version}"
+    ref="{{TAG}}"
+    # Strip pre-release suffix for semantic comparison.
+    base="${ref%%-*}"
+    if [[ "$base" != "$expected" ]]; then
+      echo "ERROR: TAG '{{TAG}}' does not match package.json version 'v$version'" >&2
+      exit 1
+    fi
+    echo "OK: TAG '{{TAG}}' matches package.json version 'v$version'"
+
+# Render release Compose manifests, .env.example, and checksums.
+# TAG must be a valid release tag (vX.Y.Z).
+# DIGEST must be the pushed OCI digest (sha256:<64hex>).
+# Calls scripts/release-assets.sh which produces _release/<TAG>/
+release-assets TAG DIGEST:
+    scripts/release-assets.sh "{{TAG}}" "{{DIGEST}}"
 
 # Run code coverage for JavaScript/TypeScript and Rust, producing separate reports.
 # Fails if either language's coverage run fails.

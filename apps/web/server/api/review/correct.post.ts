@@ -6,19 +6,26 @@
  * request body (prevents spoofing).
  */
 
-import { readBody } from 'h3';
+import { readBody, defineEventHandler, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   getActorId,
   performReviewAction,
   okEnvelope,
   errorEnvelope,
+  requireAuthorization,
   buildAuthorizationInfo,
+  reviewAndApplyEnabled,
+  getReviewMutationExecutorFromEvent,
+  applyReviewMutationWithTransition,
+  sanitizeError,
+  sanitizeErrorMessage,
 } from '../../utils/workflow-store';
-
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'categorization:execute');
   const requestId = crypto.randomUUID();
+  const authCheck = await requireAuthorization(event, 'categorization:execute');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
 
   // Parse and validate body
   let body: Record<string, unknown>;
@@ -74,12 +81,78 @@ export default defineEventHandler(async (event) => {
       status = 409;
       code = 'VERSION_CONFLICT';
     }
+    console.error(`[${requestId}] ${code}: ${outcome.error ?? 'Unknown error'}`);
     setResponseStatus(event, status);
-    return errorEnvelope(code, outcome.error ?? 'Unknown error', authInfo, false, requestId);
+    return errorEnvelope(code, sanitizeErrorMessage(outcome.error ?? 'Unknown error'), authInfo, false, requestId);
   }
 
+  // Check if reviewAndApply mode is enabled and an executor is available
+  if (reviewAndApplyEnabled(event)) {
+    const executor = getReviewMutationExecutorFromEvent(event);
+    if (executor) {
+      try {
+        const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
+          wf.store,
+          reviewId,
+          actorId,
+          executor,
+          requestId,
+          categoryId,
+        );
+
+        return okEnvelope(
+          {
+            itemId: outcome.itemId,
+            categoryId,
+            success: mutationResult.success,
+            error: mutationResult.error,
+            categorizationExecuted: true,
+            mutationStatus: mutationResult.mutationStatus,
+            applied: mutationResult.applied,
+            verified: mutationResult.verified,
+            stale: mutationResult.stale,
+            transactionId: mutationResult.transactionId,
+            previousCategoryId: mutationResult.previousCategoryId,
+            newCategoryId: mutationResult.newCategoryId,
+            finalStatus,
+          },
+          authInfo,
+          requestId,
+        );
+      } catch (e) {
+        const safe = sanitizeError(e, requestId, 'MUTATION_FAILED', false);
+        setResponseStatus(event, 500);
+        return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+      }
+    }
+
+    // reviewAndApply configured but no executor wired — fail closed
+    setResponseStatus(event, 503);
+    return errorEnvelope(
+      'EXECUTOR_UNAVAILABLE',
+      'Review-and-apply requires a mutation service but the executor was not available.',
+      authInfo,
+      false,
+      requestId,
+    );
+  }
+
+  // Observe mode — workflow transition only, no mutation
   return okEnvelope(
-    { itemId: outcome.itemId, categoryId, success: true, error: null, categorizationExecuted: false },
+    {
+      itemId: outcome.itemId,
+      categoryId,
+      success: true,
+      error: null,
+      categorizationExecuted: false,
+      mutationStatus: 'noop',
+      applied: false,
+      verified: false,
+      stale: false,
+      transactionId: null,
+      previousCategoryId: null,
+      newCategoryId: null,
+    },
     authInfo,
     requestId,
   );

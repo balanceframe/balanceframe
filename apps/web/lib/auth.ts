@@ -39,6 +39,8 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
+    /** Disable public self-registration — accounts must be created by an admin. */
+    disableSignUp: true,
   },
 
   plugins: [apiKey()],

@@ -110,9 +110,13 @@ describe('ReviewController', () => {
         toStatus: 'correcting', actor: ACTOR, reason: 'Correcting',
         expectedVersion: t1.version,
       });
+      const t3 = await store.transitionReviewItem(item2.id, {
+        toStatus: 'applying', actor: 'system', reason: 'Applying',
+        expectedVersion: t2.version,
+      });
       await store.transitionReviewItem(item2.id, {
         toStatus: 'applied', actor: 'system', reason: 'Applied',
-        expectedVersion: t2.version,
+        expectedVersion: t3.version,
       });
 
       await controller.loadNextPage();
@@ -384,14 +388,13 @@ describe('ReviewController', () => {
       expect(stored?.status).toBe('pending_review');
     });
 
-    it('undo is rejected for non-reversible status (rejected)', async () => {
-      await seedPendingReview(store);
+    it('undo transitions rejected item back to pending_review', async () => {
+      const item = await seedPendingReview(store);
       await controller.loadNextPage();
       await controller.getBindings().reject();
-
-      await expect(controller.getBindings().undo()).rejects.toThrow(
-        /cannot undo|not reversible|undo/i,
-      );
+      await controller.getBindings().undo();
+      const stored = await store.getReviewItem(item.id);
+      expect(stored?.status).toBe('pending_review');
     });
   });
 
@@ -758,16 +761,15 @@ describe('ReviewController', () => {
       });
     });
 
-    it('correct sends two-step transition for pending_review item', async () => {
+    it('correct sends single-step transition for pending_review item', async () => {
       await seedPendingReview(store);
       await controller.loadNextPage();
 
       const spy = vi.spyOn(store, 'transitionReviewItem');
       await controller.getBindings().correct('cat-transport');
 
-      expect(spy).toHaveBeenCalledTimes(2);
-      expect(spy.mock.calls[0][1]).toMatchObject({ toStatus: 'approved' });
-      expect(spy.mock.calls[1][1]).toMatchObject({ toStatus: 'correcting' });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1]).toMatchObject({ toStatus: 'correcting' });
     });
     it('skip sends the correct transition input to the store', async () => {
       await seedPendingReview(store);

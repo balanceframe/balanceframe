@@ -425,13 +425,13 @@ describe('useApiReviewController', () => {
   // ── Unsupported operations ──────────────────────────────────────
 
   describe('unsupported operations', () => {
-    it('undo returns explicit failure', async () => {
+    it('undo returns failure when no item has been acted on', async () => {
       const adapter = useApiReviewController('http://test.local');
       const result = await adapter.undo();
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('not supported');
-      expect(adapter.error).toContain('not supported');
+      expect(result.error).toContain('Act on an item first');
+      expect(adapter.error).toContain('Act on an item first');
     });
 
     it('bulkApprove returns explicit failure', async () => {
@@ -468,15 +468,6 @@ describe('useApiReviewController', () => {
 
       expect(result.results[0].success).toBe(false);
       expect(result.errorCount).toBe(1);
-    });
-
-    it('undo sets error on adapter even when no current item exists', async () => {
-      const adapter = useApiReviewController('http://test.local');
-
-      // Undo is a static failure regardless of state
-      const result = await adapter.undo();
-      expect(result.success).toBe(false);
-      expect(adapter.error).toContain('not supported');
     });
   });
 });

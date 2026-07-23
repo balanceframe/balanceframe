@@ -316,15 +316,17 @@ export class CategorizationMutationService {
     }
 
     if (!idemClaim.isOwner) {
-      if (idemClaim.record.completed) {
-        // Replay: return the cached result without touching ledger or approval
+      // Replay if the record is already in a terminal state
+      if (idemClaim.record.status !== 'in_progress') {
         return this.replayResult(idemClaim.record, input);
       }
-      // In-flight: another execution is using this key — return conflict
+      // In-flight: another execution is using this key — or previous run crashed
+      // and the lease hasn't expired yet. The caller should retry later.
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
       return this.fail(baseResult, 'idempotency_in_progress',
         'Execution with this idempotency key is already in progress', input);
     }
+
 
     // We own the claim — proceed with execution
 
@@ -534,13 +536,17 @@ export class CategorizationMutationService {
     }
 
     // =====================================================================
-    // 13. Complete idempotency record (with error if verification failed)
+    // 13. Complete idempotency record
+    //
+    // Post-write failures are terminal (the write may have happened externally
+    // even if verification failed).  Pre-write failures are handled above via
+    // recordFailure (retryable).
     // =====================================================================
 
     if (!verified) {
       const errMsg = verifyMessage ?? 'Postcondition verification failed';
       try {
-        await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg);
+        await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, false);
       } catch {
         // Non-fatal
       }
@@ -551,6 +557,7 @@ export class CategorizationMutationService {
         // Non-fatal
       }
     }
+
 
     // =====================================================================
     // 14. Append completion or failure audit
@@ -695,17 +702,16 @@ export class CategorizationMutationService {
     return false;
   }
 
-  /**
-   * Record a failure idempotency outcome (best-effort).
-   */
   private async recordFailure(input: ExecuteCategorizationInput, err: unknown): Promise<void> {
     try {
       const errMsg = err instanceof Error ? err.message : String(err);
-      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg);
+      // Transient errors before the write are retryable
+      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, true);
     } catch {
       // Non-fatal
     }
   }
+
 
   /**
    * Append an execution_failed audit record after a write error (best-effort).
@@ -786,12 +792,13 @@ export class CategorizationMutationService {
       // Ignore parse failures
     }
 
+    const succeeded = idem.status === 'succeeded';
     return {
-      success: idem.completed && !idem.errorMessage,
+      success: succeeded,
       transactionId: txId,
       previousCategoryId: null,
       newCategoryId: catId,
-      verified: !idem.errorMessage,
+      verified: succeeded,
       planId: null,
       idempotencyKey: input.idempotencyKey,
       approvalId: null,
@@ -800,4 +807,45 @@ export class CategorizationMutationService {
       message: idem.errorMessage ?? undefined,
     };
   }
+
+}
+
+// ---------------------------------------------------------------------------
+// Native Rust mutation protocol factory
+// ---------------------------------------------------------------------------
+
+/** Shape of the @balanceframe/native module used at runtime. */
+interface CategorizationNativeBindings {
+  planSetCategory(input: string): string;
+  verifyMutation(input: string): string;
+}
+
+let nativeBin: CategorizationNativeBindings | null = null;
+
+async function getCategorizationNative(): Promise<CategorizationNativeBindings> {
+  if (!nativeBin) {
+    const { createRequire } = await import('node:module');
+    const require = createRequire(import.meta.url);
+    nativeBin = require('@balanceframe/native') as CategorizationNativeBindings;
+  }
+  return nativeBin;
+}
+
+/**
+ * Create a RustMutationProtocol backed by the native @balanceframe/native addon.
+ * Uses lazy dynamic import so it can be stubbed in non-native environments.
+ * Throws if the native addon is not available.
+ */
+export async function createNativeCategorizationMutationProtocol(): Promise<RustMutationProtocol> {
+  const native = await getCategorizationNative();
+  return {
+    planSetCategory(transaction, category) {
+      const json = native.planSetCategory(JSON.stringify({ transaction, category }));
+      return JSON.parse(json) as MutationPlan;
+    },
+    verifyMutation(plan, snapshot) {
+      const json = native.verifyMutation(JSON.stringify({ plan, snapshot }));
+      return JSON.parse(json) as VerificationResult;
+    },
+  };
 }

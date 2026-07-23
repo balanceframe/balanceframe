@@ -104,6 +104,63 @@ interface ApiEnvelope<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Proposal detail types (mirrors server-side shapes)
+// ---------------------------------------------------------------------------
+
+export interface SimulationExample {
+  readonly txId: string;
+  readonly payee: string | null;
+  readonly amount: { minorUnits: string; currency: string };
+  readonly currentCategory: string | null;
+  readonly wouldChange: boolean;
+}
+
+export interface SimulationEvidence {
+  readonly transactionsMatched: number;
+  readonly transactionsAffected: readonly string[];
+  readonly categoryDistribution: Record<string, number>;
+  readonly conflicts: readonly string[];
+  readonly examples: readonly SimulationExample[];
+  readonly simulatedAt: string;
+}
+
+export interface CategorizationProposalDetail {
+  readonly id: string;
+  readonly operation: string;
+  readonly budgetId: string;
+  readonly transactionId: string;
+  readonly categoryId: string;
+  readonly payloadHash: string;
+  readonly policyVersion: string;
+  readonly preconditions: string;
+  readonly expiresAt: string;
+  readonly actorId: string;
+  readonly provenance: string;
+  readonly providerModel: string | null;
+  readonly correlationId: string | null;
+  readonly supersededAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface ProposalDetailPayload {
+  readonly proposal: CategorizationProposalDetail;
+  readonly simulation: SimulationEvidence | null;
+  readonly stale: boolean;
+  readonly simulationStatus: 'present' | 'missing' | 'stale';
+}
+
+export interface ProposeRulePayload {
+  readonly proposalId: string;
+  readonly operation: string;
+  readonly merchant: string;
+  readonly categoryId: string;
+  readonly simulation: SimulationEvidence | null;
+  readonly simulationStatus: 'present' | 'missing';
+  readonly simulationWarning: string | null;
+  readonly message: string;
+}
+
+// ---------------------------------------------------------------------------
 // Composable
 // ---------------------------------------------------------------------------
 
@@ -122,9 +179,11 @@ export function useApiReviewController(
   options?: ApiReviewControllerOptions,
 ): ReviewControllerAdapter {
   // ── Reactive state ──────────────────────────────────────────────
-  const state = shallowRef<ReviewSurfaceState>(createDefaultState());
+  const state = ref<ReviewSurfaceState>(createDefaultState());
   const loading = ref(false);
   const error = ref<string | null>(null);
+  /** ID of the most recently consumed item, for undo when queue resets. */
+  const lastActedItemId = ref<string | null>(null);
 
   // Normalise the base URL (strip trailing slash).
   const api = baseUrl.replace(/\/+$/, '');
@@ -260,6 +319,8 @@ export function useApiReviewController(
       }
 
       // ── Success path — update state ────────────────────────────
+      // Save the consumed item ID so undo can target it later.
+      lastActedItemId.value = currentId;
       // Remove the processed item from the local queue and advance
       // to the next item or to empty.
       const items = state.value.items;
@@ -358,40 +419,148 @@ export function useApiReviewController(
   }
 
   async function correct(categoryId: string): Promise<WebActionResult> {
-    return doAction('correct', { categoryId });
+    const currentItem = state.value.currentItem;
+    if (!currentItem) {
+      const result: WebActionResult = {
+        itemId: '<no-current>',
+        success: false,
+        error: 'No current item to edit',
+      };
+      error.value = result.error;
+      return result;
+    }
+
+    const currentId = currentItem.reviewItem.id;
+    loading.value = true;
+    error.value = null;
+
+    try {
+      const envelope = await callApi<SingleActionResult>(
+        '/api/review/correct',
+        'POST',
+        { reviewId: currentId, categoryId },
+      );
+
+      if (envelope.status === 'error' || envelope.error) {
+        const msg = envelope.error?.message ?? 'Unknown error';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      const result = envelope.result;
+      if (!result || typeof result !== 'object') {
+        const msg = 'Invalid edit result envelope';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      if (!result.success) {
+        const msg = result.error ?? 'Edit failed';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      // Refresh the queue to show the updated item (still pending_review
+      // or correcting, not removed).
+      await fetchItems();
+
+      return {
+        itemId: result.itemId ?? currentId,
+        success: true,
+        error: null,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      error.value = msg;
+      return { itemId: currentId, success: false, error: msg };
+    } finally {
+      loading.value = false;
+    }
   }
 
   async function reject(): Promise<WebActionResult> {
     return doAction('reject');
   }
-
+  
   async function skip(): Promise<WebActionResult> {
     return doAction('skip');
   }
-
+  
   async function undo(): Promise<WebActionResult> {
-    // Undo is not supported by the API — return explicit failure
-    // rather than a no-op success.
-    const currentId =
-      state.value.currentItem?.reviewItem.id ?? '<no-current>';
-    const msg = 'Undo is not supported by the API';
-    error.value = msg;
-    return { itemId: currentId, success: false, error: msg };
+    const targetId = lastActedItemId.value ?? state.value.currentItem?.reviewItem.id ?? '<no-current>';
+    if (!lastActedItemId.value) {
+      const msg = 'No item to undo. Act on an item first.';
+      error.value = msg;
+      return { itemId: targetId, success: false, error: msg };
+    }
+  
+    loading.value = true;
+    error.value = null;
+  
+    try {
+      const envelope = await callApi<SingleActionResult>(
+        '/api/review/undo',
+        'POST',
+        { reviewId: targetId },
+      );
+  
+      if (envelope.status === 'error' || envelope.error) {
+        const msg = envelope.error?.message ?? 'Unknown error';
+        error.value = msg;
+        return { itemId: targetId, success: false, error: msg };
+      }
+  
+      const result = envelope.result;
+      if (!result || typeof result !== 'object') {
+        const msg = 'Invalid undo result envelope';
+        error.value = msg;
+        return { itemId: targetId, success: false, error: msg };
+      }
+  
+      if (!result.success) {
+        const msg = result.error ?? 'Undo failed';
+        error.value = msg;
+        return { itemId: targetId, success: false, error: msg };
+      }
+  
+      // Clear the tracked ID so the same undo can't be replayed,
+      // then refresh the queue to show the restored item.
+      lastActedItemId.value = null;
+      await fetchItems();
+  
+      return {
+        itemId: result.itemId ?? targetId,
+        success: true,
+        error: null,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      error.value = msg;
+      return { itemId: targetId, success: false, error: msg };
+    } finally {
+      loading.value = false;
+    }
   }
   
   async function proposeRule(
     reviewId: string,
     merchant: string,
     categoryId: string,
-  ): Promise<WebActionResult> {
+    simulation?: SimulationEvidence,
+  ): Promise<WebActionResult & { simulationStatus?: string; simulationWarning?: string | null }> {
     loading.value = true;
     error.value = null;
   
     try {
+      const body: Record<string, unknown> = { reviewId, merchant, categoryId };
+      if (simulation) {
+        body.simulation = simulation;
+      }
+  
       const envelope = await callApi<SingleActionResult>(
         '/api/review/propose-rule',
         'POST',
-        { reviewId, merchant, categoryId },
+        body,
       );
   
       if (envelope.status === 'error' || envelope.error) {
@@ -400,23 +569,22 @@ export function useApiReviewController(
         return { itemId: reviewId, success: false, error: msg };
       }
   
-      const result = envelope.result;
+      const result = envelope.result as unknown as Record<string, unknown> | null;
       if (!result || typeof result !== 'object') {
         const msg = 'Invalid action result envelope';
         error.value = msg;
         return { itemId: reviewId, success: false, error: msg };
       }
   
-      if (!result.success) {
-        const msg = result.error ?? 'Rule proposal failed';
-        error.value = msg;
-        return { itemId: reviewId, success: false, error: msg };
-      }
+      const simStatus = typeof result.simulationStatus === 'string' ? result.simulationStatus : undefined;
+      const simWarning = typeof result.simulationWarning === 'string' ? result.simulationWarning : null;
   
       return {
-        itemId: result.itemId ?? reviewId,
+        itemId: (result.proposalId as string) ?? reviewId,
         success: true,
         error: null,
+        simulationStatus: simStatus,
+        simulationWarning: simWarning,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -426,7 +594,7 @@ export function useApiReviewController(
       loading.value = false;
     }
   }
-
+  
   // ── Bulk actions ────────────────────────────────────────────────
 
   async function bulkApprove(): Promise<WebBulkActionResult> {
@@ -509,6 +677,18 @@ export function useApiReviewController(
     };
   }
 
+  function selectIndex(index: number): void {
+    const items = state.value.items;
+    if (index < 0 || index >= items.length) return;
+    state.value = {
+      ...state.value,
+      currentIndex: index,
+      currentItem: items[index] ?? null,
+      selectedIndices: [],
+    };
+  }
+
+
   function toggleSelection(index: number): void {
     const sel = [...state.value.selectedIndices];
     const pos = sel.indexOf(index);
@@ -571,6 +751,7 @@ export function useApiReviewController(
     bulkSkip,
     selectNext,
     selectPrevious,
+    selectIndex,
     toggleSelection,
     clearSelection,
     resetMetrics,

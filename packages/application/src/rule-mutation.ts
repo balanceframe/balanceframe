@@ -36,6 +36,7 @@ import type {
   BudgetLedger,
   MutationResult,
   LedgerSnapshotResult,
+  RuleProposal,
 } from '@balanceframe/actual-adapter';
 
 import type {
@@ -80,6 +81,42 @@ export interface RuleMutationPlan {
 }
 
 // ---------------------------------------------------------------------------
+// Simulation types
+// ---------------------------------------------------------------------------
+
+/** An example transaction that a rule would match during simulation. */
+export interface SimulationExample {
+  /** Transaction ID. */
+  txId: string;
+  /** Payee name, if available. */
+  payee: string | null;
+  /** Transaction amount with minor units and currency. */
+  amount: { minorUnits: string; currency: string };
+  /** Current category name, if any. */
+  currentCategory: string | null;
+  /** Whether the rule would change the category. */
+  wouldChange: boolean;
+}
+
+/** Simulation evidence produced by the Rust simulateRule function. */
+export interface RuleSimulationResult {
+  /** Rule ID (empty for planned rules). */
+  ruleId: string;
+  /** Rule name. */
+  name: string;
+  /** Number of transactions that would be matched. */
+  transactionsMatched: number;
+  /** IDs of transactions that would be affected. */
+  transactionsAffected: string[];
+  /** Distribution of target categories. */
+  categoryDistribution: Record<string, number>;
+  /** Conflict messages when a rule overlaps with other rules. */
+  conflicts: string[];
+  /** Example transactions that would be affected. */
+  examples: SimulationExample[];
+}
+
+// ---------------------------------------------------------------------------
 // Rust protocol surface — rule-specific planning and verification
 // ---------------------------------------------------------------------------
 
@@ -95,6 +132,12 @@ export interface RustRuleMutationProtocol {
     plan: RuleMutationPlan,
     snapshot: ProtocolSnapshot,
   ): VerificationResult;
+
+  /** Simulate a rule against snapshot transactions and return evidence. */
+  simulateRule(
+    rule: { name: string; trigger: unknown; actions: unknown },
+    snapshot: ProtocolSnapshot,
+  ): RuleSimulationResult;
 }
 
 // Native implementation (calls @balanceframe/native N-API bindings at runtime)
@@ -167,6 +210,20 @@ export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutati
       const json = native.verifyRuleMutation(JSON.stringify({ plan, snapshot }));
       return JSON.parse(json) as VerificationResult;
     },
+    simulateRule(rule, snapshot) {
+      const json = native.simulateRule(JSON.stringify({
+        rule: {
+          id: '',
+          name: rule.name,
+          order: 0,
+          trigger: rule.trigger,
+          actions: rule.actions,
+          inactive: false,
+        },
+        transactions: snapshot.transactions,
+      }));
+      return JSON.parse(json) as RuleSimulationResult;
+     },
   };
 }
 
@@ -208,6 +265,8 @@ export interface ExecuteRuleResult {
   reasonCodes: string[];
   /** Human-readable message for failures or verification issues. */
   message?: string;
+  /** Simulation evidence from the Rust simulateRule call, or null on early rejection. */
+  simulation: RuleSimulationResult | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +336,7 @@ export class RuleMutationService {
       approvalId: null,
       auditRecordId: null,
       reasonCodes: [],
+      simulation: null,
     };
 
     // =====================================================================
@@ -341,10 +401,17 @@ export class RuleMutationService {
     // =====================================================================
     // 3. Idempotency claim (atomic check-and-create)
     // =====================================================================
-
-    const serialisedEffect = JSON.stringify({
-      ruleName: this.extractRuleName(proposal),
-    });
+    let serialisedEffect: string;
+    try {
+      serialisedEffect = JSON.stringify({
+        ruleName: this.extractRuleName(proposal),
+      });
+    } catch (e) {
+      await this.appendFailureAudit(input, proposal, auth, 'invalid_preconditions');
+      return this.fail(baseResult, 'invalid_preconditions',
+        e instanceof Error ? e.message : 'Proposal preconditions are invalid',
+        input);
+    }
 
     let idemClaim: IdempotencyClaim;
     try {
@@ -362,15 +429,17 @@ export class RuleMutationService {
     }
 
     if (!idemClaim.isOwner) {
-      if (idemClaim.record.completed) {
-        // Replay: return the cached result without touching ledger or approval
+      // Replay if the record is already in a terminal state
+      if (idemClaim.record.status !== 'in_progress') {
         return this.replayResult(idemClaim.record, input);
       }
-      // In-flight: another execution is using this key
+      // In-flight: another execution is using this key — or previous run crashed
+      // and the lease hasn't expired yet. The caller should retry later.
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
       return this.fail(baseResult, 'idempotency_in_progress',
         'Execution with this idempotency key is already in progress', input);
     }
+
 
     // We own the claim — proceed with execution
 
@@ -487,7 +556,17 @@ export class RuleMutationService {
     //    snapshot, but precondition check happens before write)
     // =====================================================================
 
-    const ruleInput = this.extractRuleInput(proposal);
+    let ruleInput: RuleProposalInput;
+    try {
+      ruleInput = this.extractRuleInput(proposal);
+    } catch (e) {
+      await this.recordFailure(input, e);
+      await this.appendFailureAudit(input, proposal, auth,
+        e instanceof Error ? e.message : 'invalid_preconditions');
+      return this.fail(baseResult, 'invalid_preconditions',
+        e instanceof Error ? e.message : 'Proposal preconditions are invalid', input);
+    }
+
     let plan: RuleMutationPlan;
     try {
       plan = this.rust.planCreateRule(ruleInput, snapshot);
@@ -511,16 +590,53 @@ export class RuleMutationService {
     }
 
     // =====================================================================
-    // 11. Write via ledger.createRule
+    // 11. Simulate the planned rule — must produce evidence, no conflicts
     // =====================================================================
+
+    let simulation: RuleSimulationResult;
+    try {
+      simulation = this.rust.simulateRule(
+        {
+          name: plan.ruleName,
+          trigger: plan.expectedOutcome.trigger,
+          actions: plan.expectedOutcome.actions,
+        },
+        snapshot,
+      );
+    } catch (err) {
+      await this.recordFailure(input, err);
+      await this.appendFailureAudit(input, proposal, auth,
+        err instanceof Error ? err.message : 'simulation_failed');
+      return this.fail(baseResult, 'simulation_failed',
+        err instanceof Error ? err.message : 'Rule simulation failed', input);
+    }
+
+    // Proposals cannot execute without simulation evidence
+    if (simulation.transactionsMatched === 0) {
+      baseResult.simulation = simulation;
+      await this.recordFailure(input, new Error('Rule would match zero transactions'));
+      await this.appendFailureAudit(input, proposal, auth, 'simulation_no_matches');
+      return this.fail(baseResult, 'simulation_no_matches',
+        'Rule simulation matched zero transactions — no evidence for execution', input);
+    }
+
+    // Surface conflicts from overlapping rules
+    if (simulation.conflicts.length > 0) {
+      baseResult.simulation = simulation;
+      await this.recordFailure(input, new Error('Simulation revealed conflicts'));
+      await this.appendFailureAudit(input, proposal, auth, 'simulation_conflicts');
+      return this.fail(baseResult, 'simulation_conflicts',
+        `Rule simulation revealed conflicts: ${simulation.conflicts.join('; ')}`, input);
+    }
+
+    // =====================================================================
+    // 12. Write via ledger.createRule
+    // =====================================================================
+
 
     let writeResult: MutationResult;
     try {
-      writeResult = await this.ledger.createRule({
-        name: ruleInput.name,
-        conditions: ruleInput.conditions,
-        actions: ruleInput.actions,
-      });
+      writeResult = await this.ledger.createRule(this.buildRuleProposal(proposal));
     } catch (err) {
       await this.recordFailure(input, err);
       await this.auditFailure(input, proposal, auth, err);
@@ -568,12 +684,17 @@ export class RuleMutationService {
 
     // =====================================================================
     // 13. Complete idempotency record
+    //
+    // Post-write failures are terminal (the write may have happened externally
+    // even if verification failed).  Pre-write failures are handled above via
+    // recordFailure (retryable).
     // =====================================================================
 
     if (!verified) {
       const errMsg = verifyMessage ?? 'Postcondition verification failed';
       try {
-        await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg);
+        // Terminal — external write may have occurred; do not retry
+        await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, false);
       } catch {
         // Non-fatal
       }
@@ -584,6 +705,7 @@ export class RuleMutationService {
         // Non-fatal
       }
     }
+
 
     // =====================================================================
     // 14. Append completion or failure audit
@@ -620,10 +742,6 @@ export class RuleMutationService {
       // Non-fatal
     }
 
-    // =====================================================================
-    // 15. Return result
-    // =====================================================================
-
     return {
       success: verified,
       ruleId,
@@ -633,45 +751,75 @@ export class RuleMutationService {
       auditRecordId: auditCompleted?.id ?? auditStarted?.id ?? null,
       reasonCodes: allReasonCodes,
       message: verified ? undefined : (verifyMessage ?? 'Postcondition verification failed'),
+      simulation,
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Private helpers
-  // -------------------------------------------------------------------------
 
   /**
-   * Extract the rule name from proposal preconditions.
+   * Extract rule name from proposal preconditions.
+   * Supports both flat format ({ name }) and nativeRule-nested ({ nativeRule: { name } }).
+   * Throws when the name is missing or empty.
    */
   private extractRuleName(proposal: CategorizationProposal): string {
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(proposal.preconditions);
-      return parsed.name ?? 'unnamed_rule';
+      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
     } catch {
-      return 'unnamed_rule';
+      throw new Error('Proposal preconditions are not valid JSON');
     }
-  }
 
+    // Support both flat format and nativeRule-nested format
+    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
+      ? parsed.nativeRule as Record<string, unknown>
+      : parsed;
+
+    const name = ruleData.name;
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new Error('Rule name is required and must be a non-empty string');
+    }
+    return name.trim();
+  }
   /**
    * Extract rule input from proposal preconditions.
+   * Supports both flat format ({ name, conditions, actions }) and nativeRule-nested
+   * format ({ nativeRule: { name, conditions, actions } }).
+   * Throws when required fields are missing or degenerate.
    */
   private extractRuleInput(proposal: CategorizationProposal): RuleProposalInput {
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(proposal.preconditions);
-      return {
-        name: parsed.name ?? 'unnamed_rule',
-        conditions: parsed.conditions ?? [],
-        actions: parsed.actions ?? [],
-        budgetId: proposal.budgetId,
-      };
+      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
     } catch {
-      return {
-        name: 'unnamed_rule',
-        conditions: [],
-        actions: [],
-        budgetId: proposal.budgetId,
-      };
+      throw new Error('Proposal preconditions are not valid JSON');
     }
+
+    // Support both flat format and nativeRule-nested format
+    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
+      ? parsed.nativeRule as Record<string, unknown>
+      : parsed;
+
+    const name = ruleData.name;
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new Error('Rule name is required and must be a non-empty string');
+    }
+
+    const conditions = ruleData.conditions;
+    if (!Array.isArray(conditions) || conditions.length === 0) {
+      throw new Error('Rule conditions are required and must be a non-empty array');
+    }
+
+    const actions = ruleData.actions;
+    if (!Array.isArray(actions) || actions.length === 0) {
+      throw new Error('Rule actions are required and must be a non-empty array');
+    }
+
+    return {
+      name: name.trim(),
+      conditions,
+      actions,
+      budgetId: proposal.budgetId,
+    };
   }
 
   /**
@@ -709,11 +857,13 @@ export class RuleMutationService {
   private async recordFailure(input: ExecuteRuleInput, err: unknown): Promise<void> {
     try {
       const errMsg = err instanceof Error ? err.message : String(err);
-      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg);
+      // Transient errors before the write are retryable
+      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, true);
     } catch {
       // Non-fatal
     }
   }
+
 
   /**
    * Append an execution_failed audit record after a write error (best-effort).
@@ -790,15 +940,70 @@ export class RuleMutationService {
       // Ignore parse failures
     }
 
+    const succeeded = idem.status === 'succeeded';
     return {
-      success: idem.completed && !idem.errorMessage,
+      success: succeeded,
       ruleId,
-      verified: !idem.errorMessage,
+      verified: succeeded,
       idempotencyKey: input.idempotencyKey,
       approvalId: null,
       auditRecordId: null,
       reasonCodes: ['idempotency_replay'],
       message: idem.errorMessage ?? undefined,
+      simulation: null,
     };
   }
-}
+
+
+  /**
+   * Build a RuleProposal for ledger.createRule from proposal preconditions,
+   * supporting both flat format ({ name, conditions, actions, conditionsOp, stage })
+   * and nativeRule-nested format ({ nativeRule: { name, conditions, actions, conditionsOp, stage } }).
+   *
+   * Throws when required fields are missing or degenerate, ensuring no
+   * default/unnamed rule reaches the ledger.
+   */
+  private buildRuleProposal(proposal: CategorizationProposal): RuleProposal {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
+    } catch {
+      throw new Error('Proposal preconditions are not valid JSON');
+    }
+
+    // Support both flat format and nativeRule-nested format
+    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
+      ? parsed.nativeRule as Record<string, unknown>
+      : parsed;
+
+    const name = ruleData.name;
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new Error('Rule name is required and must be a non-empty string');
+    }
+
+    const conditions = ruleData.conditions;
+    if (!Array.isArray(conditions) || conditions.length === 0) {
+      throw new Error('Rule conditions are required and must be a non-empty array');
+    }
+
+    const actions = ruleData.actions;
+    if (!Array.isArray(actions) || actions.length === 0) {
+      throw new Error('Rule actions are required and must be a non-empty array');
+    }
+
+    const stageVal = ruleData.stage;
+    const stage: 'pre' | 'post' | undefined =
+      stageVal === 'pre' ? 'pre' :
+      stageVal === 'post' ? 'post' :
+      undefined;
+
+    return {
+      name: name.trim(),
+      conditions,
+      actions,
+      conditionsOp: (ruleData.conditionsOp as 'and' | 'or') ?? 'and',
+      stage,
+    };
+  }
+
+ }

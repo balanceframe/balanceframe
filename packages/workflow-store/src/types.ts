@@ -113,12 +113,14 @@ export type ReviewStatus =
   | 'suggestion_generated'
   | 'pending_review'
   | 'approved'
+  | 'applying'
   | 'correcting'
   | 'applied'
   | 'apply_failed'
   | 'rejected'
   | 'skipped'
   | 'superseded';
+
 
 /** A review item tracking one candidate through the review-apply lifecycle. */
 export interface ReviewItem {
@@ -209,6 +211,23 @@ export interface TransitionReviewInput {
    * supersedes this one (establishes the successor link).
    */
   readonly supersededBy?: string;
+  // ── Correction evidence fields ─────────────────────────────────────────
+  // These are captured as structured history when transitioning to
+  // `approved` or `correcting`.
+  /** Normalized merchant name from the transaction payee. */
+  readonly merchant?: string;
+  /** Imported payee name from the transaction import data. */
+  readonly importedPayee?: string;
+  /** Account ID the transaction belongs to. */
+  readonly accountId?: string;
+  /** Direction — `'inflow'` or `'outflow'`. */
+  readonly direction?: string;
+  /** Transaction amount in minor units. */
+  readonly amount?: number;
+  /** Transaction date (ISO-8601). */
+  readonly date?: string;
+  /** Human-readable category name assigned by the correction. */
+  readonly categoryName?: string;
 }
 
 /** An audited action recording a review-item status transition. */
@@ -398,6 +417,12 @@ export interface WorkflowStore {
    */
   listReviewItems(options?: ReviewListOptions): Promise<ReviewItem[]>;
 
+  /**
+   * Return the total number of review items matching the given filter.
+   * Used for pagination totals.
+   */
+  countReviewItems(options?: ReviewListOptions): Promise<number>;
+
   /** Return all review items sharing a correlation ID. */
   listReviewItemsByCorrelation(correlationId: string): Promise<ReviewItem[]>;
 
@@ -429,6 +454,20 @@ export interface WorkflowStore {
     actor: string,
     reason?: string,
   ): Promise<TransitionReviewResult[]>;
+
+  /**
+   * Update the category assigned to a review item.
+   *
+   * Used after a correct/edit action to persist the reviewer's chosen
+   * category so downstream display (change preview, queue) reflects it.
+   *
+   * @throws If the item does not exist or the version lock fails.
+   */
+  updateReviewItemCategory(
+    id: string,
+    categoryId: string,
+    expectedVersion: number,
+  ): Promise<ReviewItem>;
 
   /**
    * Undo the last reversible transition.
@@ -474,6 +513,12 @@ export interface WorkflowStore {
    * List categorization proposals ordered by creation time descending.
    */
   listProposals(options?: ListProposalsOptions): Promise<CategorizationProposal[]>;
+
+  /**
+   * Return the total number of categorization proposals matching the
+   * given filter.  Used for pagination totals.
+   */
+  countProposals(options?: ListProposalsOptions): Promise<number>;
 
   /**
    * Supersede a proposal (and cascade-supersede its approvals).
@@ -526,7 +571,8 @@ export interface WorkflowStore {
   /**
    * Create an idempotency record for at-most-once execution.
    *
-   * Rejects replay with different proposalId, operation, or serialisedEffect
+   * Claims the record as `in_progress` with a lease expiration.  Rejects
+   * replay with different proposalId, operation, or serialisedEffect
    * under the same idempotency key.
    *
    * @returns An {@link IdempotencyClaim} — the record and whether this
@@ -538,14 +584,37 @@ export interface WorkflowStore {
   getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null>;
 
   /**
-   * Mark an idempotency record as completed.
+   * Transition an idempotency record to a terminal status.
    *
-   * @param errorMessage Optional error message if the execution failed.
+   * - No errorMessage    → `succeeded`
+   * - isRetryable=true    → `retryable_failed`
+   * - isRetryable=false   → `terminal_failed`
+   *
+   * @param key            The idempotency key.
+   * @param errorMessage   Optional error message if the execution failed.
+   * @param isRetryable    Whether a failed execution is safe to retry.
    */
   completeIdempotencyRecord(
     key: string,
     errorMessage?: string | null,
+    isRetryable?: boolean,
   ): Promise<IdempotencyRecord>;
+
+  /**
+   * Find all idempotency records whose lease has expired while still
+   * `in_progress`.  These records represent executions that may have been
+   * stranded by a crash or timeout.
+   */
+  findStrandedIdempotencyRecords(): Promise<IdempotencyRecord[]>;
+
+  /**
+   * Reconcile stranded `in_progress` records whose lease has expired.
+   *
+   * Marks each as `retryable_failed` and records the error.  Returns the
+   * number of records reconciled.
+   */
+  reconcileStrandedIdempotencyRecords(): Promise<number>;
+
 
   // ── Audit records (append-only) ───────────────────────────────────
 
@@ -572,6 +641,27 @@ export interface WorkflowStore {
   ): Promise<AuditRecord[]>;
 
   // ── Authorization ─────────────────────────────────────────────────
+
+  // ── Correction history ────────────────────────────────────────────────
+
+  /**
+   * Query structured correction evidence recorded from approved/corrected
+   * review transitions.
+   *
+   * Corrections are append-only; the original suggestion is never mutated.
+   */
+  queryCorrectionHistory(
+    options?: CorrectionHistoryOptions,
+  ): Promise<CorrectionRecord[]>;
+
+  /**
+   * Find conflicting account / direction / category values across
+   * corrections for the same merchant.  Conflicts are flagged rather
+   * than collapsed, so callers can decide how to resolve them.
+   *
+   * @param limit  Maximum number of conflicts to return (default 50).
+   */
+  findCorrectionConflicts(limit?: number): Promise<CorrectionConflict[]>;
 
   /**
    * Evaluate whether an actor is authorized for a given capability/scope.
@@ -608,6 +698,81 @@ export interface WorkflowStore {
     capabilities: string[];
     scope: string;
   } | null>;
+
+  // ── Lifecycle / administrative operations ─────────────────────────
+
+  /**
+   * Cancel all pending (unclaimed) jobs. Returns count cancelled.
+   * Processing and completed jobs are left untouched.
+   */
+  cancelPendingJobs(): Promise<number>;
+
+  /**
+   * Delete an actor's membership record. Returns true if a
+   * record was found and deleted.
+   */
+  deleteActorMembership(actorId: string): Promise<boolean>;
+
+  /**
+   * Record an export event for export-before-delete tracking.
+   * Overwrites any previous export record (only the most recent
+   * export is tracked).
+   */
+  recordExport(input: {
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  }): Promise<void>;
+
+  /**
+   * Get the most recent export record, or null if none exists.
+   */
+  getLastExport(): Promise<{
+    exportedAt: string;
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  } | null>;
+
+  /**
+   * Delete all records for a given lifecycle scope.
+   *
+   * Supported scopes: connection, space, user, provider, workflow,
+   * notification.
+   *
+   * @returns Deleted counts per entity type, plus retained records
+   *          count and reasons why certain records were preserved.
+   */
+  // ── Rule overrides ────────────────────────────────────────────
+
+  /**
+   * Persist or clear a local override for a rule's inactive state.
+   * This is the source of truth for rule toggling since the Actual
+   * sync protocol does not support updating rule fields.
+   */
+  setRuleOverride(ruleId: string, inactive: boolean): Promise<void>;
+
+  /**
+   * Return all active rule overrides as a Map<ruleId, inactive>.
+   */
+  getRuleOverrides(): Promise<Map<string, boolean>>;
+
+  /**
+   * Remove a local override for a rule's inactive state.
+   * Called after the Actual ledger has been successfully updated or when
+   * cleaning up stale local annotations.
+   */
+  removeRuleOverride(ruleId: string): Promise<void>;
+
+  deleteScopeData(
+    scope: string,
+    options?: { actorId?: string },
+  ): Promise<{
+    deleted: Record<string, number>;
+    retained: { count: number; reasons: string[] };
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -742,6 +907,9 @@ export interface CreateApprovalInput {
 // IdempotencyRecord — at-most-once execution tracking
 // ---------------------------------------------------------------------------
 
+/** Lifecycle status of an idempotent workflow operation. */
+export type IdempotencyStatus = 'in_progress' | 'succeeded' | 'retryable_failed' | 'terminal_failed';
+
 /** Record of an idempotent workflow operation. */
 export interface IdempotencyRecord {
   readonly idempotencyKey: string;
@@ -749,6 +917,10 @@ export interface IdempotencyRecord {
   readonly operation: string;
   readonly executedAt: string;
   readonly completed: boolean;
+  /** Lifecycle status of this record. */
+  readonly status: IdempotencyStatus;
+  /** ISO-8601 timestamp after which the in_progress claim expires. */
+  readonly leaseExpiresAt: string | null;
   /** Serialised effect of the execution. */
   readonly serialisedEffect: string;
   readonly errorMessage: string | null;
@@ -761,6 +933,8 @@ export interface CreateIdempotencyInput {
   readonly proposalId: string;
   readonly operation: string;
   readonly serialisedEffect: string;
+  /** Duration in milliseconds for the initial lease.  Defaults to 60 000. */
+  readonly leaseDurationMs?: number;
 }
 
 /**
@@ -771,6 +945,7 @@ export interface IdempotencyClaim {
   readonly record: IdempotencyRecord;
   readonly isOwner: boolean;
 }
+
 
 // ---------------------------------------------------------------------------
 // AuditRecord — append-only workflow audit trail
@@ -837,6 +1012,82 @@ export interface AppendAuditInput {
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CorrectionRecord — structured evidence from approved/corrected reviews
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured evidence captured when a review item transitions to
+ * `approved` or `correcting`.  Immutable once written.
+ */
+export interface CorrectionRecord {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** The review item that was approved or corrected. */
+  readonly reviewItemId: string;
+  /** Transaction this correction applies to. */
+  readonly transactionId: string;
+  /** Monotonic version of the transaction at time of correction. */
+  readonly transactionVersion: number;
+  /** Normalized merchant name from the transaction payee. */
+  readonly merchant: string | null;
+  /** Imported payee name from the transaction import data. */
+  readonly importedPayee: string | null;
+  /** Account ID the transaction belongs to. */
+  readonly accountId: string | null;
+  /** Direction — `'inflow'`, `'outflow'`, or null. */
+  readonly direction: string | null;
+  /** Transaction amount in minor units, or null. */
+  readonly amount: number | null;
+  /** Transaction date (ISO-8601), or null. */
+  readonly date: string | null;
+  /** The category that was approved or assigned. */
+  readonly categoryId: string;
+  /** Human-readable category name, or null. */
+  readonly categoryName: string | null;
+  /** Actor who performed the approval or correction. */
+  readonly actor: string;
+  /** Review status before this transition. */
+  readonly fromStatus: ReviewStatus;
+  /** Review status after this transition. */
+  readonly toStatus: ReviewStatus;
+  /** The review item ID that is the source of this correction. */
+  readonly sourceReviewId: string;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/**
+ * A detected conflict among corrections for the same merchant across
+ * different approved or corrected reviews.
+ */
+export interface CorrectionConflict {
+  /** The field that has conflicting values (`'account'`, `'direction'`, `'category'`). */
+  readonly field: 'account' | 'direction' | 'category';
+  /** The merchant name shared by the conflicting corrections. */
+  readonly merchant: string;
+  /** The distinct values found for this field across corrections. */
+  readonly values: string[];
+  /** IDs of the correction records that contribute to this conflict. */
+  readonly correctionIds: string[];
+}
+
+/** Options for querying correction history. */
+export interface CorrectionHistoryOptions {
+  /** Filter by review item ID. */
+  readonly reviewItemId?: string;
+  /** Filter by merchant name. */
+  readonly merchant?: string;
+  /** Filter by transaction ID. */
+  readonly transactionId?: string;
+  /** Filter by actor. */
+  readonly actor?: string;
+  /** Maximum number of records to return (default 50). */
+  readonly limit?: number;
+  /** Number of records to skip. */
+  readonly offset?: number;
+}
 // Authorization types
 // ---------------------------------------------------------------------------
 

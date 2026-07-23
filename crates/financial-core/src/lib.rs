@@ -13,7 +13,8 @@ pub mod reconciliation;
 pub mod snapshots;
 
 pub use analysis::{
-    generate_rule_candidates, run_deterministic_analysis, DeterministicAnalysis,
+    generate_rule_candidates, generate_rule_candidates_from_corrections,
+    run_deterministic_analysis, CorrectionEvidence, DeterministicAnalysis,
     HistoricalCorrection, RecurringCharge, RepeatedMerchant, RuleCandidate, UncategorizedBacklog,
 };
 pub use blockers::{Blocker, BlockerCollector, ReasonCode};

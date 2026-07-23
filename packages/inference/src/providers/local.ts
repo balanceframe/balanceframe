@@ -1,10 +1,16 @@
 /**
  * Local (on-device) provider adapter.
  *
- * Runs classification entirely locally — no network egress. This adapter
- * uses a simple keyword/rule-based fallback when no real local model is
- * configured, but is designed to be replaced with an ONNX/TFLite/WASM
- * model at the composition root.
+ * DETERMINISTIC LIMITED FALLBACK — NOT CALIBRATED MODEL OUTPUT
+ *
+ * This adapter uses a simple keyword/rule-based heuristic lookup to provide
+ * a best-guess category when no real provider can classify the candidate.
+ * It is NOT a calibrated model — confidence scores are fixed constants
+ * (0.6 for a match, 0 for no match) and must NOT be interpreted as
+ * statistical likelihood or model confidence.
+ *
+ * Designed to be replaced with an ONNX/TFLite/WASM model at the
+ * composition root for production use.
  *
  * Never reads credentials from the environment; all configuration is
  * injected via the constructor.
@@ -18,13 +24,6 @@ export interface LocalProviderConfig {
   model?: string;
 }
 
-/**
- * Local provider adapter.
- *
- * Injects a simple heuristic classifier by default. A real local model
- * can be wired by subclassing or providing a custom classify function
- * at the composition root.
- */
 export class LocalProvider implements ProviderAdapter {
   readonly providerId: string;
   readonly providerInfo: ProviderInfo;

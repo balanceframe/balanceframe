@@ -24,11 +24,12 @@ import type {
   PolicyEngine,
   Redactor,
   ProviderInfo,
+  AuthoritativeLayer,
+  LayerResult,
 } from './types';
 import type { ProviderAdapter } from './providers/types';
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
-
 /** Dependency-injection configuration for the orchestrator. */
 export interface OrchestratorConfig {
   /** Registered provider adapters — injectable. */
@@ -43,13 +44,17 @@ export interface OrchestratorConfig {
   providerTimeoutMs?: number;
   /** External AbortSignal for caller-initiated cancellation across all classify calls. */
   signal?: AbortSignal;
+  /** Ordered authoritative layers checked before provider routing. */
+  layers?: AuthoritativeLayer[];
+  /** Maximum concurrent classify calls to providers. Defaults to 3 when unset or zero. */
+  maxConcurrency?: number;
 }
 
 /**
  * Orchestrates classification of unresolved candidates.
  *
  * Thread-safe: each classify call is independent and produces new
- * Suggestion instances. No shared mutable state.
+ * Suggestion objects — no shared mutable state.
  */
 export class Orchestrator {
   private readonly providers: ProviderAdapter[];
@@ -58,6 +63,10 @@ export class Orchestrator {
   private readonly promptVersion: string;
   private readonly providerTimeoutMs: number | undefined;
   private readonly signal: AbortSignal | undefined;
+  private readonly layers: AuthoritativeLayer[] | undefined;
+  private readonly maxConcurrency: number | undefined;
+  /** Track abort listener for cleanup after each classifyOne call. */
+  private _abortListener: (() => void) | null = null;
 
   constructor(config: OrchestratorConfig) {
     this.providers = config.providers;
@@ -66,6 +75,8 @@ export class Orchestrator {
     this.promptVersion = config.promptVersion;
     this.providerTimeoutMs = config.providerTimeoutMs;
     this.signal = config.signal;
+    this.layers = config.layers;
+    this.maxConcurrency = config.maxConcurrency;
   }
 
   /**
@@ -74,18 +85,48 @@ export class Orchestrator {
    * Returns one Suggestion per candidate — never throws. Errors from
    * provider calls, policy denials, or validation failures are captured
    * in the Suggestion's errors array.
+   *
+   * At most maxConcurrency classifyOne calls run simultaneously, preventing
+   * provider flooding. Defaults to 3 when maxConcurrency is unset or zero.
    */
   async classify(candidates: UnresolvedCandidate[]): Promise<Suggestion[]> {
-    const results: Suggestion[] = [];
+    const total = candidates.length;
+    const results: Suggestion[] = new Array(total);
 
-    for (const candidate of candidates) {
-      const suggestion = await this.classifyOne(candidate);
-      results.push(suggestion);
+    // Default to a bounded parallel pool of 3 when concurrency is unset or zero
+    const effectiveConc = (this.maxConcurrency ?? 3) || 3;
+    const maxConc = Math.min(effectiveConc, total);
+
+    // Bounded concurrency: use a simple sliding-window approach
+    let nextIdx = 0;
+    const inFlight = new Set<Promise<void>>();
+
+    async function startOne(
+      orchestrator: Orchestrator,
+      candidate: UnresolvedCandidate,
+      idx: number,
+    ): Promise<void> {
+      results[idx] = await orchestrator.classifyOne(candidate);
+    }
+
+    while (nextIdx < total || inFlight.size > 0) {
+      // Fill the window up to maxConcurrency
+      while (nextIdx < total && inFlight.size < maxConc) {
+        const idx = nextIdx++;
+        const promise = startOne(this, candidates[idx]!, idx).finally(() => {
+          inFlight.delete(promise);
+        });
+        inFlight.add(promise);
+      }
+
+      if (inFlight.size > 0) {
+        // Wait for at least one to finish
+        await Promise.race(inFlight);
+      }
     }
 
     return results;
   }
-
   private async classifyOne(candidate: UnresolvedCandidate): Promise<Suggestion> {
     // Check candidate eligibility
     const eligibilityError = this.checkEligibility(candidate);
@@ -96,6 +137,11 @@ export class Orchestrator {
     // Check policy
     if (!this.policy.isEnabled('classification')) {
       return this.errorSuggestion(candidate, 'classification disabled by policy', null);
+    }
+    // Run authoritative layers before falling through to providers
+    const layerSuggestion = await this.resolveLayers(candidate);
+    if (layerSuggestion) {
+      return layerSuggestion;
     }
 
     // Find eligible providers for this capability
@@ -125,33 +171,36 @@ export class Orchestrator {
       ? this.redactor.forExternal(candidate)
       : this.redactor.forLocal(candidate);
 
-    // Build classify request with deadline race
+    // Build classify request with deadline race and category context
     let timeoutId: TimeoutHandle | undefined;
     const abortController = new AbortController();
     const timeoutMs = this.providerTimeoutMs ?? (isExternal ? 30_000 : 10_000);
 
     // Race the adapter call against a hard deadline — enforces timeout even for
     // adapters that do not check the AbortSignal.
-    const timeoutPromise = new Promise<ClassificationResult>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        abortController.abort();
-        reject(Object.assign(new Error(`provider timeout after ${timeoutMs}ms`), { name: 'TimeoutError' }));
-      }, timeoutMs);
-
-      // Link external caller cancellation signal
-      if (this.signal) {
-        if (this.signal.aborted) {
-          clearTimeout(timeoutId);
-          reject(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
-          return;
-        }
-        this.signal.addEventListener('abort', () => {
-          clearTimeout(timeoutId);
-          abortController.abort();
-          reject(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
-        }, { once: true });
-      }
+    let rejectTimeout!: (reason: unknown) => void;
+    const timeoutPromise = new Promise<ClassificationResult>((_resolve, reject) => {
+      rejectTimeout = reject;
     });
+    timeoutId = setTimeout(() => {
+      abortController.abort();
+      rejectTimeout(Object.assign(new Error(`provider timeout after ${timeoutMs}ms`), { name: 'TimeoutError' }));
+    }, timeoutMs);
+
+    // Link external caller cancellation signal — cleanup after call
+    const abortHandler = () => {
+      clearTimeout(timeoutId);
+      abortController.abort();
+      rejectTimeout(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
+    };
+    if (this.signal) {
+      if (this.signal.aborted) {
+        clearTimeout(timeoutId);
+        rejectTimeout(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
+      } else {
+        this.signal.addEventListener('abort', abortHandler, { once: true });
+      }
+    }
 
     const request: ClassifyRequest = {
       transactionId: preparedCandidate.transactionId,
@@ -164,9 +213,10 @@ export class Orchestrator {
       currency: preparedCandidate.currency,
       date: preparedCandidate.date,
       categoryId: preparedCandidate.categoryId,
-      // In a real system, these come from the protocol snapshot
-      categoryNames: {},
-      categoryGroups: {},
+      // Category context from protocol snapshot — carried on the candidate
+      allowedCategoryIds: preparedCandidate.allowedCategoryIds ?? [],
+      categoryNames: preparedCandidate.categoryNames ?? {},
+      categoryGroups: preparedCandidate.categoryGroups ?? {},
       signal: abortController.signal,
     };
 
@@ -176,6 +226,9 @@ export class Orchestrator {
       result = await Promise.race([chosenAdapter.classify(request), timeoutPromise]);
     } catch (err) {
       clearTimeout(timeoutId);
+      if (this.signal) {
+        this.signal.removeEventListener('abort', abortHandler);
+      }
       const message = err instanceof Error ? err.message : String(err);
       const errorCode = err instanceof Error && err.name !== 'Error'
         ? err.name
@@ -187,6 +240,9 @@ export class Orchestrator {
       return this.errorSuggestion(candidate, message, chosenProviderInfo.id, errorCode);
     } finally {
       clearTimeout(timeoutId);
+      if (this.signal) {
+        this.signal.removeEventListener('abort', abortHandler);
+      }
     }
 
     // Validate provider output
@@ -201,6 +257,18 @@ export class Orchestrator {
     }
 
     const validated = parsed.data;
+
+    // Category allowlist validation: if allowedCategoryIds is non-empty, the
+    // returned categoryId must be in the allowed set.
+    const allowedIds = candidate.allowedCategoryIds ?? [];
+    if (allowedIds.length > 0 && !allowedIds.includes(validated.categoryId)) {
+      return this.errorSuggestion(
+        candidate,
+        `provider returned category "${validated.categoryId}" which is not in the allowed category set`,
+        chosenProviderInfo.id,
+        'CATEGORY_NOT_ALLOWED',
+      );
+    }
 
     // Build the suggestion with deterministic idempotency key
     return this.buildSuggestion(candidate, validated, chosenProviderInfo);
@@ -293,7 +361,7 @@ export class Orchestrator {
 
       // Inference-specific extras
       id: randomUUID(),
-      alternatives: validated.alternatives.map((a) => ({ ...a })),
+      alternatives: validated.alternatives.map((a) => ({ categoryId: a.categoryId, reason: a.reason })),
       errors: [],
       deterministicEvidence: structuredClone(candidate.deterministicEvidence),
     };
@@ -356,4 +424,146 @@ export class Orchestrator {
       deterministicEvidence: structuredClone(candidate.deterministicEvidence),
     };
   }
-}
+
+  /**
+   * Run authoritative layers in registration order.
+   *
+   * Returns a Suggestion if any layer resolves or blocks the candidate,
+   * or null if all layers return unresolved/unavailable.
+   */
+  private async resolveLayers(candidate: UnresolvedCandidate): Promise<Suggestion | null> {
+    if (!this.layers || this.layers.length === 0) {
+      return null;
+    }
+
+    for (const layer of this.layers) {
+      let result: LayerResult;
+      try {
+        result = await layer.resolve(candidate);
+      } catch {
+        // Layer error → treat as unavailable, continue to next layer
+        continue;
+      }
+
+      if (result.outcome === 'resolved') {
+        return this.buildLayerSuggestion(candidate, result, layer.layerId);
+      }
+
+      if (result.outcome === 'blocked') {
+        return this.buildLayerBlockedSuggestion(candidate, result, layer.layerId);
+      }
+
+      // 'unresolved' or 'unavailable' — fall through to next layer or provider
+    }
+
+    return null;
+  }
+
+  /**
+   * Build a Suggestion from an authoritative layer resolve.
+   *
+   * No provider was called; the layer output IS the suggestion. Model
+   * is empty to distinguish from provider-based classification.
+   */
+  private buildLayerSuggestion(
+    candidate: UnresolvedCandidate,
+    result: LayerResult,
+    layerId: string,
+  ): Suggestion {
+    const categoryId = result.categoryId ?? '';
+    const hash = this.buildHash(candidate, categoryId, `${layerId}-layer`);
+    const now = new Date().toISOString();
+
+    return {
+      transactionId: candidate.transactionId,
+      proposedCategoryId: categoryId,
+      categoryId,
+      categoryName: '',
+      confidence: 1,
+      reasonCodes: [`${layerId}-resolved`],
+      evidence: result.rationale ? [result.rationale] : [],
+
+      spaceId: candidate.spaceId,
+      connectionId: candidate.connectionId,
+      budgetId: candidate.budgetId,
+      transactionVersion: candidate.transactionVersion,
+      rawMerchant: candidate.rawMerchant ?? null,
+      normalizedMerchant: candidate.normalizedMerchant ?? null,
+      researchSummary: null,
+      alternativeCategoryIds: [],
+      rationale: result.rationale ?? '',
+      provider: `${layerId}-layer`,
+      model: '',
+      promptVersion: this.promptVersion,
+      inferencePolicyVersion: this.policy.policyVersion,
+      createdAt: now,
+      payloadHash: hash,
+      hash,
+      provenance: {
+        provider: `${layerId}-layer`,
+        model: '',
+        promptVersion: this.promptVersion,
+        policyVersion: this.policy.policyVersion,
+      },
+
+      id: randomUUID(),
+      alternatives: [],
+      errors: [],
+      deterministicEvidence: structuredClone(candidate.deterministicEvidence),
+    };
+  }
+
+  /**
+   * Build an error-bearing Suggestion for a layer-blocked candidate.
+   *
+   * proposedCategoryId is empty to route to manual review. Model is empty
+   * since no provider was involved.
+   */
+  private buildLayerBlockedSuggestion(
+    candidate: UnresolvedCandidate,
+    result: LayerResult,
+    layerId: string,
+  ): Suggestion {
+    const errorMessage = result.error ?? result.rationale ?? `blocked by ${layerId}`;
+    const hash = this.buildHash(candidate, '', '', errorMessage);
+    const now = new Date().toISOString();
+
+    return {
+      transactionId: candidate.transactionId,
+      proposedCategoryId: '',
+      categoryId: '',
+      categoryName: '',
+      confidence: 0,
+      reasonCodes: [`${layerId}-blocked`],
+      evidence: [errorMessage],
+
+      spaceId: candidate.spaceId,
+      connectionId: candidate.connectionId,
+      budgetId: candidate.budgetId,
+      transactionVersion: candidate.transactionVersion,
+      rawMerchant: candidate.rawMerchant ?? null,
+      normalizedMerchant: candidate.normalizedMerchant ?? null,
+      researchSummary: null,
+      alternativeCategoryIds: [],
+      rationale: errorMessage,
+      provider: `${layerId}-layer`,
+      model: '',
+      promptVersion: this.promptVersion,
+      inferencePolicyVersion: this.policy.policyVersion,
+      createdAt: now,
+      payloadHash: hash,
+      hash,
+      provenance: {
+        provider: `${layerId}-layer`,
+        model: '',
+        promptVersion: this.promptVersion,
+        policyVersion: this.policy.policyVersion,
+      },
+
+      id: randomUUID(),
+      alternatives: [],
+      errors: [errorMessage],
+      deterministicEvidence: structuredClone(candidate.deterministicEvidence),
+    };
+  }
+ }

@@ -40,7 +40,7 @@ export interface ProviderAllowlist {
 // ---------------------------------------------------------------------------
 
 export type ProviderLocality = 'local' | 'external';
-export type AuthType = 'none' | 'api-key' | 'oauth';
+export type AuthType = 'none' | 'api-key' | 'oauth' | 'bearer';
 
 export interface ProviderInfo {
   id: string;
@@ -50,6 +50,37 @@ export interface ProviderInfo {
   endpoint: string | null;
   authType: AuthType | null;
   model: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Authoritative layer resolution
+// ---------------------------------------------------------------------------
+
+/** Outcome of an authoritative layer resolution attempt. */
+export type LayerOutcome = 'resolved' | 'unresolved' | 'blocked' | 'unavailable';
+
+/** Result from an authoritative resolution layer. */
+export interface LayerResult {
+  /** Resolution outcome. */
+  outcome: LayerOutcome;
+  /** Resolved category when outcome is 'resolved'. */
+  categoryId?: string;
+  /** Rationale for the resolution or block. */
+  rationale?: string;
+  /** Error detail when outcome is 'unavailable' or 'blocked'. */
+  error?: string;
+}
+
+/**
+ * An authoritative resolution layer checked before providers.
+ *
+ * Layers run in registration order. The first layer that returns
+ * 'resolved' or 'blocked' short-circuits the pipeline. 'unresolved'
+ * and 'unavailable' fall through to the next layer or provider.
+ */
+export interface AuthoritativeLayer {
+  readonly layerId: string;
+  resolve(candidate: UnresolvedCandidate): Promise<LayerResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +104,12 @@ export interface UnresolvedCandidate {
   date: string;
   categoryId: string | null;
   importedId: string | null;
+  /** Category IDs this candidate may be classified into (from budget snapshot). */
+  allowedCategoryIds?: string[];
+  /** Budget category names keyed by id — for provider context. */
+  categoryNames?: Record<string, string>;
+  /** Category group names keyed by id — for provider context. */
+  categoryGroups?: Record<string, string>;
   deterministicEvidence: Record<string, unknown>;
 }
 
@@ -94,6 +131,8 @@ export interface ClassifyRequest {
   currency: string;
   date: string;
   categoryId: string | null;
+  /** Category IDs the provider is allowed to suggest. */
+  allowedCategoryIds: string[];
   /** Budget category names keyed by id — for provider context. */
   categoryNames: Record<string, string>;
   /** Category group names keyed by id — for provider context. */
@@ -239,15 +278,6 @@ export interface Redactor {
   forExternal(candidate: UnresolvedCandidate): UnresolvedCandidate;
   /** Return fields unchanged for a local provider call. */
   forLocal(candidate: UnresolvedCandidate): UnresolvedCandidate;
-}
-
-// ---------------------------------------------------------------------------
-// Orchestrator configuration
-// ---------------------------------------------------------------------------
-
-export interface OrchestratorConfig {
-  providers: Array<{ providerId: string; providerInfo: ProviderInfo; classify: (request: ClassifyRequest) => Promise<ClassificationResult> }>;
-  policy: PolicyEngine;
-  redactor: Redactor;
-  promptVersion: string;
+  /** Check whether the candidate contains prompt-injection patterns. */
+  hasInjection(candidate: UnresolvedCandidate): boolean;
 }

@@ -12,7 +12,7 @@ the user in control of every decision.
 BalanceFrame is licensed under the **Apache License, Version 2.0**.
 See [LICENSE](LICENSE) for the full license text. All contributors must
 sign off their commits to certify compliance with the [Developer Certificate
-of Origin](https://developercordificate.org/); see [CONTRIBUTING.md](CONTRIBUTING.md)
+of Origin](https://developercertificate.org/); see [CONTRIBUTING.md](CONTRIBUTING.md)
 for details.
 
 - [NOTICE](NOTICE) — Required attribution notices
@@ -61,16 +61,18 @@ BalanceFrame is a **Rust–TypeScript modular monolith**:
   cross-language protocol schemas. Compiled via N-API for direct use from
   TypeScript.
 - **TypeScript** owns the application layer: Actual Budget API integration
-  (read-only initially), model-provider orchestration for ML classification,
+  (read-only for ledger queries; writes for categorisation mutations
+  when authorised), model-provider orchestration for ML classification,
   workflow state management, CLI, and web UI.
 - **N-API bindings** provide the bridge between Rust and TypeScript with
   versioned, coarse-grained calls.
 
 ## Features
 
-- **Read-only Actual integration** — Connects to Actual Budget via the
-  published `@actual-app/api` to access transactions, categories, and
-  budget state without modifying the ledger.
+- **Actual integration** — Connects to Actual Budget via the
+  published `@actual-app/api` to observe transactions, categories, and
+  budget state.  Categorisation mutations are written only when explicitly
+  authorised through the review-apply workflow (opt-in per deployment).
 - **Deterministic classification** — Rust-based rule engine that applies
   user-defined patterns and learned rules with full provenance.
 - **ML-assisted suggestions** — Provider-neutral model orchestration that
@@ -82,7 +84,46 @@ BalanceFrame is a **Rust–TypeScript modular monolith**:
 - **Local-first and self-hosted** — No dependency on cloud services for
   core functionality; model providers are optional and swappable.
 
-## Quick Start
+## Quick Start (Docker)
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/engine/install/) and [Docker Compose](https://docs.docker.com/compose/install/)
+- An existing [Actual Budget](https://actualbudget.org) server (or follow the bundled setup below)
+
+### Deploy BalanceFrame alongside an existing Actual server
+
+```bash
+# Download the latest release assets from the GitHub Releases page, then:
+cp .env.example .env
+# Edit .env: set BETTER_AUTH_SECRET (openssl rand -hex 32) and BETTER_AUTH_URL
+docker compose up -d
+```
+
+BalanceFrame starts on port 3030 by default. Open `http://localhost:3030` in your
+browser, log in, and connect BalanceFrame to your Actual server URL.
+
+### Deploy BalanceFrame with a bundled Actual Budget server
+
+For a new single-server setup include the optional overlay:
+
+```bash
+docker compose -f compose.yaml -f compose.actual.yaml up -d
+```
+
+After both services become healthy, connect BalanceFrame to `http://actual:5006`
+through the application setup. Actual is independently upgradeable and
+removable — removing BalanceFrame never deletes Actual data.
+
+### Upgrade
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+See [docs/releases.md](docs/releases.md) for the SemVer and upgrade policy.
+
+## Development
 
 ### Prerequisites
 
@@ -116,6 +157,23 @@ nix flake check
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 
+### Release
+
+```bash
+# Enter the release shell (adds Docker, Cosign, Syft, etc.)
+nix develop .#release
+
+# Verify a tag matches the current package version
+just release-verify v0.1.0
+
+# Generate release assets
+just release-assets v0.1.0 sha256:<64-hex-digest>
+```
+
+See [docs/releases.md](docs/releases.md) and
+[.github/workflows/release.yml](.github/workflows/release.yml) for the
+full release process.
+
 ### Coverage
 
 ```bash
@@ -146,28 +204,9 @@ those targets, so the first baseline can be reviewed before adding gates.
 
 ## Project Status
 
-BalanceFrame is in **pre-release planning and implementation.** The roadmap
-is documented in detail at [docs/roadmap/overview.md](docs/roadmap/overview.md).
-
-### Current Phase
-
-**Phase 0** — Actual baseline and technical proof: proving stock Actual
-integration and the Rust–TypeScript contract before product workflow
-implementation.
-
-### Roadmap
-
-| Phase | Outcome |
-|-------|---------|
-| 0 | Actual baseline, Rust–TypeScript contract, N-API proof |
-| 1 | Read-only Actual gateway and deterministic Rust analysis |
-| 2 | Provider-neutral, suggestion-only ML classification |
-| 3 | Fast exception review workflow (MVP validation gate) |
-| 4 | Approved, recoverable category writes |
-| 5 | Inspectable rule learning with historical simulation |
-
-Phases 6–10 cover spaces, governance, budget intelligence, and linked-space
-coordination. See the [full roadmap](docs/roadmap/overview.md) for details.
+BalanceFrame is in **initial release.** The current stable version is
+**v0.1.0**. The roadmap is documented in detail at
+[docs/roadmap/overview.md](docs/roadmap/overview.md).
 
 ## Related Projects
 

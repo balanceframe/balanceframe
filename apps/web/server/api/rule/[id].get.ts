@@ -5,12 +5,17 @@
  * the workflow DB is initialised; the rule is fetched from the ledger
  * adapter injected into the event context by the lifecycle plugin.
  *
+ * When a local inactive override exists (from a previous PATCH that failed
+ * verification or a stale annotation), `inactive` reflects the effective
+ * value and the `_localOverride` flag is set so callers can distinguish
+ * local annotations from Actual source-of-truth.
+ *
  * Response envelope carries the full RuleShowResult shape including
  * trigger and action configuration.
  */
 
-import type { RuleShowResult } from '../../utils/rule-types';
-import { getLedgerFromEvent } from '../../utils/rule-types';
+import type { RuleShowResult, LedgerHandle } from '../../utils/rule-types';
+import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
   getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
 } from '../../utils/workflow-store';
@@ -25,26 +30,18 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
-  const ledger = getLedgerFromEvent(event);
-  if (!ledger) {
-    setResponseStatus(event, 503);
-    return errorEnvelope(
-      'LEDGER_UNAVAILABLE',
-      'No ledger connection available. Connect to a budget before viewing a rule.',
-      authInfo,
-      true,
-      requestId,
-    );
-  }
-
-  const routeId = event.context.params?.id;
-  if (!routeId) {
-    setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_RULE_ID', 'Rule ID is required.', authInfo, false, requestId);
-  }
-
   try {
+    const manager = createMutationConnectionManager();
+    const connected = await manager.restore();
+    const ledger = connected.connector as unknown as LedgerHandle;
+
     const allRules = (await ledger.listRules()) as RuleShowResult[];
+    const routeId = event.context.params?.id;
+    if (!routeId) {
+      setResponseStatus(event, 400);
+      return errorEnvelope('MISSING_RULE_ID', 'Rule ID is required.', authInfo, false, requestId);
+    }
+
     const rule: RuleShowResult | undefined = allRules.find((r) => r.id === routeId);
 
     if (!rule) {
@@ -52,8 +49,17 @@ export default defineEventHandler(async (event) => {
       return errorEnvelope('RULE_NOT_FOUND', `Rule not found: ${routeId}`, authInfo, false, requestId);
     }
 
+    // Merge local rule override if present, with explicit flag
+    const overrides = await wf.store.getRuleOverrides();
+    const overrideInactive = overrides.get(rule.id);
+    if (overrideInactive !== undefined) {
+      rule.inactive = overrideInactive;
+      rule._localOverride = true;
+    }
+
     return okEnvelope(rule, authInfo, requestId);
   } catch (e) {
+    if (event.node.res.headersSent) throw e;
     setResponseStatus(event, 500);
     return errorEnvelope(
       'RULE_SHOW_FAILED',

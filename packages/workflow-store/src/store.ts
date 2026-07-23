@@ -34,6 +34,7 @@ import type {
   ApprovalStatus,
   ProposalApproval,
   IdempotencyClaim,
+  IdempotencyStatus,
   IdempotencyRecord,
   AuditRecord,
   AuditClassification,
@@ -45,6 +46,9 @@ import type {
   AuthorizationDisposition,
   AuthorizationResult,
   MembershipStatus,
+  CorrectionRecord,
+  CorrectionConflict,
+  CorrectionHistoryOptions,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -190,11 +194,14 @@ function rowToIdempotency(row: IdempotencyRow): IdempotencyRecord {
     operation: row.operation as ProposalOperation,
     executedAt: row.executed_at,
     completed: row.completed !== 0,
+    status: row.idempotency_status as IdempotencyStatus,
+    leaseExpiresAt: row.lease_expires_at,
     serialisedEffect: row.serialised_effect,
     errorMessage: row.error_message,
     updatedAt: row.updated_at,
   };
 }
+
 
 /** Map a raw DB row to a typed AuditRecord. */
 function rowToAudit(row: AuditRow): AuditRecord {
@@ -223,29 +230,51 @@ function rowToAudit(row: AuditRow): AuditRecord {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Review transition validation
-// ---------------------------------------------------------------------------
 
+/** Map a raw DB row to a typed CorrectionRecord. */
+function rowToCorrection(row: CorrectionRow): CorrectionRecord {
+  return {
+    id: row.id,
+    reviewItemId: row.review_item_id,
+    transactionId: row.transaction_id,
+    transactionVersion: row.transaction_version,
+    merchant: row.merchant,
+    importedPayee: row.imported_payee,
+    accountId: row.account_id,
+    direction: row.direction,
+    amount: row.amount,
+    date: row.date,
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    actor: row.actor,
+    fromStatus: row.from_status as ReviewStatus,
+    toStatus: row.to_status as ReviewStatus,
+    sourceReviewId: row.source_review_id,
+    createdAt: row.created_at,
+  };
+}
+// ---------------------------------------------------------------------------
 /** Allowed transitions between review statuses. */
 const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
   discovered: ['suggestion_generated', 'pending_review', 'superseded'],
   suggestion_generated: ['pending_review', 'skipped', 'superseded'],
-  pending_review: ['approved', 'rejected', 'skipped', 'superseded'],
-  approved: ['correcting', 'pending_review', 'superseded'],
-  correcting: ['applied', 'apply_failed', 'pending_review', 'superseded'],
+  pending_review: ['approved', 'correcting', 'rejected', 'skipped', 'superseded'],
+  approved: ['correcting', 'applying', 'pending_review', 'superseded'],
+  applying: ['applied', 'apply_failed', 'superseded'],
+  correcting: ['applying', 'pending_review', 'superseded', 'rejected', 'skipped', 'approved'],
   applied: ['superseded'],
   apply_failed: ['correcting', 'pending_review', 'superseded'],
-  rejected: ['superseded'],
-  skipped: ['superseded'],
+  rejected: ['superseded', 'pending_review'],
+  skipped: ['superseded', 'pending_review'],
   superseded: [],
 };
 
-/** Statuses for which `pending_review` is an undo, not a forward transition. */
-const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting'];
-
 /** Terminal statuses that cannot transition forward. */
 const TERMINAL_STATUSES: ReviewStatus[] = ['applied', 'apply_failed', 'rejected', 'skipped', 'superseded'];
+
+/** Statuses for which `pending_review` is an undo, not a forward transition. */
+const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting', 'rejected', 'skipped'];
+
 
 // ---------------------------------------------------------------------------
 // Row shapes (internal, matching DB schema)
@@ -356,10 +385,13 @@ interface IdempotencyRow {
   operation: string;
   executed_at: string;
   completed: number;
+  idempotency_status: string;
+  lease_expires_at: string | null;
   serialised_effect: string;
   error_message: string | null;
   updated_at: string;
 }
+
 
 interface AuditRow {
   id: string;
@@ -390,6 +422,26 @@ interface ActorMembershipRow {
   scope: string;
 }
 
+
+interface CorrectionRow {
+  id: string;
+  review_item_id: string;
+  transaction_id: string;
+  transaction_version: number;
+  merchant: string | null;
+  imported_payee: string | null;
+  account_id: string | null;
+  direction: string | null;
+  amount: number | null;
+  date: string | null;
+  category_id: string;
+  category_name: string | null;
+  actor: string;
+  from_status: string;
+  to_status: string;
+  source_review_id: string;
+  created_at: string;
+}
 // ---------------------------------------------------------------------------
 // SqliteWorkflowStore
 // ---------------------------------------------------------------------------
@@ -460,6 +512,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectIdempotency: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectIdempotencyByProposalOp: null as unknown as ReturnType<DatabaseType['prepare']>,
     completeIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateIdempotencyStatusStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectStrandedIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateStrandedIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertAudit: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectAuditByClassification: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectAuditByProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -468,215 +523,358 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectActorMembership: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectExpiredApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
     markExpiredApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    cancelPendingJobsStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    deleteMembershipStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertExportRecordStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectLastExportStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertCorrection: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByReview: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByMerchant: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByTransaction: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectAllCorrections: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionConflicts: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateReviewItemCategory: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionByReviewTransition: null as unknown as ReturnType<DatabaseType['prepare']>,
+    upsertRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
+    getAllRuleOverrides: null as unknown as ReturnType<DatabaseType['prepare']>,
+    removeRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countReviewItems: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countReviewItemsByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsActive: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsByBudgetActive: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsSuperseded: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsSupersededByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectSchemaVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
+    upsertSchemaVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
-    this.initSchema();
+    this.db.pragma('busy_timeout = 5000');
+
+    // (1) Create only the schema_version table first
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER NOT NULL UNIQUE,
+        applied_at TEXT NOT NULL
+      );
+    `);
+
+    // (2-3) Run ordered transactional migrations
+    this.runMigrations();
+
+    // (4) Prepare runtime statements
     this.prepareStatements();
   }
-
   /** Release the database connection. */
   close(): void {
     this.db.close();
   }
 
-  // ── Schema initialisation ─────────────────────────────────────────
 
-  private initSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS suggestions (
-        id                  TEXT PRIMARY KEY,
-        budget_id           TEXT NOT NULL,
-        transaction_id      TEXT NOT NULL,
-        category_id         TEXT NOT NULL,
-        classifier          TEXT NOT NULL,
-        prompt_version      TEXT NOT NULL,
-        payload             TEXT NOT NULL,
-        transaction_version INTEGER NOT NULL,
-        superseded_at       TEXT,
-        created_at          TEXT NOT NULL
-      );
+  // ── Schema migrations ─────────────────────────────────────────
+  //
+  // Each migration is a function that applies one or more DDL/DML changes
+  // inside a single transaction.  The store's schema_version table tracks
+  // which version has been applied; migrations are run sequentially.
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestions_active
-        ON suggestions(budget_id, transaction_id, classifier, prompt_version)
-        WHERE superseded_at IS NULL;
+  private static readonly MIGRATIONS: Array<(db: DatabaseType) => void> = [
+    // Version 1: Initial schema
+    (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS suggestions (
+          id                  TEXT PRIMARY KEY,
+          budget_id           TEXT NOT NULL,
+          transaction_id      TEXT NOT NULL,
+          category_id         TEXT NOT NULL,
+          classifier          TEXT NOT NULL,
+          prompt_version      TEXT NOT NULL,
+          payload             TEXT NOT NULL,
+          transaction_version INTEGER NOT NULL,
+          superseded_at       TEXT,
+          created_at          TEXT NOT NULL
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_suggestions_transaction
-        ON suggestions(transaction_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestions_active
+          ON suggestions(budget_id, transaction_id, classifier, prompt_version)
+          WHERE superseded_at IS NULL;
 
-      CREATE TABLE IF NOT EXISTS candidate_jobs (
-        id               TEXT PRIMARY KEY,
-        job_type         TEXT NOT NULL,
-        candidate_id     TEXT NOT NULL,
-        status           TEXT NOT NULL DEFAULT 'pending',
-        claim_token      TEXT,
-        claimed_at       TEXT,
-        claim_expires_at TEXT,
-        created_at       TEXT NOT NULL,
-        updated_at       TEXT NOT NULL,
-        UNIQUE(job_type, candidate_id)
-      );
+        CREATE INDEX IF NOT EXISTS idx_suggestions_transaction
+          ON suggestions(transaction_id);
 
-      CREATE INDEX IF NOT EXISTS idx_jobs_status
-        ON candidate_jobs(status);
+        CREATE TABLE IF NOT EXISTS candidate_jobs (
+          id               TEXT PRIMARY KEY,
+          job_type         TEXT NOT NULL,
+          candidate_id     TEXT NOT NULL,
+          status           TEXT NOT NULL DEFAULT 'pending',
+          claim_token      TEXT,
+          claimed_at       TEXT,
+          claim_expires_at TEXT,
+          created_at       TEXT NOT NULL,
+          updated_at       TEXT NOT NULL,
+          UNIQUE(job_type, candidate_id)
+        );
 
-      CREATE TABLE IF NOT EXISTS failure_records (
-        id            TEXT PRIMARY KEY,
-        job_id        TEXT NOT NULL REFERENCES candidate_jobs(id),
-        error_code    TEXT NOT NULL,
-        error_message TEXT NOT NULL,
-        created_at    TEXT NOT NULL
-      );
+        CREATE INDEX IF NOT EXISTS idx_jobs_status
+          ON candidate_jobs(status);
 
-      CREATE INDEX IF NOT EXISTS idx_failures_job
-        ON failure_records(job_id);
+        CREATE TABLE IF NOT EXISTS failure_records (
+          id            TEXT PRIMARY KEY,
+          job_id        TEXT NOT NULL REFERENCES candidate_jobs(id),
+          error_code    TEXT NOT NULL,
+          error_message TEXT NOT NULL,
+          created_at    TEXT NOT NULL
+        );
 
-      CREATE TABLE IF NOT EXISTS review_items (
-        id                   TEXT PRIMARY KEY,
-        suggestion_id        TEXT,
-        budget_id            TEXT NOT NULL,
-        transaction_id       TEXT NOT NULL,
-        category_id          TEXT NOT NULL,
-        classifier           TEXT NOT NULL,
-        prompt_version       TEXT NOT NULL DEFAULT '',
-        transaction_version  INTEGER NOT NULL DEFAULT 0,
-        status               TEXT NOT NULL DEFAULT 'discovered',
-        correlation_id       TEXT,
-        assigned_reviewer_id TEXT,
-        approved_by          TEXT NOT NULL DEFAULT '[]',
-        reviewers_required   INTEGER NOT NULL DEFAULT 1,
-        priority             INTEGER NOT NULL DEFAULT 0,
-        evidence             TEXT NOT NULL DEFAULT '{}',
-        provenance           TEXT NOT NULL,
-        superseded_by        TEXT,
-        superseded_reason    TEXT,
-        freshness_expires_at TEXT,
-        version              INTEGER NOT NULL DEFAULT 1,
-        created_at           TEXT NOT NULL,
-        updated_at           TEXT NOT NULL
-      );
+        CREATE INDEX IF NOT EXISTS idx_failures_job
+          ON failure_records(job_id);
 
-      CREATE INDEX IF NOT EXISTS idx_review_items_status
-        ON review_items(status);
+        CREATE TABLE IF NOT EXISTS review_items (
+          id                   TEXT PRIMARY KEY,
+          suggestion_id        TEXT,
+          budget_id            TEXT NOT NULL,
+          transaction_id       TEXT NOT NULL,
+          category_id          TEXT NOT NULL,
+          classifier           TEXT NOT NULL,
+          prompt_version       TEXT NOT NULL DEFAULT '',
+          transaction_version  INTEGER NOT NULL DEFAULT 0,
+          status               TEXT NOT NULL DEFAULT 'discovered',
+          correlation_id       TEXT,
+          assigned_reviewer_id TEXT,
+          approved_by          TEXT NOT NULL DEFAULT '[]',
+          reviewers_required   INTEGER NOT NULL DEFAULT 1,
+          priority             INTEGER NOT NULL DEFAULT 0,
+          evidence             TEXT NOT NULL DEFAULT '{}',
+          provenance           TEXT NOT NULL,
+          superseded_by        TEXT,
+          superseded_reason    TEXT,
+          freshness_expires_at TEXT,
+          version              INTEGER NOT NULL DEFAULT 1,
+          created_at           TEXT NOT NULL,
+          updated_at           TEXT NOT NULL
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_review_items_correlation
-        ON review_items(correlation_id);
+        CREATE INDEX IF NOT EXISTS idx_review_items_status
+          ON review_items(status);
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_review_items_active_issue
-        ON review_items(budget_id, transaction_id, category_id, classifier)
-        WHERE status != 'superseded';
+        CREATE INDEX IF NOT EXISTS idx_review_items_correlation
+          ON review_items(correlation_id);
 
-      CREATE TABLE IF NOT EXISTS review_actions (
-        id               TEXT PRIMARY KEY,
-        review_item_id   TEXT NOT NULL REFERENCES review_items(id),
-        from_status      TEXT NOT NULL,
-        to_status        TEXT NOT NULL,
-        actor            TEXT NOT NULL,
-        reason           TEXT,
-        metadata         TEXT NOT NULL DEFAULT '{}',
-        created_at       TEXT NOT NULL
-      );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_review_items_active_issue
+          ON review_items(budget_id, transaction_id, category_id, classifier)
+          WHERE status != 'superseded';
 
-      CREATE INDEX IF NOT EXISTS idx_review_actions_item
-        ON review_actions(review_item_id);
+        CREATE TABLE IF NOT EXISTS review_actions (
+          id               TEXT PRIMARY KEY,
+          review_item_id   TEXT NOT NULL REFERENCES review_items(id),
+          from_status      TEXT NOT NULL,
+          to_status        TEXT NOT NULL,
+          actor            TEXT NOT NULL,
+          reason           TEXT,
+          metadata         TEXT NOT NULL DEFAULT '{}',
+          created_at       TEXT NOT NULL
+        );
 
-      CREATE TABLE IF NOT EXISTS categorization_proposals (
-        id               TEXT PRIMARY KEY,
-        operation        TEXT NOT NULL,
-        budget_id        TEXT NOT NULL,
-        transaction_id   TEXT NOT NULL,
-        category_id      TEXT NOT NULL,
-        payload_hash     TEXT NOT NULL,
-        policy_version   TEXT NOT NULL,
-        preconditions    TEXT NOT NULL,
-        expires_at       TEXT NOT NULL,
-        actor_id         TEXT NOT NULL,
-        provenance       TEXT NOT NULL,
-        provider_model   TEXT,
-        correlation_id   TEXT,
-        superseded_at    TEXT,
-        created_at       TEXT NOT NULL
-      );
+        CREATE INDEX IF NOT EXISTS idx_review_actions_item
+          ON review_actions(review_item_id);
 
-      CREATE INDEX IF NOT EXISTS idx_proposals_active_target
-        ON categorization_proposals(budget_id, transaction_id, operation)
-        WHERE superseded_at IS NULL;
+        CREATE TABLE IF NOT EXISTS categorization_proposals (
+          id               TEXT PRIMARY KEY,
+          operation        TEXT NOT NULL,
+          budget_id        TEXT NOT NULL,
+          transaction_id   TEXT NOT NULL,
+          category_id      TEXT NOT NULL,
+          payload_hash     TEXT NOT NULL,
+          policy_version   TEXT NOT NULL,
+          preconditions    TEXT NOT NULL,
+          expires_at       TEXT NOT NULL,
+          actor_id         TEXT NOT NULL,
+          provenance       TEXT NOT NULL,
+          provider_model   TEXT,
+          correlation_id   TEXT,
+          superseded_at    TEXT,
+          created_at       TEXT NOT NULL
+        );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_payload_unique
-        ON categorization_proposals(budget_id, transaction_id, operation, payload_hash);
+        CREATE INDEX IF NOT EXISTS idx_proposals_active_target
+          ON categorization_proposals(budget_id, transaction_id, operation)
+          WHERE superseded_at IS NULL;
 
-      CREATE TABLE IF NOT EXISTS proposal_approvals (
-        id            TEXT PRIMARY KEY,
-        proposal_id   TEXT NOT NULL REFERENCES categorization_proposals(id),
-        payload_hash  TEXT NOT NULL,
-        actor_id      TEXT NOT NULL,
-        status        TEXT NOT NULL DEFAULT 'active',
-        expires_at    TEXT NOT NULL,
-        consumed_at   TEXT,
-        superseded_at TEXT,
-        created_at    TEXT NOT NULL
-      );
+        DROP INDEX IF EXISTS idx_proposals_payload_unique;
 
-      CREATE INDEX IF NOT EXISTS idx_approvals_proposal
-        ON proposal_approvals(proposal_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_payload_unique
+          ON categorization_proposals(budget_id, transaction_id, operation, payload_hash)
+          WHERE superseded_at IS NULL;
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_actor
-        ON proposal_approvals(proposal_id, actor_id)
-        WHERE status = 'active';
+        CREATE TABLE IF NOT EXISTS proposal_approvals (
+          id            TEXT PRIMARY KEY,
+          proposal_id   TEXT NOT NULL REFERENCES categorization_proposals(id),
+          payload_hash  TEXT NOT NULL,
+          actor_id      TEXT NOT NULL,
+          status        TEXT NOT NULL DEFAULT 'active',
+          expires_at    TEXT NOT NULL,
+          consumed_at   TEXT,
+          superseded_at TEXT,
+          created_at    TEXT NOT NULL
+        );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_proposal_actor
-        ON proposal_approvals(proposal_id, actor_id);
+        CREATE INDEX IF NOT EXISTS idx_approvals_proposal
+          ON proposal_approvals(proposal_id);
 
-      CREATE TABLE IF NOT EXISTS idempotency_records (
-        idempotency_key   TEXT PRIMARY KEY,
-        proposal_id       TEXT NOT NULL,
-        operation         TEXT NOT NULL,
-        executed_at       TEXT NOT NULL,
-        completed         INTEGER NOT NULL DEFAULT 0,
-        serialised_effect TEXT NOT NULL,
-        error_message     TEXT,
-        updated_at        TEXT NOT NULL
-      );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_actor
+          ON proposal_approvals(proposal_id, actor_id)
+          WHERE status = 'active';
 
-      CREATE TABLE IF NOT EXISTS audit_records (
-        id                       TEXT PRIMARY KEY,
-        classification           TEXT NOT NULL,
-        timestamp                TEXT NOT NULL,
-        actor_id                 TEXT NOT NULL,
-        operation                TEXT,
-        proposal_id              TEXT,
-        payload_hash             TEXT,
-        budget_id                TEXT,
-        backend_ids              TEXT NOT NULL DEFAULT '[]',
-        policy_version           TEXT,
-        authorization_disposition TEXT,
-        idempotency_key          TEXT,
-        expected_prior_state     TEXT,
-        observed_result_state    TEXT,
-        provider_model           TEXT,
-        correlation_id           TEXT,
-        request_id               TEXT,
-        result                   TEXT NOT NULL,
-        is_error                 INTEGER NOT NULL DEFAULT 0
-      );
+        DROP INDEX IF EXISTS idx_approvals_proposal_actor;
 
-      CREATE INDEX IF NOT EXISTS idx_audit_classification
-        ON audit_records(classification);
+        CREATE TABLE IF NOT EXISTS rule_overrides (
+          rule_id   TEXT PRIMARY KEY,
+          inactive  INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_audit_proposal
-        ON audit_records(proposal_id);
+        CREATE TABLE IF NOT EXISTS idempotency_records (
+          idempotency_key   TEXT PRIMARY KEY,
+          proposal_id       TEXT NOT NULL,
+          operation         TEXT NOT NULL,
+          executed_at       TEXT NOT NULL,
+          completed         INTEGER NOT NULL DEFAULT 0,
+          serialised_effect TEXT NOT NULL,
+          error_message     TEXT,
+          updated_at        TEXT NOT NULL
+        );
 
-      CREATE TABLE IF NOT EXISTS actor_memberships (
-        actor_id     TEXT PRIMARY KEY,
-        status       TEXT NOT NULL DEFAULT 'active',
-        capabilities TEXT NOT NULL DEFAULT '[]',
-        scope        TEXT NOT NULL DEFAULT '*'
-      );
-    `);
+        CREATE TABLE IF NOT EXISTS audit_records (
+          id                       TEXT PRIMARY KEY,
+          classification           TEXT NOT NULL,
+          timestamp                TEXT NOT NULL,
+          actor_id                 TEXT NOT NULL,
+          operation                TEXT,
+          proposal_id              TEXT,
+          payload_hash             TEXT,
+          budget_id                TEXT,
+          backend_ids              TEXT NOT NULL DEFAULT '[]',
+          policy_version           TEXT,
+          authorization_disposition TEXT,
+          idempotency_key          TEXT,
+          expected_prior_state     TEXT,
+          observed_result_state    TEXT,
+          provider_model           TEXT,
+          correlation_id           TEXT,
+          request_id               TEXT,
+          result                   TEXT NOT NULL,
+          is_error                 INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS review_corrections (
+          id                  TEXT PRIMARY KEY,
+          review_item_id      TEXT NOT NULL REFERENCES review_items(id),
+          transaction_id      TEXT NOT NULL,
+          transaction_version INTEGER NOT NULL DEFAULT 0,
+          merchant            TEXT,
+          imported_payee      TEXT,
+          account_id          TEXT,
+          direction           TEXT,
+          amount              INTEGER,
+          date                TEXT,
+          category_id         TEXT NOT NULL,
+          category_name       TEXT,
+          actor               TEXT NOT NULL,
+          from_status         TEXT NOT NULL,
+          to_status           TEXT NOT NULL,
+          source_review_id    TEXT NOT NULL,
+          created_at          TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_review
+          ON review_corrections(review_item_id);
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_merchant
+          ON review_corrections(merchant);
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_transaction
+          ON review_corrections(transaction_id);
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_actor
+          ON review_corrections(actor);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_classification
+          ON audit_records(classification);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_proposal
+          ON audit_records(proposal_id);
+
+        CREATE TABLE IF NOT EXISTS actor_memberships (
+          actor_id     TEXT PRIMARY KEY,
+          status       TEXT NOT NULL DEFAULT 'active',
+          capabilities TEXT NOT NULL DEFAULT '[]',
+          scope        TEXT NOT NULL DEFAULT '*'
+        );
+
+        CREATE TABLE IF NOT EXISTS export_records (
+          id               TEXT PRIMARY KEY,
+          budget_name      TEXT NOT NULL,
+          export_path      TEXT NOT NULL,
+          account_count    INTEGER NOT NULL DEFAULT 0,
+          transaction_count INTEGER NOT NULL DEFAULT 0,
+          exported_at      TEXT NOT NULL
+        );
+      `);
+    },
+    // Version 2: Idempotency state machine — status field and lease expiration
+    (db) => {
+      db.exec(`
+        ALTER TABLE idempotency_records ADD COLUMN idempotency_status TEXT NOT NULL DEFAULT 'in_progress';
+        ALTER TABLE idempotency_records ADD COLUMN lease_expires_at TEXT;
+
+        -- Backfill existing completed records to the correct terminal status
+        UPDATE idempotency_records
+           SET idempotency_status = 'succeeded'
+         WHERE completed = 1
+           AND error_message IS NULL;
+
+        UPDATE idempotency_records
+           SET idempotency_status = 'terminal_failed'
+         WHERE completed = 1
+           AND error_message IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_idempotency_status
+          ON idempotency_records(idempotency_status);
+      `);
+    },
+  ];
+
+  private getCurrentSchemaVersion(): number {
+    const row = this.db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined;
+    return row?.version ?? 0;
   }
+  private runMigrations(): void {
+    const current = this.getCurrentSchemaVersion();
+    const target = SqliteWorkflowStore.MIGRATIONS.length;
+
+    if (current >= target) return;
+
+    for (let v = current + 1; v <= target; v++) {
+      const migration = SqliteWorkflowStore.MIGRATIONS[v - 1];
+      if (!migration) continue;
+      const runMigration = this.db.transaction(() => {
+        migration(this.db);
+        this.db.prepare(
+          'INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)'
+        ).run({ version: v, appliedAt: new Date().toISOString() });
+      });
+      runMigration();
+    }
+  }
+
 
   private prepareStatements(): void {
     // ── Suggestions ────────────────────────────────────────────────────
@@ -920,6 +1118,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
          AND version = @expectedVersion
     `);
 
+    this.stmt.updateReviewItemCategory = this.db.prepare(`
+      UPDATE review_items
+         SET category_id = @categoryId,
+             updated_at = @now,
+             version = version + 1
+       WHERE id = @id
+         AND version = @expectedVersion
+    `);
+
     this.stmt.insertReviewAction = this.db.prepare(`
       INSERT INTO review_actions (id, review_item_id, from_status, to_status,
                                   actor, reason, metadata, created_at)
@@ -944,7 +1151,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Proposals ──────────────────────────────────────────────────────
 
     this.stmt.insertProposal = this.db.prepare(`
-      INSERT INTO categorization_proposals (id, operation, budget_id, transaction_id,
+      INSERT OR IGNORE INTO categorization_proposals (id, operation, budget_id, transaction_id,
                                             category_id, payload_hash, policy_version,
                                             preconditions, expires_at, actor_id,
                                             provenance, provider_model, correlation_id,
@@ -954,8 +1161,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
               @preconditions, @expiresAt, @actorId,
               @provenance, @providerModel, @correlationId,
               @supersededAt, @createdAt)
-      ON CONFLICT(budget_id, transaction_id, operation, payload_hash)
-        DO NOTHING
       RETURNING *
     `);
 
@@ -991,14 +1196,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Approvals ─────────────────────────────────────────────────────
 
     this.stmt.insertApproval = this.db.prepare(`
-      INSERT INTO proposal_approvals (id, proposal_id, payload_hash, actor_id,
+      INSERT OR IGNORE INTO proposal_approvals (id, proposal_id, payload_hash, actor_id,
                                       status, expires_at, consumed_at,
                                       superseded_at, created_at)
       VALUES (@id, @proposalId, @payloadHash, @actorId,
               'active', @expiresAt, NULL,
               NULL, @createdAt)
-      ON CONFLICT(proposal_id, actor_id)
-        DO NOTHING
       RETURNING *
     `);
 
@@ -1097,6 +1300,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.stmt.selectApprovalByProposalActor = this.db.prepare(`
       SELECT * FROM proposal_approvals
        WHERE proposal_id = @proposalId AND actor_id = @actorId
+       ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, created_at DESC
        LIMIT 1
     `);
 
@@ -1104,10 +1308,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     this.stmt.insertIdempotency = this.db.prepare(`
       INSERT INTO idempotency_records (idempotency_key, proposal_id, operation,
-                                       executed_at, completed, serialised_effect,
+                                       executed_at, completed, idempotency_status,
+                                       lease_expires_at, serialised_effect,
                                        error_message, updated_at)
       VALUES (@idempotencyKey, @proposalId, @operation,
-              @executedAt, 0, @serialisedEffect,
+              @executedAt, 0, 'in_progress',
+              @leaseExpiresAt, @serialisedEffect,
               NULL, @updatedAt)
       ON CONFLICT(idempotency_key) DO NOTHING
       RETURNING *
@@ -1124,10 +1330,37 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.stmt.completeIdempotencyStmt = this.db.prepare(`
       UPDATE idempotency_records
          SET completed = 1,
+             idempotency_status = @status,
              error_message = @errorMessage,
              updated_at = @now
        WHERE idempotency_key = @key
     `);
+
+    this.stmt.updateIdempotencyStatusStmt = this.db.prepare(`
+      UPDATE idempotency_records
+         SET idempotency_status = @status,
+             error_message = @errorMessage,
+             updated_at = @now
+       WHERE idempotency_key = @key
+    `);
+
+    this.stmt.selectStrandedIdempotencyStmt = this.db.prepare(`
+      SELECT * FROM idempotency_records
+       WHERE idempotency_status = 'in_progress'
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= @now
+    `);
+
+    this.stmt.updateStrandedIdempotencyStmt = this.db.prepare(`
+      UPDATE idempotency_records
+         SET idempotency_status = 'retryable_failed',
+             error_message = @errorMessage,
+             updated_at = @now
+       WHERE idempotency_status = 'in_progress'
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= @now
+    `);
+
 
     // ── Audit ─────────────────────────────────────────────────────────
 
@@ -1166,6 +1399,88 @@ export class SqliteWorkflowStore implements WorkflowStore {
       SELECT COUNT(*) as count FROM audit_records
     `);
 
+
+    // ── Corrections ──────────────────────────────────────────────────────
+
+    this.stmt.insertCorrection = this.db.prepare(`
+      INSERT INTO review_corrections (id, review_item_id, transaction_id,
+                                      transaction_version, merchant, imported_payee,
+                                      account_id, direction, amount, date,
+                                      category_id, category_name, actor,
+                                      from_status, to_status, source_review_id,
+                                      created_at)
+      VALUES (@id, @reviewItemId, @transactionId,
+              @transactionVersion, @merchant, @importedPayee,
+              @accountId, @direction, @amount, @date,
+              @categoryId, @categoryName, @actor,
+              @fromStatus, @toStatus, @sourceReviewId,
+              @createdAt)
+    `);
+
+    this.stmt.selectCorrectionByReviewTransition = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE review_item_id = @reviewItemId
+         AND from_status = @fromStatus
+         AND to_status = @toStatus
+       LIMIT 1
+    `);
+
+    this.stmt.selectCorrectionsByReview = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE review_item_id = @reviewItemId
+       ORDER BY created_at ASC
+    `);
+
+    this.stmt.selectCorrectionsByMerchant = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE merchant = @merchant
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectCorrectionsByTransaction = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE transaction_id = @transactionId
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectCorrectionsByActor = this.db.prepare(`
+      SELECT * FROM review_corrections
+       WHERE actor = @actor
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectAllCorrections = this.db.prepare(`
+      SELECT * FROM review_corrections
+      ORDER BY created_at DESC
+      LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectCorrectionConflicts = this.db.prepare(`
+      WITH merchant_groups AS (
+        SELECT merchant, category_id AS value, 'category' AS field, id AS cid
+          FROM review_corrections
+         WHERE merchant IS NOT NULL
+         UNION ALL
+        SELECT merchant, direction, 'direction', id
+          FROM review_corrections
+         WHERE merchant IS NOT NULL AND direction IS NOT NULL
+         UNION ALL
+        SELECT merchant, account_id, 'account', id
+          FROM review_corrections
+         WHERE merchant IS NOT NULL AND account_id IS NOT NULL
+      )
+      SELECT field, merchant,
+             GROUP_CONCAT(DISTINCT value) AS values_json,
+             GROUP_CONCAT(DISTINCT cid) AS correction_ids
+        FROM merchant_groups
+       GROUP BY field, merchant
+      HAVING COUNT(DISTINCT value) > 1
+       ORDER BY merchant, field
+       LIMIT @limit
+    `);
     // ── Actor memberships ──────────────────────────────────────────────
 
     this.stmt.upsertActorMembershipStmt = this.db.prepare(`
@@ -1179,6 +1494,102 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     this.stmt.selectActorMembership = this.db.prepare(`
       SELECT * FROM actor_memberships WHERE actor_id = ?
+    `);
+
+    // ── Lifecycle ──────────────────────────────────────────────────────
+
+    this.stmt.cancelPendingJobsStmt = this.db.prepare(`
+      DELETE FROM candidate_jobs WHERE status = 'pending'
+    `);
+
+    this.stmt.deleteMembershipStmt = this.db.prepare(`
+      DELETE FROM actor_memberships WHERE actor_id = ?
+    `);
+
+    this.stmt.insertExportRecordStmt = this.db.prepare(`
+      DELETE FROM export_records
+    `);
+    // Re-insert as single-row tracking table
+    this.stmt.insertExportRecordStmt = this.db.prepare(`
+      INSERT INTO export_records (id, budget_name, export_path,
+                                   account_count, transaction_count,
+                                   exported_at)
+      VALUES (@id, @budgetName, @exportPath,
+              @accountCount, @transactionCount,
+              @exportedAt)
+    `);
+
+    this.stmt.selectLastExportStmt = this.db.prepare(`
+      SELECT * FROM export_records ORDER BY exported_at DESC LIMIT 1
+    `);
+
+    // ── Rule overrides ─────────────────────────────────────────────────
+
+    this.stmt.upsertRuleOverride = this.db.prepare(`
+      INSERT INTO rule_overrides (rule_id, inactive, created_at, updated_at)
+      VALUES (@ruleId, @inactive, @now, @now)
+      ON CONFLICT(rule_id) DO UPDATE SET
+        inactive = @inactive,
+        updated_at = @now
+    `);
+
+    this.stmt.getAllRuleOverrides = this.db.prepare(`
+      SELECT rule_id, inactive FROM rule_overrides
+    `);
+
+    this.stmt.removeRuleOverride = this.db.prepare(`
+      DELETE FROM rule_overrides WHERE rule_id = @ruleId
+    `);
+
+    // ── Schema version ──────────────────────────────────────────────────
+
+    this.stmt.selectSchemaVersion = this.db.prepare(`
+      SELECT version FROM schema_version ORDER BY version DESC LIMIT 1
+    `);
+
+    this.stmt.upsertSchemaVersion = this.db.prepare(`
+      INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)
+    `);
+
+    // ── Count queries (pagination totals) ───────────────────────────────
+
+    this.stmt.countReviewItems = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM review_items WHERE 1=1
+    `);
+
+    this.stmt.countReviewItemsByStatus = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM review_items WHERE status = @status
+    `);
+
+    this.stmt.countProposals = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+    `);
+
+    this.stmt.countProposalsActive = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE superseded_at IS NULL
+    `);
+
+    this.stmt.countProposalsByBudget = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE budget_id = @budgetId
+    `);
+
+    this.stmt.countProposalsByBudgetActive = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND superseded_at IS NULL
+    `);
+
+    this.stmt.countProposalsSuperseded = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE superseded_at IS NOT NULL
+    `);
+
+    this.stmt.countProposalsSupersededByBudget = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND superseded_at IS NOT NULL
     `);
   }
 
@@ -1599,6 +2010,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToReviewItem);
   }
 
+  async countReviewItems(options?: ReviewListOptions): Promise<number> {
+    if (options?.status) {
+      const row = this.stmt.countReviewItemsByStatus.get({ status: options.status }) as { count: number };
+      return row.count;
+    }
+    const row = this.stmt.countReviewItems.get({}) as { count: number };
+    return row.count;
+  }
+
   async listReviewItemsByCorrelation(correlationId: string): Promise<ReviewItem[]> {
     const rows = this.stmt.listReviewItemsByCorrelation.all({ correlationId }) as ReviewItemRow[];
     return rows.map(rowToReviewItem);
@@ -1722,9 +2142,58 @@ export class SqliteWorkflowStore implements WorkflowStore {
         metadata: JSON.stringify(input.metadata ?? {}),
         createdAt: now,
       });
+
+      // Record structured correction evidence for approve/correct transitions
+      // Each atomic status-changing transition produces exactly one correction
+      // record (the version check above guarantees the transition is unique).
+      if (toStatus === 'approved' || toStatus === 'correcting') {
+        const correctionId = randomUUID();
+        const fullRow = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+
+        this.stmt.insertCorrection.run({
+          id: correctionId,
+          reviewItemId: id,
+          transactionId: fullRow.transaction_id,
+          transactionVersion: fullRow.transaction_version,
+          merchant: input.merchant ?? null,
+          importedPayee: input.importedPayee ?? null,
+          accountId: input.accountId ?? null,
+          direction: input.direction ?? null,
+          amount: input.amount ?? null,
+          date: input.date ?? null,
+          categoryId: fullRow.category_id,
+          categoryName: input.categoryName ?? null,
+          actor: input.actor,
+          fromStatus,
+          toStatus,
+          sourceReviewId: id,
+          createdAt: now,
+        });
+      }
     });
 
     txn();
+
+    const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+    return rowToReviewItem(updated);
+  }
+
+  async updateReviewItemCategory(
+    id: string,
+    categoryId: string,
+    expectedVersion: number,
+  ): Promise<ReviewItem> {
+    const now = nowISO();
+    const result = this.stmt.updateReviewItemCategory.run({
+      id,
+      categoryId,
+      expectedVersion,
+      now,
+    });
+
+    if (result.changes === 0) {
+      throw new Error(`Version conflict on review item ${id}: expected ${expectedVersion}`);
+    }
 
     const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
     return rowToReviewItem(updated);
@@ -1850,6 +2319,45 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToReviewAction);
   }
 
+
+  // ── Correction history ──────────────────────────────────────────────
+
+  async queryCorrectionHistory(options?: CorrectionHistoryOptions): Promise<CorrectionRecord[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+
+    let rows: CorrectionRow[];
+
+    if (options?.reviewItemId) {
+      rows = this.stmt.selectCorrectionsByReview.all({ reviewItemId: options.reviewItemId }) as CorrectionRow[];
+    } else if (options?.merchant) {
+      rows = this.stmt.selectCorrectionsByMerchant.all({ merchant: options.merchant, limit, offset }) as CorrectionRow[];
+    } else if (options?.transactionId) {
+      rows = this.stmt.selectCorrectionsByTransaction.all({ transactionId: options.transactionId, limit, offset }) as CorrectionRow[];
+    } else if (options?.actor) {
+      rows = this.stmt.selectCorrectionsByActor.all({ actor: options.actor, limit, offset }) as CorrectionRow[];
+    } else {
+      rows = this.stmt.selectAllCorrections.all({ limit, offset }) as CorrectionRow[];
+    }
+
+    return rows.map(rowToCorrection);
+  }
+
+  async findCorrectionConflicts(limit: number = 50): Promise<CorrectionConflict[]> {
+    const rows = this.stmt.selectCorrectionConflicts.all({ limit }) as {
+      field: string;
+      merchant: string;
+      values_json: string;
+      correction_ids: string;
+    }[];
+
+    return rows.map(r => ({
+      field: r.field as 'account' | 'direction' | 'category',
+      merchant: r.merchant,
+      values: r.values_json.split(',').filter((v, i, a) => a.indexOf(v) === i), // dedupe
+      correctionIds: r.correction_ids.split(','),
+    }));
+  }
   // ── Categorization proposal lifecycle ─────────────────────────────
 
 
@@ -1971,6 +2479,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }
 
     return rows.map(rowToProposal);
+  }
+
+  async countProposals(options?: ListProposalsOptions): Promise<number> {
+    const hasBudget = options?.budgetId != null;
+    let row: { count: number };
+
+    if (hasBudget) {
+      if (options?.superseded === false) {
+        row = this.stmt.countProposalsByBudgetActive.get({ budgetId: options.budgetId }) as { count: number };
+      } else if (options?.superseded === true) {
+        row = this.stmt.countProposalsSupersededByBudget.get({ budgetId: options.budgetId }) as { count: number };
+      } else {
+        row = this.stmt.countProposalsByBudget.get({ budgetId: options.budgetId }) as { count: number };
+      }
+    } else {
+      if (options?.superseded === false) {
+        row = this.stmt.countProposalsActive.get({}) as { count: number };
+      } else if (options?.superseded === true) {
+        row = this.stmt.countProposalsSuperseded.get({}) as { count: number };
+      } else {
+        row = this.stmt.countProposals.get({}) as { count: number };
+      }
+    }
+
+    return row.count;
   }
 
   // ── Proposal approval lifecycle ───────────────────────────────────
@@ -2124,6 +2657,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   async createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyClaim> {
     const now = nowISO();
+    const leaseMs = input.leaseDurationMs ?? 60_000;
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
 
     // Atomic claim: INSERT with ON CONFLICT DO NOTHING — eliminates SELECT-then-INSERT race
     const row = this.stmt.insertIdempotency.get({
@@ -2132,6 +2667,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       operation: input.operation,
       executedAt: now,
       serialisedEffect: input.serialisedEffect,
+      leaseExpiresAt,
       updatedAt: now,
     }) as IdempotencyRow | undefined;
 
@@ -2160,6 +2696,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return { record: rowToIdempotency(existing), isOwner: false };
   }
 
+
   async getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null> {
     const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow | undefined;
     return row ? rowToIdempotency(row) : null;
@@ -2168,12 +2705,33 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async completeIdempotencyRecord(
     key: string,
     errorMessage?: string | null,
+    isRetryable?: boolean,
   ): Promise<IdempotencyRecord> {
     const now = nowISO();
-    this.stmt.completeIdempotencyStmt.run({ key, errorMessage: errorMessage ?? null, now });
+    const status: IdempotencyStatus =
+      errorMessage
+        ? (isRetryable ? 'retryable_failed' : 'terminal_failed')
+        : 'succeeded';
+    this.stmt.completeIdempotencyStmt.run({ key, status, errorMessage: errorMessage ?? null, now });
     const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow;
     return rowToIdempotency(row);
   }
+
+  async findStrandedIdempotencyRecords(): Promise<IdempotencyRecord[]> {
+    const now = nowISO();
+    const rows = this.stmt.selectStrandedIdempotencyStmt.all({ now }) as IdempotencyRow[];
+    return rows.map(rowToIdempotency);
+  }
+
+  async reconcileStrandedIdempotencyRecords(): Promise<number> {
+    const now = nowISO();
+    const result = this.stmt.updateStrandedIdempotencyStmt.run({
+      now,
+      errorMessage: 'Lease expired — stranded in_progress record reconciled',
+    });
+    return result.changes;
+  }
+
 
   // ── Audit records (append-only) ───────────────────────────────────
 
@@ -2207,14 +2765,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
       isError: input.isError ? 1 : 0,
     });
 
-    const row = this.stmt.selectAuditByProposal.all({ proposalId: id ?? '', limit: 1 }) as AuditRow[];
-    // Fetch by scanning recent — simplest with no index on id
-    const allRows = (this.stmt.selectAuditCount.get as () => { count: number })();
-    const rows = this.stmt.selectAuditByClassification.all({
-      classification: null,
-      limit: 1,
-      offset: 0,
-    }) as AuditRow[];
     // Actually, let's construct from what we have
     const resultRecord: AuditRecord = {
       id,
@@ -2367,5 +2917,161 @@ export class SqliteWorkflowStore implements WorkflowStore {
       capabilities: JSON.parse(row.capabilities) as string[],
       scope: row.scope,
     };
+  }
+
+  // ── Lifecycle operations ──────────────────────────────────────────
+
+  async cancelPendingJobs(): Promise<number> {
+    const result = this.stmt.cancelPendingJobsStmt.run({});
+    return result.changes;
+  }
+
+  async deleteActorMembership(actorId: string): Promise<boolean> {
+    const result = this.stmt.deleteMembershipStmt.run(actorId);
+    return result.changes > 0;
+  }
+
+  async recordExport(input: {
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  }): Promise<void> {
+    const id = randomUUID();
+    const now = nowISO();
+    // Clear previous record then insert fresh one (single-row tracking)
+    this.db.prepare(`DELETE FROM export_records`).run();
+    this.stmt.insertExportRecordStmt.run({
+      id,
+      budgetName: input.budgetName,
+      exportPath: input.exportPath,
+      accountCount: input.accountCount,
+      transactionCount: input.transactionCount,
+      exportedAt: now,
+    });
+  }
+
+  async getLastExport(): Promise<{
+    exportedAt: string;
+    budgetName: string;
+    exportPath: string;
+    accountCount: number;
+    transactionCount: number;
+  } | null> {
+    const row = this.stmt.selectLastExportStmt.get({}) as {
+      id: string;
+      budget_name: string;
+      export_path: string;
+      account_count: number;
+      transaction_count: number;
+      exported_at: string;
+    } | undefined;
+    if (!row) return null;
+    return {
+      exportedAt: row.exported_at,
+      budgetName: row.budget_name,
+      exportPath: row.export_path,
+      accountCount: row.account_count,
+      transactionCount: row.transaction_count,
+    };
+  }
+
+  async deleteScopeData(
+    scope: string,
+    options?: { actorId?: string },
+  ): Promise<{
+    deleted: Record<string, number>;
+    retained: { count: number; reasons: string[] };
+  }> {
+    const deleted: Record<string, number> = {};
+    const reasons: string[] = [];
+    const db = this.db;
+
+    switch (scope) {
+      case 'connection':
+      case 'space':
+        deleted.corrections = db.prepare('DELETE FROM review_corrections').run().changes;
+        deleted.reviewActions = db.prepare('DELETE FROM review_actions').run().changes;
+        deleted.reviewItems = db.prepare('DELETE FROM review_items').run().changes;
+        deleted.failures = db.prepare('DELETE FROM failure_records').run().changes;
+        deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
+        deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
+        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        deleted.auditRecords = db.prepare('DELETE FROM audit_records').run().changes;
+        deleted.memberships = db.prepare('DELETE FROM actor_memberships').run().changes;
+        deleted.exports = db.prepare('DELETE FROM export_records').run().changes;
+        deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
+        break;
+
+      case 'user':
+        if (options?.actorId) {
+          const a = options.actorId;
+          deleted.memberships = db.prepare('DELETE FROM actor_memberships WHERE actor_id = ?').run(a).changes;
+        } else {
+          reasons.push('No actorId provided for user-scope deletion');
+        }
+        break;
+
+      case 'workflow':
+        deleted.corrections = db.prepare('DELETE FROM review_corrections').run().changes;
+        deleted.reviewActions = db.prepare('DELETE FROM review_actions').run().changes;
+        deleted.reviewItems = db.prepare('DELETE FROM review_items').run().changes;
+        deleted.failures = db.prepare('DELETE FROM failure_records').run().changes;
+        deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
+        deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
+        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
+        break;
+
+      case 'provider':
+        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        break;
+
+      case 'notification':
+        reasons.push('Notification data scope has no corresponding storage tables');
+        break;
+
+      default:
+        reasons.push(`Unknown scope "${scope}": no data deleted`);
+    }
+
+    // Count retained records still present
+    let retainedCount = 0;
+    try {
+      const row = db.prepare('SELECT COUNT(*) as c FROM suggestions').get() as { c: number } | undefined;
+      if (row) retainedCount += row.c;
+    } catch { /* table may not exist */ }
+    try {
+      const row = db.prepare('SELECT COUNT(*) as c FROM candidate_jobs').get() as { c: number } | undefined;
+      if (row) retainedCount += row.c;
+    } catch { /* table may not exist */ }
+
+    return {
+      deleted,
+      retained: { count: retainedCount, reasons },
+    };
+  }
+
+  // ── Rule overrides ──────────────────────────────────────────────────
+
+  async setRuleOverride(ruleId: string, inactive: boolean): Promise<void> {
+    const now = nowISO();
+    this.stmt.upsertRuleOverride.run({ ruleId, inactive: inactive ? 1 : 0, now });
+  }
+
+  async getRuleOverrides(): Promise<Map<string, boolean>> {
+    const rows = this.stmt.getAllRuleOverrides.all({}) as Array<{ rule_id: string; inactive: number }>;
+    const map = new Map<string, boolean>();
+    for (const row of rows) {
+      map.set(row.rule_id, row.inactive === 1);
+    }
+    return map;
+  }
+
+  async removeRuleOverride(ruleId: string): Promise<void> {
+    this.stmt.removeRuleOverride.run({ ruleId });
   }
 }

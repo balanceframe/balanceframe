@@ -31,6 +31,13 @@ describe('parseArgs', () => {
     expect(result.cmd.command).toBe('budget.summary');
     expect(result.cmd.format).toBe('json');
   });
+ 
+  it('parses budget list --json', () => {
+    const result = parseArgs(['budget', 'list', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('budget.list');
+  });
 
   it('parses export --json', () => {
     const result = parseArgs(['export', '--json']);
@@ -801,5 +808,86 @@ describe('main — rule routing', () => {
     const parsed = JSON.parse(result);
     expect(parsed.status).toBe('error');
     expect(parsed.error.code).toBe('missing_rule_id');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Composition integration — main() produces dispatch without manual opts
+// ---------------------------------------------------------------------------
+
+describe('main — composition integration', () => {
+  it('dispatches pending-review when composition-aligned opts provided', async () => {
+    const result = await main(
+      ['transactions', 'pending-review', '--json'],
+      {
+        actorId: 'usr_test',
+        requestId: 'req_comp_001',
+        mode: 'observe',
+        ledger: { mockLedger: true },
+        analysisProtocol: {
+          async pendingReview() {
+            return {
+              uncategorizedCount: 7,
+              totalUncategorizedAmount: { minorUnits: '42000', currency: 'USD' },
+              candidates: [
+                {
+                  transactionId: 'tx_comp_001',
+                  amount: { minorUnits: '6000', currency: 'USD' },
+                  payeeName: 'Composition Store',
+                  date: '2026-07-21',
+                  reasons: [{ kind: 'uncategorized', details: 'No category' }],
+                },
+              ],
+              oldestUncategorizedDate: '2026-06-01',
+              healthState: 'healthy',
+              blockers: [],
+            };
+          },
+          async reviewShow() {
+            return { reviewId: '', generatedAt: '', status: 'not_found', description: '', totalAmount: { minorUnits: '0', currency: 'USD' }, itemCount: 0, items: [] };
+          },
+          async budgetSummary() {
+            return { month: '', totalBudgeted: { minorUnits: '0', currency: 'USD' }, totalSpent: { minorUnits: '0', currency: 'USD' }, totalRemaining: { minorUnits: '0', currency: 'USD' }, categories: [] };
+          },
+        },
+      },
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(parsed.requestId).toBe('req_comp_001');
+    expect(parsed.result.uncategorizedCount).toBe(7);
+  });
+
+  it('returns error for not_connected when ledger is null with protocol', async () => {
+    const result = await main(
+      ['transactions', 'pending-review', '--json'],
+      {
+        actorId: 'usr_test',
+        requestId: 'req_no_ledger',
+        mode: 'observe',
+        ledger: null,
+        analysisProtocol: {
+          async pendingReview() {
+            return {
+              uncategorizedCount: 0,
+              totalUncategorizedAmount: { minorUnits: '0', currency: 'USD' },
+              candidates: [],
+              oldestUncategorizedDate: null,
+              healthState: 'unknown',
+              blockers: [],
+            };
+          },
+          async reviewShow() {
+            return { reviewId: '', generatedAt: '', status: 'not_found', description: '', totalAmount: { minorUnits: '0', currency: 'USD' }, itemCount: 0, items: [] };
+          },
+          async budgetSummary() {
+            return { month: '', totalBudgeted: { minorUnits: '0', currency: 'USD' }, totalSpent: { minorUnits: '0', currency: 'USD' }, totalRemaining: { minorUnits: '0', currency: 'USD' }, categories: [] };
+          },
+        },
+      },
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error!.code).toBe('not_connected');
   });
 });

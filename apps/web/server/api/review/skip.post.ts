@@ -6,19 +6,22 @@
  * request body (prevents spoofing).
  */
 
-import { readBody } from 'h3';
+import { readBody, defineEventHandler, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   getActorId,
   performReviewAction,
   okEnvelope,
   errorEnvelope,
+  requireAuthorization,
   buildAuthorizationInfo,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'categorization:execute');
   const requestId = crypto.randomUUID();
+  const authCheck = await requireAuthorization(event, 'categorization:execute');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
 
   // Parse and validate body
   let body: Record<string, unknown>;
@@ -66,8 +69,21 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope(code, outcome.error ?? 'Unknown error', authInfo, false, requestId);
   }
 
+  // Skip is workflow-only — no mutation even in reviewAndApply mode
   return okEnvelope(
-    { itemId: outcome.itemId, success: true, error: null, categorizationExecuted: false },
+    {
+      itemId: outcome.itemId,
+      success: true,
+      error: null,
+      categorizationExecuted: false,
+      mutationStatus: 'noop',
+      applied: false,
+      verified: false,
+      stale: false,
+      transactionId: null,
+      previousCategoryId: null,
+      newCategoryId: null,
+    },
     authInfo,
     requestId,
   );

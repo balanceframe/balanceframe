@@ -47,6 +47,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@balanceframe/actual-adapter':
+        specifier: workspace:*
+        version: link:../../packages/actual-adapter
+      '@balanceframe/application':
+        specifier: workspace:*
+        version: link:../../packages/application
       '@balanceframe/workflow-store':
         specifier: workspace:*
         version: link:../../packages/workflow-store
@@ -59,6 +65,9 @@ importers:
       better-sqlite3:
         specifier: ^12.11.1
         version: 12.11.1
+      h3:
+        specifier: ^1.15.11
+        version: 1.15.11
       vue:
         specifier: ^3.5.0
         version: 3.5.40(typescript@5.9.3)
@@ -130,12 +139,18 @@ importers:
 
   packages/application:
     dependencies:
+      '@balanceframe/actual-adapter':
+        specifier: workspace:*
+        version: link:../actual-adapter
       '@balanceframe/native':
         specifier: workspace:*
         version: link:../../crates/node-binding
       '@balanceframe/protocol-generated':
         specifier: workspace:*
         version: link:../protocol-generated
+      '@balanceframe/workflow-store':
+        specifier: workspace:*
+        version: link:../workflow-store
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

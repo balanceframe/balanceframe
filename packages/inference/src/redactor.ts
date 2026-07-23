@@ -92,25 +92,34 @@ function redactSensitive(input: UnresolvedCandidate): UnresolvedCandidate {
 }
 
 /**
- * Create a Redactor that redacts sensitive and injection-containing content
- * for external calls while preserving all data for local calls.
+ * Create a Redactor that always applies privacy redaction for external calls
+ * and additionally detects injection patterns.
  *
- * Field-wide leak prevention: if ANY sensitive field contains injection,
- * ALL sensitive fields are redacted to prevent side-channel information leaks
- * through apparently benign fields.
+ * Privacy redaction is ALWAYS applied to sensitive text fields for external calls,
+ * independent of injection detection. This ensures PII/PCI data never reaches
+ * external providers.
+ *
+ * Injection detection is an additional safeguard: if ANY sensitive field contains
+ * injection patterns, it can be checked via hasInjection(). The orchestrator may
+ * use this for logging or telemetry, but privacy redaction already protects
+ * the data.
  */
 export function createRedactor(): Redactor {
   return {
     forExternal(candidate: UnresolvedCandidate): UnresolvedCandidate {
-      if (hasInjection(candidate)) {
-        return redactSensitive(candidate);
-      }
-      return { ...candidate };
+      // Privacy redaction is always applied — independent of injection.
+      // This ensures sensitive fields never reach external providers.
+      return redactSensitive(candidate);
     },
 
     forLocal(candidate: UnresolvedCandidate): UnresolvedCandidate {
-      // Local calls pass through with no redaction
+      // Local calls pass through with no redaction.
       return { ...candidate };
+    },
+
+    /** Check whether the candidate contains injection patterns. */
+    hasInjection(candidate: UnresolvedCandidate): boolean {
+      return hasInjection(candidate);
     },
   };
 }

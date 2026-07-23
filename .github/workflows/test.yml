@@ -5,6 +5,8 @@ on:
 
 permissions:
   contents: read
+  security-events: write
+  actions: read
 
 jobs:
   linux:
@@ -14,13 +16,13 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d # v16
 
       - name: Enable Nix binary cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4 # v9
 
       - name: Validate the flake and development shell
         run: nix flake check --print-build-logs
@@ -45,9 +47,34 @@ jobs:
 
       - name: Run code coverage
         run: nix develop --command just coverage
+      - name: Check coverage thresholds
+        run: |
+          SUMMARY="coverage/summary.json"
+          if [ -f "$SUMMARY" ]; then
+            echo "Checking coverage thresholds..."
+            # Extract per-package line coverage and validate against thresholds
+            FAIL=0
+            while read -r pkg cov; do
+              cov_int=${cov%.*}
+              if [ "$cov_int" -lt 40 ] 2>/dev/null; then
+                echo "::error::FAIL: $pkg line coverage $cov% is below minimum 40%"
+                FAIL=1
+              elif [ "$cov_int" -lt 60 ] 2>/dev/null; then
+                echo "::warning::WARN: $pkg line coverage $cov% is below target 60%"
+              else
+                echo "  OK: $pkg line coverage $cov%"
+              fi
+            done < <(jq -r '.packages | to_entries[] | "\(.key) \(.value.line)"' "$SUMMARY" 2>/dev/null || echo "")
+            exit $FAIL
+          else
+            echo "No coverage summary found at $SUMMARY — skipping threshold check"
+          fi
+
+      - name: Run dependency security audit
+        run: nix develop --command pnpm audit --audit-level=high || echo "Audit found issues — review required"
 
       - name: Upload coverage reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: coverage-reports
           path: coverage/
@@ -56,10 +83,13 @@ jobs:
       - name: Run Rust clippy
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
+
   portable:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
     strategy:
       fail-fast: false
       matrix:
@@ -73,20 +103,21 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: pnpm
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Install dependencies

@@ -28,15 +28,23 @@ import {
 } from 'h3';
 import { timingSafeEqual, createHmac } from 'node:crypto';
 import { auth } from '../../lib/auth';
+import { authMigrationFailed, authMigrationMessage } from '../utils/auth-migration-status';
 import type { EventWithContext } from '../utils/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const OPERATIONAL_API_PREFIXES = ['/api/review', '/api/proposal'];
-const HEALTH_PATH = '/api/health';
+// /api routes that do NOT require authentication — everything else is denied by default.
+const PUBLIC_API_ALLOWLIST = ['/api/health', '/api/health/ready', '/api/auth'];
 
+// Startup warning when dev bypass env var is active.
+if (process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true') {
+  console.warn(
+    '[auth] WARNING: Development auth bypass is ACTIVE via BALANCEFRAME_DEV_BYPASS_AUTH. ' +
+    'This should only be enabled in local development environments.',
+  );
+}
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -141,12 +149,22 @@ function validateSessionToken(
 export default defineEventHandler(async (event) => {
   const path = getRequestPath(event);
 
-  // 1. Health — always public.
-  if (path === HEALTH_PATH) return;
+  // 1. Public allowlist — always pass through without auth.
+  const isPublic = PUBLIC_API_ALLOWLIST.some((p) => path === p || path.startsWith(p + '/'));
+  if (isPublic) return;
 
-  // 2. Non-operational routes pass through.
-  const isOperational = OPERATIONAL_API_PREFIXES.some((p) => path.startsWith(p));
-  if (!isOperational) return;
+  // 2. Non-API routes pass through (Nuxt pages, static assets, etc.).
+  if (!path.startsWith('/api/')) return;
+
+  // 3. Auth migration check — if migrations failed, reject all API
+  //    requests with 503 to prevent serving degraded auth state.
+  if (authMigrationFailed) {
+    setResponseStatus(event, 503);
+    return serviceUnavailable(
+      `Auth database migration failed: ${authMigrationMessage ?? 'unknown error'}. ` +
+      'Server cannot accept authenticated requests until resolved.',
+    );
+  }
 
   // 3. Check environment configuration.
   const config = readConfig(event);
@@ -154,10 +172,23 @@ export default defineEventHandler(async (event) => {
     (config.apiToken as string) || process.env.BALANCEFRAME_API_TOKEN || '';
 
   // 4. Dev bypass (local development only).
-  if (
+  const nodeEnv = process.env.NODE_ENV;
+  const bypassRequested =
     config.devBypassAuth === true ||
-    process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true'
-  ) {
+    process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
+
+  if (bypassRequested) {
+    // Never honor bypass in production — guard against misconfiguration.
+    if (
+      !nodeEnv ||
+      (nodeEnv !== 'development' && nodeEnv !== 'test')
+    ) {
+      setResponseStatus(event, 503);
+      return serviceUnavailable(
+        'Dev bypass is not allowed in production. ' +
+        'Set NODE_ENV=development or NODE_ENV=test for local development.',
+      );
+    }
     const actorId = (config.authActorId as string) || 'dev-bypass';
     setAuthContext(event, actorId);
     return;

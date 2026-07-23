@@ -843,6 +843,7 @@ describe('ActualConnector', () => {
       const budgets = await connector.discoverBudgets();
       expect(budgets).toHaveLength(1);
     });
+ 
   });
 
   // ==========================================================================
@@ -2403,6 +2404,163 @@ describe('ActualConnector', () => {
   });
 
   // ==========================================================================
+  // 26. Regression: Category retrieval works with getCategories() without options
+  // ==========================================================================
+
+  describe('category retrieval without hidden option', () => {
+    it('listCategories should retrieve categories when getCategories is called without hidden option', async () => {
+      await connector.connect({
+        serverUrl: 'http://localhost:5006',
+        secretKey: 'secret',
+      });
+
+      // Simulate live API: getCategories() only returns data when called WITHOUT { hidden: true }
+      let callArg: unknown = undefined;
+      mockClient.getCategories = vi.fn().mockImplementation((opts?: { hidden?: boolean }) => {
+        callArg = opts;
+        // Real API returns nothing when called with { hidden: true }
+        if (opts !== undefined) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve(mockCategories);
+      });
+      mockClient.getCategoryGroups = vi.fn().mockResolvedValue(mockCategoryGroups);
+
+      const result = await connector.listCategories();
+
+      // Verifies getCategories was called WITHOUT the hidden option (regression guard)
+      expect(callArg).toBeUndefined();
+      expect(result).toHaveLength(2);
+      expect(result[0].id).toBe('c1');
+      expect(result[0].name).toBe('Food');
+    });
+
+    it('setTransactionCategory should validate proposed category via getCategories without hidden option', async () => {
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions.map(t => ({ ...t }))),
+        getCategories: vi.fn().mockImplementation((opts?: { hidden?: boolean }) => {
+          // Real API returns nothing when called with { hidden: true }
+          if (opts !== undefined) return Promise.resolve([]);
+          return Promise.resolve(mockCategories);
+        }),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-cat-noopts-regression',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      mock.updateTransaction = vi.fn();
+
+      // currentCategoryId=null skips precondition check; proposed c1 exists in mockCategories
+      const result = await writeConnector.setTransactionCategory('tx1', 'c1', null);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.transactionId).toBe('tx1');
+        expect(result.newCategoryId).toBe('c1');
+      }
+
+      await writeConnector.disconnect();
+    });
+
+    it('should reject proposed category that does not exist (regression: hidden option removed)', async () => {
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions),
+        getCategories: vi.fn().mockImplementation((opts?: { hidden?: boolean }) => {
+          if (opts !== undefined) return Promise.resolve([]);
+          return Promise.resolve(mockCategories);
+        }),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-cat-noopts-notfound',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      mock.updateTransaction = vi.fn();
+
+      // 'nonexistent' is not in mockCategories
+      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('CATEGORY_NOT_FOUND');
+      }
+
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+
+    it('should still detect tombstone categories (client-side check preserved)', async () => {
+      const categoriesWithDeleted: APICategoryEntity[] = [
+        ...mockCategories,
+        {
+          id: 'c_deleted',
+          name: 'Deleted Cat',
+          group_id: 'g1',
+          is_income: false,
+          hidden: false,
+          tombstone: true,
+        } as APICategoryEntity,
+      ];
+
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions),
+        getCategories: vi.fn().mockImplementation((opts?: { hidden?: boolean }) => {
+          if (opts !== undefined) return Promise.resolve([]);
+          return Promise.resolve(categoriesWithDeleted);
+        }),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-cat-noopts-tombstone',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      mock.updateTransaction = vi.fn();
+
+      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1');
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.code).toBe('CATEGORY_DELETED');
+        expect(result.error).toContain('tombstone');
+      }
+
+      expect(mock.updateTransaction).not.toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+  });
+
+  // ==========================================================================
   // setTransactionCategory — write-mode tests
   // ==========================================================================
 
@@ -2494,6 +2652,109 @@ describe('ActualConnector', () => {
 
       // No client mutation call on precondition failure
       expect(mock.updateTransaction).not.toHaveBeenCalled();
+
+      await writeConnector.disconnect();
+    });
+
+    it('should proceed when currentCategoryId is null and Actual has a non-null category', async () => {
+      const transactions = mockTransactions.map(t => ({ ...t }));
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(transactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-null-precond-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      // Make updateTransaction persist the category change for verification
+      mock.updateTransaction = vi.fn().mockImplementation(
+        (id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find(t => t.id === id);
+          if (tx && typeof fields.category === 'string') {
+            tx.category = fields.category;
+          }
+          return Promise.resolve(undefined);
+        },
+      );
+
+      // tx1 has category 'c1' in Actual, but stored review item has null (unknown).
+      // Should read Actual's current category and proceed without mismatch.
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.transactionId).toBe('tx1');
+        // previousCategoryId reflects Actual's real value before the change
+        expect(result.previousCategoryId).toBe('c1');
+        expect(result.newCategoryId).toBe('c2');
+        expect(result.verified).toBe(true);
+      }
+
+      expect(mock.updateTransaction).toHaveBeenCalledTimes(1);
+      expect(mock.updateTransaction).toHaveBeenCalledWith('tx1', { category: 'c2' });
+
+      await writeConnector.disconnect();
+    });
+
+    it('should proceed when currentCategoryId is null and Actual has null category', async () => {
+      const transactions = [
+        { ...mockTransactions[0], category: null } as TransactionEntity,
+        { ...mockTransactions[1] } as TransactionEntity,
+      ];
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(transactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-null-null-test',
+      });
+
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      // Make updateTransaction persist the category change for verification
+      mock.updateTransaction = vi.fn().mockImplementation(
+        (id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find(t => t.id === id);
+          if (tx && typeof fields.category === 'string') {
+            tx.category = fields.category;
+          }
+          return Promise.resolve(undefined);
+        },
+      );
+
+      // tx1 has category null in Actual, and stored review item also has null.
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.transactionId).toBe('tx1');
+        expect(result.previousCategoryId).toBeNull();
+        expect(result.newCategoryId).toBe('c2');
+        expect(result.verified).toBe(true);
+      }
+
+      expect(mock.updateTransaction).toHaveBeenCalledTimes(1);
+      expect(mock.updateTransaction).toHaveBeenCalledWith('tx1', { category: 'c2' });
 
       await writeConnector.disconnect();
     });

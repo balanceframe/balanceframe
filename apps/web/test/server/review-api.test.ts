@@ -150,17 +150,17 @@ describe('performReviewAction', () => {
     expect(refreshed!.status).toBe("approved");
   });
 
-  it('corrects a pending review item (transitions to approved with category metadata)', async () => {
+  it('corrects a pending review item (transitions to correcting with category metadata)', async () => {
     const item = await seedPendingReview(store);
     const outcome = await performReviewAction(store, item.id, 'correct', ACTOR, 'cat-office');
     expect(outcome.success).toBe(true);
     expect(outcome.error).toBeNull();
     expect(outcome.itemId).toBe(item.id);
 
+    // Item should now be in 'correcting' status (not auto-approved)
     const refreshed = await store.getReviewItem(item.id);
-    expect(refreshed!.status).toBe("approved");
+    expect(refreshed!.status).toBe('correcting');
   });
-
   it('rejects a pending review item', async () => {
     const item = await seedPendingReview(store);
     const outcome = await performReviewAction(store, item.id, 'reject', ACTOR);
@@ -219,9 +219,10 @@ describe('performReviewAction', () => {
 
     // Verify the transition action persisted the metadata
     const actions = await store.getReviewActions(item.id);
-    const approveAction = actions.find((a) => a.toStatus === "approved");
-    expect(approveAction).toBeDefined();
-    expect(approveAction!.metadata).toEqual({ categoryId: 'cat-office' });
+    // Verify the transition action persisted the metadata on the correcting transition
+    const correctAction = actions.find((a) => a.toStatus === 'correcting');
+    expect(correctAction).toBeDefined();
+    expect(correctAction!.metadata).toEqual({ categoryId: 'cat-office' });
   });
 });
 

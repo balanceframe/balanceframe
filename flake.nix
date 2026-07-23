@@ -26,6 +26,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = import ./nix/dev-shell.nix { inherit pkgs; };
+        release = import ./nix/release-shell.nix { inherit pkgs; };
       });
 
       checks = forAllSystems (

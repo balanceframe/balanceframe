@@ -12,7 +12,7 @@
  * - Broad-access caveat exposed as a constant.
  */
 
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -125,6 +125,8 @@ export interface ActualClient {
   createAccount(account: Omit<APIAccountEntity, 'id'>, initialBalance?: number): Promise<string>;
   updateTransaction(id: string, fields: Record<string, unknown>): Promise<unknown>;
   createRule(rule: Record<string, unknown>): Promise<{ id: string }>;
+  updateRule(id: string, rule: Record<string, unknown>): Promise<unknown>;
+  deleteRule(id: string): Promise<boolean>;
   setBudgetAmount(month: string, categoryId: string, value: number): Promise<void>;
 }
 
@@ -184,6 +186,8 @@ export async function createDefaultActualClient(): Promise<ActualClient> {
       actual.createAccount(account, initialBalance),
     updateTransaction: (id, fields) => actual.updateTransaction(id, fields),
     createRule: (rule) => actual.createRule(rule as Parameters<typeof actual.createRule>[0]),
+    updateRule: (id, rule) => actual.updateRule({ id, ...rule } as Parameters<typeof actual.updateRule>[0]),
+    deleteRule: (id) => actual.deleteRule(id),
     setBudgetAmount: (month, categoryId, value) =>
       actual.setBudgetAmount(month, categoryId, value),
   };
@@ -231,6 +235,8 @@ export class ActualConnector implements BudgetLedger {
   private _budgetInfo: BudgetInfo | null = null;
   private _serverVersion: string | null = null;
   private _connectedAt: string | null = null;
+  /** Promise guard for synchronize() — prevents concurrent sync operations. */
+  private _syncPromise: Promise<LedgerSnapshotResult> | null = null;
 
   constructor(config: ActualConnectorConfig) {
     this.client = config.client;
@@ -264,8 +270,6 @@ export class ActualConnector implements BudgetLedger {
 
   // -------------------------------------------------------------------------
   // Synchronize
-  // -------------------------------------------------------------------------
-
   async synchronize(): Promise<LedgerSnapshotResult> {
     this.assertInitialized();
 
@@ -273,8 +277,23 @@ export class ActualConnector implements BudgetLedger {
       throw new Error('No budget selected; call discoverBudgets() and selectBudget() first');
     }
 
-    const budgetId = this._budgetInfo.id;
-    const groupId = this._budgetInfo.groupId;
+    // Deduplicate concurrent synchronize() calls: if a sync is already in
+    // progress, return the in-flight promise instead of starting a new one.
+    if (this._syncPromise) {
+      return this._syncPromise;
+    }
+
+    this._syncPromise = this._doSynchronize();
+    try {
+      return await this._syncPromise;
+    } finally {
+      this._syncPromise = null;
+    }
+  }
+
+  private async _doSynchronize(): Promise<LedgerSnapshotResult> {
+    const budgetId = this._budgetInfo!.id;
+    const groupId = this._budgetInfo!.groupId;
 
     await this.withCacheLock(budgetId, async () => {
       const cache = this.getOrCreateCache(budgetId);
@@ -339,7 +358,7 @@ export class ActualConnector implements BudgetLedger {
     const payeeMap = buildPayeeNameMap(payees);
     const transferAcctMap = buildTransferAcctMap(payees);
     const categories = normalizeCategories(
-      (await this.client.getCategories({ hidden: true })) as APICategoryEntity[],
+      (await this.client.getCategories()) as APICategoryEntity[],
       await this.client.getCategoryGroups(),
     );
     const categoryMap = buildCategoryInfoMap(categories);
@@ -364,7 +383,7 @@ export class ActualConnector implements BudgetLedger {
 
   async listCategories(): Promise<Category[]> {
     this.assertInitialized();
-    const cats = (await this.client.getCategories({ hidden: true })) as APICategoryEntity[];
+    const cats = (await this.client.getCategories()) as APICategoryEntity[];
     const groups = await this.client.getCategoryGroups();
     return normalizeCategories(cats, groups);
   }
@@ -479,6 +498,43 @@ export class ActualConnector implements BudgetLedger {
     });
   }
 
+  async updateRule(
+    id: string,
+    fields: Record<string, unknown>,
+    precondition?: MutationPrecondition,
+  ): Promise<MutationResult> {
+    this.assertMutationAllowed('updateRule');
+    if (!this._budgetInfo) {
+      return { success: false, error: 'No budget selected.', code: 'BUDGET_NOT_SELECTED' } as MutationResult;
+    }
+    return this.withCacheLock(this._budgetInfo.id, async () => {
+      try {
+        const allRaw = await this.client.getRules();
+        const currentRaw = allRaw.find((r) => r.id === id);
+        if (!currentRaw) {
+          return { success: false, error: `Rule not found: ${id}`, code: 'RULE_NOT_FOUND' } as MutationResult;
+        }
+        const merged: Record<string, unknown> = {
+          id: currentRaw.id,
+          stage: currentRaw.stage,
+          conditionsOp: currentRaw.conditionsOp,
+          conditions: JSON.stringify(currentRaw.conditions),
+          actions: JSON.stringify(currentRaw.actions),
+          tombstone: fields.inactive !== undefined ? fields.inactive : (currentRaw.tombstone ?? false),
+        };
+        await this.client.updateRule(id, merged);
+      } catch (err) {
+        return { success: false, error: `Failed to update rule: ${err instanceof Error ? err.message : String(err)}`, code: 'RULE_UPDATE_FAILED' } as MutationResult;
+      }
+      try {
+        await this.client.sync();
+      } catch {
+        return { success: false, error: 'Sync failed after updating rule', code: 'SYNC_FAILED' } as MutationResult;
+      }
+      return { success: true } as MutationResult;
+    });
+  }
+
   async setBudgetAmount(
     _month: string,
     _categoryId: LedgerId,
@@ -492,7 +548,57 @@ export class ActualConnector implements BudgetLedger {
     );
   }
 
+  async deleteRule(
+    id: string,
+    precondition?: MutationPrecondition,
+  ): Promise<MutationResult> {
+    this.assertMutationAllowed('deleteRule');
+    if (!this._budgetInfo) {
+      return { success: false, error: 'No budget selected.', code: 'BUDGET_NOT_SELECTED' } as MutationResult;
+    }
+    return this.withCacheLock(this._budgetInfo.id, async () => {
+      try {
+        const result = await this.client.deleteRule(id);
+        if (result === false) {
+          return { success: false, error: 'Rule is referenced by a schedule and cannot be deleted.', code: 'RULE_HAS_SCHEDULE' } as MutationResult;
+        }
+      } catch (err) {
+        return { success: false, error: `Failed to delete rule: ${err instanceof Error ? err.message : String(err)}`, code: 'RULE_DELETE_FAILED' } as MutationResult;
+      }
+      try {
+        await this.client.sync();
+      } catch {
+        return { success: false, error: 'Sync failed after deleting rule', code: 'SYNC_FAILED' } as MutationResult;
+      }
+      return { success: true } as MutationResult;
+    });
+  }
 
+
+  /**
+   * Set the category of a transaction by ID.
+   *
+   * Precondition:
+   *   `currentCategoryId` — expected current category from the caller.
+   *   - If non-null: MUST match Actual's current category or the call fails
+   *     with `PRECONDITION_MISMATCH` (stale-precondition protection).
+   *   - If null (unknown / review-item stored no category): Actual's current
+   *     category is accepted as-is and the mutation proceeds.
+   *
+   * Postcondition:
+   *   The transaction is updated in Actual, synced, and re-read to verify.
+   *   On success the result includes `previousCategoryId` (the value before
+   *   mutation), `newCategoryId`, `idempotencyKey`, and `verified: true`.
+   *
+   * Error conditions:
+   *   `PRECONDITION_MISMATCH` — non-null currentCategoryId does not match Actual
+   *   `TRANSACTION_NOT_FOUND` — transaction does not exist
+   *   `CATEGORY_NOT_FOUND` — proposed category does not exist in budget
+   *   `CATEGORY_DELETED` — proposed category is a tombstone (deleted)
+   *   `SYNC_FAILED` — the write succeeded but sync after it failed
+   *   `VERIFICATION_FAILED` — post-write re-read shows unexpected category
+   *   `BUDGET_NOT_SELECTED` — no budget selected via selectBudget()
+   */
   async setTransactionCategory(
     transactionId: LedgerId,
     proposedCategoryId: LedgerId,
@@ -532,8 +638,11 @@ export class ActualConnector implements BudgetLedger {
       }
 
       // Verify precondition: current category must match expected value
+      // When currentCategoryId is null (unknown/empty from review item), we
+      // accept Actual's current value and proceed. When non-null, a mismatch
+      // rejects with PRECONDITION_MISMATCH (stale-precondition protection).
       const actualCategory = tx.category ?? null;
-      if (actualCategory !== currentCategoryId) {
+      if (currentCategoryId !== null && actualCategory !== currentCategoryId) {
         return {
           success: false,
           error: `Category precondition mismatch for transaction ${transactionId}: ` +
@@ -546,7 +655,7 @@ export class ActualConnector implements BudgetLedger {
       }
 
       // Validate the proposed category exists in this budget
-      const allCats = (await this.client.getCategories({ hidden: true })) as APICategoryEntity[];
+      const allCats = (await this.client.getCategories()) as APICategoryEntity[];
       const proposedCat = allCats.find(c => c.id === proposedCategoryId);
       if (!proposedCat) {
         return {
@@ -687,8 +796,8 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     const files = await this.client.getBudgets();
     return files.map(f => ({
-      id: f.id ?? f.cloudFileId ?? '',
-      groupId: f.groupId ?? '',
+      id: f.id ?? f.cloudFileId ?? f.groupId ?? '',
+      groupId: f.groupId ?? f.id ?? f.cloudFileId ?? '',
       name: f.name ?? 'Unnamed Budget',
       encrypted: f.hasKey ?? false,
     }));
@@ -700,7 +809,7 @@ export class ActualConnector implements BudgetLedger {
   async selectBudget(budgetId: string, password?: string): Promise<BudgetInfo> {
     this.assertInitialized();
     const budgets = await this.discoverBudgets();
-    const info = budgets.find(b => b.id === budgetId);
+    const info = budgets.find(b => b.id === budgetId || b.groupId === budgetId);
     if (!info) {
       throw new Error(`Budget "${budgetId}" not found on server`);
     }
@@ -931,6 +1040,7 @@ export class ActualConnector implements BudgetLedger {
     if (!resolved.startsWith(baseResolved)) {
       throw new Error(`Cache path traversal blocked for key "${key}"`);
     }
+    mkdirSync(resolved, { recursive: true, mode: 0o700 });
     return resolved;
   }
 
@@ -997,7 +1107,7 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     const payees = normalizePayees(await this.client.getPayees());
     const categories = normalizeCategories(
-      (await this.client.getCategories({ hidden: true })) as APICategoryEntity[],
+      (await this.client.getCategories()) as APICategoryEntity[],
       await this.client.getCategoryGroups(),
     );
     const payeeMap = buildPayeeNameMap(payees);

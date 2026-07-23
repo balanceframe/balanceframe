@@ -8,12 +8,16 @@
  * When no ledger is connected the route returns LEDGER_UNAVAILABLE so the
  * UI can surface a clear connection-needed state.
  *
+ * When a local inactive override exists for a rule, `inactive` reflects
+ * the effective value and the `_localOverride` flag is set so callers
+ * can distinguish local annotations from Actual source-of-truth.
+ *
  * Response envelope:
  *   { items: RuleListItem[], total: number }
  */
 
-import type { RuleListItem } from '../../utils/rule-types';
-import { getLedgerFromEvent } from '../../utils/rule-types';
+import type { RuleListItem, LedgerHandle } from '../../utils/rule-types';
+import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
   getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
 } from '../../utils/workflow-store';
@@ -28,34 +32,40 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
-  const ledger = getLedgerFromEvent(event);
-  if (!ledger) {
-    setResponseStatus(event, 503);
-    return errorEnvelope(
-      'LEDGER_UNAVAILABLE',
-      'No ledger connection available. Connect to a budget before listing rules.',
-      authInfo,
-      true,
-      requestId,
-    );
-  }
-
   try {
+    const manager = createMutationConnectionManager();
+    const connected = await manager.restore();
+    const ledger = connected.connector as unknown as LedgerHandle;
+
     const rules: RuleListItem[] = await ledger.listRules();
+
+    // Merge local rule overrides (inactive toggle state) with an explicit
+    // label so the UI can distinguish local annotations from Actual data.
+    const overrides = await wf.store.getRuleOverrides();
+    if (overrides.size > 0) {
+      for (const rule of rules) {
+        const overrideInactive = overrides.get(rule.id);
+        if (overrideInactive !== undefined) {
+          rule.inactive = overrideInactive;
+          rule._localOverride = true;
+        }
+      }
+    }
 
     return okEnvelope(
       { items: rules, total: rules.length },
       authInfo,
       requestId,
     );
-  } catch (e) {
-    setResponseStatus(event, 500);
+  } catch (err) {
+    setResponseStatus(event, 503);
     return errorEnvelope(
-      'RULE_LIST_FAILED',
-      e instanceof Error ? e.message : String(e),
+      'LEDGER_UNAVAILABLE',
+      `Failed to connect to Actual: ${err instanceof Error ? err.message : String(err)}`,
       authInfo,
       true,
       requestId,
     );
   }
+
 });

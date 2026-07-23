@@ -11,6 +11,7 @@
  *   const items = await wf.store.listReviewItems(...);
  */
 
+import { setResponseStatus } from 'h3';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type {
   WorkflowStore,
@@ -20,6 +21,8 @@ import type {
   TransitionReviewInput,
   ReviewListOptions,
   TransitionReviewResult,
+  CreateIdempotencyInput,
+  IdempotencyStatus,
 } from '@balanceframe/workflow-store';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -69,6 +72,7 @@ export interface ReviewQueueItem {
       readonly affectsEnvelope: boolean;
     };
     readonly correlationId: string | null;
+    readonly categoryNames?: Record<string, string>;
     readonly promptVersion: string;
   };
   readonly homogeneity: {
@@ -131,9 +135,11 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
     : [];
 
   const fromCategory: string =
-    typeof pay?.currentCategory === 'string'
+    typeof pay?.currentCategory === 'string' && pay.currentCategory
       ? pay.currentCategory
-      : item.categoryId;
+      : (item.categoryId || 'Uncategorized');
+  const toCategory: string = item.categoryId || '—';
+
 
   return {
     reviewItem: item,
@@ -143,7 +149,7 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       account,
       amount,
       currentCategory: fromCategory,
-      suggestedCategory: item.categoryId,
+      suggestedCategory: item.categoryId || '—',
       alternatives: alternativesList,
       history: historyList,
       ruleCandidates,
@@ -151,11 +157,12 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       freshness: item.freshnessExpiresAt,
       changePreview: {
         fromCategory,
-        toCategory: item.categoryId,
-        affectsEnvelope: fromCategory !== item.categoryId,
+        toCategory,
+        affectsEnvelope: fromCategory !== toCategory,
       },
       correlationId: item.correlationId,
       promptVersion: item.promptVersion,
+      categoryNames: (pay?.categoryNames as Record<string, string> | undefined) ?? undefined,
     },
     homogeneity: {
       sameMerchant: false,
@@ -163,7 +170,7 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
       sameClassifier: false,
       sameCategory: false,
     },
-    actionable: item.status === 'pending_review',
+    actionable: item.status === 'pending_review' || item.status === 'correcting',
   };
 }
 
@@ -205,9 +212,12 @@ export function getWorkflowStore(
   if (storeError) return { error: storeError };
   if (store) return { store };
 
-  // Read config — Nitro auto-imports useRuntimeConfig when called from a
-  // route handler, but the utility receives the event directly.
-  const config = useRuntimeConfig();
+  let config: Record<string, unknown>;
+  try {
+    config = useRuntimeConfig(event) as Record<string, unknown>;
+  } catch {
+    config = (event.context.runtimeConfig as Record<string, unknown> | undefined) ?? {};
+  }
   const dbPath: string =
     (config.workflowDbPath as string) ||
     process.env.BALANCEFRAME_WORKFLOW_DB_PATH ||
@@ -267,14 +277,16 @@ function statusForAction(action: string): ReviewStatus {
     case 'approve':
       return 'approved';
     case 'correct':
-      // Semantically: "approve with a different category".
-      // pending_review -> approved; the corrected categoryId is carried
-      // in the transition metadata so downstream processors can distinguish.
-      return 'approved';
+      // pending_review -> correcting; the corrected categoryId is carried
+      // in the transition metadata so downstream processors know which
+      // category the reviewer selected.
+      return 'correcting';
     case 'reject':
       return 'rejected';
     case 'skip':
       return 'skipped';
+    case 'undo':
+      return 'pending_review';
     default:
       throw new Error(`Unknown review action: ${action}`);
   }
@@ -288,6 +300,8 @@ export interface ActionOutcome {
   readonly itemId: string;
   readonly success: boolean;
   readonly error: string | null;
+  /** Resulting review status after the action, or null on failure. */
+  readonly status: ReviewStatus | null;
 }
 
 /**
@@ -298,7 +312,7 @@ export interface ActionOutcome {
  *
  * @param store   - an initialised WorkflowStore
  * @param reviewId - the review-item ID to act on
- * @param action  - one of 'approve', 'correct', 'reject', 'skip'
+ * @param action  - one of 'approve', 'correct', 'reject', 'skip', 'undo'
  * @param actorId - the authenticated actor identifier
  * @param categoryId - optional category for 'correct' action
  */
@@ -312,9 +326,22 @@ export async function performReviewAction(
   // Verify the item exists and get its current version for optimistic locking.
   const item = await store.getReviewItem(reviewId);
   if (!item) {
-    return { itemId: reviewId, success: false, error: 'Review item not found' };
+    return { itemId: reviewId, success: false, error: 'Review item not found', status: null };
   }
 
+  if (action === 'undo') {
+    try {
+      const result = await store.undoReviewTransition(reviewId, actorId, 'Reversed by reviewer');
+      return { itemId: result.id, success: true, error: null, status: result.status };
+    } catch (e) {
+      return {
+        itemId: reviewId,
+        success: false,
+        error: e instanceof Error ? e.message : String(e),
+        status: null,
+      };
+    }
+  }
   const toStatus = statusForAction(action);
 
   try {
@@ -325,12 +352,24 @@ export async function performReviewAction(
       metadata: categoryId ? { categoryId } : undefined,
     };
     const result = await store.transitionReviewItem(reviewId, input);
-    return { itemId: result.id, success: true, error: null };
+
+    // After a correct action, also update the item's category_id so
+    // downstream display (change preview, queue) reflects the edit.
+    if (action === 'correct' && categoryId) {
+      await store.updateReviewItemCategory(
+        reviewId,
+        categoryId,
+        result.version,
+      );
+    }
+
+    return { itemId: result.id, success: true, error: null, status: result.status };
   } catch (e) {
     return {
       itemId: reviewId,
       success: false,
       error: e instanceof Error ? e.message : String(e),
+      status: null,
     };
   }
 }
@@ -421,3 +460,501 @@ export function buildAuthorizationInfo(
     allowed: true,
   };
 }
+
+/**
+ * Result of a route-level authorization guard check.
+ * When `ok` is true, `info` holds the AuthorizationInfo for response envelopes.
+ * When `ok` is false, `response` is the error envelope (status code already set).
+ */
+export type AuthGuardResult =
+  | { ok: true; info: AuthorizationInfo }
+  | { ok: false; response: ApiEnvelope<null> };
+
+/**
+ * Require that the request is authenticated and has the given capability.
+ *
+ * Checks:
+ *   1. Auth context exists on the event (set by middleware)
+ *   2. Workflow store is available
+ *   3. Actor's membership is active and includes the capability
+ *
+ * On success returns `{ ok: true, info: AuthorizationInfo }`.
+ * On failure sets the response status (403, 503, or 500) and returns
+ * `{ ok: false, response: ApiEnvelope<null> }` — the caller MUST return early.
+ */
+export async function requireAuthorization(
+  event: EventWithContext,
+  capability: string,
+): Promise<AuthGuardResult> {
+  const auth = event.context.auth as { authenticated: boolean; actorId?: string } | undefined;
+  if (!auth?.authenticated) {
+    setResponseStatus(event, 403);
+    return {
+      ok: false,
+      response: errorEnvelope(
+        'AUTHORIZATION_REQUIRED',
+        'Authentication is required for this operation',
+        null,
+        false,
+      ),
+    };
+  }
+
+  const actorId = getActorId(event);
+  const wf = getWorkflowStore(event);
+  if ('error' in wf) {
+    setResponseStatus(event, 503);
+    return {
+      ok: false,
+      response: errorEnvelope('STORE_UNAVAILABLE', wf.error, null, false),
+    };
+  }
+
+  let result: { allowed: boolean; reason: string };
+  try {
+    result = await wf.store.evaluateAuthorization(actorId, capability, '*', '1.0');
+  } catch {
+    setResponseStatus(event, 500);
+    return {
+      ok: false,
+      response: errorEnvelope(
+        'AUTHORIZATION_CHECK_FAILED',
+        'Authorization check could not be completed',
+        null,
+        false,
+      ),
+    };
+  }
+
+  if (!result.allowed) {
+    setResponseStatus(event, 403);
+    return {
+      ok: false,
+      response: errorEnvelope('FORBIDDEN', result.reason, null, false),
+    };
+  }
+
+  return {
+    ok: true,
+    info: { actorId, capability, allowed: true },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Error sanitization — prevent internal details from leaking to API clients
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of sanitizing a caught error for user-safe API responses.
+ */
+export interface SanitizedError {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+/**
+ * Strip filesystem paths, source references, and adapter-internal details
+ * from a raw error message, returning a user-safe summary.
+ */
+export function sanitizeErrorMessage(raw: string): string {
+  // Remove Unix filesystem paths: /path/to/file or /path/to/dir.ext
+  let safe = raw.replace(/\/(?:[^\s/]+\/)+[^\s/]*/g, '');
+  // Remove Windows filesystem paths: C:\path\to\file.ext
+  safe = safe.replace(/[A-Za-z]:\\(?:[^\s\\]+\\)*[^\s\\]*/g, '');
+  // Remove stack-frame trailers (Node/V8 stack lines)
+  safe = safe.replace(/\n\s*at\s.*$/s, '');
+  // Remove inline source references: (file.ts:42) or at file.ts:42:10
+  safe = safe.replace(/\s*\([\w./-]+\.\w+:\d+(?::\d+)?\)/, '');
+  // Remove error-type prefixes like "Error:" "TypeError:" at the start
+  safe = safe.replace(/^\w+Error:\s*/, '');
+  // Remove internal adapter/component names in parens: (ActualLedger)
+  safe = safe.replace(/\s*\([A-Z][a-zA-Z]*(?:Adapter|Ledger|Store|Service|Manager)\)/g, '');
+  // Collapse internal method/class references: ActualLedger.deleteRule
+  safe = safe.replace(/\b[A-Z][a-zA-Z0-9]*\.[a-z][a-zA-Z0-9]*/g, '');
+  return safe.trim() || 'An unexpected error occurred.';
+}
+
+/**
+ * Process a caught Error for safe API error responses.
+ *
+ * Logs the full error details (message + stack trace) with the correlation
+ * ID to the server log, then returns a user-safe structure whose `message`
+ * contains no filesystem paths, adapter internals, or source-level detail.
+ *
+ * @example
+ *   catch (err) {
+ *     const safe = sanitizeError(err, requestId, 'RULE_UPDATE_FAILED', true);
+ *     setResponseStatus(event, 500);
+ *     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+ *   }
+ */
+export function sanitizeError(
+  err: unknown,
+  requestId: string,
+  code: string,
+  retryable: boolean = false,
+): SanitizedError {
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error && err.stack ? `\n${err.stack}` : '';
+
+  // Log EVERYTHING with the correlation ID for server-side debugging
+  console.error(`[${requestId}] ${code}: ${rawMessage}${stack}`);
+
+  return {
+    code,
+    message: sanitizeErrorMessage(rawMessage),
+    retryable,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Mutation service seam — typed bridge between web routes and the
+// CategorizationMutationService (in @balanceframe/application).  The web
+// layer does NOT depend on the application package; instead, the composition
+// root (or test harness) injects a ReviewMutationExecutor callback.
+//
+// reviewAndApply mode (enabled via runtimeConfig) makes approve/correct
+// actually write categorization mutations, not just transition workflow state.
+// ---------------------------------------------------------------------------
+
+/**
+ * Status values for the mutation phase of a review action.
+ *
+ * - `noop`       — no mutation was attempted (Observe mode).
+ * - `denied`     — reviewAndApply is configured but no executor is wired.
+ * - `applying`   — mutation is in progress (async / deferred).
+ * - `applied`    — mutation write succeeded (verification pending / not done).
+ * - `apply_failed` — mutation write failed.
+ * - `stale`      — mutation was not attempted because snapshot data is stale.
+ * - `verified`   — mutation write succeeded AND postcondition verification passed.
+ */
+export type MutationStatus = 'noop' | 'denied' | 'applying' | 'applied' | 'apply_failed' | 'stale' | 'verified';
+
+/** Input to the review mutation executor. */
+export interface ReviewMutationInput {
+  readonly reviewId: string;
+  readonly actorId: string;
+  readonly requestId: string;
+  readonly categoryId?: string;
+  readonly correlationId?: string;
+}
+
+/** Result of a categorized mutation from the executor. */
+export interface ReviewMutationResult {
+  readonly mutationStatus: MutationStatus;
+  readonly success: boolean;
+  readonly applied: boolean;
+  readonly verified: boolean;
+  readonly stale: boolean;
+  readonly transactionId: string | null;
+  readonly previousCategoryId: string | null;
+  readonly newCategoryId: string | null;
+  readonly error: string | null;
+}
+
+/**
+ * Typed callback that performs the actual ledger mutation for a review action.
+ *
+ * The composition root (@balanceframe/application's CategorizationMutationService)
+ * wires this, so web routes never depend on application internals.
+ */
+export type ReviewMutationExecutor = (
+  input: ReviewMutationInput,
+  store: WorkflowStore,
+  item: ReviewItem,
+) => Promise<ReviewMutationResult>;
+
+/** Module-level executor — set by the composition root at startup. */
+let _mutationExecutor: ReviewMutationExecutor | null = null;
+
+/**
+ * Inject the mutation executor (called once by the composition root).
+ */
+export function setReviewMutationExecutor(fn: ReviewMutationExecutor | null): void {
+  _mutationExecutor = fn;
+}
+
+/**
+ * Get the currently registered mutation executor, or null.
+ */
+export function getReviewMutationExecutor(): ReviewMutationExecutor | null {
+  return _mutationExecutor;
+}
+
+/**
+ * Check whether reviewAndApply (mutation-enabled) mode is active for this
+ * request based on runtime configuration.
+ */
+export function reviewAndApplyEnabled(event: EventWithContext): boolean {
+  const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
+  return config?.reviewAndApply === true;
+}
+
+// ---------------------------------------------------------------------------
+// Factory-based executor creation (event-context-aware)
+// ---------------------------------------------------------------------------
+
+/**
+ * Factory type — creates a per-request ReviewMutationExecutor from the
+ * event context.  This allows the composition root to wire real services
+ * (BudgetLedger, CategorizationMutationService) without the web layer
+ * depending on @balanceframe/application or @balanceframe/actual-adapter.
+ */
+export type ReviewMutationExecutorFactory = (
+  event: EventWithContext,
+) => ReviewMutationExecutor | null;
+
+/** Module-level factory — set by the composition root at startup. */
+let _executorFactory: ReviewMutationExecutorFactory | null = null;
+
+/**
+ * Register an executor factory (called once by the composition root).
+ * Clears any previously set module-level factory.
+ */
+export function setReviewMutationExecutorFactory(
+  fn: ReviewMutationExecutorFactory | null,
+): void {
+  _executorFactory = fn;
+}
+
+/**
+ * Get the current executor factory, or null.
+ */
+export function getReviewMutationExecutorFactory(): ReviewMutationExecutorFactory | null {
+  return _executorFactory;
+}
+
+/**
+ * Resolve a mutation executor for the given event context.
+ *
+ * Priority:
+ * 1. Factory-based executor (per-request, from event context)
+ * 2. Module-level singleton (set via setReviewMutationExecutor)
+ *
+ * Returns null when no executor is available for this request.
+ */
+export function getReviewMutationExecutorFromEvent(
+  event: EventWithContext,
+): ReviewMutationExecutor | null {
+  if (_executorFactory) {
+    const fromFactory = _executorFactory(event);
+    if (fromFactory) return fromFactory;
+  }
+  return _mutationExecutor;
+}
+
+// ---------------------------------------------------------------------------
+// Mutation transition orchestration
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of executing a review mutation with workflow-state transitions.
+ */
+export interface MutationTransitionResult {
+  readonly mutationResult: ReviewMutationResult;
+  readonly finalStatus: ReviewStatus;
+}
+
+/**
+ * Execute a mutation with durable applying-claim semantics.
+ *
+ * Flow:
+ *   1. Create an idempotency record (`in_progress` with lease)
+ *   2. Transition the review item from its current status (approved/correcting)
+ *      to `applying` — this is the durable claim.  If the process crashes
+ *      after this step, the stranded `applying` item can be recovered.
+ *   3. Execute the mutation via the executor callback.
+ *   4. Transition from `applying` to `applied` (success) or `apply_failed`
+ *      (any failure).
+ *   5. Complete the idempotency record (succeeded / retryable_failed).
+ *
+ * Maps stale and verification failures explicitly — a successful write
+ * that fails verification lands in `apply_failed` with metadata.
+ *
+ * @param store        — the workflow store
+ * @param reviewId     — the item to act on
+ * @param actorId      — authenticated actor
+ * @param executor     — the mutation executor callback
+ * @param requestId    — tracking ID
+ * @param categoryId   — optional category override (for 'correct')
+ * @param executionId  — optional correlation/execution ID
+ */
+export async function applyReviewMutationWithTransition(
+  store: WorkflowStore,
+  reviewId: string,
+  actorId: string,
+  executor: ReviewMutationExecutor,
+  requestId: string,
+  categoryId?: string,
+  executionId?: string,
+): Promise<MutationTransitionResult> {
+  const idempotencyKey = `review-apply:${reviewId}:${actorId}`;
+
+  // ===================================================================
+  // 1. Idempotency claim — create in_progress with lease
+  // ===================================================================
+  const idemInput: CreateIdempotencyInput = {
+    idempotencyKey,
+    proposalId: reviewId,
+    operation: 'review_apply',
+    serialisedEffect: JSON.stringify({ reviewId, actorId }),
+    leaseDurationMs: 60_000,
+  };
+
+  const idemClaim = await store.createIdempotencyRecord(idemInput);
+
+  if (!idemClaim.isOwner) {
+    // Already in a terminal state — return the cached outcome
+    if (idemClaim.record.status !== 'in_progress') {
+      const succeeded = idemClaim.record.status === 'succeeded';
+      return {
+        mutationResult: {
+          success: succeeded,
+          mutationStatus: succeeded ? 'applied' : 'apply_failed',
+          applied: succeeded,
+          verified: succeeded,
+          stale: false,
+          error: idemClaim.record.errorMessage ?? undefined,
+          transactionId: null,
+          previousCategoryId: null,
+          newCategoryId: null,
+        },
+        finalStatus: succeeded ? 'applied' : 'apply_failed',
+      };
+    }
+    // Lease still active — another worker is handling this item
+    throw new Error(`Review apply ${reviewId} is already in progress (idempotency key ${idempotencyKey})`);
+  }
+
+  // ===================================================================
+  // 2. Durable applying claim — transition to `applying`
+  // ===================================================================
+  const itemBeforeApply = await store.getReviewItem(reviewId);
+  if (!itemBeforeApply) {
+    throw new Error(`Review item ${reviewId} not found before mutation`);
+  }
+
+  // Validate we can transition from current status to applying
+  await store.transitionReviewItem(reviewId, {
+    toStatus: 'applying',
+    actor: actorId,
+    expectedVersion: itemBeforeApply.version,
+    reason: 'Starting external mutation',
+  });
+
+  // ===================================================================
+  // 3. Execute the mutation
+  // ===================================================================
+  let mutationResult: ReviewMutationResult;
+  try {
+    mutationResult = await executor(
+      { reviewId, actorId, requestId, categoryId, correlationId: executionId },
+      store,
+      itemBeforeApply,
+    );
+  } catch (err) {
+    // Executor threw — transition to apply_failed and record as retryable
+    const applyingItem = await store.getReviewItem(reviewId);
+    if (applyingItem) {
+      await store.transitionReviewItem(reviewId, {
+        toStatus: 'apply_failed',
+        actor: actorId,
+        expectedVersion: applyingItem.version,
+        metadata: {
+          error: err instanceof Error ? err.message : String(err),
+          mutationStatus: 'executor_error',
+        },
+      });
+    }
+    await store.completeIdempotencyRecord(idempotencyKey, err instanceof Error ? err.message : String(err), true);
+    return {
+      mutationResult: {
+        success: false,
+        mutationStatus: 'apply_failed',
+        applied: false,
+        verified: false,
+        stale: false,
+        error: err instanceof Error ? err.message : String(err),
+        transactionId: null,
+        previousCategoryId: null,
+        newCategoryId: null,
+      },
+      finalStatus: 'apply_failed',
+    };
+  }
+
+  // ===================================================================
+  // 4. Determine final status based on mutation result
+  // ===================================================================
+  let finalStatus: ReviewStatus;
+  const metadata: Record<string, unknown> = {
+    mutationStatus: mutationResult.mutationStatus,
+    stale: mutationResult.stale,
+    transactionId: mutationResult.transactionId,
+  };
+
+  if (mutationResult.mutationStatus === 'denied') {
+    // Executor declined — transition back from applying to previous status
+    finalStatus = itemBeforeApply.status;
+  } else if (mutationResult.verified) {
+    finalStatus = 'applied';
+    metadata.verified = true;
+  } else if (mutationResult.stale) {
+    finalStatus = 'apply_failed';
+    metadata.staleReason = 'snapshot_stale';
+    metadata.error = mutationResult.error;
+  } else if (mutationResult.applied && !mutationResult.verified) {
+    finalStatus = 'apply_failed';
+    metadata.verificationFailed = true;
+    metadata.error = mutationResult.error;
+  } else {
+    finalStatus = 'apply_failed';
+    metadata.error = mutationResult.error;
+  }
+
+  // ===================================================================
+  // 5. Transition from `applying` to final status
+  // ===================================================================
+  if (finalStatus !== itemBeforeApply.status) {
+    const applyingItem = await store.getReviewItem(reviewId);
+    if (!applyingItem) {
+      throw new Error(`Review item ${reviewId} not found for final transition`);
+    }
+    await store.transitionReviewItem(reviewId, {
+      toStatus: finalStatus,
+      actor: actorId,
+      expectedVersion: applyingItem.version,
+      metadata,
+    });
+  }
+  // If denied (stay in applying), we still need to revert
+  if (finalStatus === itemBeforeApply.status && finalStatus !== 'applying') {
+    // Revert from applying back to original status
+    const applyingItem = await store.getReviewItem(reviewId);
+    if (applyingItem) {
+      await store.transitionReviewItem(reviewId, {
+        toStatus: finalStatus as ReviewStatus,
+        actor: actorId,
+        expectedVersion: applyingItem.version,
+        reason: 'Mutation declined — reverting applying claim',
+      });
+    }
+  }
+
+  // ===================================================================
+  // 6. Complete idempotency record
+  // ===================================================================
+  const isRetryable = finalStatus === 'apply_failed';
+  await store.completeIdempotencyRecord(
+    idempotencyKey,
+    finalStatus === 'applied' ? null : (mutationResult.error ?? 'Unknown failure'),
+    isRetryable,
+  );
+
+  return { mutationResult, finalStatus };
+}
+
+
+/** Re-export ReviewStatus for route handler convenience. */
+export type { ReviewStatus } from '@balanceframe/workflow-store';

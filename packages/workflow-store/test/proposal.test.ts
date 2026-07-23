@@ -144,6 +144,17 @@ describe('CategorizationProposal', () => {
       expect(second.payloadHash).toBe(SAMPLE_HASH);
     });
 
+    it('creates a fresh proposal after the previous identical proposal is superseded', async () => {
+      const first = await store.createProposal(BASE_PROPOSAL);
+      await store.supersedeProposal(first.id);
+
+      const second = await store.createProposal(BASE_PROPOSAL);
+
+      expect(second.id).not.toBe(first.id);
+      expect(second.supersededAt).toBeNull();
+      expect((await store.getProposal(first.id))!.supersededAt).not.toBeNull();
+    });
+
     it('creates a new proposal when payloadHash differs (changed content)', async () => {
       const first = await store.createProposal(BASE_PROPOSAL);
 
@@ -516,13 +527,15 @@ describe('CategorizationProposal', () => {
       expect(second.status).toBe('active');
     });
 
-    it('rejects re-issuing approval when a consumed approval already exists for the same proposal and actor', async () => {
+    it('re-issues approval for an active proposal after a consumed approval', async () => {
       const a = await store.createApproval({ ...BASE_APPROVAL, proposalId });
       await store.consumeApproval(a.id);
 
-      await expect(
-        store.createApproval({ ...BASE_APPROVAL, proposalId }),
-      ).rejects.toThrow(/cannot be re-issued/i);
+      const replacement = await store.createApproval({ ...BASE_APPROVAL, proposalId });
+
+      expect(replacement.id).not.toBe(a.id);
+      expect(replacement.status).toBe('active');
+      expect((await store.getApproval(a.id))!.status).toBe('consumed');
     });
 
     it('rejects re-issuing approval when a superseded approval already exists for the same proposal and actor', async () => {
