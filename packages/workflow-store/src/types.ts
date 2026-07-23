@@ -415,6 +415,12 @@ export interface WorkflowStore {
    */
   listReviewItems(options?: ReviewListOptions): Promise<ReviewItem[]>;
 
+  /**
+   * Return the total number of review items matching the given filter.
+   * Used for pagination totals.
+   */
+  countReviewItems(options?: ReviewListOptions): Promise<number>;
+
   /** Return all review items sharing a correlation ID. */
   listReviewItemsByCorrelation(correlationId: string): Promise<ReviewItem[]>;
 
@@ -505,6 +511,12 @@ export interface WorkflowStore {
    * List categorization proposals ordered by creation time descending.
    */
   listProposals(options?: ListProposalsOptions): Promise<CategorizationProposal[]>;
+
+  /**
+   * Return the total number of categorization proposals matching the
+   * given filter.  Used for pagination totals.
+   */
+  countProposals(options?: ListProposalsOptions): Promise<number>;
 
   /**
    * Supersede a proposal (and cascade-supersede its approvals).
@@ -720,6 +732,13 @@ export interface WorkflowStore {
    * Return all active rule overrides as a Map<ruleId, inactive>.
    */
   getRuleOverrides(): Promise<Map<string, boolean>>;
+
+  /**
+   * Remove a local override for a rule's inactive state.
+   * Called after the Actual ledger has been successfully updated or when
+   * cleaning up stale local annotations.
+   */
+  removeRuleOverride(ruleId: string): Promise<void>;
 
   deleteScopeData(
     scope: string,

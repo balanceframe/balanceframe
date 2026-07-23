@@ -5,6 +5,11 @@
  * the workflow DB is initialised; the rule is fetched from the ledger
  * adapter injected into the event context by the lifecycle plugin.
  *
+ * When a local inactive override exists (from a previous PATCH that failed
+ * verification or a stale annotation), `inactive` reflects the effective
+ * value and the `_localOverride` flag is set so callers can distinguish
+ * local annotations from Actual source-of-truth.
+ *
  * Response envelope carries the full RuleShowResult shape including
  * trigger and action configuration.
  */
@@ -44,11 +49,12 @@ export default defineEventHandler(async (event) => {
       return errorEnvelope('RULE_NOT_FOUND', `Rule not found: ${routeId}`, authInfo, false, requestId);
     }
 
-    // Merge local rule override if present
+    // Merge local rule override if present, with explicit flag
     const overrides = await wf.store.getRuleOverrides();
     const overrideInactive = overrides.get(rule.id);
     if (overrideInactive !== undefined) {
-      (rule as unknown as Record<string, unknown>).inactive = overrideInactive;
+      rule.inactive = overrideInactive;
+      rule._localOverride = true;
     }
 
     return okEnvelope(rule, authInfo, requestId);

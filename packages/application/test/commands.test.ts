@@ -380,6 +380,8 @@ describe('Export/Disconnect/Removal — safe behavior', () => {
       exportedAt: '2026-07-18T10:00:00Z',
       budgetName: 'My Budget',
       exportPath: '/tmp/balanceframe-export/my-budget.json',
+      byteSize: 1024,
+      sha256Hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       accountCount: 5,
       transactionCount: 250,
     };
@@ -435,10 +437,12 @@ describe('Lifecycle callbacks', () => {
       exportedAt: '2026-07-18T10:00:00Z',
       budgetName: 'My Budget',
       exportPath: '/tmp/balanceframe-export/my-budget.json',
+      byteSize: 1024,
+      sha256Hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       accountCount: 5,
       transactionCount: 250,
     }));
-    const callbacks: LifecycleCallbacks = { doExport, doDisconnect: vi.fn(), doRemoveConnection: vi.fn() };
+    const callbacks: LifecycleCallbacks = { doExport, doDisconnect: vi.fn(), doRemoveConnection: vi.fn(), doDeleteData: vi.fn() };
     const ledger = { mockLedger: true };
     const result = await callbacks.doExport(ledger);
     expect(doExport).toHaveBeenCalledWith(ledger);
@@ -452,7 +456,7 @@ describe('Lifecycle callbacks', () => {
       credentialsRemoved: true,
       message: 'Connection removed. Actual server was not modified.',
     }));
-    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect, doRemoveConnection: vi.fn() };
+    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect, doRemoveConnection: vi.fn(), doDeleteData: vi.fn() };
     const result = await callbacks.doDisconnect({ mockLedger: true });
     expect(doDisconnect).toHaveBeenCalledTimes(1);
     expect(result.disconnected).toBe(true);
@@ -470,7 +474,7 @@ describe('Lifecycle callbacks', () => {
         'Project-side filtering does not reduce the broad access held by the connector. ' +
         'Ensure your Actual server and backups have appropriate security.',
     }));
-    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect: vi.fn(), doRemoveConnection };
+    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect: vi.fn(), doRemoveConnection, doDeleteData: vi.fn() };
     const result = await callbacks.doRemoveConnection({});
     expect(doRemoveConnection).toHaveBeenCalledTimes(1);
     expect(result.removed).toBe(true);

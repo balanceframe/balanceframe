@@ -278,4 +278,6 @@ export interface Redactor {
   forExternal(candidate: UnresolvedCandidate): UnresolvedCandidate;
   /** Return fields unchanged for a local provider call. */
   forLocal(candidate: UnresolvedCandidate): UnresolvedCandidate;
+  /** Check whether the candidate contains prompt-injection patterns. */
+  hasInjection(candidate: UnresolvedCandidate): boolean;
 }

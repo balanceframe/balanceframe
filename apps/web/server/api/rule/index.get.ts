@@ -8,6 +8,10 @@
  * When no ledger is connected the route returns LEDGER_UNAVAILABLE so the
  * UI can surface a clear connection-needed state.
  *
+ * When a local inactive override exists for a rule, `inactive` reflects
+ * the effective value and the `_localOverride` flag is set so callers
+ * can distinguish local annotations from Actual source-of-truth.
+ *
  * Response envelope:
  *   { items: RuleListItem[], total: number }
  */
@@ -35,15 +39,15 @@ export default defineEventHandler(async (event) => {
 
     const rules: RuleListItem[] = await ledger.listRules();
 
-    // Merge local rule overrides (inactive toggle state) on top of Actual's
-    // data.  The Actual sync protocol does not support updating rule fields,
-    // so we store toggle state in the workflow DB.
+    // Merge local rule overrides (inactive toggle state) with an explicit
+    // label so the UI can distinguish local annotations from Actual data.
     const overrides = await wf.store.getRuleOverrides();
     if (overrides.size > 0) {
       for (const rule of rules) {
         const overrideInactive = overrides.get(rule.id);
         if (overrideInactive !== undefined) {
-          (rule as unknown as Record<string, unknown>).inactive = overrideInactive;
+          rule.inactive = overrideInactive;
+          rule._localOverride = true;
         }
       }
     }

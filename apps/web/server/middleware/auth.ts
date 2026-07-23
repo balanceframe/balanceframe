@@ -28,15 +28,15 @@ import {
 } from 'h3';
 import { timingSafeEqual, createHmac } from 'node:crypto';
 import { auth } from '../../lib/auth';
+import { authMigrationFailed, authMigrationMessage } from '../utils/auth-migration-status';
 import type { EventWithContext } from '../utils/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const OPERATIONAL_API_PREFIXES = ['/api/review', '/api/proposal'];
-const HEALTH_PATH = '/api/health';
-
+// /api routes that do NOT require authentication — everything else is denied by default.
+const PUBLIC_API_ALLOWLIST = ['/api/health', '/api/auth'];
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -141,12 +141,22 @@ function validateSessionToken(
 export default defineEventHandler(async (event) => {
   const path = getRequestPath(event);
 
-  // 1. Health — always public.
-  if (path === HEALTH_PATH) return;
+  // 1. Public allowlist — always pass through without auth.
+  const isPublic = PUBLIC_API_ALLOWLIST.some((p) => path === p || path.startsWith(p + '/'));
+  if (isPublic) return;
 
-  // 2. Non-operational routes pass through.
-  const isOperational = OPERATIONAL_API_PREFIXES.some((p) => path.startsWith(p));
-  if (!isOperational) return;
+  // 2. Non-API routes pass through (Nuxt pages, static assets, etc.).
+  if (!path.startsWith('/api/')) return;
+
+  // 3. Auth migration check — if migrations failed, reject all API
+  //    requests with 503 to prevent serving degraded auth state.
+  if (authMigrationFailed) {
+    setResponseStatus(event, 503);
+    return serviceUnavailable(
+      `Auth database migration failed: ${authMigrationMessage ?? 'unknown error'}. ` +
+      'Server cannot accept authenticated requests until resolved.',
+    );
+  }
 
   // 3. Check environment configuration.
   const config = readConfig(event);

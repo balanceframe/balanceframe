@@ -81,8 +81,11 @@ export default defineEventHandler(async (event) => {
       };
     });
 
+    // Independent total count for pagination
+    const total = await wf.store.countProposals({ superseded: false });
+
     return okEnvelope(
-      { proposals: items, total: items.length },
+      { proposals: items, total },
       authInfo,
       requestId,
     );

@@ -33,8 +33,12 @@ export default defineEventHandler(async (event) => {
     const allItems = [...items, ...correctingItems].sort((a, b) => b.priority - a.priority);
     const queueItems: ReviewQueueItem[] = allItems.map(buildReviewQueueItem);
 
+    // Independent total counts for pagination
+    const pendingTotal = await wf.store.countReviewItems({ status: 'pending_review' });
+    const correctingTotal = await wf.store.countReviewItems({ status: 'correcting' });
+
     return okEnvelope(
-      { items: queueItems, total: queueItems.length },
+      { items: queueItems, total: pendingTotal + correctingTotal },
       authInfo,
     );
   } catch (e) {

@@ -1154,6 +1154,469 @@ describe('SqliteWorkflowStore', () => {
   });
 
   // =======================================================================
+  // Schema migrations
+  // =======================================================================
+
+  describe('schema migrations', () => {
+    it('creates schema_version table on instantiation', () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const row = s['db'].prepare('SELECT COUNT(*) AS count FROM schema_version').get() as { count: number };
+      expect(row.count).toBeGreaterThanOrEqual(0);
+      s.close();
+    });
+
+    it('reports current schema version', () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const v = s['getCurrentSchemaVersion']();
+      expect(typeof v).toBe('number');
+      expect(v).toBeGreaterThanOrEqual(0);
+      s.close();
+    });
+
+    it('applies version records on fresh database', () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const versionRow = s['db'].prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number | null };
+      expect(versionRow.version).not.toBeNull();
+      s.close();
+    });
+  });
+
+  // =======================================================================
+  // Pagination totals
+  // =======================================================================
+
+  describe('pagination totals', () => {
+    it('countReviewItems returns zero when empty', async () => {
+      const count = await store.countReviewItems();
+      expect(count).toBe(0);
+    });
+
+    it('countReviewItems matches list length for single status', async () => {
+      // Seed review items with distinct composite keys
+      await store.createReviewItem({
+        budgetId: 'budget-alpha', transactionId: 'txn-seeded-1',
+        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+      });
+      await store.createReviewItem({
+        budgetId: 'budget-alpha', transactionId: 'txn-seeded-2',
+        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+      });
+      await store.createReviewItem({
+        budgetId: 'budget-beta', transactionId: 'txn-seeded-3',
+        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+      });
+
+      const items = await store.listReviewItems({ status: 'discovered' });
+      const count = await store.countReviewItems({ status: 'discovered' });
+      expect(count).toBe(items.length);
+      // Concrete assertion: all 3 seeded items are 'discovered'
+      expect(count).toBe(3);
+    });
+
+    it('countReviewItems totals across all statuses', async () => {
+      // Create items across distinct statuses
+      const i1 = await store.createReviewItem({
+        budgetId: 'budget-alpha', transactionId: 'txn-stat-1',
+        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+      });
+      await store.createReviewItem({
+        budgetId: 'budget-alpha', transactionId: 'txn-stat-2',
+        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+      });
+      const i3 = await store.createReviewItem({
+        budgetId: 'budget-beta', transactionId: 'txn-stat-3',
+        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+      });
+      const i4 = await store.createReviewItem({
+        budgetId: 'budget-beta', transactionId: 'txn-stat-4',
+        categoryId: 'cat-transport', classifier: 'deep', provenance: 'test',
+      });
+
+      // Transition i1 → suggestion_generated, i3 → pending_review
+      await store.transitionReviewItem(i1.id, {
+        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+      });
+      await store.transitionReviewItem(i3.id, {
+        toStatus: 'pending_review', actor: 'test', expectedVersion: 1,
+      });
+
+      // Now: 2 discovered (i2, i4) + 1 suggestion_generated (i1) + 1 pending_review (i3) = 4
+      const items = await store.listReviewItems();
+      const count = await store.countReviewItems();
+      expect(count).toBe(items.length);
+      expect(count).toBe(4);
+    });
+
+    it('countProposals returns zero when empty', async () => {
+      const count = await store.countProposals();
+      expect(count).toBe(0);
+    });
+
+    it('countProposals matches list length', async () => {
+      const future = () => new Date(Date.now() + 86_400_000).toISOString();
+
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-alpha',
+        transactionId: 'txn-prop-1', categoryId: 'cat-food',
+        payloadHash: 'hash-aaa', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-beta',
+        transactionId: 'txn-prop-2', categoryId: 'cat-util',
+        payloadHash: 'hash-bbb', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+
+      const items = await store.listProposals();
+      const count = await store.countProposals();
+      expect(count).toBe(items.length);
+      expect(count).toBe(2);
+    });
+
+    it('countProposals with superseded filter matches filtered list', async () => {
+      const future = () => new Date(Date.now() + 86_400_000).toISOString();
+
+      // 2 active proposals
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-alpha',
+        transactionId: 'txn-ps-1', categoryId: 'cat-food',
+        payloadHash: 'hash-ccc', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-beta',
+        transactionId: 'txn-ps-2', categoryId: 'cat-util',
+        payloadHash: 'hash-ddd', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      // 1 superseded proposal
+      const p3 = await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-gamma',
+        transactionId: 'txn-ps-3', categoryId: 'cat-fun',
+        payloadHash: 'hash-eee', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.supersedeProposal(p3.id);
+
+      const active = await store.listProposals({ superseded: false });
+      const activeCount = await store.countProposals({ superseded: false });
+      expect(activeCount).toBe(active.length);
+      expect(activeCount).toBe(2);
+
+      const superseded = await store.listProposals({ superseded: true });
+      const supersededCount = await store.countProposals({ superseded: true });
+      expect(supersededCount).toBe(superseded.length);
+      expect(supersededCount).toBe(1);
+    });
+
+    // ── Page boundary and filter integration tests ──────────────────
+
+    it('countReviewItems returns total irrespective of status filter with concrete values', async () => {
+      const i1 = await store.createReviewItem({
+        budgetId: 'budget-pg', transactionId: 'txn-pg-1',
+        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+      });
+      await store.createReviewItem({
+        budgetId: 'budget-pg', transactionId: 'txn-pg-2',
+        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+      });
+      const i3 = await store.createReviewItem({
+        budgetId: 'budget-pg', transactionId: 'txn-pg-3',
+        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+      });
+      await store.transitionReviewItem(i1.id, {
+        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+      });
+      await store.transitionReviewItem(i3.id, {
+        toStatus: 'pending_review', actor: 'test', expectedVersion: 1,
+      });
+
+      expect(await store.countReviewItems()).toBe(3);
+      expect(await store.countReviewItems({ status: 'discovered' })).toBe(1);
+      expect(await store.countReviewItems({ status: 'suggestion_generated' })).toBe(1);
+      expect(await store.countReviewItems({ status: 'pending_review' })).toBe(1);
+      expect(await store.countReviewItems({ status: 'approved' })).toBe(0);
+    });
+
+    it('listReviewItems respects limit', async () => {
+      const created = [];
+      for (let i = 0; i < 5; i++) {
+        const item = await store.createReviewItem({
+          budgetId: 'budget-lim', transactionId: `txn-lim-${i}`,
+          categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+        });
+        created.push(item);
+        tickSync();
+      }
+
+      const all = await store.listReviewItems();
+      expect(all).toHaveLength(5);
+
+      const limited = await store.listReviewItems({ limit: 2 });
+      expect(limited).toHaveLength(2);
+      // Same priority, created_at ASC → first seeded first
+      expect(limited[0].id).toBe(created[0].id);
+    });
+
+    it('listReviewItems respects offset', async () => {
+      const allItems = [];
+      for (let i = 0; i < 5; i++) {
+        const item = await store.createReviewItem({
+          budgetId: 'budget-off', transactionId: `txn-off-${i}`,
+          categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+        });
+        allItems.push(item);
+        tickSync();
+      }
+
+      const all = await store.listReviewItems();
+      expect(all).toHaveLength(5);
+
+      const offset3 = await store.listReviewItems({ offset: 3 });
+      expect(offset3).toHaveLength(2);
+      expect(offset3[0].id).toBe(all[3].id);
+
+      // Offset past end
+      expect(await store.listReviewItems({ offset: 10 })).toHaveLength(0);
+    });
+
+    it('listReviewItems respects limit with status filter', async () => {
+      const i1 = await store.createReviewItem({
+        budgetId: 'budget-st', transactionId: 'txn-st-1',
+        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+      });
+      const i2 = await store.createReviewItem({
+        budgetId: 'budget-st', transactionId: 'txn-st-2',
+        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+      });
+      const i3 = await store.createReviewItem({
+        budgetId: 'budget-st', transactionId: 'txn-st-3',
+        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+      });
+      await store.transitionReviewItem(i1.id, {
+        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+      });
+      await store.transitionReviewItem(i3.id, {
+        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+      });
+
+      // Only i2 remains discovered
+      const discoveredAll = await store.listReviewItems({ status: 'discovered' });
+      expect(discoveredAll).toHaveLength(1);
+      expect(discoveredAll[0].id).toBe(i2.id);
+
+      // Limit beyond available — returns all matching
+      const discoveredAll2 = await store.listReviewItems({ status: 'discovered', limit: 5 });
+      expect(discoveredAll2).toHaveLength(1);
+
+      // Filter + offset past end
+      expect(await store.listReviewItems({ status: 'discovered', offset: 1 })).toHaveLength(0);
+    });
+
+    it('countProposals with budget filter returns correct totals', async () => {
+      const future = () => new Date(Date.now() + 86_400_000).toISOString();
+
+      // 2 in budget-alpha, 3 in budget-beta
+      for (let i = 0; i < 2; i++) {
+        await store.createProposal({
+          operation: 'set_category', budgetId: 'budget-alpha',
+          transactionId: `txn-bfa-${i}`, categoryId: 'cat-food',
+          payloadHash: `hash-bfa-${i}`, policyVersion: '1',
+          preconditions: '{}', expiresAt: future(),
+          actorId: 'bot', provenance: 'test',
+        });
+      }
+      for (let i = 0; i < 3; i++) {
+        await store.createProposal({
+          operation: 'set_category', budgetId: 'budget-beta',
+          transactionId: `txn-bfb-${i}`, categoryId: 'cat-util',
+          payloadHash: `hash-bfb-${i}`, policyVersion: '1',
+          preconditions: '{}', expiresAt: future(),
+          actorId: 'bot', provenance: 'test',
+        });
+      }
+
+      expect(await store.countProposals()).toBe(5);
+      expect(await store.countProposals({ budgetId: 'budget-alpha' })).toBe(2);
+      expect(await store.countProposals({ budgetId: 'budget-beta' })).toBe(3);
+      expect(await store.countProposals({ budgetId: 'nonexistent' })).toBe(0);
+    });
+
+    it('countProposals with budget + superseded filter returns correct counts', async () => {
+      const future = () => new Date(Date.now() + 86_400_000).toISOString();
+
+      // budget-alpha: 3 active
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-alpha',
+        transactionId: 'txn-bs-a1', categoryId: 'cat-food',
+        payloadHash: 'hash-bs-a1', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-alpha',
+        transactionId: 'txn-bs-a2', categoryId: 'cat-util',
+        payloadHash: 'hash-bs-a2', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-alpha',
+        transactionId: 'txn-bs-a3', categoryId: 'cat-fun',
+        payloadHash: 'hash-bs-a3', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      // budget-beta: 2 active, 1 superseded
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-beta',
+        transactionId: 'txn-bs-b1', categoryId: 'cat-food',
+        payloadHash: 'hash-bs-b1', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-beta',
+        transactionId: 'txn-bs-b2', categoryId: 'cat-util',
+        payloadHash: 'hash-bs-b2', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      const b3 = await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-beta',
+        transactionId: 'txn-bs-b3', categoryId: 'cat-fun',
+        payloadHash: 'hash-bs-b3', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.supersedeProposal(b3.id);
+      // budget-gamma: 1 superseded
+      const c1 = await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-gamma',
+        transactionId: 'txn-bs-c1', categoryId: 'cat-food',
+        payloadHash: 'hash-bs-c1', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.supersedeProposal(c1.id);
+
+      // Global
+      expect(await store.countProposals()).toBe(7);
+      expect(await store.countProposals({ superseded: false })).toBe(5);
+      expect(await store.countProposals({ superseded: true })).toBe(2);
+
+      // By budget
+      expect(await store.countProposals({ budgetId: 'budget-alpha' })).toBe(3);
+      expect(await store.countProposals({ budgetId: 'budget-alpha', superseded: false })).toBe(3);
+      expect(await store.countProposals({ budgetId: 'budget-alpha', superseded: true })).toBe(0);
+
+      expect(await store.countProposals({ budgetId: 'budget-beta' })).toBe(3);
+      expect(await store.countProposals({ budgetId: 'budget-beta', superseded: false })).toBe(2);
+      expect(await store.countProposals({ budgetId: 'budget-beta', superseded: true })).toBe(1);
+
+      expect(await store.countProposals({ budgetId: 'budget-gamma' })).toBe(1);
+      expect(await store.countProposals({ budgetId: 'budget-gamma', superseded: false })).toBe(0);
+      expect(await store.countProposals({ budgetId: 'budget-gamma', superseded: true })).toBe(1);
+    });
+
+    it('listProposals respects limit', async () => {
+      const future = () => new Date(Date.now() + 86_400_000).toISOString();
+
+      const created = [];
+      for (let i = 0; i < 5; i++) {
+        const p = await store.createProposal({
+          operation: 'set_category', budgetId: 'budget-pl',
+          transactionId: `txn-pl-${i}`, categoryId: 'cat-food',
+          payloadHash: `hash-pl-${i}`, policyVersion: '1',
+          preconditions: '{}', expiresAt: future(),
+          actorId: 'bot', provenance: 'test',
+        });
+        created.push(p);
+        tickSync();
+      }
+
+      const all = await store.listProposals();
+      expect(all).toHaveLength(5);
+
+      const limited = await store.listProposals({ limit: 2 });
+      expect(limited).toHaveLength(2);
+      // Newest first (created_at DESC)
+      expect(limited[0].id).toBe(created[4].id);
+    });
+    it('listProposals respects offset', async () => {
+      const future = () => new Date(Date.now() + 86_400_000).toISOString();
+
+      const allItems = [];
+      for (let i = 0; i < 5; i++) {
+        const p = await store.createProposal({
+          operation: 'set_category', budgetId: 'budget-po',
+          transactionId: `txn-po-${i}`, categoryId: 'cat-food',
+          payloadHash: `hash-po-${i}`, policyVersion: '1',
+          preconditions: '{}', expiresAt: future(),
+          actorId: 'bot', provenance: 'test',
+        });
+        allItems.push(p);
+        tickSync();
+      }
+
+      const all = await store.listProposals();
+      expect(all).toHaveLength(5);
+
+      const offset3 = await store.listProposals({ offset: 3 });
+      expect(offset3).toHaveLength(2);
+      expect(offset3[0].id).toBe(all[3].id);
+
+      // Offset past end
+      expect(await store.listProposals({ offset: 10 })).toHaveLength(0);
+    });
+
+    it('listProposals respects limit with superseded filter', async () => {
+      const future = () => new Date(Date.now() + 86_400_000).toISOString();
+
+      // Create 3 proposals, supersede the last two
+      const p1 = await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-ls',
+        transactionId: 'txn-ls-1', categoryId: 'cat-food',
+        payloadHash: 'hash-ls-1', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      const p2 = await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-ls',
+        transactionId: 'txn-ls-2', categoryId: 'cat-util',
+        payloadHash: 'hash-ls-2', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      const p3 = await store.createProposal({
+        operation: 'set_category', budgetId: 'budget-ls',
+        transactionId: 'txn-ls-3', categoryId: 'cat-fun',
+        payloadHash: 'hash-ls-3', policyVersion: '1',
+        preconditions: '{}', expiresAt: future(),
+        actorId: 'bot', provenance: 'test',
+      });
+      await store.supersedeProposal(p2.id);
+      await store.supersedeProposal(p3.id);
+
+      // Active: only p1
+      expect(await store.listProposals({ superseded: false, limit: 1 })).toHaveLength(1);
+      expect(await store.listProposals({ superseded: false })).toHaveLength(1);
+
+      // Superseded: p2 and p3
+      expect(await store.listProposals({ superseded: true })).toHaveLength(2);
+      expect(await store.listProposals({ superseded: true, limit: 1 })).toHaveLength(1);
+      expect(await store.listProposals({ superseded: true, offset: 1 })).toHaveLength(1);
+      expect(await store.listProposals({ superseded: true, offset: 2 })).toHaveLength(0);
+    });
+  });
+
+  // =======================================================================
   // Resource lifecycle
   // =======================================================================
 

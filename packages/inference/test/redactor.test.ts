@@ -1,11 +1,10 @@
 /**
  * Tests for content redaction before external inference calls.
  *
- * Covers: redaction of transaction descriptions, notes, merchant/payee,
- * prompt-injection text; no redaction for local calls;
- * Unicode/format-control obfuscation hardening,
- * direct instruction override detection,
- * field-wide leak prevention, and benign false-positive avoidance.
+ * Covers: unconditional privacy redaction of all sensitive text fields for
+ * external calls; no redaction for local calls; prompt-injection detection
+ * via hasInjection(); Unicode/format-control obfuscation hardening;
+ * direct instruction override detection; field-wide leak prevention.
  */
 import { describe, it, expect } from 'vitest';
 import { createRedactor } from '../src/redactor';
@@ -117,66 +116,66 @@ describe('prompt-injection redaction', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Benign text passes through for external calls (no false positives)
+// All text is redacted for external calls (unconditional privacy redaction)
 // ---------------------------------------------------------------------------
 
-describe('benign text passes through for external calls', () => {
+describe('all text redacted for external calls', () => {
   const redactor = createRedactor();
 
-  it('does not redact ordinary payment description', () => {
+  it('redacts ordinary payment description', () => {
     const input = makeCandidate({
       description: 'Paid electricity bill for July',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.description).toBe('Paid electricity bill for July');
+    expect(redacted.description).toBe('[REDACTED]');
   });
 
-  it('does not redact common bank message containing "you are now"', () => {
+  it('redacts common bank message containing "you are now"', () => {
     const input = makeCandidate({
       notes: 'You are now up to date on payments',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.notes).toBe('You are now up to date on payments');
+    expect(redacted.notes).toBe('[REDACTED]');
   });
 
-  it('does not redact innocent system prefix', () => {
+  it('redacts innocent system prefix', () => {
     const input = makeCandidate({
       description: 'System: Payment received for invoice INV-042',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.description).toBe('System: Payment received for invoice INV-042');
+    expect(redacted.description).toBe('[REDACTED]');
   });
 
-  it('does not redact merchant name from description', () => {
+  it('redacts merchant name from description', () => {
     const input = makeCandidate({
       description: 'AMEX PAYMENT 1234',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.description).toBe('AMEX PAYMENT 1234');
+    expect(redacted.description).toBe('[REDACTED]');
   });
 
-  it('does not redact benign payee', () => {
+  it('redacts benign payee', () => {
     const input = makeCandidate({
       importedPayee: 'WALMART.COM',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.importedPayee).toBe('WALMART.COM');
+    expect(redacted.importedPayee).toBe('[REDACTED]');
   });
 
-  it('does not redact "ignore" in non-injection context', () => {
+  it('redacts "ignore" in non-injection context', () => {
     const input = makeCandidate({
       description: 'Please ignore the late fee on this account',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.description).toBe('Please ignore the late fee on this account');
+    expect(redacted.description).toBe('[REDACTED]');
   });
 
-  it('does not redact benign instructions mention', () => {
+  it('redacts benign instructions mention', () => {
     const input = makeCandidate({
       notes: 'The instructions were to pay by the 15th',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.notes).toBe('The instructions were to pay by the 15th');
+    expect(redacted.notes).toBe('[REDACTED]');
   });
 });
 
@@ -283,21 +282,20 @@ describe('unicode obfuscation protection', () => {
     const redacted = redactor.forExternal(input);
     expect(redacted.description).toBe('[REDACTED]');
   });
-
-  it('does not redact benign Unicode characters (accents, emoji)', () => {
+  it('redacts benign Unicode characters (accents, emoji) — unconditional redaction', () => {
     const input = makeCandidate({
       description: 'Café payment for 20€ — ☕ regular purchase',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.description).toBe('Café payment for 20€ — ☕ regular purchase');
+    expect(redacted.description).toBe('[REDACTED]');
   });
 
-  it('does not redact common Unicode punctuation', () => {
+  it('redacts common Unicode punctuation — unconditional redaction', () => {
     const input = makeCandidate({
       description: 'Payment — Invoice #1234 (due 15/07)',
     });
     const redacted = redactor.forExternal(input);
-    expect(redacted.description).toBe('Payment — Invoice #1234 (due 15/07)');
+    expect(redacted.description).toBe('[REDACTED]');
   });
 });
 

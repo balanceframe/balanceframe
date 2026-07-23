@@ -29,6 +29,9 @@ export default defineNuxtConfig({
     /** Actor identity for authenticated requests. */
     authActorId: 'api-user',
 
+    /** Enable write mutations on approve/correct (default: observe-only). */
+    reviewAndApply: false,
+
     /** Path to the workflow SQLite database. */
     workflowDbPath: '',
 

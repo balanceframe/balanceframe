@@ -70,8 +70,10 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope(code, outcome.error ?? 'Unknown error', authInfo, false, requestId);
   }
 
-  // Check if reviewAndApply mode is enabled and an executor is available
-  if (reviewAndApplyEnabled(event)) {
+  // Only invoke mutation when the item has reached full 'approved' status
+  // (quorum met).  Partial approvals are successful transitions but must
+  // NOT trigger external ledger writes.
+  if (reviewAndApplyEnabled(event) && outcome.status === 'approved') {
     const executor = getReviewMutationExecutorFromEvent(event);
     if (executor) {
       try {
@@ -88,6 +90,7 @@ export default defineEventHandler(async (event) => {
             itemId: outcome.itemId,
             success: mutationResult.success,
             error: mutationResult.error,
+            status: outcome.status,
             categorizationExecuted: true,
             mutationStatus: mutationResult.mutationStatus,
             applied: mutationResult.applied,
@@ -113,32 +116,25 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    // reviewAndApply configured but no executor wired
-    return okEnvelope(
-      {
-        itemId: outcome.itemId,
-        success: true,
-        error: 'Mutation executor not available',
-        categorizationExecuted: false,
-        mutationStatus: 'denied',
-        applied: false,
-        verified: false,
-        stale: false,
-        transactionId: null,
-        previousCategoryId: null,
-        newCategoryId: null,
-      },
+    // Review-and-apply must fail closed if the secure application service was
+    // not injected; never report a successful workflow-only approval.
+    setResponseStatus(event, 501);
+    return errorEnvelope(
+      'NOT_IMPLEMENTED',
+      'Review-and-apply requires a secure mutation service composition.',
       authInfo,
+      false,
       requestId,
     );
   }
 
-  // Observe mode — workflow transition only, no mutation
+  // Not quorate or observe mode — workflow transition only, no mutation
   return okEnvelope(
     {
       itemId: outcome.itemId,
       success: true,
       error: null,
+      status: outcome.status,
       categorizationExecuted: false,
       mutationStatus: 'noop',
       applied: false,

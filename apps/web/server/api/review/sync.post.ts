@@ -5,6 +5,22 @@ import {
 } from '@balanceframe/application';
 import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
 
+/** Structured sync result with per-item outcome counts. */
+export interface SyncReviewResult {
+  readonly synchronized: true;
+  /** Number of new deterministic review candidates persisted. */
+  readonly created: number;
+  /** Transitions: successfully moved from discovered to pending_review. */
+  readonly transitioned: number;
+  /** Items that were skipped (e.g. version conflict, already pending). */
+  readonly skipped: number;
+  /** Items that failed to transition with reason codes. */
+  readonly failed: number;
+  /** Per-failure reason codes. */
+  readonly reasons: Record<string, number>;
+  readonly result: unknown;
+}
+
 /** Synchronize the configured Actual budget and persist deterministic review candidates. */
 export default defineEventHandler(async event => {
   const auth = buildAuthorizationInfo(event, 'observe');
@@ -21,16 +37,19 @@ export default defineEventHandler(async event => {
     const connected = await manager.restore();
     const protocol = await createNativeAnalysisProtocol();
     const result = await protocol.pendingReview(connected.connector, null);
-    const persisted = await persistPendingReviewResult(
+    const created = await persistPendingReviewResult(
       workflow.store,
       connected.budget.id || connected.budget.groupId,
       result,
     );
-    // Transition all discovered items to pending_review so they appear
-    // in the actionable review queue. Items remain discovered only when
-    // they already exist with a newer version (idempotent dedup).
+
+    // Transition all discovered items to pending_review with structured reporting.
     const discovered = await workflow.store.listReviewItems({ status: 'discovered' });
     let transitioned = 0;
+    let skipped = 0;
+    let failed = 0;
+    const reasons: Record<string, number> = {};
+
     for (const item of discovered) {
       try {
         await workflow.store.transitionReviewItem(item.id, {
@@ -40,16 +59,32 @@ export default defineEventHandler(async event => {
           expectedVersion: item.version,
         });
         transitioned += 1;
-      } catch {
-        // skip items that can't transition (e.g. version conflict with
-        // concurrent workflow)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes('version conflict') || message.includes('expected version')) {
+          skipped += 1;
+          reasons['version_conflict'] = (reasons['version_conflict'] ?? 0) + 1;
+        } else if (message.includes('not allowed') || message.includes('invalid transition')) {
+          skipped += 1;
+          reasons['invalid_transition'] = (reasons['invalid_transition'] ?? 0) + 1;
+        } else {
+          failed += 1;
+          reasons['unknown'] = (reasons['unknown'] ?? 0) + 1;
+        }
       }
     }
-    return okEnvelope(
-      { synchronized: true, persisted, result },
-      auth,
-      requestId,
-    );
+
+    const syncResult: SyncReviewResult = {
+      synchronized: true,
+      created,
+      transitioned,
+      skipped,
+      failed,
+      reasons: Object.keys(reasons).length > 0 ? reasons : { none: 0 },
+      result,
+    };
+
+    return okEnvelope(syncResult, auth, requestId);
   } catch (error) {
     setResponseStatus(event, 500);
     return errorEnvelope(

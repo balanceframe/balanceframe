@@ -93,6 +93,12 @@ COPY --from=builder /app/crates/node-binding/index.d.ts ./node_modules/@balancef
 # Create data directory with writable ownership
 RUN mkdir -p /data && chown balanceframe:balanceframe /data
 
+# Prune development-only dependencies for smaller attack surface
+RUN npm prune --omit=dev && rm -rf /tmp/*
+
+# Switch to non-root user
+USER balanceframe
+
 # Set runtime defaults
 ENV NUXT_AUTH_DB_PATH=/data/auth.db \
     BALANCEFRAME_WORKFLOW_DB_PATH=/data/workflow.db

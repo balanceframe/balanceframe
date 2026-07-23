@@ -502,6 +502,8 @@ export interface ExportResult {
   exportedAt: string;
   budgetName: string;
   exportPath: string;
+  byteSize: number;
+  sha256Hash: string;
   accountCount: number;
   transactionCount: number;
 }

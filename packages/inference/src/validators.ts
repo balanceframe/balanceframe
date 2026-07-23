@@ -15,16 +15,16 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 export const alternativeSchema = z.object({
-  categoryId: z.string().min(1),
-  reason: z.string().min(1),
+  categoryId: z.string().min(1).max(200),
+  reason: z.string().min(1).max(2000),
 });
 
 export const classificationResultSchema = z.object({
-  categoryId: z.string().min(1),
-  confidence: z.number().nullable(),
-  alternatives: z.array(alternativeSchema),
-  rationale: z.string().min(1),
-  model: z.string().min(1),
+  categoryId: z.string().min(1).max(200),
+  confidence: z.number().min(0).max(1).nullable(),
+  alternatives: z.array(alternativeSchema).max(10),
+  rationale: z.string().min(1).max(5000),
+  model: z.string().min(1).max(200),
 });
 
 export type ClassificationResultParsed = z.infer<typeof classificationResultSchema>;

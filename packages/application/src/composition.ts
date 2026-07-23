@@ -55,6 +55,9 @@ import type {
 import type { DataFreshness } from './envelope.js';
 import { ReasonCodes } from './errors.js';
 import { ApplicationError } from './errors.js';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, writeFile, rename, stat, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // CompositionConfigurationError
@@ -637,7 +640,7 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
  * Minimal store interface for lifecycle operations.
  * Satisfied structurally by SqliteWorkflowStore.
  */
-interface LifecycleStore {
+export interface LifecycleStore {
   cancelPendingJobs(): Promise<number>;
   deleteActorMembership(actorId: string): Promise<boolean>;
   recordExport(input: {
@@ -699,13 +702,44 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
+
       const now = new Date().toISOString();
       const budgetName = 'Balanced Budget';
-      const exportPath = `/tmp/balanceframe-export/balanced-budget.json`;
+
+      // Build export content — a minimal budget manifest
+      const exportData = {
+        version: 1,
+        exportedAt: now,
+        source: 'balanceframe-observe',
+        budgetName,
+        accounts: [] as unknown[],
+        transactions: [] as unknown[],
+      };
+
+      const content = JSON.stringify(exportData, null, 2);
+      const contentBytes = Buffer.byteLength(content, 'utf-8');
+      const sha256Hash = createHash('sha256').update(content, 'utf-8').digest('hex');
+
+      // Determine export path — unique per call
+      const exportDir = '/tmp/balanceframe-export';
+      const timestamp = Date.now();
+      const rand = randomBytes(4).toString('hex');
+      const exportFilename = `budget-export-${timestamp}-${rand}.json`;
+      const exportPath = join(exportDir, exportFilename);
+
+      // Atomic write: temp file → rename (atomic on POSIX)
+      const tmpPath = exportPath + '.' + randomBytes(4).toString('hex');
+      await mkdir(exportDir, { recursive: true });
+      await writeFile(tmpPath, content, 'utf-8');
+      await rename(tmpPath, exportPath);
+
+      // Write verification sidecar (.bfv = balanceframe-verify)
+      const bfvPath = exportPath + '.bfv';
+      await writeFile(bfvPath, `${sha256Hash}\n${contentBytes}\n`, 'utf-8');
+
+      // Record export in store for export-before-delete tracking
       const accountCount = 0;
       const transactionCount = 0;
-
-      // Record export if store is available (export-before-delete tracking)
       if (store) {
         await store.recordExport({ budgetName, exportPath, accountCount, transactionCount });
       }
@@ -714,6 +748,8 @@ export function createLifecycleCallbacks(
         exportedAt: now,
         budgetName,
         exportPath,
+        byteSize: contentBytes,
+        sha256Hash,
         accountCount,
         transactionCount,
       };
@@ -734,11 +770,14 @@ export function createLifecycleCallbacks(
         cancelledJobs = await store.cancelPendingJobs();
         await store.deleteActorMembership(actorId);
       }
+      const cleanupPerformed = !!store;
       return {
-        disconnected: true,
-        cacheRemoved: true,
-        credentialsRemoved: true,
-        message: `Disconnected successfully. ${cancelledJobs} pending job(s) cancelled. Actual server was not modified.`,
+        disconnected: cleanupPerformed,
+        cacheRemoved: cleanupPerformed,
+        credentialsRemoved: cleanupPerformed,
+        message: cleanupPerformed
+          ? `Disconnected successfully. ${cancelledJobs} pending job(s) cancelled. Actual server was not modified.`
+          : 'No cleanup was performed because no workflow store is configured.',
       };
     },
 
@@ -757,15 +796,17 @@ export function createLifecycleCallbacks(
         await store.deleteScopeData('connection', { actorId });
         await store.deleteActorMembership(actorId);
       }
+      const cleanupPerformed = !!store;
       return {
-        removed: true,
-        cacheRemoved: true,
-        credentialsRemoved: true,
-        broadAccessCaveat:
-          'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
-          'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
-          'Project-side filtering does not reduce the broad access held by the connector. ' +
-          'Ensure your Actual server and backups have appropriate security.',
+        removed: cleanupPerformed,
+        cacheRemoved: cleanupPerformed,
+        credentialsRemoved: cleanupPerformed,
+        broadAccessCaveat: cleanupPerformed
+          ? 'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
+            'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
+            'Project-side filtering does not reduce the broad access held by the connector. ' +
+            'Ensure your Actual server and backups have appropriate security.'
+          : 'No cleanup was performed because no workflow store is configured.',
       };
     },
 
@@ -790,31 +831,121 @@ export function createLifecycleCallbacks(
         });
       }
 
-      // Export-before-delete enforcement
-      if (store) {
-        const lastExport = await store.getLastExport();
-        if (!lastExport) {
-          throw new ApplicationError({
-            code: 'export_required',
-            message: 'An export must be performed before deleting data. Run "export" first.',
-            reasonCodes: ['export_before_delete'],
-            retryable: false,
-          });
-        }
+      // Export-before-delete enforcement — requires store AND valid artifact
+      if (!store) {
+        throw new ApplicationError({
+          code: 'export_required',
+          message: 'Cannot verify export before delete without a workflow store. Run "export" first.',
+          reasonCodes: ['export_before_delete'],
+          retryable: false,
+        });
       }
 
-      // Perform scoped deletion
+      const lastExport = await store.getLastExport();
+      if (!lastExport) {
+        throw new ApplicationError({
+          code: 'export_required',
+          message: 'An export must be performed before deleting data. Run "export" first.',
+          reasonCodes: ['export_before_delete'],
+          retryable: false,
+        });
+      }
+
+      // ── Artifact verification ──────────────────────────────────
+      const exportPath = lastExport.exportPath;
+
+      // 1. File existence
+      let exportStat;
+      try {
+        exportStat = await stat(exportPath);
+      } catch {
+        throw new ApplicationError({
+          code: 'export_artifact_missing',
+          message: `Export file ${exportPath} does not exist or is inaccessible. Run "export" first.`,
+          reasonCodes: ['export_before_delete', 'export_artifact_missing'],
+          retryable: false,
+        });
+      }
+
+      // 2. File type check
+      if (!exportStat.isFile()) {
+        throw new ApplicationError({
+          code: 'export_artifact_invalid',
+          message: `Export path ${exportPath} is not a regular file. Run "export" first.`,
+          reasonCodes: ['export_before_delete', 'export_artifact_invalid'],
+          retryable: false,
+        });
+      }
+
+      // 3. Non-zero size check
+      if (exportStat.size === 0) {
+        throw new ApplicationError({
+          code: 'export_artifact_empty',
+          message: 'Export file is empty. Run "export" first.',
+          reasonCodes: ['export_before_delete', 'export_artifact_empty'],
+          retryable: false,
+        });
+      }
+
+      // 4. Verification sidecar existence and readability
+      const bfvPath = exportPath + '.bfv';
+      let bfvContent: string;
+      try {
+        bfvContent = await readFile(bfvPath, 'utf-8');
+      } catch {
+        throw new ApplicationError({
+          code: 'export_verification_missing',
+          message: 'Export verification metadata is missing. The export may be corrupted. Run "export" first.',
+          reasonCodes: ['export_before_delete', 'export_verification_missing'],
+          retryable: false,
+        });
+      }
+
+      // 5. Parse sidecar for expected hash
+      const lines = bfvContent.trim().split('\n');
+      const expectedHash = lines[0]?.trim();
+      if (!expectedHash || !/^[a-f0-9]{64}$/.test(expectedHash)) {
+        throw new ApplicationError({
+          code: 'export_verification_corrupt',
+          message: 'Export verification metadata is corrupt. Run "export" first.',
+          reasonCodes: ['export_before_delete', 'export_verification_corrupt'],
+          retryable: false,
+        });
+      }
+
+      // 6. Readability + hash verification — read the actual export file
+      let actualContent: string;
+      try {
+        actualContent = await readFile(exportPath, 'utf-8');
+      } catch {
+        throw new ApplicationError({
+          code: 'export_not_readable',
+          message: 'Export file exists but could not be read. It may be corrupted. Run "export" first.',
+          reasonCodes: ['export_before_delete', 'export_not_readable'],
+          retryable: false,
+        });
+      }
+
+      const actualHash = createHash('sha256').update(actualContent, 'utf-8').digest('hex');
+      if (actualHash !== expectedHash) {
+        throw new ApplicationError({
+          code: 'export_hash_mismatch',
+          message: 'Export file content hash does not match the recorded verification. The export may have been modified. Run "export" first.',
+          reasonCodes: ['export_before_delete', 'export_hash_mismatch'],
+          retryable: false,
+        });
+      }
+
+      // ── All checks passed — proceed with scoped deletion ───────
       let cancelledJobs = 0;
       let deleted: Record<string, number> = {};
       let retained = { count: 0, reasons: [] as string[] };
       const correlationId = `del_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
-      if (store) {
-        cancelledJobs = await store.cancelPendingJobs();
-        const result = await store.deleteScopeData(scope, { actorId });
-        deleted = result.deleted;
-        retained = result.retained;
-      }
+      cancelledJobs = await store.cancelPendingJobs();
+      const result = await store.deleteScopeData(scope, { actorId });
+      deleted = result.deleted;
+      retained = result.retained;
 
       return {
         actorId,

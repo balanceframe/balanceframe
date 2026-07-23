@@ -235,6 +235,8 @@ export class ActualConnector implements BudgetLedger {
   private _budgetInfo: BudgetInfo | null = null;
   private _serverVersion: string | null = null;
   private _connectedAt: string | null = null;
+  /** Promise guard for synchronize() — prevents concurrent sync operations. */
+  private _syncPromise: Promise<LedgerSnapshotResult> | null = null;
 
   constructor(config: ActualConnectorConfig) {
     this.client = config.client;
@@ -268,8 +270,6 @@ export class ActualConnector implements BudgetLedger {
 
   // -------------------------------------------------------------------------
   // Synchronize
-  // -------------------------------------------------------------------------
-
   async synchronize(): Promise<LedgerSnapshotResult> {
     this.assertInitialized();
 
@@ -277,8 +277,23 @@ export class ActualConnector implements BudgetLedger {
       throw new Error('No budget selected; call discoverBudgets() and selectBudget() first');
     }
 
-    const budgetId = this._budgetInfo.id;
-    const groupId = this._budgetInfo.groupId;
+    // Deduplicate concurrent synchronize() calls: if a sync is already in
+    // progress, return the in-flight promise instead of starting a new one.
+    if (this._syncPromise) {
+      return this._syncPromise;
+    }
+
+    this._syncPromise = this._doSynchronize();
+    try {
+      return await this._syncPromise;
+    } finally {
+      this._syncPromise = null;
+    }
+  }
+
+  private async _doSynchronize(): Promise<LedgerSnapshotResult> {
+    const budgetId = this._budgetInfo!.id;
+    const groupId = this._budgetInfo!.groupId;
 
     await this.withCacheLock(budgetId, async () => {
       const cache = this.getOrCreateCache(budgetId);

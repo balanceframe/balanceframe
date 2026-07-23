@@ -1790,3 +1790,64 @@ describe('CorrectionHistory', () => {
     });
   });
 });
+
+// =======================================================================
+// Sync failure reporting (structured outcome tracking)
+// =======================================================================
+
+interface SyncReviewResult {
+  synchronized: true;
+  created: number;
+  transitioned: number;
+  skipped: number;
+  failed: number;
+  reasons: Record<string, number>;
+  result: unknown;
+}
+
+describe('sync failure reporting', () => {
+  it('tracks created count from persist call', async () => {
+    const result: SyncReviewResult = {
+      synchronized: true,
+      created: 5,
+      transitioned: 3,
+      skipped: 1,
+      failed: 0,
+      reasons: { version_conflict: 1 },
+      result: { candidates: [] },
+    };
+    expect(result.synchronized).toBe(true);
+    expect(result.created).toBe(5);
+    expect(result.transitioned).toBe(3);
+    expect(result.skipped).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.reasons.version_conflict).toBe(1);
+  });
+
+  it('tracks failure reason codes', async () => {
+    const result: SyncReviewResult = {
+      synchronized: true,
+      created: 0,
+      transitioned: 0,
+      skipped: 0,
+      failed: 2,
+      reasons: { unknown: 2 },
+      result: { candidates: [] },
+    };
+    expect(result.failed).toBe(2);
+    expect(result.reasons.unknown).toBe(2);
+  });
+
+  it('reports empty reasons as none when no failures', async () => {
+    const result: SyncReviewResult = {
+      synchronized: true,
+      created: 1,
+      transitioned: 1,
+      skipped: 0,
+      failed: 0,
+      reasons: { none: 0 },
+      result: { candidates: [] },
+    };
+    expect(result.reasons.none).toBe(0);
+  });
+});

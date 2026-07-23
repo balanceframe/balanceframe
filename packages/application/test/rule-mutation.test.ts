@@ -457,6 +457,7 @@ describe('RuleMutationService', () => {
       name: TEST_RULE_NAME,
       conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
       actions: [{ type: 'set_category', value: 'cat_groceries' }],
+      conditionsOp: 'and',
     });
     expect(rust.verifyRuleMutation).toHaveBeenCalled();
     expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(TEST_NONCE, null);

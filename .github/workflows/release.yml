@@ -21,13 +21,13 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@e50d5f73bfe71c2f0c4e99595cf20a3d1e20f5b6 # v16
 
       - name: Enable Nix binary cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/magic-nix-cache-action@87b8c9ec4a6faa118318b143a7da1c022406cd62 # v9
 
       - name: Validate the flake
         run: nix flake check --print-build-logs
@@ -57,10 +57,10 @@ jobs:
         run: nix develop .#release --command cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@b5ca514318bd6f1783a6b1ef68f029b2c3d6aad5 # v3.10.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -68,7 +68,7 @@ jobs:
 
       - name: Extract metadata for OCI tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/balanceframe
           tags: |
@@ -79,7 +79,7 @@ jobs:
 
       - name: Build and push multi-platform image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -111,14 +111,14 @@ jobs:
             --yes
 
       - name: Generate SBOM with Syft
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@2b5e44f70dbc9d1708e27c03f28c28b5b024c3a0 # v0.18.0
         with:
           image: ${{ steps.imgref.outputs.full }}
           artifact-name: sbom.spdx.json
           format: spdx-json
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.1
         with:
           name: BalanceFrame ${{ github.ref_name }}
           body: |
@@ -164,7 +164,7 @@ jobs:
       id-token: write
       contents: read
       packages: read
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@b0a6aefd8e3b70e0fb4f8c2e45a7bd2ddc569548 # v2.1.0
     with:
       image: ghcr.io/${{ github.repository_owner }}/balanceframe
       digest: ${{ needs.verify.outputs.digest }}

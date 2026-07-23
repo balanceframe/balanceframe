@@ -529,16 +529,28 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectCorrectionByReviewTransition: null as unknown as ReturnType<DatabaseType['prepare']>,
     upsertRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
     getAllRuleOverrides: null as unknown as ReturnType<DatabaseType['prepare']>,
+    removeRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countReviewItems: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countReviewItemsByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposals: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsActive: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsByBudgetActive: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsSuperseded: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countProposalsSupersededByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectSchemaVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
+    upsertSchemaVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
+    this.db.pragma('busy_timeout = 5000');
     this.initSchema();
     this.prepareStatements();
+    this.runMigrations();
   }
-
   /** Release the database connection. */
   close(): void {
     this.db.close();
@@ -786,7 +798,48 @@ export class SqliteWorkflowStore implements WorkflowStore {
         transaction_count INTEGER NOT NULL DEFAULT 0,
         exported_at      TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version    INTEGER NOT NULL,
+        applied_at TEXT NOT NULL
+      );
     `);
+  }
+
+  // ── Schema migrations ─────────────────────────────────────────
+  //
+  // Each migration is a function that applies one or more DDL/DML changes
+  // inside a single transaction.  The store's schema_version table tracks
+  // which version has been applied; migrations are run sequentially.
+
+  private static readonly MIGRATIONS: Array<(db: DatabaseType) => void> = [
+    // Version 1: Initial schema — created by initSchema() above.
+    (_db) => {
+      // The schema is already created before migrations run; this record
+      // establishes the baseline for future ordered migrations.
+    },
+  ];
+
+  private getCurrentSchemaVersion(): number {
+    const row = this.stmt.selectSchemaVersion.get({}) as { version: number } | undefined;
+    return row?.version ?? 0;
+  }
+
+  private runMigrations(): void {
+    const current = this.getCurrentSchemaVersion();
+    const target = SqliteWorkflowStore.MIGRATIONS.length;
+
+    if (current >= target) return;
+
+    for (let v = current + 1; v <= target; v++) {
+      const migration = SqliteWorkflowStore.MIGRATIONS[v - 1];
+      if (!migration) continue;
+      const runMigration = this.db.transaction(() => {
+        migration(this.db);
+        this.stmt.upsertSchemaVersion.run({ version: v, appliedAt: new Date().toISOString() });
+      });
+      runMigration();
+    }
   }
 
   private prepareStatements(): void {
@@ -1420,6 +1473,61 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.stmt.getAllRuleOverrides = this.db.prepare(`
       SELECT rule_id, inactive FROM rule_overrides
     `);
+
+    this.stmt.removeRuleOverride = this.db.prepare(`
+      DELETE FROM rule_overrides WHERE rule_id = @ruleId
+    `);
+
+    // ── Schema version ──────────────────────────────────────────────────
+
+    this.stmt.selectSchemaVersion = this.db.prepare(`
+      SELECT version FROM schema_version ORDER BY version DESC LIMIT 1
+    `);
+
+    this.stmt.upsertSchemaVersion = this.db.prepare(`
+      INSERT INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)
+    `);
+
+    // ── Count queries (pagination totals) ───────────────────────────────
+
+    this.stmt.countReviewItems = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM review_items WHERE 1=1
+    `);
+
+    this.stmt.countReviewItemsByStatus = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM review_items WHERE status = @status
+    `);
+
+    this.stmt.countProposals = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+    `);
+
+    this.stmt.countProposalsActive = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE superseded_at IS NULL
+    `);
+
+    this.stmt.countProposalsByBudget = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE budget_id = @budgetId
+    `);
+
+    this.stmt.countProposalsByBudgetActive = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND superseded_at IS NULL
+    `);
+
+    this.stmt.countProposalsSuperseded = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE superseded_at IS NOT NULL
+    `);
+
+    this.stmt.countProposalsSupersededByBudget = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM categorization_proposals
+       WHERE budget_id = @budgetId
+         AND superseded_at IS NOT NULL
+    `);
   }
 
 
@@ -1837,6 +1945,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
       rows = this.stmt.listReviewItems.all({ limit, offset }) as ReviewItemRow[];
     }
     return rows.map(rowToReviewItem);
+  }
+
+  async countReviewItems(options?: ReviewListOptions): Promise<number> {
+    if (options?.status) {
+      const row = this.stmt.countReviewItemsByStatus.get({ status: options.status }) as { count: number };
+      return row.count;
+    }
+    const row = this.stmt.countReviewItems.get({}) as { count: number };
+    return row.count;
   }
 
   async listReviewItemsByCorrelation(correlationId: string): Promise<ReviewItem[]> {
@@ -2301,6 +2418,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToProposal);
   }
 
+  async countProposals(options?: ListProposalsOptions): Promise<number> {
+    const hasBudget = options?.budgetId != null;
+    let row: { count: number };
+
+    if (hasBudget) {
+      if (options?.superseded === false) {
+        row = this.stmt.countProposalsByBudgetActive.get({ budgetId: options.budgetId }) as { count: number };
+      } else if (options?.superseded === true) {
+        row = this.stmt.countProposalsSupersededByBudget.get({ budgetId: options.budgetId }) as { count: number };
+      } else {
+        row = this.stmt.countProposalsByBudget.get({ budgetId: options.budgetId }) as { count: number };
+      }
+    } else {
+      if (options?.superseded === false) {
+        row = this.stmt.countProposalsActive.get({}) as { count: number };
+      } else if (options?.superseded === true) {
+        row = this.stmt.countProposalsSuperseded.get({}) as { count: number };
+      } else {
+        row = this.stmt.countProposals.get({}) as { count: number };
+      }
+    }
+
+    return row.count;
+  }
+
   // ── Proposal approval lifecycle ───────────────────────────────────
 
 
@@ -2535,14 +2677,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
       isError: input.isError ? 1 : 0,
     });
 
-    const row = this.stmt.selectAuditByProposal.all({ proposalId: id ?? '', limit: 1 }) as AuditRow[];
-    // Fetch by scanning recent — simplest with no index on id
-    const allRows = (this.stmt.selectAuditCount.get as () => { count: number })();
-    const rows = this.stmt.selectAuditByClassification.all({
-      classification: null,
-      limit: 1,
-      offset: 0,
-    }) as AuditRow[];
     // Actually, let's construct from what we have
     const resultRecord: AuditRecord = {
       id,
@@ -2847,5 +2981,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
       map.set(row.rule_id, row.inactive === 1);
     }
     return map;
+  }
+
+  async removeRuleOverride(ruleId: string): Promise<void> {
+    this.stmt.removeRuleOverride.run({ ruleId });
   }
 }

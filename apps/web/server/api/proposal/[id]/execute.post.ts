@@ -1,26 +1,31 @@
 /**
- * POST /api/proposal/[id]/execute — execute a rule proposal by creating the
- * Actual rule, syncing the budget, and superseding the proposal.
+ * POST /api/proposal/[id]/execute — execute a rule proposal via the
+ * RuleMutationService, which enforces simulation, precondition checks,
+ * payload binding, idempotency, and post-write verification.
  *
  * Flow:
  *   1. Load the proposal from the workflow store
  *   2. Validate it is not superseded or expired
- *   3. Extract `nativeRule` from the proposal's preconditions
+ *   3. Extract rule data from the proposal's preconditions
  *   4. Verify the actor has an active approval for this proposal payload
- *   5. Atomically claim the idempotency record (prevents concurrent duplicates)
- *   6. If first owner: consume approval, connect to Actual, create rule, sync,
- *      supersede proposal, complete idempotency record
- *   7. If retry/replay: return cached success or error from idempotency record
+ *   5. Connect to the Actual ledger via ConnectionManager.restore()
+ *   6. Create the native rule mutation protocol (or return NOT_IMPLEMENTED)
+ *   7. Compose RuleMutationService and execute
+ *   8. Supersede the proposal on success
+ *   9. Map the service result to the API envelope
  *
  * Error codes:
  *   400 — MISSING_PROPOSAL_ID
  *   404 — PROPOSAL_NOT_FOUND
- *   409 — PROPOSAL_SUPERSEDED / PROPOSAL_EXPIRED / EXECUTION_IN_PROGRESS
- *   422 — NATIVE_RULE_MISSING
+ *   403 — PROPOSAL_NOT_APPROVED
+ *   409 — PROPOSAL_SUPERSEDED / PROPOSAL_EXPIRED
+ *   422 — INVALID_PRECONDITIONS / NATIVE_RULE_MISSING
+ *   501 — NOT_IMPLEMENTED (native protocol unavailable)
+ *   503 — LEDGER_UNAVAILABLE
  *   500 — RULE_EXECUTION_FAILED
  */
 
-import { setResponseStatus } from 'h3';
+import { defineEventHandler, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   getActorId,
@@ -29,22 +34,80 @@ import {
   buildAuthorizationInfo,
 } from '../../../utils/workflow-store';
 import { createMutationConnectionManager } from '../../../utils/mutation-executor';
+import {
+  RuleMutationService,
+  createNativeRuleMutationProtocol,
+} from '@balanceframe/application';
+import type { BudgetLedger } from '@balanceframe/actual-adapter';
+import type { RustRuleMutationProtocol, ExecuteRuleResult } from '@balanceframe/application';
 
-// ---------------------------------------------------------------------------
-// Minimal ledger handle — mirrors the createRule contract from BudgetLedger
-// without introducing a hard dependency on @balanceframe/actual-adapter types
-// in Nitro's module resolution.
-// ---------------------------------------------------------------------------
+/**
+ * Map reason codes from the service to HTTP status codes and public error codes.
+ * All transient/unexpected failures are marked retryable.
+ */
+function mapServiceError(reasonCodes: string[]): { status: number; code: string; retryable: boolean } {
+  // Replay of a previously failed or successful execution — idempotent
+  if (reasonCodes.includes('idempotency_replay')) {
+    return { status: 200, code: 'IDEMPOTENCY_REPLAY', retryable: false };
+  }
 
-interface LedgerHandle {
-  createRule(rule: {
-    name?: string;
-    stage?: string | null;
-    conditionsOp?: string;
-    conditions: unknown[];
-    actions: unknown[];
-  }): Promise<{ success: boolean; id?: string; error?: string; code?: string }>;
-  synchronize(): Promise<unknown>;
+  // Concurrent execution collision — retryable
+  if (reasonCodes.includes('idempotency_in_progress')) {
+    return { status: 409, code: 'EXECUTION_IN_PROGRESS', retryable: true };
+  }
+
+  // Authorization / approval failures — NOT retryable
+  if (reasonCodes.includes('member_inactive') || reasonCodes.includes('insufficient_capability') || reasonCodes.includes('insufficient_scope')) {
+    return { status: 403, code: 'AUTHORIZATION_DENIED', retryable: false };
+  }
+  if (reasonCodes.includes('approval_not_found') || reasonCodes.includes('approval_consumed') || reasonCodes.includes('approval_expired') || reasonCodes.includes('approval_superseded') || reasonCodes.includes('approval_proposal_mismatch')) {
+    return { status: 409, code: 'APPROVAL_FAILED', retryable: false };
+  }
+  if (reasonCodes.includes('payload_hash_mismatch')) {
+    return { status: 422, code: 'PAYLOAD_HASH_MISMATCH', retryable: false };
+  }
+
+  // Proposal state failures — NOT retryable
+  if (reasonCodes.includes('proposal_not_found')) {
+    return { status: 404, code: 'PROPOSAL_NOT_FOUND', retryable: false };
+  }
+  if (reasonCodes.includes('proposal_superseded')) {
+    return { status: 409, code: 'PROPOSAL_SUPERSEDED', retryable: false };
+  }
+  if (reasonCodes.includes('proposal_expired')) {
+    return { status: 409, code: 'PROPOSAL_EXPIRED', retryable: false };
+  }
+  if (reasonCodes.includes('unsupported_operation')) {
+    return { status: 422, code: 'UNSUPPORTED_OPERATION', retryable: false };
+  }
+
+  // Precondition / simulation failures — NOT retryable (bad proposal data)
+  if (reasonCodes.includes('rule_name_conflict') || reasonCodes.includes('simulation_no_matches') || reasonCodes.includes('simulation_conflicts')) {
+    return { status: 422, code: 'PRECONDITION_FAILED', retryable: false };
+  }
+
+  // Planning / simulation errors — transient
+  if (reasonCodes.includes('plan_failed') || reasonCodes.includes('simulation_failed')) {
+    return { status: 500, code: 'PLANNING_FAILED', retryable: true };
+  }
+
+  // Sync / reread failures — transient
+  if (reasonCodes.includes('sync_failed') || reasonCodes.includes('reread_failed') || reasonCodes.includes('stale_snapshot')) {
+    return { status: 503, code: 'LEDGER_SYNC_FAILED', retryable: true };
+  }
+
+  // Idempotency mismatch — retryable
+  if (reasonCodes.includes('idempotency_replay_mismatch')) {
+    return { status: 409, code: 'IDEMPOTENCY_MISMATCH', retryable: false };
+  }
+
+  // Write failures — retryable (transient ledger failure)
+  if (reasonCodes.includes('write_failed')) {
+    return { status: 500, code: 'RULE_EXECUTION_FAILED', retryable: true };
+  }
+
+  // Fallback — treat as retryable to be safe
+  return { status: 500, code: 'RULE_EXECUTION_FAILED', retryable: true };
 }
 
 export default defineEventHandler(async (event) => {
@@ -100,7 +163,7 @@ export default defineEventHandler(async (event) => {
     }
 
     // -------------------------------------------------------------------
-    // 3. Extract nativeRule from preconditions
+    // 3. Extract rule data from preconditions (for display / approval matching)
     // -------------------------------------------------------------------
     let preconditionsObject: Record<string, unknown>;
     try {
@@ -116,37 +179,22 @@ export default defineEventHandler(async (event) => {
       );
     }
 
-    const nativeRule = preconditionsObject.nativeRule as Record<string, unknown> | undefined;
-    if (!nativeRule || typeof nativeRule !== 'object') {
-      setResponseStatus(event, 422);
-      return errorEnvelope(
-        'NATIVE_RULE_MISSING',
-        'Proposal does not contain a nativeRule in its preconditions.',
-        authInfo,
-        false,
-        requestId,
-      );
-    }
-
-    const conditions = Array.isArray(nativeRule.conditions) ? nativeRule.conditions : [];
-    const actions = Array.isArray(nativeRule.actions) ? nativeRule.actions : [];
-
-    // Extract a human-readable rule name from the payee_name condition
-    const payeeCondition = conditions.find(
-      (c: unknown) =>
-        typeof c === 'object' && c !== null && (c as Record<string, unknown>).field === 'payee_name',
-    );
-    const ruleName = payeeCondition
-      ? String((payeeCondition as Record<string, unknown>).value ?? 'unnamed_rule')
-      : 'unnamed_rule';
+    // The service's buildRuleProposal handles both flat and nativeRule-nested
+    // formats internally, but for early validation we extract the name here.
+    const ruleName =
+      (preconditionsObject.name as string) ??
+      (preconditionsObject.nativeRule &&
+        typeof preconditionsObject.nativeRule === 'object' &&
+        ((preconditionsObject.nativeRule as Record<string, unknown>).name as string)) ??
+      'unnamed_rule';
 
     // -------------------------------------------------------------------
-    // 4. Verify active approval before idempotency claim
+    // 4. Verify active approval
     //
-    // Check the actor has an active approval matching the proposal payload
-    // BEFORE claiming the idempotency record.  This prevents creating
-    // idempotency records for unauthorised requests that would otherwise
-    // require explicit cleanup or expire on their own.
+    // Find an active approval matching this actor and payload hash BEFORE
+    // composing the service.  The service performs deeper validation (binding,
+    // status, expiry) once invoked, but this early check avoids unnecessary
+    // connection overhead for clearly unauthorised requests.
     // -------------------------------------------------------------------
     const actorId = getActorId(event);
     const activeApprovals = await wf.store.findActiveApprovals(proposalId);
@@ -166,128 +214,15 @@ export default defineEventHandler(async (event) => {
     }
 
     // -------------------------------------------------------------------
-    // 5. Atomic claim via idempotency record
-    //
-    // Use a deterministic key scoped to the actor so concurrent requests
-    // by the same actor serialise.  The idempotency key includes the
-    // authenticated actor identity so a different actor cannot replay or
-    // observe another actor's execution result without their own
-    // authorization check.
-    // Only the first caller (isOwner === true) proceeds with consumption
-    // and mutation; subsequent callers observe the completed record or
-    // return EXECUTION_IN_PROGRESS.
-    // -------------------------------------------------------------------
-    const idempotencyKey = `${proposalId}:execute:${actorId}`;
-    const serialisedEffect = JSON.stringify({
-      ruleName,
-      conditions,
-      actions,
-      conditionsOp: nativeRule.conditionsOp ?? 'and',
-      stage: nativeRule.stage ?? null,
-      payloadHash: proposal.payloadHash,
-    });
-
-    const claim = await wf.store.createIdempotencyRecord({
-      idempotencyKey,
-      proposalId,
-      operation: 'rule_execute',
-      serialisedEffect,
-    });
-
-    if (!claim.isOwner) {
-      // Another request already claimed execution.
-      // Check whether it completed.
-      const currentProposal = await wf.store.getProposal(proposalId);
-      if (currentProposal?.supersededAt) {
-        // The rule was already created — return idempotent success.
-        return okEnvelope(
-          {
-            ruleId: null,
-            name: ruleName,
-            proposalId,
-            alreadyExecuted: true,
-          },
-          authInfo,
-          requestId,
-        );
-      }
-
-      const currentRecord = await wf.store.getIdempotencyRecord(idempotencyKey);
-      if (currentRecord?.completed && currentRecord.errorMessage) {
-        setResponseStatus(event, 500);
-        return errorEnvelope(
-          'RULE_EXECUTION_FAILED',
-          currentRecord.errorMessage,
-          authInfo,
-          false,
-          requestId,
-        );
-      }
-
-      if (currentRecord?.completed) {
-        // Completed successfully but proposal not superseded (edge case).
-        return okEnvelope(
-          {
-            ruleId: null,
-            name: ruleName,
-            proposalId,
-            alreadyExecuted: true,
-          },
-          authInfo,
-          requestId,
-        );
-      }
-
-      setResponseStatus(event, 409);
-      return errorEnvelope(
-        'EXECUTION_IN_PROGRESS',
-        'Concurrent execution in progress for this proposal. Retry after completion.',
-        authInfo,
-        false,
-        requestId,
-      );
-    }
-
-    // -------------------------------------------------------------------
-    // 6. Consume the approval atomically BEFORE any external mutation
-    //
-    // We own the idempotency record, so only this request will reach this
-    // point.  consumeApproval throws if the approval has already been
-    // consumed (e.g. by a concurrent actor-specific approval check before
-    // the idempotency claim was finalised).
-    // -------------------------------------------------------------------
-    try {
-      await wf.store.consumeApproval(matchingApproval.id);
-    } catch (err) {
-      await wf.store.completeIdempotencyRecord(
-        idempotencyKey,
-        `Approval already consumed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      setResponseStatus(event, 409);
-      return errorEnvelope(
-        'APPROVAL_CONSUMPTION_FAILED',
-        err instanceof Error ? err.message : 'Failed to consume approval',
-        authInfo,
-        false,
-        requestId,
-      );
-    }
-
-    // -------------------------------------------------------------------
-    // 7. Connect to Actual ledger
+    // 5. Connect to Actual ledger
     // -------------------------------------------------------------------
     const manager = createMutationConnectionManager();
 
-    let ledger: LedgerHandle;
+    let ledger: BudgetLedger;
     try {
       const connected = await manager.restore();
-      ledger = connected.connector as unknown as LedgerHandle;
+      ledger = connected.connector as unknown as BudgetLedger;
     } catch (err) {
-      // Record the failure so retries see the cached error
-      await wf.store.completeIdempotencyRecord(
-        idempotencyKey,
-        `Failed to restore budget connection: ${err instanceof Error ? err.message : String(err)}`,
-      );
       setResponseStatus(event, 503);
       return errorEnvelope(
         'LEDGER_UNAVAILABLE',
@@ -299,57 +234,128 @@ export default defineEventHandler(async (event) => {
     }
 
     // -------------------------------------------------------------------
-    // 8. Create the rule via connector
+    // 6. Create native rule mutation protocol
+    //
+    // The Rust protocol (planCreateRule, simulateRule, verifyRuleMutation)
+    // is required for safe execution.  If the native addon is unavailable on
+    // this server, return a stable NOT_IMPLEMENTED response rather than
+    // mutating Actual without simulation/verification.
     // -------------------------------------------------------------------
-    let createResult: { success: boolean; id?: string; error?: string; code?: string };
+    let rust: RustRuleMutationProtocol;
     try {
-      createResult = await ledger.createRule({
-        name: ruleName,
-        stage: (nativeRule.stage as string | null | undefined) ?? null,
-        conditionsOp: (nativeRule.conditionsOp as string | undefined) ?? 'and',
-        conditions,
-        actions,
+      rust = await createNativeRuleMutationProtocol();
+    } catch (err) {
+      setResponseStatus(event, 501);
+      return errorEnvelope(
+        'NOT_IMPLEMENTED',
+        'Rule execution requires the native rule mutation protocol, ' +
+          'which is not available on this server. ' +
+          `(${err instanceof Error ? err.message : String(err)})`,
+        authInfo,
+        false,
+        requestId,
+      );
+    }
+
+    // -------------------------------------------------------------------
+    // 7. Compose RuleMutationService and execute
+    //
+    // The service handles the full secure flow:
+    //   - Authorization (evaluateAuthorization)
+    //   - Idempotency claim (atomic check-and-create)
+    //   - Approval validation (binding, payload hash, status)
+    //   - Approval consumption (one-time lock)
+    //   - Audit start
+    //   - Snapshot synchronize + staleness check
+    //   - Rust planCreateRule (precondition check)
+    //   - Rust simulateRule (simulation with evidence)
+    //   - ledger.createRule (the actual mutation — the only write to Actual)
+    //   - Reread + Rust verifyRuleMutation (postcondition verification)
+    //   - Idempotency completion
+    //   - Audit completion
+    // -------------------------------------------------------------------
+    const idempotencyKey = `${proposalId}:execute:${actorId}`;
+    const service = new RuleMutationService(wf.store, ledger, rust);
+
+    let result: ExecuteRuleResult;
+    try {
+      result = await service.execute({
+        proposalId,
+        actorId,
+        idempotencyKey,
+        approvalId: matchingApproval.id,
+        requestId,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to create rule via ledger';
-      await wf.store.completeIdempotencyRecord(idempotencyKey, message);
       setResponseStatus(event, 500);
-      return errorEnvelope('RULE_EXECUTION_FAILED', message, authInfo, false, requestId);
-    }
-
-    if (!createResult.success) {
-      const message = createResult.error ?? 'Ledger returned failure without message';
-      await wf.store.completeIdempotencyRecord(idempotencyKey, message);
-      setResponseStatus(event, 500);
-      return errorEnvelope('RULE_EXECUTION_FAILED', message, authInfo, false, requestId);
-    }
-
-    // -------------------------------------------------------------------
-    // 9. Post-creation synchronize (non-fatal)
-    // -------------------------------------------------------------------
-    try {
-      await ledger.synchronize();
-    } catch {
-      // Non-fatal — the rule was created
+      return errorEnvelope(
+        'RULE_EXECUTION_FAILED',
+        err instanceof Error ? err.message : String(err),
+        authInfo,
+        true,
+        requestId,
+      );
     }
 
     // -------------------------------------------------------------------
-    // 10. Supersede the proposal
+    // 8. Handle replay (idempotent completion)
+    // -------------------------------------------------------------------
+    if (result.reasonCodes.includes('idempotency_replay')) {
+      if (result.success && result.verified) {
+        // Previous execution completed successfully
+        return okEnvelope(
+          {
+            ruleId: result.ruleId,
+            name: ruleName,
+            proposalId,
+            alreadyExecuted: true,
+          },
+          authInfo,
+          requestId,
+        );
+      }
+      // Previous execution failed — return cached error
+      const { status, code, retryable } = mapServiceError(result.reasonCodes);
+      setResponseStatus(event, status);
+      return errorEnvelope(
+        code,
+        result.message ?? 'Previous execution failed',
+        authInfo,
+        retryable,
+        requestId,
+      );
+    }
+
+    // -------------------------------------------------------------------
+    // 9. Handle execution failure
+    // -------------------------------------------------------------------
+    if (!result.success) {
+      const { status, code, retryable } = mapServiceError(result.reasonCodes);
+      setResponseStatus(event, status);
+      return errorEnvelope(
+        code,
+        result.message ?? 'Rule execution failed',
+        authInfo,
+        retryable,
+        requestId,
+      );
+    }
+
+    // -------------------------------------------------------------------
+    // 10. Supersede the proposal on success (non-fatal)
     // -------------------------------------------------------------------
     try {
       await wf.store.supersedeProposal(proposalId);
     } catch {
-      // Non-fatal — the rule is created and approval consumed
+      // Non-fatal — the rule is created and verified
     }
 
     // -------------------------------------------------------------------
-    // 11. Complete the idempotency record (success)
+    // 11. Return success
     // -------------------------------------------------------------------
-    await wf.store.completeIdempotencyRecord(idempotencyKey, null);
-
     return okEnvelope(
       {
-        ruleId: createResult.id ?? null,
+        ruleId: result.ruleId,
         name: ruleName,
         proposalId,
       },

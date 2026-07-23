@@ -12,7 +12,7 @@ the user in control of every decision.
 BalanceFrame is licensed under the **Apache License, Version 2.0**.
 See [LICENSE](LICENSE) for the full license text. All contributors must
 sign off their commits to certify compliance with the [Developer Certificate
-of Origin](https://developercordificate.org/); see [CONTRIBUTING.md](CONTRIBUTING.md)
+of Origin](https://developercertificate.org/); see [CONTRIBUTING.md](CONTRIBUTING.md)
 for details.
 
 - [NOTICE](NOTICE) — Required attribution notices
@@ -61,16 +61,18 @@ BalanceFrame is a **Rust–TypeScript modular monolith**:
   cross-language protocol schemas. Compiled via N-API for direct use from
   TypeScript.
 - **TypeScript** owns the application layer: Actual Budget API integration
-  (read-only initially), model-provider orchestration for ML classification,
+  (read-only for ledger queries; writes for categorisation mutations
+  when authorised), model-provider orchestration for ML classification,
   workflow state management, CLI, and web UI.
 - **N-API bindings** provide the bridge between Rust and TypeScript with
   versioned, coarse-grained calls.
 
 ## Features
 
-- **Read-only Actual integration** — Connects to Actual Budget via the
-  published `@actual-app/api` to access transactions, categories, and
-  budget state without modifying the ledger.
+- **Actual integration** — Connects to Actual Budget via the
+  published `@actual-app/api` to observe transactions, categories, and
+  budget state.  Categorisation mutations are written only when explicitly
+  authorised through the review-apply workflow (opt-in per deployment).
 - **Deterministic classification** — Rust-based rule engine that applies
   user-defined patterns and learned rules with full provenance.
 - **ML-assisted suggestions** — Provider-neutral model orchestration that

@@ -46,13 +46,15 @@ export interface OrchestratorConfig {
   signal?: AbortSignal;
   /** Ordered authoritative layers checked before provider routing. */
   layers?: AuthoritativeLayer[];
+  /** Maximum concurrent classify calls to providers. Default: no limit. */
+  maxConcurrency?: number;
 }
 
 /**
  * Orchestrates classification of unresolved candidates.
  *
  * Thread-safe: each classify call is independent and produces new
- * Suggestion instances. No shared mutable state.
+ * Suggestion objects — no shared mutable state.
  */
 export class Orchestrator {
   private readonly providers: ProviderAdapter[];
@@ -62,6 +64,9 @@ export class Orchestrator {
   private readonly providerTimeoutMs: number | undefined;
   private readonly signal: AbortSignal | undefined;
   private readonly layers: AuthoritativeLayer[] | undefined;
+  private readonly maxConcurrency: number | undefined;
+  /** Track abort listener for cleanup after each classifyOne call. */
+  private _abortListener: (() => void) | null = null;
 
   constructor(config: OrchestratorConfig) {
     this.providers = config.providers;
@@ -71,26 +76,63 @@ export class Orchestrator {
     this.providerTimeoutMs = config.providerTimeoutMs;
     this.signal = config.signal;
     this.layers = config.layers;
+    this.maxConcurrency = config.maxConcurrency;
   }
 
   /**
+   * Classify one or more unresolved candidates.
    * Classify one or more unresolved candidates.
    *
    * Returns one Suggestion per candidate — never throws. Errors from
    * provider calls, policy denials, or validation failures are captured
    * in the Suggestion's errors array.
+   *
+   * When maxConcurrency is set, at most that many classifyOne calls run
+   * simultaneously, preventing provider flooding.
    */
   async classify(candidates: UnresolvedCandidate[]): Promise<Suggestion[]> {
-    const results: Suggestion[] = [];
+    const total = candidates.length;
+    const results: Suggestion[] = new Array(total);
+    const maxConc = this.maxConcurrency ?? total;
 
-    for (const candidate of candidates) {
-      const suggestion = await this.classifyOne(candidate);
-      results.push(suggestion);
+    if (maxConc <= 0 || maxConc >= total) {
+      // No concurrency limit or limit >= total — process serially
+      for (let i = 0; i < total; i++) {
+        results[i] = await this.classifyOne(candidates[i]!);
+      }
+      return results;
+    }
+
+    // Bounded concurrency: use a simple sliding-window approach
+    let nextIdx = 0;
+    const inFlight = new Set<Promise<void>>();
+
+    async function startOne(
+      orchestrator: Orchestrator,
+      candidate: UnresolvedCandidate,
+      idx: number,
+    ): Promise<void> {
+      results[idx] = await orchestrator.classifyOne(candidate);
+    }
+
+    while (nextIdx < total || inFlight.size > 0) {
+      // Fill the window up to maxConcurrency
+      while (nextIdx < total && inFlight.size < maxConc) {
+        const idx = nextIdx++;
+        const promise = startOne(this, candidates[idx]!, idx).finally(() => {
+          inFlight.delete(promise);
+        });
+        inFlight.add(promise);
+      }
+
+      if (inFlight.size > 0) {
+        // Wait for at least one to finish
+        await Promise.race(inFlight);
+      }
     }
 
     return results;
   }
-
   private async classifyOne(candidate: UnresolvedCandidate): Promise<Suggestion> {
     // Check candidate eligibility
     const eligibilityError = this.checkEligibility(candidate);
@@ -142,26 +184,29 @@ export class Orchestrator {
 
     // Race the adapter call against a hard deadline — enforces timeout even for
     // adapters that do not check the AbortSignal.
-    const timeoutPromise = new Promise<ClassificationResult>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        abortController.abort();
-        reject(Object.assign(new Error(`provider timeout after ${timeoutMs}ms`), { name: 'TimeoutError' }));
-      }, timeoutMs);
-
-      // Link external caller cancellation signal
-      if (this.signal) {
-        if (this.signal.aborted) {
-          clearTimeout(timeoutId);
-          reject(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
-          return;
-        }
-        this.signal.addEventListener('abort', () => {
-          clearTimeout(timeoutId);
-          abortController.abort();
-          reject(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
-        }, { once: true });
-      }
+    let rejectTimeout!: (reason: unknown) => void;
+    const timeoutPromise = new Promise<ClassificationResult>((_resolve, reject) => {
+      rejectTimeout = reject;
     });
+    timeoutId = setTimeout(() => {
+      abortController.abort();
+      rejectTimeout(Object.assign(new Error(`provider timeout after ${timeoutMs}ms`), { name: 'TimeoutError' }));
+    }, timeoutMs);
+
+    // Link external caller cancellation signal — cleanup after call
+    const abortHandler = () => {
+      clearTimeout(timeoutId);
+      abortController.abort();
+      rejectTimeout(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
+    };
+    if (this.signal) {
+      if (this.signal.aborted) {
+        clearTimeout(timeoutId);
+        rejectTimeout(Object.assign(new Error('classify cancelled'), { name: 'AbortError' }));
+      } else {
+        this.signal.addEventListener('abort', abortHandler, { once: true });
+      }
+    }
 
     const request: ClassifyRequest = {
       transactionId: preparedCandidate.transactionId,
@@ -187,6 +232,9 @@ export class Orchestrator {
       result = await Promise.race([chosenAdapter.classify(request), timeoutPromise]);
     } catch (err) {
       clearTimeout(timeoutId);
+      if (this.signal) {
+        this.signal.removeEventListener('abort', abortHandler);
+      }
       const message = err instanceof Error ? err.message : String(err);
       const errorCode = err instanceof Error && err.name !== 'Error'
         ? err.name
@@ -198,6 +246,9 @@ export class Orchestrator {
       return this.errorSuggestion(candidate, message, chosenProviderInfo.id, errorCode);
     } finally {
       clearTimeout(timeoutId);
+      if (this.signal) {
+        this.signal.removeEventListener('abort', abortHandler);
+      }
     }
 
     // Validate provider output
@@ -212,6 +263,18 @@ export class Orchestrator {
     }
 
     const validated = parsed.data;
+
+    // Category allowlist validation: if allowedCategoryIds is non-empty, the
+    // returned categoryId must be in the allowed set.
+    const allowedIds = candidate.allowedCategoryIds ?? [];
+    if (allowedIds.length > 0 && !allowedIds.includes(validated.categoryId)) {
+      return this.errorSuggestion(
+        candidate,
+        `provider returned category "${validated.categoryId}" which is not in the allowed category set`,
+        chosenProviderInfo.id,
+        'CATEGORY_NOT_ALLOWED',
+      );
+    }
 
     // Build the suggestion with deterministic idempotency key
     return this.buildSuggestion(candidate, validated, chosenProviderInfo);
@@ -304,7 +367,7 @@ export class Orchestrator {
 
       // Inference-specific extras
       id: randomUUID(),
-      alternatives: validated.alternatives.map((a) => ({ ...a })),
+      alternatives: validated.alternatives.map((a) => ({ categoryId: a.categoryId, reason: a.reason })),
       errors: [],
       deterministicEvidence: structuredClone(candidate.deterministicEvidence),
     };

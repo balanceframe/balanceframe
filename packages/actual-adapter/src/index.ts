@@ -73,6 +73,7 @@ export {
   EncryptedCredentialStore,
   EnvCredentialStore,
   NullCredentialStore,
+  CorruptCredentialError,
 } from './credentials.js';
 
 export {

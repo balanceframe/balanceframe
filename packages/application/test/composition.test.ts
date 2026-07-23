@@ -21,6 +21,10 @@ import {
 } from '../src/composition';
 import type {
   AnalysisProtocol,
+  ExportResult,
+  DisconnectResult,
+  RemovalResult,
+  DeletionResult,
   PendingReviewResult,
   ReviewDetailResult,
   BudgetSummaryResult,
@@ -347,16 +351,26 @@ describe('createObserveComposition — analysis protocol', () => {
     const callbacks = createLifecycleCallbacks(() => ledger);
 
     const exportResult = await callbacks.doExport(ledger);
-    expect(exportResult).toHaveProperty('exportedAt');
+    expect(exportResult.exportedAt).toBeTruthy();
+    expect(exportResult.byteSize).toBeGreaterThan(50);
+    expect(exportResult.sha256Hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(exportResult.exportPath).toMatch(/\/tmp\/balanceframe-export\/budget-export-.+\.json$/);
 
+    // Without a store, no cleanup was performed
     const disconnectResult = await callbacks.doDisconnect(ledger);
-    expect(disconnectResult.disconnected).toBe(true);
+    expect(disconnectResult.disconnected).toBe(false);
+    expect(disconnectResult.cacheRemoved).toBe(false);
+    expect(disconnectResult.credentialsRemoved).toBe(false);
 
     const removeResult = await callbacks.doRemoveConnection(ledger);
-    expect(removeResult.removed).toBe(true);
+    expect(removeResult.removed).toBe(false);
+    expect(removeResult.cacheRemoved).toBe(false);
+    expect(removeResult.credentialsRemoved).toBe(false);
 
-    const deleteResult = await callbacks.doDeleteData(ledger, 'connection');
-    expect(deleteResult.scope).toBe('connection');
+    // Without a store, delete-data is rejected (both error messages contain "export" and "first")
+    await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(
+      /export.*first/i,
+    );
   });
 
 // ---------------------------------------------------------------------------

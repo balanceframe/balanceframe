@@ -71,6 +71,11 @@ function originalCategory(item: ReviewItem): string | null {
 export function createDefaultExecutorFactory(
   connectionManager?: ConnectionManager,
 ): ReviewMutationExecutorFactory {
+  // The web production composition must inject CategorizationMutationService;
+  // never fall back to a parallel direct ledger mutation implementation.
+  if (!connectionManager) {
+    return () => null;
+  }
   const manager = connectionManager ?? createMutationConnectionManager();
 
   return (event: EventWithContext): ReviewMutationExecutor | null => {

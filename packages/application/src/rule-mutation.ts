@@ -36,6 +36,7 @@ import type {
   BudgetLedger,
   MutationResult,
   LedgerSnapshotResult,
+  RuleProposal,
 } from '@balanceframe/actual-adapter';
 
 import type {
@@ -616,11 +617,7 @@ export class RuleMutationService {
 
     let writeResult: MutationResult;
     try {
-      writeResult = await this.ledger.createRule({
-        name: ruleInput.name,
-        conditions: ruleInput.conditions,
-        actions: ruleInput.actions,
-      });
+      writeResult = await this.ledger.createRule(this.buildRuleProposal(proposal));
     } catch (err) {
       await this.recordFailure(input, err);
       await this.auditFailure(input, proposal, auth, err);
@@ -903,4 +900,42 @@ export class RuleMutationService {
       simulation: null,
     };
   }
-}
+
+  /**
+   * Build a RuleProposal for ledger.createRule from proposal preconditions,
+   * supporting both flat format ({ name, conditions, actions, conditionsOp, stage })
+   * and nativeRule-nested format ({ nativeRule: { conditions, actions, conditionsOp, stage } }).
+   *
+   * Falls back to defaults when preconditions are unparseable.
+   */
+  private buildRuleProposal(proposal: CategorizationProposal): RuleProposal {
+    try {
+      const parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
+      // Support both flat format and nativeRule-nested format
+      const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
+        ? parsed.nativeRule as Record<string, unknown>
+        : parsed;
+
+      const stageVal = ruleData.stage;
+      const stage: 'pre' | 'post' | undefined =
+        stageVal === 'pre' ? 'pre' :
+        stageVal === 'post' ? 'post' :
+        undefined;
+
+      return {
+        name: (ruleData.name as string) ?? (parsed.name as string) ?? 'unnamed_rule',
+        conditions: Array.isArray(ruleData.conditions) ? ruleData.conditions : [],
+        actions: Array.isArray(ruleData.actions) ? ruleData.actions : [],
+        conditionsOp: (ruleData.conditionsOp as 'and' | 'or') ?? 'and',
+        stage,
+      };
+    } catch {
+      return {
+        name: 'unnamed_rule',
+        conditions: [],
+        actions: [],
+      };
+    }
+  }
+
+ }

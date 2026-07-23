@@ -6,12 +6,19 @@
  * dependency on either package at the web tier.
  */
 
+/** Structured result from a rule mutation operation. */
+export type RuleOperationResult =
+  | { success: true }
+  | { success: false; error: string; code: string };
+
 /** List item for rule listing. */
 export interface RuleListItem {
   readonly id: string;
   readonly name: string;
   readonly order: number;
-  readonly inactive: boolean;
+  inactive: boolean;
+  /** Set to true when `inactive` comes from a local override rather than Actual state. */
+  _localOverride?: boolean;
 }
 
 /** Detail view of a single rule. */
@@ -21,7 +28,9 @@ export interface RuleShowResult {
   readonly order: number;
   readonly trigger: unknown;
   readonly actions: unknown;
-  readonly inactive: boolean;
+  inactive: boolean;
+  /** Set to true when `inactive` comes from a local override rather than Actual state. */
+  _localOverride?: boolean;
 }
 
 /**
@@ -30,14 +39,19 @@ export interface RuleShowResult {
  * Injected at runtime by the lifecycle plugin that manages the connection
  * to the Actual Budget ledger.  When absent the API routes return a
  * LEDGER_UNAVAILABLE error.
+ *
+ * Methods return `RuleOperationResult` so callers can distinguish actual
+ * success from structured error codes rather than relying on bare booleans.
  */
 export interface LedgerHandle {
   /** List every automation rule from the ledger. */
   listRules(): Promise<RuleListItem[]>;
   /** Update an existing automation rule. */
-  updateRule(id: string, fields: Record<string, unknown>): Promise<unknown>;
+  updateRule(id: string, fields: Record<string, unknown>): Promise<RuleOperationResult>;
   /** Delete an automation rule. */
-  deleteRule(id: string): Promise<boolean>;
+  deleteRule(id: string): Promise<RuleOperationResult>;
+  /** Re-synchronise the ledger after a write to verify the new state. */
+  synchronize(): Promise<unknown>;
 }
 
 /**

@@ -19,6 +19,23 @@
 import type { ProviderAdapter } from './types';
 import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types';
 
+/**
+ * Escape untrusted text for safe embedding in XML-style delimiters.
+ * Replaces &, <, >, " and control characters with their XML entities.
+ */
+function escapeXml(value: string): string {
+  return Array.from(value)
+    .filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code >= 0x20 || code === 0x09 || code === 0x0a || code === 0x0d;
+    })
+    .join('')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /** Supported auth schemes. */
 export type OpenAIAuthType = 'bearer' | 'api-key';
 
@@ -64,7 +81,7 @@ export class OpenAIProvider implements ProviderAdapter {
       locality: config.locality ?? 'external',
       supportedCapabilities: ['classification', 'merchantResearch'],
       endpoint: config.endpoint,
-      authType: config.authType === 'api-key' ? 'api-key' : 'api-key',
+      authType: 'api-key',
       model: config.model,
     };
     this.endpoint = config.endpoint;
@@ -106,13 +123,16 @@ export class OpenAIProvider implements ProviderAdapter {
    * Build the chat completions request payload.
    * Override in subclass to customize the prompt.
    *
-   * Untrusted content is wrapped in named XML-style delimiters to
-   * mitigate prompt injection via transaction data.
+   * Untrusted content is XML-escaped and wrapped in named XML-style
+   * delimiters to mitigate prompt injection via transaction data.
    */
   protected buildChatRequest(request: ClassifyRequest): Record<string, unknown> {
-    const description = request.description ?? '';
-    const notes = request.notes ?? '';
-    const importedPayee = request.importedPayee ?? '';
+    const description = escapeXml(request.description ?? '');
+    const notes = escapeXml(request.notes ?? '');
+    const importedPayee = escapeXml(request.importedPayee ?? '');
+    const merchant = escapeXml(request.rawMerchant ?? request.normalizedMerchant ?? 'unknown');
+    const amount = escapeXml(`${request.amountMinorUnits} ${request.currency}`);
+    const date = escapeXml(request.date);
 
     return {
       model: this.model,
@@ -128,9 +148,9 @@ export class OpenAIProvider implements ProviderAdapter {
             `<description>${description}</description>`,
             `<notes>${notes}</notes>`,
             `<importedPayee>${importedPayee}</importedPayee>`,
-            `<merchant>${request.rawMerchant ?? request.normalizedMerchant ?? 'unknown'}</merchant>`,
-            `<amount>${request.amountMinorUnits} ${request.currency}</amount>`,
-            `<date>${request.date}</date>`,
+            `<merchant>${merchant}</merchant>`,
+            `<amount>${amount}</amount>`,
+            `<date>${date}</date>`,
             `<categoryNames>${JSON.stringify(request.categoryNames)}</categoryNames>`,
             `<categoryGroups>${JSON.stringify(request.categoryGroups)}</categoryGroups>`,
           ].join('\n'),

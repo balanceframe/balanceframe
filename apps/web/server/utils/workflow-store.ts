@@ -209,9 +209,12 @@ export function getWorkflowStore(
   if (storeError) return { error: storeError };
   if (store) return { store };
 
-  // Read config — Nitro auto-imports useRuntimeConfig when called from a
-  // route handler, but the utility receives the event directly.
-  const config = useRuntimeConfig();
+  let config: Record<string, unknown>;
+  try {
+    config = useRuntimeConfig(event) as Record<string, unknown>;
+  } catch {
+    config = (event.context.runtimeConfig as Record<string, unknown> | undefined) ?? {};
+  }
   const dbPath: string =
     (config.workflowDbPath as string) ||
     process.env.BALANCEFRAME_WORKFLOW_DB_PATH ||
@@ -294,6 +297,8 @@ export interface ActionOutcome {
   readonly itemId: string;
   readonly success: boolean;
   readonly error: string | null;
+  /** Resulting review status after the action, or null on failure. */
+  readonly status: ReviewStatus | null;
 }
 
 /**
@@ -318,20 +323,19 @@ export async function performReviewAction(
   // Verify the item exists and get its current version for optimistic locking.
   const item = await store.getReviewItem(reviewId);
   if (!item) {
-    return { itemId: reviewId, success: false, error: 'Review item not found' };
+    return { itemId: reviewId, success: false, error: 'Review item not found', status: null };
   }
 
-  // Undo is a reverse-transition that calls undoReviewTransition,
-  // not transitionReviewItem like the other actions.
   if (action === 'undo') {
     try {
       const result = await store.undoReviewTransition(reviewId, actorId, 'Reversed by reviewer');
-      return { itemId: result.id, success: true, error: null };
+      return { itemId: result.id, success: true, error: null, status: result.status };
     } catch (e) {
       return {
         itemId: reviewId,
         success: false,
         error: e instanceof Error ? e.message : String(e),
+        status: null,
       };
     }
   }
@@ -356,12 +360,13 @@ export async function performReviewAction(
       );
     }
 
-    return { itemId: result.id, success: true, error: null };
+    return { itemId: result.id, success: true, error: null, status: result.status };
   } catch (e) {
     return {
       itemId: reviewId,
       success: false,
       error: e instanceof Error ? e.message : String(e),
+      status: null,
     };
   }
 }
