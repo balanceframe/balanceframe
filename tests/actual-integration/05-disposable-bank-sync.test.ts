@@ -435,6 +435,7 @@ describe('Proof 7 — Complete review-to-Actual persisted path', () => {
     const serverUrl = process.env.ACTUAL_SERVER_URL || 'http://localhost:5006';
     const secretKey = process.env.ACTUAL_SECRET_KEY || '';
     const budgetName = process.env.ACTUAL_BUDGET_NAME;
+    const groupIdHint = process.env.ACTUAL_GROUP_ID;
     expect(secretKey).toBeTruthy();
 
     const dataDir = mkdtempSync(join(tmpdir(), 'bf-proof7-'));
@@ -445,14 +446,16 @@ describe('Proof 7 — Complete review-to-Actual persisted path', () => {
       password: secretKey,
     });
 
-    // Discover remote budgets and select deterministically
-    // Regression: getBudgets() must return at least the seeded fixture budget
+    // Discover remote budget by stable group ID when available. Actual may
+    // expose local and cloud entries with different names.
     const allBudgets = await getBudgets();
     expect(allBudgets.length).toBeGreaterThan(0);
 
-    const candidates = budgetName
-      ? allBudgets.filter((b: { name?: string }) => b.name === budgetName)
-      : allBudgets;
+    const candidates = groupIdHint
+      ? allBudgets.filter((b: { groupId?: string }) => b.groupId === groupIdHint)
+      : budgetName
+        ? allBudgets.filter((b: { name?: string }) => b.name === budgetName)
+        : allBudgets;
     const selected = candidates[0];
     expect(selected).toBeDefined();
     expect(typeof selected === 'object' && selected !== null).toBe(true);

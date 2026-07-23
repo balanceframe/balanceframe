@@ -1,5 +1,5 @@
 /** PATCH /api/rule/[id] — toggle a rule's inactive state in local store. */
-import { setResponseStatus } from 'h3';
+import { readBody, setResponseStatus } from 'h3';
 import {
   getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
 } from '../../utils/workflow-store';
