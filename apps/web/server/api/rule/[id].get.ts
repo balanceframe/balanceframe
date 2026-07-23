@@ -44,6 +44,13 @@ export default defineEventHandler(async (event) => {
       return errorEnvelope('RULE_NOT_FOUND', `Rule not found: ${routeId}`, authInfo, false, requestId);
     }
 
+    // Merge local rule override if present
+    const overrides = await wf.store.getRuleOverrides();
+    const overrideInactive = overrides.get(rule.id);
+    if (overrideInactive !== undefined) {
+      (rule as unknown as Record<string, unknown>).inactive = overrideInactive;
+    }
+
     return okEnvelope(rule, authInfo, requestId);
   } catch (e) {
     if (event.node.res.headersSent) throw e;
