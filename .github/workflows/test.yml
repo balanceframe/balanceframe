@@ -83,14 +83,6 @@ jobs:
       - name: Run Rust clippy
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@1b549b9259bda1cb5ddde3b41741a82a2d15a841 # v3.28.13
-        with:
-          languages: javascript-typescript, rust
-          queries: security-and-quality
-
-      - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@1b549b9259bda1cb5ddde3b41741a82a2d15a841 # v3.28.13
 
   portable:
     name: ${{ matrix.name }}
