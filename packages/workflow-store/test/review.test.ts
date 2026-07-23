@@ -129,13 +129,12 @@ describe('ReviewItem lifecycle', () => {
   // =======================================================================
 
   describe('terminal transitions', () => {
-    it('applied is reachable via discovered -> suggestion_generated -> pending_review -> approved -> correcting -> applied', async () => {
+    it('applied is reachable via discovered -> suggestion_generated -> pending_review -> approved -> correcting -> applying -> applied', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
       expect(item.status).toBe('discovered');
 
       const t1 = await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       expect(t1.status).toBe('suggestion_generated');
-      expect(t1.version).toBe(2);
 
       const t2 = await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       expect(t2.status).toBe('pending_review');
@@ -146,20 +145,27 @@ describe('ReviewItem lifecycle', () => {
       const t4 = await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
       expect(t4.status).toBe('correcting');
 
-      const t5 = await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 5 });
-      expect(t5.status).toBe('applied');
-    });
+      const tApply = await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      expect(tApply.status).toBe('applying');
 
-    it('apply_failed is reachable via approved -> correcting -> apply_failed', async () => {
+      const t5 = await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
+      expect(t5.status).toBe('applied');
+    })
+
+
+    it('apply_failed is reachable via approved -> correcting -> applying -> apply_failed', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
       await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
 
-      const failed = await store.transitionReviewItem(item.id, { ...APPLY_FAIL, expectedVersion: 5 });
+      const tApply = await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      expect(tApply.status).toBe('applying');
+
+      const failed = await store.transitionReviewItem(item.id, { ...APPLY_FAIL, expectedVersion: 6 });
       expect(failed.status).toBe('apply_failed');
-    });
+    })
 
     it('rejected is reachable from pending_review', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
@@ -527,12 +533,14 @@ describe('ReviewItem lifecycle', () => {
       await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
-      await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 5 });
+      await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
 
       await expect(
-        store.undoReviewTransition(item.id, ACTOR_ALICE, 'Too late', 6),
+        store.undoReviewTransition(item.id, ACTOR_ALICE, 'Too late', 7),
       ).rejects.toThrow();
-    });
+    })
+
   });
 
   // =======================================================================

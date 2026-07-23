@@ -126,23 +126,13 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    // reviewAndApply configured but no executor wired
-    return okEnvelope(
-      {
-        itemId: outcome.itemId,
-        categoryId,
-        success: true,
-        error: 'Mutation executor not available',
-        categorizationExecuted: false,
-        mutationStatus: 'denied',
-        applied: false,
-        verified: false,
-        stale: false,
-        transactionId: null,
-        previousCategoryId: null,
-        newCategoryId: null,
-      },
+    // reviewAndApply configured but no executor wired — fail closed
+    setResponseStatus(event, 503);
+    return errorEnvelope(
+      'EXECUTOR_UNAVAILABLE',
+      'Review-and-apply requires a mutation service but the executor was not available.',
       authInfo,
+      false,
       requestId,
     );
   }

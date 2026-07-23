@@ -429,15 +429,17 @@ export class RuleMutationService {
     }
 
     if (!idemClaim.isOwner) {
-      if (idemClaim.record.completed) {
-        // Replay: return the cached result without touching ledger or approval
+      // Replay if the record is already in a terminal state
+      if (idemClaim.record.status !== 'in_progress') {
         return this.replayResult(idemClaim.record, input);
       }
-      // In-flight: another execution is using this key
+      // In-flight: another execution is using this key — or previous run crashed
+      // and the lease hasn't expired yet. The caller should retry later.
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
       return this.fail(baseResult, 'idempotency_in_progress',
         'Execution with this idempotency key is already in progress', input);
     }
+
 
     // We own the claim — proceed with execution
 
@@ -682,12 +684,17 @@ export class RuleMutationService {
 
     // =====================================================================
     // 13. Complete idempotency record
+    //
+    // Post-write failures are terminal (the write may have happened externally
+    // even if verification failed).  Pre-write failures are handled above via
+    // recordFailure (retryable).
     // =====================================================================
 
     if (!verified) {
       const errMsg = verifyMessage ?? 'Postcondition verification failed';
       try {
-        await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg);
+        // Terminal — external write may have occurred; do not retry
+        await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, false);
       } catch {
         // Non-fatal
       }
@@ -698,6 +705,7 @@ export class RuleMutationService {
         // Non-fatal
       }
     }
+
 
     // =====================================================================
     // 14. Append completion or failure audit
@@ -849,11 +857,13 @@ export class RuleMutationService {
   private async recordFailure(input: ExecuteRuleInput, err: unknown): Promise<void> {
     try {
       const errMsg = err instanceof Error ? err.message : String(err);
-      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg);
+      // Transient errors before the write are retryable
+      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, true);
     } catch {
       // Non-fatal
     }
   }
+
 
   /**
    * Append an execution_failed audit record after a write error (best-effort).
@@ -930,10 +940,11 @@ export class RuleMutationService {
       // Ignore parse failures
     }
 
+    const succeeded = idem.status === 'succeeded';
     return {
-      success: idem.completed && !idem.errorMessage,
+      success: succeeded,
       ruleId,
-      verified: !idem.errorMessage,
+      verified: succeeded,
       idempotencyKey: input.idempotencyKey,
       approvalId: null,
       auditRecordId: null,
@@ -942,6 +953,7 @@ export class RuleMutationService {
       simulation: null,
     };
   }
+
 
   /**
    * Build a RuleProposal for ledger.createRule from proposal preconditions,

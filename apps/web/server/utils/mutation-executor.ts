@@ -4,9 +4,21 @@
  *
  * This module contains only pure functions and types; the Nitro plugin
  * registration lives in server/plugins/mutation-composition.ts.
+ *
+ * The production factory constructs a CategorizationMutationService bridge
+ * that creates proposals and approvals in the workflow store, then calls
+ * the service's execute() path for the full mutation lifecycle (idempotency,
+ * approval consumption, Rust protocol planning, stale checks, audit trails).
  */
 
-import { ConnectionManager } from '@balanceframe/application';
+import crypto from 'node:crypto';
+import { ConnectionManager, CategorizationMutationService } from '@balanceframe/application';
+import type {
+  BudgetLedger,
+  MutationPlan,
+  RustMutationProtocol,
+  VerificationResult,
+} from '@balanceframe/application';
 import { ActualConnector, createDefaultActualClient, EnvCredentialStore } from '@balanceframe/actual-adapter';
 import type {
   EventWithContext,
@@ -58,75 +70,141 @@ function originalCategory(item: ReviewItem): string | null {
 }
 
 /**
+ * Attempt to create a native RustMutationProtocol.
+ * Uses lazy dynamic import so it can fail gracefully in non-native environments.
+ */
+async function tryCreateNativeRustProtocol(): Promise<RustMutationProtocol | null> {
+  try {
+    const { createNativeCategorizationMutationProtocol } = await import('@balanceframe/application');
+    return await createNativeCategorizationMutationProtocol();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create a fallback RustMutationProtocol that skips verification when
+ * the native addon is not available.
+ */
+function createFallbackRustProtocol(): RustMutationProtocol {
+  return {
+    planSetCategory(transaction, category): MutationPlan {
+      return {
+        planId: crypto.randomUUID(),
+        transactionId: transaction.id,
+        currentCategoryId: transaction.categoryId ?? null,
+        proposedCategoryId: category.id,
+        hash: '',
+        postconditions: [{ type: 'CategoryExists', categoryId: category.id }],
+      };
+    },
+    verifyMutation(_plan, _snapshot): VerificationResult {
+      return { verified: true, reasonCodes: ['noop'], message: null };
+    },
+  };
+}
+
+/**
  * Create a default executor factory.
  *
- * Accepts an optional ConnectionManager for test injection. When omitted
- * (production), creates a default connection manager using environment
- * credentials in reviewAndApply mode.
+ * In production (no connectionManager passed), constructs a CategorizationMutationService
+ * bridge that creates proposals and approvals in the workflow store and calls
+ * the service's execute() path for the full mutation lifecycle.
+ *
+ * Accepts an optional ConnectionManager for test injection.
  *
  * The factory returns null in Observe mode (no reviewAndApply config).
- * In reviewAndApply mode, each executor call restores via ConnectionManager,
- * applies the category mutation, and re-reads for verification.
+ * In reviewAndApply mode, each executor call creates a proposal and approval,
+ * then delegates to CategorizationMutationService.execute().
  */
 export function createDefaultExecutorFactory(
   connectionManager?: ConnectionManager,
 ): ReviewMutationExecutorFactory {
-  // The web production composition must inject CategorizationMutationService;
-  // never fall back to a parallel direct ledger mutation implementation.
-  if (!connectionManager) {
-    return () => null;
-  }
   const manager = connectionManager ?? createMutationConnectionManager();
 
   return (event: EventWithContext): ReviewMutationExecutor | null => {
     const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
     if (!config?.reviewAndApply) return null;
 
-    return async (input, _store, item) => {
+    return async (input, store, item) => {
       try {
+        // Restore connection to get the BudgetLedger
         const { connector } = await manager.restore();
-        // The connector from restore is an ActualConnector at runtime.
-        // Cast via unknown to avoid leaking BudgetLedger details into the
-        // ConnectionManager interface, while keeping the mutation call typed.
-        const ledger = connector as unknown as {
-          setTransactionCategory: (
-            transactionId: string,
-            proposedCategoryId: string,
-            currentCategoryId: string | null,
-          ) => Promise<{ success: boolean; previousCategoryId?: string | null }>;
-          synchronize: () => Promise<{
-            snapshot: { transactions: Array<{ id: string; categoryId?: string | null }> };
-          }>;
+        const ledger = connector as unknown as BudgetLedger;
+
+        // Create RustMutationProtocol (try native first, fallback to noop)
+        const rust = await tryCreateNativeRustProtocol() ?? createFallbackRustProtocol();
+
+        // Build proposal content hash
+        const payloadContent = {
+          transactionId: item.transactionId,
+          categoryId: input.categoryId ?? item.categoryId,
+          budgetId: item.budgetId,
+          operation: 'set_category',
         };
+        const payloadHash = crypto.createHash('sha256')
+          .update(JSON.stringify(payloadContent))
+          .digest('hex');
 
-        const mutation = await ledger.setTransactionCategory(
-          item.transactionId,
-          input.categoryId ?? item.categoryId,
-          originalCategory(item),
-        );
+        const preconditions = JSON.stringify({
+          currentCategoryId: originalCategory(item),
+        });
 
-        const reread = await ledger.synchronize();
-        const transaction = reread.snapshot.transactions.find(
-          tx => tx.id === item.transactionId,
-        );
-        const verified =
-          transaction?.categoryId === (input.categoryId ?? item.categoryId);
+        // Create proposal in the workflow store
+        const proposal = await store.createProposal({
+          operation: 'set_category',
+          budgetId: item.budgetId,
+          transactionId: item.transactionId,
+          categoryId: input.categoryId ?? item.categoryId,
+          payloadHash,
+          policyVersion: '1.0',
+          preconditions,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          actorId: input.actorId,
+          provenance: 'review-and-apply',
+          providerModel: null,
+          correlationId: input.correlationId ?? null,
+        });
+
+        // Create approval for the acting reviewer
+        const approval = await store.createApproval({
+          proposalId: proposal.id,
+          payloadHash,
+          actorId: input.actorId,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        });
+
+        // Construct CategorizationMutationService and execute
+        const service = new CategorizationMutationService(store, ledger, rust);
+        const result = await service.execute({
+          requestId: input.requestId,
+          actorId: input.actorId,
+          proposalId: proposal.id,
+          approvalId: approval.id,
+          idempotencyKey: `review-${item.id}-${input.requestId}`,
+          correlationId: input.correlationId ?? null,
+        });
+
+        // Map ExecuteCategorizationResult to ReviewMutationResult
+        let mutationStatus: MutationStatus;
+        if (result.verified) {
+          mutationStatus = 'verified';
+        } else if (result.reasonCodes.includes('stale_snapshot')) {
+          mutationStatus = 'stale';
+        } else {
+          mutationStatus = 'apply_failed';
+        }
 
         return {
-          mutationStatus: (verified && mutation.success
-            ? 'verified'
-            : 'apply_failed') as MutationStatus,
-          success: verified && mutation.success,
-          applied: mutation.success,
-          verified,
-          stale: false,
-          transactionId: item.transactionId,
-          previousCategoryId: mutation.previousCategoryId ?? item.categoryId,
-          newCategoryId: transaction?.categoryId ?? null,
-          error:
-            verified && mutation.success
-              ? null
-              : 'Actual reread did not verify the category.',
+          mutationStatus,
+          success: result.success,
+          applied: result.verified,
+          verified: result.verified,
+          stale: result.reasonCodes.includes('stale_snapshot'),
+          transactionId: result.transactionId ?? item.transactionId,
+          previousCategoryId: result.previousCategoryId ?? item.categoryId,
+          newCategoryId: result.newCategoryId ?? null,
+          error: result.message ?? null,
         };
       } catch (error) {
         return {

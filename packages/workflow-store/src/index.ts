@@ -43,6 +43,7 @@ export type {
   ProposalApproval,
   IdempotencyClaim,
   IdempotencyRecord,
+  IdempotencyStatus,
   AuditRecord,
   AuditClassification,
   CreateProposalInput,

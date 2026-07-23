@@ -21,6 +21,8 @@ import type {
   TransitionReviewInput,
   ReviewListOptions,
   TransitionReviewResult,
+  CreateIdempotencyInput,
+  IdempotencyStatus,
 } from '@balanceframe/workflow-store';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -755,15 +757,20 @@ export interface MutationTransitionResult {
 }
 
 /**
- * Execute a mutation with the applying → (applied | apply_failed) state
- * transition semantics.
+ * Execute a mutation with durable applying-claim semantics.
  *
  * Flow:
- *   approved → applied (on verified success)
- *   approved → apply_failed (on failure / stale / unverified)
+ *   1. Create an idempotency record (`in_progress` with lease)
+ *   2. Transition the review item from its current status (approved/correcting)
+ *      to `applying` — this is the durable claim.  If the process crashes
+ *      after this step, the stranded `applying` item can be recovered.
+ *   3. Execute the mutation via the executor callback.
+ *   4. Transition from `applying` to `applied` (success) or `apply_failed`
+ *      (any failure).
+ *   5. Complete the idempotency record (succeeded / retryable_failed).
  *
  * Maps stale and verification failures explicitly — a successful write
- * that fails verification lands in apply_failed with metadata.
+ * that fails verification lands in `apply_failed` with metadata.
  *
  * @param store        — the workflow store
  * @param reviewId     — the item to act on
@@ -782,21 +789,104 @@ export async function applyReviewMutationWithTransition(
   categoryId?: string,
   executionId?: string,
 ): Promise<MutationTransitionResult> {
-  // Read current item state (should be 'approved' after performReviewAction)
-  const item = await store.getReviewItem(reviewId);
-  if (!item) {
+  const idempotencyKey = `review-apply:${reviewId}:${actorId}`;
+
+  // ===================================================================
+  // 1. Idempotency claim — create in_progress with lease
+  // ===================================================================
+  const idemInput: CreateIdempotencyInput = {
+    idempotencyKey,
+    proposalId: reviewId,
+    operation: 'review_apply',
+    serialisedEffect: JSON.stringify({ reviewId, actorId }),
+    leaseDurationMs: 60_000,
+  };
+
+  const idemClaim = await store.createIdempotencyRecord(idemInput);
+
+  if (!idemClaim.isOwner) {
+    // Already in a terminal state — return the cached outcome
+    if (idemClaim.record.status !== 'in_progress') {
+      const succeeded = idemClaim.record.status === 'succeeded';
+      return {
+        mutationResult: {
+          success: succeeded,
+          mutationStatus: succeeded ? 'applied' : 'apply_failed',
+          applied: succeeded,
+          verified: succeeded,
+          stale: false,
+          error: idemClaim.record.errorMessage ?? undefined,
+          transactionId: null,
+          previousCategoryId: null,
+          newCategoryId: null,
+        },
+        finalStatus: succeeded ? 'applied' : 'apply_failed',
+      };
+    }
+    // Lease still active — another worker is handling this item
+    throw new Error(`Review apply ${reviewId} is already in progress (idempotency key ${idempotencyKey})`);
+  }
+
+  // ===================================================================
+  // 2. Durable applying claim — transition to `applying`
+  // ===================================================================
+  const itemBeforeApply = await store.getReviewItem(reviewId);
+  if (!itemBeforeApply) {
     throw new Error(`Review item ${reviewId} not found before mutation`);
   }
 
-  // Execute the mutation
-  const mutationResult = await executor(
-    { reviewId, actorId, requestId, categoryId, correlationId: executionId },
-    store,
-    item,
-  );
+  // Validate we can transition from current status to applying
+  await store.transitionReviewItem(reviewId, {
+    toStatus: 'applying',
+    actor: actorId,
+    expectedVersion: itemBeforeApply.version,
+    reason: 'Starting external mutation',
+  });
 
-  // Determine final workflow status based on the mutation result.
-  // Map stale and verification failures explicitly.
+  // ===================================================================
+  // 3. Execute the mutation
+  // ===================================================================
+  let mutationResult: ReviewMutationResult;
+  try {
+    mutationResult = await executor(
+      { reviewId, actorId, requestId, categoryId, correlationId: executionId },
+      store,
+      itemBeforeApply,
+    );
+  } catch (err) {
+    // Executor threw — transition to apply_failed and record as retryable
+    const applyingItem = await store.getReviewItem(reviewId);
+    if (applyingItem) {
+      await store.transitionReviewItem(reviewId, {
+        toStatus: 'apply_failed',
+        actor: actorId,
+        expectedVersion: applyingItem.version,
+        metadata: {
+          error: err instanceof Error ? err.message : String(err),
+          mutationStatus: 'executor_error',
+        },
+      });
+    }
+    await store.completeIdempotencyRecord(idempotencyKey, err instanceof Error ? err.message : String(err), true);
+    return {
+      mutationResult: {
+        success: false,
+        mutationStatus: 'apply_failed',
+        applied: false,
+        verified: false,
+        stale: false,
+        error: err instanceof Error ? err.message : String(err),
+        transactionId: null,
+        previousCategoryId: null,
+        newCategoryId: null,
+      },
+      finalStatus: 'apply_failed',
+    };
+  }
+
+  // ===================================================================
+  // 4. Determine final status based on mutation result
+  // ===================================================================
   let finalStatus: ReviewStatus;
   const metadata: Record<string, unknown> = {
     mutationStatus: mutationResult.mutationStatus,
@@ -805,44 +895,66 @@ export async function applyReviewMutationWithTransition(
   };
 
   if (mutationResult.mutationStatus === 'denied') {
-    // Executor declined the operation — leave in approved (no change)
-    finalStatus = item.status;
+    // Executor declined — transition back from applying to previous status
+    finalStatus = itemBeforeApply.status;
   } else if (mutationResult.verified) {
-    // Write + verification all passed
     finalStatus = 'applied';
     metadata.verified = true;
   } else if (mutationResult.stale) {
-    // Explicit staleness mapping
     finalStatus = 'apply_failed';
     metadata.staleReason = 'snapshot_stale';
     metadata.error = mutationResult.error;
   } else if (mutationResult.applied && !mutationResult.verified) {
-    // Write happened but postcondition verification failed
     finalStatus = 'apply_failed';
     metadata.verificationFailed = true;
     metadata.error = mutationResult.error;
   } else {
-    // Generic failure
     finalStatus = 'apply_failed';
     metadata.error = mutationResult.error;
   }
 
-  // Only issue a transition if the final status differs from current
-  if (finalStatus !== item.status) {
-    const itemBeforeTransition = await store.getReviewItem(reviewId);
-    if (!itemBeforeTransition) {
+  // ===================================================================
+  // 5. Transition from `applying` to final status
+  // ===================================================================
+  if (finalStatus !== itemBeforeApply.status) {
+    const applyingItem = await store.getReviewItem(reviewId);
+    if (!applyingItem) {
       throw new Error(`Review item ${reviewId} not found for final transition`);
     }
     await store.transitionReviewItem(reviewId, {
       toStatus: finalStatus,
       actor: actorId,
-      expectedVersion: itemBeforeTransition.version,
+      expectedVersion: applyingItem.version,
       metadata,
     });
   }
+  // If denied (stay in applying), we still need to revert
+  if (finalStatus === itemBeforeApply.status && finalStatus !== 'applying') {
+    // Revert from applying back to original status
+    const applyingItem = await store.getReviewItem(reviewId);
+    if (applyingItem) {
+      await store.transitionReviewItem(reviewId, {
+        toStatus: finalStatus as ReviewStatus,
+        actor: actorId,
+        expectedVersion: applyingItem.version,
+        reason: 'Mutation declined — reverting applying claim',
+      });
+    }
+  }
+
+  // ===================================================================
+  // 6. Complete idempotency record
+  // ===================================================================
+  const isRetryable = finalStatus === 'apply_failed';
+  await store.completeIdempotencyRecord(
+    idempotencyKey,
+    finalStatus === 'applied' ? null : (mutationResult.error ?? 'Unknown failure'),
+    isRetryable,
+  );
 
   return { mutationResult, finalStatus };
 }
+
 
 /** Re-export ReviewStatus for route handler convenience. */
 export type { ReviewStatus } from '@balanceframe/workflow-store';

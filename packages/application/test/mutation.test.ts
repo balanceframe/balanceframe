@@ -174,12 +174,15 @@ function mockIdempotencyRecord(overrides: Partial<IdempotencyRecord> = {}): Idem
     operation: 'set_category',
     executedAt: '2026-07-20T11:00:00Z',
     completed: false,
+    status: 'in_progress',
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     serialisedEffect: JSON.stringify({ transactionId: TEST_TX_ID, newCategoryId: TEST_CATEGORY_ID }),
     errorMessage: null,
     updatedAt: '2026-07-20T11:00:00Z',
     ...overrides,
   };
 }
+
 
 function mockSetCategoryResult(overrides: Partial<SetCategoryResult> = {}): SetCategoryResult {
   return {
@@ -711,7 +714,7 @@ describe('CategorizationMutationService', () => {
 
     it('returns cached result when idempotency key already completed', async () => {
       store.createIdempotencyRecord.mockResolvedValue({
-        record: mockIdempotencyRecord({ completed: true }),
+        record: mockIdempotencyRecord({ completed: true, status: 'succeeded' }),
         isOwner: false,
       });
 
@@ -749,7 +752,7 @@ describe('CategorizationMutationService', () => {
       await service.execute(makeInput());
       expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
         TEST_NONCE,
-        null, // no error
+        null,
       );
     });
 
@@ -760,6 +763,7 @@ describe('CategorizationMutationService', () => {
       expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
         TEST_NONCE,
         expect.stringContaining('Backend error'),
+        true,
       );
     });
 
@@ -838,12 +842,14 @@ describe('CategorizationMutationService', () => {
       expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
         TEST_NONCE,
         expect.stringContaining('Approval already consumed'),
+        true,
       );
 
       // Second call with same idempotency key: createIdempotencyRecord returns existing completed record
       store.createIdempotencyRecord.mockResolvedValue({
         record: mockIdempotencyRecord({
           completed: true,
+          status: 'retryable_failed',
           errorMessage: 'Approval already consumed',
         }),
         isOwner: false,
@@ -1334,7 +1340,7 @@ describe('CategorizationMutationService', () => {
       // First execution completed successfully
       // Second request has same idempotency key but the approval is now consumed
       store.createIdempotencyRecord.mockResolvedValue({
-        record: mockIdempotencyRecord({ completed: true, errorMessage: null }),
+        record: mockIdempotencyRecord({ completed: true, errorMessage: null, status: 'succeeded' }),
         isOwner: false,
       });
       // Note: even though the approval is consumed, we replay before checking it

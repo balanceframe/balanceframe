@@ -152,12 +152,15 @@ function mockIdempotencyRecord(overrides: Partial<IdempotencyRecord> = {}): Idem
     operation: 'create_rule',
     executedAt: '2026-07-20T11:00:00Z',
     completed: false,
+    status: 'in_progress',
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     serialisedEffect: JSON.stringify({ ruleName: TEST_RULE_NAME }),
     errorMessage: null,
     updatedAt: '2026-07-20T11:00:00Z',
     ...overrides,
   };
 }
+
 
 function mockProtocolSnapshot(overrides: Partial<ProtocolSnapshot> = {}): ProtocolSnapshot {
   return {
@@ -547,7 +550,7 @@ describe('RuleMutationService', () => {
     store.getProposal.mockResolvedValue(mockProposal());
     store.evaluateAuthorization.mockResolvedValue(allowedAuth());
 
-    const completedRecord = mockIdempotencyRecord({ completed: true, errorMessage: null });
+    const completedRecord = mockIdempotencyRecord({ completed: true, errorMessage: null, status: 'succeeded' });
     store.createIdempotencyRecord.mockResolvedValue({
       isOwner: false,
       record: completedRecord,

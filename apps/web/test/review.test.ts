@@ -110,9 +110,13 @@ describe('ReviewController', () => {
         toStatus: 'correcting', actor: ACTOR, reason: 'Correcting',
         expectedVersion: t1.version,
       });
+      const t3 = await store.transitionReviewItem(item2.id, {
+        toStatus: 'applying', actor: 'system', reason: 'Applying',
+        expectedVersion: t2.version,
+      });
       await store.transitionReviewItem(item2.id, {
         toStatus: 'applied', actor: 'system', reason: 'Applied',
-        expectedVersion: t2.version,
+        expectedVersion: t3.version,
       });
 
       await controller.loadNextPage();

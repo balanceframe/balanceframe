@@ -34,6 +34,7 @@ import type {
   ApprovalStatus,
   ProposalApproval,
   IdempotencyClaim,
+  IdempotencyStatus,
   IdempotencyRecord,
   AuditRecord,
   AuditClassification,
@@ -193,11 +194,14 @@ function rowToIdempotency(row: IdempotencyRow): IdempotencyRecord {
     operation: row.operation as ProposalOperation,
     executedAt: row.executed_at,
     completed: row.completed !== 0,
+    status: row.idempotency_status as IdempotencyStatus,
+    leaseExpiresAt: row.lease_expires_at,
     serialisedEffect: row.serialised_effect,
     errorMessage: row.error_message,
     updatedAt: row.updated_at,
   };
 }
+
 
 /** Map a raw DB row to a typed AuditRecord. */
 function rowToAudit(row: AuditRow): AuditRecord {
@@ -250,16 +254,14 @@ function rowToCorrection(row: CorrectionRow): CorrectionRecord {
   };
 }
 // ---------------------------------------------------------------------------
-// Review transition validation
-// ---------------------------------------------------------------------------
-
 /** Allowed transitions between review statuses. */
 const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
   discovered: ['suggestion_generated', 'pending_review', 'superseded'],
   suggestion_generated: ['pending_review', 'skipped', 'superseded'],
   pending_review: ['approved', 'correcting', 'rejected', 'skipped', 'superseded'],
-  approved: ['correcting', 'applied', 'apply_failed', 'pending_review', 'superseded'],
-  correcting: ['applied', 'apply_failed', 'pending_review', 'superseded', 'rejected', 'skipped', 'approved'],
+  approved: ['correcting', 'applying', 'pending_review', 'superseded'],
+  applying: ['applied', 'apply_failed', 'superseded'],
+  correcting: ['applying', 'pending_review', 'superseded', 'rejected', 'skipped', 'approved'],
   applied: ['superseded'],
   apply_failed: ['correcting', 'pending_review', 'superseded'],
   rejected: ['superseded', 'pending_review'],
@@ -267,11 +269,12 @@ const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
   superseded: [],
 };
 
+/** Terminal statuses that cannot transition forward. */
+const TERMINAL_STATUSES: ReviewStatus[] = ['applied', 'apply_failed', 'rejected', 'skipped', 'superseded'];
+
 /** Statuses for which `pending_review` is an undo, not a forward transition. */
 const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting', 'rejected', 'skipped'];
 
-/** Terminal statuses that cannot transition forward. */
-const TERMINAL_STATUSES: ReviewStatus[] = ['applied', 'apply_failed', 'rejected', 'skipped', 'superseded'];
 
 // ---------------------------------------------------------------------------
 // Row shapes (internal, matching DB schema)
@@ -382,10 +385,13 @@ interface IdempotencyRow {
   operation: string;
   executed_at: string;
   completed: number;
+  idempotency_status: string;
+  lease_expires_at: string | null;
   serialised_effect: string;
   error_message: string | null;
   updated_at: string;
 }
+
 
 interface AuditRow {
   id: string;
@@ -506,6 +512,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectIdempotency: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectIdempotencyByProposalOp: null as unknown as ReturnType<DatabaseType['prepare']>,
     completeIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateIdempotencyStatusStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectStrandedIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateStrandedIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertAudit: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectAuditByClassification: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectAuditByProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -818,6 +827,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
         );
       `);
     },
+    // Version 2: Idempotency state machine — status field and lease expiration
+    (db) => {
+      db.exec(`
+        ALTER TABLE idempotency_records ADD COLUMN idempotency_status TEXT NOT NULL DEFAULT 'in_progress';
+        ALTER TABLE idempotency_records ADD COLUMN lease_expires_at TEXT;
+
+        -- Backfill existing completed records to the correct terminal status
+        UPDATE idempotency_records
+           SET idempotency_status = 'succeeded'
+         WHERE completed = 1
+           AND error_message IS NULL;
+
+        UPDATE idempotency_records
+           SET idempotency_status = 'terminal_failed'
+         WHERE completed = 1
+           AND error_message IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_idempotency_status
+          ON idempotency_records(idempotency_status);
+      `);
+    },
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -844,6 +874,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       runMigration();
     }
   }
+
 
   private prepareStatements(): void {
     // ── Suggestions ────────────────────────────────────────────────────
@@ -1277,10 +1308,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     this.stmt.insertIdempotency = this.db.prepare(`
       INSERT INTO idempotency_records (idempotency_key, proposal_id, operation,
-                                       executed_at, completed, serialised_effect,
+                                       executed_at, completed, idempotency_status,
+                                       lease_expires_at, serialised_effect,
                                        error_message, updated_at)
       VALUES (@idempotencyKey, @proposalId, @operation,
-              @executedAt, 0, @serialisedEffect,
+              @executedAt, 0, 'in_progress',
+              @leaseExpiresAt, @serialisedEffect,
               NULL, @updatedAt)
       ON CONFLICT(idempotency_key) DO NOTHING
       RETURNING *
@@ -1297,10 +1330,37 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.stmt.completeIdempotencyStmt = this.db.prepare(`
       UPDATE idempotency_records
          SET completed = 1,
+             idempotency_status = @status,
              error_message = @errorMessage,
              updated_at = @now
        WHERE idempotency_key = @key
     `);
+
+    this.stmt.updateIdempotencyStatusStmt = this.db.prepare(`
+      UPDATE idempotency_records
+         SET idempotency_status = @status,
+             error_message = @errorMessage,
+             updated_at = @now
+       WHERE idempotency_key = @key
+    `);
+
+    this.stmt.selectStrandedIdempotencyStmt = this.db.prepare(`
+      SELECT * FROM idempotency_records
+       WHERE idempotency_status = 'in_progress'
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= @now
+    `);
+
+    this.stmt.updateStrandedIdempotencyStmt = this.db.prepare(`
+      UPDATE idempotency_records
+         SET idempotency_status = 'retryable_failed',
+             error_message = @errorMessage,
+             updated_at = @now
+       WHERE idempotency_status = 'in_progress'
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= @now
+    `);
+
 
     // ── Audit ─────────────────────────────────────────────────────────
 
@@ -2597,6 +2657,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   async createIdempotencyRecord(input: CreateIdempotencyInput): Promise<IdempotencyClaim> {
     const now = nowISO();
+    const leaseMs = input.leaseDurationMs ?? 60_000;
+    const leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
 
     // Atomic claim: INSERT with ON CONFLICT DO NOTHING — eliminates SELECT-then-INSERT race
     const row = this.stmt.insertIdempotency.get({
@@ -2605,6 +2667,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       operation: input.operation,
       executedAt: now,
       serialisedEffect: input.serialisedEffect,
+      leaseExpiresAt,
       updatedAt: now,
     }) as IdempotencyRow | undefined;
 
@@ -2633,6 +2696,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return { record: rowToIdempotency(existing), isOwner: false };
   }
 
+
   async getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null> {
     const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow | undefined;
     return row ? rowToIdempotency(row) : null;
@@ -2641,12 +2705,33 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async completeIdempotencyRecord(
     key: string,
     errorMessage?: string | null,
+    isRetryable?: boolean,
   ): Promise<IdempotencyRecord> {
     const now = nowISO();
-    this.stmt.completeIdempotencyStmt.run({ key, errorMessage: errorMessage ?? null, now });
+    const status: IdempotencyStatus =
+      errorMessage
+        ? (isRetryable ? 'retryable_failed' : 'terminal_failed')
+        : 'succeeded';
+    this.stmt.completeIdempotencyStmt.run({ key, status, errorMessage: errorMessage ?? null, now });
     const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow;
     return rowToIdempotency(row);
   }
+
+  async findStrandedIdempotencyRecords(): Promise<IdempotencyRecord[]> {
+    const now = nowISO();
+    const rows = this.stmt.selectStrandedIdempotencyStmt.all({ now }) as IdempotencyRow[];
+    return rows.map(rowToIdempotency);
+  }
+
+  async reconcileStrandedIdempotencyRecords(): Promise<number> {
+    const now = nowISO();
+    const result = this.stmt.updateStrandedIdempotencyStmt.run({
+      now,
+      errorMessage: 'Lease expired — stranded in_progress record reconciled',
+    });
+    return result.changes;
+  }
+
 
   // ── Audit records (append-only) ───────────────────────────────────
 

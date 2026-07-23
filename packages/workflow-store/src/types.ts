@@ -113,12 +113,14 @@ export type ReviewStatus =
   | 'suggestion_generated'
   | 'pending_review'
   | 'approved'
+  | 'applying'
   | 'correcting'
   | 'applied'
   | 'apply_failed'
   | 'rejected'
   | 'skipped'
   | 'superseded';
+
 
 /** A review item tracking one candidate through the review-apply lifecycle. */
 export interface ReviewItem {
@@ -569,7 +571,8 @@ export interface WorkflowStore {
   /**
    * Create an idempotency record for at-most-once execution.
    *
-   * Rejects replay with different proposalId, operation, or serialisedEffect
+   * Claims the record as `in_progress` with a lease expiration.  Rejects
+   * replay with different proposalId, operation, or serialisedEffect
    * under the same idempotency key.
    *
    * @returns An {@link IdempotencyClaim} — the record and whether this
@@ -581,14 +584,37 @@ export interface WorkflowStore {
   getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null>;
 
   /**
-   * Mark an idempotency record as completed.
+   * Transition an idempotency record to a terminal status.
    *
-   * @param errorMessage Optional error message if the execution failed.
+   * - No errorMessage    → `succeeded`
+   * - isRetryable=true    → `retryable_failed`
+   * - isRetryable=false   → `terminal_failed`
+   *
+   * @param key            The idempotency key.
+   * @param errorMessage   Optional error message if the execution failed.
+   * @param isRetryable    Whether a failed execution is safe to retry.
    */
   completeIdempotencyRecord(
     key: string,
     errorMessage?: string | null,
+    isRetryable?: boolean,
   ): Promise<IdempotencyRecord>;
+
+  /**
+   * Find all idempotency records whose lease has expired while still
+   * `in_progress`.  These records represent executions that may have been
+   * stranded by a crash or timeout.
+   */
+  findStrandedIdempotencyRecords(): Promise<IdempotencyRecord[]>;
+
+  /**
+   * Reconcile stranded `in_progress` records whose lease has expired.
+   *
+   * Marks each as `retryable_failed` and records the error.  Returns the
+   * number of records reconciled.
+   */
+  reconcileStrandedIdempotencyRecords(): Promise<number>;
+
 
   // ── Audit records (append-only) ───────────────────────────────────
 
@@ -881,6 +907,9 @@ export interface CreateApprovalInput {
 // IdempotencyRecord — at-most-once execution tracking
 // ---------------------------------------------------------------------------
 
+/** Lifecycle status of an idempotent workflow operation. */
+export type IdempotencyStatus = 'in_progress' | 'succeeded' | 'retryable_failed' | 'terminal_failed';
+
 /** Record of an idempotent workflow operation. */
 export interface IdempotencyRecord {
   readonly idempotencyKey: string;
@@ -888,6 +917,10 @@ export interface IdempotencyRecord {
   readonly operation: string;
   readonly executedAt: string;
   readonly completed: boolean;
+  /** Lifecycle status of this record. */
+  readonly status: IdempotencyStatus;
+  /** ISO-8601 timestamp after which the in_progress claim expires. */
+  readonly leaseExpiresAt: string | null;
   /** Serialised effect of the execution. */
   readonly serialisedEffect: string;
   readonly errorMessage: string | null;
@@ -900,6 +933,8 @@ export interface CreateIdempotencyInput {
   readonly proposalId: string;
   readonly operation: string;
   readonly serialisedEffect: string;
+  /** Duration in milliseconds for the initial lease.  Defaults to 60 000. */
+  readonly leaseDurationMs?: number;
 }
 
 /**
@@ -910,6 +945,7 @@ export interface IdempotencyClaim {
   readonly record: IdempotencyRecord;
   readonly isOwner: boolean;
 }
+
 
 // ---------------------------------------------------------------------------
 // AuditRecord — append-only workflow audit trail

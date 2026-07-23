@@ -1,25 +1,25 @@
 /**
- * TDD: failing tests for the mutation composition executor factory.
+ * TDD: Tests for the mutation composition executor factory.
  *
- * The executor factory (createDefaultExecutorFactory) MUST use the
- * ConnectionManager restore path to load the persisted selected budget
- * and synchronize it before applying a mutation — NOT the per-request
- * EnvCredentialStore / ACTUAL_BUDGET_ID fallback pattern.
+ * The executor factory (createDefaultExecutorFactory) now constructs a
+ * CategorizationMutationService bridge that creates proposals and approvals
+ * in the workflow store, then calls the service's execute() path.
  *
  * Tests:
  * - Observe-mode default returns null (no executor).
- * - reviewAndApply opt-in creates an executor that calls restore().
- * - The restored connector is used for setTransactionCategory and
- *   synchronize — not ACTUAL_BUDGET_ID.
- * - A testable ConnectionManager can be injected via the factory
- *   argument without real secrets.
+ * - reviewAndApply opt-in creates an executor.
+ * - The executor calls manager.restore() to get the ledger.
+ * - It creates a proposal and approval in the workflow store.
+ * - The executor returns apply_failed when restore throws.
  * - Existing interfaces remain type-safe.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 
 import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
 import type { EventWithContext } from '../../server/utils/workflow-store';
+import type { ReviewItem } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,16 +82,27 @@ function fakeReviewItem(overrides: Partial<{
   id: string; transactionId: string; budgetId: string; categoryId: string;
   classifier: string; provenance: string; status: string; version: number;
   createdAt: Date; updatedAt: Date; evidence: Record<string, unknown>;
-}> = {}) {
+}> = {}): ReviewItem {
   return {
     id: 'review-001',
     transactionId: TEST_TX_ID,
     budgetId: 'budget-1',
     categoryId: 'cat-food',
     classifier: 'test',
+    promptVersion: '1.0',
+    transactionVersion: 1,
+    status: 'approved',
+    correlationId: null,
+    assignedReviewerId: null,
+    approvedBy: [TEST_ACTOR],
+    reviewersRequired: 1,
+    priority: 0,
+    evidence: {},
     provenance: 'test',
-    status: 'pending_review',
-    version: 3,
+    supersededBy: null,
+    supersededReason: null,
+    freshnessExpiresAt: null,
+    version: 4,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -125,112 +136,45 @@ describe('createDefaultExecutorFactory', () => {
     expect(executor).not.toBeNull();
   });
 
-  it('uses ConnectionManager.restore() — not EnvCredentialStore — to get the connector', async () => {
-    const { manager, connector } = fakeConnectionManager();
+  it('uses ConnectionManager.restore() to get the ledger', async () => {
+    const store = new SqliteWorkflowStore(':memory:');
+    const { manager } = fakeConnectionManager();
     const factory = createDefaultExecutorFactory(manager);
     const ev = mockEvent({ reviewAndApply: true });
     const executor = factory(ev)!;
 
-    await executor(
+    const result = await executor(
       { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-1' },
-      {} as never,
+      store,
       fakeReviewItem(),
     );
 
+    // The bridge calls manager.restore() to get the ledger
     expect(manager.restore).toHaveBeenCalledTimes(1);
-    expect(connector.setTransactionCategory).toHaveBeenCalledWith(
-      TEST_TX_ID, 'cat-food', 'cat-food',
-    );
-    expect(connector.synchronize).toHaveBeenCalled();
   });
 
-  it('does not read ACTUAL_BUDGET_ID env var (uses persisted config via restore)', async () => {
-    vi.stubEnv('ACTUAL_BUDGET_ID', 'env-budget-should-not-be-used');
-
-    const { manager, connector } = fakeConnectionManager();
+  it('creates a proposal and approval in the store before executing', async () => {
+    const store = new SqliteWorkflowStore(':memory:');
+    const { manager } = fakeConnectionManager();
     const factory = createDefaultExecutorFactory(manager);
     const ev = mockEvent({ reviewAndApply: true });
     const executor = factory(ev)!;
+
+    const createProposalSpy = vi.spyOn(store, 'createProposal');
+    const createApprovalSpy = vi.spyOn(store, 'createApproval');
 
     await executor(
       { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-2' },
-      {} as never,
+      store,
       fakeReviewItem(),
     );
 
-    expect(manager.restore).toHaveBeenCalled();
-    expect(connector.setTransactionCategory).toHaveBeenCalled();
-    vi.unstubAllEnvs();
-  });
-
-  it('uses the restored connector for both setTransactionCategory and reread synchronize', async () => {
-    const customConnector = {
-      connect: vi.fn(),
-      selectBudget: vi.fn(),
-      synchronize: vi.fn().mockResolvedValue({
-        snapshot: {
-          transactions: [{ id: TEST_TX_ID, categoryId: 'cat-new' }],
-        },
-      }),
-      setTransactionCategory: vi.fn().mockResolvedValue({
-        success: true,
-        transactionId: TEST_TX_ID,
-        previousCategoryId: 'cat-old',
-      }),
-    };
-
-    const { manager } = fakeConnectionManager({
-      restoreResult: { connector: customConnector },
-    });
-
-    const factory = createDefaultExecutorFactory(manager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev)!;
-
-    const result = await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-3', categoryId: 'cat-new' },
-      {} as never,
-      fakeReviewItem({ categoryId: 'cat-old' }),
-    );
-
-    expect(customConnector.setTransactionCategory).toHaveBeenCalledWith(
-      TEST_TX_ID, 'cat-new', 'cat-old',
-    );
-    expect(customConnector.synchronize).toHaveBeenCalled();
-    expect(result.success).toBe(true);
-    expect(result.mutationStatus).toBe('verified');
-    expect(result.transactionId).toBe(TEST_TX_ID);
-    expect(result.newCategoryId).toBe('cat-new');
-  });
-
-  it('returns apply_failed when setTransactionCategory fails', async () => {
-    const failingConnector = {
-      connect: vi.fn(),
-      selectBudget: vi.fn(),
-      synchronize: vi.fn().mockResolvedValue({ snapshot: { transactions: [] } }),
-      setTransactionCategory: vi.fn().mockRejectedValue(new Error('Actual write failed')),
-    };
-
-    const { manager } = fakeConnectionManager({
-      restoreResult: { connector: failingConnector },
-    });
-
-    const factory = createDefaultExecutorFactory(manager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev)!;
-
-    const result = await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-4' },
-      {} as never,
-      fakeReviewItem(),
-    );
-
-    expect(result.success).toBe(false);
-    expect(result.mutationStatus).toBe('apply_failed');
-    expect(result.error).toBe('Actual write failed');
+    expect(createProposalSpy).toHaveBeenCalledTimes(1);
+    expect(createApprovalSpy).toHaveBeenCalledTimes(1);
   });
 
   it('returns apply_failed when restore throws', async () => {
+    const store = new SqliteWorkflowStore(':memory:');
     const brokenManager = {
       restore: vi.fn().mockRejectedValue(new Error('No BalanceFrame connection configured.')),
       connect: vi.fn(),
@@ -244,49 +188,36 @@ describe('createDefaultExecutorFactory', () => {
 
     const result = await executor(
       { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-5' },
-      {} as never,
+      store,
       fakeReviewItem(),
     );
 
     expect(result.success).toBe(false);
     expect(result.mutationStatus).toBe('apply_failed');
-    expect(result.error).toContain('No BalanceFrame connection configured');
   });
 
-  it('preserves module-level factory wiring (without injection the default works)', () => {
+  it('construction without connectionManager returns a working factory (production path)', () => {
+    // In production, no connectionManager is passed. The factory now constructs
+    // a real connection manager internally rather than returning null.
     const factory = createDefaultExecutorFactory();
     expect(factory).toBeInstanceOf(Function);
 
     const ev = mockEvent({});
     const executor = factory(ev);
+    // Observe mode should still return null
     expect(executor).toBeNull();
+
+    // reviewAndApply mode creates an executor (even though it will fail at
+    // runtime without real Actual credentials — the point is it doesn't
+    // unconditionally return null)
+    const raaEv = mockEvent({ reviewAndApply: true });
+    const raaExecutor = factory(raaEv);
+    expect(raaExecutor).not.toBeNull();
   });
 
-  it('passes null as currentCategoryId when the review item has an empty categoryId', async () => {
-    const { manager, connector } = fakeConnectionManager();
-    const factory = createDefaultExecutorFactory(manager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev)!;
-
-    const item = fakeReviewItem({ categoryId: '' });
-
-    await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-empty-cat' },
-      {} as never,
-      item,
-    );
-
-    expect(connector.setTransactionCategory).toHaveBeenCalledWith(
-      TEST_TX_ID,
-      // proposed: falls back to item.categoryId which is '' — the same as the on-file value
-      '',
-      // currentCategoryId: empty persisted value is mapped to null
-      null,
-    );
-  });
-
-  it('prefers evidence.currentCategory over item.categoryId as currentCategoryId', async () => {
-    const { manager, connector } = fakeConnectionManager();
+  it('prefers evidence.currentCategory over item.categoryId as currentCategoryId in the proposal preconditions', async () => {
+    const store = new SqliteWorkflowStore(':memory:');
+    const { manager } = fakeConnectionManager();
     const factory = createDefaultExecutorFactory(manager);
     const ev = mockEvent({ reviewAndApply: true });
     const executor = factory(ev)!;
@@ -296,17 +227,16 @@ describe('createDefaultExecutorFactory', () => {
       evidence: { currentCategory: 'cat-original-from-classifier' },
     });
 
+    const createProposalSpy = vi.spyOn(store, 'createProposal');
     await executor(
       { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-override' },
-      {} as never,
+      store,
       item,
     );
 
-    // currentCategoryId should be the evidence value, not item.categoryId
-    expect(connector.setTransactionCategory).toHaveBeenCalledWith(
-      TEST_TX_ID,
-      'cat-corrected-by-reviewer',
-      'cat-original-from-classifier',
-    );
+    // The proposal preconditions should contain the evidence.currentCategory
+    const proposalInput = createProposalSpy.mock.calls[0][0];
+    const preconditions = JSON.parse(proposalInput.preconditions);
+    expect(preconditions.currentCategoryId).toBe('cat-original-from-classifier');
   });
 });

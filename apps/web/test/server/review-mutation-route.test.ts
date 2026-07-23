@@ -383,13 +383,12 @@ describe('reviewAndApply mode — route behavior contract', () => {
     expect(mutationResult.stale).toBe(true);
   });
 
-  it('returns denied when reviewAndApply enabled but no executor wired', async () => {
+  it('returns 5xx when reviewAndApply enabled but no executor wired (fail closed)', async () => {
     const item = await seedPendingReview(store);
     const ev = mockEvent({ authenticated: true, config: { reviewAndApply: true } });
     const actorId = getActorId(ev);
 
-    // No executor set up
-
+    // No executor set up — the route handler MUST fail closed
     const outcome = await performReviewAction(store, item.id, 'approve', actorId);
     expect(outcome.success).toBe(true);
 
@@ -397,26 +396,24 @@ describe('reviewAndApply mode — route behavior contract', () => {
     expect(enabled).toBe(true);
 
     const executor = getReviewMutationExecutor();
-    // When executor is null, route returns denied
-    const mutationStatus = executor ? undefined : 'denied';
+    // When executor is null, both approve and correct routes return a
+    // non-success HTTP status with errorEnvelope, NOT 200 with denied.
+    expect(executor).toBeNull();
 
-    // Route handler builds this response
-    const responseFields = {
-      itemId: outcome.itemId,
-      success: true,
-      error: mutationStatus === 'denied' ? 'Mutation executor not available' : null,
-      categorizationExecuted: false,
-      mutationStatus: mutationStatus ?? 'noop',
-      applied: false,
-      verified: false,
-      stale: false,
-      transactionId: null,
-      previousCategoryId: null,
-      newCategoryId: null,
-    };
-
-    expect(responseFields.categorizationExecuted).toBe(false);
-    expect(responseFields.mutationStatus).toBe('denied');
+    // Route handler builds this error response:
+    //   approve: setResponseStatus(event, 501); errorEnvelope('NOT_IMPLEMENTED', ...)
+    //   correct: setResponseStatus(event, 503); errorEnvelope('EXECUTOR_UNAVAILABLE', ...)
+    // Both are non-success with categorizationExecuted:false
+    const errorResponse = errorEnvelope(
+      'NOT_IMPLEMENTED',
+      'Review-and-apply requires a secure mutation service composition.',
+      buildAuthorizationInfo(ev, 'categorization:execute'),
+      false,
+      'test-req',
+    );
+    expect(errorResponse.status).toBe('error');
+    expect(errorResponse.result).toBeNull();
+    expect(errorResponse.error?.code).toBe('NOT_IMPLEMENTED');
   });
 
   it('preserves actor-from-auth in executor calls', async () => {
