@@ -14,6 +14,22 @@
             {{ rule.inactive ? 'Inactive' : 'Active' }}
           </UBadge>
           <span class="text-xs text-gray-400">#{{ rule.order }}</span>
+          <UButton
+            size="xs"
+            :color="rule.inactive ? 'success' : 'warning'"
+            variant="solid"
+            @click="toggleInactive"
+          >
+            {{ rule.inactive ? 'Activate' : 'Deactivate' }}
+          </UButton>
+          <UButton
+            size="xs"
+            color="error"
+            variant="outline"
+            @click="deleteRule"
+          >
+            Delete
+          </UButton>
         </div>
       </div>
     </template>
@@ -239,6 +255,19 @@ const props = withDefaults(defineProps<RuleDetailProps>(), {
   proposalState: null,
   showSimulationMissing: false,
 });
+
+const emit = defineEmits<{
+  toggle: [id: string, inactive: boolean];
+  delete: [id: string];
+}>();
+
+async function toggleInactive() {
+  emit('toggle', props.rule.id, !props.rule.inactive);
+}
+
+async function deleteRule() {
+  emit('delete', props.rule.id);
+}
 
 function formatJson(value: unknown): string {
   return JSON.stringify(value, null, 2);

@@ -29,6 +29,16 @@
           variant="solid"
           :label="`${currentCount} items`"
         />
+        <UButton
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          icon="i-heroicons-arrow-path"
+          :label="syncing ? 'Syncing...' : 'Sync'"
+          :loading="syncing"
+          :disabled="syncing"
+          @click="handleSync"
+        />
       </div>
     </div>
 
@@ -210,6 +220,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown);
 });
+const syncing = ref(false);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -304,6 +315,28 @@ function handleProposalError(message: string, retryable: boolean): void {
     color: 'error',
     duration: 10000,
   });
+}
+
+async function handleSync() {
+  if (syncing.value) return;
+  syncing.value = true;
+  try {
+    const res = await fetch('/api/review/sync', { method: 'POST', credentials: 'same-origin' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const toast = useToast();
+      toast.add({ title: 'Sync complete', color: 'success', duration: 5000 });
+      await adapter.refresh();
+    } else {
+      const toast = useToast();
+      toast.add({ title: 'Sync failed', description: data.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+    }
+  } catch (e) {
+    const toast = useToast();
+    toast.add({ title: 'Sync failed', description: e instanceof Error ? e.message : 'Connection error', color: 'error', duration: 10000 });
+  } finally {
+    syncing.value = false;
+  }
 }
 
 async function handleSignOut() {
