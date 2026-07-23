@@ -39,7 +39,13 @@ export default defineEventHandler(async (event) => {
     const manager = createMutationConnectionManager();
     const connected = await manager.restore();
     const ledger = connected.connector as unknown as LedgerHandle;
-    await ledger.updateRule(ruleId, body);
+    const result = await ledger.updateRule(ruleId, body);
+    // Check for silent failure (MutationResult with success: false)
+    if (typeof result === 'object' && result !== null && 'success' in result && !result.success) {
+      const msg = (result as { error?: string }).error ?? 'Update failed without message';
+      setResponseStatus(event, 500);
+      return errorEnvelope('RULE_UPDATE_FAILED', msg, authInfo, true, requestId);
+    }
     return okEnvelope({ updated: true }, authInfo, requestId);
   } catch (err) {
     setResponseStatus(event, 500);

@@ -494,7 +494,20 @@ export class ActualConnector implements BudgetLedger {
     }
     return this.withCacheLock(this._budgetInfo.id, async () => {
       try {
-        await this.client.updateRule(id, fields);
+        const allRaw = await this.client.getRules();
+        const currentRaw = allRaw.find((r) => r.id === id);
+        if (!currentRaw) {
+          return { success: false, error: `Rule not found: ${id}`, code: 'RULE_NOT_FOUND' } as MutationResult;
+        }
+        const merged: Record<string, unknown> = {
+          id: currentRaw.id,
+          stage: currentRaw.stage,
+          conditionsOp: currentRaw.conditionsOp,
+          conditions: JSON.stringify(currentRaw.conditions),
+          actions: JSON.stringify(currentRaw.actions),
+          tombstone: fields.inactive !== undefined ? fields.inactive : (currentRaw.tombstone ?? false),
+        };
+        await this.client.updateRule(id, merged);
       } catch (err) {
         return { success: false, error: `Failed to update rule: ${err instanceof Error ? err.message : String(err)}`, code: 'RULE_UPDATE_FAILED' } as MutationResult;
       }
@@ -505,6 +518,19 @@ export class ActualConnector implements BudgetLedger {
       }
       return { success: true } as MutationResult;
     });
+  }
+
+  async setBudgetAmount(
+    _month: string,
+    _categoryId: LedgerId,
+    _amount: number,
+    _precondition?: MutationPrecondition,
+  ): Promise<MutationResult> {
+    this.assertInitialized();
+    throw new Error(
+      'setBudgetAmount() is not yet implemented in any connection mode. ' +
+      'This method will be available in a future update.',
+    );
   }
 
   async deleteRule(
@@ -531,19 +557,6 @@ export class ActualConnector implements BudgetLedger {
       }
       return { success: true } as MutationResult;
     });
-  }
-
-  async setBudgetAmount(
-    _month: string,
-    _categoryId: LedgerId,
-    _amount: number,
-    _precondition?: MutationPrecondition,
-  ): Promise<MutationResult> {
-    this.assertInitialized();
-    throw new Error(
-      'setBudgetAmount() is not yet implemented in any connection mode. ' +
-      'This method will be available in a future update.',
-    );
   }
 
 
