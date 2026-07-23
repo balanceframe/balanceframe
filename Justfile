@@ -76,9 +76,10 @@ docker-test:
 compose-validate:
     tests/deployment/compose-validate.sh
 
-# Verify that TAG matches the root package.json version (with 'v' prefix).
-# Exits nonzero on mismatch. Passes through valid pre-release tags.
-release-verify TAG="v$(jq -r '.version' package.json)":
+# Verify that TAG matches the root package.json version (with 'v' prefix)
+# and that the tag has not already been released.
+# Exits nonzero on mismatch or if the tag already exists on the remote.
+release-verify TAG:
     #!/usr/bin/env bash
     set -euo pipefail
     version="$(jq -r '.version' package.json)"
@@ -92,10 +93,12 @@ release-verify TAG="v$(jq -r '.version' package.json)":
     fi
     echo "OK: TAG '{{TAG}}' matches package.json version 'v$version'"
 
-# Render release Compose manifests, .env.example, and checksums.
-# TAG must be a valid release tag (vX.Y.Z).
-# DIGEST must be the pushed OCI digest (sha256:<64hex>).
-# Calls scripts/release-assets.sh which produces _release/<TAG>/
+    # Check that the tag does not already exist on the remote.
+    if git ls-remote --tags origin "refs/tags/{{TAG}}" | grep -q .; then
+      echo "ERROR: Tag '{{TAG}}' already exists on the remote." >&2
+      exit 1
+    fi
+    echo "OK: Tag '{{TAG}}' has not been released yet."
 release-assets TAG DIGEST:
     scripts/release-assets.sh "{{TAG}}" "{{DIGEST}}"
 
