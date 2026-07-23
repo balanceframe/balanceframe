@@ -35,6 +35,19 @@ export default defineEventHandler(async (event) => {
 
     const rules: RuleListItem[] = await ledger.listRules();
 
+    // Merge local rule overrides (inactive toggle state) on top of Actual's
+    // data.  The Actual sync protocol does not support updating rule fields,
+    // so we store toggle state in the workflow DB.
+    const overrides = await wf.store.getRuleOverrides();
+    if (overrides.size > 0) {
+      for (const rule of rules) {
+        const overrideInactive = overrides.get(rule.id);
+        if (overrideInactive !== undefined) {
+          (rule as unknown as Record<string, unknown>).inactive = overrideInactive;
+        }
+      }
+    }
+
     return okEnvelope(
       { items: rules, total: rules.length },
       authInfo,

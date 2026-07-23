@@ -527,6 +527,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectCorrectionConflicts: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateReviewItemCategory: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectCorrectionByReviewTransition: null as unknown as ReturnType<DatabaseType['prepare']>,
+    upsertRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
+    getAllRuleOverrides: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
@@ -690,6 +692,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
         WHERE status = 'active';
 
       DROP INDEX IF EXISTS idx_approvals_proposal_actor;
+
+      CREATE TABLE IF NOT EXISTS rule_overrides (
+        rule_id   TEXT PRIMARY KEY,
+        inactive  INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
 
       CREATE TABLE IF NOT EXISTS idempotency_records (
         idempotency_key   TEXT PRIMARY KEY,
@@ -1396,6 +1405,20 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     this.stmt.selectLastExportStmt = this.db.prepare(`
       SELECT * FROM export_records ORDER BY exported_at DESC LIMIT 1
+    `);
+
+    // ── Rule overrides ─────────────────────────────────────────────────
+
+    this.stmt.upsertRuleOverride = this.db.prepare(`
+      INSERT INTO rule_overrides (rule_id, inactive, created_at, updated_at)
+      VALUES (@ruleId, @inactive, @now, @now)
+      ON CONFLICT(rule_id) DO UPDATE SET
+        inactive = @inactive,
+        updated_at = @now
+    `);
+
+    this.stmt.getAllRuleOverrides = this.db.prepare(`
+      SELECT rule_id, inactive FROM rule_overrides
     `);
   }
 
@@ -2808,5 +2831,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
       deleted,
       retained: { count: retainedCount, reasons },
     };
+  }
+
+  // ── Rule overrides ──────────────────────────────────────────────────
+
+  async setRuleOverride(ruleId: string, inactive: boolean): Promise<void> {
+    const now = nowISO();
+    this.stmt.upsertRuleOverride.run({ ruleId, inactive: inactive ? 1 : 0, now });
+  }
+
+  async getRuleOverrides(): Promise<Map<string, boolean>> {
+    const rows = this.stmt.getAllRuleOverrides.all({}) as Array<{ rule_id: string; inactive: number }>;
+    const map = new Map<string, boolean>();
+    for (const row of rows) {
+      map.set(row.rule_id, row.inactive === 1);
+    }
+    return map;
   }
 }

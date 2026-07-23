@@ -1,7 +1,5 @@
-/** PATCH /api/rule/[id] — update a rule (toggle inactive, rename, etc). */
+/** PATCH /api/rule/[id] — toggle a rule's inactive state in local store. */
 import { setResponseStatus } from 'h3';
-import type { LedgerHandle } from '../../utils/rule-types';
-import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
   getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
 } from '../../utils/workflow-store';
@@ -30,22 +28,17 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('INVALID_BODY', 'Request body must be valid JSON.', authInfo, false, requestId);
   }
 
-  if (body.inactive !== undefined && typeof body.inactive !== 'boolean') {
+  if (body.inactive === undefined) {
+    setResponseStatus(event, 422);
+    return errorEnvelope('INVALID_FIELD', 'inactive field is required.', authInfo, false, requestId);
+  }
+  if (typeof body.inactive !== 'boolean') {
     setResponseStatus(event, 422);
     return errorEnvelope('INVALID_FIELD', 'inactive must be a boolean.', authInfo, false, requestId);
   }
 
   try {
-    const manager = createMutationConnectionManager();
-    const connected = await manager.restore();
-    const ledger = connected.connector as unknown as LedgerHandle;
-    const result = await ledger.updateRule(ruleId, body);
-    // Check for silent failure (MutationResult with success: false)
-    if (typeof result === 'object' && result !== null && 'success' in result && !result.success) {
-      const msg = (result as { error?: string }).error ?? 'Update failed without message';
-      setResponseStatus(event, 500);
-      return errorEnvelope('RULE_UPDATE_FAILED', msg, authInfo, true, requestId);
-    }
+    await wf.store.setRuleOverride(ruleId, body.inactive);
     return okEnvelope({ updated: true }, authInfo, requestId);
   } catch (err) {
     setResponseStatus(event, 500);

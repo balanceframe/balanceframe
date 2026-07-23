@@ -707,6 +707,20 @@ export interface WorkflowStore {
    * @returns Deleted counts per entity type, plus retained records
    *          count and reasons why certain records were preserved.
    */
+  // ── Rule overrides ────────────────────────────────────────────
+
+  /**
+   * Persist or clear a local override for a rule's inactive state.
+   * This is the source of truth for rule toggling since the Actual
+   * sync protocol does not support updating rule fields.
+   */
+  setRuleOverride(ruleId: string, inactive: boolean): Promise<void>;
+
+  /**
+   * Return all active rule overrides as a Map<ruleId, inactive>.
+   */
+  getRuleOverrides(): Promise<Map<string, boolean>>;
+
   deleteScopeData(
     scope: string,
     options?: { actorId?: string },
