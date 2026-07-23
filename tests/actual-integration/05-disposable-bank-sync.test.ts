@@ -635,11 +635,20 @@ describe('Proof 7 — Complete review-to-Actual persisted path', () => {
     expect(mutationResult.transactionId).toBe(txId);
     expect(mutationResult.newCategoryId).toBe(groceriesId);
 
+    // ---- Claim execution via 'applying' ----
+    const applyingItem = await store.transitionReviewItem(reviewItem.id, {
+      toStatus: 'applying',
+      actor: ACTOR,
+      expectedVersion: correctingItem.version,
+      reason: 'Claiming mutation execution',
+    });
+    expect(applyingItem.status).toBe('applying');
+
     // ---- Transition to 'applied' ----
     const appliedItem = await store.transitionReviewItem(reviewItem.id, {
       toStatus: 'applied',
       actor: ACTOR,
-      expectedVersion: correctingItem.version,
+      expectedVersion: applyingItem.version,
       reason: 'Mutation verified in Actual, marking as applied',
     });
     expect(appliedItem.status).toBe('applied');
@@ -663,7 +672,7 @@ describe('Proof 7 — Complete review-to-Actual persisted path', () => {
 
     // ---- Verify audit trail ----
     const reviewActions = await store.getReviewActions(reviewItem.id);
-    expect(reviewActions.length).toBeGreaterThanOrEqual(4); // discovered→pending → approved → correcting → applied
+    expect(reviewActions.length).toBeGreaterThanOrEqual(5); // discovered→pending → approved → correcting → applying → applied
 
     const transitions = reviewActions.map(
       (a: { fromStatus: string; toStatus: string; actor: string }) =>
@@ -672,7 +681,8 @@ describe('Proof 7 — Complete review-to-Actual persisted path', () => {
     expect(transitions).toContain('discovered→pending_review');
     expect(transitions).toContain('pending_review→approved');
     expect(transitions).toContain('approved→correcting');
-    expect(transitions).toContain('correcting→applied');
+    expect(transitions).toContain('correcting→applying');
+    expect(transitions).toContain('applying→applied');
 
     // Verify correction records exist for the 'correcting' transition
     const corrections = await store.queryCorrectionHistory({
