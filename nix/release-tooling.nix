@@ -21,14 +21,12 @@ in
 
   buildInputs = base.buildInputs;
 
-  commands =
-    base.commands
-    ++ [
-      "docker"
-      "docker-buildx"
-      "docker-compose"
-      "syft"
-      "cosign"
-      "slsa-verifier"
-    ];
+  commands = base.commands ++ [
+    "docker"
+    "docker-buildx"
+    "docker-compose"
+    "syft"
+    "cosign"
+    "slsa-verifier"
+  ];
 }
