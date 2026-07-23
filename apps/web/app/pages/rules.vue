@@ -169,38 +169,47 @@ async function handleSignOut() {
 }
 
 async function handleToggleRule(id: string, inactive: boolean) {
-  const res = await $fetch<ApiEnvelope<{ updated: boolean }>>(`/api/rule/${id}`, {
-    method: 'PATCH',
-    baseURL: apiBase || undefined,
-    credentials: 'same-origin',
-    body: { inactive },
-  });
-  if (res.status === 'ok') {
+  try {
+    const res = await $fetch<ApiEnvelope<{ updated: boolean }>>(`/api/rule/${id}`, {
+      method: 'PATCH',
+      baseURL: apiBase || undefined,
+      credentials: 'same-origin',
+      body: { inactive },
+    });
+    if (res.status === 'ok') {
+      const toast = useToast();
+      toast.add({ title: `Rule ${inactive ? 'deactivated' : 'activated'}`, color: 'success', duration: 5000 });
+      await loadRules();
+    } else {
+      const toast = useToast();
+      toast.add({ title: 'Failed to update rule', description: res.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+    }
+  } catch (e) {
     const toast = useToast();
-    toast.add({ title: `Rule ${inactive ? 'deactivated' : 'activated'}`, color: 'success', duration: 5000 });
-    await loadRules();
-  } else {
-    const toast = useToast();
-    toast.add({ title: 'Failed to update rule', description: res.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+    toast.add({ title: 'Failed to update rule', description: e instanceof Error ? e.message : 'Connection error', color: 'error', duration: 10000 });
   }
 }
-
 async function handleDeleteRule(id: string) {
   // Confirm first
   const confirmed = window.confirm('Are you sure you want to delete this rule?');
   if (!confirmed) return;
-  const res = await $fetch<ApiEnvelope<{ deleted: boolean }>>(`/api/rule/${id}`, {
-    method: 'DELETE',
-    baseURL: apiBase || undefined,
-    credentials: 'same-origin',
-  });
-  if (res.status === 'ok') {
+  try {
+    const res = await $fetch<ApiEnvelope<{ deleted: boolean }>>(`/api/rule/${id}`, {
+      method: 'DELETE',
+      baseURL: apiBase || undefined,
+      credentials: 'same-origin',
+    });
+    if (res.status === 'ok') {
+      const toast = useToast();
+      toast.add({ title: 'Rule deleted', color: 'success', duration: 5000 });
+      await loadRules();
+    } else {
+      const toast = useToast();
+      toast.add({ title: 'Failed to delete rule', description: res.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+    }
+  } catch (e) {
     const toast = useToast();
-    toast.add({ title: 'Rule deleted', color: 'success', duration: 5000 });
-    await loadRules();
-  } else {
-    const toast = useToast();
-    toast.add({ title: 'Failed to delete rule', description: res.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+    toast.add({ title: 'Failed to delete rule', description: e instanceof Error ? e.message : 'Connection error', color: 'error', duration: 10000 });
   }
 }
 </script>

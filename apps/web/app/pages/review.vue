@@ -206,8 +206,12 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   const tag = target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-  // Don't steal browser shortcuts (Ctrl+C, Ctrl+A, etc.)
-  if (event.ctrlKey || event.metaKey) return;
+  // Suppress review shortcuts while a modal is open (Enter on modal
+  // buttons must not approve, C must not re-open correction, etc.)
+  if (modalOpen.value) return;
+
+  // Don't steal browser shortcuts (Ctrl+C, Ctrl+A, etc.) — except undo
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() !== 'z') return;
 
   actions.handleKeyboard(event);
 }
@@ -258,6 +262,9 @@ const showCorrectModal = ref(false);
 function openCorrectModal(_category?: string) {
   if (adapter.state.currentItem) showCorrectModal.value = true;
 }
+
+/** True when any modal overlay is visible — review shortcuts are suppressed. */
+const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
 
 function onCorrectConfirm(categoryId: string) {
   showCorrectModal.value = false;

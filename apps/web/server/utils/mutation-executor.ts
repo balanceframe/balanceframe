@@ -14,6 +14,7 @@ import type {
   ReviewMutationExecutorFactory,
   MutationStatus,
 } from './workflow-store';
+import type { ReviewItem } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Production helpers
@@ -32,6 +33,28 @@ export function createMutationConnectionManager(
       mode: 'reviewAndApply',
     }),
   });
+}
+
+/**
+ * Extract the original Actual category from classifier evidence.
+ *
+ * When a reviewer corrects a suggestion, the workflow item's categoryId is
+ * updated to the corrected category.  The mutation precondition must
+ * reference the original Actual category (evidence.currentCategory) so the
+ * Actual API can verify the transaction is still in the expected category
+ * before applying.  Falls back to null (no precondition check) when
+ * evidence does not carry currentCategory.
+ */
+function originalCategory(item: ReviewItem): string | null {
+  const ev = item.evidence as Record<string, unknown> | undefined;
+  // Prefer evidence.currentCategory when present and non-empty
+  if (ev && typeof ev.currentCategory === 'string' && ev.currentCategory) {
+    return ev.currentCategory as string;
+  }
+  // Fall back to item.categoryId so the precondition check uses the
+  // item's current category even when evidence doesn't carry currentCategory.
+  // Map empty/null categoryId to null (no precondition check).
+  return item.categoryId || null;
 }
 
 /**
@@ -74,7 +97,7 @@ export function createDefaultExecutorFactory(
         const mutation = await ledger.setTransactionCategory(
           item.transactionId,
           input.categoryId ?? item.categoryId,
-          item.categoryId || null,
+          originalCategory(item),
         );
 
         const reread = await ledger.synchronize();

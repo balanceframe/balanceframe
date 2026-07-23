@@ -781,13 +781,21 @@ pub fn generate_rule_candidates_from_corrections(
                 let date_earliest = ctx.dates.iter().min().cloned();
                 let date_latest = ctx.dates.iter().max().cloned();
 
-                let all_pos = ctx.amounts.iter().all(|&a| a >= 0);
-                let all_neg = ctx.amounts.iter().all(|&a| a <= 0);
-                let direction = if all_pos {
-                    "inflow".to_string()
-                } else if all_neg {
-                    "outflow".to_string()
+                let direction = if !ctx.amounts.is_empty() {
+                    let all_pos = ctx.amounts.iter().all(|&a| a >= 0);
+                    let all_neg = ctx.amounts.iter().all(|&a| a <= 0);
+                    if all_pos {
+                        "inflow".to_string()
+                    } else if all_neg {
+                        "outflow".to_string()
+                    } else {
+                        "mixed".to_string()
+                    }
+                } else if ctx.directions.len() == 1 {
+                    // No amounts recorded, but direction evidence is consistent
+                    ctx.directions.iter().next().unwrap().clone()
                 } else {
+                    // No amounts and no direction, or conflicting directions
                     "mixed".to_string()
                 };
 
@@ -1753,5 +1761,116 @@ mod tests {
             &scope, "2026-07-18",
         );
         assert_eq!(result_a.repeated_merchants, result_b.repeated_merchants);
+    }
+
+    // -- correction direction with absent amounts --------------------------
+
+    #[test]
+    fn test_correction_candidate_direction_with_absent_amounts() {
+        // When correction amounts are absent, direction must be derived from
+        // recorded direction evidence, not falsely defaulted to "inflow".
+        let outflow_ev = CorrectionEvidence {
+            source_review_id: "r1".into(),
+            merchant: Some("Netflix".into()),
+            imported_payee: None,
+            account_id: Some("a1".into()),
+            direction: Some("outflow".into()),
+            amount: None,
+            date: Some("2026-01-15".into()),
+            category_id: "c1".into(),
+            category_name: Some("Subscriptions".into()),
+            actor: "user".into(),
+            from_status: "pending".into(),
+            to_status: "approved".into(),
+        };
+        let outflow_ev2 = CorrectionEvidence {
+            source_review_id: "r2".into(),
+            direction: Some("outflow".into()),
+            amount: None,
+            ..outflow_ev.clone()
+        };
+        // Two corrections, both missing amounts, both outflow → direction is outflow
+        let candidates = generate_rule_candidates_from_corrections(&[outflow_ev, outflow_ev2], 2);
+        assert_eq!(candidates.len(), 1, "should produce one candidate from outflow corrections");
+        assert_eq!(
+            candidates[0].direction, "outflow",
+            "direction must be outflow when amounts are absent but direction evidence is consistent; got '{}'",
+            candidates[0].direction
+        );
+    }
+
+    #[test]
+    fn test_correction_candidate_direction_without_amounts_or_direction() {
+        // When both amounts and direction evidence are absent, direction must
+        // be "mixed" (unknown) rather than falsely inflating to "inflow".
+        let ev = CorrectionEvidence {
+            source_review_id: "r1".into(),
+            merchant: Some("UnknownCo".into()),
+            imported_payee: None,
+            account_id: Some("a1".into()),
+            direction: None,
+            amount: None,
+            date: None,
+            category_id: "c2".into(),
+            category_name: Some("Misc".into()),
+            actor: "user".into(),
+            from_status: "pending".into(),
+            to_status: "approved".into(),
+        };
+        let ev2 = CorrectionEvidence {
+            source_review_id: "r2".into(),
+            ..ev.clone()
+        };
+        let candidates = generate_rule_candidates_from_corrections(&[ev, ev2], 2);
+        assert_eq!(candidates.len(), 1, "should produce one candidate");
+        assert_eq!(
+            candidates[0].direction, "mixed",
+            "direction must be mixed when both amounts and direction are absent; got '{}'",
+            candidates[0].direction
+        );
+    }
+
+    #[test]
+    fn test_correction_candidate_direction_with_mixed_direction_evidence_no_amounts() {
+        // Multiple conflicting direction values with no amounts → "mixed"
+        let inflow_ev = CorrectionEvidence {
+            source_review_id: "r1".into(),
+            merchant: Some("FlexCo".into()),
+            direction: Some("inflow".into()),
+            amount: None,
+            category_id: "c3".into(),
+            ..sample_correction_evidence()
+        };
+        let outflow_ev = CorrectionEvidence {
+            source_review_id: "r2".into(),
+            direction: Some("outflow".into()),
+            amount: None,
+            ..inflow_ev.clone()
+        };
+        let candidates = generate_rule_candidates_from_corrections(&[inflow_ev, outflow_ev], 2);
+        assert_eq!(candidates.len(), 1, "should produce one candidate from mixed direction");
+        assert_eq!(
+            candidates[0].direction, "mixed",
+            "direction must be mixed when direction evidence conflicts and amounts absent; got '{}'",
+            candidates[0].direction
+        );
+    }
+
+    /// Shared baseline for CorrectionEvidence used in direction tests.
+    fn sample_correction_evidence() -> CorrectionEvidence {
+        CorrectionEvidence {
+            source_review_id: String::new(),
+            merchant: None,
+            imported_payee: None,
+            account_id: None,
+            direction: None,
+            amount: None,
+            date: None,
+            category_id: String::new(),
+            category_name: None,
+            actor: "test".into(),
+            from_status: "pending".into(),
+            to_status: "approved".into(),
+        }
     }
 }

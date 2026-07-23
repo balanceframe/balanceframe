@@ -15,6 +15,8 @@ import type { ReviewControllerAdapter } from '../types/review-client';
  * @param onCorrect - optional callback invoked when the user presses the
  *   correct key (C/c). The component is expected to prompt for a category
  *   and then call `adapter.correct(categoryId)`.
+ * @param onProposeRule - optional callback invoked to open the rule-proposal
+ *   flow. Currently triggered programmatically rather than by direct keyboard.
  */
 export function useReviewActions(
   adapter: ReviewControllerAdapter,
@@ -27,14 +29,14 @@ export function useReviewActions(
    *
    * Key bindings (Nuxt-convention friendly):
    *   Enter       — approve
- *   KeyC        — edit category (opens correction modal)
+   *   KeyC        — edit category (opens correction modal)
    *   KeyS        — skip
    *   KeyZ + ctrl — undo
    *   ArrowDown   — selectNext
    *   ArrowUp     — selectPrevious
    */
   function handleKeyboard(event: KeyboardEvent): boolean {
-    const { ctrlKey, key } = event;
+    const { ctrlKey, metaKey, key } = event;
 
     switch (key) {
       case 'Enter':
@@ -62,10 +64,11 @@ export function useReviewActions(
 
       case 'z':
       case 'Z':
+        // Require Ctrl/Cmd modifier — bare z must not mutate state.
+        if (!ctrlKey && !metaKey) return false;
         adapter.undo();
         event.preventDefault();
         return true;
-
 
       case 'ArrowDown':
         adapter.selectNext();

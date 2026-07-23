@@ -81,7 +81,7 @@ function fakeConnectionManager(overrides?: {
 function fakeReviewItem(overrides: Partial<{
   id: string; transactionId: string; budgetId: string; categoryId: string;
   classifier: string; provenance: string; status: string; version: number;
-  createdAt: Date; updatedAt: Date;
+  createdAt: Date; updatedAt: Date; evidence: Record<string, unknown>;
 }> = {}) {
   return {
     id: 'review-001',
@@ -282,6 +282,31 @@ describe('createDefaultExecutorFactory', () => {
       '',
       // currentCategoryId: empty persisted value is mapped to null
       null,
+    );
+  });
+
+  it('prefers evidence.currentCategory over item.categoryId as currentCategoryId', async () => {
+    const { manager, connector } = fakeConnectionManager();
+    const factory = createDefaultExecutorFactory(manager);
+    const ev = mockEvent({ reviewAndApply: true });
+    const executor = factory(ev)!;
+
+    const item = fakeReviewItem({
+      categoryId: 'cat-corrected-by-reviewer',
+      evidence: { currentCategory: 'cat-original-from-classifier' },
+    });
+
+    await executor(
+      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-override' },
+      {} as never,
+      item,
+    );
+
+    // currentCategoryId should be the evidence value, not item.categoryId
+    expect(connector.setTransactionCategory).toHaveBeenCalledWith(
+      TEST_TX_ID,
+      'cat-corrected-by-reviewer',
+      'cat-original-from-classifier',
     );
   });
 });

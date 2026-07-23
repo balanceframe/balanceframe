@@ -55,6 +55,14 @@ RUN cd crates/node-binding && pnpm build
 # Build all workspace packages (includes Nuxt/Nitro app build)
 RUN pnpm build
 
+# Ensure JS wrapper and type declarations exist (napi may not generate them
+# for all platforms).  Without this, the runtime COPY would fail when the
+# source file is absent — Docker COPY has no shell to handle missing files.
+RUN test -f /app/crates/node-binding/index.js \
+    || printf 'module.exports = require("./balanceframe.node");\n' > /app/crates/node-binding/index.js; \
+    test -f /app/crates/node-binding/index.d.ts \
+    || printf 'declare const _default: typeof import("./balanceframe.node");\nexport default _default;\n' > /app/crates/node-binding/index.d.ts
+
 # -----------------------------------------------------------------------------
 # Runtime stage: minimal Node 24 image
 # -----------------------------------------------------------------------------
@@ -69,17 +77,18 @@ WORKDIR /app
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Ensure the N-API addon target directory exists
+RUN mkdir -p /app/node_modules/@balanceframe/native
+
 # Copy built application from builder
 COPY --from=builder /app/apps/web/.output ./web-output
 COPY --from=builder /app/node_modules ./node_modules
 
-# Copy the compiled N-API addon with its JS wrapper and type declarations
+# Copy the compiled N-API addon with its JS wrapper and type declarations.
+# The builder stage always produces these files, so unconditional COPY is safe.
 COPY --from=builder /app/crates/node-binding/balanceframe.node ./node_modules/@balanceframe/native/balanceframe.node
-COPY --from=builder /app/crates/node-binding/index.js ./node_modules/@balanceframe/native/index.js 2>/dev/null || true
-COPY --from=builder /app/crates/node-binding/index.d.ts ./node_modules/@balanceframe/native/index.d.ts 2>/dev/null || true
-
-# Ensure the N-API addon can be found by require()
-RUN mkdir -p /app/node_modules/@balanceframe/native
+COPY --from=builder /app/crates/node-binding/index.js ./node_modules/@balanceframe/native/index.js
+COPY --from=builder /app/crates/node-binding/index.d.ts ./node_modules/@balanceframe/native/index.d.ts
 
 # Create data directory with writable ownership
 RUN mkdir -p /data && chown balanceframe:balanceframe /data

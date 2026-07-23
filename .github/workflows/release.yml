@@ -15,6 +15,9 @@ jobs:
     name: Verify and publish
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
 
     steps:
       - name: Check out repository
@@ -95,25 +98,24 @@ jobs:
         run: |
           nix develop .#release --command just release-assets "$TAG" "$DIGEST"
 
+      - name: Construct full image reference
+        id: imgref
+        run: |
+          echo "full=ghcr.io/${{ github.repository_owner }}/balanceframe@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
       - name: Sign image with Cosign
         env:
           COSIGN_EXPERIMENTAL: 1
         run: |
-          cosign sign "${{ steps.build.outputs.digest }}" \
+          cosign sign "${{ steps.imgref.outputs.full }}" \
             --yes
 
       - name: Generate SBOM with Syft
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ steps.build.outputs.digest }}
+          image: ${{ steps.imgref.outputs.full }}
           artifact-name: sbom.spdx.json
           format: spdx-json
-
-      - name: Generate SLSA provenance
-        uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2
-        with:
-          image: ${{ steps.build.outputs.digest }}
-          digest: ${{ steps.build.outputs.digest }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -152,3 +154,17 @@ jobs:
             _release/${{ github.ref_name }}/CHECKSUMS
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # ---------------------------------------------------------------------------
+  # SLSA provenance — reusable workflow, must be a separate job
+  # ---------------------------------------------------------------------------
+  generate-slsa:
+    needs: verify
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2
+    with:
+      image: ghcr.io/${{ github.repository_owner }}/balanceframe
+      digest: ${{ needs.verify.outputs.digest }}

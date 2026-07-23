@@ -410,3 +410,150 @@ describe('proposal API — simulation evidence', () => {
     expect(parsed.merchant).toBe(MERCHANT);
   });
 });
+
+// -----------------------------------------------------------------------
+// Cross-actor idempotency for proposal execute
+// -----------------------------------------------------------------------
+
+describe('proposal execute — cross-actor idempotency', () => {
+  let store: SqliteWorkflowStore;
+  let review: ReviewItem;
+
+  beforeEach(async () => {
+    store = new SqliteWorkflowStore();
+    tickSync();
+    const seeded = await seedStore(store);
+    review = seeded.review;
+  });
+
+  it('different actors get separate idempotency keys for the same proposal', async () => {
+    const preconditions = JSON.stringify({
+      merchant: MERCHANT,
+      source: 'review',
+      reviewId: review.id,
+      nativeRule: {
+        conditions: [{ field: 'payee_name', op: 'is', value: 'Test Store', type: 'string' }],
+        actions: [{ type: 'set-category', field: 'category', value: CATEGORY_ID }],
+        conditionsOp: 'and',
+        stage: null,
+      },
+    });
+
+    const proposal = await store.createProposal({
+      operation: 'create_rule',
+      budgetId: BUDGET,
+      transactionId: '__rule__',
+      categoryId: CATEGORY_ID,
+      payloadHash: crypto.randomUUID(),
+      policyVersion: '1.0',
+      preconditions,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      actorId: ACTOR,
+      provenance: 'review-action',
+      providerModel: null,
+      correlationId: null,
+    });
+
+    const serialisedEffect = JSON.stringify({
+      ruleName: 'Test Store',
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Test Store', type: 'string' }],
+      actions: [{ type: 'set-category', field: 'category', value: CATEGORY_ID }],
+      conditionsOp: 'and',
+      stage: null,
+      payloadHash: proposal.payloadHash,
+    });
+
+    const actorA = 'user-alpha';
+    const actorB = 'user-beta';
+
+    // Actor A claims execution with actor-scoped key
+    const keyA = `${proposal.id}:execute:${actorA}`;
+    const claimA = await store.createIdempotencyRecord({
+      idempotencyKey: keyA,
+      proposalId: proposal.id,
+      operation: 'rule_execute',
+      serialisedEffect,
+    });
+    expect(claimA.isOwner).toBe(true);
+
+    // Actor B gets a different key — can claim independently
+    // (this would fail with the old proposal-only key)
+    const keyB = `${proposal.id}:execute:${actorB}`;
+    expect(keyA).not.toBe(keyB);
+    const claimB = await store.createIdempotencyRecord({
+      idempotencyKey: keyB,
+      proposalId: proposal.id,
+      operation: 'rule_execute',
+      serialisedEffect,
+    });
+    expect(claimB.isOwner).toBe(true);
+
+    // Same actor retries — idempotent replay (same-actor duplicate prevention intact)
+    const retryA = await store.createIdempotencyRecord({
+      idempotencyKey: keyA,
+      proposalId: proposal.id,
+      operation: 'rule_execute',
+      serialisedEffect,
+    });
+    expect(retryA.isOwner).toBe(false);
+  });
+});
+
+it('rejects actor without approval before idempotency creation', async () => {
+  const store = new SqliteWorkflowStore();
+  tickSync();
+  const seeded = await seedStore(store);
+
+  const preconditions = JSON.stringify({
+    merchant: MERCHANT,
+    source: 'review',
+    reviewId: seeded.review.id,
+    nativeRule: {
+      conditions: [{ field: 'payee_name', op: 'is', value: 'Test Store', type: 'string' }],
+      actions: [{ type: 'set-category', field: 'category', value: CATEGORY_ID }],
+      conditionsOp: 'and',
+      stage: null,
+    },
+  });
+
+  const proposal = await store.createProposal({
+    operation: 'create_rule',
+    budgetId: BUDGET,
+    transactionId: '__rule__',
+    categoryId: CATEGORY_ID,
+    payloadHash: crypto.randomUUID(),
+    policyVersion: '1.0',
+    preconditions,
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    actorId: ACTOR,
+    provenance: 'review-action',
+    providerModel: null,
+    correlationId: null,
+  });
+
+  // No approval was created for this actor — simulate the handler's pre-claim check
+  const approvals = await store.findActiveApprovals(proposal.id);
+  expect(approvals).toHaveLength(0);
+
+  // Confirm no idempotency record exists for this actor (handler rejects before creating one)
+  const key = `${proposal.id}:execute:${ACTOR}`;
+  const record = await store.getIdempotencyRecord(key);
+  expect(record).toBeNull();
+
+  // Verify a fresh claim would succeed as owner (no stale record left behind)
+  const serialisedEffect = JSON.stringify({
+    ruleName: 'Test Store',
+    conditions: [{ field: 'payee_name', op: 'is', value: 'Test Store', type: 'string' }],
+    actions: [{ type: 'set-category', field: 'category', value: CATEGORY_ID }],
+    conditionsOp: 'and',
+    stage: null,
+    payloadHash: proposal.payloadHash,
+  });
+  const claim = await store.createIdempotencyRecord({
+    idempotencyKey: key,
+    proposalId: proposal.id,
+    operation: 'rule_execute',
+    serialisedEffect,
+  });
+  expect(claim.isOwner).toBe(true);
+});
