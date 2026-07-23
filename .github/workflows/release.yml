@@ -107,7 +107,8 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: 1
         run: |
-          cosign sign "${{ steps.imgref.outputs.full }}" \
+          nix develop .#release --command cosign sign \
+            "${{ steps.imgref.outputs.full }}" \
             --yes
 
       - name: Generate SBOM with Syft
