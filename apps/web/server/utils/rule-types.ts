@@ -34,6 +34,10 @@ export interface RuleShowResult {
 export interface LedgerHandle {
   /** List every automation rule from the ledger. */
   listRules(): Promise<RuleListItem[]>;
+  /** Update an existing automation rule. */
+  updateRule(id: string, fields: Record<string, unknown>): Promise<unknown>;
+  /** Delete an automation rule. */
+  deleteRule(id: string): Promise<boolean>;
 }
 
 /**

@@ -12,8 +12,8 @@
  *   { items: RuleListItem[], total: number }
  */
 
-import type { RuleListItem } from '../../utils/rule-types';
-import { getLedgerFromEvent } from '../../utils/rule-types';
+import type { RuleListItem, LedgerHandle } from '../../utils/rule-types';
+import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
   getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
 } from '../../utils/workflow-store';
@@ -28,19 +28,11 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
-  const ledger = getLedgerFromEvent(event);
-  if (!ledger) {
-    setResponseStatus(event, 503);
-    return errorEnvelope(
-      'LEDGER_UNAVAILABLE',
-      'No ledger connection available. Connect to a budget before listing rules.',
-      authInfo,
-      true,
-      requestId,
-    );
-  }
-
   try {
+    const manager = createMutationConnectionManager();
+    const connected = await manager.restore();
+    const ledger = connected.connector as unknown as LedgerHandle;
+
     const rules: RuleListItem[] = await ledger.listRules();
 
     return okEnvelope(
@@ -48,14 +40,15 @@ export default defineEventHandler(async (event) => {
       authInfo,
       requestId,
     );
-  } catch (e) {
-    setResponseStatus(event, 500);
+  } catch (err) {
+    setResponseStatus(event, 503);
     return errorEnvelope(
-      'RULE_LIST_FAILED',
-      e instanceof Error ? e.message : String(e),
+      'LEDGER_UNAVAILABLE',
+      `Failed to connect to Actual: ${err instanceof Error ? err.message : String(err)}`,
       authInfo,
       true,
       requestId,
     );
   }
+
 });

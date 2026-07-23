@@ -125,6 +125,8 @@ export interface ActualClient {
   createAccount(account: Omit<APIAccountEntity, 'id'>, initialBalance?: number): Promise<string>;
   updateTransaction(id: string, fields: Record<string, unknown>): Promise<unknown>;
   createRule(rule: Record<string, unknown>): Promise<{ id: string }>;
+  updateRule(id: string, rule: Record<string, unknown>): Promise<unknown>;
+  deleteRule(id: string): Promise<boolean>;
   setBudgetAmount(month: string, categoryId: string, value: number): Promise<void>;
 }
 
@@ -184,6 +186,8 @@ export async function createDefaultActualClient(): Promise<ActualClient> {
       actual.createAccount(account, initialBalance),
     updateTransaction: (id, fields) => actual.updateTransaction(id, fields),
     createRule: (rule) => actual.createRule(rule as Parameters<typeof actual.createRule>[0]),
+    updateRule: (id, rule) => actual.updateRule({ id, ...rule } as Parameters<typeof actual.updateRule>[0]),
+    deleteRule: (id) => actual.deleteRule(id),
     setBudgetAmount: (month, categoryId, value) =>
       actual.setBudgetAmount(month, categoryId, value),
   };
@@ -476,6 +480,56 @@ export class ActualConnector implements BudgetLedger {
         success: true,
         id: createResult.id,
       } as MutationResult;
+    });
+  }
+
+  async updateRule(
+    id: string,
+    fields: Record<string, unknown>,
+    precondition?: MutationPrecondition,
+  ): Promise<MutationResult> {
+    this.assertMutationAllowed('updateRule');
+    if (!this._budgetInfo) {
+      return { success: false, error: 'No budget selected.', code: 'BUDGET_NOT_SELECTED' } as MutationResult;
+    }
+    return this.withCacheLock(this._budgetInfo.id, async () => {
+      try {
+        await this.client.updateRule(id, fields);
+      } catch (err) {
+        return { success: false, error: `Failed to update rule: ${err instanceof Error ? err.message : String(err)}`, code: 'RULE_UPDATE_FAILED' } as MutationResult;
+      }
+      try {
+        await this.client.sync();
+      } catch {
+        return { success: false, error: 'Sync failed after updating rule', code: 'SYNC_FAILED' } as MutationResult;
+      }
+      return { success: true } as MutationResult;
+    });
+  }
+
+  async deleteRule(
+    id: string,
+    precondition?: MutationPrecondition,
+  ): Promise<MutationResult> {
+    this.assertMutationAllowed('deleteRule');
+    if (!this._budgetInfo) {
+      return { success: false, error: 'No budget selected.', code: 'BUDGET_NOT_SELECTED' } as MutationResult;
+    }
+    return this.withCacheLock(this._budgetInfo.id, async () => {
+      try {
+        const result = await this.client.deleteRule(id);
+        if (result === false) {
+          return { success: false, error: 'Rule is referenced by a schedule and cannot be deleted.', code: 'RULE_HAS_SCHEDULE' } as MutationResult;
+        }
+      } catch (err) {
+        return { success: false, error: `Failed to delete rule: ${err instanceof Error ? err.message : String(err)}`, code: 'RULE_DELETE_FAILED' } as MutationResult;
+      }
+      try {
+        await this.client.sync();
+      } catch {
+        return { success: false, error: 'Sync failed after deleting rule', code: 'SYNC_FAILED' } as MutationResult;
+      }
+      return { success: true } as MutationResult;
     });
   }
 

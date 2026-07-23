@@ -9,8 +9,8 @@
  * trigger and action configuration.
  */
 
-import type { RuleShowResult } from '../../utils/rule-types';
-import { getLedgerFromEvent } from '../../utils/rule-types';
+import type { RuleShowResult, LedgerHandle } from '../../utils/rule-types';
+import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
   getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
 } from '../../utils/workflow-store';
@@ -25,26 +25,18 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
-  const ledger = getLedgerFromEvent(event);
-  if (!ledger) {
-    setResponseStatus(event, 503);
-    return errorEnvelope(
-      'LEDGER_UNAVAILABLE',
-      'No ledger connection available. Connect to a budget before viewing a rule.',
-      authInfo,
-      true,
-      requestId,
-    );
-  }
-
-  const routeId = event.context.params?.id;
-  if (!routeId) {
-    setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_RULE_ID', 'Rule ID is required.', authInfo, false, requestId);
-  }
-
   try {
+    const manager = createMutationConnectionManager();
+    const connected = await manager.restore();
+    const ledger = connected.connector as unknown as LedgerHandle;
+
     const allRules = (await ledger.listRules()) as RuleShowResult[];
+    const routeId = event.context.params?.id;
+    if (!routeId) {
+      setResponseStatus(event, 400);
+      return errorEnvelope('MISSING_RULE_ID', 'Rule ID is required.', authInfo, false, requestId);
+    }
+
     const rule: RuleShowResult | undefined = allRules.find((r) => r.id === routeId);
 
     if (!rule) {
@@ -54,6 +46,7 @@ export default defineEventHandler(async (event) => {
 
     return okEnvelope(rule, authInfo, requestId);
   } catch (e) {
+    if (event.node.res.headersSent) throw e;
     setResponseStatus(event, 500);
     return errorEnvelope(
       'RULE_SHOW_FAILED',
