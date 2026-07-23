@@ -247,6 +247,21 @@ function isSynchronizableLedger(
     typeof value.synchronize === 'function'
   );
 }
+
+/**
+ * Type guard: true when `value` has a `disconnect(): Promise<void>` method.
+ * Used to detect BudgetLedger instances that support disconnect cleanup.
+ */
+function isDisconnectableLedger(
+  value: unknown,
+): value is { disconnect(): Promise<void> } {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'disconnect' in value &&
+    typeof (value as Record<string, unknown>).disconnect === 'function'
+  );
+}
 /**
  * Create a production {@link AnalysisProtocol} backed by the
  * @balanceframe/native N-API addon.
@@ -794,14 +809,23 @@ export function createLifecycleCallbacks(
         cancelledJobs = await store.cancelPendingJobs();
         await store.deleteActorMembership(actorId);
       }
-      const cleanupPerformed = !!store;
+
+      let cacheRemoved = false;
+      let credentialsRemoved = false;
+
+      if (isDisconnectableLedger(l)) {
+        await l.disconnect();
+        cacheRemoved = true;
+        credentialsRemoved = true;
+      }
+
       return {
-        disconnected: cleanupPerformed,
-        cacheRemoved: cleanupPerformed,
-        credentialsRemoved: cleanupPerformed,
-        message: cleanupPerformed
+        disconnected: cacheRemoved,
+        cacheRemoved,
+        credentialsRemoved,
+        message: cacheRemoved
           ? `Disconnected successfully. ${cancelledJobs} pending job(s) cancelled. Actual server was not modified.`
-          : 'No cleanup was performed because no workflow store is configured.',
+          : 'The connected ledger does not support disconnect cleanup. No cache or credentials were removed.',
       };
     },
 
@@ -820,20 +844,28 @@ export function createLifecycleCallbacks(
         await store.deleteScopeData('connection', { actorId });
         await store.deleteActorMembership(actorId);
       }
-      const cleanupPerformed = !!store;
+
+      let cacheRemoved = false;
+      let credentialsRemoved = false;
+
+      if (isDisconnectableLedger(l)) {
+        await l.disconnect();
+        cacheRemoved = true;
+        credentialsRemoved = true;
+      }
+
       return {
-        removed: cleanupPerformed,
-        cacheRemoved: cleanupPerformed,
-        credentialsRemoved: cleanupPerformed,
-        broadAccessCaveat: cleanupPerformed
+        removed: cacheRemoved,
+        cacheRemoved,
+        credentialsRemoved,
+        broadAccessCaveat: cacheRemoved
           ? 'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
             'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
             'Project-side filtering does not reduce the broad access held by the connector. ' +
             'Ensure your Actual server and backups have appropriate security.'
-          : 'No cleanup was performed because no workflow store is configured.',
+          : 'The connected ledger does not support disconnect cleanup. No cache or credentials were removed.',
       };
     },
-
     async doDeleteData(ledger: unknown, scope: string) {
       const l = ledger ?? getLedger();
       if (!l) {

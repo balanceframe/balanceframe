@@ -81,7 +81,7 @@ export class OpenAIProvider implements ProviderAdapter {
       locality: config.locality ?? 'external',
       supportedCapabilities: ['classification', 'merchantResearch'],
       endpoint: config.endpoint,
-      authType: 'api-key',
+      authType: config.authType ?? 'bearer',
       model: config.model,
     };
     this.endpoint = config.endpoint;
@@ -151,8 +151,8 @@ export class OpenAIProvider implements ProviderAdapter {
             `<merchant>${merchant}</merchant>`,
             `<amount>${amount}</amount>`,
             `<date>${date}</date>`,
-            `<categoryNames>${JSON.stringify(request.categoryNames)}</categoryNames>`,
-            `<categoryGroups>${JSON.stringify(request.categoryGroups)}</categoryGroups>`,
+            `<categoryNames>${escapeXml(JSON.stringify(request.categoryNames))}</categoryNames>`,
+            `<categoryGroups>${escapeXml(JSON.stringify(request.categoryGroups))}</categoryGroups>`,
           ].join('\n'),
         },
       ],

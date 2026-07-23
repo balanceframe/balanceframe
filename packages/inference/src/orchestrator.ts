@@ -46,7 +46,7 @@ export interface OrchestratorConfig {
   signal?: AbortSignal;
   /** Ordered authoritative layers checked before provider routing. */
   layers?: AuthoritativeLayer[];
-  /** Maximum concurrent classify calls to providers. Default: no limit. */
+  /** Maximum concurrent classify calls to providers. Defaults to 3 when unset or zero. */
   maxConcurrency?: number;
 }
 
@@ -81,27 +81,21 @@ export class Orchestrator {
 
   /**
    * Classify one or more unresolved candidates.
-   * Classify one or more unresolved candidates.
    *
    * Returns one Suggestion per candidate — never throws. Errors from
    * provider calls, policy denials, or validation failures are captured
    * in the Suggestion's errors array.
    *
-   * When maxConcurrency is set, at most that many classifyOne calls run
-   * simultaneously, preventing provider flooding.
+   * At most maxConcurrency classifyOne calls run simultaneously, preventing
+   * provider flooding. Defaults to 3 when maxConcurrency is unset or zero.
    */
   async classify(candidates: UnresolvedCandidate[]): Promise<Suggestion[]> {
     const total = candidates.length;
     const results: Suggestion[] = new Array(total);
-    const maxConc = this.maxConcurrency ?? total;
 
-    if (maxConc <= 0 || maxConc >= total) {
-      // No concurrency limit or limit >= total — process serially
-      for (let i = 0; i < total; i++) {
-        results[i] = await this.classifyOne(candidates[i]!);
-      }
-      return results;
-    }
+    // Default to a bounded parallel pool of 3 when concurrency is unset or zero
+    const effectiveConc = (this.maxConcurrency ?? 3) || 3;
+    const maxConc = Math.min(effectiveConc, total);
 
     // Bounded concurrency: use a simple sliding-window approach
     let nextIdx = 0;

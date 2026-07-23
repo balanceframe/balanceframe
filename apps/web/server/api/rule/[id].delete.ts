@@ -14,12 +14,14 @@ import { setResponseStatus } from 'h3';
 import type { LedgerHandle, RuleOperationResult, RuleListItem } from '../../utils/rule-types';
 import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
-  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError,
+  getWorkflowStore, okEnvelope, errorEnvelope, requireAuthorization, buildAuthorizationInfo, sanitizeError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'rule.execute');
   const requestId = crypto.randomUUID();
+  const authCheck = await requireAuthorization(event, 'rule.execute');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
 
   const wf = getWorkflowStore(event);
   if ('error' in wf) {

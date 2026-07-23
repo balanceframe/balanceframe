@@ -206,6 +206,210 @@ describe('bounded concurrency', () => {
     expect(results).toHaveLength(3);
     expect(callOrder).toEqual([0, 1, 2]);
   });
+
+  it('defaults to concurrency 3 when maxConcurrency is undefined', async () => {
+    let inflight = 0;
+    let maxInflight = 0;
+    const resolvers: Array<() => void> = [];
+    const classify = vi.fn().mockImplementation(async (_req: ClassifyRequest) => {
+      inflight++;
+      maxInflight = Math.max(maxInflight, inflight);
+      const { promise, resolve } = Promise.withResolvers<void>();
+      resolvers.push(resolve);
+      await promise;
+      inflight--;
+      return classifyResult();
+    });
+
+    const adapter: ProviderAdapter = {
+      providerId: 'test-local',
+      providerInfo: {
+        id: 'test-local',
+        name: 'Test Local',
+        locality: 'local',
+        supportedCapabilities: ['classification'],
+        endpoint: null,
+        authType: null,
+        model: 'test-model-v1',
+      },
+      classify,
+    };
+
+    const orchestrator = new Orchestrator({
+      providers: [adapter],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies({ classification: 'local-only' }),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'v1',
+      // maxConcurrency intentionally undefined
+    });
+
+    const candidates = Array.from({ length: 10 }, (_, i) =>
+      makeCandidate({ transactionId: `tx_${String(i).padStart(3, '0')}` }),
+    );
+
+    const resultsPromise = orchestrator.classify(candidates);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Default of 3 starts immediately — only 3 of 10 in-flight
+    expect(classify).toHaveBeenCalledTimes(3);
+    expect(maxInflight).toBeLessThanOrEqual(3);
+
+    // Release one by one — each release lets the next candidate start
+    for (let i = 0; i < 7; i++) {
+      resolvers[i]!();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    // All 10 should have been classified by now
+    expect(classify).toHaveBeenCalledTimes(10);
+
+    // Release the final batch of 3
+    resolvers[7]!();
+    resolvers[8]!();
+    resolvers[9]!();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const results = await resultsPromise;
+    expect(results).toHaveLength(10);
+  });
+
+  it('defaults to concurrency 3 when maxConcurrency is 0', async () => {
+    let inflight = 0;
+    let maxInflight = 0;
+    const resolvers: Array<() => void> = [];
+    const classify = vi.fn().mockImplementation(async (_req: ClassifyRequest) => {
+      inflight++;
+      maxInflight = Math.max(maxInflight, inflight);
+      const { promise, resolve } = Promise.withResolvers<void>();
+      resolvers.push(resolve);
+      await promise;
+      inflight--;
+      return classifyResult();
+    });
+
+    const adapter: ProviderAdapter = {
+      providerId: 'test-local',
+      providerInfo: {
+        id: 'test-local',
+        name: 'Test Local',
+        locality: 'local',
+        supportedCapabilities: ['classification'],
+        endpoint: null,
+        authType: null,
+        model: 'test-model-v1',
+      },
+      classify,
+    };
+
+    const orchestrator = new Orchestrator({
+      providers: [adapter],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies({ classification: 'local-only' }),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'v1',
+      maxConcurrency: 0,
+    });
+
+    const candidates = Array.from({ length: 10 }, (_, i) =>
+      makeCandidate({ transactionId: `tx_${String(i).padStart(3, '0')}` }),
+    );
+
+    const resultsPromise = orchestrator.classify(candidates);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // maxConcurrency=0 is treated as default 3
+    expect(classify).toHaveBeenCalledTimes(3);
+    expect(maxInflight).toBeLessThanOrEqual(3);
+
+    // Release one by one
+    for (let i = 0; i < 7; i++) {
+      resolvers[i]!();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(classify).toHaveBeenCalledTimes(10);
+
+    // Release final 3
+    resolvers[7]!();
+    resolvers[8]!();
+    resolvers[9]!();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const results = await resultsPromise;
+    expect(results).toHaveLength(10);
+  });
+
+  it('uses bounded pool even when concurrency exceeds candidate count', async () => {
+    let inflight = 0;
+    let maxInflight = 0;
+    const resolvers: Array<() => void> = [];
+    const classify = vi.fn().mockImplementation(async (_req: ClassifyRequest) => {
+      inflight++;
+      maxInflight = Math.max(maxInflight, inflight);
+      const { promise, resolve } = Promise.withResolvers<void>();
+      resolvers.push(resolve);
+      await promise;
+      inflight--;
+      return classifyResult();
+    });
+
+    const adapter: ProviderAdapter = {
+      providerId: 'test-local',
+      providerInfo: {
+        id: 'test-local',
+        name: 'Test Local',
+        locality: 'local',
+        supportedCapabilities: ['classification'],
+        endpoint: null,
+        authType: null,
+        model: 'test-model-v1',
+      },
+      classify,
+    };
+
+    const orchestrator = new Orchestrator({
+      providers: [adapter],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies({ classification: 'local-only' }),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'v1',
+      maxConcurrency: 10,
+    });
+
+    // With 3 candidates, maxConc becomes min(10, 3) = 3 — all start in one batch
+    const candidates = [
+      makeCandidate({ transactionId: 'tx_001' }),
+      makeCandidate({ transactionId: 'tx_002' }),
+      makeCandidate({ transactionId: 'tx_003' }),
+    ];
+
+    const resultsPromise = orchestrator.classify(candidates);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(classify).toHaveBeenCalledTimes(3);
+    expect(maxInflight).toBeLessThanOrEqual(3);
+
+    // Release one by one — pool still bounds correctly
+    resolvers[0]!();
+    await vi.advanceTimersByTimeAsync(0);
+    // All 3 were already started, no more to start
+    expect(classify).toHaveBeenCalledTimes(3);
+
+    resolvers[1]!();
+    resolvers[2]!();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const results = await resultsPromise;
+    expect(results).toHaveLength(3);
+  });
 });
 
 describe('abort-listener cleanup', () => {

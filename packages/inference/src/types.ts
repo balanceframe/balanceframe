@@ -40,7 +40,7 @@ export interface ProviderAllowlist {
 // ---------------------------------------------------------------------------
 
 export type ProviderLocality = 'local' | 'external';
-export type AuthType = 'none' | 'api-key' | 'oauth';
+export type AuthType = 'none' | 'api-key' | 'oauth' | 'bearer';
 
 export interface ProviderInfo {
   id: string;

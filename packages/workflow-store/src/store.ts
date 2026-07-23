@@ -547,264 +547,26 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('busy_timeout = 5000');
-    this.initSchema();
-    this.prepareStatements();
+
+    // (1) Create only the schema_version table first
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER NOT NULL UNIQUE,
+        applied_at TEXT NOT NULL
+      );
+    `);
+
+    // (2-3) Run ordered transactional migrations
     this.runMigrations();
+
+    // (4) Prepare runtime statements
+    this.prepareStatements();
   }
   /** Release the database connection. */
   close(): void {
     this.db.close();
   }
 
-  // ── Schema initialisation ─────────────────────────────────────────
-
-  private initSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS suggestions (
-        id                  TEXT PRIMARY KEY,
-        budget_id           TEXT NOT NULL,
-        transaction_id      TEXT NOT NULL,
-        category_id         TEXT NOT NULL,
-        classifier          TEXT NOT NULL,
-        prompt_version      TEXT NOT NULL,
-        payload             TEXT NOT NULL,
-        transaction_version INTEGER NOT NULL,
-        superseded_at       TEXT,
-        created_at          TEXT NOT NULL
-      );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestions_active
-        ON suggestions(budget_id, transaction_id, classifier, prompt_version)
-        WHERE superseded_at IS NULL;
-
-      CREATE INDEX IF NOT EXISTS idx_suggestions_transaction
-        ON suggestions(transaction_id);
-
-      CREATE TABLE IF NOT EXISTS candidate_jobs (
-        id               TEXT PRIMARY KEY,
-        job_type         TEXT NOT NULL,
-        candidate_id     TEXT NOT NULL,
-        status           TEXT NOT NULL DEFAULT 'pending',
-        claim_token      TEXT,
-        claimed_at       TEXT,
-        claim_expires_at TEXT,
-        created_at       TEXT NOT NULL,
-        updated_at       TEXT NOT NULL,
-        UNIQUE(job_type, candidate_id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_jobs_status
-        ON candidate_jobs(status);
-
-      CREATE TABLE IF NOT EXISTS failure_records (
-        id            TEXT PRIMARY KEY,
-        job_id        TEXT NOT NULL REFERENCES candidate_jobs(id),
-        error_code    TEXT NOT NULL,
-        error_message TEXT NOT NULL,
-        created_at    TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_failures_job
-        ON failure_records(job_id);
-
-      CREATE TABLE IF NOT EXISTS review_items (
-        id                   TEXT PRIMARY KEY,
-        suggestion_id        TEXT,
-        budget_id            TEXT NOT NULL,
-        transaction_id       TEXT NOT NULL,
-        category_id          TEXT NOT NULL,
-        classifier           TEXT NOT NULL,
-        prompt_version       TEXT NOT NULL DEFAULT '',
-        transaction_version  INTEGER NOT NULL DEFAULT 0,
-        status               TEXT NOT NULL DEFAULT 'discovered',
-        correlation_id       TEXT,
-        assigned_reviewer_id TEXT,
-        approved_by          TEXT NOT NULL DEFAULT '[]',
-        reviewers_required   INTEGER NOT NULL DEFAULT 1,
-        priority             INTEGER NOT NULL DEFAULT 0,
-        evidence             TEXT NOT NULL DEFAULT '{}',
-        provenance           TEXT NOT NULL,
-        superseded_by        TEXT,
-        superseded_reason    TEXT,
-        freshness_expires_at TEXT,
-        version              INTEGER NOT NULL DEFAULT 1,
-        created_at           TEXT NOT NULL,
-        updated_at           TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_review_items_status
-        ON review_items(status);
-
-      CREATE INDEX IF NOT EXISTS idx_review_items_correlation
-        ON review_items(correlation_id);
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_review_items_active_issue
-        ON review_items(budget_id, transaction_id, category_id, classifier)
-        WHERE status != 'superseded';
-
-      CREATE TABLE IF NOT EXISTS review_actions (
-        id               TEXT PRIMARY KEY,
-        review_item_id   TEXT NOT NULL REFERENCES review_items(id),
-        from_status      TEXT NOT NULL,
-        to_status        TEXT NOT NULL,
-        actor            TEXT NOT NULL,
-        reason           TEXT,
-        metadata         TEXT NOT NULL DEFAULT '{}',
-        created_at       TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_review_actions_item
-        ON review_actions(review_item_id);
-
-      CREATE TABLE IF NOT EXISTS categorization_proposals (
-        id               TEXT PRIMARY KEY,
-        operation        TEXT NOT NULL,
-        budget_id        TEXT NOT NULL,
-        transaction_id   TEXT NOT NULL,
-        category_id      TEXT NOT NULL,
-        payload_hash     TEXT NOT NULL,
-        policy_version   TEXT NOT NULL,
-        preconditions    TEXT NOT NULL,
-        expires_at       TEXT NOT NULL,
-        actor_id         TEXT NOT NULL,
-        provenance       TEXT NOT NULL,
-        provider_model   TEXT,
-        correlation_id   TEXT,
-        superseded_at    TEXT,
-        created_at       TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_proposals_active_target
-        ON categorization_proposals(budget_id, transaction_id, operation)
-        WHERE superseded_at IS NULL;
-
-      DROP INDEX IF EXISTS idx_proposals_payload_unique;
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_payload_unique
-        ON categorization_proposals(budget_id, transaction_id, operation, payload_hash)
-        WHERE superseded_at IS NULL;
-
-      CREATE TABLE IF NOT EXISTS proposal_approvals (
-        id            TEXT PRIMARY KEY,
-        proposal_id   TEXT NOT NULL REFERENCES categorization_proposals(id),
-        payload_hash  TEXT NOT NULL,
-        actor_id      TEXT NOT NULL,
-        status        TEXT NOT NULL DEFAULT 'active',
-        expires_at    TEXT NOT NULL,
-        consumed_at   TEXT,
-        superseded_at TEXT,
-        created_at    TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_approvals_proposal
-        ON proposal_approvals(proposal_id);
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_actor
-        ON proposal_approvals(proposal_id, actor_id)
-        WHERE status = 'active';
-
-      DROP INDEX IF EXISTS idx_approvals_proposal_actor;
-
-      CREATE TABLE IF NOT EXISTS rule_overrides (
-        rule_id   TEXT PRIMARY KEY,
-        inactive  INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS idempotency_records (
-        idempotency_key   TEXT PRIMARY KEY,
-        proposal_id       TEXT NOT NULL,
-        operation         TEXT NOT NULL,
-        executed_at       TEXT NOT NULL,
-        completed         INTEGER NOT NULL DEFAULT 0,
-        serialised_effect TEXT NOT NULL,
-        error_message     TEXT,
-        updated_at        TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS audit_records (
-        id                       TEXT PRIMARY KEY,
-        classification           TEXT NOT NULL,
-        timestamp                TEXT NOT NULL,
-        actor_id                 TEXT NOT NULL,
-        operation                TEXT,
-        proposal_id              TEXT,
-        payload_hash             TEXT,
-        budget_id                TEXT,
-        backend_ids              TEXT NOT NULL DEFAULT '[]',
-        policy_version           TEXT,
-        authorization_disposition TEXT,
-        idempotency_key          TEXT,
-        expected_prior_state     TEXT,
-        observed_result_state    TEXT,
-        provider_model           TEXT,
-        correlation_id           TEXT,
-        request_id               TEXT,
-        result                   TEXT NOT NULL,
-        is_error                 INTEGER NOT NULL DEFAULT 0
-      );
-
-      CREATE TABLE IF NOT EXISTS review_corrections (
-        id                  TEXT PRIMARY KEY,
-        review_item_id      TEXT NOT NULL REFERENCES review_items(id),
-        transaction_id      TEXT NOT NULL,
-        transaction_version INTEGER NOT NULL DEFAULT 0,
-        merchant            TEXT,
-        imported_payee      TEXT,
-        account_id          TEXT,
-        direction           TEXT,
-        amount              INTEGER,
-        date                TEXT,
-        category_id         TEXT NOT NULL,
-        category_name       TEXT,
-        actor               TEXT NOT NULL,
-        from_status         TEXT NOT NULL,
-        to_status           TEXT NOT NULL,
-        source_review_id    TEXT NOT NULL,
-        created_at          TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_corrections_review
-        ON review_corrections(review_item_id);
-
-      CREATE INDEX IF NOT EXISTS idx_corrections_merchant
-        ON review_corrections(merchant);
-
-      CREATE INDEX IF NOT EXISTS idx_corrections_transaction
-        ON review_corrections(transaction_id);
-
-      CREATE INDEX IF NOT EXISTS idx_corrections_actor
-        ON review_corrections(actor);
-
-      CREATE INDEX IF NOT EXISTS idx_audit_classification
-        ON audit_records(classification);
-
-      CREATE INDEX IF NOT EXISTS idx_audit_proposal
-        ON audit_records(proposal_id);
-
-      CREATE TABLE IF NOT EXISTS actor_memberships (
-        actor_id     TEXT PRIMARY KEY,
-        status       TEXT NOT NULL DEFAULT 'active',
-        capabilities TEXT NOT NULL DEFAULT '[]',
-        scope        TEXT NOT NULL DEFAULT '*'
-      );
-
-      CREATE TABLE IF NOT EXISTS export_records (
-        id               TEXT PRIMARY KEY,
-        budget_name      TEXT NOT NULL,
-        export_path      TEXT NOT NULL,
-        account_count    INTEGER NOT NULL DEFAULT 0,
-        transaction_count INTEGER NOT NULL DEFAULT 0,
-        exported_at      TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS schema_version (
-        version    INTEGER NOT NULL,
-        applied_at TEXT NOT NULL
-      );
-    `);
-  }
 
   // ── Schema migrations ─────────────────────────────────────────
   //
@@ -813,18 +575,257 @@ export class SqliteWorkflowStore implements WorkflowStore {
   // which version has been applied; migrations are run sequentially.
 
   private static readonly MIGRATIONS: Array<(db: DatabaseType) => void> = [
-    // Version 1: Initial schema — created by initSchema() above.
-    (_db) => {
-      // The schema is already created before migrations run; this record
-      // establishes the baseline for future ordered migrations.
+    // Version 1: Initial schema
+    (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS suggestions (
+          id                  TEXT PRIMARY KEY,
+          budget_id           TEXT NOT NULL,
+          transaction_id      TEXT NOT NULL,
+          category_id         TEXT NOT NULL,
+          classifier          TEXT NOT NULL,
+          prompt_version      TEXT NOT NULL,
+          payload             TEXT NOT NULL,
+          transaction_version INTEGER NOT NULL,
+          superseded_at       TEXT,
+          created_at          TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestions_active
+          ON suggestions(budget_id, transaction_id, classifier, prompt_version)
+          WHERE superseded_at IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_suggestions_transaction
+          ON suggestions(transaction_id);
+
+        CREATE TABLE IF NOT EXISTS candidate_jobs (
+          id               TEXT PRIMARY KEY,
+          job_type         TEXT NOT NULL,
+          candidate_id     TEXT NOT NULL,
+          status           TEXT NOT NULL DEFAULT 'pending',
+          claim_token      TEXT,
+          claimed_at       TEXT,
+          claim_expires_at TEXT,
+          created_at       TEXT NOT NULL,
+          updated_at       TEXT NOT NULL,
+          UNIQUE(job_type, candidate_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_jobs_status
+          ON candidate_jobs(status);
+
+        CREATE TABLE IF NOT EXISTS failure_records (
+          id            TEXT PRIMARY KEY,
+          job_id        TEXT NOT NULL REFERENCES candidate_jobs(id),
+          error_code    TEXT NOT NULL,
+          error_message TEXT NOT NULL,
+          created_at    TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_failures_job
+          ON failure_records(job_id);
+
+        CREATE TABLE IF NOT EXISTS review_items (
+          id                   TEXT PRIMARY KEY,
+          suggestion_id        TEXT,
+          budget_id            TEXT NOT NULL,
+          transaction_id       TEXT NOT NULL,
+          category_id          TEXT NOT NULL,
+          classifier           TEXT NOT NULL,
+          prompt_version       TEXT NOT NULL DEFAULT '',
+          transaction_version  INTEGER NOT NULL DEFAULT 0,
+          status               TEXT NOT NULL DEFAULT 'discovered',
+          correlation_id       TEXT,
+          assigned_reviewer_id TEXT,
+          approved_by          TEXT NOT NULL DEFAULT '[]',
+          reviewers_required   INTEGER NOT NULL DEFAULT 1,
+          priority             INTEGER NOT NULL DEFAULT 0,
+          evidence             TEXT NOT NULL DEFAULT '{}',
+          provenance           TEXT NOT NULL,
+          superseded_by        TEXT,
+          superseded_reason    TEXT,
+          freshness_expires_at TEXT,
+          version              INTEGER NOT NULL DEFAULT 1,
+          created_at           TEXT NOT NULL,
+          updated_at           TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_items_status
+          ON review_items(status);
+
+        CREATE INDEX IF NOT EXISTS idx_review_items_correlation
+          ON review_items(correlation_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_review_items_active_issue
+          ON review_items(budget_id, transaction_id, category_id, classifier)
+          WHERE status != 'superseded';
+
+        CREATE TABLE IF NOT EXISTS review_actions (
+          id               TEXT PRIMARY KEY,
+          review_item_id   TEXT NOT NULL REFERENCES review_items(id),
+          from_status      TEXT NOT NULL,
+          to_status        TEXT NOT NULL,
+          actor            TEXT NOT NULL,
+          reason           TEXT,
+          metadata         TEXT NOT NULL DEFAULT '{}',
+          created_at       TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_actions_item
+          ON review_actions(review_item_id);
+
+        CREATE TABLE IF NOT EXISTS categorization_proposals (
+          id               TEXT PRIMARY KEY,
+          operation        TEXT NOT NULL,
+          budget_id        TEXT NOT NULL,
+          transaction_id   TEXT NOT NULL,
+          category_id      TEXT NOT NULL,
+          payload_hash     TEXT NOT NULL,
+          policy_version   TEXT NOT NULL,
+          preconditions    TEXT NOT NULL,
+          expires_at       TEXT NOT NULL,
+          actor_id         TEXT NOT NULL,
+          provenance       TEXT NOT NULL,
+          provider_model   TEXT,
+          correlation_id   TEXT,
+          superseded_at    TEXT,
+          created_at       TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_proposals_active_target
+          ON categorization_proposals(budget_id, transaction_id, operation)
+          WHERE superseded_at IS NULL;
+
+        DROP INDEX IF EXISTS idx_proposals_payload_unique;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_payload_unique
+          ON categorization_proposals(budget_id, transaction_id, operation, payload_hash)
+          WHERE superseded_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS proposal_approvals (
+          id            TEXT PRIMARY KEY,
+          proposal_id   TEXT NOT NULL REFERENCES categorization_proposals(id),
+          payload_hash  TEXT NOT NULL,
+          actor_id      TEXT NOT NULL,
+          status        TEXT NOT NULL DEFAULT 'active',
+          expires_at    TEXT NOT NULL,
+          consumed_at   TEXT,
+          superseded_at TEXT,
+          created_at    TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_approvals_proposal
+          ON proposal_approvals(proposal_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_active_actor
+          ON proposal_approvals(proposal_id, actor_id)
+          WHERE status = 'active';
+
+        DROP INDEX IF EXISTS idx_approvals_proposal_actor;
+
+        CREATE TABLE IF NOT EXISTS rule_overrides (
+          rule_id   TEXT PRIMARY KEY,
+          inactive  INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS idempotency_records (
+          idempotency_key   TEXT PRIMARY KEY,
+          proposal_id       TEXT NOT NULL,
+          operation         TEXT NOT NULL,
+          executed_at       TEXT NOT NULL,
+          completed         INTEGER NOT NULL DEFAULT 0,
+          serialised_effect TEXT NOT NULL,
+          error_message     TEXT,
+          updated_at        TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_records (
+          id                       TEXT PRIMARY KEY,
+          classification           TEXT NOT NULL,
+          timestamp                TEXT NOT NULL,
+          actor_id                 TEXT NOT NULL,
+          operation                TEXT,
+          proposal_id              TEXT,
+          payload_hash             TEXT,
+          budget_id                TEXT,
+          backend_ids              TEXT NOT NULL DEFAULT '[]',
+          policy_version           TEXT,
+          authorization_disposition TEXT,
+          idempotency_key          TEXT,
+          expected_prior_state     TEXT,
+          observed_result_state    TEXT,
+          provider_model           TEXT,
+          correlation_id           TEXT,
+          request_id               TEXT,
+          result                   TEXT NOT NULL,
+          is_error                 INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS review_corrections (
+          id                  TEXT PRIMARY KEY,
+          review_item_id      TEXT NOT NULL REFERENCES review_items(id),
+          transaction_id      TEXT NOT NULL,
+          transaction_version INTEGER NOT NULL DEFAULT 0,
+          merchant            TEXT,
+          imported_payee      TEXT,
+          account_id          TEXT,
+          direction           TEXT,
+          amount              INTEGER,
+          date                TEXT,
+          category_id         TEXT NOT NULL,
+          category_name       TEXT,
+          actor               TEXT NOT NULL,
+          from_status         TEXT NOT NULL,
+          to_status           TEXT NOT NULL,
+          source_review_id    TEXT NOT NULL,
+          created_at          TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_review
+          ON review_corrections(review_item_id);
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_merchant
+          ON review_corrections(merchant);
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_transaction
+          ON review_corrections(transaction_id);
+
+        CREATE INDEX IF NOT EXISTS idx_corrections_actor
+          ON review_corrections(actor);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_classification
+          ON audit_records(classification);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_proposal
+          ON audit_records(proposal_id);
+
+        CREATE TABLE IF NOT EXISTS actor_memberships (
+          actor_id     TEXT PRIMARY KEY,
+          status       TEXT NOT NULL DEFAULT 'active',
+          capabilities TEXT NOT NULL DEFAULT '[]',
+          scope        TEXT NOT NULL DEFAULT '*'
+        );
+
+        CREATE TABLE IF NOT EXISTS export_records (
+          id               TEXT PRIMARY KEY,
+          budget_name      TEXT NOT NULL,
+          export_path      TEXT NOT NULL,
+          account_count    INTEGER NOT NULL DEFAULT 0,
+          transaction_count INTEGER NOT NULL DEFAULT 0,
+          exported_at      TEXT NOT NULL
+        );
+      `);
     },
   ];
 
   private getCurrentSchemaVersion(): number {
-    const row = this.stmt.selectSchemaVersion.get({}) as { version: number } | undefined;
+    const row = this.db.prepare(
+      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+    ).get() as { version: number } | undefined;
     return row?.version ?? 0;
   }
-
   private runMigrations(): void {
     const current = this.getCurrentSchemaVersion();
     const target = SqliteWorkflowStore.MIGRATIONS.length;
@@ -836,7 +837,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
       if (!migration) continue;
       const runMigration = this.db.transaction(() => {
         migration(this.db);
-        this.stmt.upsertSchemaVersion.run({ version: v, appliedAt: new Date().toISOString() });
+        this.db.prepare(
+          'INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)'
+        ).run({ version: v, appliedAt: new Date().toISOString() });
       });
       runMigration();
     }
@@ -1485,7 +1488,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     this.stmt.upsertSchemaVersion = this.db.prepare(`
-      INSERT INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)
+      INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)
     `);
 
     // ── Count queries (pagination totals) ───────────────────────────────

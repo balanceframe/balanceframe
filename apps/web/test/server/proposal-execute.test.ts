@@ -74,6 +74,7 @@ vi.mock('../../server/utils/workflow-store', async (importOriginal) => {
       requestId,
     })),
     buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'rule.execute' })),
+    requireAuthorization: vi.fn(() => Promise.resolve({ ok: true, info: { actorId: 'test-actor', capability: 'rule.execute', allowed: true } })),
   };
 });
 

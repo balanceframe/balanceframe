@@ -21,6 +21,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SqliteWorkflowStore } from '../src/store.js';
 import type { SaveSuggestionInput } from '../src/types.js';
+import Database from 'better-sqlite3';
+import { mkdtempSync, unlinkSync, rmdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1178,6 +1182,57 @@ describe('SqliteWorkflowStore', () => {
       const versionRow = s['db'].prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number | null };
       expect(versionRow.version).not.toBeNull();
       s.close();
+    });
+
+    it('upgrades from version-0 database (migration metadata only) to current schema', () => {
+      // Create a version-0 database with only schema_version table
+      const tmpDir = mkdtempSync(join(tmpdir(), 'wf-mig-'));
+      const dbPath = join(tmpDir, 'test.db');
+      try {
+        const db = new Database(dbPath);
+        db.exec(`
+          CREATE TABLE schema_version (
+            version INTEGER NOT NULL UNIQUE,
+            applied_at TEXT NOT NULL
+          );
+          INSERT INTO schema_version (version, applied_at) VALUES (0, '2024-01-01T00:00:00.000Z');
+        `);
+        db.close();
+
+        // Open with SqliteWorkflowStore — should run migration v1
+        const s = new SqliteWorkflowStore(dbPath);
+
+        // Version should be upgraded to at least 1
+        const versionRow = s['db'].prepare(
+          'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+        ).get() as { version: number };
+        expect(versionRow.version).toBeGreaterThanOrEqual(1);
+
+        // Verify tables created by migration v1 exist
+        const tables = s['db'].prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).all() as { name: string }[];
+        const tableNames = tables.map(t => t.name);
+
+        expect(tableNames).toContain('suggestions');
+        expect(tableNames).toContain('candidate_jobs');
+        expect(tableNames).toContain('failure_records');
+        expect(tableNames).toContain('review_items');
+        expect(tableNames).toContain('review_actions');
+        expect(tableNames).toContain('categorization_proposals');
+        expect(tableNames).toContain('proposal_approvals');
+        expect(tableNames).toContain('rule_overrides');
+        expect(tableNames).toContain('idempotency_records');
+        expect(tableNames).toContain('audit_records');
+        expect(tableNames).toContain('review_corrections');
+        expect(tableNames).toContain('actor_memberships');
+        expect(tableNames).toContain('export_records');
+
+        s.close();
+      } finally {
+        try { unlinkSync(dbPath); } catch { /* ignore */ }
+        try { rmdirSync(tmpDir); } catch { /* ignore */ }
+      }
     });
   });
 

@@ -486,6 +486,106 @@ describe('createObserveComposition — analysis protocol', () => {
     );
   });
 
+  it('doDisconnect calls ledger.disconnect and reports cleanup when ledger supports it', async () => {
+    let disconnectCalled = false;
+    const ledger = {
+      ...mockLedger(),
+      async disconnect() {
+        disconnectCalled = true;
+      },
+    };
+    const callbacks = createLifecycleCallbacks(() => ledger);
+    const result = await callbacks.doDisconnect(ledger);
+    expect(disconnectCalled).toBe(true);
+    expect(result.disconnected).toBe(true);
+    expect(result.cacheRemoved).toBe(true);
+    expect(result.credentialsRemoved).toBe(true);
+    expect(result.message).toMatch(/Disconnected successfully/);
+  });
+
+  it('doDisconnect reports no cache/credential removal when ledger lacks disconnect', async () => {
+    const ledger = { mockLedger: true, noSync: true };
+    const callbacks = createLifecycleCallbacks(() => ledger);
+    const result = await callbacks.doDisconnect(ledger);
+    expect(result.disconnected).toBe(false);
+    expect(result.cacheRemoved).toBe(false);
+    expect(result.credentialsRemoved).toBe(false);
+    expect(result.message).toMatch(/does not support disconnect cleanup/);
+  });
+
+  it('doDisconnect reports no cache/credential removal even with store when ledger lacks disconnect', async () => {
+    const store = {
+      async cancelPendingJobs() { return 5; },
+      async deleteActorMembership() { return true; },
+      async recordExport() {},
+      async getLastExport() { return null; },
+      async deleteScopeData() {
+        return { deleted: {}, retained: { count: 0, reasons: [] } };
+      },
+    };
+    const ledger = { mockLedger: true };
+    const callbacks = createLifecycleCallbacks(
+      () => ledger,
+      { workflowStore: store, actorId: 'usr_disc_test' },
+    );
+    const result = await callbacks.doDisconnect(ledger);
+    // Store operations run (jobs cancelled, membership deleted) but cache/credentials
+    // cannot be removed without a disconnect-capable ledger
+    expect(result.disconnected).toBe(false);
+    expect(result.cacheRemoved).toBe(false);
+    expect(result.credentialsRemoved).toBe(false);
+    expect(result.message).toMatch(/does not support disconnect cleanup/);
+  });
+
+  it('doRemoveConnection calls ledger.disconnect and reports cleanup when ledger supports it', async () => {
+    let disconnectCalled = false;
+    const ledger = {
+      ...mockLedger(),
+      async disconnect() {
+        disconnectCalled = true;
+      },
+    };
+    const callbacks = createLifecycleCallbacks(() => ledger);
+    const result = await callbacks.doRemoveConnection(ledger);
+    expect(disconnectCalled).toBe(true);
+    expect(result.removed).toBe(true);
+    expect(result.cacheRemoved).toBe(true);
+    expect(result.credentialsRemoved).toBe(true);
+    expect(result.broadAccessCaveat).toMatch(/broad access/i);
+  });
+
+  it('doRemoveConnection reports no cache/credential removal when ledger lacks disconnect', async () => {
+    const ledger = { mockLedger: true, noSync: true };
+    const callbacks = createLifecycleCallbacks(() => ledger);
+    const result = await callbacks.doRemoveConnection(ledger);
+    expect(result.removed).toBe(false);
+    expect(result.cacheRemoved).toBe(false);
+    expect(result.credentialsRemoved).toBe(false);
+    expect(result.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
+  });
+
+  it('doRemoveConnection reports no cache/credential removal even with store when ledger lacks disconnect', async () => {
+    const store = {
+      async cancelPendingJobs() { return 3; },
+      async deleteActorMembership() { return true; },
+      async recordExport() {},
+      async getLastExport() { return null; },
+      async deleteScopeData() {
+        return { deleted: { memberships: 1, jobs: 0, corrections: 0 }, retained: { count: 0, reasons: [] } };
+      },
+    };
+    const ledger = { mockLedger: true };
+    const callbacks = createLifecycleCallbacks(
+      () => ledger,
+      { workflowStore: store, actorId: 'usr_rem_test' },
+    );
+    const result = await callbacks.doRemoveConnection(ledger);
+    expect(result.removed).toBe(false);
+    expect(result.cacheRemoved).toBe(false);
+    expect(result.credentialsRemoved).toBe(false);
+    expect(result.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
+  });
+
 // ---------------------------------------------------------------------------
 // createObserveComposition — configuration errors
 // ---------------------------------------------------------------------------

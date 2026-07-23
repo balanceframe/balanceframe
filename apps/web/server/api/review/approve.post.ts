@@ -13,6 +13,7 @@ import {
   performReviewAction,
   okEnvelope,
   errorEnvelope,
+  requireAuthorization,
   buildAuthorizationInfo,
   reviewAndApplyEnabled,
   getReviewMutationExecutorFromEvent,
@@ -23,8 +24,10 @@ import {
 import type { ReviewStatus } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'categorization:execute');
   const requestId = crypto.randomUUID();
+  const authCheck = await requireAuthorization(event, 'categorization:execute');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
 
   // Parse and validate body
   let body: Record<string, unknown>;

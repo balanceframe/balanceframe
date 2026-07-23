@@ -5,7 +5,7 @@
  * so that injection sequences like closing tags or control characters
  * cannot break out of the delimiter structure.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { OpenAIProvider } from '../src/providers/openai';
 import type { ClassifyRequest } from '../src/types';
 
@@ -114,18 +114,74 @@ describe('escaped prompt content', () => {
     expect(content).toContain('Grocery shopping');
     expect(content).toContain('Trader Joe\'s');
   });
+
+  it('escapes category names values to prevent injection', () => {
+    const provider = new OpenAIProvider({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-4',
+    });
+    const request = makeRequest({
+      categoryNames: { cat_dining: 'Dining & Restaurants <script>' },
+    });
+    const body = provider.buildChatRequest(request);
+    const content = (body.messages as Array<Record<string, unknown>>)
+      .find(m => m.role === 'user')?.content as string;
+    // The category names JSON should be escaped — angle brackets and ampersands must be encoded
+    expect(content).not.toContain('<script>');
+    expect(content).not.toContain('& Restaurants');
+    expect(content).toContain('&amp;');
+    expect(content).toContain('&lt;script&gt;');
+  });
+
+  it('escapes category groups values to prevent injection', () => {
+    const provider = new OpenAIProvider({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-4',
+    });
+    const request = makeRequest({
+      categoryGroups: { group_bills: 'Bills & Fees</categoryGroups><evil>' },
+    });
+    const body = provider.buildChatRequest(request);
+    const content = (body.messages as Array<Record<string, unknown>>)
+      .find(m => m.role === 'user')?.content as string;
+    // Injection sequences in category group labels must be escaped — the raw
+    // injection string should never appear unescaped in the content
+    expect(content).not.toContain('Bills & Fees</categoryGroups><evil>');
+    expect(content).toContain('&lt;/categoryGroups&gt;&lt;evil&gt;');
+    expect(content).toContain('&amp;');
+  });
+
+  it('preserves normal category names and groups unescaped-safe', () => {
+    const provider = new OpenAIProvider({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-4',
+    });
+    const request = makeRequest({
+      categoryNames: { cat_food: 'Groceries', cat_transport: 'Transport' },
+      categoryGroups: { group_essential: 'Essential Spending' },
+    });
+    const body = provider.buildChatRequest(request);
+    const content = (body.messages as Array<Record<string, unknown>>)
+      .find(m => m.role === 'user')?.content as string;
+    // Normal category data should pass through in JSON form
+    expect(content).toContain('&quot;cat_food&quot;');
+    expect(content).toContain('Groceries');
+    expect(content).toContain('Essential Spending');
+  });
 });
 
-describe('bearer auth metadata', () => {
-  it('reports api-key auth type when configured as bearer', () => {
+describe('provider auth metadata', () => {
+  it('reports bearer auth type when configured as bearer', () => {
     const provider = new OpenAIProvider({
       endpoint: 'https://api.openai.com/v1',
       apiKey: 'sk-test',
       model: 'gpt-4',
       authType: 'bearer',
     });
-    // ProviderInfo.authType should reflect the configured auth type
-    expect(provider.providerInfo.authType).toBe('api-key');
+    expect(provider.providerInfo.authType).toBe('bearer');
   });
 
   it('reports api-key auth type when configured as api-key', () => {
@@ -138,6 +194,15 @@ describe('bearer auth metadata', () => {
     expect(provider.providerInfo.authType).toBe('api-key');
   });
 
+  it('defaults to bearer auth type when unset', () => {
+    const provider = new OpenAIProvider({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-4',
+    });
+    expect(provider.providerInfo.authType).toBe('bearer');
+  });
+
   it('reports external locality with proper auth metadata', () => {
     const provider = new OpenAIProvider({
       endpoint: 'https://api.openai.com/v1',
@@ -145,7 +210,33 @@ describe('bearer auth metadata', () => {
       model: 'gpt-4',
     });
     expect(provider.providerInfo.locality).toBe('external');
-    expect(provider.providerInfo.authType).toBe('api-key');
+    expect(provider.providerInfo.authType).toBe('bearer');
     expect(provider.providerInfo.endpoint).toBe('https://api.openai.com/v1');
+  });
+
+  it('uses bearer auth scheme in the Authorization header', () => {
+    let capturedHeaders: Record<string, string> | undefined;
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      redirected: false,
+      json: async () => ({
+        choices: [{ message: { content: '{"categoryId":"cat_food","confidence":0.9,"rationale":"Test","model":"gpt-4"}' } }],
+      }),
+    });
+
+    const provider = new OpenAIProvider({
+      endpoint: 'https://api.openai.com/v1',
+      apiKey: 'sk-test',
+      model: 'gpt-4',
+      authType: 'bearer',
+      fetchFn: mockFetch,
+    });
+
+    const request = makeRequest();
+    provider.classify(request);
+
+    const callArgs = mockFetch.mock.calls[0];
+    capturedHeaders = (callArgs[1] as Record<string, Record<string, string>>)?.headers;
+    expect(capturedHeaders?.Authorization).toBe('Bearer sk-test');
   });
 });

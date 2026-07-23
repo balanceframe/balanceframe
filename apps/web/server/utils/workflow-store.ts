@@ -11,6 +11,7 @@
  *   const items = await wf.store.listReviewItems(...);
  */
 
+import { setResponseStatus } from 'h3';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type {
   WorkflowStore,
@@ -455,6 +456,85 @@ export function buildAuthorizationInfo(
     actorId: getActorId(event),
     capability,
     allowed: true,
+  };
+}
+
+/**
+ * Result of a route-level authorization guard check.
+ * When `ok` is true, `info` holds the AuthorizationInfo for response envelopes.
+ * When `ok` is false, `response` is the error envelope (status code already set).
+ */
+export type AuthGuardResult =
+  | { ok: true; info: AuthorizationInfo }
+  | { ok: false; response: ApiEnvelope<null> };
+
+/**
+ * Require that the request is authenticated and has the given capability.
+ *
+ * Checks:
+ *   1. Auth context exists on the event (set by middleware)
+ *   2. Workflow store is available
+ *   3. Actor's membership is active and includes the capability
+ *
+ * On success returns `{ ok: true, info: AuthorizationInfo }`.
+ * On failure sets the response status (403, 503, or 500) and returns
+ * `{ ok: false, response: ApiEnvelope<null> }` — the caller MUST return early.
+ */
+export async function requireAuthorization(
+  event: EventWithContext,
+  capability: string,
+): Promise<AuthGuardResult> {
+  const auth = event.context.auth as { authenticated: boolean; actorId?: string } | undefined;
+  if (!auth?.authenticated) {
+    setResponseStatus(event, 403);
+    return {
+      ok: false,
+      response: errorEnvelope(
+        'AUTHORIZATION_REQUIRED',
+        'Authentication is required for this operation',
+        null,
+        false,
+      ),
+    };
+  }
+
+  const actorId = getActorId(event);
+  const wf = getWorkflowStore(event);
+  if ('error' in wf) {
+    setResponseStatus(event, 503);
+    return {
+      ok: false,
+      response: errorEnvelope('STORE_UNAVAILABLE', wf.error, null, false),
+    };
+  }
+
+  let result: { allowed: boolean; reason: string };
+  try {
+    result = await wf.store.evaluateAuthorization(actorId, capability, '*', '1.0');
+  } catch {
+    setResponseStatus(event, 500);
+    return {
+      ok: false,
+      response: errorEnvelope(
+        'AUTHORIZATION_CHECK_FAILED',
+        'Authorization check could not be completed',
+        null,
+        false,
+      ),
+    };
+  }
+
+  if (!result.allowed) {
+    setResponseStatus(event, 403);
+    return {
+      ok: false,
+      response: errorEnvelope('FORBIDDEN', result.reason, null, false),
+    };
+  }
+
+  return {
+    ok: true,
+    info: { actorId, capability, allowed: true },
   };
 }
 

@@ -515,36 +515,74 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
   });
 
   it('disconnect reports only completed cleanup', async () => {
-    const ledger = { mockLedger: true };
-
-    // Without store — no cleanup performed
-    const callbacksNoStore = createLifecycleCallbacks(() => ledger);
-    const resultNoCleanup = await callbacksNoStore.doDisconnect(ledger);
+    // Ledger without disconnect — no cache/credential removal even with store
+    const ledgerNoDisconnect = { mockLedger: true };
+    const callbacksNoStore = createLifecycleCallbacks(() => ledgerNoDisconnect);
+    const resultNoCleanup = await callbacksNoStore.doDisconnect(ledgerNoDisconnect);
     expect(resultNoCleanup.cacheRemoved).toBe(false);
     expect(resultNoCleanup.credentialsRemoved).toBe(false);
+    expect(resultNoCleanup.message).toMatch(/does not support disconnect cleanup/);
 
-    // With store — cleanup performed
     const store = createTestStore();
-    const callbacksClean = createLifecycleCallbacks(() => ledger, { workflowStore: store, actorId: 'usr_dtest4' });
-    const resultClean = await callbacksClean.doDisconnect(ledger);
-    expect(resultClean.cacheRemoved).toBe(true);
-    expect(resultClean.credentialsRemoved).toBe(true);
+    const callbacksWithStore = createLifecycleCallbacks(
+      () => ledgerNoDisconnect,
+      { workflowStore: store, actorId: 'usr_dtest4' },
+    );
+    const resultWithStore = await callbacksWithStore.doDisconnect(ledgerNoDisconnect);
+    // Even with a store, cache/credentials not removed when ledger lacks disconnect
+    expect(resultWithStore.cacheRemoved).toBe(false);
+    expect(resultWithStore.credentialsRemoved).toBe(false);
+    expect(resultWithStore.message).toMatch(/does not support disconnect cleanup/);
+
+    // Ledger with disconnect — cache/credential removal reported
+    let disconnectCalled = false;
+    const ledgerWithDisconnect = {
+      mockLedger: true,
+      async disconnect() {
+        disconnectCalled = true;
+      },
+    };
+    const callbacksWithDisconnect = createLifecycleCallbacks(() => ledgerWithDisconnect);
+    const resultWithDisconnect = await callbacksWithDisconnect.doDisconnect(ledgerWithDisconnect);
+    expect(disconnectCalled).toBe(true);
+    expect(resultWithDisconnect.cacheRemoved).toBe(true);
+    expect(resultWithDisconnect.credentialsRemoved).toBe(true);
+    expect(resultWithDisconnect.message).toMatch(/Disconnected successfully/);
   });
 
   it('remove-connection reports only completed cleanup', async () => {
-    const ledger = { mockLedger: true };
-
-    // Without store — no cleanup performed
-    const callbacksNoStore = createLifecycleCallbacks(() => ledger);
-    const resultNoCleanup = await callbacksNoStore.doRemoveConnection(ledger);
+    // Ledger without disconnect — no cache/credential removal even with store
+    const ledgerNoDisconnect = { mockLedger: true };
+    const callbacksNoStore = createLifecycleCallbacks(() => ledgerNoDisconnect);
+    const resultNoCleanup = await callbacksNoStore.doRemoveConnection(ledgerNoDisconnect);
     expect(resultNoCleanup.cacheRemoved).toBe(false);
     expect(resultNoCleanup.credentialsRemoved).toBe(false);
+    expect(resultNoCleanup.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
 
-    // With store — cleanup performed
     const store = createTestStore();
-    const callbacksClean = createLifecycleCallbacks(() => ledger, { workflowStore: store, actorId: 'usr_dtest5' });
-    const resultClean = await callbacksClean.doRemoveConnection(ledger);
-    expect(resultClean.cacheRemoved).toBe(true);
-    expect(resultClean.credentialsRemoved).toBe(true);
+    const callbacksWithStore = createLifecycleCallbacks(
+      () => ledgerNoDisconnect,
+      { workflowStore: store, actorId: 'usr_dtest5' },
+    );
+    const resultWithStore = await callbacksWithStore.doRemoveConnection(ledgerNoDisconnect);
+    // Even with a store, cache/credentials not removed when ledger lacks disconnect
+    expect(resultWithStore.cacheRemoved).toBe(false);
+    expect(resultWithStore.credentialsRemoved).toBe(false);
+    expect(resultWithStore.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
+
+    // Ledger with disconnect — cache/credential removal reported
+    let disconnectCalled = false;
+    const ledgerWithDisconnect = {
+      mockLedger: true,
+      async disconnect() {
+        disconnectCalled = true;
+      },
+    };
+    const callbacksWithDisconnect = createLifecycleCallbacks(() => ledgerWithDisconnect);
+    const resultWithDisconnect = await callbacksWithDisconnect.doRemoveConnection(ledgerWithDisconnect);
+    expect(disconnectCalled).toBe(true);
+    expect(resultWithDisconnect.cacheRemoved).toBe(true);
+    expect(resultWithDisconnect.credentialsRemoved).toBe(true);
+    expect(resultWithDisconnect.broadAccessCaveat).toMatch(/broad access/i);
   });
 });

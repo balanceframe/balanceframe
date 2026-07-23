@@ -283,4 +283,28 @@ describe('RuleOperationResult handling', () => {
     expect(stillPresent).toBeDefined();
     // Route would return VERIFICATION_FAILED
   });
+
+  it('detects correct post-update state when inactive=true is confirmed', () => {
+    // Simulate PATCH with inactive=true where re-read confirms inactive=true
+    const bodyInactive = true;
+    const updatedRules: RuleListItem[] = [
+      { id: 'r1', name: 'Rule One', order: 1, inactive: true },
+    ];
+    const verified = updatedRules.find(r => r.id === 'r1');
+    expect(verified).toBeDefined();
+    // Postcondition: the ledger matches the requested value
+    expect(verified!.inactive).toBe(bodyInactive);
+  });
+
+  it('detects misleading post-update state where inactive=true is not confirmed', () => {
+    // Simulate PATCH with inactive=true where re-read still shows inactive=false
+    const bodyInactive = true;
+    const updatedRules: RuleListItem[] = [
+      { id: 'r1', name: 'Rule One', order: 1, inactive: false },
+    ];
+    const verified = updatedRules.find(r => r.id === 'r1');
+    expect(verified).toBeDefined();
+    // Postcondition fails — route would return RULE_UPDATE_FAILED with details
+    expect(verified!.inactive).not.toBe(bodyInactive);
+  });
 });

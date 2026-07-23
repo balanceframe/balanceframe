@@ -31,6 +31,7 @@ import {
   getActorId,
   okEnvelope,
   errorEnvelope,
+  requireAuthorization,
   buildAuthorizationInfo,
   sanitizeError,
 } from '../../../utils/workflow-store';
@@ -112,8 +113,10 @@ function mapServiceError(reasonCodes: string[]): { status: number; code: string;
 }
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'rule.execute');
   const requestId = crypto.randomUUID();
+  const authCheck = await requireAuthorization(event, 'rule.execute');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
 
   const wf = getWorkflowStore(event);
   if ('error' in wf) {

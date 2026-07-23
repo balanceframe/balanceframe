@@ -90,6 +90,6 @@ export const providerInfoSchema = z.object({
   locality: z.enum(['local', 'external']),
   supportedCapabilities: z.array(z.enum(['classification', 'merchantResearch', 'conversation', 'telemetry'])),
   endpoint: z.string().nullable(),
-  authType: z.enum(['none', 'api-key', 'oauth']).nullable(),
+  authType: z.enum(['none', 'api-key', 'oauth', 'bearer']).nullable(),
   model: z.string().nullable(),
 });
