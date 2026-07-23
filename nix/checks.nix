@@ -2,6 +2,7 @@
 
 let
   tooling = import ./tooling.nix { inherit pkgs; };
+  releaseTooling = import ./release-tooling.nix { inherit pkgs; };
 
   # Formatter check: run nixfmt in check mode against all .nix files
   nix-format =
@@ -28,7 +29,7 @@ let
       }
       ''
         cd ${root}
-        for f in flake.nix flake.lock Justfile nix/dev-shell.nix nix/tooling.nix nix/checks.nix; do
+        for f in flake.nix flake.lock Justfile nix/dev-shell.nix nix/release-shell.nix nix/release-tooling.nix nix/tooling.nix nix/checks.nix; do
           test -f "$f" || { echo "missing: $f" >&2; exit 1; }
         done
         # Validate flake.lock as JSON
@@ -64,9 +65,38 @@ let
         touch "$out"
       '';
 
+  # Release-shell-tools check: verify all release tools are available from
+  # declared derivation inputs only (not ambient PATH)
+  release-shell-tools =
+    pkgs.runCommand "release-shell-tools-check"
+      {
+        nativeBuildInputs = releaseTooling.packages ++ releaseTooling.nativeBuildInputs;
+        buildInputs = releaseTooling.buildInputs;
+      }
+      ''
+        for tool in \
+          rustc cargo rustfmt cargo-clippy rust-analyzer \
+          cargo-nextest cargo-audit cargo-deny \
+          sqlite3 git jq python3 nixfmt expect actual-server just \
+          docker docker-buildx docker-compose syft cosign slsa-verifier; do
+          path="$(command -v "$tool" 2>/dev/null)" || {
+            echo "missing command: $tool" >&2
+            exit 1
+          }
+          case "$path" in
+            /nix/store/*) ;;
+            *)
+              echo "ambient tool path for $tool: $path" >&2
+              exit 1
+              ;;
+          esac
+        done
+        touch "$out"
+      '';
 in
 {
   nix-format = nix-format;
   flake-source = flake-source;
   shell-tools = shell-tools;
+  release-shell-tools = release-shell-tools;
 }

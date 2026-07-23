@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  verify:
+    name: Verify and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Enable Nix binary cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Validate the flake
+        run: nix flake check --print-build-logs
+
+      - name: Tag/version policy verification
+        run: nix develop .#release --command just release-verify "$GITHUB_REF_NAME"
+
+      - name: Install dependencies
+        run: nix develop .#release --command pnpm install --frozen-lockfile
+
+      - name: Build workspace
+        run: nix develop .#release --command pnpm build
+
+      - name: Typecheck workspace
+        run: nix develop .#release --command pnpm typecheck
+
+      - name: Lint workspace
+        run: nix develop .#release --command pnpm lint
+
+      - name: Run JavaScript and TypeScript tests
+        run: nix develop .#release --command pnpm test
+
+      - name: Run Rust tests
+        run: nix develop .#release --command cargo test --workspace
+
+      - name: Run Rust clippy
+        run: nix develop .#release --command cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for OCI tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/balanceframe
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push multi-platform image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate release assets
+        env:
+          TAG: ${{ github.ref_name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          nix develop .#release --command just release-assets "$TAG" "$DIGEST"
+
+      - name: Sign image with Cosign
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign sign "${{ steps.build.outputs.digest }}" \
+            --yes
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.build.outputs.digest }}
+          artifact-name: sbom.spdx.json
+          format: spdx-json
+
+      - name: Generate SLSA provenance
+        uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2
+        with:
+          image: ${{ steps.build.outputs.digest }}
+          digest: ${{ steps.build.outputs.digest }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: BalanceFrame ${{ github.ref_name }}
+          body: |
+            ## BalanceFrame ${{ github.ref_name }}
+
+            Supported platforms: linux/amd64, linux/arm64
+
+            ### Image reference
+            ```
+            ghcr.io/${{ github.repository_owner }}/balanceframe@${{ steps.build.outputs.digest }}
+            ```
+
+            ### Upgrade
+            ```bash
+            # Back up your data volume first, then:
+            docker compose pull
+            docker compose up -d
+            ```
+
+            ### Configuration
+            See [docs/releases.md](https://github.com/${{ github.repository_owner }}/balanceframe/blob/${{ github.ref_name }}/docs/releases.md) for the SemVer and configuration stability policy.
+
+            ### Assets
+            - `compose.yaml` — canonical sidecar deployment
+            - `compose.actual.yaml` — optional Actual Budget overlay
+            - `.env.example` — environment template
+            - `CHECKSUMS` — SHA-256 checksums for all assets
+            - `sbom.spdx.json` — SPDX SBOM
+          files: |
+            _release/${{ github.ref_name }}/compose.yaml
+            _release/${{ github.ref_name }}/compose.actual.yaml
+            _release/${{ github.ref_name }}/.env.example
+            _release/${{ github.ref_name }}/CHECKSUMS
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

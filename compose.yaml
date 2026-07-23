@@ -1,0 +1,36 @@
+# =============================================================================
+# BalanceFrame — canonical Docker Compose deployment
+# =============================================================================
+# This manifest deploys BalanceFrame as a sidecar to an existing Actual Budget
+# server.  Actual remains independently usable, upgradeable, and removable.
+#
+# Usage:
+#   cp .env.example .env      # configure secrets and ports
+#   docker compose up -d      # start BalanceFrame
+#   docker compose pull       # upgrade BalanceFrame
+#
+# See docs/releases.md for the SemVer and upgrade policy.
+# =============================================================================
+
+services:
+  balanceframe:
+    image: ${BALANCEFRAME_IMAGE_REF:?required}
+    restart: unless-stopped
+    ports:
+      - "${BALANCEFRAME_PORT:-3030}:3000"
+    volumes:
+      - balanceframe-data:/data
+    environment:
+      - NUXT_AUTH_DB_PATH=/data/auth.db
+      - BALANCEFRAME_WORKFLOW_DB_PATH=/data/workflow.db
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?required}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:?required}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  balanceframe-data:

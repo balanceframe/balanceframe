@@ -1,0 +1,32 @@
+# =============================================================================
+# BalanceFrame + Actual Budget — optional Docker Compose overlay
+# =============================================================================
+# This overlay adds an Actual Budget server alongside BalanceFrame.
+# Use it for a single-host evaluation or a new deployment that does not yet
+# have an Actual server.
+#
+# Usage:
+#   docker compose -f compose.yaml -f compose.actual.yaml up -d
+#
+# After both services become healthy, connect BalanceFrame to Actual at:
+#   http://actual:5006
+#
+# Actual remains independently usable and removable.  Removing BalanceFrame
+# never deletes the actual-data volume.
+# =============================================================================
+
+services:
+  actual:
+    image: actualbudget/actual-server:${ACTUAL_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${ACTUAL_PORT:-5006}:5006"
+    volumes:
+      - actual-data:/data
+
+volumes:
+  actual-data:
+
+networks:
+  default:
+    name: balanceframe
