@@ -4,7 +4,6 @@
 [![Release](https://img.shields.io/github/v/release/balanceframe/balanceframe)](https://github.com/balanceframe/balanceframe/releases)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue)](https://github.com/orgs/balanceframe/packages/container/balanceframe)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Last commit](https://img.shields.io/github/last-commit/balanceframe/balanceframe/main)](https://github.com/balanceframe/balanceframe/commits/main)
 
 **AI-assisted budget categorization on top of [Actual Budget](https://actualbudget.org).**
 
