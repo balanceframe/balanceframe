@@ -1,10 +1,10 @@
 # BalanceFrame
 
-[![GitHub Release](https://img.shields.io/github/v/release/balanceframe/balanceframe?style=flat-square)](https://github.com/balanceframe/balanceframe/releases)
-[![CI - Test](https://img.shields.io/github/actions/workflow/status/balanceframe/balanceframe/test.yml?style=flat-square&label=test)](https://github.com/balanceframe/balanceframe/actions/workflows/test.yml)
-[![Docker image](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fghcr.io%2Fv2%2Fbalanceframe%2Fbalanceframe%2Ftags%2Flist&query=%24.tags%5B0%5D&label=docker&style=flat-square)](https://github.com/orgs/balanceframe/packages/container/package/balanceframe)
-[![License](https://img.shields.io/github/license/balanceframe/balanceframe?style=flat-square)](LICENSE)
-[![GitHub last commit](https://img.shields.io/github/last-commit/balanceframe/balanceframe/main?style=flat-square)](https://github.com/balanceframe/balanceframe/commits/main)
+[![CI](https://github.com/balanceframe/balanceframe/actions/workflows/test.yml/badge.svg)](https://github.com/balanceframe/balanceframe/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/balanceframe/balanceframe)](https://github.com/balanceframe/balanceframe/releases)
+[![Docker](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fghcr.io%2Fv2%2Fbalanceframe%2Fbalanceframe%2Ftags%2Flist&query=%24.tags%5B0%5D&label=docker&color=blue)](https://github.com/orgs/balanceframe/packages/container/balanceframe)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/balanceframe/balanceframe/main)](https://github.com/balanceframe/balanceframe/commits/main)
 **AI-assisted budget categorization on top of [Actual Budget](https://actualbudget.org).**
 
 BalanceFrame is an open-source, self-hostable intelligence and workflow layer
