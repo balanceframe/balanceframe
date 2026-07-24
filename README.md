@@ -1,5 +1,10 @@
 # BalanceFrame
 
+[![GitHub Release](https://img.shields.io/github/v/release/balanceframe/balanceframe?style=flat-square)](https://github.com/balanceframe/balanceframe/releases)
+[![CI - Test](https://img.shields.io/github/actions/workflow/status/balanceframe/balanceframe/test.yml?style=flat-square&label=test)](https://github.com/balanceframe/balanceframe/actions/workflows/test.yml)
+[![Docker image](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fghcr.io%2Fv2%2Fbalanceframe%2Fbalanceframe%2Ftags%2Flist&query=%24.tags%5B0%5D&label=docker&style=flat-square)](https://github.com/orgs/balanceframe/packages/container/package/balanceframe)
+[![License](https://img.shields.io/github/license/balanceframe/balanceframe?style=flat-square)](LICENSE)
+[![GitHub last commit](https://img.shields.io/github/last-commit/balanceframe/balanceframe/main?style=flat-square)](https://github.com/balanceframe/balanceframe/commits/main)
 **AI-assisted budget categorization on top of [Actual Budget](https://actualbudget.org).**
 
 BalanceFrame is an open-source, self-hostable intelligence and workflow layer
@@ -163,12 +168,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 # Enter the release shell (adds Docker, Cosign, Syft, etc.)
 nix develop .#release
 
-# Verify a tag matches the current package version
-just release-verify v0.1.0
-
-# Generate release assets
-just release-assets v0.1.0 sha256:<64-hex-digest>
-```
+just release-verify v0.1.4
+just release-assets v0.1.4 sha256:<64-hex-digest>
 
 See [docs/releases.md](docs/releases.md) and
 [.github/workflows/release.yml](.github/workflows/release.yml) for the
@@ -205,8 +206,7 @@ those targets, so the first baseline can be reviewed before adding gates.
 ## Project Status
 
 BalanceFrame is in **initial release.** The current stable version is
-**v0.1.0**. The roadmap is documented in detail at
-[docs/roadmap/overview.md](docs/roadmap/overview.md).
+**v0.1.4**. The roadmap is documented in detail at
 
 ## Related Projects
 
