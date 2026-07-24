@@ -1,5 +1,10 @@
 # BalanceFrame
 
+[![CI](https://github.com/balanceframe/balanceframe/actions/workflows/test.yml/badge.svg)](https://github.com/balanceframe/balanceframe/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/balanceframe/balanceframe)](https://github.com/balanceframe/balanceframe/releases)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue)](https://github.com/balanceframe/balanceframe/pkgs/container/balanceframe)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 **AI-assisted budget categorization on top of [Actual Budget](https://actualbudget.org).**
 
 BalanceFrame is an open-source, self-hostable intelligence and workflow layer
@@ -163,12 +168,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 # Enter the release shell (adds Docker, Cosign, Syft, etc.)
 nix develop .#release
 
-# Verify a tag matches the current package version
-just release-verify v0.1.0
-
-# Generate release assets
-just release-assets v0.1.0 sha256:<64-hex-digest>
-```
+just release-verify v0.1.4
+just release-assets v0.1.4 sha256:<64-hex-digest>
 
 See [docs/releases.md](docs/releases.md) and
 [.github/workflows/release.yml](.github/workflows/release.yml) for the
@@ -205,8 +206,7 @@ those targets, so the first baseline can be reviewed before adding gates.
 ## Project Status
 
 BalanceFrame is in **initial release.** The current stable version is
-**v0.1.0**. The roadmap is documented in detail at
-[docs/roadmap/overview.md](docs/roadmap/overview.md).
+**v0.1.4**. The roadmap is documented in detail at
 
 ## Related Projects
 

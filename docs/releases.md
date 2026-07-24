@@ -35,9 +35,9 @@ all stable releases. Before `1.0.0`, `0.y.z` semantics apply:
 
 ## Release process
 
-1. Update root `package.json` version to the release version (e.g. `0.1.0`).
-2. Create an annotated Git tag: `git tag -a v0.1.0 -m "v0.1.0"`
-3. Push the tag: `git push origin v0.1.0`
+1. Update root `package.json` version to the release version (e.g. `0.1.4`).
+2. Create an annotated Git tag: `git tag -a v0.1.4 -m "v0.1.4"`
+3. Push the tag: `git push origin v0.1.4`
 4. The `release.yml` GitHub Actions workflow runs:
    - Nix flake checks
    - Workspace build, typecheck, lint, and tests
