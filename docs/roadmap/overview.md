@@ -1,6 +1,6 @@
 # BalanceFrame roadmap
 
-> **Status:** Planning complete; implementation has not started.
+> **Status:** MVP shipped (v0.1.5); post-MVP phases planned below.
 >
 > **Canonical name and domain:** **BalanceFrame** — <https://balanceframe.com>
 >
@@ -74,48 +74,107 @@ Every phase exit criterion and product review should explicitly consider these r
 - **AI agent:** a model-backed actor with an independently auditable identity and an explicitly delegated, revocable set of operational capabilities. It is not a human identity and cannot alter its own authority.
 
 
-## What is upcoming next
+## Completed: MVP (phases 00–5)
 
-### Phase 00 — Development environment setup
+Phases 00 through 5 — the categorization MVP — are complete in v0.1.5. The
+implementation proved that BalanceFrame can connect to an unmodified Actual
+server, read and normalize its data, produce deterministic and model-assisted
+categorization suggestions, present a responsive review workflow faster than
+direct Actual categorization, apply approved writes with postcondition
+verification, and convert repeated outcomes into deterministic Actual rules.
 
-The first implementation phase to begin is [`mvp/00-development-environment-setup.md`](mvp/00-development-environment-setup.md). It establishes a pinned, modular Nix Flake as the canonical development environment for every later phase. All project tooling — Rust, Node/TypeScript, native-build dependencies, Git, repository scripts — must be available through `nix develop` without depending on ambient system packages. A committed `flake.lock` and root `nix/` modules with documented dev-shell and check outputs are required before any code work begins.
-
-This phase does not renumber the existing implementation phases. It is numbered `00` to make its prerequisite position explicit: Phase 0's Actual/API proof begins only after the toolchain environment is reproducible.
-
-### Phase 0 — Actual baseline and technical proof
-
-Phase 0 proves stock Actual integration and the Rust–TypeScript contract before product workflow implementation. It begins after Phase 00 completes.
-
-The work establishes sanitized fixtures; measures manual categorization; proves every required public `@actual-app/api` operation against representative budgets; tests data-quality blockers, export, disconnect, and Actual-independent operation; and produces tested N-API artifacts for Linux x86-64 and ARM64.
-
-No ledger mutation or product automation should be built before this proof establishes that the public Actual API, synchronized-cache lifecycle, and native binding are viable without a fork.
-
-## What is upcoming
-
-### MVP: prove a diminishing categorization exception inbox
-
-| Phase | Outcome | Exit gate |
+| Phase | Outcome | Exit gate achieved |
 |---|---|---|
-| [1](mvp/01-read-only-actual-gateway.md) | Read-only Actual gateway and deterministic Rust analysis | CLI lists valid candidates without modifying Actual. |
-| [2](mvp/02-suggestion-only-classifier.md) | Provider-neutral, suggestion-only classification | Fixture evaluation produces suggestions but no ledger mutations. |
-| [3](mvp/03-review-workflow.md) | Fast, responsive single exception inbox | Review is measured faster or less burdensome than categorizing directly in Actual. This is the primary product-validation gate. |
-| [4](mvp/04-approved-categorization-writes.md) | Exact, approved, recoverable category writes | Stale, replayed, conflicting, or unauthorized changes cannot silently alter Actual. |
-| [5](mvp/05-deterministic-learning.md) | Inspectable rule learning and historical simulation | Recurring categorization work and model use decline over time. |
+| [00](mvp/00-development-environment-setup.md) | Reproducible Nix Flake dev environment | `nix develop` provides all tooling; `nix flake check` succeeds. |
+| [0](mvp/00-actual-baseline-and-technical-proof.md) | Actual API proof and Rust–TypeScript contract | Public API works without a fork; N-API artifacts built for Linux x86-64 and ARM64. |
+| [1](mvp/01-read-only-actual-gateway.md) | Read-only gateway and deterministic analysis | CLI lists candidates without modifying Actual. |
+| [2](mvp/02-suggestion-only-classifier.md) | Provider-neutral classification | Suggestions produced without ledger mutations. |
+| [3](mvp/03-review-workflow.md) | Responsive exception inbox | Measured review faster than direct Actual categorization. Product-validation gate passed. |
+| [4](mvp/04-approved-categorization-writes.md) | Approved, verified category writes | Stale, replayed, or unauthorized changes cannot silently alter Actual. |
+| [5](mvp/05-deterministic-learning.md) | Inspectable rule learning | Recurring model use and categorization work decline over time. |
 
-Phases 0–5 are the MVP. Do not build the broader platform if Phase 3 does not prove a declining, lower-burden review workflow.
+## Post-MVP: open-source product depth
 
-### Post-MVP: open-source product depth
+Future phases listed from highest user value to most specialized.
 
-| Phase | Outcome | Exit gate |
-|---|---|---|
-| [6](post-mvp/06-built-in-conversational-interface.md) | Optional conversational interface, Skill, and Hermes adapter | Chat improves accessibility without inventing facts or bypassing policy. |
-| [7](post-mvp/07-space-governance.md) | Spaces, independent identities, scoped capabilities, approvals | Every read and action is attributable and deterministically enforced. |
-| [8](post-mvp/08-budget-intelligence.md) | Alerts, recurrence/duplicate evidence, notification delivery, sinking funds, affordability | Scenario tests show conservative analysis under stale or incomplete data and notifications are authorized, redacted, deduplicated, and independently degradable. |
-| [9](post-mvp/09-controlled-reallocations.md) | Approval-gated reallocation proposals | Stale proposals cannot double-use funds or violate protected categories. |
-| [9.5](post-mvp/09-5-delegated-operational-autonomy.md) | Bounded, revocable AI-agent operational delegation | Revocation precedes the next execution; every delegated mutation is bounded, attributable, replay-safe, and verified. |
-| [10](post-mvp/10-linked-spaces.md) | Privacy-preserving cross-instance coordination | Participants coordinate selected expenses without exposing unrelated private ledger data. |
+### v0.2 — Budget intelligence
 
-A future custom Rust ledger is not a scheduled phase. It is considered only after pure-core reuse, signed-event work, shadow-mode differential validation against Actual, and an explicit migration decision. A Rust daemon and Rust-owned ledger database are prohibited before then.
+[Phase 8](post-mvp/08-budget-intelligence.md): alerts, duplicate/anomaly evidence,
+recurrence/subscription detection, notification delivery, sinking-fund health,
+cash-flow context, reports, and purchase evaluation. Analysis-first; advice is
+never permission or execution.
+
+| Exit gate |
+|---|
+| Scenario tests show conservative analysis under stale or incomplete data; notifications are authorized, redacted, deduplicated, and independently degradable. |
+
+### v0.3 — Space governance
+
+[Phase 7](post-mvp/07-space-governance.md): controlled collaboration with
+independent identities, scoped capabilities, temporal membership, and
+deterministic authorization — no shared credentials or automatic private-data
+disclosure.
+
+| Exit gate |
+|---|
+| Every read and action is attributable, scoped, and deterministically enforced without depending on shared full-control credentials. |
+
+### v0.4 — Merchant intelligence and enrichment
+
+[Phase 11](post-mvp/11-merchant-intelligence-and-enrichment.md): improve
+categorization and merchant/entity resolution when bank-imported transactions
+are sparse, while keeping every decision explainable, conservative, and
+privacy-aware.
+
+| Exit gate |
+|---|
+| Categorization evidence and merchant resolution improve for sparse imports without external-data dependence becoming a hidden requirement. |
+
+### v0.5 — Controlled reallocations
+
+[Phase 9](post-mvp/09-controlled-reallocations.md): turn conservative
+`safe_with_reallocation` analysis into exact, policy-governed proposals
+through the same approval and mutation pipeline used for categorization writes.
+
+| Exit gate |
+|---|
+| Stale or concurrent proposals cannot double-use funds or violate protected-category policy. |
+
+### v0.6 — Delegated operational autonomy
+
+[Phase 9.5](post-mvp/09-5-delegated-operational-autonomy.md): allow users to
+delegate selected operational capabilities to attributable AI agents without
+creating a global autonomy slider or agent-specific write path.
+
+| Exit gate |
+|---|
+| Revocation takes effect before the next execution; agents cannot escalate authority; every delegated mutation is bounded, attributable, replay-safe, policy-valid, and postcondition-verified. |
+
+### v0.7 — Built-in conversational interface
+
+[Phase 6](post-mvp/06-built-in-conversational-interface.md): optional
+conversation as an accessibility and explanation surface over the same
+deterministic capability layer used by web and CLI.
+
+| Exit gate |
+|---|
+| Chat improves accessibility and explanation without inventing facts, bypassing policy, or making a core workflow chat-dependent. |
+
+### v0.8 — Linked spaces
+
+[Phase 10](post-mvp/10-linked-spaces.md): privacy-preserving cross-instance
+coordination so independently operated BalanceFrame instances can coordinate
+selected expenses and targets without sharing credentials or exposing unrelated
+private ledger data.
+
+| Exit gate |
+|---|
+| Participants coordinate chosen expenses and targets while unrelated private ledger data, credentials, and identifiers remain undisclosed. |
+
+A future custom Rust ledger is not a scheduled phase. It is considered only
+after pure-core reuse, signed-event work, shadow-mode differential validation
+against Actual, and an explicit migration decision. A Rust daemon and Rust-owned
+ledger database are prohibited before then.
 
 ### Rust post-MVP expansion path
 

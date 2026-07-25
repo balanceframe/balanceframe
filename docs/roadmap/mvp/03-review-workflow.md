@@ -1,7 +1,7 @@
 # Phase 3 — Review workflow
 
 **Depends on:** Phase 2  
-**Status:** Upcoming  
+**Status:** Shipped (v0.1.5)
 **Product-validation gate:** Do not build later platform phases unless this phase succeeds.
 
 ## Objective

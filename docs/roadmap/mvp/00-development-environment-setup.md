@@ -1,7 +1,7 @@
 # Phase 00 — Development environment setup
 
 **Precedes:** every other roadmap phase  
-**Status:** Upcoming
+**Status:** Shipped (v0.1.5)
 
 ## Objective
 

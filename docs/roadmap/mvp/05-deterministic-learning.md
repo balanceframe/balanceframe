@@ -1,7 +1,7 @@
 # Phase 5 — Deterministic learning
 
 **Depends on:** Phase 4  
-**Status:** Upcoming
+**Status:** Shipped (v0.1.5)
 
 ## Objective
 

@@ -1,7 +1,7 @@
 # Phase 4 — Approved categorization writes
 
 **Depends on:** Phase 3  
-**Status:** Upcoming
+**Status:** Shipped (v0.1.5)
 
 ## Objective
 
