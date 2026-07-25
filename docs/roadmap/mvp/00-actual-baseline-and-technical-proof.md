@@ -1,6 +1,6 @@
 # Phase 0 — Actual baseline and technical proof
 
-**Status:** Active
+**Status:** Shipped (v0.1.5)
 
 ## Objective
 

@@ -1,7 +1,7 @@
 # Phase 1 — Read-only Actual gateway
 
 **Depends on:** Phase 0  
-**Status:** Upcoming
+**Status:** Shipped (v0.1.5)
 
 ## Objective
 

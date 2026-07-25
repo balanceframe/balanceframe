@@ -1,7 +1,7 @@
 # Phase 2 — Suggestion-only classifier
 
 **Depends on:** Phase 1  
-**Status:** Upcoming
+**Status:** Shipped (v0.1.5)
 
 ## Objective
 
