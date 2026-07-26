@@ -619,6 +619,30 @@ describe('POST /api/invitations/redeem', () => {
     // Must not leak the raw token value
   });
 
+  it('rejects malformed email before claiming invitation', async () => {
+    mockReadBody.mockResolvedValue({
+      token: 'some-valid-token-value',
+      name: 'New User',
+      email: 'a@b',
+      password: 'password12345678',
+    });
+
+    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      400,
+    );
+    // claimInvitation must NOT be called — email rejected before claim
+    expect(mockStore.claimInvitation).not.toHaveBeenCalled();
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    // Validation errors are user-correctable (reasonCode starts with validation.)
+    expect(response.error!.retryable).toBe(true);
+    // Must not leak the email value
+    expect(JSON.stringify(response)).not.toContain('a@b');
+    expect(JSON.stringify(response)).not.toContain('invalid');
+  });
+
   it('succeeds and calls completeInvitationRedemption with empty membership', async () => {
     const claimId = 'claim-for-redeem-01';
     const redeemedUserId = 'redeemed-user-abc-456';

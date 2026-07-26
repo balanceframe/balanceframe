@@ -1255,6 +1255,10 @@ export interface FinalizeBootstrapResult {
   readonly bootstrappedAt: string;
 }
 
+/**
+ * Input to claim an invitation by presenting the bearer token.
+ * Optional request/correlation IDs are propagated to audit records.
+ */
 export interface ClaimInvitationInput {
   readonly token: string;
   readonly email: string;
@@ -1318,14 +1322,6 @@ export interface CreateInvitationResult {
     readonly status: InvitationStatus;
   };
   readonly inviteUrl: string;
-}
-
-/**
- * Input to claim an invitation by presenting the bearer token.
- */
-export interface ClaimInvitationInput {
-  readonly token: string;
-  readonly email: string;
 }
 
 /**

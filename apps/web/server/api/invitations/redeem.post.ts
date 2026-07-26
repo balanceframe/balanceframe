@@ -21,6 +21,7 @@ import { auth } from '../../../lib/auth';
 import { getWorkflowStore } from '../../utils/workflow-store';
 import {
   normalizeEmail,
+  validateEmail,
   invitationError,
 } from '../../utils/registration';
 
@@ -51,9 +52,8 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 400);
     return invitationError('Password must be at least 8 characters', requestId, 'validation.password_too_short');
   }
-
   const email = normalizeEmail(emailRaw);
-  if (!email.includes('@') || email.length < 3) {
+  if (!validateEmail(email)) {
     setResponseStatus(event, 400);
     return invitationError('Invalid email address', requestId, 'validation.invalid_email');
   }

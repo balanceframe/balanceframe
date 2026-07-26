@@ -8,7 +8,6 @@ import {
   loadBudget as loadActualBudget,
   q as actualQuery,
   runQuery as runActualQuery,
-  sync,
 } from '@actual-app/api';
 
 export * from '@actual-app/api';
