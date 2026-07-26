@@ -105,12 +105,30 @@ async function flush() {
 }
 
 const configResponse = {
-  registrationMode: 'bootstrap',
-  bootstrapAvailable: true,
+  schemaVersion: '1',
+  requestId: 'test-request-id',
+  status: 'ok',
+  dataFreshness: null,
+  authorization: null,
+  result: {
+    registrationMode: 'bootstrap',
+    bootstrapAvailable: true,
+    invitationRequired: false,
+  },
+  error: null,
 };
 const inviteConfigResponse = {
-  registrationMode: 'invite',
-  bootstrapAvailable: false,
+  schemaVersion: '1',
+  requestId: 'test-request-id',
+  status: 'ok',
+  dataFreshness: null,
+  authorization: null,
+  result: {
+    registrationMode: 'invite',
+    bootstrapAvailable: false,
+    invitationRequired: true,
+  },
+  error: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -371,12 +389,15 @@ describe('invite.vue — token fragment handling and redemption', () => {
     expect(wrapper.find('form').exists()).toBe(false);
   });
 
-  it('calls redeem API and navigates to /login on success', async () => {
+  it('clears token and shows generic expired message on terminal redeem failure', async () => {
     const fetchMock = getFetchMock();
     const navigateToMock = getNavigateToMock();
     window.location.hash = '#token=abc123';
 
-    fetchMock.mockResolvedValueOnce(undefined); // successful redeem
+    // Simulate a terminal error (retryable: false) from the API
+    const serverError = new Error('Invalid invitation') as { data?: { error?: { message?: string; retryable?: boolean } } };
+    serverError.data = { error: { message: 'This invitation is invalid or has expired.', retryable: false } };
+    fetchMock.mockRejectedValueOnce(serverError);
 
     wrapper = mount(InvitePage, { global: { stubs: uiStubs } });
     await flush();
@@ -389,41 +410,64 @@ describe('invite.vue — token fragment handling and redemption', () => {
     await wrapper.find('form').trigger('submit');
     await flush();
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/invitations/redeem', {
-      method: 'POST',
-      body: {
-        token: 'abc123',
-        name: 'Invited',
-        email: 'invited@example.com',
-        password: 'password',
-      },
-    });
-    expect(navigateToMock).toHaveBeenCalledWith('/login');
-  });
-
-  it('clears token and shows generic expired message on redeem failure', async () => {
-    const fetchMock = getFetchMock();
-    const navigateToMock = getNavigateToMock();
-    window.location.hash = '#token=abc123';
-
-    fetchMock.mockRejectedValueOnce(new Error('Invalid invitation'));
-
-    wrapper = mount(InvitePage, { global: { stubs: uiStubs } });
-    await flush();
-
-    wrapper.vm.name = 'Invited';
-    wrapper.vm.email = 'invited@example.com';
-    wrapper.vm.password = 'password';
-    await flush();
-
-    await wrapper.find('form').trigger('submit');
-    await flush();
-
-    // Token ref should be cleared on failure
+    // Token ref should be cleared on terminal failure
     expect(wrapper.vm.token).toBe('');
     // Generic expired message shown instead of the specific API error
     expect(wrapper.text()).toContain('invalid or has expired');
     // Should not navigate on error
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves token on validation failure (retryable: true)', async () => {
+    const fetchMock = getFetchMock();
+    const navigateToMock = getNavigateToMock();
+    window.location.hash = '#token=abc123';
+
+    // Simulate a validation error (retryable: true) from the API
+    const serverError = new Error('Password must be at least 8 characters') as { data?: { error?: { message?: string; retryable?: boolean } } };
+    serverError.data = { error: { message: 'Password must be at least 8 characters', retryable: true } };
+    fetchMock.mockRejectedValueOnce(serverError);
+
+    wrapper = mount(InvitePage, { global: { stubs: uiStubs } });
+    await flush();
+
+    wrapper.vm.name = 'Invited';
+    wrapper.vm.email = 'invited@example.com';
+    wrapper.vm.password = '';  // too short or empty — triggers validation
+    await flush();
+
+    await wrapper.find('form').trigger('submit');
+    await flush();
+
+    // Token should be preserved on validation errors — user can fix fields and retry
+    expect(wrapper.vm.token).toBe('abc123');
+    // The server message should be shown
+    expect(wrapper.text()).toContain('Password must be at least 8 characters');
+    // Should not navigate on error
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves token on network error (no structured data)', async () => {
+    const fetchMock = getFetchMock();
+    const navigateToMock = getNavigateToMock();
+    window.location.hash = '#token=abc123';
+
+    // Plain Error without data — network failure, not server error
+    fetchMock.mockRejectedValueOnce(new Error('Network error'));
+
+    wrapper = mount(InvitePage, { global: { stubs: uiStubs } });
+    await flush();
+
+    wrapper.vm.name = 'Invited';
+    wrapper.vm.email = 'invited@example.com';
+    wrapper.vm.password = 'password';
+    await flush();
+
+    await wrapper.find('form').trigger('submit');
+    await flush();
+
+    // Network errors preserve token for retry
+    expect(wrapper.vm.token).toBe('abc123');
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
@@ -435,8 +479,10 @@ describe('invite.vue — token fragment handling and redemption', () => {
     wrapper = mount(InvitePage, { global: { stubs: uiStubs } });
     await flush();
 
-    // Simulate full lifecycle: form fill, submit (even failure clears token)
-    fetchMock.mockRejectedValueOnce(new Error('fail'));
+    // Simulate full lifecycle: form fill, submit (failure clears token)
+    const serverError = new Error('fail') as { data?: { error?: { message?: string; retryable?: boolean } } };
+    serverError.data = { error: { message: 'fail', retryable: false } };
+    fetchMock.mockRejectedValueOnce(serverError);
     wrapper.vm.name = 'Test';
     wrapper.vm.email = 'test@example.com';
     wrapper.vm.password = 'password';

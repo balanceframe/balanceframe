@@ -97,10 +97,13 @@ const bootstrapAvailable = ref(false);
 onMounted(async () => {
   try {
     const config = await $fetch<{
-      registrationMode: string;
-      bootstrapAvailable: boolean;
+      result: {
+        registrationMode: string;
+        bootstrapAvailable: boolean;
+        invitationRequired: boolean;
+      };
     }>('/api/auth/config');
-    bootstrapAvailable.value = config.bootstrapAvailable;
+    bootstrapAvailable.value = config.result.bootstrapAvailable;
   } catch {
     // Config unavailable — default to invite-only mode (no bootstrap link).
   }

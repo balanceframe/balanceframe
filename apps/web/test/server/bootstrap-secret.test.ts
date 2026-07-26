@@ -14,7 +14,7 @@ import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from 'vitest
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { resolveBootstrapSecret, BootstrapSecretError } from '../../lib/resolve-bootstrap-secret';
+import { resolveBootstrapSecret, BootstrapSecretError, validateBootstrapSecretConfig } from '../../lib/resolve-bootstrap-secret';
 
 /** A valid-length secret (32 'a's). */
 const VALID_SECRET = 'a'.repeat(32);
@@ -236,5 +236,58 @@ describe('error messages do not leak secret values', () => {
       expect(msg).toContain('/nonexistent/file');
       expect(msg).toContain('BALANCEFRAME_BOOTSTRAP_SECRET_FILE');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Startup validation — validates config at server init, missing source is OK
+// ---------------------------------------------------------------------------
+
+describe('validateBootstrapSecretConfig — startup validation', () => {
+  it('does not throw when a valid env var is set', () => {
+    vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET', VALID_SECRET);
+    expect(() => validateBootstrapSecretConfig()).not.toThrow();
+  });
+
+  it('does not throw when a valid file source is configured', () => {
+    const fp = join(tmpDir, 'startup-valid-file');
+    writeFileSync(fp, VALID_SECRET);
+    vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', fp);
+    expect(() => validateBootstrapSecretConfig()).not.toThrow();
+  });
+
+  it('does not throw when neither source is set (instance may already be bootstrapped)', () => {
+    expect(() => validateBootstrapSecretConfig()).not.toThrow();
+  });
+
+  it('throws when both sources are set (ambiguous configuration)', () => {
+    vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET', VALID_SECRET);
+    vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', '/some/path');
+    expect(() => validateBootstrapSecretConfig()).toThrow(BootstrapSecretError);
+    expect(() => validateBootstrapSecretConfig()).toThrow(
+      'Both BALANCEFRAME_BOOTSTRAP_SECRET_FILE and BALANCEFRAME_BOOTSTRAP_SECRET are set',
+    );
+  });
+
+  it('throws when the configured file is unreadable', () => {
+    vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', '/nonexistent/bootstrap/startup-secret.txt');
+    expect(() => validateBootstrapSecretConfig()).toThrow(BootstrapSecretError);
+    expect(() => validateBootstrapSecretConfig()).toThrow(/Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/);
+  });
+
+  it('throws when the resolved secret is shorter than 32 characters', () => {
+    vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET', SHORT_SECRET);
+    expect(() => validateBootstrapSecretConfig()).toThrow(BootstrapSecretError);
+    expect(() => validateBootstrapSecretConfig()).toThrow(
+      'Bootstrap secret from env must be at least 32 characters',
+    );
+  });
+
+  it('throws when a directory is used as a file source', () => {
+    const dirPath = join(tmpDir, 'startup-isdir');
+    mkdirSync(dirPath, { recursive: true });
+    vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', dirPath);
+    expect(() => validateBootstrapSecretConfig()).toThrow(BootstrapSecretError);
+    expect(() => validateBootstrapSecretConfig()).toThrow(/Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/);
   });
 });

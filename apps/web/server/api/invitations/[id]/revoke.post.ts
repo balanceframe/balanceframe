@@ -4,7 +4,7 @@
  * Only the instance owner may revoke invitations.
  * The raw token is never stored server-side, so revocation only prevents
  * future claims; any leaked token is permanently invalidated.
- * Audit is appended by the route since revokeInvitation does not write one.
+ * The store writes the authoritative audit record with actor context.
  */
 
 import { defineEventHandler, setResponseStatus } from 'h3';
@@ -120,7 +120,7 @@ export default defineEventHandler(async (event) => {
 
   // 5. Revoke the invitation
   try {
-    await wf.store.revokeInvitation(invitationId);
+    await wf.store.revokeInvitation(invitationId, ctx.actorId, requestId);
   } catch {
     setResponseStatus(event, 400);
     return {
@@ -137,20 +137,6 @@ export default defineEventHandler(async (event) => {
         reasonCodes: ['invitation.revoke_failed'],
       },
     };
-  }
-
-  // 6. Append audit record
-  try {
-    await wf.store.appendAuditRecord({
-      classification: 'invitation_revoked',
-      actorId: ctx.actorId,
-      operation: 'revoke_invitation',
-      proposalId: invitationId,
-      requestId,
-      result: `Invitation ${invitationId} revoked`,
-    });
-  } catch {
-    // Non-fatal audit failure
   }
 
   return {

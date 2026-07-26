@@ -683,6 +683,68 @@ export interface WorkflowStore {
    * Idempotent on already-finalized claims.
    */
   finalizeBootstrap(input: FinalizeBootstrapInput): Promise<FinalizeBootstrapResult>;
+
+  /**
+   * Create a new invitation for self-hosted account creation.
+   * Persists only a SHA-256 digest of the bearer token.
+   * Returns the stable metadata plus a copyable invite URL containing
+   * the raw token in the fragment.
+   *
+   * @param creatorUserId The authenticated user creating the invitation.
+   * @param auditContext Optional request/correlation IDs for audit records.
+   */
+  createInvitation(
+    creatorUserId: string,
+    auditContext?: { requestId?: string; correlationId?: string },
+  ): Promise<CreateInvitationResult>;
+
+  /**
+   * Revoke an active invitation by its stable ID.
+   * Idempotent on already-revoked invitations.
+   *
+   * @param actorId  The authenticated actor performing the revocation
+   *                 (stored in the audit record).  Defaults to 'system'.
+   * @param requestId Correlation ID for the request (stored in the audit).
+   *
+   * @throws If the invitation is not found or is in a non-revocable state.
+   */
+  revokeInvitation(invitationId: string, actorId?: string, requestId?: string): Promise<void>;
+
+  /**
+   * List all invitations ordered by creation time descending.
+   * Returns public metadata only — no token digest or raw token.
+   */
+  listInvitations(): Promise<InvitationMetadata[]>;
+
+  /**
+   * Claim an invitation by presenting the bearer token.
+   * Transitions the invitation from 'active' to 'claimed' and returns
+   * a claim ID for cross-database identity creation recovery.
+   *
+   * Idempotent: re-claiming with the same token and email returns the
+   * existing claim; a different email is rejected.
+   *
+   * @throws If the token is invalid, revoked, already redeemed,
+   *         already claimed by a different email, or expired.
+   *         Expired invitations are marked as such before the throw.
+   */
+  claimInvitation(input: ClaimInvitationInput): Promise<ClaimInvitationResult>;
+
+  /**
+   * Complete invitation redemption after identity creation.
+   * Transitions the invitation from 'claimed' to 'redeemed' and records
+   * the created user ID.
+   *
+   * @throws If the claim ID is not found or the invitation is not in
+   *         the 'claimed' state.
+   */
+  completeInvitationRedemption(claimId: string, userId: string, requestId?: string): Promise<void>;
+
+  /**
+   * Find stranded 'claimed' invitations whose redemption was interrupted.
+   * Returns a count for reconciliation reporting.
+   */
+  reconcileClaimedInvitations(): Promise<number>;
   /**
    * Evaluate whether an actor is authorized for a given capability/scope.
    *
@@ -926,8 +988,6 @@ export interface CreateApprovalInput {
 // ---------------------------------------------------------------------------
 // IdempotencyRecord — at-most-once execution tracking
 // ---------------------------------------------------------------------------
-
-/** Lifecycle status of an idempotent workflow operation. */
 export type IdempotencyStatus = 'in_progress' | 'succeeded' | 'retryable_failed' | 'terminal_failed';
 
 /** Record of an idempotent workflow operation. */
@@ -985,6 +1045,11 @@ export type AuditClassification =
   | 'execution_failed'
   | 'proposal_superseded'
   | 'authorization_check'
+  | 'invitation_created'
+  | 'invitation_claimed'
+  | 'invitation_revoked'
+  | 'invitation_redeemed'
+  | 'invitation_expired'
   | (string & {});
 
 /** An append-only audit record. Immutable once written. */
@@ -1190,10 +1255,13 @@ export interface FinalizeBootstrapResult {
   readonly bootstrappedAt: string;
 }
 
-// ---------------------------------------------------------------------------
-// Invitation — one-time bearer-token account creation
-// ---------------------------------------------------------------------------
-
+export interface ClaimInvitationInput {
+  readonly token: string;
+  readonly email: string;
+  /** Optional request/correlation IDs propagated to audit records. */
+  readonly requestId?: string;
+  readonly correlationId?: string;
+}
 /**
  * Lifecycle status of an invitation token.
  * - `active`: ready to be claimed.

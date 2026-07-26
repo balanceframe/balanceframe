@@ -56,6 +56,19 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/** Email regex matching Better Auth's built-in validation semantics. */
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Validate an email address with Better Auth-compatible semantics.
+ * Must be called after normalizeEmail (lowercased, trimmed).
+ * Returns true only for addresses that Better Auth's createUser would accept.
+ */
+export function validateEmail(email: string): boolean {
+  if (!email || email.length < 3) return false;
+  return EMAIL_REGEX.test(email);
+}
+
 /** Generate a 32-byte random token and return both raw and hex-encoded forms. */
 export function generateInviteToken(): { raw: string; hex: string; digest: string } {
   const raw = randomBytes(32);
@@ -148,13 +161,15 @@ export function registrationError(
     },
   };
 }
-
 /** Non-enumerating error for invitation failures. */
 export function invitationError(
   message: string,
   requestId: string,
   reasonCode: string,
 ): ApiEnvelope<null> {
+  // reason codes starting with 'validation.' represent user-correctable field
+  // errors; all others (token/store/identity failures) are terminal.
+  const retryable = reasonCode.startsWith('validation.');
   return {
     schemaVersion: '1',
     requestId,
@@ -165,7 +180,7 @@ export function invitationError(
     error: {
       code: 'INVITATION_FAILED',
       message,
-      retryable: false,
+      retryable,
     },
   };
 }

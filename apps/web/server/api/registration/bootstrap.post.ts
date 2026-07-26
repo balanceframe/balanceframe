@@ -7,6 +7,9 @@
  *
  * The store's claimBootstrap handles state, membership, and audit atomically.
  * Better Auth user creation is a separate, cross-database step.
+ * On interruption (crash between claim and finalization), same-email retries
+ * recover deterministically using the durable claim ID and, if the Better
+ * Auth user was already created, the admin plugin's listUsers API.
  */
 
 import { readBody, defineEventHandler, setResponseStatus } from 'h3';
@@ -14,6 +17,7 @@ import { auth } from '../../../lib/auth';
 import { getWorkflowStore } from '../../utils/workflow-store';
 import {
   normalizeEmail,
+  validateEmail,
   loadBootstrapSecret,
   verifyBootstrapSecret,
   registrationError,
@@ -48,12 +52,15 @@ export default defineEventHandler(async (event) => {
   }
 
   const email = normalizeEmail(emailRaw);
-  if (!email.includes('@') || email.length < 3) {
+
+  // 3. Validate email with Better Auth-compatible semantics BEFORE claiming
+  //    This prevents a malformed email from consuming the bootstrap claim slot.
+  if (!validateEmail(email)) {
     setResponseStatus(event, 400);
     return registrationError('Invalid email address', requestId, 'validation.invalid_email');
   }
 
-  // 3. Load and verify bootstrap secret
+  // 4. Load and verify bootstrap secret
   const secretLoad = loadBootstrapSecret();
   if (!secretLoad.available) {
     setResponseStatus(event, 400);
@@ -65,23 +72,48 @@ export default defineEventHandler(async (event) => {
     return registrationError('Invalid bootstrap secret', requestId, 'bootstrap.invalid_secret');
   }
 
-  // 4. Access store
+  // 5. Access store
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
     setResponseStatus(event, 503);
     return registrationError('Store unavailable', requestId, 'store.unavailable');
   }
 
-  // 5. Claim the bootstrap slot
-  const claimId = crypto.randomUUID();
+  // 6. Check registration state — distinguish already-bootstrapped (409)
+  //    from store/migration errors (503).
   try {
-    await wf.store.claimBootstrap({ name, email, claimId });
+    const regState = await wf.store.getRegistrationState();
+    if (regState.mode === 'complete') {
+      setResponseStatus(event, 409);
+      return registrationError('Bootstrap is not available', requestId, 'bootstrap.already_completed');
+    }
+  } catch {
+    // If we can't read the state, treat as unavailable
+    setResponseStatus(event, 503);
+    return registrationError('Store unavailable', requestId, 'store.state_read_error');
+  }
+
+  // 7. Claim the bootstrap slot — capture the durable claim ID for finalization.
+  //    On same-email retry the store returns the existing claimId, which we MUST
+  //    use (not a newly generated one) to successfully finalize.
+  let effectiveClaimId: string;
+  try {
+    const claimId = crypto.randomUUID();
+    const claimResult = await wf.store.claimBootstrap({ name, email, claimId });
+    effectiveClaimId = claimResult.claimId;
   } catch (err) {
+    const message = err instanceof Error ? err.message : '';
+    // Known conflict states from the store — return 409 to distinguish from 503
+    if (message.includes('already completed') || message.includes('already claimed')) {
+      setResponseStatus(event, 409);
+      return registrationError('Bootstrap is not available', requestId, 'bootstrap.conflict');
+    }
+    // Everything else (missing migration, db locked, etc.) — 503
     setResponseStatus(event, 503);
     return registrationError('Registration store not initialised', requestId, 'store.missing_migration');
   }
 
-  // 6. Create the Better Auth user (trusted server call — no headers forwarded)
+  // 8. Create the Better Auth user (trusted server call — no headers forwarded)
   let baUserId: string;
   try {
     const result = await auth.api.createUser({
@@ -100,14 +132,54 @@ export default defineEventHandler(async (event) => {
     }
     baUserId = baUser.id;
   } catch (err) {
-    // Store already claimed the bootstrap slot; user cannot retry with different email
+    // Attempt recovery: if the user was already created in a prior attempt,
+    // listUsers can find the existing user so we can finalize.
+    const errMsg = err instanceof Error ? err.message.toLowerCase() : '';
+    const isDuplicateEmail =
+      errMsg.includes('email') &&
+      (errMsg.includes('already') || errMsg.includes('exists') || errMsg.includes('duplicate'));
+
+    if (isDuplicateEmail) {
+      try {
+        const listResult = await auth.api.listUsers({});
+        const existing = listResult.users?.find(
+          (u: { email?: string }) => u.email?.toLowerCase() === email,
+        );
+        if (existing?.id) {
+          baUserId = existing.id;
+          // Finalize with the recovered user ID
+          try {
+            await wf.store.finalizeBootstrap({ claimId: effectiveClaimId, ownerUserId: baUserId });
+          } catch {
+            setResponseStatus(event, 500);
+            return registrationError('Could not complete setup', requestId, 'bootstrap.finalization_failed');
+          }
+
+          return {
+            schemaVersion: '1',
+            requestId,
+            status: 'ok',
+            dataFreshness: null,
+            authorization: null,
+            result: {
+              message: 'Instance owner account created. You can now sign in.',
+            },
+            error: null,
+          };
+        }
+      } catch {
+        // listUsers failed — fall through to generic error
+      }
+    }
+
+    // Could not recover — claim remains for same-email retry
     setResponseStatus(event, 400);
     return registrationError('Could not create account', requestId, 'bootstrap.user_creation_failed');
   }
 
-  // 7. Finalize bootstrap with the Better Auth user ID
+  // 9. Finalize bootstrap using the effective (possibly reused) claim ID
   try {
-    await wf.store.finalizeBootstrap({ claimId, ownerUserId: baUserId });
+    await wf.store.finalizeBootstrap({ claimId: effectiveClaimId, ownerUserId: baUserId });
   } catch (err) {
     setResponseStatus(event, 500);
     return registrationError('Could not complete setup', requestId, 'bootstrap.finalization_failed');

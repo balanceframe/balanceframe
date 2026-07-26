@@ -88,7 +88,7 @@ secret:
 
   `BALANCEFRAME_BOOTSTRAP_SECRET_FILE` — path to a file containing the
   secret (preferred for Docker Compose deployments; the project `compose.yaml`
-  mounts `./bootstrap_secret.txt` to `/run/secrets/bootstrap_secret`).
+  mounts `./.bootstrap_secret` to `/run/secrets/bootstrap_secret`).
 
   `BALANCEFRAME_BOOTSTRAP_SECRET` — inline environment variable (alternate
   mechanism; avoid when secrets management is available).
@@ -154,3 +154,19 @@ After bootstrap completes, registration transitions to invite-only:
   migration must produce a documented downgrade path).
 - Breaking schema changes are MINOR-bump events before `1.0.0` and MAJOR-bump
   events after.
+
+## Release history
+
+### v0.2.0 (2026-07-26)
+
+- **Self-hosted registration** — two-state bootstrap/invite model replaces the
+  disabled public sign-up. Adds persisted SQLite migration (version 3) for
+  `registration_state` singleton and `invitations` table in `workflow.db`.
+  Introduces new public HTTP routes and a server-side config endpoint.
+- **Configuration change** — `BALANCEFRAME_BOOTSTRAP_SECRET_FILE` defines the
+  operator bootstrap secret. The canonical `compose.yaml` mount reads from
+  `./.bootstrap_secret` (hidden dotfile, gitignored). Inline
+  `BALANCEFRAME_BOOTSTRAP_SECRET` remains available as an alternative.
+- **Breaking (pre-1.0.0 MINOR)** — new required artifact and schema migration.
+  See [Account lifecycle](#account-lifecycle-self-hosted-registration) above
+  for setup instructions.

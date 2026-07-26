@@ -7,6 +7,13 @@
  *
  * The store's claimInvitation validates the token and claims the slot.
  * The route then creates the Better Auth user and completes redemption.
+ *
+ * On interruption (crash between claim and redemption), same-email retries
+ * recover deterministically using the durable claim ID and, if the Better
+ * Auth user was already created, the admin plugin's listUsers API.
+ *
+ * Auditing is handled by the store's completeInvitationRedemption — the route
+ * does not produce a separate redemption audit record.
  */
 
 import { readBody, defineEventHandler, setResponseStatus } from 'h3';
@@ -69,7 +76,7 @@ export default defineEventHandler(async (event) => {
   }
 
   // 5. Create the Better Auth user (trusted server call — no headers forwarded)
-  let createdUser: { id: string };
+  let redeemedUserId: string;
   try {
     const result = await auth.api.createUser({
       body: {
@@ -85,45 +92,107 @@ export default defineEventHandler(async (event) => {
     if (!('id' in baUser) || typeof baUser.id !== 'string') {
       throw new Error('Unexpected user response shape');
     }
-    createdUser = { id: baUser.id };
+    redeemedUserId = baUser.id;
   } catch (err) {
-    // Roll back the claim — best-effort
-    try {
-      await wf.store.completeInvitationRedemption(claimResult.claimId, '__failed__');
-    } catch {
-      // Ignore rollback errors
+    // Attempt recovery: if the user was already created in a prior attempt,
+    // listUsers can find the existing user so we can finalize.
+    const errMsg = err instanceof Error ? err.message.toLowerCase() : '';
+    const isDuplicateEmail =
+      errMsg.includes('email') &&
+      (errMsg.includes('already') || errMsg.includes('exists') || errMsg.includes('duplicate'));
+
+    if (isDuplicateEmail) {
+      try {
+        const listResult = await auth.api.listUsers({});
+        const existing = listResult.users?.find(
+          (u: { email?: string }) => u.email?.toLowerCase() === email,
+        );
+        if (existing?.id) {
+          redeemedUserId = existing.id;
+          // Continue to complete redemption with recovered user ID
+          try {
+            await wf.store.completeInvitationRedemption(
+              claimResult.claimId,
+              redeemedUserId,
+              requestId,
+            );
+          } catch {
+            setResponseStatus(event, 500);
+            return invitationError(
+              'Could not complete registration',
+              requestId,
+              'invitation.finalization_failed',
+            );
+          }
+          // Assign empty membership
+          try {
+            await wf.store.upsertActorMembership(
+              redeemedUserId,
+              'active',
+              [],
+              '*',
+            );
+          } catch {
+            // Membership missing but invitation is redeemed — reconcile can fix
+            setResponseStatus(event, 500);
+            return invitationError(
+              'Could not complete registration',
+              requestId,
+              'invitation.membership_failed',
+            );
+          }
+          return {
+            schemaVersion: '1',
+            requestId,
+            status: 'ok',
+            dataFreshness: null,
+            authorization: null,
+            result: {
+              message: 'Account created. You can now sign in.',
+            },
+            error: null,
+          };
+        }
+      } catch {
+        // listUsers failed — fall through to generic error
+      }
     }
+
+    // Could not recover — invitation remains claimed for same-email retry
     setResponseStatus(event, 400);
     return invitationError('Could not create account', requestId, 'invitation.user_creation_failed');
   }
 
-  const redeemedUserId = createdUser.id;
+  // 6. Complete redemption — updates invitation state with the user ID.
+  //    The store appends the authoritative invitation_redeemed audit record.
+  //    On failure the invitation stays claimed (recoverable by reconcile).
+  try {
+    await wf.store.completeInvitationRedemption(
+      claimResult.claimId,
+      redeemedUserId,
+      requestId,
+    );
+  } catch {
+    setResponseStatus(event, 500);
+    return invitationError(
+      'Could not complete registration',
+      requestId,
+      'invitation.finalization_failed',
+    );
+  }
 
-  // 6. Assign empty membership (active, no capabilities)
+  // 7. Assign empty membership (active, no capabilities).
+  //    If this fails the invitation is already redeemed; return an error so
+  //    the caller knows the account was partially created.
   try {
     await wf.store.upsertActorMembership(redeemedUserId, 'active', [], '*');
   } catch {
-    // Non-fatal
-  }
-
-  // 7. Complete redemption — updates invitation state with the user ID
-  try {
-    await wf.store.completeInvitationRedemption(claimResult.claimId, redeemedUserId);
-  } catch {
-    // Interrupted finalization — reconcile path handles this
-  }
-
-  // 8. Append audit record
-  try {
-    await wf.store.appendAuditRecord({
-      classification: 'invitation_redeemed',
-      actorId: redeemedUserId,
-      operation: 'redeem_invitation',
+    setResponseStatus(event, 500);
+    return invitationError(
+      'Could not complete registration',
       requestId,
-      result: `Invitation redeemed for user ${redeemedUserId}`,
-    });
-  } catch {
-    // Non-fatal audit failure
+      'invitation.membership_failed',
+    );
   }
 
   return {

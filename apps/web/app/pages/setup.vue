@@ -131,10 +131,13 @@ const bootstrapSecret = ref('');
 onMounted(async () => {
   try {
     const config = await $fetch<{
-      registrationMode: string;
-      bootstrapAvailable: boolean;
+      result: {
+        registrationMode: string;
+        bootstrapAvailable: boolean;
+        invitationRequired: boolean;
+      };
     }>('/api/auth/config');
-    bootstrapAvailable.value = config.bootstrapAvailable;
+    bootstrapAvailable.value = config.result.bootstrapAvailable;
   } catch {
     bootstrapAvailable.value = false;
   } finally {

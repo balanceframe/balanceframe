@@ -21,7 +21,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SqliteWorkflowStore } from '../src/store.js';
 import { createHash } from 'node:crypto';
-import type { SaveSuggestionInput } from '../src/types.js';
+import type { SaveSuggestionInput, WorkflowStore } from '../src/types.js';
 import Database from 'better-sqlite3';
 import { mkdtempSync, unlinkSync, rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1962,6 +1962,45 @@ describe('registration lifecycle', () => {
       ).rejects.toThrow();
       s.close();
     });
+    it('expired invitation status persists as expired after claim rejection (no rollback)', async () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const invite = await s.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+      s['db'].prepare(
+        'UPDATE invitations SET expires_at = ? WHERE id = ?'
+      ).run(PAST_EXPIRY, invite.invitation.id);
+
+      await expect(
+        s.claimInvitation({ token, email: 'user@example.com' })
+      ).rejects.toThrow();
+
+      // Status MUST persist as 'expired' despite the thrown error
+      const row = s['db'].prepare(
+        'SELECT status FROM invitations WHERE id = ?'
+      ).get(invite.invitation.id) as { status: string } | undefined;
+      expect(row).toBeDefined();
+      expect(row!.status).toBe('expired');
+      s.close();
+    });
+
+    it('expired invitation creates an audit record with expired classification', async () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const invite = await s.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+      s['db'].prepare(
+        'UPDATE invitations SET expires_at = ? WHERE id = ?'
+      ).run(PAST_EXPIRY, invite.invitation.id);
+
+      await expect(
+        s.claimInvitation({ token, email: 'user@example.com' })
+      ).rejects.toThrow();
+
+      const auditRows = s['db'].prepare(
+        "SELECT * FROM audit_records WHERE classification = 'invitation_expired'"
+      ).all() as Record<string, unknown>[];
+      expect(auditRows.length).toBeGreaterThanOrEqual(1);
+      s.close();
+    });
     it('claimInvitation is one-time: second claim with same token fails', async () => {
       const invite = await regStore.createInvitation(FIXED_USER_ID);
       const token = invite.inviteUrl.split('#token=')[1];
@@ -2014,6 +2053,44 @@ describe('registration lifecycle', () => {
       expect(reconciled).toBeGreaterThanOrEqual(1);
     });
   });
+    it('all six invitation lifecycle methods are exposed on WorkflowStore interface', async () => {
+      // Type-level verification: the class satisfies the interface contract
+      // for all invitation methods
+      const storeRef: WorkflowStore = regStore;
+
+      // createInvitation
+      const invite = await storeRef.createInvitation(FIXED_USER_ID);
+      expect(invite.invitation).toBeDefined();
+      expect(invite.inviteUrl).toMatch(/\/invite#token=/);
+
+      // listInvitations
+      const list = await storeRef.listInvitations();
+      expect(Array.isArray(list)).toBe(true);
+
+      // revokeInvitation
+      await storeRef.revokeInvitation(invite.invitation.id);
+      const afterRevoke = await storeRef.listInvitations();
+      const revokeEntry = afterRevoke.find(i => i.id === invite.invitation.id);
+      expect(revokeEntry?.status).toBe('revoked');
+
+      // claimInvitation — create a fresh one to claim
+      const invite2 = await storeRef.createInvitation(FIXED_USER_ID);
+      const token2 = invite2.inviteUrl.split('#token=')[1];
+      const claim = await storeRef.claimInvitation({ token: token2, email: 'claimant@example.com' });
+      expect(claim.claimId).toBeTypeOf('string');
+      expect(claim.email).toBe('claimant@example.com');
+
+      // completeInvitationRedemption
+      await storeRef.completeInvitationRedemption(claim.claimId, 'user-redeemed');
+      const afterRedeem = await storeRef.listInvitations();
+      const redeemEntry = afterRedeem.find(i => i.id === invite2.invitation.id);
+      expect(redeemEntry?.status).toBe('redeemed');
+      expect(redeemEntry?.redeemedUserId).toBe('user-redeemed');
+
+      // reconcileClaimedInvitations
+      const reconciled = await storeRef.reconcileClaimedInvitations();
+      expect(typeof reconciled).toBe('number');
+    });
 
   // -----------------------------------------------------------------------
   // Audit metadata never contains raw secrets

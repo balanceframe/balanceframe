@@ -147,13 +147,21 @@ async function handleRedeem() {
     // Success — redirect to sign in.  Token is discarded with the component.
     await navigateTo('/login');
   } catch (e: unknown) {
+    // Extract structured error data from the $fetch response
+    const errorData = (e as { data?: { error?: { message?: string; retryable?: boolean } } })?.data?.error;
+    const serverMessage = errorData?.message;
     const msg =
-      e instanceof Error
-        ? e.message
-        : 'This invitation is invalid or has expired.';
+      serverMessage ||
+      (e instanceof Error ? e.message : 'This invitation is invalid or has expired.');
     error.value = msg;
-    // Clear the token ref on failure so it is not reusable within the page.
-    token.value = '';
+
+    // Determine if this is a terminal token error or a correctable field error.
+    // retryable === false: token/store/identity failures — clear token, user needs a new link.
+    // retryable === true or undefined: validation failures or network errors — preserve token.
+    if (errorData?.retryable === false) {
+      token.value = '';
+    }
+    // Otherwise preserve the in-memory token so the user can fix fields and retry.
   } finally {
     loading.value = false;
   }

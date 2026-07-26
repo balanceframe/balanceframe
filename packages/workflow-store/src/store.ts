@@ -3368,7 +3368,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return txn() as FinalizeBootstrapResult;
   }
 
-  async createInvitation(creatorUserId: string): Promise<CreateInvitationResult> {
+  async createInvitation(creatorUserId: string, auditContext?: { requestId?: string; correlationId?: string }): Promise<CreateInvitationResult> {
     const id = randomUUID();
     const rawToken = randomBytes(32).toString('hex');
     const tokenDigest = createHash('sha256').update(rawToken).digest('hex');
@@ -3399,8 +3399,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
       expectedPriorState: null,
       observedResultState: null,
       providerModel: null,
-      correlationId: null,
-      requestId: null,
+      correlationId: auditContext?.correlationId ?? null,
+      requestId: auditContext?.requestId ?? null,
       result: `Invitation ${id} created`,
       isError: 0,
     });
@@ -3412,7 +3412,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     };
   }
 
-  async revokeInvitation(invitationId: string): Promise<void> {
+  async revokeInvitation(invitationId: string, actorId?: string, requestId?: string): Promise<void> {
     const now = nowISO();
     const result = this.stmt.updateInvitationRevoke.run({ id: invitationId });
     if (result.changes === 0) {
@@ -3425,9 +3425,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
       id: randomUUID(),
       classification: 'invitation_revoked',
       timestamp: now,
-      actorId: 'system',
+      actorId: actorId ?? 'system',
       operation: 'revoke_invitation',
-      proposalId: null,
+      proposalId: invitationId,
       payloadHash: null,
       budgetId: null,
       backendIds: '[]',
@@ -3438,7 +3438,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       observedResultState: null,
       providerModel: null,
       correlationId: null,
-      requestId: null,
+      requestId: requestId ?? null,
       result: `Invitation ${invitationId} revoked`,
       isError: 0,
     });
@@ -3454,31 +3454,56 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const claimId = randomUUID();
     const now = nowISO();
 
+    // First, look up the invitation outside the transaction.
+    // If it's expired, update status + audit outside the transaction
+    // so the status transition commits even though we throw.
+    const row = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
+    if (!row) throw new Error('Invalid invitation');
+
+    if (isExpired(row.expires_at)) {
+      this.stmt.updateInvitationExpired.run({ id: row.id, now });
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'invitation_expired',
+        timestamp: now,
+        actorId: input.email,
+        operation: 'claim_invitation',
+        proposalId: null,
+        payloadHash: null,
+        budgetId: null,
+        backendIds: '[]',
+        policyVersion: null,
+        authorizationDisposition: null,
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: null,
+        providerModel: null,
+        correlationId: input.correlationId ?? null,
+        requestId: input.requestId ?? null,
+        result: `Invitation ${row.id} expired`,
+        isError: 1,
+      });
+      throw new Error('Invitation has expired');
+    }
+
+    // Normal claim flow inside a transaction for atomicity
     const txn = this.db.transaction(() => {
-      const row = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
-      if (!row) throw new Error('Invalid invitation');
+      // Re-read within transaction for consistency under concurrent writes
+      const freshRow = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
 
-      if (isExpired(row.expires_at)) {
-        this.stmt.updateInvitationExpired.run({ id: row.id, now });
-        if (row.status === 'active') {
-          throw new Error('Invitation has expired');
-        }
-        throw new Error('Invitation has expired');
-      }
-
-      if (row.status === 'claimed') {
-        if (row.claimed_email === input.email) {
-          return { claimId: row.claim_id!, email: row.claimed_email };
+      if (freshRow!.status === 'claimed') {
+        if (freshRow!.claimed_email === input.email) {
+          return { claimId: freshRow!.claim_id!, email: freshRow!.claimed_email };
         }
         throw new Error('Invitation already claimed by a different email');
       }
 
-      if (row.status !== 'active') {
-        throw new Error(`Invitation is ${row.status}`);
+      if (freshRow!.status !== 'active') {
+        throw new Error(`Invitation is ${freshRow!.status}`);
       }
 
       const updateResult = this.stmt.updateInvitationClaim.run({
-        id: row.id,
+        id: freshRow!.id,
         email: input.email,
         claimId,
         claimedAt: now,
@@ -3503,9 +3528,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
         expectedPriorState: null,
         observedResultState: null,
         providerModel: null,
-        correlationId: null,
-        requestId: null,
-        result: `Invitation ${row.id} claimed by ${input.email}`,
+        correlationId: input.correlationId ?? null,
+        requestId: input.requestId ?? null,
+        result: `Invitation ${freshRow!.id} claimed by ${input.email}`,
         isError: 0,
       });
 
@@ -3515,7 +3540,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return txn() as ClaimInvitationResult;
   }
 
-  async completeInvitationRedemption(claimId: string, userId: string): Promise<void> {
+  async completeInvitationRedemption(claimId: string, userId: string, requestId?: string): Promise<void> {
     const now = nowISO();
     const result = this.stmt.updateInvitationRedeemed.run({
       claimId,
@@ -3542,7 +3567,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       observedResultState: null,
       providerModel: null,
       correlationId: null,
-      requestId: null,
+      requestId: requestId ?? null,
       result: `Invitation redeemed for user ${userId}`,
       isError: 0,
     });

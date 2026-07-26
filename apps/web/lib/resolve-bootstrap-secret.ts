@@ -92,3 +92,27 @@ export function resolveBootstrapSecret(): ResolveBootstrapSecretResult {
 
   return { secret, source };
 }
+
+/**
+ * Validate bootstrap-secret configuration for server startup.
+ *
+ * Unlike {@link resolveBootstrapSecret}, this function treats a missing
+ * source (neither env var set) as acceptable — the instance may already
+ * be bootstrapped. All other configuration errors (ambiguous sources,
+ * unreadable file, too-short secret) still throw {@link BootstrapSecretError},
+ * causing the server to fail closed during initialization.
+ *
+ * Safe to call at server startup — has no side effects and does not
+ * require native module loading.
+ */
+export function validateBootstrapSecretConfig(): void {
+  try {
+    resolveBootstrapSecret();
+  } catch (err) {
+    if (err instanceof BootstrapSecretError && err.message.includes('Neither')) {
+      // Missing source is acceptable — instance may already be bootstrapped.
+      return;
+    }
+    throw err;
+  }
+}

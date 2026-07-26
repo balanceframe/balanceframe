@@ -21,10 +21,10 @@
 # ACTUAL_SERVER_URL environment variable instead.
 #
 # Usage:
-#   cp .env.example .env      # configure secrets and ports
-#   docker compose up -d      # start BalanceFrame
-#   docker compose pull       # upgrade BalanceFrame
-#
+#   cp .env.example .env                       # configure secrets and ports
+#   openssl rand -hex 32 > .bootstrap_secret   # generate bootstrap secret
+#   docker compose up -d                        # start BalanceFrame
+#   docker compose pull                         # upgrade BalanceFrame
 # See docs/releases.md for the SemVer and upgrade policy.
 # =============================================================================
 
@@ -62,4 +62,4 @@ volumes:
   balanceframe-data:
 secrets:
   bootstrap_secret:
-    file: ./bootstrap_secret.txt
+    file: ./.bootstrap_secret

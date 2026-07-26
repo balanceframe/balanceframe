@@ -98,6 +98,7 @@ import {
   registrationError,
   invitationError,
   requireOwner,
+  validateEmail,
 } from '../../server/utils/registration';
 import type { EventWithContext } from '../../server/utils/workflow-store';
 
@@ -290,7 +291,44 @@ describe('error envelope helpers — no reason-code leak', () => {
     const serialized = JSON.stringify(envelope);
     expect(serialized).not.toContain('invite.expired');
     expect(envelope.error?.code).toBe('INVITATION_FAILED');
+    // Terminal token errors have retryable: false
+    expect(envelope.error?.retryable).toBe(false);
+    // Only documented fields in the error object
     expect(Object.keys(envelope.error!)).toEqual(['code', 'message', 'retryable']);
+  });
+
+  it('invitationError sets retryable: true for validation reason codes', () => {
+    const envelope = invitationError(
+      'Password must be at least 8 characters',
+      'req-val',
+      'validation.password_too_short',
+    );
+    const serialized = JSON.stringify(envelope);
+    // No reason code leaks
+    expect(serialized).not.toContain('validation.password_too_short');
+    expect(envelope.error?.code).toBe('INVITATION_FAILED');
+    // Validation errors are retryable (user can fix fields)
+    expect(envelope.error?.retryable).toBe(true);
+    expect(Object.keys(envelope.error!)).toEqual(['code', 'message', 'retryable']);
+  });
+
+  it('invitationError with store.unavailable is not retryable', () => {
+    const envelope = invitationError(
+      'Store unavailable',
+      'req-store',
+      'store.unavailable',
+    );
+    expect(envelope.error?.retryable).toBe(false);
+    expect(JSON.stringify(envelope)).not.toContain('store.unavailable');
+  });
+
+  it('invitationError with invitation.invalid is not retryable', () => {
+    const envelope = invitationError(
+      'Invalid or expired invitation',
+      'req-inv',
+      'invitation.invalid',
+    );
+    expect(envelope.error?.retryable).toBe(false);
   });
 
   it('error envelopes do not leak supplied message content in extra fields', () => {
@@ -319,4 +357,108 @@ describe('error envelope helpers — no reason-code leak', () => {
     });
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// 8. validateEmail — Better Auth-compatible email validation
+// ---------------------------------------------------------------------------
+
+describe('validateEmail — Better Auth-compatible email semantics', () => {
+  it('accepts standard email addresses', () => {
+    expect(validateEmail('user@example.com')).toBe(true);
+    expect(validateEmail('test.user@sub.domain.co')).toBe(true);
+    expect(validateEmail('a+b@example.org')).toBe(true);
+  });
+
+  it('rejects empty and blank strings', () => {
+    expect(validateEmail('')).toBe(false);
+    expect(validateEmail('   ')).toBe(false);
+  });
+
+  it('rejects strings without @ symbol', () => {
+    expect(validateEmail('userexample.com')).toBe(false);
+    expect(validateEmail('notanemail')).toBe(false);
+  });
+
+  it('rejects strings without dot after @', () => {
+    expect(validateEmail('user@example')).toBe(false);
+    expect(validateEmail('a@b')).toBe(false);
+  });
+
+  it('rejects strings with spaces', () => {
+    expect(validateEmail('user @example.com')).toBe(false);
+    expect(validateEmail('user@ example.com')).toBe(false);
+    expect(validateEmail(' user@example.com')).toBe(false);
+  });
+
+  it('rejects strings with multiple @ symbols', () => {
+    expect(validateEmail('user@domain@example.com')).toBe(false);
+  });
+
+  it('rejects very short inputs', () => {
+    expect(validateEmail('a@b')).toBe(false);
+    expect(validateEmail('ab')).toBe(false);
+  });
+
+  it('accepts normalized lowercase email that would pass Better Auth', () => {
+    // Better Auth accepts standard emails after normalization
+    expect(validateEmail('test+alias@example.com')).toBe(true);
+    expect(validateEmail('valid.email@address.co.uk')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Status code distinction — 409 vs 503 never leak reason
+// ---------------------------------------------------------------------------
+
+describe('bootstrap error status codes — 409 (conflict) vs 503 (unavailable)', () => {
+  it('registrationError envelope is identical for 409 and 503 paths', () => {
+    const err409 = registrationError(
+      'Instance already configured',
+      'req-409',
+      'bootstrap.already_completed',
+    );
+    const err503 = registrationError(
+      'Store unavailable',
+      'req-503',
+      'store.unavailable',
+    );
+    // Both have the same code regardless of HTTP status
+    expect(err409.error?.code).toBe('REGISTRATION_FAILED');
+    expect(err503.error?.code).toBe('REGISTRATION_FAILED');
+    // Neither envelope leaks the reason code
+    expect(JSON.stringify(err409)).not.toContain('already_completed');
+    expect(JSON.stringify(err503)).not.toContain('store.unavailable');
+    // Neither envelope leaks the internal reason string
+    expect(JSON.stringify(err409)).not.toContain('bootstrap');
+    expect(JSON.stringify(err503)).not.toContain('store');
+    // Both error objects have the exact same shape (only message differs)
+    expect(Object.keys(err409.error!)).toEqual(['code', 'message', 'retryable']);
+    expect(Object.keys(err503.error!)).toEqual(['code', 'message', 'retryable']);
+  });
+
+  it('serialized 409 conflict response does not reveal nature of conflict', () => {
+    const envelope = registrationError(
+      'Bootstrap is not available',
+      'req-test',
+      'bootstrap.already_completed',
+    );
+    const serialized = JSON.stringify(envelope);
+    expect(serialized).not.toContain('already');
+    expect(serialized).not.toContain('owner');
+    expect(serialized).not.toContain('completed');
+    expect(serialized).not.toContain('conflict');
+  });
+
+  it('serialized 503 unavailable response does not reveal store details', () => {
+    const envelope = registrationError(
+      'Store unavailable',
+      'req-unavail',
+      'store.missing_migration',
+    );
+    const serialized = JSON.stringify(envelope);
+    expect(serialized).not.toContain('missing_migration');
+    expect(serialized).not.toContain('migration');
+    expect(serialized).not.toContain('table');
+  });
 });

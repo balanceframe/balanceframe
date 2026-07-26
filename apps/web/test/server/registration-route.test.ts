@@ -22,11 +22,13 @@ const {
   mockReadBody,
   mockSetResponseStatus,
   mockCreateUser,
+  mockListUsers,
   mockGetWorkflowStore,
 } = vi.hoisted(() => ({
   mockReadBody: vi.fn(),
   mockSetResponseStatus: vi.fn(),
   mockCreateUser: vi.fn(),
+  mockListUsers: vi.fn(),
   mockGetWorkflowStore: vi.fn(),
 }));
 
@@ -42,12 +44,11 @@ vi.mock('h3', () => ({
 
 // ---------------------------------------------------------------------------
 // Mock lib/auth — heavy native bindings; expose only createUser
-// ---------------------------------------------------------------------------
-
 vi.mock('../../lib/auth', () => ({
   auth: {
     api: {
       createUser: mockCreateUser,
+      listUsers: mockListUsers,
     },
   },
 }));
@@ -67,6 +68,7 @@ vi.mock('../../server/utils/workflow-store', () => ({
 import configHandler from '../../server/api/auth/config.get';
 import bootstrapHandler from '../../server/api/registration/bootstrap.post';
 import createInviteHandler from '../../server/api/invitations/index.post';
+import revokeHandler from '../../server/api/invitations/[id]/revoke.post';
 import redeemHandler from '../../server/api/invitations/redeem.post';
 
 // ---------------------------------------------------------------------------
@@ -79,6 +81,7 @@ interface MockStore {
   claimBootstrap: Mock;
   finalizeBootstrap: Mock;
   createInvitation: Mock;
+  revokeInvitation: Mock;
   claimInvitation: Mock;
   upsertActorMembership: Mock;
   completeInvitationRedemption: Mock;
@@ -111,6 +114,7 @@ function createMockStore(): MockStore {
     claimBootstrap: vi.fn(),
     finalizeBootstrap: vi.fn(),
     createInvitation: vi.fn(),
+    revokeInvitation: vi.fn(),
     claimInvitation: vi.fn(),
     upsertActorMembership: vi.fn(),
     completeInvitationRedemption: vi.fn(),
@@ -196,10 +200,14 @@ describe('GET /api/auth/config', () => {
 // ---------------------------------------------------------------
 // POST /api/registration/bootstrap
 // ---------------------------------------------------------------
-
 describe('POST /api/registration/bootstrap', () => {
   beforeEach(() => {
     process.env.BALANCEFRAME_BOOTSTRAP_SECRET = BOOTSTRAP_SECRET;
+    mockStore.getRegistrationState.mockResolvedValue({
+      mode: 'bootstrap',
+      ownerUserId: null,
+      bootstrappedAt: null,
+    });
   });
 
   it('rejects malformed body with stable generic error', async () => {
@@ -257,6 +265,119 @@ describe('POST /api/registration/bootstrap', () => {
     expect(JSON.stringify(response)).not.toContain(BOOTSTRAP_SECRET);
   });
 
+  it('rejects invalid email format before claiming', async () => {
+    mockReadBody.mockResolvedValue({
+      name: 'Test',
+      email: 'not-an-email',
+      password: 'secure-password-here-42',
+      bootstrapSecret: BOOTSTRAP_SECRET,
+    });
+
+    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      400,
+    );
+    // claimBootstrap and createUser must NOT be called — email rejected before claim
+    expect(mockStore.claimBootstrap).not.toHaveBeenCalled();
+    expect(mockCreateUser).not.toHaveBeenCalled();
+    expect(response.error!.code).toBe('REGISTRATION_FAILED');
+    expect(response.error).not.toHaveProperty('reasonCodes');
+  });
+
+  it('rejects email with embedded spaces before claiming', async () => {
+    mockReadBody.mockResolvedValue({
+      name: 'Test',
+      email: 'test@ example.com',
+      password: 'secure-password-here-42',
+      bootstrapSecret: BOOTSTRAP_SECRET,
+    });
+
+    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      400,
+    );
+    expect(mockStore.claimBootstrap).not.toHaveBeenCalled();
+    expect(response.error!.code).toBe('REGISTRATION_FAILED');
+  });
+
+  it('returns 409 conflict when owner already exists', async () => {
+    mockReadBody.mockResolvedValue({
+      name: 'Second User',
+      email: 'second@example.com',
+      password: 'another-secure-password',
+      bootstrapSecret: BOOTSTRAP_SECRET,
+    });
+    // Registration state reports owner already exists
+    mockStore.getRegistrationState.mockResolvedValue({
+      mode: 'complete',
+      ownerUserId: 'existing-owner',
+      bootstrappedAt: '2025-01-01T00:00:00.000Z',
+    });
+
+    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      409,
+    );
+    // Must not attempt claim or BA user creation
+    expect(mockStore.claimBootstrap).not.toHaveBeenCalled();
+    expect(mockCreateUser).not.toHaveBeenCalled();
+    expect(response.error!.code).toBe('REGISTRATION_FAILED');
+    // Must not reveal the nature of the conflict
+    expect(JSON.stringify(response)).not.toContain('already');
+    expect(JSON.stringify(response)).not.toContain('owner');
+    expect(JSON.stringify(response)).not.toContain('completed');
+  });
+
+  it('returns 409 when bootstrap already claimed with different email', async () => {
+    mockReadBody.mockResolvedValue({
+      name: 'Intruder',
+      email: 'intruder@example.com',
+      password: 'another-secure-password',
+      bootstrapSecret: BOOTSTRAP_SECRET,
+    });
+    // Store throws because a different email already claimed the slot
+    mockStore.claimBootstrap.mockRejectedValue(
+      new Error('Bootstrap already claimed'),
+    );
+
+    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      409,
+    );
+    expect(response.error!.code).toBe('REGISTRATION_FAILED');
+    expect(JSON.stringify(response)).not.toContain('already');
+    expect(JSON.stringify(response)).not.toContain('claimed');
+  });
+
+  it('returns 503 when store throws migration or unexpected error', async () => {
+    mockReadBody.mockResolvedValue({
+      name: 'Owner User',
+      email: 'owner@example.com',
+      password: 'secure-password-here-42',
+      bootstrapSecret: BOOTSTRAP_SECRET,
+    });
+    // Store throws a generic error (missing migration, db locked, etc.)
+    mockStore.claimBootstrap.mockRejectedValue(
+      new Error('no such table: registration_state'),
+    );
+
+    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      503,
+    );
+    expect(response.error!.code).toBe('REGISTRATION_FAILED');
+  });
+
   it('succeeds and creates BA user without forwarded headers', async () => {
     const baUserId = 'ba-user-abc-123';
     mockReadBody.mockResolvedValue({
@@ -286,8 +407,7 @@ describe('POST /api/registration/bootstrap', () => {
       name: 'Owner User',
       email: 'owner@example.com',
     });
-    // Verifies claimBootstrap received a claimId and the same claimId
-    // flows to finalizeBootstrap with the returned Better Auth user ID
+    // Verifies claimBootstrap received a claimId
     expect(mockStore.claimBootstrap).toHaveBeenCalledTimes(1);
     const claimBootstrapInput = mockStore.claimBootstrap.mock.calls[0][0] as Record<string, unknown>;
     expect(claimBootstrapInput).toMatchObject({
@@ -296,7 +416,7 @@ describe('POST /api/registration/bootstrap', () => {
     });
     expect(typeof claimBootstrapInput.claimId).toBe('string');
     expect(mockStore.finalizeBootstrap).toHaveBeenCalledWith({
-      claimId: claimBootstrapInput.claimId,
+      claimId: fixedClaimId,
       ownerUserId: baUserId,
     });
     expect(response.status).toBe('ok');
@@ -305,28 +425,91 @@ describe('POST /api/registration/bootstrap', () => {
     });
   });
 
-  it('rejects duplicate bootstrap with stable generic error', async () => {
+  it('reuses existing claimId on same-email retry after interrupted claim', async () => {
+    const existingClaimId = 'existing-claim-retry-001';
+    const baUserId = 'ba-user-retry-123';
     mockReadBody.mockResolvedValue({
-      name: 'Second User',
-      email: 'second@example.com',
-      password: 'another-secure-password',
+      name: 'Owner User',
+      email: 'owner@example.com',
+      password: 'secure-password-here-42',
       bootstrapSecret: BOOTSTRAP_SECRET,
     });
-    // Store throws because owner already exists
-    mockStore.claimBootstrap.mockRejectedValue(
-      new Error('Bootstrap already completed'),
-    );
+    mockCreateUser.mockResolvedValue({ user: { id: baUserId } });
+    // claimBootstrap returns existing claimId (same-email retry from previous interruption)
+    mockStore.claimBootstrap.mockResolvedValue({ claimId: existingClaimId });
+    mockStore.finalizeBootstrap.mockResolvedValue({
+      ownerUserId: baUserId,
+      bootstrappedAt: '2025-01-01T00:00:00.000Z',
+    });
+
+    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+
+    // Route must use the returned claimId, not generate a new random one
+    expect(mockStore.finalizeBootstrap).toHaveBeenCalledWith({
+      claimId: existingClaimId,
+      ownerUserId: baUserId,
+    });
+    expect(response.status).toBe('ok');
+  });
+
+  it('recovers via listUsers when createUser fails because user already exists', async () => {
+    const existingClaimId = 'recovery-claim-001';
+    const existingUserId = 'ba-user-recovery-456';
+    mockReadBody.mockResolvedValue({
+      name: 'Owner User',
+      email: 'owner@example.com',
+      password: 'secure-password-here-42',
+      bootstrapSecret: BOOTSTRAP_SECRET,
+    });
+    // claimBootstrap succeeds with existing claimId
+    mockStore.claimBootstrap.mockResolvedValue({ claimId: existingClaimId });
+    // createUser throws because the user was already created in a previous attempt
+    mockCreateUser.mockRejectedValue(new Error('User with this email already exists'));
+    // listUsers returns the existing user so we can recover
+    mockListUsers.mockResolvedValue({
+      users: [{ id: existingUserId, email: 'owner@example.com' }],
+    });
+    mockStore.finalizeBootstrap.mockResolvedValue({
+      ownerUserId: existingUserId,
+      bootstrappedAt: '2025-01-01T00:00:00.000Z',
+    });
+
+    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+
+    // Should have called listUsers to find the existing user
+    expect(mockListUsers).toHaveBeenCalledTimes(1);
+    // Should have finalized with the recovered user ID
+    expect(mockStore.finalizeBootstrap).toHaveBeenCalledWith({
+      claimId: existingClaimId,
+      ownerUserId: existingUserId,
+    });
+    expect(response.status).toBe('ok');
+    expect(response.result).toMatchObject({
+      message: 'Instance owner account created. You can now sign in.',
+    });
+  });
+
+  it('fails with 400 when createUser fails and user cannot be recovered', async () => {
+    mockReadBody.mockResolvedValue({
+      name: 'Owner User',
+      email: 'owner@example.com',
+      password: 'secure-password-here-42',
+      bootstrapSecret: BOOTSTRAP_SECRET,
+    });
+    mockStore.claimBootstrap.mockResolvedValue({ claimId: 'claim-001' });
+    // createUser fails with a non-duplicate error
+    mockCreateUser.mockRejectedValue(new Error('Database connection error'));
+    // listUsers returns empty — no existing user to recover
+    mockListUsers.mockResolvedValue({ users: [] });
 
     const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
 
     expect(mockSetResponseStatus).toHaveBeenCalledWith(
       expect.anything(),
-      503,
+      400,
     );
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
-    // Must not reveal that bootstrap is already completed
-    expect(JSON.stringify(response)).not.toContain('already');
-    expect(JSON.stringify(response)).not.toContain('completed');
+    expect(mockStore.finalizeBootstrap).not.toHaveBeenCalled();
   });
 });
 
@@ -428,9 +611,12 @@ describe('POST /api/invitations/redeem', () => {
       400,
     );
     expect(response.error!.code).toBe('INVITATION_FAILED');
-    // Must not leak the token value or the specific reason
+    // Must not leak reasonCodes or lifecycle/state information — neutral contract
+    expect(response.error!.reasonCodes).toBeUndefined();
+    // Invalid tokens are terminal failures — never retryable
+    expect(response.error!.retryable).toBe(false);
     expect(JSON.stringify(response)).not.toContain('invalid-token-value');
-    expect(response.error).not.toHaveProperty('reasonCodes');
+    // Must not leak the raw token value
   });
 
   it('succeeds and calls completeInvitationRedemption with empty membership', async () => {
@@ -450,7 +636,6 @@ describe('POST /api/invitations/redeem', () => {
     });
     mockStore.upsertActorMembership.mockResolvedValue(undefined);
     mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
-    mockStore.appendAuditRecord.mockResolvedValue(undefined);
 
     const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
 
@@ -461,11 +646,14 @@ describe('POST /api/invitations/redeem', () => {
       [],
       '*',
     );
-    // Verify redemption was completed with the correct IDs
+    // Verify redemption was completed with the correct IDs and requestId
     expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
       claimId,
       redeemedUserId,
+      expect.any(String),
     );
+    // Route must NOT produce its own audit — store handles it
+    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
     // Verify the raw token never appears in the response
     expect(response.status).toBe('ok');
     expect(JSON.stringify(response)).not.toContain(validToken);
@@ -516,5 +704,166 @@ describe('POST /api/invitations/redeem', () => {
     // Must not leak the token value or distinguish the failure reason
     expect(JSON.stringify(response)).not.toContain('replayed-token-value');
     expect(JSON.stringify(response)).not.toContain('claimed');
+  });
+
+  it('fails with 400 when createUser fails (non-duplicate) — does not redeem invitation', async () => {
+    const claimId = 'claim-nonrecoverable-001';
+    mockReadBody.mockResolvedValue({
+      token: 'some-token-value-here',
+      name: 'New User',
+      email: 'newuser@example.com',
+      password: 'password12345678',
+    });
+    mockStore.claimInvitation.mockResolvedValue({ claimId });
+    // createUser fails with a non-duplicate error
+    mockCreateUser.mockRejectedValue(new Error('Database connection error'));
+
+    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      400,
+    );
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    // completeInvitationRedemption must NOT be called — invitation stays claimed
+    expect(mockStore.completeInvitationRedemption).not.toHaveBeenCalled();
+    // The claim is left stranded; no permanent state change
+    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
+    // No redemption audit should be produced
+    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
+    expect(response.status).toBe('error');
+  });
+
+  it('recovers via listUsers when createUser fails due to duplicate email', async () => {
+    const claimId = 'claim-recovery-002';
+    const existingUserId = 'recovered-user-789';
+    mockReadBody.mockResolvedValue({
+      token: 'another-valid-token',
+      name: 'Existing User',
+      email: 'existing@example.com',
+      password: 'password12345678',
+    });
+    mockStore.claimInvitation.mockResolvedValue({ claimId });
+    // createUser throws duplicate email error
+    mockCreateUser.mockRejectedValue(
+      new Error('User with this email already exists'),
+    );
+    mockListUsers.mockResolvedValue({
+      users: [{ id: existingUserId, email: 'existing@example.com' }],
+    });
+    mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
+    mockStore.upsertActorMembership.mockResolvedValue(undefined);
+
+    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+
+    // Should have called listUsers to find the existing user
+    expect(mockListUsers).toHaveBeenCalledTimes(1);
+    // Should complete redemption with the recovered user ID
+    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
+      claimId,
+      existingUserId,
+      expect.any(String),
+    );
+    expect(mockStore.upsertActorMembership).toHaveBeenCalledWith(
+      existingUserId,
+      'active',
+      [],
+      '*',
+    );
+    expect(response.status).toBe('ok');
+    // No route-level audit — store handles it
+    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when membership assignment fails after successful createUser', async () => {
+    const claimId = 'claim-membership-fail-003';
+    const redeemedUserId = 'membership-fail-user';
+    mockReadBody.mockResolvedValue({
+      token: 'membership-fail-token',
+      name: 'Member Fail',
+      email: 'member-fail@example.com',
+      password: 'password12345678',
+    });
+    mockStore.claimInvitation.mockResolvedValue({ claimId });
+    mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
+    mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
+    // membership assignment fails
+    mockStore.upsertActorMembership.mockRejectedValue(
+      new Error('Store write conflict'),
+    );
+
+    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      500,
+    );
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    expect(response.status).toBe('error');
+    // Redemption was completed — invitation is redeemed even though membership failed
+    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
+      claimId,
+      redeemedUserId,
+      expect.any(String),
+    );
+    // No route-level audit
+    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when completeInvitationRedemption fails after createUser', async () => {
+    const claimId = 'claim-finalize-fail-004';
+    const redeemedUserId = 'finalize-fail-user';
+    mockReadBody.mockResolvedValue({
+      token: 'finalize-fail-token',
+      name: 'Finalize Fail',
+      email: 'finalize-fail@example.com',
+      password: 'password12345678',
+    });
+    mockStore.claimInvitation.mockResolvedValue({ claimId });
+    mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
+    // completeInvitationRedemption throws
+    mockStore.completeInvitationRedemption.mockRejectedValue(
+      new Error('Update failed'),
+    );
+
+    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      500,
+    );
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    expect(response.status).toBe('error');
+    // upsertActorMembership should not be called since finalization failed
+    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
+    // No route-level audit
+    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
+  });
+
+  it('produces exactly one redemption audit via store (no route-level audit)', async () => {
+    const claimId = 'claim-audit-005';
+    const redeemedUserId = 'audit-check-user';
+    mockReadBody.mockResolvedValue({
+      token: 'audit-check-token',
+      name: 'Audit Check',
+      email: 'audit-check@example.com',
+      password: 'password12345678',
+    });
+    mockStore.claimInvitation.mockResolvedValue({ claimId });
+    mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
+    mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
+    mockStore.upsertActorMembership.mockResolvedValue(undefined);
+
+    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+
+    expect(response.status).toBe('ok');
+    // CompleteInvitationRedemption was called — its internal audit is the only one
+    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
+      claimId,
+      redeemedUserId,
+      expect.any(String),
+    );
+    // Route must NOT produce its own audit record
+    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
   });
 });
