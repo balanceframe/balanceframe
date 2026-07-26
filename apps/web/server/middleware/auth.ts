@@ -26,6 +26,7 @@ import {
   setHeader,
   setResponseStatus,
 } from 'h3';
+import { fromNodeHeaders } from 'better-auth/node';
 import { timingSafeEqual, createHmac } from 'node:crypto';
 import { auth } from '../../lib/auth';
 import { authMigrationFailed, authMigrationMessage } from '../utils/auth-migration-status';
@@ -104,6 +105,7 @@ function readConfig(event: EventWithContext): Record<string, unknown> {
     return event.context.runtimeConfig ?? {};
   }
 }
+
 
 function setAuthContext(
   event: EventWithContext,
@@ -202,11 +204,7 @@ export default defineEventHandler(async (event) => {
 
   // 5. Try Better Auth session.
   try {
-    const rawHeaders = getRequestHeaders(event);
-    const headers = new Headers();
-    for (const [key, value] of Object.entries(rawHeaders)) {
-      if (value) headers.set(key, String(value));
-    }
+    const headers = fromNodeHeaders(getRequestHeaders(event));
     const session = await auth.api.getSession({ headers });
     if (session?.user) {
       setAuthContext(event, session.user.id, session.user as Record<string, unknown>);
@@ -223,11 +221,7 @@ export default defineEventHandler(async (event) => {
 
     // 6a. Try Better Auth API key.
     try {
-      const rawHeaders = getRequestHeaders(event);
-      const headers = new Headers();
-      for (const [key, value] of Object.entries(rawHeaders)) {
-        if (value) headers.set(key, String(value));
-      }
+      const headers = fromNodeHeaders(getRequestHeaders(event));
       const result = await auth.api.verifyApiKey({ body: { key: token }, headers });
       if (result?.valid && result.user?.id) {
         setAuthContext(event, result.user.id, result.user as Record<string, unknown>);

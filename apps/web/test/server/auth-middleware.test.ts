@@ -16,6 +16,10 @@ import type {
 // Mock h3 module — must be before importing the middleware
 // ---------------------------------------------------------------------------
 
+const { mockGetRequestHeaders } = vi.hoisted(() => ({
+  mockGetRequestHeaders: vi.fn().mockReturnValue({}),
+}));
+
 const { mockGetRequestPath, mockGetHeader, mockGetCookie, mockSetResponseStatus, mockSetHeader } = vi.hoisted(() => ({
   mockGetRequestPath: vi.fn(),
   mockGetHeader: vi.fn(),
@@ -27,6 +31,7 @@ const { mockGetRequestPath, mockGetHeader, mockGetCookie, mockSetResponseStatus,
 vi.mock('h3', () => ({
   defineEventHandler: <T>(handler: T) => handler,
   getRequestPath: mockGetRequestPath,
+  getRequestHeaders: mockGetRequestHeaders,
   getHeader: mockGetHeader,
   getCookie: mockGetCookie,
   setResponseStatus: mockSetResponseStatus,
@@ -143,6 +148,47 @@ describe('auth middleware — route scoping', () => {
 
     expect(result).toBeUndefined();
     expect(mockSetResponseStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('auth middleware — Better Auth session', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetRequestPath.mockReturnValue('/api/invitations');
+    mockGetRequestHeaders.mockReturnValue({
+      cookie: 'better-auth.session_token=session-token',
+      host: 'localhost:3000',
+    });
+    mockGetSession.mockResolvedValue({
+      user: {
+        id: 'user-from-session',
+        email: 'owner@example.com',
+      },
+    });
+  });
+  afterEach(() => {
+    mockGetSession.mockResolvedValue(null);
+    mockGetRequestHeaders.mockReturnValue({});
+  });
+
+
+  it('authenticates an API request from the Better Auth session cookie', async () => {
+    const event = mockEvent({ context: { runtimeConfig: {} } });
+
+    const result = await handler(event);
+
+    expect(result).toBeUndefined();
+    expect(event.context.auth).toEqual({
+      authenticated: true,
+      actorId: 'user-from-session',
+      user: {
+        id: 'user-from-session',
+        email: 'owner@example.com',
+      },
+    });
+    expect(mockGetSession).toHaveBeenCalledWith({
+      headers: expect.any(Headers),
+    });
   });
 });
 
