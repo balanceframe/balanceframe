@@ -38,6 +38,9 @@ export default defineNuxtConfig({
     /** Path to the Better Auth SQLite database. */
     authDbPath: '',
 
+    /** Path or indicator that a bootstrap secret is configured (set by env). */
+    bootstrapSecretPath: '',
+
     public: {
       apiBase: '',
     },

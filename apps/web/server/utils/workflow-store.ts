@@ -12,6 +12,7 @@
  */
 
 import { setResponseStatus } from 'h3';
+import type { H3Event } from 'h3';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type {
   WorkflowStore,
@@ -214,7 +215,7 @@ export function getWorkflowStore(
 
   let config: Record<string, unknown>;
   try {
-    config = useRuntimeConfig(event) as Record<string, unknown>;
+    config = useRuntimeConfig(event as unknown as H3Event) as Record<string, unknown>;
   } catch {
     config = (event.context.runtimeConfig as Record<string, unknown> | undefined) ?? {};
   }
@@ -488,7 +489,7 @@ export async function requireAuthorization(
 ): Promise<AuthGuardResult> {
   const auth = event.context.auth as { authenticated: boolean; actorId?: string } | undefined;
   if (!auth?.authenticated) {
-    setResponseStatus(event, 403);
+    setResponseStatus(event as unknown as H3Event, 403);
     return {
       ok: false,
       response: errorEnvelope(
@@ -503,7 +504,7 @@ export async function requireAuthorization(
   const actorId = getActorId(event);
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
-    setResponseStatus(event, 503);
+    setResponseStatus(event as unknown as H3Event, 503);
     return {
       ok: false,
       response: errorEnvelope('STORE_UNAVAILABLE', wf.error, null, false),
@@ -514,7 +515,7 @@ export async function requireAuthorization(
   try {
     result = await wf.store.evaluateAuthorization(actorId, capability, '*', '1.0');
   } catch {
-    setResponseStatus(event, 500);
+    setResponseStatus(event as unknown as H3Event, 500);
     return {
       ok: false,
       response: errorEnvelope(
@@ -527,7 +528,7 @@ export async function requireAuthorization(
   }
 
   if (!result.allowed) {
-    setResponseStatus(event, 403);
+    setResponseStatus(event as unknown as H3Event, 403);
     return {
       ok: false,
       response: errorEnvelope('FORBIDDEN', result.reason, null, false),
@@ -815,7 +816,7 @@ export async function applyReviewMutationWithTransition(
           applied: succeeded,
           verified: succeeded,
           stale: false,
-          error: idemClaim.record.errorMessage ?? undefined,
+          error: idemClaim.record.errorMessage ?? null,
           transactionId: null,
           previousCategoryId: null,
           newCategoryId: null,

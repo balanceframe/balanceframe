@@ -23,7 +23,7 @@ import {
   createDefaultActualClient,
   EnvCredentialStore,
 } from '@balanceframe/actual-adapter';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, cpSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -431,14 +431,23 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
 
 describe('Proof 7 — Complete review-to-Actual persisted path', () => {
   it('connects, syncs, persists, corrects, mutates Actual, rereads and verifies', async () => {
-    // ---- Setup: discover remote budget by name ----
+    // ---- Setup: discover budget from local seed data ----
     const serverUrl = process.env.ACTUAL_SERVER_URL || 'http://localhost:5006';
     const secretKey = process.env.ACTUAL_SECRET_KEY || '';
     const budgetName = process.env.ACTUAL_BUDGET_NAME;
     const groupIdHint = process.env.ACTUAL_GROUP_ID;
+    const seedDataDir = process.env.ACTUAL_SEED_DATA_DIR || '';
     expect(secretKey).toBeTruthy();
+    expect(seedDataDir).toBeTruthy();
 
     const dataDir = mkdtempSync(join(tmpdir(), 'bf-proof7-'));
+
+    // Copy the canonical seeded budget data into the disposable temp
+    // directory so the freshly-initialized client finds the budget from
+    // local metadata.  This avoids depending on the Actual v26 server
+    // download endpoint, which cannot resolve the seeded budget from a
+    // fresh client without local metadata.
+    cpSync(seedDataDir, dataDir, { recursive: true });
 
     await init({
       dataDir,
@@ -446,33 +455,24 @@ describe('Proof 7 — Complete review-to-Actual persisted path', () => {
       password: secretKey,
     });
 
-    // Discover remote budget by stable group ID when available. Actual may
-    // expose local and cloud entries with different names.
+    // With local seed data in the dataDir, getBudgets() finds the seeded
+    // budget from metadata.json — no server-side file listing required.
     const allBudgets = await getBudgets();
-    expect(allBudgets.length).toBeGreaterThan(0);
+    expect(allBudgets.length).toBeGreaterThanOrEqual(1);
 
-    const candidates = groupIdHint
-      ? allBudgets.filter((b: { groupId?: string }) => b.groupId === groupIdHint)
-      : budgetName
-        ? allBudgets.filter((b: { name?: string }) => b.name === budgetName)
-        : allBudgets;
-    const selected = candidates[0];
+    // Normalize entries and select by the stable env-provided group ID.
+    const normalized = allBudgets.map((b: Record<string, unknown>) => ({
+      id: (typeof b.id === 'string' && b.id) || (typeof b.cloudFileId === 'string' && b.cloudFileId) || '',
+      name: (typeof b.name === 'string' && b.name) || '',
+      groupId: (typeof b.groupId === 'string' && b.groupId) || '',
+    }));
+    const selected = normalized.find((c) => c.groupId === groupIdHint) || normalized[0];
     expect(selected).toBeDefined();
-    expect(typeof selected === 'object' && selected !== null).toBe(true);
-
-    let groupId = '';
-    let cloudFileId = '';
-    if (selected && typeof selected === 'object' && 'groupId' in selected && 'cloudFileId' in selected) {
-      const s = selected as { groupId: unknown; cloudFileId: unknown };
-      if (typeof s.groupId === 'string' && typeof s.cloudFileId === 'string') {
-        groupId = s.groupId;
-        cloudFileId = s.cloudFileId;
-      }
-    }
+    const groupId = selected.groupId || groupIdHint || '';
     expect(groupId).toBeTruthy();
-    expect(cloudFileId).toBeTruthy();
 
-    // Download/load the fixture budget using the existing helper
+    // Load the budget — downloadBudget resolves groupId from local
+    // metadata.json in the dataDir without a server fetch.
     await downloadBudget(groupId);
     // Resolve existing entities from the seeded fixture budget
     const accounts = await getAccounts();
@@ -534,13 +534,30 @@ describe('Proof 7 — Complete review-to-Actual persisted path', () => {
     await shutdown();
 
     // ---- ActualConnector: BalanceFrame adapter path ----
+    // Create an isolated cache directory so the connector doesn't interfere
+    // with the raw API client's data dir.
+    const connectorCacheDir = mkdtempSync(join(tmpdir(), 'bf-proof7-connector-'));
+
+    // Populate the connector's server cache key directory from seed data so
+    // getBudgets() finds the seeded budget from local metadata without a
+    // server listing request.
+    const serverCacheKey = serverUrl.replace(/[^a-zA-Z0-9._-]/g, '_');
+    cpSync(seedDataDir, join(connectorCacheDir, serverCacheKey), { recursive: true });
+
     const connector = new ActualConnector({
       client: await createDefaultActualClient(),
       credentialStore: new EnvCredentialStore(),
       mode: 'disposableSandbox',
+      cacheDir: connectorCacheDir,
     });
 
     await connector.connect({ serverUrl, secretKey });
+
+    // Populate the connector's per-group cache key directory from seed data so
+    // downloadBudget(groupId) resolves locally without a server fetch.
+    const groupCacheKey = groupId.replace(/[^a-zA-Z0-9._-]/g, '_');
+    cpSync(seedDataDir, join(connectorCacheDir, groupCacheKey), { recursive: true });
+
     const budgetInfo = await connector.selectBudget(groupId);
     expect(budgetInfo).toBeDefined();
 

@@ -663,6 +663,88 @@ export interface WorkflowStore {
    */
   findCorrectionConflicts(limit?: number): Promise<CorrectionConflict[]>;
 
+
+  // ── Registration and invitations ────────────────────────────────
+
+  /**
+   * Get the current registration state (mode, owner info).
+   */
+  getRegistrationState(): Promise<RegistrationState>;
+
+  /**
+   * Claim the bootstrap slot atomically.
+   * Idempotent for same email on retry; rejects different email if claimed.
+   */
+  claimBootstrap(input: BootstrapClaimInput): Promise<BootstrapClaimResult>;
+
+  /**
+   * Finalize bootstrap after Better Auth user creation.
+   * Writes owner ID, membership, timestamp, and audit atomically.
+   * Idempotent on already-finalized claims.
+   */
+  finalizeBootstrap(input: FinalizeBootstrapInput): Promise<FinalizeBootstrapResult>;
+
+  /**
+   * Create a new invitation for self-hosted account creation.
+   * Persists only a SHA-256 digest of the bearer token.
+   * Returns the stable metadata plus a copyable invite URL containing
+   * the raw token in the fragment.
+   *
+   * @param creatorUserId The authenticated user creating the invitation.
+   * @param auditContext Optional request/correlation IDs for audit records.
+   */
+  createInvitation(
+    creatorUserId: string,
+    auditContext?: { requestId?: string; correlationId?: string },
+  ): Promise<CreateInvitationResult>;
+
+  /**
+   * Revoke an active invitation by its stable ID.
+   * Idempotent on already-revoked invitations.
+   *
+   * @param actorId  The authenticated actor performing the revocation
+   *                 (stored in the audit record).  Defaults to 'system'.
+   * @param requestId Correlation ID for the request (stored in the audit).
+   *
+   * @throws If the invitation is not found or is in a non-revocable state.
+   */
+  revokeInvitation(invitationId: string, actorId?: string, requestId?: string): Promise<void>;
+
+  /**
+   * List all invitations ordered by creation time descending.
+   * Returns public metadata only — no token digest or raw token.
+   */
+  listInvitations(): Promise<InvitationMetadata[]>;
+
+  /**
+   * Claim an invitation by presenting the bearer token.
+   * Transitions the invitation from 'active' to 'claimed' and returns
+   * a claim ID for cross-database identity creation recovery.
+   *
+   * Idempotent: re-claiming with the same token and email returns the
+   * existing claim; a different email is rejected.
+   *
+   * @throws If the token is invalid, revoked, already redeemed,
+   *         already claimed by a different email, or expired.
+   *         Expired invitations are marked as such before the throw.
+   */
+  claimInvitation(input: ClaimInvitationInput): Promise<ClaimInvitationResult>;
+
+  /**
+   * Complete invitation redemption after identity creation.
+   * Transitions the invitation from 'claimed' to 'redeemed' and records
+   * the created user ID.
+   *
+   * @throws If the claim ID is not found or the invitation is not in
+   *         the 'claimed' state.
+   */
+  completeInvitationRedemption(claimId: string, userId: string, requestId?: string): Promise<void>;
+
+  /**
+   * Find stranded 'claimed' invitations whose redemption was interrupted.
+   * Returns a count for reconciliation reporting.
+   */
+  reconcileClaimedInvitations(): Promise<number>;
   /**
    * Evaluate whether an actor is authorized for a given capability/scope.
    *
@@ -906,8 +988,6 @@ export interface CreateApprovalInput {
 // ---------------------------------------------------------------------------
 // IdempotencyRecord — at-most-once execution tracking
 // ---------------------------------------------------------------------------
-
-/** Lifecycle status of an idempotent workflow operation. */
 export type IdempotencyStatus = 'in_progress' | 'succeeded' | 'retryable_failed' | 'terminal_failed';
 
 /** Record of an idempotent workflow operation. */
@@ -965,6 +1045,11 @@ export type AuditClassification =
   | 'execution_failed'
   | 'proposal_superseded'
   | 'authorization_check'
+  | 'invitation_created'
+  | 'invitation_claimed'
+  | 'invitation_revoked'
+  | 'invitation_redeemed'
+  | 'invitation_expired'
   | (string & {});
 
 /** An append-only audit record. Immutable once written. */
@@ -1113,4 +1198,154 @@ export interface AuthorizationResult {
   readonly scope: string;
   readonly policyVersion: string;
   readonly reason: string;
+}
+
+// ---------------------------------------------------------------------------
+// Registration — self-hosted bootstrap lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Registration mode indicating whether the instance has been bootstrapped.
+ * `'bootstrap'` — no owner exists, setup is available.
+ * `'complete'` — an owner has been registered, further bootstrap is blocked.
+ */
+export type RegistrationMode = 'bootstrap' | 'complete';
+
+/**
+ * Public registration state returned by {@link SqliteWorkflowStore.getRegistrationState}.
+ * Contains no secrets.
+ */
+export interface RegistrationState {
+  readonly mode: RegistrationMode;
+  readonly ownerUserId: string | null;
+  readonly bootstrappedAt: string | null;
+}
+
+/**
+ * Input to claim the bootstrap slot.
+ * No secrets here — those are validated by the route before calling the store.
+ */
+export interface BootstrapClaimInput {
+  readonly name: string;
+  readonly email: string;
+  readonly claimId: string;
+}
+
+/**
+ * Result of claiming the bootstrap slot — a claimId for cross-database recovery.
+ */
+export interface BootstrapClaimResult {
+  readonly claimId: string;
+}
+
+/**
+ * Input to finalize bootstrap after Better Auth user creation.
+ * Writes the actual user ID, owner membership, timestamp, and audit atomically.
+ */
+export interface FinalizeBootstrapInput {
+  readonly claimId: string;
+  readonly ownerUserId: string;
+}
+
+/**
+ * Result of finalizing bootstrap — the now-immutable owner identity.
+ */
+export interface FinalizeBootstrapResult {
+  readonly ownerUserId: string;
+  readonly bootstrappedAt: string;
+}
+
+/**
+ * Input to claim an invitation by presenting the bearer token.
+ * Optional request/correlation IDs are propagated to audit records.
+ */
+export interface ClaimInvitationInput {
+  readonly token: string;
+  readonly email: string;
+  /** Optional request/correlation IDs propagated to audit records. */
+  readonly requestId?: string;
+  readonly correlationId?: string;
+}
+/**
+ * Lifecycle status of an invitation token.
+ * - `active`: ready to be claimed.
+ * - `claimed`: a recipient has bound their email; awaiting identity creation.
+ * - `redeemed`: the recipient has created their account.
+ * - `revoked`: explicitly invalidated by the owner before use.
+ * - `expired`: the token lifetime has elapsed without redemption.
+ */
+export type InvitationStatus = 'active' | 'claimed' | 'redeemed' | 'revoked' | 'expired';
+
+/**
+ * Full invitation record as stored in the database.
+ * Never contains the raw bearer token.
+ */
+export interface Invitation {
+  readonly id: string;
+  readonly tokenDigest: string;
+  readonly status: InvitationStatus;
+  readonly createdByUserId: string;
+  readonly expiresAt: string;
+  readonly claimedEmail: string | null;
+  readonly claimId: string | null;
+  readonly redeemedUserId: string | null;
+  readonly createdAt: string;
+  readonly claimedAt: string | null;
+  readonly redeemedAt: string | null;
+}
+
+/**
+ * Public metadata for an invitation returned in list responses.
+ * Contains no token digest or raw token.
+ */
+export interface InvitationMetadata {
+  readonly id: string;
+  readonly status: InvitationStatus;
+  readonly createdByUserId: string;
+  readonly expiresAt: string;
+  readonly claimedEmail: string | null;
+  readonly redeemedUserId: string | null;
+  readonly createdAt: string;
+  readonly claimedAt: string | null;
+  readonly redeemedAt: string | null;
+}
+
+/**
+ * Result of creating an invitation.
+ * The `inviteUrl` contains the raw bearer token in the fragment;
+ * the `invitation` object exposes only the stable identifier and metadata.
+ */
+export interface CreateInvitationResult {
+  readonly invitation: {
+    readonly id: string;
+    readonly expiresAt: string;
+    readonly status: InvitationStatus;
+  };
+  readonly inviteUrl: string;
+}
+
+/**
+ * Result of a successful invitation claim.
+ * The `claimId` is used for cross-database identity creation recovery.
+ */
+export interface ClaimInvitationResult {
+  readonly claimId: string;
+  readonly email: string;
+}
+
+/**
+ * Input to complete invitation redemption after identity creation.
+ */
+export interface CompleteInvitationRedemptionInput {
+  readonly claimId: string;
+  readonly userId: string;
+}
+
+/**
+ * Result of finalizing an invitation redemption.
+ */
+export interface CompleteInvitationRedemptionResult {
+  readonly invitationId: string;
+  readonly userId: string;
+  readonly redeemedAt: string;
 }

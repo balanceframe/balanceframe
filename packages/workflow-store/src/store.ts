@@ -12,7 +12,7 @@
 
 import Database from 'better-sqlite3';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 
 import type {
   Suggestion,
@@ -49,8 +49,19 @@ import type {
   CorrectionRecord,
   CorrectionConflict,
   CorrectionHistoryOptions,
+  RegistrationState,
+  RegistrationMode,
+  BootstrapClaimInput,
+  BootstrapClaimResult,
+  FinalizeBootstrapInput,
+  FinalizeBootstrapResult,
+  InvitationStatus,
+  Invitation,
+  InvitationMetadata,
+  CreateInvitationResult,
+  ClaimInvitationInput,
+  ClaimInvitationResult,
 } from './types.js';
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -253,6 +264,21 @@ function rowToCorrection(row: CorrectionRow): CorrectionRecord {
     createdAt: row.created_at,
   };
 }
+
+/** Map a raw DB row to InvitationMetadata (public, no digest). */
+function rowToInvitationMetadata(row: InvitationRow): InvitationMetadata {
+  return {
+    id: row.id,
+    status: row.status as InvitationStatus,
+    createdByUserId: row.created_by_user_id,
+    expiresAt: row.expires_at,
+    claimedEmail: row.claimed_email,
+    redeemedUserId: row.redeemed_user_id,
+    createdAt: row.created_at,
+    claimedAt: row.claimed_at,
+    redeemedAt: row.redeemed_at,
+  };
+}
 // ---------------------------------------------------------------------------
 /** Allowed transitions between review statuses. */
 const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
@@ -422,6 +448,20 @@ interface ActorMembershipRow {
   scope: string;
 }
 
+interface InvitationRow {
+  id: string;
+  token_digest: string;
+  status: string;
+  created_by_user_id: string;
+  expires_at: string;
+  claimed_email: string | null;
+  claim_id: string | null;
+  redeemed_user_id: string | null;
+  created_at: string;
+  claimed_at: string | null;
+  redeemed_at: string | null;
+}
+
 
 interface CorrectionRow {
   id: string;
@@ -549,6 +589,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
     countProposalsSupersededByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectSchemaVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
     upsertSchemaVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectRegistrationState: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertRegistrationClaim: null as unknown as ReturnType<DatabaseType['prepare']>,
+    finalizeRegistration: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertInvitation: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectInvitation: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectInvitationByDigest: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectAllInvitations: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateInvitationClaim: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateInvitationRevoke: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateInvitationExpired: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateInvitationRedeemed: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectStrandedClaims: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
@@ -846,6 +898,40 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
         CREATE INDEX IF NOT EXISTS idx_idempotency_status
           ON idempotency_records(idempotency_status);
+      `);
+    },
+    // Version 3: Registration and invitation tables
+    (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS registration_state (
+          singleton       INTEGER PRIMARY KEY CHECK (singleton = 1),
+          owner_user_id   TEXT UNIQUE,
+          bootstrapped_at TEXT,
+          claim_id        TEXT,
+          claimed_email   TEXT,
+          claimed_name    TEXT,
+          claimed_at      TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS invitations (
+          id                 TEXT PRIMARY KEY,
+          token_digest       TEXT UNIQUE NOT NULL,
+          status             TEXT NOT NULL CHECK(status IN ('active','claimed','redeemed','revoked','expired')),
+          created_by_user_id TEXT NOT NULL,
+          expires_at         TEXT NOT NULL,
+          claimed_email      TEXT,
+          claim_id           TEXT,
+          redeemed_user_id   TEXT,
+          created_at         TEXT NOT NULL,
+          claimed_at         TEXT,
+          redeemed_at        TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_invitations_status
+          ON invitations(status);
+
+        CREATE INDEX IF NOT EXISTS idx_invitations_claim_id
+          ON invitations(claim_id);
       `);
     },
   ];
@@ -1590,6 +1676,84 @@ export class SqliteWorkflowStore implements WorkflowStore {
       SELECT COUNT(*) AS count FROM categorization_proposals
        WHERE budget_id = @budgetId
          AND superseded_at IS NOT NULL
+    `);
+
+    // ── Registration ──────────────────────────────────────────────────
+
+    this.stmt.selectRegistrationState = this.db.prepare(`
+      SELECT * FROM registration_state WHERE singleton = 1
+    `);
+    this.stmt.insertRegistrationClaim = this.db.prepare(`
+      INSERT INTO registration_state (singleton, claim_id, claimed_email, claimed_name, claimed_at)
+      VALUES (1, @claimId, @email, @name, @claimedAt)
+    `);
+
+    this.stmt.finalizeRegistration = this.db.prepare(`
+      UPDATE registration_state
+         SET owner_user_id = @ownerUserId,
+             bootstrapped_at = @bootstrappedAt
+       WHERE singleton = 1
+         AND claim_id = @claimId
+         AND owner_user_id IS NULL
+    `);
+
+    // ── Invitations ─────────────────────────────────────────────────────
+
+    this.stmt.insertInvitation = this.db.prepare(`
+      INSERT INTO invitations (id, token_digest, status, created_by_user_id, expires_at, created_at)
+      VALUES (@id, @tokenDigest, 'active', @createdByUserId, @expiresAt, @createdAt)
+    `);
+
+    this.stmt.selectInvitation = this.db.prepare(`
+      SELECT * FROM invitations WHERE id = ?
+    `);
+
+    this.stmt.selectInvitationByDigest = this.db.prepare(`
+      SELECT * FROM invitations WHERE token_digest = ?
+    `);
+
+    this.stmt.selectAllInvitations = this.db.prepare(`
+      SELECT * FROM invitations ORDER BY created_at DESC
+    `);
+
+    this.stmt.updateInvitationClaim = this.db.prepare(`
+      UPDATE invitations
+         SET status = 'claimed',
+             claimed_email = @email,
+             claim_id = @claimId,
+             claimed_at = @claimedAt
+       WHERE id = @id
+         AND status = 'active'
+    `);
+
+    this.stmt.updateInvitationRevoke = this.db.prepare(`
+      UPDATE invitations
+         SET status = 'revoked'
+       WHERE id = @id
+         AND status = 'active'
+    `);
+
+    this.stmt.updateInvitationExpired = this.db.prepare(`
+      UPDATE invitations
+         SET status = 'expired'
+       WHERE id = @id
+         AND status = 'active'
+         AND expires_at < @now
+    `);
+
+    this.stmt.updateInvitationRedeemed = this.db.prepare(`
+      UPDATE invitations
+         SET status = 'redeemed',
+             redeemed_user_id = @userId,
+             redeemed_at = @redeemedAt
+       WHERE claim_id = @claimId
+         AND status = 'claimed'
+    `);
+
+    this.stmt.selectStrandedClaims = this.db.prepare(`
+      SELECT * FROM invitations
+       WHERE status = 'claimed'
+         AND redeemed_user_id IS NULL
     `);
   }
 
@@ -3073,5 +3237,344 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   async removeRuleOverride(ruleId: string): Promise<void> {
     this.stmt.removeRuleOverride.run({ ruleId });
+  }
+
+  // ── Registration and invitations ─────────────────────────────────
+
+  async getRegistrationState(): Promise<RegistrationState> {
+    const row = this.stmt.selectRegistrationState.get({}) as
+      { owner_user_id: string | null; bootstrapped_at: string | null } | undefined;
+    if (!row || !row.owner_user_id) {
+      return { mode: 'bootstrap', ownerUserId: null, bootstrappedAt: null };
+    }
+    return {
+      mode: 'complete',
+      ownerUserId: row.owner_user_id,
+      bootstrappedAt: row.bootstrapped_at,
+    };
+  }
+
+  async claimBootstrap(input: BootstrapClaimInput): Promise<BootstrapClaimResult> {
+    const now = nowISO();
+
+    const txn = this.db.transaction(() => {
+      const row = this.stmt.selectRegistrationState.get({}) as
+        { owner_user_id: string | null; claim_id: string | null; claimed_email: string | null } | undefined;
+
+      if (row?.owner_user_id) {
+        throw new Error('Bootstrap already completed');
+      }
+
+      if (row?.claim_id) {
+        if (row.claimed_email === input.email) {
+          return { claimId: row.claim_id };
+        }
+        throw new Error('Bootstrap already claimed');
+      }
+
+      this.stmt.insertRegistrationClaim.run({
+        claimId: input.claimId,
+        email: input.email,
+        name: input.name,
+        claimedAt: now,
+      });
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'bootstrap_claimed',
+        timestamp: now,
+        actorId: input.email,
+        operation: 'claim_bootstrap',
+        proposalId: null,
+        payloadHash: null,
+        budgetId: null,
+        backendIds: '[]',
+        policyVersion: null,
+        authorizationDisposition: null,
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: null,
+        providerModel: null,
+        correlationId: null,
+        requestId: null,
+        result: `Bootstrap claimed for ${input.email}`,
+        isError: 0,
+      });
+
+      return { claimId: input.claimId };
+    });
+
+    return txn() as BootstrapClaimResult;
+  }
+
+  async finalizeBootstrap(input: FinalizeBootstrapInput): Promise<FinalizeBootstrapResult> {
+    const now = nowISO();
+
+    const txn = this.db.transaction(() => {
+      const row = this.stmt.selectRegistrationState.get({}) as
+        { owner_user_id: string | null; claim_id: string | null; bootstrapped_at: string | null } | undefined;
+
+      if (!row?.claim_id) {
+        throw new Error('No bootstrap claim found');
+      }
+      if (row.claim_id !== input.claimId) {
+        throw new Error('Claim ID mismatch');
+      }
+
+      if (row.owner_user_id) {
+        return { ownerUserId: row.owner_user_id, bootstrappedAt: row.bootstrapped_at! };
+      }
+
+      const result = this.stmt.finalizeRegistration.run({
+        claimId: input.claimId,
+        ownerUserId: input.ownerUserId,
+        bootstrappedAt: now,
+      });
+      if (result.changes === 0) {
+        throw new Error('Bootstrap finalization failed');
+      }
+
+      this.stmt.upsertActorMembershipStmt.run({
+        actorId: input.ownerUserId,
+        status: 'active',
+        capabilities: JSON.stringify(['categorization:execute', 'rule:execute']),
+        scope: '*',
+      });
+
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'bootstrap_completed',
+        timestamp: now,
+        actorId: input.ownerUserId,
+        operation: 'bootstrap',
+        proposalId: null,
+        payloadHash: null,
+        budgetId: null,
+        backendIds: '[]',
+        policyVersion: null,
+        authorizationDisposition: null,
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: null,
+        providerModel: null,
+        correlationId: null,
+        requestId: null,
+        result: 'Owner created',
+        isError: 0,
+      });
+
+      return { ownerUserId: input.ownerUserId, bootstrappedAt: now };
+    });
+
+    return txn() as FinalizeBootstrapResult;
+  }
+
+  async createInvitation(creatorUserId: string, auditContext?: { requestId?: string; correlationId?: string }): Promise<CreateInvitationResult> {
+    const id = randomUUID();
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenDigest = createHash('sha256').update(rawToken).digest('hex');
+    const now = nowISO();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    this.stmt.insertInvitation.run({
+      id,
+      tokenDigest,
+      createdByUserId: creatorUserId,
+      expiresAt,
+      createdAt: now,
+    });
+
+    this.stmt.insertAudit.run({
+      id: randomUUID(),
+      classification: 'invitation_created',
+      timestamp: now,
+      actorId: creatorUserId,
+      operation: 'create_invitation',
+      proposalId: null,
+      payloadHash: null,
+      budgetId: null,
+      backendIds: '[]',
+      policyVersion: null,
+      authorizationDisposition: null,
+      idempotencyKey: null,
+      expectedPriorState: null,
+      observedResultState: null,
+      providerModel: null,
+      correlationId: auditContext?.correlationId ?? null,
+      requestId: auditContext?.requestId ?? null,
+      result: `Invitation ${id} created`,
+      isError: 0,
+    });
+
+    const base = (process.env.BETTER_AUTH_URL || 'http://localhost:3000').replace(/\/+$/, '');
+    return {
+      invitation: { id, expiresAt, status: 'active' as InvitationStatus },
+      inviteUrl: `${base}/invite#token=${rawToken}`,
+    };
+  }
+
+  async revokeInvitation(invitationId: string, actorId?: string, requestId?: string): Promise<void> {
+    const now = nowISO();
+    const result = this.stmt.updateInvitationRevoke.run({ id: invitationId });
+    if (result.changes === 0) {
+      const row = this.stmt.selectInvitation.get(invitationId) as InvitationRow | undefined;
+      if (!row) throw new Error('Invitation not found');
+      if (row.status === 'revoked') return;
+      throw new Error(`Cannot revoke invitation in '${row.status}' state`);
+    }
+    this.stmt.insertAudit.run({
+      id: randomUUID(),
+      classification: 'invitation_revoked',
+      timestamp: now,
+      actorId: actorId ?? 'system',
+      operation: 'revoke_invitation',
+      proposalId: invitationId,
+      payloadHash: null,
+      budgetId: null,
+      backendIds: '[]',
+      policyVersion: null,
+      authorizationDisposition: null,
+      idempotencyKey: null,
+      expectedPriorState: null,
+      observedResultState: null,
+      providerModel: null,
+      correlationId: null,
+      requestId: requestId ?? null,
+      result: `Invitation ${invitationId} revoked`,
+      isError: 0,
+    });
+  }
+
+  async listInvitations(): Promise<InvitationMetadata[]> {
+    const rows = this.stmt.selectAllInvitations.all({}) as InvitationRow[];
+    return rows.map(rowToInvitationMetadata);
+  }
+
+  async claimInvitation(input: ClaimInvitationInput): Promise<ClaimInvitationResult> {
+    const digest = createHash('sha256').update(input.token).digest('hex');
+    const claimId = randomUUID();
+    const now = nowISO();
+
+    // First, look up the invitation outside the transaction.
+    // If it's expired, update status + audit outside the transaction
+    // so the status transition commits even though we throw.
+    const row = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
+    if (!row) throw new Error('Invalid invitation');
+
+    if (isExpired(row.expires_at)) {
+      this.stmt.updateInvitationExpired.run({ id: row.id, now });
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'invitation_expired',
+        timestamp: now,
+        actorId: input.email,
+        operation: 'claim_invitation',
+        proposalId: null,
+        payloadHash: null,
+        budgetId: null,
+        backendIds: '[]',
+        policyVersion: null,
+        authorizationDisposition: null,
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: null,
+        providerModel: null,
+        correlationId: input.correlationId ?? null,
+        requestId: input.requestId ?? null,
+        result: `Invitation ${row.id} expired`,
+        isError: 1,
+      });
+      throw new Error('Invitation has expired');
+    }
+
+    // Normal claim flow inside a transaction for atomicity
+    const txn = this.db.transaction(() => {
+      // Re-read within transaction for consistency under concurrent writes
+      const freshRow = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
+
+      if (freshRow!.status === 'claimed') {
+        if (freshRow!.claimed_email === input.email) {
+          return { claimId: freshRow!.claim_id!, email: freshRow!.claimed_email };
+        }
+        throw new Error('Invitation already claimed by a different email');
+      }
+
+      if (freshRow!.status !== 'active') {
+        throw new Error(`Invitation is ${freshRow!.status}`);
+      }
+
+      const updateResult = this.stmt.updateInvitationClaim.run({
+        id: freshRow!.id,
+        email: input.email,
+        claimId,
+        claimedAt: now,
+      });
+
+      if (updateResult.changes === 0) {
+        throw new Error('Invitation claim failed');
+      }
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'invitation_claimed',
+        timestamp: now,
+        actorId: input.email,
+        operation: 'claim_invitation',
+        proposalId: null,
+        payloadHash: null,
+        budgetId: null,
+        backendIds: '[]',
+        policyVersion: null,
+        authorizationDisposition: null,
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: null,
+        providerModel: null,
+        correlationId: input.correlationId ?? null,
+        requestId: input.requestId ?? null,
+        result: `Invitation ${freshRow!.id} claimed by ${input.email}`,
+        isError: 0,
+      });
+
+      return { claimId, email: input.email };
+    });
+
+    return txn() as ClaimInvitationResult;
+  }
+
+  async completeInvitationRedemption(claimId: string, userId: string, requestId?: string): Promise<void> {
+    const now = nowISO();
+    const result = this.stmt.updateInvitationRedeemed.run({
+      claimId,
+      userId,
+      redeemedAt: now,
+    });
+    if (result.changes === 0) {
+      throw new Error(`Claim ${claimId} not found or not in claimed state`);
+    }
+    this.stmt.insertAudit.run({
+      id: randomUUID(),
+      classification: 'invitation_redeemed',
+      timestamp: now,
+      actorId: userId,
+      operation: 'redeem_invitation',
+      proposalId: null,
+      payloadHash: null,
+      budgetId: null,
+      backendIds: '[]',
+      policyVersion: null,
+      authorizationDisposition: null,
+      idempotencyKey: null,
+      expectedPriorState: null,
+      observedResultState: null,
+      providerModel: null,
+      correlationId: null,
+      requestId: requestId ?? null,
+      result: `Invitation redeemed for user ${userId}`,
+      isError: 0,
+    });
+  }
+
+  async reconcileClaimedInvitations(): Promise<number> {
+    const rows = this.stmt.selectStrandedClaims.all({}) as InvitationRow[];
+    return rows.length;
   }
 }

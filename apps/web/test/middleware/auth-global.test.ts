@@ -75,6 +75,18 @@ describe('auth.global middleware — session check', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('bypasses session check for /setup', async () => {
+    const result = await authMiddleware(mockRoute({ path: '/setup' }));
+    expect(result).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('bypasses session check for /invite', async () => {
+    const result = await authMiddleware(mockRoute({ path: '/invite' }));
+    expect(result).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('bypasses session check for /api/auth/* routes', async () => {
     const result = await authMiddleware(
       mockRoute({ path: '/api/auth/get-session' }),

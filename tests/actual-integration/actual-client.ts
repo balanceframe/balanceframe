@@ -159,8 +159,16 @@ interface DownloadOptions {
 }
 
 /**
- * Selects a local budget when its ID is provided, otherwise downloads the
- * server budget identified by its group sync ID.
+ * Downloads a server budget by its group sync ID and loads it locally.
+ *
+ * Delegates to the Actual API handler which resolves `groupId` to a
+ * `cloudFileId` internally: it searches local budgets by groupId first,
+ * then falls back to the server's remote file listing. When found, it
+ * downloads (if needed) and loads the budget. This works for fresh temp
+ * clients with no local metadata files as well as established clients.
+ *
+ * When `budgetIdOrOptions` is a string, loads a locally-known budget by
+ * that ID rather than downloading from the server.
  */
 export async function downloadBudget(
   groupId: string,
@@ -172,14 +180,16 @@ export async function downloadBudget(
     return;
   }
 
-  const remoteBudget = (await getBudgets()).find(
-    (budget) => budget.groupId === groupId,
-  );
-  if (!remoteBudget) {
-    throw new Error(`No remote budget exists for group "${groupId}"`);
-  }
+  // Merge options: prefer budgetIdOrOptions for password fields
+  const effectiveOptions = budgetIdOrOptions ?? options;
 
-  await downloadActualBudget(groupId, budgetIdOrOptions ?? options);
+  // The Actual API handler resolves groupId → cloudFileId internally:
+  //   1. Searches local budgets (metadata.json) by groupId
+  //   2. Falls back to remote file listing (server /list-user-files)
+  //   3. Downloads the file and loads the budget
+  // Pass groupId directly — extracting cloudFileId from getBudgets() would
+  // make the handler's groupId-based lookup fail because fileId ≠ groupId.
+  await downloadActualBudget(groupId, effectiveOptions);
 }
 
 

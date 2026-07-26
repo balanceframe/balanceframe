@@ -13,8 +13,8 @@
 
 import crypto from 'node:crypto';
 import { ConnectionManager, CategorizationMutationService } from '@balanceframe/application';
+import type { BudgetLedger } from '@balanceframe/actual-adapter';
 import type {
-  BudgetLedger,
   MutationPlan,
   RustMutationProtocol,
   VerificationResult,
@@ -163,7 +163,7 @@ export function createDefaultExecutorFactory(
           actorId: input.actorId,
           provenance: 'review-and-apply',
           providerModel: null,
-          correlationId: input.correlationId ?? null,
+          correlationId: input.correlationId ?? undefined,
         });
 
         // Create approval for the acting reviewer
@@ -182,7 +182,7 @@ export function createDefaultExecutorFactory(
           proposalId: proposal.id,
           approvalId: approval.id,
           idempotencyKey: `review-${item.id}-${input.requestId}`,
-          correlationId: input.correlationId ?? null,
+          correlationId: input.correlationId ?? undefined,
         });
 
         // Map ExecuteCategorizationResult to ReviewMutationResult
