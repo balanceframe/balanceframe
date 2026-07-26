@@ -57,7 +57,7 @@ export function resolveBootstrapSecret(): ResolveBootstrapSecretResult {
     } catch (err) {
       throw new BootstrapSecretError(
         `Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE at "${filePath}": ` +
-          `${(err as NodeJS.ErrnoException).message}`,
+          `${(err as Error).message}`,
       );
     }
 

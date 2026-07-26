@@ -78,6 +78,10 @@ describe('02 — Sync & Cache Lifecycle', () => {
   });
 
   // ------------------------------------------------------------------
+  // Proof 1b: Download by group ID on a fresh client (no local listing)
+  // ------------------------------------------------------------------
+
+  // ------------------------------------------------------------------
   // Proof 2: Synchronize with server
   // ------------------------------------------------------------------
   it('should synchronize budget data with the server', async () => {

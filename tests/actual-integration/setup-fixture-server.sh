@@ -727,12 +727,13 @@ ENV
   fi
 
   # Shell-quote all values with printf %q (handles spaces, quotes, etc.)
-  local qs qk qb qg qn
+  local qs qk qb qg qn qsd
   printf -v qs "%q" "$ACTUAL_SERVER_URL"
   printf -v qk "%q" "$ACTUAL_SECRET_KEY"
   printf -v qb "%q" "$budget_id"
   printf -v qg "%q" "$group_id"
   printf -v qn "%q" "$ACTUAL_BUDGET_NAME"
+  printf -v qsd "%q" "$SEED_DATA_DIR"
 
   cat > "$SCRIPT_DIR/.env.test" << ENV
 ACTUAL_SERVER_URL=$qs
@@ -740,6 +741,7 @@ ACTUAL_SECRET_KEY=$qk
 ACTUAL_BUDGET_ID=$qb
 ACTUAL_GROUP_ID=$qg
 ACTUAL_BUDGET_NAME=$qn
+ACTUAL_SEED_DATA_DIR=$qsd
 ENV
 
   ok "Environment written to $SCRIPT_DIR/.env.test"

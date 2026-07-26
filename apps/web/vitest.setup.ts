@@ -5,6 +5,7 @@
  */
 
 import { ref, computed, onMounted, nextTick, watch, shallowRef } from 'vue';
+import { vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Vue reactivity auto-imports (provided by Nuxt via unplugin-auto-import)
