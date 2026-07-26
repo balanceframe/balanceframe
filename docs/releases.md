@@ -73,6 +73,78 @@ tags (`vX.Y.Z`, `vX.Y`, `vX`, `latest`) are convenience aliases.
   connection/auth flow and are never exposed as compose-time environment
   variables.
 
+## Account lifecycle (self-hosted registration)
+
+BalanceFrame implements a two-state registration model designed for
+self-hosted deployments that never share a public sign-up form.
+
+### Bootstrap (first owner)
+
+A fresh instance starts with no user accounts. The first (and only) owner
+is created through a bootstrap flow protected by a high-entropy operator
+secret:
+
+- **Configure exactly one of:**
+
+  `BALANCEFRAME_BOOTSTRAP_SECRET_FILE` — path to a file containing the
+  secret (preferred for Docker Compose deployments; the project `compose.yaml`
+  mounts `./bootstrap_secret.txt` to `/run/secrets/bootstrap_secret`).
+
+  `BALANCEFRAME_BOOTSTRAP_SECRET` — inline environment variable (alternate
+  mechanism; avoid when secrets management is available).
+
+- Generate the secret with `openssl rand -hex 32` (produces a 64-character
+  hex string). The resolved value must be at least 32 characters.
+- The application fails closed at startup if both sources are set, the file
+  is unreadable, or the secret is too short.
+- The secret file is required only while no owner exists. It may remain
+  configured after bootstrap but is never used as a general registration
+  credential.
+- **Never commit the bootstrap secret to version control, embed it in
+  OCI images, or write it to application logs.** The `/api/auth/config`
+  endpoint reports bootstrap availability but never leaks the secret value.
+
+### Invite-only (subsequent accounts)
+
+After bootstrap completes, registration transitions to invite-only:
+
+- Only the existing owner may create an invitation through the web UI.
+  Authorization is enforced server-side by user ID; the Better Auth `admin`
+  plugin's HTTP endpoints remain inaccessible to all accounts.
+- Each invitation produces a one-time URL containing a 32-byte random bearer
+  token in the URI fragment:
+
+  `https://<public-origin>/invite#token=<hex>`
+
+  The fragment is never sent to the server in HTTP requests or written to
+  standard proxy access logs. The invite page reads and clears it with
+  `history.replaceState` before posting the token in its JSON body over TLS.
+- Only the SHA-256 digest of the token is persisted in `workflow.db`. The
+  raw token is returned exactly once — in the response that creates the
+  invitation. The owner copies this URL out-of-band (Clipboard API) and
+  delivers it to the intended recipient.
+- Tokens are single-use, revocable, and expire after 7 days. The application
+  never sends transactional email; delivery of the invitation link is the
+  operator's responsibility.
+- The recipient uses the link to set their name, email, and password through
+  the invitation redemption flow, then signs in normally. The new account
+  receives an active membership with no mutation capabilities.
+- Invalid, revoked, expired, already-claimed, and already-redeemed tokens
+  share a single public rejection message that does not enumerate the reason.
+
+### Configuration
+
+- `BETTER_AUTH_URL` must be set to the externally accessed HTTPS origin
+  (e.g. `https://balanceframe.example.com`). It is used for auth callbacks
+  and as the base when constructing invitation URLs.
+- Public/open registration is not supported. Better Auth's `disableSignUp`
+  is permanently enabled and the UI never exposes a sign-up form.
+- Email verification is not implemented. The invite itself is the identity
+  proof; no verification email is sent.
+- All registration policy state (bootstrap completion, invitations) is
+  stored in `workflow.db`, separate from Better Auth's authentication
+  tables. The two databases are never coupled in a single transaction.
+
 ## Backward compatibility
 
 - A minor/patch upgrade on the same data volume must work without data loss or

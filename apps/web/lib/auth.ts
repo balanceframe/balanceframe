@@ -13,9 +13,10 @@
  * Schema migrations are handled by `server/plugins/auth-migration.ts`.
  */
 
+import { admin } from 'better-auth/plugins';
+import { apiKey } from '@better-auth/api-key';
 import { betterAuth } from 'better-auth';
 import Database from 'better-sqlite3';
-import { apiKey } from '@better-auth/api-key';
 
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -43,5 +44,8 @@ export const auth = betterAuth({
     disableSignUp: true,
   },
 
-  plugins: [apiKey()],
+  plugins: [
+    admin(),
+    apiKey(),
+  ],
 });

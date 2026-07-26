@@ -21,7 +21,6 @@
  */
 
 export { SqliteWorkflowStore } from './store.js';
-
 export type {
   Suggestion,
   SaveSuggestionInput,
@@ -54,4 +53,18 @@ export type {
   AuthorizationDisposition,
   AuthorizationResult,
   MembershipStatus,
+  RegistrationState,
+  RegistrationMode,
+  BootstrapClaimInput,
+  InvitationStatus,
+  Invitation,
+  InvitationMetadata,
+  CreateInvitationResult,
+  ClaimInvitationInput,
+  ClaimInvitationResult,
+  BootstrapClaimResult,
+  FinalizeBootstrapInput,
+  FinalizeBootstrapResult,
+  CompleteInvitationRedemptionInput,
+  CompleteInvitationRedemptionResult,
 } from './types.js';

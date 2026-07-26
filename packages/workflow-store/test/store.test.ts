@@ -18,8 +18,9 @@
  * - Stale worker rejection
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SqliteWorkflowStore } from '../src/store.js';
+import { createHash } from 'node:crypto';
 import type { SaveSuggestionInput } from '../src/types.js';
 import Database from 'better-sqlite3';
 import { mkdtempSync, unlinkSync, rmdirSync } from 'node:fs';
@@ -1671,6 +1672,403 @@ describe('SqliteWorkflowStore', () => {
     });
   });
 
+
+// =======================================================================
+// Registration lifecycle – bootstrap and invitation persistence
+// =======================================================================
+
+describe('registration lifecycle', () => {
+  // Direct DB access for schema-level assertions
+  let db: Database.Database;
+  let regStore: SqliteWorkflowStore;
+
+  const FIXED_USER_ID = '00000000-0000-0000-0000-000000000001';
+  const FIXED_INVITE_ID = '00000000-0000-0000-0000-000000000010';
+  const TOKEN_DIGEST =
+    '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
+  const FIXED_NOW = '2026-07-25T12:00:00.000Z';
+  const FUTURE_EXPIRY = '2026-08-01T12:00:00.000Z';
+  const OWNER_USER_ID = '00000000-0000-0000-0000-000000000099';
+  const PAST_EXPIRY = '2026-07-18T12:00:00.000Z';
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    regStore = new SqliteWorkflowStore(':memory:');
+  });
+
+  afterEach(() => {
+    regStore.close();
+    db.close();
+  });
+
+  // -----------------------------------------------------------------------
+  // Schema migration (v3)
+  // -----------------------------------------------------------------------
+
+  describe('schema migration (v3)', () => {
+    it('creates registration_state table with single-row constraint', () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const tableNames = s['db'].prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+      ).all() as { name: string }[];
+
+      expect(tableNames.map(t => t.name)).toContain('registration_state');
+
+      const colInfo = s['db'].prepare(
+        "PRAGMA table_info('registration_state')"
+      ).all() as { name: string; type: string; notnull: number; pk: number }[];
+
+      const colNames = colInfo.map(c => c.name);
+      expect(colNames).toContain('singleton');
+      expect(colNames).toContain('owner_user_id');
+      expect(colNames).toContain('bootstrapped_at');
+
+      const singletonCol = colInfo.find(c => c.name === 'singleton')!;
+      expect(singletonCol.type).toBe('INTEGER');
+      expect(singletonCol.pk).toBe(1);
+
+      s.close();
+    });
+
+    it('enforces singleton constraint on registration_state', () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const insert = s['db'].prepare(`
+        INSERT INTO registration_state (singleton, owner_user_id, bootstrapped_at)
+        VALUES (1, 'user-1', @now)
+      `);
+      insert.run({ now: FIXED_NOW });
+
+      expect(() => {
+        insert.run({ now: FIXED_NOW });
+      }).toThrow();
+
+      s.close();
+    });
+
+    it('creates invitations table with token-digest-only columns', () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const tableNames = s['db'].prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+      ).all() as { name: string }[];
+
+      expect(tableNames.map(t => t.name)).toContain('invitations');
+
+      const colInfo = s['db'].prepare(
+        "PRAGMA table_info('invitations')"
+      ).all() as { name: string; type: string; notnull: number; pk: number }[];
+
+      const colNames = colInfo.map(c => c.name);
+      expect(colNames).toContain('id');
+      expect(colNames).toContain('token_digest');
+      expect(colNames).toContain('status');
+      expect(colNames).toContain('created_by_user_id');
+      expect(colNames).toContain('expires_at');
+      expect(colNames).toContain('claimed_email');
+      expect(colNames).toContain('claim_id');
+      expect(colNames).toContain('redeemed_user_id');
+      expect(colNames).toContain('created_at');
+      expect(colNames).toContain('claimed_at');
+      expect(colNames).toContain('redeemed_at');
+
+      // No column stores the raw bearer token
+      expect(colNames).not.toContain('token');
+      expect(colNames).not.toContain('raw_token');
+      expect(colNames).not.toContain('bearer_token');
+
+      s.close();
+    });
+
+    it('enforces unique constraint on invitations.token_digest', () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const insertInvite = s['db'].prepare(`
+        INSERT INTO invitations (id, token_digest, status, created_by_user_id, expires_at, created_at)
+        VALUES (@id, @digest, 'active', @creator, @expires, @now)
+      `);
+      insertInvite.run({
+        id: FIXED_INVITE_ID,
+        digest: TOKEN_DIGEST,
+        creator: FIXED_USER_ID,
+        expires: FUTURE_EXPIRY,
+        now: FIXED_NOW,
+      });
+
+      expect(() => {
+        insertInvite.run({
+          id: '00000000-0000-0000-0000-000000000011',
+          digest: TOKEN_DIGEST,
+          creator: FIXED_USER_ID,
+          expires: FUTURE_EXPIRY,
+          now: FIXED_NOW,
+        });
+      }).toThrow();
+
+      s.close();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Bootstrap lifecycle
+  // -----------------------------------------------------------------------
+
+  describe('bootstrap', () => {
+    it('reports bootstrap available when no owner exists', async () => {
+      const state = await regStore.getRegistrationState();
+      expect(state.mode).toBe('bootstrap');
+      expect(state.ownerUserId).toBeNull();
+      expect(state.bootstrappedAt).toBeNull();
+    });
+    it('claimBootstrap creates exactly one owner under concurrent attempts', async () => {
+      const attempt1 = regStore.claimBootstrap({
+        name: 'Alice',
+        email: 'alice@example.com',
+        claimId: '00000000-0000-0000-0000-0000000000a1',
+      });
+      const attempt2 = regStore.claimBootstrap({
+        name: 'Bob',
+        email: 'bob@example.com',
+        claimId: '00000000-0000-0000-0000-0000000000a2',
+      });
+
+      const results = await Promise.allSettled([attempt1, attempt2]);
+      const succeeded = results.filter(
+        (r): r is PromiseFulfilledResult<Awaited<typeof attempt1>> => r.status === 'fulfilled'
+      );
+      expect(succeeded).toHaveLength(1);
+
+      await expect(
+        regStore.claimBootstrap({
+          name: 'Charlie',
+          email: 'charlie@example.com',
+          claimId: '00000000-0000-0000-0000-0000000000a3',
+        })
+      ).rejects.toThrow();
+    });
+
+    it('persists owner_user_id and prevents second bootstrap', async () => {
+      const claimId = '00000000-0000-0000-0000-000000000099-claim';
+
+      const claim = await regStore.claimBootstrap({
+        name: 'Owner',
+        email: 'owner@example.com',
+        claimId,
+      });
+      expect(claim.claimId).toBe(claimId);
+
+      await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
+
+      const state = await regStore.getRegistrationState();
+      expect(state.mode).toBe('complete');
+      expect(state.ownerUserId).toBe(OWNER_USER_ID);
+      expect(state.bootstrappedAt).not.toBeNull();
+
+      const row = regStore['db'].prepare(
+        'SELECT owner_user_id, bootstrapped_at FROM registration_state WHERE singleton = 1'
+      ).get() as { owner_user_id: string; bootstrapped_at: string } | undefined;
+      expect(row).not.toBeUndefined();
+      expect(row!.owner_user_id).toBe(OWNER_USER_ID);
+
+      await expect(
+        regStore.claimBootstrap({
+          name: 'Second',
+          email: 'second@example.com',
+          claimId: '00000000-0000-0000-0000-000000000099-second',
+        })
+      ).rejects.toThrow();
+    });
+    it('assigns owner an active membership with bootstrap capabilities', async () => {
+      const claimId = '00000000-0000-0000-0000-000000000099-membership';
+
+      await regStore.claimBootstrap({
+        name: 'Owner',
+        email: 'owner@example.com',
+        claimId,
+      });
+      await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
+
+      const membership = await regStore.getActorMembership(OWNER_USER_ID);
+      expect(membership).not.toBeNull();
+      expect(membership!.status).toBe('active');
+      expect(membership!.capabilities).toContain('categorization:execute');
+      expect(membership!.capabilities).toContain('rule:execute');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Invitation lifecycle
+  // -----------------------------------------------------------------------
+
+  describe('invitation lifecycle', () => {
+    it('createInvitation returns only id, expiresAt, and inviteUrl — no raw token', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+
+      expect(invite.invitation).toBeDefined();
+      expect(invite.invitation.id).toBeTypeOf('string');
+      expect(invite.invitation.expiresAt).toBeTypeOf('string');
+      expect(invite.invitation.status).toBe('active');
+      expect(invite.inviteUrl).toMatch(/^https?:\/\/.*\/invite#token=/);
+      const invitationJson = JSON.stringify(invite.invitation);
+      expect(invitationJson).not.toMatch(/[a-f0-9]{64}/i);
+    });
+
+    it('createInvitation persists only a token digest, never the raw token', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+      const expectedDigest = createHash('sha256').update(token).digest('hex');
+
+      const rows = regStore['db'].prepare(
+        'SELECT * FROM invitations'
+      ).all() as Record<string, unknown>[];
+      expect(rows).toHaveLength(1);
+
+      const row = rows[0];
+      expect(row.token_digest).toBe(expectedDigest);
+
+      // Only the token_digest column contains a 64-char hex value
+      const hex64Cols = Object.entries(row).filter(
+        ([_, v]) => typeof v === 'string' && /^[a-f0-9]{64}$/i.test(v)
+      );
+      expect(hex64Cols.map(([k]) => k)).toEqual(['token_digest']);
+    });
+
+    it('revokeInvitation marks an active invitation as revoked', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+      await regStore.revokeInvitation(invite.invitation.id);
+
+      const list = await regStore.listInvitations();
+      const revoked = list.find(i => i.id === invite.invitation.id);
+      expect(revoked).toBeDefined();
+      expect(revoked!.status).toBe('revoked');
+    });
+
+    it('claimInvitation rejects a revoked invitation', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+      await regStore.revokeInvitation(invite.invitation.id);
+
+      await expect(
+        regStore.claimInvitation({ token, email: 'user@example.com' })
+      ).rejects.toThrow();
+    });
+    it('claimInvitation rejects an expired invitation', async () => {
+      const s = new SqliteWorkflowStore(':memory:');
+      const invite = await s.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+      s['db'].prepare(
+        'UPDATE invitations SET expires_at = ? WHERE id = ?'
+      ).run(PAST_EXPIRY, invite.invitation.id);
+
+      await expect(
+        s.claimInvitation({ token, email: 'user@example.com' })
+      ).rejects.toThrow();
+      s.close();
+    });
+    it('claimInvitation is one-time: second claim with same token fails', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+
+      const claim1 = await regStore.claimInvitation({
+        token,
+        email: 'first@example.com',
+      });
+      expect(claim1.claimId).toBeTypeOf('string');
+      expect(claim1.email).toBe('first@example.com');
+
+      await expect(
+        regStore.claimInvitation({ token, email: 'second@example.com' })
+      ).rejects.toThrow();
+
+      const replay = await regStore.claimInvitation({
+        token,
+        email: 'first@example.com',
+      });
+      expect(replay.claimId).toBe(claim1.claimId);
+    });
+
+    it('completeInvitationRedemption finalizes the invitation with a user ID', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+      const claim = await regStore.claimInvitation({
+        token,
+        email: 'user@example.com',
+      });
+
+      await regStore.completeInvitationRedemption(
+        claim.claimId,
+        '00000000-0000-0000-0000-000000000020',
+      );
+
+      const list = await regStore.listInvitations();
+      const completed = list.find(i => i.id === invite.invitation.id);
+      expect(completed).toBeDefined();
+      expect(completed!.status).toBe('redeemed');
+      expect(completed!.redeemedUserId).toBe('00000000-0000-0000-0000-000000000020');
+      expect(completed!.redeemedAt).not.toBeNull();
+    });
+
+    it('reconcileClaimedInvitations finalizes stranded claimed invitations', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+      await regStore.claimInvitation({ token, email: 'stranded@example.com' });
+
+      const reconciled = await regStore.reconcileClaimedInvitations();
+      expect(reconciled).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Audit metadata never contains raw secrets
+  // -----------------------------------------------------------------------
+
+  describe('audit: no raw secrets in persistence', () => {
+    it('bootstrap audit records do not contain the operator secret', async () => {
+      const claimId = '00000000-0000-0000-0000-000000000099-audit';
+
+      await regStore.claimBootstrap({
+        name: 'Owner',
+        email: 'owner@example.com',
+        claimId,
+      });
+      await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
+
+      const rows = regStore['db'].prepare(
+        'SELECT * FROM audit_records'
+      ).all() as Record<string, unknown>[];
+
+      const allText = rows.map(r => JSON.stringify(Object.values(r))).join(' ');
+      expect(allText).not.toContain('s3kr1t');
+      expect(allText).not.toContain('correct-horse');
+      expect(allText).not.toContain('some-strong-password');
+    });
+    it('invitation audit records do not contain the raw bearer token', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+      const token = invite.inviteUrl.split('#token=')[1];
+
+      const rows = regStore['db'].prepare(
+        "SELECT * FROM audit_records WHERE classification LIKE '%invit%'"
+      ).all() as Record<string, unknown>[];
+
+      const allText = rows.map(r => JSON.stringify(Object.values(r))).join(' ');
+      expect(allText).not.toContain(token);
+    });
+
+    it('inviteUrl is never persisted in any database table', async () => {
+      const invite = await regStore.createInvitation(FIXED_USER_ID);
+
+      const tables = regStore['db'].prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name != 'schema_version'"
+      ).all() as { name: string }[];
+
+      for (const { name: table } of tables) {
+        const rows = regStore['db'].prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[];
+        for (const row of rows) {
+          const allValues = Object.values(row).map(String).join(' ');
+          expect(allValues).not.toContain(invite.inviteUrl);
+          expect(allValues).not.toContain('invite#token=');
+        }
+      }
+    });
+  });
+});
   // =======================================================================
   // Resource lifecycle
   // =======================================================================

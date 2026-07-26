@@ -43,6 +43,9 @@ services:
       - BALANCEFRAME_WORKFLOW_DB_PATH=/data/workflow.db
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?required}
       - BETTER_AUTH_URL=${BETTER_AUTH_URL:?required}
+      - BALANCEFRAME_BOOTSTRAP_SECRET_FILE=/run/secrets/bootstrap_secret
+    secrets:
+      - bootstrap_secret
     healthcheck:
       test: ["CMD-SHELL", "wget -q --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
       interval: 30s
@@ -57,3 +60,6 @@ networks:
 
 volumes:
   balanceframe-data:
+secrets:
+  bootstrap_secret:
+    file: ./bootstrap_secret.txt

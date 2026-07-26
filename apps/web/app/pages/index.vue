@@ -33,18 +33,25 @@
         </div>
       </div>
 
-      <div v-else class="flex gap-2">
+      <div v-else class="flex flex-col gap-3">
         <UButton
           to="/login"
           label="Sign in"
           size="lg"
+          class="self-start"
         />
-        <UButton
-          to="/login"
-          variant="outline"
-          label="Create account"
-          size="lg"
-        />
+        <div class="text-sm text-gray-500 dark:text-gray-400">
+          <NuxtLink
+            v-if="bootstrapAvailable"
+            to="/setup"
+            class="text-primary-500 hover:text-primary-600 dark:text-primary-400 dark:hover:text-primary-300"
+          >
+            Set up this instance
+          </NuxtLink>
+          <p v-else>
+            Have an invitation link? Open it to create your account.
+          </p>
+        </div>
       </div>
     </UCard>
   </UContainer>
@@ -58,6 +65,20 @@ const session = computed(() => sessionState.value?.data ?? null);
 const isPending = computed(() => sessionState.value?.isPending ?? true);
 const isAuthenticated = computed(() => !!session.value?.user);
 const user = computed(() => session.value?.user ?? null);
+
+const bootstrapAvailable = ref(false);
+
+onMounted(async () => {
+  try {
+    const config = await $fetch<{
+      registrationMode: string;
+      bootstrapAvailable: boolean;
+    }>('/api/auth/config');
+    bootstrapAvailable.value = config.bootstrapAvailable;
+  } catch {
+    // Config unavailable — default to invite-only instructions.
+  }
+});
 
 async function handleSignOut() {
   await authClient.signOut();

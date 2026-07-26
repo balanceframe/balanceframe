@@ -36,7 +36,13 @@ import type { EventWithContext } from '../utils/workflow-store';
 // ---------------------------------------------------------------------------
 
 // /api routes that do NOT require authentication — everything else is denied by default.
-const PUBLIC_API_ALLOWLIST = ['/api/health', '/api/health/ready', '/api/auth'];
+const PUBLIC_API_ALLOWLIST = [
+  '/api/health',
+  '/api/health/ready',
+  '/api/auth',
+  '/api/registration/bootstrap',
+  '/api/invitations/redeem',
+];
 
 // Startup warning when dev bypass env var is active.
 if (process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true') {

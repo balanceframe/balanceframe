@@ -663,6 +663,26 @@ export interface WorkflowStore {
    */
   findCorrectionConflicts(limit?: number): Promise<CorrectionConflict[]>;
 
+
+  // ── Registration and invitations ────────────────────────────────
+
+  /**
+   * Get the current registration state (mode, owner info).
+   */
+  getRegistrationState(): Promise<RegistrationState>;
+
+  /**
+   * Claim the bootstrap slot atomically.
+   * Idempotent for same email on retry; rejects different email if claimed.
+   */
+  claimBootstrap(input: BootstrapClaimInput): Promise<BootstrapClaimResult>;
+
+  /**
+   * Finalize bootstrap after Better Auth user creation.
+   * Writes owner ID, membership, timestamp, and audit atomically.
+   * Idempotent on already-finalized claims.
+   */
+  finalizeBootstrap(input: FinalizeBootstrapInput): Promise<FinalizeBootstrapResult>;
   /**
    * Evaluate whether an actor is authorized for a given capability/scope.
    *
@@ -1113,4 +1133,155 @@ export interface AuthorizationResult {
   readonly scope: string;
   readonly policyVersion: string;
   readonly reason: string;
+}
+
+// ---------------------------------------------------------------------------
+// Registration — self-hosted bootstrap lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Registration mode indicating whether the instance has been bootstrapped.
+ * `'bootstrap'` — no owner exists, setup is available.
+ * `'complete'` — an owner has been registered, further bootstrap is blocked.
+ */
+export type RegistrationMode = 'bootstrap' | 'complete';
+
+/**
+ * Public registration state returned by {@link SqliteWorkflowStore.getRegistrationState}.
+ * Contains no secrets.
+ */
+export interface RegistrationState {
+  readonly mode: RegistrationMode;
+  readonly ownerUserId: string | null;
+  readonly bootstrappedAt: string | null;
+}
+
+/**
+ * Input to claim the bootstrap slot.
+ * No secrets here — those are validated by the route before calling the store.
+ */
+export interface BootstrapClaimInput {
+  readonly name: string;
+  readonly email: string;
+  readonly claimId: string;
+}
+
+/**
+ * Result of claiming the bootstrap slot — a claimId for cross-database recovery.
+ */
+export interface BootstrapClaimResult {
+  readonly claimId: string;
+}
+
+/**
+ * Input to finalize bootstrap after Better Auth user creation.
+ * Writes the actual user ID, owner membership, timestamp, and audit atomically.
+ */
+export interface FinalizeBootstrapInput {
+  readonly claimId: string;
+  readonly ownerUserId: string;
+}
+
+/**
+ * Result of finalizing bootstrap — the now-immutable owner identity.
+ */
+export interface FinalizeBootstrapResult {
+  readonly ownerUserId: string;
+  readonly bootstrappedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Invitation — one-time bearer-token account creation
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle status of an invitation token.
+ * - `active`: ready to be claimed.
+ * - `claimed`: a recipient has bound their email; awaiting identity creation.
+ * - `redeemed`: the recipient has created their account.
+ * - `revoked`: explicitly invalidated by the owner before use.
+ * - `expired`: the token lifetime has elapsed without redemption.
+ */
+export type InvitationStatus = 'active' | 'claimed' | 'redeemed' | 'revoked' | 'expired';
+
+/**
+ * Full invitation record as stored in the database.
+ * Never contains the raw bearer token.
+ */
+export interface Invitation {
+  readonly id: string;
+  readonly tokenDigest: string;
+  readonly status: InvitationStatus;
+  readonly createdByUserId: string;
+  readonly expiresAt: string;
+  readonly claimedEmail: string | null;
+  readonly claimId: string | null;
+  readonly redeemedUserId: string | null;
+  readonly createdAt: string;
+  readonly claimedAt: string | null;
+  readonly redeemedAt: string | null;
+}
+
+/**
+ * Public metadata for an invitation returned in list responses.
+ * Contains no token digest or raw token.
+ */
+export interface InvitationMetadata {
+  readonly id: string;
+  readonly status: InvitationStatus;
+  readonly createdByUserId: string;
+  readonly expiresAt: string;
+  readonly claimedEmail: string | null;
+  readonly redeemedUserId: string | null;
+  readonly createdAt: string;
+  readonly claimedAt: string | null;
+  readonly redeemedAt: string | null;
+}
+
+/**
+ * Result of creating an invitation.
+ * The `inviteUrl` contains the raw bearer token in the fragment;
+ * the `invitation` object exposes only the stable identifier and metadata.
+ */
+export interface CreateInvitationResult {
+  readonly invitation: {
+    readonly id: string;
+    readonly expiresAt: string;
+    readonly status: InvitationStatus;
+  };
+  readonly inviteUrl: string;
+}
+
+/**
+ * Input to claim an invitation by presenting the bearer token.
+ */
+export interface ClaimInvitationInput {
+  readonly token: string;
+  readonly email: string;
+}
+
+/**
+ * Result of a successful invitation claim.
+ * The `claimId` is used for cross-database identity creation recovery.
+ */
+export interface ClaimInvitationResult {
+  readonly claimId: string;
+  readonly email: string;
+}
+
+/**
+ * Input to complete invitation redemption after identity creation.
+ */
+export interface CompleteInvitationRedemptionInput {
+  readonly claimId: string;
+  readonly userId: string;
+}
+
+/**
+ * Result of finalizing an invitation redemption.
+ */
+export interface CompleteInvitationRedemptionResult {
+  readonly invitationId: string;
+  readonly userId: string;
+  readonly redeemedAt: string;
 }

@@ -12,8 +12,8 @@
 import { defineNuxtRouteMiddleware, useRequestHeaders, navigateTo } from '#app';
 
 export default defineNuxtRouteMiddleware(async (to) => {
-  // Allow the login page and auth API routes through without a session.
-  if (to.path === '/login' || to.path.startsWith('/api/auth')) {
+  // Allow public registration routes, the login page, and auth API routes through without a session.
+  if (to.path === '/login' || to.path === '/setup' || to.path === '/invite' || to.path.startsWith('/api/auth')) {
     return;
   }
 
