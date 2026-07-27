@@ -87,4 +87,26 @@ export type {
   ReportListOptions,
   SavedViewResult,
   CreateSavedViewInput,
+  // Phase 8.5 — Saved view lifecycle
+  UpdateSavedViewInput,
+  DuplicateSavedViewInput,
+  // Phase 8.5 — Finding lifecycle
+  Finding,
+  FindingStatus,
+  CreateFindingInput,
+  AcknowledgeFindingInput,
+  CorrectFindingInput,
+  DismissFindingInput,
+  ReopenFindingInput,
+  SupersedeFindingInput,
+  ListFindingsOptions,
+  // Phase 8.5 — Report history
+  ReportHistoryEntry,
+  // Phase 8.5 — Outbox listing
+  ListOutboxRecordsOptions,
+  // Phase 8.5 — Notification policy
+  NotificationPolicyRecord,
+  SaveNotificationPolicyInput,
+  RecipientResolution,
+  ListNotificationPoliciesOptions,
 } from './types.js';

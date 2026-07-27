@@ -6,6 +6,17 @@ use balanceframe_financial_core::{
     Category, CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag, Transaction,
 };
 pub use balanceframe_financial_core::{InferencePolicy, Provenance};
+pub use balanceframe_financial_core::{
+    DataQualityCenter, QualityDimension, AnalysisAvailability,
+    LiquidityCoverage, UpcomingObligation, CoverageRatio,
+    BillCalendar, BillCalendarEntry,
+    BudgetVarianceReport, CategoryVariance, CategoryTrend, TrendDirection,
+    IrregularObligationsReport, IrregularObligation, IrregularityKind,
+    IncomeReliabilityReport, IncomeSource,
+    ForecastCalibration, CalibrationMetric,
+    Scenario, ScenarioId, ScenarioVersion, ScenarioComparisonDelta, ScenarioComparisonResult,
+    MultidimensionalHealth, HealthDimension,
+};
 use balanceframe_financial_core as fc;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
@@ -1904,6 +1915,181 @@ pub fn evaluate_financial_state(request: FinancialStateRequest) -> FinancialStat
         score,
         reason_codes,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Additional Budget Intelligence protocol wrappers
+// ---------------------------------------------------------------------------
+
+/// Compute a composite data-quality center report from snapshot data.
+///
+/// Extracts accounts, transactions, uncategorized and duplicate counts
+/// from the snapshot and delegates to `fc::compute_data_quality_center`.
+pub fn compute_data_quality(snapshot: &ProtocolSnapshot) -> DataQualityCenter {
+    let accounts_count = snapshot.accounts.len();
+    let transactions_count = snapshot.transactions.len();
+    let uncategorized_count = snapshot.transactions.iter()
+        .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
+        .count();
+    // Simplified duplicate detection: count transactions with same imported_id
+    let mut seen_imported = std::collections::HashSet::new();
+    let duplicate_candidates = snapshot.transactions.iter()
+        .filter(|tx| tx.imported_id.is_some())
+        .filter(|tx| !seen_imported.insert(tx.imported_id.as_deref().unwrap_or("")))
+        .count();
+
+    // Staleness is passed as None — computing days-since requires an external
+    // time crate at this layer.  The analytics function handles missing
+    // freshness metadata gracefully.
+
+    fc::compute_data_quality_center(
+        accounts_count,
+        transactions_count,
+        uncategorized_count,
+        duplicate_candidates,
+        None,
+        None,
+    )
+}
+
+/// Compute liquidity coverage for upcoming obligations from snapshot data.
+///
+/// Finds liquid accounts (non-off-budget, non-closed) and extracts their
+/// cleared balance, then delegates to `fc::compute_liquidity_coverage`.
+pub fn compute_liquidity_coverage_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    current_month: &str,
+) -> LiquidityCoverage {
+    // Sum liquid account balances (on-budget, non-closed accounts)
+    let liquid_balance: Option<fc::Money> = {
+        let mut total_minor: i64 = 0;
+        let mut currency: Option<String> = None;
+        for acct in &snapshot.accounts {
+            if !acct.off_budget && !acct.is_closed {
+                total_minor = total_minor.saturating_add(acct.cleared_balance.minor_units());
+                currency = Some(acct.cleared_balance.currency().to_string());
+            }
+        }
+        currency.map(|cur| fc::Money::new(total_minor, &cur))
+    };
+
+    fc::compute_liquidity_coverage(
+        liquid_balance.as_ref(),
+        &snapshot.schedules,
+        &snapshot.budgets,
+        current_month,
+    )
+}
+
+/// Compute the bill/obligation calendar from snapshot schedules and transactions.
+pub fn compute_bill_calendar_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    reference_date: &str,
+) -> BillCalendar {
+    fc::compute_bill_calendar(&snapshot.schedules, &snapshot.transactions, reference_date)
+}
+
+/// Compute budget variance and trends from snapshot budget months and transactions.
+pub fn compute_budget_variance_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    reference_date: &str,
+) -> BudgetVarianceReport {
+    fc::compute_budget_variance(
+        &snapshot.budgets,
+        &snapshot.transactions,
+        &snapshot.categories,
+        reference_date,
+    )
+}
+
+/// Detect irregular obligations from snapshot schedules.
+pub fn compute_irregular_obligations_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+) -> IrregularObligationsReport {
+    fc::compute_irregular_obligations(&snapshot.schedules)
+}
+
+/// Compute income reliability from snapshot transactions, schedules, and categories.
+pub fn compute_income_reliability_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+) -> IncomeReliabilityReport {
+    fc::compute_income_reliability(
+        &snapshot.transactions,
+        &snapshot.schedules,
+        &snapshot.categories,
+    )
+}
+
+/// Compute forecast calibration from snapshot budget months and transactions.
+pub fn compute_forecast_calibration_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+) -> ForecastCalibration {
+    fc::compute_forecast_calibration(&snapshot.budgets, &snapshot.transactions)
+}
+
+/// Compare two immutable scenarios from their JSON payloads.
+/// Deserializes the JSON values into `fc::Scenario` structs and delegates
+/// to `fc::compare_scenarios`.  Returns `Unavailable` when deserialization fails.
+pub fn compare_scenarios_from_json(
+    baseline_json: &serde_json::Value,
+    comparison_json: &serde_json::Value,
+) -> ScenarioComparisonResult {
+    let baseline: Scenario = match serde_json::from_value(baseline_json.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            return ScenarioComparisonResult {
+                availability: AnalysisAvailability::Unavailable,
+                baseline: ScenarioId {
+                    id: String::new(),
+                    name: "deserialization_error".to_string(),
+                },
+                comparison: ScenarioId {
+                    id: String::new(),
+                    name: "deserialization_error".to_string(),
+                },
+                deltas: vec![],
+                summary: format!("Failed to deserialize baseline scenario: {}", e),
+            };
+        }
+    };
+    let comparison: Scenario = match serde_json::from_value(comparison_json.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            return ScenarioComparisonResult {
+                availability: AnalysisAvailability::Unavailable,
+                baseline: baseline.id,
+                comparison: ScenarioId {
+                    id: String::new(),
+                    name: "deserialization_error".to_string(),
+                },
+                deltas: vec![],
+                summary: format!("Failed to deserialize comparison scenario: {}", e),
+            };
+        }
+    };
+    fc::compare_scenarios(&baseline, &comparison)
+}
+
+/// Compute multidimensional health from snapshot data.
+/// Runs all sub-analyses internally and delegates to
+/// `fc::compute_multidimensional_health`.
+pub fn compute_multidimensional_health_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    current_month: &str,
+) -> MultidimensionalHealth {
+    let data_quality = compute_data_quality(snapshot);
+    let liquidity = compute_liquidity_coverage_from_snapshot(snapshot, current_month);
+    let budget_variance = compute_budget_variance_from_snapshot(snapshot, current_month);
+    let income_reliability = compute_income_reliability_from_snapshot(snapshot);
+    let forecast_calibration = compute_forecast_calibration_from_snapshot(snapshot);
+
+    fc::compute_multidimensional_health(
+        Some(&liquidity),
+        Some(&budget_variance),
+        Some(&income_reliability),
+        Some(&forecast_calibration),
+        Some(&data_quality),
+    )
 }
 
 #[cfg(test)]

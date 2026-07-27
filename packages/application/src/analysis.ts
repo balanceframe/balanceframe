@@ -75,6 +75,25 @@ import type {
   AttentionHomeOutput,
   FinancialStateResult,
   FinancialStateOutput,
+  DataQualityResult,
+  DataQualityOutput,
+  LiquidityCoverageResult,
+  LiquidityCoverageOutput,
+  BillCalendarResult,
+  BillCalendarOutput,
+  BudgetVarianceResult,
+  BudgetVarianceOutput,
+  IrregularObligationsResult,
+  IrregularObligationsOutput,
+  IncomeReliabilityResult,
+  IncomeReliabilityOutput,
+  ForecastCalibrationResult,
+  ForecastCalibrationOutput,
+  ScenarioComparisonParams,
+  ScenarioComparisonResult,
+  ScenarioComparisonOutput,
+  MultidimensionalHealthResult,
+  MultidimensionalHealthOutput,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -1869,6 +1888,592 @@ export async function attentionHomeAnalysis(
 
   try {
     const result = await analysisProtocol.attentionHome(ledger, params);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Data Quality Center
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a composite data-quality report from snapshot data.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function dataQualityAnalysis(
+  input: CommandInput,
+): Promise<DataQualityOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before analyzing data quality.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.dataQuality) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Data quality analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.dataQuality(ledger);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Liquidity Coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute liquidity coverage for upcoming obligations.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function liquidityCoverageAnalysis(
+  input: CommandInput,
+  currentMonth: string,
+): Promise<LiquidityCoverageOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before analyzing liquidity coverage.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.liquidityCoverage) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Liquidity coverage analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!currentMonth) {
+    const err = new ErrorInfo({
+      code: 'current_month_required',
+      message: 'A current month (YYYY-MM) is required for liquidity coverage analysis.',
+      retryable: false,
+      reasonCodes: ['invalid_params'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.liquidityCoverage(ledger, currentMonth);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Bill Calendar
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the bill/obligation calendar.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function billCalendarAnalysis(
+  input: CommandInput,
+  referenceDate: string,
+): Promise<BillCalendarOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before computing bill calendar.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.billCalendar) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Bill calendar is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!referenceDate) {
+    const err = new ErrorInfo({
+      code: 'reference_date_required',
+      message: 'A reference date is required for bill calendar analysis.',
+      retryable: false,
+      reasonCodes: ['invalid_params'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.billCalendar(ledger, referenceDate);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Budget Variance
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute budget variance and trends.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function budgetVarianceAnalysis(
+  input: CommandInput,
+  referenceDate: string,
+): Promise<BudgetVarianceOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before computing budget variance.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.budgetVariance) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Budget variance analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!referenceDate) {
+    const err = new ErrorInfo({
+      code: 'reference_date_required',
+      message: 'A reference date is required for budget variance analysis.',
+      retryable: false,
+      reasonCodes: ['invalid_params'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.budgetVariance(ledger, referenceDate);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Irregular Obligations
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect irregular obligations from schedules.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function irregularObligationsAnalysis(
+  input: CommandInput,
+): Promise<IrregularObligationsOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before analyzing irregular obligations.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.irregularObligations) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Irregular obligations analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.irregularObligations(ledger);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Income Reliability
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute income reliability assessment.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function incomeReliabilityAnalysis(
+  input: CommandInput,
+): Promise<IncomeReliabilityOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before analyzing income reliability.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.incomeReliability) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Income reliability analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.incomeReliability(ledger);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Forecast Calibration
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute forecast calibration by comparing projections to actuals.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function forecastCalibrationAnalysis(
+  input: CommandInput,
+): Promise<ForecastCalibrationOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before computing forecast calibration.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.forecastCalibration) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Forecast calibration is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.forecastCalibration(ledger);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Scenario Comparison (Immutable)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare two immutable scenarios.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function scenarioComparisonAnalysis(
+  input: CommandInput,
+  params: ScenarioComparisonParams,
+): Promise<ScenarioComparisonOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before comparing scenarios.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.scenarioComparison) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Scenario comparison is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!params || !params.baseline || !params.comparison) {
+    const err = new ErrorInfo({
+      code: 'scenario_params_required',
+      message: 'Both baseline and comparison scenario payloads are required.',
+      retryable: false,
+      reasonCodes: ['invalid_params'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.scenarioComparison(ledger, params);
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errInfo = new ErrorInfo({
+      code: 'analysis_failed',
+      message,
+      retryable: true,
+      reasonCodes: ['analysis_error'],
+    });
+    return errorResponse(requestId, errInfo);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Multidimensional Health
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute explainable multidimensional health assessment.
+ * Read-only deterministic analysis — no model or cloud invocation.
+ * Skips auth gates — results are always observable.
+ */
+export async function multidimensionalHealthAnalysis(
+  input: CommandInput,
+  currentMonth: string,
+): Promise<MultidimensionalHealthOutput['envelope']> {
+  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+
+  if (!ledger) {
+    const err = new ErrorInfo({
+      code: 'not_connected',
+      message: 'No ledger connected. Use a connect command first.',
+      retryable: true,
+      reasonCodes: ['missing_ledger_config'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (freshness && freshness.isStale) {
+    const err = new ErrorInfo({
+      code: 'stale_budget_intelligence',
+      message: 'Snapshot data is stale. Reconnect or re-download before computing multidimensional health.',
+      retryable: true,
+      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!analysisProtocol || !analysisProtocol.multidimensionalHealth) {
+    const err = new ErrorInfo({
+      code: 'no_analysis_protocol',
+      message: 'Multidimensional health assessment is not available. Ensure the Rust protocol bindings are loaded.',
+      retryable: true,
+      reasonCodes: ['missing_analysis_protocol'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  if (!currentMonth) {
+    const err = new ErrorInfo({
+      code: 'current_month_required',
+      message: 'A current month (YYYY-MM) is required for multidimensional health assessment.',
+      retryable: false,
+      reasonCodes: ['invalid_params'],
+    });
+    return errorResponse(requestId, err);
+  }
+
+  try {
+    const result = await analysisProtocol.multidimensionalHealth(ledger, currentMonth);
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

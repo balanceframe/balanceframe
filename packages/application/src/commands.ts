@@ -235,6 +235,60 @@ export interface AnalysisProtocol {
   financialState?(
     ledger: unknown,
   ): Promise<FinancialStateResult>;
+
+  // -----------------------------------------------------------------------
+  // Phase 8 — Additional Budget Intelligence methods
+  // -----------------------------------------------------------------------
+
+  /** Compute composite data-quality report from snapshot data. */
+  dataQuality?(
+    ledger: unknown,
+  ): Promise<DataQualityResult>;
+
+  /** Compute liquidity coverage for upcoming obligations. */
+  liquidityCoverage?(
+    ledger: unknown,
+    currentMonth: string,
+  ): Promise<LiquidityCoverageResult>;
+
+  /** Compute the bill/obligation calendar. */
+  billCalendar?(
+    ledger: unknown,
+    referenceDate: string,
+  ): Promise<BillCalendarResult>;
+
+  /** Compute budget variance and trends. */
+  budgetVariance?(
+    ledger: unknown,
+    referenceDate: string,
+  ): Promise<BudgetVarianceResult>;
+
+  /** Detect irregular obligations from schedules. */
+  irregularObligations?(
+    ledger: unknown,
+  ): Promise<IrregularObligationsResult>;
+
+  /** Compute income reliability assessment. */
+  incomeReliability?(
+    ledger: unknown,
+  ): Promise<IncomeReliabilityResult>;
+
+  /** Compute forecast calibration by comparing projections to actuals. */
+  forecastCalibration?(
+    ledger: unknown,
+  ): Promise<ForecastCalibrationResult>;
+
+  /** Compare two immutable scenarios. */
+  scenarioComparison?(
+    ledger: unknown,
+    params: ScenarioComparisonParams,
+  ): Promise<ScenarioComparisonResult>;
+
+  /** Compute multidimensional health assessment. */
+  multidimensionalHealth?(
+    ledger: unknown,
+    currentMonth: string,
+  ): Promise<MultidimensionalHealthResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,6 +1213,306 @@ export interface FinancialStateResult {
 
 export interface FinancialStateOutput {
   envelope: ResponseEnvelope<FinancialStateResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Data Quality Center
+// ---------------------------------------------------------------------------
+
+/**
+ * A single dimension of data quality with score and severity.
+ * Fields match the shape returned by the analytics native addon.
+ */
+export interface QualityDimension {
+  name: string;
+  score: number | null;
+  severity: string;
+  details: string[];
+  worstSeverity: string | null;
+}
+
+/**
+ * Composite data-quality report.
+ */
+export interface DataQualityResult {
+  overallScore: number | null;
+  dimensions: QualityDimension[];
+  recommendations: string[];
+}
+
+export interface DataQualityOutput {
+  envelope: ResponseEnvelope<DataQualityResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Liquidity Coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * A single upcoming obligation.
+ */
+export interface UpcomingObligation {
+  name: string;
+  dueDate: string;
+  amount: Money;
+  categoryId: string | null;
+  isRecurring: boolean;
+}
+
+/**
+ * Coverage ratio against upcoming obligations.
+ */
+export interface CoverageRatio {
+  ratio: number;
+  label: string;
+}
+
+/**
+ * Liquidity / obligation coverage assessment.
+ */
+export interface LiquidityCoverageResult {
+  totalLiquid: Money | null;
+  totalObligations: Money | null;
+  coverage: CoverageRatio[];
+  upcomingObligations: UpcomingObligation[];
+}
+
+export interface LiquidityCoverageOutput {
+  envelope: ResponseEnvelope<LiquidityCoverageResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Bill Calendar
+// ---------------------------------------------------------------------------
+
+/**
+ * Calendar entry for a single bill or obligation.
+ */
+export interface BillCalendarEntry {
+  name: string;
+  dueDate: string;
+  amount: Money;
+  categoryId: string | null;
+  status: string;
+}
+
+/**
+ * Calendar of upcoming bills/obligations.
+ */
+export interface BillCalendarResult {
+  entries: BillCalendarEntry[];
+  totalUnpaid: Money | null;
+  unpaidCount: number;
+}
+
+export interface BillCalendarOutput {
+  envelope: ResponseEnvelope<BillCalendarResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Budget Variance
+// ---------------------------------------------------------------------------
+
+/**
+ * Variance for a single budget category.
+ */
+export interface CategoryVariance {
+  categoryId: string;
+  categoryName: string;
+  budgeted: Money;
+  actual: Money;
+  variance: Money;
+  variancePercent: number;
+  label: string;
+}
+
+/**
+ * Trend direction for a budget category.
+ */
+export type TrendDirection = 'increasing' | 'decreasing' | 'stable' | 'volatile';
+
+/**
+ * Trend information for a single category.
+ */
+export interface CategoryTrend {
+  categoryId: string;
+  categoryName: string;
+  direction: TrendDirection;
+  avgChange: number;
+  periodsAnalyzed: number;
+  seasonalityDetected: boolean;
+}
+
+/**
+ * Budget variance and trends report.
+ */
+export interface BudgetVarianceResult {
+  categoryVariances: CategoryVariance[];
+  trends: CategoryTrend[];
+  totalBudgeted: Money | null;
+  totalActual: Money | null;
+  totalVariance: Money | null;
+  overallVariancePercent: number | null;
+}
+
+export interface BudgetVarianceOutput {
+  envelope: ResponseEnvelope<BudgetVarianceResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Irregular Obligations
+// ---------------------------------------------------------------------------
+
+/**
+ * Type of irregularity detected for an obligation.
+ */
+export type IrregularityKind = 'nonMonthly' | 'seasonal' | 'oneOff' | 'variableAmount';
+
+/**
+ * An irregular obligation entry.
+ */
+export interface IrregularObligation {
+  name: string;
+  kind: IrregularityKind;
+  typicalAmount: Money;
+  frequency: string;
+  categoryId: string | null;
+  nextExpectedDate: string | null;
+}
+
+/**
+ * Report of obligations that don't follow a regular monthly pattern.
+ */
+export interface IrregularObligationsResult {
+  obligations: IrregularObligation[];
+  totalEstimatedAnnual: Money | null;
+}
+
+export interface IrregularObligationsOutput {
+  envelope: ResponseEnvelope<IrregularObligationsResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Income Reliability
+// ---------------------------------------------------------------------------
+
+/**
+ * A single income source with reliability metrics.
+ */
+export interface IncomeSource {
+  name: string;
+  typicalMonthly: Money;
+  reliabilityScore: number;
+  variability: number;
+  paymentCount: number;
+  isRegular: boolean;
+}
+
+/**
+ * Assessment of income reliability.
+ */
+export interface IncomeReliabilityResult {
+  sources: IncomeSource[];
+  totalMonthly: Money | null;
+  overallScore: number | null;
+  unreliableSourceCount: number;
+}
+
+export interface IncomeReliabilityOutput {
+  envelope: ResponseEnvelope<IncomeReliabilityResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Forecast Calibration
+// ---------------------------------------------------------------------------
+
+/**
+ * Calibration metric for a single forecast dimension.
+ */
+export interface CalibrationMetric {
+  metricName: string;
+  mape: number | null;
+  bias: number | null;
+  periodsCompared: number;
+  isCalibrated: boolean;
+}
+
+/**
+ * How well past forecasts matched actual outcomes.
+ */
+export interface ForecastCalibrationResult {
+  metrics: CalibrationMetric[];
+  overallCalibrated: boolean;
+  recommendations: string[];
+}
+
+export interface ForecastCalibrationOutput {
+  envelope: ResponseEnvelope<ForecastCalibrationResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Scenario Comparison (Immutable)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parameters for comparing two immutable scenarios.
+ */
+export interface ScenarioComparisonParams {
+  /** Baseline scenario JSON payload. */
+  baseline: Record<string, unknown>;
+  /** Comparison scenario JSON payload. */
+  comparison: Record<string, unknown>;
+}
+
+/**
+ * Comparison delta between two scenarios for a single dimension.
+ */
+export interface ScenarioComparisonDelta {
+  dimension: string;
+  baselineValue: unknown;
+  comparisonValue: unknown;
+  change: string;
+}
+
+/**
+ * Result of comparing two immutable scenarios.
+ */
+export interface ScenarioComparisonResult {
+  deltas: ScenarioComparisonDelta[];
+  summary: string;
+}
+
+export interface ScenarioComparisonOutput {
+  envelope: ResponseEnvelope<ScenarioComparisonResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Budget Intelligence — Multidimensional Health
+// ---------------------------------------------------------------------------
+
+/**
+ * A single dimension of financial health.
+ */
+export interface HealthDimension {
+  dimension: string;
+  score: number;
+  weight: number;
+  explanation: string;
+  severity: string;
+}
+
+/**
+ * Explainable multidimensional health assessment.
+ */
+export interface MultidimensionalHealthResult {
+  dimensions: HealthDimension[];
+  compositeScore: number;
+  summary: string;
+  recommendations: string[];
+}
+
+export interface MultidimensionalHealthOutput {
+  envelope: ResponseEnvelope<MultidimensionalHealthResult>;
 }
 
 // ---------------------------------------------------------------------------

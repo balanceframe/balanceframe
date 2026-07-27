@@ -175,6 +175,8 @@ function createStoreMock(): StoreMock {
     'claimNotificationDelivery', 'completeNotificationDelivery', 'failNotificationDelivery',
     'acknowledgeNotification', 'suppressNotification', 'getOutboxRecord',
     'getPendingNotifications', 'getRetryableNotifications', 'getDeliveryAttempts',
+    'listOutboxRecords',
+    'getNotificationPolicy', 'saveNotificationPolicy',
     'recordPolicyVersion', 'getPolicyVersion', 'getActivePolicyVersion',
     'listPolicyVersions', 'createSavedFilter', 'updateSavedFilter', 'getSavedFilter',
     'listSavedFilters', 'deleteSavedFilter', 'createReportRecord', 'getReportRecord',
@@ -846,6 +848,220 @@ describe('NotificationRuntime', () => {
 
       expect(status.pendingCount).toBe(2);
       expect(status.failedCount).toBe(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Stored policy
+  // -----------------------------------------------------------------------
+
+  describe('getStoredPolicy', () => {
+    it('returns in-memory policy when no stored policy exists', async () => {
+      store.getNotificationPolicy.mockResolvedValue(null);
+
+      const policy = await runtime.getStoredPolicy('space_default');
+
+      expect(policy.policyVersion).toBe(TEST_POLICY_VER);
+      // In-memory policy has 1 eligibility rule covering 2 classifications
+      expect(policy.eligibility).toHaveLength(1);
+      expect(policy.eligibility[0].classifications).toEqual(['budget_alert', 'review_complete']);
+    });
+
+    it('merges stored policy with in-memory defaults', async () => {
+      store.getNotificationPolicy.mockResolvedValue({
+        id: 'pol_001',
+        spaceId: 'space_default',
+        policyKey: 'notification',
+        policyVersion: 'v2',
+        policy: JSON.stringify({ maxRetries: 5 }),
+        isActive: true,
+        createdAt: '2026-07-27T00:00:00Z',
+        updatedAt: '2026-07-27T00:00:00Z',
+      });
+
+      const policy = await runtime.getStoredPolicy('space_default');
+
+      expect(policy.policyVersion).toBe('v2');
+      expect(policy.maxRetries).toBe(5);
+      // In-memory defaults preserved for missing fields
+      expect(policy.eligibility).toHaveLength(1);
+      expect(policy.defaultRedactionClass).toBe('public');
+    });
+
+    it('falls back to in-memory policy when stored policy JSON is malformed', async () => {
+      store.getNotificationPolicy.mockResolvedValue({
+        id: 'pol_002',
+        spaceId: 'space_default',
+        policyKey: 'notification',
+        policyVersion: 'v3',
+        policy: '{invalid json}',
+        isActive: true,
+        createdAt: '2026-07-27T00:00:00Z',
+        updatedAt: '2026-07-27T00:00:00Z',
+      });
+
+      const policy = await runtime.getStoredPolicy('space_default');
+
+      expect(policy.policyVersion).toBe(TEST_POLICY_VER);
+      expect(policy.maxRetries).toBe(3);
+    });
+  });
+
+  describe('getStoredPolicyVersion', () => {
+    it('returns null when no stored policy exists', async () => {
+      store.getNotificationPolicy.mockResolvedValue(null);
+
+      const version = await runtime.getStoredPolicyVersion('space_default');
+
+      expect(version).toBeNull();
+    });
+
+    it('returns the stored policy version', async () => {
+      store.getNotificationPolicy.mockResolvedValue({
+        id: 'pol_003',
+        spaceId: 'space_default',
+        policyKey: 'notification',
+        policyVersion: 'v2',
+        policy: '{}',
+        isActive: true,
+        createdAt: '2026-07-27T00:00:00Z',
+        updatedAt: '2026-07-27T00:00:00Z',
+      });
+
+      const version = await runtime.getStoredPolicyVersion('space_default');
+
+      expect(version).toBe('v2');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Inbox listing
+  // -----------------------------------------------------------------------
+
+  describe('listOutbox', () => {
+    it('returns records for the matching actor with redacted payload', async () => {
+      const event = mockEvent({ recipientId: TEST_ACTOR_A });
+      const outbox = mockOutbox({ eventId: event.id });
+      store.listOutboxRecords.mockResolvedValue([outbox]);
+      store.getNotificationEvent.mockResolvedValue(event);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+      store.getDeliveryAttempts.mockResolvedValue([]);
+
+      const items = await runtime.listOutbox(TEST_ACTOR_A);
+
+      expect(items).toHaveLength(1);
+      expect(items[0].outbox.id).toBe(TEST_OUTBOX_ID);
+      expect(items[0].event.id).toBe(TEST_EVENT_ID);
+      expect(items[0].redactedPayload.title).toBe('Budget Alert');
+      expect(items[0].deliveryAttempts).toEqual([]);
+    });
+
+    it('skips records where the event is missing', async () => {
+      const outbox = mockOutbox();
+      store.listOutboxRecords.mockResolvedValue([outbox]);
+      store.getNotificationEvent.mockResolvedValue(null);
+
+      const items = await runtime.listOutbox(TEST_ACTOR_A);
+
+      expect(items).toHaveLength(0);
+    });
+
+    it('filters records by recipientId — excludes non-matching actors', async () => {
+      const event = mockEvent({ recipientId: 'usr_other', id: 'evt_other' });
+      const outbox = mockOutbox({ eventId: 'evt_other', id: 'obx_other' });
+      store.listOutboxRecords.mockResolvedValue([outbox]);
+      store.getNotificationEvent.mockResolvedValue(event);
+
+      const items = await runtime.listOutbox(TEST_ACTOR_A);
+
+      expect(items).toHaveLength(0);
+    });
+
+    it('passes filter options to the store', async () => {
+      store.listOutboxRecords.mockResolvedValue([]);
+
+      await runtime.listOutbox(TEST_ACTOR_A, { status: 'delivered', channelType: 'in_app', limit: 10, offset: 5 });
+
+      expect(store.listOutboxRecords).toHaveBeenCalledWith({
+        status: 'delivered',
+        channelType: 'in_app',
+        limit: 10,
+        offset: 5,
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Outbox detail
+  // -----------------------------------------------------------------------
+
+  describe('getOutboxDetail', () => {
+    it('returns detail for the intended recipient', async () => {
+      const event = mockEvent({ recipientId: TEST_ACTOR_A });
+      const outbox = mockOutbox({ eventId: event.id });
+      store.getOutboxRecord.mockResolvedValue(outbox);
+      store.getNotificationEvent.mockResolvedValue(event);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+      store.getDeliveryAttempts.mockResolvedValue([]);
+
+      const detail = await runtime.getOutboxDetail(TEST_OUTBOX_ID, TEST_ACTOR_A);
+
+      expect(detail).not.toBeNull();
+      expect(detail!.outbox.id).toBe(TEST_OUTBOX_ID);
+      expect(detail!.event.id).toBe(TEST_EVENT_ID);
+    });
+
+    it('returns null for outbox that does not exist', async () => {
+      store.getOutboxRecord.mockResolvedValue(null);
+
+      const detail = await runtime.getOutboxDetail('nonexistent', TEST_ACTOR_A);
+
+      expect(detail).toBeNull();
+    });
+
+    it('returns null for mismatch between actor and recipient', async () => {
+      const event = mockEvent({ recipientId: 'usr_other' });
+      const outbox = mockOutbox({ eventId: event.id });
+      store.getOutboxRecord.mockResolvedValue(outbox);
+      store.getNotificationEvent.mockResolvedValue(event);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+
+      const detail = await runtime.getOutboxDetail(TEST_OUTBOX_ID, TEST_ACTOR_A);
+
+      expect(detail).toBeNull();
+    });
+
+    it('allows admin to view any notification', async () => {
+      const event = mockEvent({ recipientId: 'usr_other' });
+      const outbox = mockOutbox({ eventId: event.id });
+      store.getOutboxRecord.mockResolvedValue(outbox);
+      store.getNotificationEvent.mockResolvedValue(event);
+      store.getActorMembership.mockResolvedValue({
+        actorId: 'usr_admin',
+        status: 'active',
+        capabilities: ['notification:admin'],
+        scope: '*',
+      });
+      store.getDeliveryAttempts.mockResolvedValue([]);
+
+      const detail = await runtime.getOutboxDetail(TEST_OUTBOX_ID, 'usr_admin');
+
+      expect(detail).not.toBeNull();
     });
   });
 

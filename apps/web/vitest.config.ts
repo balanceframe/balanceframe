@@ -11,6 +11,9 @@ export default defineConfig({
       // Nuxt virtual module — resolved to a test shim so middleware tests
       // can mock #app imports via vi.mock outside the Nuxt build pipeline.
       '#app': resolve(__dirname, 'test/nuxt-app-shim.ts'),
+      // Nuxt/Nitro server-utils path — `../../utils/` from server/api/* files
+      // resolves to server/utils/ via the alias.
+      '../../utils': resolve(__dirname, 'server/utils'),
     },
   },
   test: {

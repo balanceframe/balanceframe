@@ -141,7 +141,7 @@ export default defineEventHandler(async (event) => {
 
     if (isDuplicateEmail) {
       try {
-        const listResult = await auth.api.listUsers({});
+        const listResult = await auth.api.listUsers({ query: {} });
         const existing = listResult.users?.find(
           (u: { email?: string }) => u.email?.toLowerCase() === email,
         );

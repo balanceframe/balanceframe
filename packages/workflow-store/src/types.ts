@@ -509,6 +509,8 @@ export interface SavedViewResult {
   readonly actorId: string;
   /** ISO-8601 creation timestamp. */
   readonly createdAt: string;
+  /** ISO-8601 timestamp of last use, or null if never used since creation. */
+  readonly lastUsedAt: string | null;
 }
 
 /** Input to create a new saved view. */
@@ -522,6 +524,26 @@ export interface CreateSavedViewInput {
   /** Optional user-defined sort expression. */
   readonly sort?: string;
   /** Actor who owns this view. */
+  readonly actorId: string;
+}
+
+/** Input to update an existing saved view (rename, re-scope, re-sort). */
+export interface UpdateSavedViewInput {
+  /** Human-readable name for this view. */
+  readonly name?: string;
+  /** Scope/filter configuration. */
+  readonly scope?: Record<string, unknown>;
+  /** Optional user-defined sort expression (null to clear). */
+  readonly sort?: string | null;
+}
+
+/** Input to duplicate an existing saved view under a new name. */
+export interface DuplicateSavedViewInput {
+  /** Source view ID to copy. */
+  readonly sourceViewId: string;
+  /** New name for the duplicated view. */
+  readonly name: string;
+  /** Actor who will own the new view. */
   readonly actorId: string;
 }
 
@@ -587,6 +609,161 @@ export interface SavedFilterListOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Finding — versioned observation with full lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle status of a finding.
+ *
+ * Transitions:
+ *   open → acknowledged | corrected | dismissed | superseded | expired
+ *   acknowledged → corrected | dismissed | reopened | superseded | expired
+ *   corrected → superseded | expired
+ *   dismissed → reopened | superseded
+ *   reopened → acknowledged | corrected | dismissed | superseded | expired
+ *   expired → superseded (reopen not allowed)
+ *   superseded → (terminal)
+ */
+export type FindingStatus =
+  | 'open'
+  | 'acknowledged'
+  | 'corrected'
+  | 'dismissed'
+  | 'reopened'
+  | 'expired'
+  | 'superseded';
+
+/**
+ * A versioned finding — an observation about categorization, budget health,
+ * data quality, or workflow state that may require action.
+ *
+ * Findings are versioned for safe concurrent transitions and support a
+ * complete lifecycle including acknowledgement, correction, dismissal,
+ * reopening, expiry, and supersession. Evidence references link findings
+ * to review items, corrections, or other external records.
+ */
+export interface Finding {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Budget this finding is associated with. */
+  readonly budgetId: string;
+  /** Classification label (e.g. 'uncategorized', 'budget_risk', 'data_quality'). */
+  readonly classification: string;
+  /** Human-readable description of the finding. */
+  readonly description: string;
+  /** Evidence payload (free-form, classifier-provided). */
+  readonly evidence: Record<string, unknown>;
+  /** References to supporting evidence records (e.g. review_item IDs, correction IDs). */
+  readonly evidenceRefs: string[];
+  /** Severity of the finding. */
+  readonly severity: 'low' | 'medium' | 'high' | 'critical';
+  /** Current lifecycle status. */
+  readonly status: FindingStatus;
+  /** Actor who owns or is assigned this finding, or null. */
+  readonly actorId: string | null;
+  /** ISO-8601 timestamp when acknowledged, or null. */
+  readonly acknowledgedAt: string | null;
+  /** Actor who acknowledged this finding, or null. */
+  readonly acknowledgedBy: string | null;
+  /** ISO-8601 timestamp when corrected, or null. */
+  readonly correctedAt: string | null;
+  /** Actor who corrected this finding, or null. */
+  readonly correctedBy: string | null;
+  /** Reference to the correction record or action that addressed this finding. */
+  readonly correctionRef: string | null;
+  /** ISO-8601 timestamp when dismissed, or null. */
+  readonly dismissedAt: string | null;
+  /** Actor who dismissed this finding, or null. */
+  readonly dismissedBy: string | null;
+  /** Human-readable reason for dismissal. */
+  readonly dismissedReason: string | null;
+  /** ISO-8601 timestamp when reopened, or null. */
+  readonly reopenedAt: string | null;
+  /** Actor who reopened this finding, or null. */
+  readonly reopenedBy: string | null;
+  /** ISO-8601 timestamp when superseded, or null. */
+  readonly supersededAt: string | null;
+  /** Finding ID that superseded this one, or null. */
+  readonly supersededBy: string | null;
+  /** Human-readable reason for supersession. */
+  readonly supersededReason: string | null;
+  /** ISO-8601 timestamp after which this finding automatically expires, or null. */
+  readonly expiresAt: string | null;
+  /** Monotonic optimistic-lock version, incremented on each transition. */
+  readonly version: number;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+  /** ISO-8601 last-update timestamp. */
+  readonly updatedAt: string;
+}
+
+/** Input to create a new finding. */
+export interface CreateFindingInput {
+  readonly budgetId: string;
+  readonly classification: string;
+  readonly description: string;
+  readonly evidence: Record<string, unknown>;
+  /** References to supporting evidence records. */
+  readonly evidenceRefs?: string[];
+  /** Severity (default 'medium'). */
+  readonly severity?: 'low' | 'medium' | 'high' | 'critical';
+  /** Actor who owns or is assigned this finding. */
+  readonly actorId?: string;
+  /** ISO-8601 expiry timestamp, if the finding should auto-expire. */
+  readonly expiresAt?: string;
+}
+
+/** Input to acknowledge a finding. */
+export interface AcknowledgeFindingInput {
+  readonly findingId: string;
+  readonly actorId: string;
+  readonly expectedVersion: number;
+}
+
+/** Input to mark a finding as corrected. */
+export interface CorrectFindingInput {
+  readonly findingId: string;
+  readonly actorId: string;
+  /** Reference to the correction record or action that addressed the finding. */
+  readonly correctionRef: string;
+  readonly expectedVersion: number;
+}
+
+/** Input to dismiss a finding. */
+export interface DismissFindingInput {
+  readonly findingId: string;
+  readonly actorId: string;
+  readonly reason: string;
+  readonly expectedVersion: number;
+}
+
+/** Input to reopen a previously dismissed or acknowledged finding. */
+export interface ReopenFindingInput {
+  readonly findingId: string;
+  readonly actorId: string;
+  readonly expectedVersion: number;
+}
+
+/** Input to supersede a finding (mark it replaced by another). */
+export interface SupersedeFindingInput {
+  readonly findingId: string;
+  readonly supersededBy: string;
+  readonly reason: string;
+  readonly actorId: string;
+  readonly expectedVersion: number;
+}
+
+/** Options for listing findings. */
+export interface ListFindingsOptions {
+  readonly status?: FindingStatus;
+  readonly budgetId?: string;
+  readonly classification?: string;
+  readonly severity?: 'low' | 'medium' | 'high' | 'critical';
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+// ---------------------------------------------------------------------------
 // ReportRecord — persisted report metadata
 // ---------------------------------------------------------------------------
 
@@ -627,6 +804,104 @@ export interface CreateReportRecordInput {
 export interface ReportListOptions {
   readonly budgetId?: string;
   readonly reportType?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+// ---------------------------------------------------------------------------
+// ReportHistoryEntry — time-ordered report history item
+// ---------------------------------------------------------------------------
+
+/**
+ * A single entry in the report history timeline.
+ * Returned by getReportHistory to give a chronological view of report
+ * generation activity for a budget or across budgets.
+ */
+export interface ReportHistoryEntry {
+  /** Stable report record ID. */
+  readonly id: string;
+  /** Report type label. */
+  readonly reportType: string;
+  /** Budget this report is associated with, or null. */
+  readonly budgetId: string | null;
+  /** ISO-8601 generation timestamp. */
+  readonly generatedAt: string;
+  /** Human-readable label derived from report config. */
+  readonly label: string;
+  /** Whether the report has expired. */
+  readonly isExpired: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// ListOutboxRecordsOptions — pagination/filter for outbox listing
+// ---------------------------------------------------------------------------
+
+/** Options for listing notification outbox records. */
+export interface ListOutboxRecordsOptions {
+  /** Filter by status (optional). */
+  readonly status?: OutboxStatus;
+  /** Filter by channel type (optional). */
+  readonly channelType?: string;
+  /** Maximum records to return (default 50). */
+  readonly limit?: number;
+  /** Number of records to skip (default 0). */
+  readonly offset?: number;
+}
+
+// ---------------------------------------------------------------------------
+// NotificationPolicyRecord — persisted per-space notification policy
+// ---------------------------------------------------------------------------
+
+/**
+ * A persisted notification policy for a space.
+ * Policies are versioned and keyed by (spaceId, policyKey).
+ */
+export interface NotificationPolicyRecord {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Space this policy belongs to. */
+  readonly spaceId: string;
+  /** Policy domain key (e.g. 'delivery', 'eligibility', 'redaction'). */
+  readonly policyKey: string;
+  /** Semantic version string for this policy. */
+  readonly policyVersion: string;
+  /** JSON-encoded policy content. */
+  readonly policy: string;
+  /** Whether this policy is currently active. */
+  readonly isActive: boolean;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+  /** ISO-8601 last-updated timestamp. */
+  readonly updatedAt: string;
+}
+
+/** Input to save or update a notification policy for a space. */
+export interface SaveNotificationPolicyInput {
+  readonly spaceId: string;
+  readonly policyKey: string;
+  readonly policyVersion: string;
+  readonly policy: Record<string, unknown>;
+}
+
+/**
+ * Result of resolving recipients for a notification within a space.
+ */
+export interface RecipientResolution {
+  /** Space the resolution applies to. */
+  readonly spaceId: string;
+  /** Resolved actor IDs eligible to receive the notification. */
+  readonly actorIds: string[];
+  /** Channels available for delivery given the space policy. */
+  readonly channels: string[];
+  /** ISO-8601 timestamp of the resolution. */
+  readonly resolvedAt: string;
+}
+
+/** Options for listing notification policies. */
+export interface ListNotificationPoliciesOptions {
+  readonly spaceId?: string;
+  readonly policyKey?: string;
+  readonly isActive?: boolean;
   readonly limit?: number;
   readonly offset?: number;
 }
@@ -1309,6 +1584,14 @@ export interface WorkflowStore {
   /** Return all delivery attempts for a given outbox record. */
   getDeliveryAttempts(outboxId: string): Promise<DeliveryAttempt[]>;
 
+  /**
+   * List outbox records with optional status/channel filter and pagination.
+   * Ordered by created_at descending (newest first).
+   */
+  listOutboxRecords(
+    options?: ListOutboxRecordsOptions,
+  ): Promise<NotificationOutboxRecord[]>;
+
   // ── Policy version lifecycle ────────────────────────────────────
 
   /**
@@ -1404,6 +1687,167 @@ export interface WorkflowStore {
    * @returns The newly created saved view with a stable ID and timestamp.
    */
   createSavedView(input: CreateSavedViewInput): Promise<SavedViewResult>;
+
+  /**
+   * Update an existing saved view (rename, re-scope, re-sort).
+   * Only the provided fields are changed.
+   *
+   * @throws If the view is not found.
+   */
+  updateSavedView(
+    viewId: string,
+    input: UpdateSavedViewInput,
+  ): Promise<SavedViewResult>;
+
+  /**
+   * Duplicate an existing saved view under a new name for the given actor.
+   * Copies scope, viewType, and sort; generates a fresh ID.
+   *
+   * @throws If the source view is not found.
+   */
+  duplicateSavedView(input: DuplicateSavedViewInput): Promise<SavedViewResult>;
+
+  /**
+   * Delete a saved view by ID.
+   * Returns true if the view existed and was deleted.
+   */
+  deleteSavedView(viewId: string): Promise<boolean>;
+
+  /**
+   * Record last-used metadata for a saved view.
+   * Updates the lastUsedAt timestamp to the current time.
+   */
+  recordSavedViewUsage(viewId: string): Promise<SavedViewResult>;
+
+  /**
+   * Retrieve a single saved view by ID, or null.
+   */
+  getSavedView(viewId: string): Promise<SavedViewResult | null>;
+
+  // ── Finding lifecycle (Phase 8.5) ────────────────────────────────
+
+  /**
+   * Create a new finding in 'open' status.
+   *
+   * @returns The newly created finding with a stable ID and version.
+   */
+  createFinding(input: CreateFindingInput): Promise<Finding>;
+
+  /** Retrieve a single finding by ID, or null. */
+  getFinding(id: string): Promise<Finding | null>;
+
+  /**
+   * List findings, optionally filtered by status, budget, classification,
+   * or severity. Ordered by severity (critical first), then creation time.
+   */
+  listFindings(options?: ListFindingsOptions): Promise<Finding[]>;
+
+  /**
+   * Return the total number of findings matching the given filter.
+   */
+  countFindings(options?: ListFindingsOptions): Promise<number>;
+
+  /**
+   * Acknowledge a finding. Transitions from 'open' to 'acknowledged'.
+   *
+   * @throws If the transition is not allowed or version lock fails.
+   */
+  acknowledgeFinding(input: AcknowledgeFindingInput): Promise<Finding>;
+
+  /**
+   * Mark a finding as corrected. Transitions from 'open' or 'acknowledged'
+   * to 'corrected'. Requires a correction reference.
+   *
+   * @throws If the transition is not allowed or version lock fails.
+   */
+  correctFinding(input: CorrectFindingInput): Promise<Finding>;
+
+  /**
+   * Dismiss a finding. Transitions from 'open', 'acknowledged' to 'dismissed'.
+   *
+   * @throws If the transition is not allowed or version lock fails.
+   */
+  dismissFinding(input: DismissFindingInput): Promise<Finding>;
+
+  /**
+   * Reopen a previously dismissed or acknowledged finding.
+   * Transitions from 'acknowledged' or 'dismissed' to 'reopened'.
+   *
+   * @throws If the transition is not allowed or version lock fails.
+   */
+  reopenFinding(input: ReopenFindingInput): Promise<Finding>;
+
+  /**
+   * Supersede a finding. Transitions from any non-terminal status to
+   * 'superseded'. Indicates the finding has been replaced.
+   *
+   * @throws If the transition is not allowed or version lock fails.
+   */
+  supersedeFinding(input: SupersedeFindingInput): Promise<Finding>;
+
+  /**
+   * Expire a finding whose expiresAt has passed.
+   * Transitions from any non-terminal status to 'expired'.
+   * Idempotent on already-expired findings.
+   */
+  expireFinding(id: string): Promise<Finding>;
+
+  // ── Notification policy lifecycle (Phase 8.5) ────────────────────
+
+  /**
+   * Save or update a notification policy for a space.
+   * The policy is stored as JSON-encoded content.
+   * If a policy with the same (spaceId, policyKey) exists, it is updated;
+   * otherwise a new record is created.
+   */
+  saveNotificationPolicy(input: SaveNotificationPolicyInput): Promise<NotificationPolicyRecord>;
+
+  /**
+   * Retrieve a notification policy by (spaceId, policyKey), or null.
+   */
+  getNotificationPolicy(
+    spaceId: string,
+    policyKey: string,
+  ): Promise<NotificationPolicyRecord | null>;
+
+  /**
+   * List notification policies, optionally filtered by space, policy key,
+   * or active status.
+   */
+  listNotificationPolicies(
+    options?: ListNotificationPoliciesOptions,
+  ): Promise<NotificationPolicyRecord[]>;
+
+  /**
+   * Resolve recipients for a notification within a space based on the
+   * active notification policy. Returns actor IDs and eligible channels.
+   */
+  resolveRecipients(
+    spaceId: string,
+    classification: string,
+    severity: string,
+  ): Promise<RecipientResolution>;
+
+  /**
+   * Delete a notification policy by ID. Returns true if found and deleted.
+   */
+  deleteNotificationPolicy(id: string): Promise<boolean>;
+
+  // ── Report history (Phase 8.5) ───────────────────────────────────
+
+  /**
+   * Retrieve time-ordered report history, optionally filtered by budget.
+   */
+  getReportHistory(
+    budgetId?: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ReportHistoryEntry[]>;
+
+  /**
+   * Count total report records, optionally filtered by budget.
+   */
+  countReportRecords(budgetId?: string): Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1606,6 +2050,19 @@ export type AuditClassification =
   | 'notification_acknowledged'
   | 'notification_suppressed'
   | 'notification_retried'
+  | 'finding_created'
+  | 'finding_acknowledged'
+  | 'finding_corrected'
+  | 'finding_dismissed'
+  | 'finding_reopened'
+  | 'finding_superseded'
+  | 'finding_expired'
+  | 'saved_view_updated'
+  | 'saved_view_deleted'
+  | 'saved_view_duplicated'
+  | 'saved_view_usage_recorded'
+  | 'notification_policy_saved'
+  | 'notification_policy_deleted'
   | (string & {});
 
 /** An append-only audit record. Immutable once written. */

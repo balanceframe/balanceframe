@@ -28,6 +28,7 @@ import type {
   AuditClassification,
   CreateNotificationEventInput,
   OutboxStatus,
+  ListOutboxRecordsOptions,
 } from '@balanceframe/workflow-store';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -729,6 +730,136 @@ export class NotificationRuntime {
       reason,
     });
     return record;
+  }
+
+  // -----------------------------------------------------------------------
+  // Policy hydration (read from store)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Return the current notification policy version string.
+   * Reads from the persisted store policy record.
+   */
+  async getStoredPolicyVersion(spaceId: string): Promise<string | null> {
+    const record = await this.store.getNotificationPolicy(spaceId, 'notification');
+    return record?.policyVersion ?? null;
+  }
+
+  /**
+   * Return the current notification policy from the store.
+   * If no persisted policy exists, returns the in-memory default.
+   */
+  async getStoredPolicy(spaceId: string): Promise<NotificationPolicy> {
+    const record = await this.store.getNotificationPolicy(spaceId, 'notification');
+    if (record) {
+      try {
+        const parsed = JSON.parse(record.policy) as Partial<NotificationPolicy>;
+        return {
+          ...this.policy,
+          ...parsed,
+          policyVersion: record.policyVersion,
+        };
+      } catch {
+        // Fall through to in-memory policy
+      }
+    }
+    return this.policy;
+  }
+
+  // -----------------------------------------------------------------------
+  // Inbox listing (read-side)
+  // -----------------------------------------------------------------------
+
+  /**
+   * List notification outbox records for the given actor.
+   *
+   * Returns records where the linked event's recipient matches the actor,
+   * with delivery state kept distinct from finding state.  Each record
+   * includes the redacted event payload and delivery attempts.
+   *
+   * @param actorId  Actor requesting the inbox.
+   * @param options  Optional status/channel filter and pagination.
+   */
+  async listOutbox(
+    actorId: string,
+    options?: { status?: OutboxStatus; channelType?: string; limit?: number; offset?: number },
+  ): Promise<Array<{
+    outbox: NotificationOutboxRecord;
+    event: NotificationEvent;
+    redactedPayload: Record<string, unknown>;
+    deliveryAttempts: DeliveryAttempt[];
+  }>> {
+    const storeOptions: ListOutboxRecordsOptions = {
+      status: options?.status,
+      channelType: options?.channelType,
+      limit: options?.limit,
+      offset: options?.offset,
+    };
+    const records = await this.store.listOutboxRecords(storeOptions);
+
+    const results: Array<{
+      outbox: NotificationOutboxRecord;
+      event: NotificationEvent;
+      redactedPayload: Record<string, unknown>;
+      deliveryAttempts: DeliveryAttempt[];
+    }> = [];
+
+    for (const outbox of records) {
+      // Fetch the event for recipient check
+      const event = await this.store.getNotificationEvent(outbox.eventId);
+      if (!event) continue;
+
+      // Filter by recipient match
+      if (event.recipientId !== actorId) continue;
+
+      // Redact the payload
+      const redactedPayload = await this.redactForActor(event, actorId);
+
+      // Get delivery attempts
+      const deliveryAttempts = await this.store.getDeliveryAttempts(outbox.id);
+
+      results.push({ outbox, event, redactedPayload, deliveryAttempts });
+    }
+
+    return results;
+  }
+
+  /**
+   * Get a single notification outbox record with its event and delivery
+   * history, redacted for the requesting actor.
+   *
+   * Returns null if the outbox is not found or the actor is not the
+   * intended recipient.
+   */
+  async getOutboxDetail(
+    outboxId: string,
+    actorId: string,
+  ): Promise<{
+    outbox: NotificationOutboxRecord;
+    event: NotificationEvent;
+    redactedPayload: Record<string, unknown>;
+    deliveryAttempts: DeliveryAttempt[];
+  } | null> {
+    const outbox = await this.store.getOutboxRecord(outboxId);
+    if (!outbox) return null;
+
+    const event = await this.store.getNotificationEvent(outbox.eventId);
+    if (!event) return null;
+
+    // Authorization: only the intended recipient can view
+    if (event.recipientId !== actorId) {
+      // Check if admin
+      const membership = await this.store.getActorMembership(actorId);
+      const capabilities = membership?.capabilities ?? [];
+      if (!capabilities.includes('notification:admin')) {
+        return null;
+      }
+    }
+
+    const redactedPayload = await this.redactForActor(event, actorId);
+    const deliveryAttempts = await this.store.getDeliveryAttempts(outbox.id);
+
+    return { outbox, event, redactedPayload, deliveryAttempts };
   }
 
   // -----------------------------------------------------------------------

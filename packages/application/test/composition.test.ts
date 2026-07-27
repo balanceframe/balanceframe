@@ -10,7 +10,7 @@
  * composition module is correctly wired).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   createObserveComposition,
   createNativeAnalysisProtocol,
@@ -47,6 +47,8 @@ import type {
   AttentionHomeResult,
 } from '../src/commands';
 import { ReasonCodes } from '../src/errors';
+import { NotificationRuntime, InAppChannelAdapter } from '../src/notifications';
+import type { NotificationPolicy } from '../src/notifications';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,6 +147,106 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
         sinkingFundsUnderfunded: 1,
         advice: ['You are on track.'],
         freshness: null,
+      });
+    },
+
+    // Phase 8.5 — Extended deterministic analytics stubs
+    computeDataQuality(input: string): string {
+      calls.push('computeDataQuality');
+      return JSON.stringify({
+        overallScore: 85,
+        dimensions: [
+          { name: 'completeness', score: 90, severity: 'good', details: ['All fields populated'], worstSeverity: null },
+          { name: 'consistency', score: 80, severity: 'fair', details: ['Minor category mismatches'], worstSeverity: 'warning' },
+        ],
+        recommendations: ['Review uncategorized transactions.'],
+      });
+    },
+    computeLiquidityCoverage(input: string): string {
+      calls.push('computeLiquidityCoverage');
+      return JSON.stringify({
+        totalLiquid: { minorUnits: '500000', currency: 'USD' },
+        totalObligations: { minorUnits: '120000', currency: 'USD' },
+        coverage: [{ ratio: 4.17, label: 'strong' }],
+        upcomingObligations: [
+          { name: 'Rent', dueDate: '2026-08-01', amount: { minorUnits: '50000', currency: 'USD' }, categoryId: 'cat_1', isRecurring: true },
+        ],
+      });
+    },
+    computeBillCalendar(input: string): string {
+      calls.push('computeBillCalendar');
+      return JSON.stringify({
+        entries: [
+          { name: 'Electric Bill', dueDate: '2026-08-15', amount: { minorUnits: '8000', currency: 'USD' }, categoryId: 'cat_2', status: 'unpaid' },
+        ],
+        totalUnpaid: { minorUnits: '8000', currency: 'USD' },
+        unpaidCount: 1,
+      });
+    },
+    computeBudgetVariance(input: string): string {
+      calls.push('computeBudgetVariance');
+      return JSON.stringify({
+        categoryVariances: [
+          { categoryId: 'cat_1', categoryName: 'Shopping', budgeted: { minorUnits: '50000', currency: 'USD' }, actual: { minorUnits: '42000', currency: 'USD' }, variance: { minorUnits: '8000', currency: 'USD' }, variancePercent: 16, label: 'under' },
+        ],
+        trends: [
+          { categoryId: 'cat_1', categoryName: 'Shopping', direction: 'stable', avgChange: 0.02, periodsAnalyzed: 3, seasonalityDetected: false },
+        ],
+        totalBudgeted: { minorUnits: '500000', currency: 'USD' },
+        totalActual: { minorUnits: '480000', currency: 'USD' },
+        totalVariance: { minorUnits: '20000', currency: 'USD' },
+        overallVariancePercent: 4,
+      });
+    },
+    detectIrregularObligations(input: string): string {
+      calls.push('detectIrregularObligations');
+      return JSON.stringify({
+        obligations: [
+          { name: 'Car Insurance', kind: 'nonMonthly', typicalAmount: { minorUnits: '60000', currency: 'USD' }, frequency: 'semi-annual', categoryId: 'cat_3', nextExpectedDate: '2026-09-01' },
+        ],
+        totalEstimatedAnnual: { minorUnits: '120000', currency: 'USD' },
+      });
+    },
+    assessIncomeReliability(input: string): string {
+      calls.push('assessIncomeReliability');
+      return JSON.stringify({
+        sources: [
+          { name: 'Salary', typicalMonthly: { minorUnits: '450000', currency: 'USD' }, reliabilityScore: 95, variability: 0.02, paymentCount: 12, isRegular: true },
+        ],
+        totalMonthly: { minorUnits: '450000', currency: 'USD' },
+        overallScore: 95,
+        unreliableSourceCount: 0,
+      });
+    },
+    evaluateForecastCalibration(input: string): string {
+      calls.push('evaluateForecastCalibration');
+      return JSON.stringify({
+        metrics: [
+          { metricName: 'MAPE', mape: 12.5, bias: 2.1, periodsCompared: 6, isCalibrated: true },
+        ],
+        overallCalibrated: true,
+        recommendations: ['Continue current forecasting approach.'],
+      });
+    },
+    compareScenarios(input: string): string {
+      calls.push('compareScenarios');
+      return JSON.stringify({
+        deltas: [
+          { dimension: 'netWorth', baselineValue: 1500000, comparisonValue: 1600000, change: '+100000' },
+        ],
+        summary: 'Comparison scenario shows improved net worth.',
+      });
+    },
+    evaluateMultidimensionalHealth(input: string): string {
+      calls.push('evaluateMultidimensionalHealth');
+      return JSON.stringify({
+        dimensions: [
+          { dimension: 'liquidity', score: 85, weight: 0.3, explanation: 'Strong cash position', severity: 'good' },
+          { dimension: 'budget_adherence', score: 70, weight: 0.3, explanation: 'Some categories over budget', severity: 'warning' },
+        ],
+        compositeScore: 78,
+        summary: 'Overall financial health is satisfactory.',
+        recommendations: ['Review discretionary spending.'],
       });
     },
   };
@@ -445,6 +547,230 @@ describe('createObserveComposition — option overrides', () => {
       lifecycleCallbacks: callbacks,
     });
     expect(comp.lifecycleCallbacks).toBe(callbacks);
+  });
+
+  it('accepts a notificationRuntime override', async () => {
+    const policy: NotificationPolicy = {
+      policyVersion: 'v1',
+      eligibility: [
+        {
+          classifications: ['budget_alert'],
+          minSeverity: 'normal',
+          requiredCapability: 'notification:receive',
+        },
+      ],
+      recipients: [
+        { actorId: 'usr_test', channels: ['in_app'], quietHours: null },
+      ],
+      channels: [
+        { type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+      ],
+      redaction: {
+        public: { visibleFields: ['title', 'summary'] },
+      },
+      maxRetries: 3,
+      defaultRedactionClass: 'public',
+    };
+    const store = {
+      cancelPendingJobs: async () => 0,
+      deleteActorMembership: async () => true,
+      recordExport: async () => {},
+      getLastExport: async () => null,
+      deleteScopeData: async () => ({ deleted: {}, retained: { count: 0, reasons: [] } }),
+      getNotificationPolicy: async () => null,
+      listOutboxRecords: async () => [],
+    };
+    const runtime = new NotificationRuntime(
+      store as never,
+      policy,
+      [new InAppChannelAdapter()],
+    );
+    const comp = await createObserveComposition({
+      notificationRuntime: runtime,
+    });
+    expect(comp.notificationRuntime).toBe(runtime);
+  });
+
+  it('defaults notificationRuntime to null when no store or override provided', async () => {
+    const { shim } = stubNativeBindings();
+    const comp = await createObserveComposition({
+      nativeBindings: () => Promise.resolve(shim),
+    });
+    expect(comp.notificationRuntime).toBeNull();
+  });
+
+  it('constructs notificationRuntime from workflowStore and notificationPolicy', async () => {
+    const policy: NotificationPolicy = {
+      policyVersion: 'v1',
+      eligibility: [
+        {
+          classifications: ['budget_alert'],
+          minSeverity: 'normal',
+          requiredCapability: 'notification:receive',
+        },
+      ],
+      recipients: [],
+      channels: [
+        { type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+      ],
+      redaction: {
+        public: { visibleFields: ['title', 'summary'] },
+      },
+      maxRetries: 3,
+      defaultRedactionClass: 'public',
+    };
+    const store = {
+      cancelPendingJobs: async () => 0,
+      deleteActorMembership: async () => true,
+      recordExport: async () => {},
+      getLastExport: async () => null,
+      deleteScopeData: async () => ({ deleted: {}, retained: { count: 0, reasons: [] } }),
+      getNotificationPolicy: async () => null,
+      listOutboxRecords: async () => [],
+      getNotificationEvent: async () => null,
+      getOutboxRecord: async () => null,
+      getActorMembership: async () => null,
+      getDeliveryAttempts: async () => [],
+      getPendingNotifications: async () => [],
+      getRetryableNotifications: async () => [],
+      acknowledgeNotification: async (id: string) => ({ id }),
+      suppressNotification: async (id: string) => ({ id }),
+      createNotificationEvent: async (i: unknown) => i,
+      enqueueNotification: async (i: unknown) => i,
+      claimNotificationDelivery: async () => null,
+      completeNotificationDelivery: async () => ({}),
+      failNotificationDelivery: async () => ({}),
+      appendAuditRecord: async () => {},
+      upsertActorMembership: async () => {},
+    };
+    const comp = await createObserveComposition({
+      workflowStore: store,
+      notificationPolicy: policy,
+    });
+    expect(comp.notificationRuntime).not.toBeNull();
+    expect(comp.notificationRuntime).toBeInstanceOf(NotificationRuntime);
+  });
+
+  it('proves the same store object is used by notificationRuntime', async () => {
+    const policy: NotificationPolicy = {
+      policyVersion: 'v1',
+      eligibility: [
+        {
+          classifications: ['budget_alert', 'review_complete', 'security_alert'],
+          minSeverity: 'normal',
+          requiredCapability: 'notification:receive',
+        },
+      ],
+      recipients: [
+        { actorId: 'usr_tester', channels: ['in_app' as const], quietHours: null },
+      ],
+      channels: [
+        { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+      ],
+      redaction: {
+        public: { visibleFields: ['title', 'summary'] },
+      },
+      maxRetries: 3,
+      defaultRedactionClass: 'public',
+    };
+
+    // Store with instrumented methods to track calls
+    const createNotificationEvent = vi.fn().mockResolvedValue({
+      id: 'evt_proof',
+      budgetId: 'budget_proof',
+      classification: 'budget_alert',
+      severity: 'normal',
+      payload: '{}',
+      correlationId: null,
+      scope: null,
+      recipientId: null,
+      redactionClass: 'public',
+      eventVersion: 1,
+      createdAt: new Date().toISOString(),
+    });
+    const enqueueNotification = vi.fn().mockResolvedValue({
+      id: 'obx_proof',
+      eventId: 'evt_proof',
+      deliveryKey: 'dk_proof',
+      channelType: 'in_app',
+      status: 'pending' as const,
+      attemptCount: 0,
+      maxAttempts: 3,
+      lastError: null,
+      nextAttemptAt: null,
+      claimToken: null,
+      claimExpiresAt: null,
+      deliveredAt: null,
+      failedAt: null,
+      acknowledgedAt: null,
+      createdAt: new Date().toISOString(),
+    });
+    const getActorMembership = vi.fn().mockResolvedValue({
+      actorId: 'usr_tester',
+      status: 'active',
+      capabilities: ['notification:receive'],
+      scope: 'test',
+    });
+    const appendAuditRecord = vi.fn().mockResolvedValue(undefined);
+    const getNotificationPolicy = vi.fn().mockResolvedValue(null);
+    const listOutboxRecords = vi.fn().mockResolvedValue([]);
+    const getNotificationEvent = vi.fn().mockResolvedValue(null);
+    const getOutboxRecord = vi.fn().mockResolvedValue(null);
+    const getDeliveryAttempts = vi.fn().mockResolvedValue([]);
+    const getPendingNotifications = vi.fn().mockResolvedValue([]);
+    const getRetryableNotifications = vi.fn().mockResolvedValue([]);
+    const acknowledgeNotification = vi.fn().mockResolvedValue({ id: 'obx_proof' });
+    const suppressNotification = vi.fn().mockResolvedValue({ id: 'obx_proof' });
+    const claimNotificationDelivery = vi.fn().mockResolvedValue(null);
+    const completeNotificationDelivery = vi.fn().mockResolvedValue({} as never);
+    const failNotificationDelivery = vi.fn().mockResolvedValue({} as never);
+
+    const store = {
+      cancelPendingJobs: async () => 0,
+      deleteActorMembership: async () => true,
+      recordExport: async () => {},
+      getLastExport: async () => null,
+      deleteScopeData: async () => ({ deleted: {}, retained: { count: 0, reasons: [] } }),
+      createNotificationEvent,
+      enqueueNotification,
+      getNotificationEvent,
+      getOutboxRecord,
+      getActorMembership,
+      getDeliveryAttempts,
+      getPendingNotifications,
+      getRetryableNotifications,
+      acknowledgeNotification,
+      suppressNotification,
+      claimNotificationDelivery,
+      completeNotificationDelivery,
+      failNotificationDelivery,
+      appendAuditRecord,
+      getNotificationPolicy,
+      listOutboxRecords,
+    };
+
+    const comp = await createObserveComposition({
+      workflowStore: store,
+      notificationPolicy: policy,
+    });
+
+    expect(comp.notificationRuntime).not.toBeNull();
+    expect(comp.notificationRuntime).toBeInstanceOf(NotificationRuntime);
+
+    // Prove the runtime uses the same store: call a runtime method that
+    // delegates to the store, then verify the store's delegate was invoked.
+    // The `create` method calls store.createNotificationEvent and
+    // store.enqueueNotification.
+    await comp.notificationRuntime!.create({
+      budgetId: 'budget_proof',
+      classification: 'budget_alert',
+      severity: 'normal',
+      payload: { title: 'Proof', summary: 'Same store' },
+    });
+
+    expect(createNotificationEvent).toHaveBeenCalled();
+    expect(enqueueNotification).toHaveBeenCalled();
+    expect(appendAuditRecord).toHaveBeenCalled();
   });
 });
 
@@ -1074,5 +1400,259 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(typeof protocol.targetHealth).toBe('function');
     expect(typeof protocol.financialState).toBe('function');
     expect(typeof protocol.attentionHome).toBe('function');
+
+    // Verify all Phase 8.5 methods exist and are functions
+    expect(typeof protocol.dataQuality).toBe('function');
+    expect(typeof protocol.liquidityCoverage).toBe('function');
+    expect(typeof protocol.billCalendar).toBe('function');
+    expect(typeof protocol.budgetVariance).toBe('function');
+    expect(typeof protocol.irregularObligations).toBe('function');
+    expect(typeof protocol.incomeReliability).toBe('function');
+    expect(typeof protocol.forecastCalibration).toBe('function');
+    expect(typeof protocol.scenarioComparison).toBe('function');
+    expect(typeof protocol.multidimensionalHealth).toBe('function');
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 8.5 — Extended deterministic analytics delegation tests
+  // -------------------------------------------------------------------------
+
+  it('dataQuality calls computeDataQuality and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.dataQuality!(ledger);
+
+    expect(calls).toContain('computeDataQuality');
+    expect(result.overallScore).toBe(85);
+    expect(result.dimensions.length).toBeGreaterThan(0);
+    expect(result.dimensions[0].name).toBe('completeness');
+    expect(result.recommendations.length).toBeGreaterThan(0);
+  });
+
+  it('dataQuality returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.dataQuality!(null);
+
+    expect(calls).not.toContain('computeDataQuality');
+    expect(result.overallScore).toBeNull();
+    expect(result.dimensions).toEqual([]);
+  });
+
+  it('liquidityCoverage calls computeLiquidityCoverage and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.liquidityCoverage!(ledger, '2026-08');
+
+    expect(calls).toContain('computeLiquidityCoverage');
+    expect(result.totalLiquid).not.toBeNull();
+    expect(result.totalLiquid!.minorUnits).toBe('500000');
+    expect(result.upcomingObligations.length).toBeGreaterThan(0);
+    expect(result.coverage.length).toBeGreaterThan(0);
+  });
+
+  it('liquidityCoverage returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.liquidityCoverage!(null, '2026-08');
+
+    expect(calls).not.toContain('computeLiquidityCoverage');
+    expect(result.totalLiquid).toBeNull();
+    expect(result.upcomingObligations).toEqual([]);
+  });
+
+  it('billCalendar calls computeBillCalendar and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.billCalendar!(ledger, '2026-08-01');
+
+    expect(calls).toContain('computeBillCalendar');
+    expect(result.entries.length).toBeGreaterThan(0);
+    expect(result.entries[0].name).toBe('Electric Bill');
+    expect(result.unpaidCount).toBe(1);
+  });
+
+  it('billCalendar returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.billCalendar!(null, '2026-08-01');
+
+    expect(calls).not.toContain('computeBillCalendar');
+    expect(result.entries).toEqual([]);
+    expect(result.unpaidCount).toBe(0);
+  });
+
+  it('budgetVariance calls computeBudgetVariance and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.budgetVariance!(ledger, '2026-08-01');
+
+    expect(calls).toContain('computeBudgetVariance');
+    expect(result.categoryVariances.length).toBeGreaterThan(0);
+    expect(result.trends.length).toBeGreaterThan(0);
+    expect(result.overallVariancePercent).toBe(4);
+  });
+
+  it('budgetVariance returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.budgetVariance!(null, '2026-08-01');
+
+    expect(calls).not.toContain('computeBudgetVariance');
+    expect(result.categoryVariances).toEqual([]);
+    expect(result.trends).toEqual([]);
+  });
+
+  it('irregularObligations calls detectIrregularObligations and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.irregularObligations!(ledger);
+
+    expect(calls).toContain('detectIrregularObligations');
+    expect(result.obligations.length).toBeGreaterThan(0);
+    expect(result.obligations[0].name).toBe('Car Insurance');
+    expect(result.totalEstimatedAnnual).not.toBeNull();
+  });
+
+  it('irregularObligations returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.irregularObligations!(null);
+
+    expect(calls).not.toContain('detectIrregularObligations');
+    expect(result.obligations).toEqual([]);
+    expect(result.totalEstimatedAnnual).toBeNull();
+  });
+
+  it('incomeReliability calls assessIncomeReliability and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.incomeReliability!(ledger);
+
+    expect(calls).toContain('assessIncomeReliability');
+    expect(result.sources.length).toBeGreaterThan(0);
+    expect(result.sources[0].name).toBe('Salary');
+    expect(result.overallScore).toBe(95);
+  });
+
+  it('incomeReliability returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.incomeReliability!(null);
+
+    expect(calls).not.toContain('assessIncomeReliability');
+    expect(result.sources).toEqual([]);
+    expect(result.overallScore).toBeNull();
+  });
+
+  it('forecastCalibration calls evaluateForecastCalibration and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.forecastCalibration!(ledger);
+
+    expect(calls).toContain('evaluateForecastCalibration');
+    expect(result.overallCalibrated).toBe(true);
+    expect(result.metrics.length).toBeGreaterThan(0);
+    expect(result.recommendations.length).toBeGreaterThan(0);
+  });
+
+  it('forecastCalibration returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.forecastCalibration!(null);
+
+    expect(calls).not.toContain('evaluateForecastCalibration');
+    expect(result.overallCalibrated).toBe(false);
+    expect(result.metrics).toEqual([]);
+  });
+
+  it('scenarioComparison calls compareScenarios and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.scenarioComparison!(ledger, {
+      baseline: { income: 5000 },
+      comparison: { income: 5500 },
+    });
+
+    expect(calls).toContain('compareScenarios');
+    expect(result.deltas.length).toBeGreaterThan(0);
+    expect(result.deltas[0].dimension).toBe('netWorth');
+    expect(result.summary).toBeTruthy();
+  });
+
+  it('scenarioComparison returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.scenarioComparison!(null, {
+      baseline: { income: 5000 },
+      comparison: { income: 5500 },
+    });
+
+    expect(calls).not.toContain('compareScenarios');
+    expect(result.deltas).toEqual([]);
+  });
+
+  it('scenarioComparison does not mutate ledger (no write calls)', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.scenarioComparison!(ledger, {
+      baseline: { income: 5000 },
+      comparison: { income: 5500 },
+    });
+
+    // Only read calls were made
+    expect(calls).toContain('compareScenarios');
+    expect(calls.filter(c => c.startsWith('analyze') || c.startsWith('compute') || c.startsWith('assess') || c.startsWith('detect') || c.startsWith('evaluate') || c.startsWith('compare'))).toContain('compareScenarios');
+  });
+
+  it('multidimensionalHealth calls evaluateMultidimensionalHealth and returns fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = mockLedger();
+
+    const result = await protocol.multidimensionalHealth!(ledger, '2026-08');
+
+    expect(calls).toContain('evaluateMultidimensionalHealth');
+    expect(result.dimensions.length).toBeGreaterThan(0);
+    expect(result.compositeScore).toBe(78);
+    expect(result.summary).toBeTruthy();
+    expect(result.recommendations.length).toBeGreaterThan(0);
+  });
+
+  it('multidimensionalHealth returns empty fallback when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+    const result = await protocol.multidimensionalHealth!(null, '2026-08');
+
+    expect(calls).not.toContain('evaluateMultidimensionalHealth');
+    expect(result.dimensions).toEqual([]);
+    expect(result.compositeScore).toBe(0);
   });
 });

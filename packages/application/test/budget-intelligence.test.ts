@@ -15,6 +15,15 @@ import {
   savedViewsListAnalysis,
   savedViewCreateAnalysis,
   attentionHomeAnalysis,
+  dataQualityAnalysis,
+  liquidityCoverageAnalysis,
+  billCalendarAnalysis,
+  budgetVarianceAnalysis,
+  irregularObligationsAnalysis,
+  incomeReliabilityAnalysis,
+  forecastCalibrationAnalysis,
+  scenarioComparisonAnalysis,
+  multidimensionalHealthAnalysis,
 } from '../src/analysis';
 import type {
   CommandInput,
@@ -29,6 +38,18 @@ import type {
 } from '../src/commands';
 import { ReasonCodes } from '../src/errors';
 import { AuthorizationContext, ErrorInfo } from '../src/envelope';
+import type {
+  DataQualityResult,
+  LiquidityCoverageResult,
+  BillCalendarResult,
+  BudgetVarianceResult,
+  IrregularObligationsResult,
+  IncomeReliabilityResult,
+  ForecastCalibrationResult,
+  ScenarioComparisonResult,
+  MultidimensionalHealthResult,
+  ScenarioComparisonParams,
+} from '../src/commands';
 
 // ---------------------------------------------------------------------------
 // Mock protocol with budget intelligence stubs

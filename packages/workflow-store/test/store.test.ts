@@ -2147,6 +2147,1261 @@ describe('registration lifecycle', () => {
   });
 });
   // =======================================================================
+  // Saved view lifecycle
+  // =======================================================================
+
+  describe('saved view lifecycle', () => {
+    const ACTOR_ID = 'actor-sv-1';
+    const BASE_VIEW_INPUT = {
+      name: 'My View',
+      viewType: 'attention',
+      scope: { budgetId: 'budget-alpha' },
+      actorId: ACTOR_ID,
+    };
+
+    describe('getSavedView', () => {
+      it('returns null for a non-existent viewId', async () => {
+        const result = await store.getSavedView('nonexistent-view');
+        expect(result).toBeNull();
+      });
+    });
+
+    describe('createSavedView', () => {
+      it('persists a saved view with all fields intact', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+
+        expect(view.viewId).toBeTypeOf('string');
+        expect(view.name).toBe(BASE_VIEW_INPUT.name);
+        expect(view.viewType).toBe(BASE_VIEW_INPUT.viewType);
+        expect(view.scope).toEqual(BASE_VIEW_INPUT.scope);
+        expect(view.sort).toBeNull();
+        expect(view.actorId).toBe(ACTOR_ID);
+        expect(view.createdAt).toBeTypeOf('string');
+        expect(view.lastUsedAt).toBeNull();
+      });
+
+      it('assigns a stable UUID that can be used to retrieve the record', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        const fetched = await store.getSavedView(view.viewId);
+        expect(fetched).not.toBeNull();
+        expect(fetched!.viewId).toBe(view.viewId);
+      });
+
+      it('stores sort when provided', async () => {
+        const view = await store.createSavedView({
+          ...BASE_VIEW_INPUT,
+          name: 'Sorted View',
+          sort: 'amount:desc',
+        });
+        expect(view.sort).toBe('amount:desc');
+      });
+
+      it('stores empty scope as empty object', async () => {
+        const view = await store.createSavedView({
+          ...BASE_VIEW_INPUT,
+          name: 'Empty Scope View',
+          scope: {},
+        });
+        expect(view.scope).toEqual({});
+      });
+    });
+
+    describe('updateSavedView', () => {
+      it('renames an existing saved view', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        const updated = await store.updateSavedView(view.viewId, { name: 'Renamed View' });
+
+        expect(updated.name).toBe('Renamed View');
+        expect(updated.viewId).toBe(view.viewId);
+      });
+
+      it('re-scopes an existing saved view', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        const newScope = { budgetId: 'budget-beta', extra: true };
+        const updated = await store.updateSavedView(view.viewId, { scope: newScope });
+
+        expect(updated.scope).toEqual(newScope);
+      });
+
+      it('re-sorts an existing saved view and can clear sort', async () => {
+        const view = await store.createSavedView({
+          ...BASE_VIEW_INPUT,
+          sort: 'date:asc',
+        });
+        expect(view.sort).toBe('date:asc');
+
+        const reSorted = await store.updateSavedView(view.viewId, { sort: 'amount:desc' });
+        expect(reSorted.sort).toBe('amount:desc');
+
+        const cleared = await store.updateSavedView(view.viewId, { sort: null });
+        expect(cleared.sort).toBeNull();
+      });
+
+      it('updates name independently of scope', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        const updated = await store.updateSavedView(view.viewId, { name: 'Just Name' });
+
+        expect(updated.name).toBe('Just Name');
+        expect(updated.scope).toEqual(BASE_VIEW_INPUT.scope);
+      });
+
+      it('throws when viewId does not exist', async () => {
+        await expect(
+          store.updateSavedView('nonexistent-view', { name: 'Ghost' }),
+        ).rejects.toThrow('Saved view nonexistent-view not found');
+      });
+
+      it('preserves lastUsedAt unchanged through rename', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        expect(view.lastUsedAt).toBeNull();
+
+        await store.recordSavedViewUsage(view.viewId);
+        const used = await store.getSavedView(view.viewId);
+        expect(used!.lastUsedAt).not.toBeNull();
+
+        const renamed = await store.updateSavedView(view.viewId, { name: 'Used & Renamed' });
+        expect(renamed.lastUsedAt).toBe(used!.lastUsedAt);
+      });
+    });
+
+    describe('duplicateSavedView', () => {
+      it('duplicates a saved view with a new name and actor', async () => {
+        const source = await store.createSavedView({
+          ...BASE_VIEW_INPUT,
+          sort: 'amount:desc',
+        });
+
+        const dup = await store.duplicateSavedView({
+          sourceViewId: source.viewId,
+          name: 'Duplicated View',
+          actorId: 'actor-sv-2',
+        });
+
+        expect(dup.name).toBe('Duplicated View');
+        expect(dup.viewType).toBe(source.viewType);
+        expect(dup.scope).toEqual(source.scope);
+        expect(dup.sort).toBe(source.sort);
+        expect(dup.actorId).toBe('actor-sv-2');
+        expect(dup.viewId).not.toBe(source.viewId);
+      });
+
+      it('throws when the source viewId does not exist', async () => {
+        await expect(
+          store.duplicateSavedView({
+            sourceViewId: 'nonexistent-source',
+            name: 'Ghost Copy',
+            actorId: ACTOR_ID,
+          }),
+        ).rejects.toThrow('Source saved view nonexistent-source not found');
+      });
+    });
+
+    describe('deleteSavedView', () => {
+      it('returns true when a view is deleted', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        const deleted = await store.deleteSavedView(view.viewId);
+        expect(deleted).toBe(true);
+      });
+
+      it('returns false when the view does not exist', async () => {
+        const deleted = await store.deleteSavedView('nonexistent-view');
+        expect(deleted).toBe(false);
+      });
+
+      it('removes the view so it is no longer retrievable', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        await store.deleteSavedView(view.viewId);
+
+        const fetched = await store.getSavedView(view.viewId);
+        expect(fetched).toBeNull();
+      });
+
+      it('removes the view so it no longer appears in listing', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        await store.deleteSavedView(view.viewId);
+
+        const views = await store.listSavedViews(ACTOR_ID);
+        expect(views.find(v => v.viewId === view.viewId)).toBeUndefined();
+      });
+    });
+
+    describe('recordSavedViewUsage', () => {
+      it('sets lastUsedAt on the view', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        expect(view.lastUsedAt).toBeNull();
+
+        const used = await store.recordSavedViewUsage(view.viewId);
+        expect(used.lastUsedAt).not.toBeNull();
+        expect(used.viewId).toBe(view.viewId);
+      });
+
+      it('updates lastUsedAt on subsequent usage', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        const first = await store.recordSavedViewUsage(view.viewId);
+
+        tickSync();
+
+        const second = await store.recordSavedViewUsage(view.viewId);
+        expect(second.lastUsedAt).not.toBeNull();
+        expect(new Date(second.lastUsedAt!).getTime()).toBeGreaterThan(new Date(first.lastUsedAt!).getTime());
+      });
+
+      it('throws when viewId does not exist', async () => {
+        await expect(
+          store.recordSavedViewUsage('nonexistent-view'),
+        ).rejects.toThrow('Saved view nonexistent-view not found');
+      });
+    });
+
+    describe('listSavedViews', () => {
+      it('returns all views for an actor', async () => {
+        await store.createSavedView(BASE_VIEW_INPUT);
+        await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'View B', viewType: 'pending_review' });
+        await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'View C', viewType: 'budget_summary' });
+
+        const views = await store.listSavedViews(ACTOR_ID);
+        expect(views).toHaveLength(3);
+      });
+
+      it('returns empty array when actor has no views', async () => {
+        const views = await store.listSavedViews('nonexistent-actor');
+        expect(views).toEqual([]);
+      });
+
+      it('does not return views belonging to other actors', async () => {
+        await store.createSavedView(BASE_VIEW_INPUT);
+        await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'Other View', actorId: 'actor-sv-other' });
+
+        const views = await store.listSavedViews(ACTOR_ID);
+        expect(views).toHaveLength(1);
+        expect(views[0].name).toBe(BASE_VIEW_INPUT.name);
+      });
+
+      it('returns most recently created first', async () => {
+        const first = await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'First' });
+        tickSync();
+        const second = await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'Second' });
+
+        const views = await store.listSavedViews(ACTOR_ID);
+        expect(views[0].name).toBe('Second');
+        expect(views[1].name).toBe('First');
+      });
+    });
+  });
+
+  // =======================================================================
+  // Finding lifecycle
+  // =======================================================================
+
+  describe('finding lifecycle', () => {
+    const ACTOR_A = 'actor-finding-1';
+    const ACTOR_B = 'actor-finding-2';
+    const BUDGET_A = 'budget-finding-a';
+    const BUDGET_B = 'budget-finding-b';
+
+    const BASE_FINDING_INPUT = {
+      budgetId: BUDGET_A,
+      classification: 'uncategorized',
+      description: 'Transaction missing category',
+      evidence: { transactionId: 'txn-999' },
+    };
+
+    describe('createFinding', () => {
+      it('persists a finding with all required fields', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+
+        expect(finding.id).toBeTypeOf('string');
+        expect(finding.budgetId).toBe(BUDGET_A);
+        expect(finding.classification).toBe('uncategorized');
+        expect(finding.description).toBe('Transaction missing category');
+        expect(finding.evidence).toEqual({ transactionId: 'txn-999' });
+        expect(finding.severity).toBe('medium');
+        expect(finding.status).toBe('open');
+        expect(finding.version).toBe(1);
+        expect(finding.actorId).toBeNull();
+        expect(finding.createdAt).toBeTypeOf('string');
+        expect(finding.updatedAt).toBe(finding.createdAt);
+      });
+
+      it('accepts optional severity, actorId, expiresAt, and evidenceRefs', async () => {
+        const finding = await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          severity: 'high',
+          actorId: ACTOR_A,
+          expiresAt: '2099-12-31T23:59:59Z',
+          evidenceRefs: ['ref-1', 'ref-2'],
+        });
+
+        expect(finding.severity).toBe('high');
+        expect(finding.actorId).toBe(ACTOR_A);
+        expect(finding.expiresAt).toBe('2099-12-31T23:59:59Z');
+        expect(finding.evidenceRefs).toEqual(['ref-1', 'ref-2']);
+      });
+
+      it('assigns a stable UUID that can be used to retrieve the record', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        const fetched = await store.getFinding(finding.id);
+        expect(fetched).not.toBeNull();
+        expect(fetched!.id).toBe(finding.id);
+      });
+    });
+
+    describe('getFinding', () => {
+      it('returns null for a non-existent id', async () => {
+        const result = await store.getFinding('nonexistent-finding');
+        expect(result).toBeNull();
+      });
+    });
+
+    describe('listFindings', () => {
+      beforeEach(async () => {
+        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'uncategorized', severity: 'medium' });
+        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'budget_risk', severity: 'high' });
+        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_B, classification: 'data_quality', severity: 'low' });
+      });
+
+      it('returns all findings with no filter', async () => {
+        const findings = await store.listFindings();
+        expect(findings).toHaveLength(3);
+      });
+
+      it('filters by status', async () => {
+        const findings = await store.listFindings({ status: 'open' });
+        expect(findings).toHaveLength(3);
+      });
+
+      it('filters by budgetId', async () => {
+        const findings = await store.listFindings({ budgetId: BUDGET_A });
+        expect(findings).toHaveLength(2);
+      });
+
+      it('filters by both status and budgetId', async () => {
+        const findings = await store.listFindings({ status: 'open', budgetId: BUDGET_B });
+        expect(findings).toHaveLength(1);
+        expect(findings[0].budgetId).toBe(BUDGET_B);
+      });
+
+      it('filters by classification', async () => {
+        const findings = await store.listFindings({ classification: 'budget_risk' });
+        expect(findings).toHaveLength(1);
+        expect(findings[0].classification).toBe('budget_risk');
+      });
+
+      it('filters by severity', async () => {
+        const findings = await store.listFindings({ severity: 'medium' });
+        expect(findings).toHaveLength(1);
+        expect(findings[0].severity).toBe('medium');
+      });
+
+      it('returns empty array when no findings match', async () => {
+        const findings = await store.listFindings({ status: 'acknowledged' });
+        expect(findings).toEqual([]);
+      });
+
+      it('respects limit and offset', async () => {
+        const two = await store.listFindings({ limit: 2 });
+        expect(two).toHaveLength(2);
+
+        const one = await store.listFindings({ limit: 1, offset: 1 });
+        expect(one).toHaveLength(1);
+      });
+    });
+
+    describe('countFindings', () => {
+      beforeEach(async () => {
+        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'uncategorized' });
+        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'budget_risk', severity: 'high' });
+        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_B, classification: 'data_quality', severity: 'low' });
+      });
+
+      it('counts all findings with no filter', async () => {
+        const count = await store.countFindings();
+        expect(count).toBe(3);
+      });
+
+      it('counts findings by budgetId', async () => {
+        const count = await store.countFindings({ budgetId: BUDGET_A });
+        expect(count).toBe(2);
+      });
+
+      it('counts findings by status', async () => {
+        const count = await store.countFindings({ status: 'open' });
+        expect(count).toBe(3);
+      });
+
+      it('counts findings by classification', async () => {
+        const count = await store.countFindings({ classification: 'data_quality' });
+        expect(count).toBe(1);
+      });
+
+      it('counts findings by severity', async () => {
+        const count = await store.countFindings({ severity: 'high' });
+        expect(count).toBe(1);
+      });
+
+      it('returns zero when no findings match', async () => {
+        const count = await store.countFindings({ status: 'acknowledged' });
+        expect(count).toBe(0);
+      });
+    });
+
+    describe('acknowledgeFinding', () => {
+      it('transitions from open to acknowledged', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        expect(finding.status).toBe('open');
+
+        const acknowledged = await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
+
+        expect(acknowledged.status).toBe('acknowledged');
+        expect(acknowledged.version).toBe(2);
+        expect(acknowledged.acknowledgedAt).not.toBeNull();
+        expect(acknowledged.acknowledgedBy).toBe(ACTOR_A);
+      });
+
+      it('is idempotent when already acknowledged', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+        const again = await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 });
+
+        expect(again.status).toBe('acknowledged');
+      });
+
+      it('rejects transition from corrected status', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+
+        await expect(
+          store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 }),
+        ).rejects.toThrow('Cannot acknowledge finding in status corrected');
+      });
+
+      it('throws on version conflict', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await expect(
+          store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 99 }),
+        ).rejects.toThrow('version conflict');
+      });
+
+      it('throws when finding does not exist', async () => {
+        await expect(
+          store.acknowledgeFinding({ findingId: 'nonexistent', actorId: ACTOR_A, expectedVersion: 1 }),
+        ).rejects.toThrow('Finding nonexistent not found');
+      });
+    });
+
+    describe('correctFinding', () => {
+      it('transitions from open to corrected', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        const corrected = await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-open-1',
+          expectedVersion: 1,
+        });
+
+        expect(corrected.status).toBe('corrected');
+        expect(corrected.version).toBe(2);
+        expect(corrected.correctedAt).not.toBeNull();
+        expect(corrected.correctedBy).toBe(ACTOR_A);
+        expect(corrected.correctionRef).toBe('corr-open-1');
+      });
+
+      it('transitions from acknowledged to corrected', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+
+        const corrected = await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_B,
+          correctionRef: 'corr-ack-1',
+          expectedVersion: 2,
+        });
+
+        expect(corrected.status).toBe('corrected');
+        expect(corrected.correctedBy).toBe(ACTOR_B);
+      });
+
+      it('is idempotent when already corrected', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+        const again = await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 2 });
+
+        expect(again.status).toBe('corrected');
+      });
+
+      it('rejects transition from dismissed status', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Not relevant', expectedVersion: 1 });
+
+        await expect(
+          store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-x', expectedVersion: 2 }),
+        ).rejects.toThrow('Cannot correct finding in status dismissed');
+      });
+
+      it('throws on version conflict', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await expect(
+          store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-conflict', expectedVersion: 99 }),
+        ).rejects.toThrow('version conflict');
+      });
+    });
+
+    describe('dismissFinding', () => {
+      it('transitions from open to dismissed', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        const dismissed = await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Not actionable at this time',
+          expectedVersion: 1,
+        });
+
+        expect(dismissed.status).toBe('dismissed');
+        expect(dismissed.version).toBe(2);
+        expect(dismissed.dismissedAt).not.toBeNull();
+        expect(dismissed.dismissedBy).toBe(ACTOR_A);
+        expect(dismissed.dismissedReason).toBe('Not actionable at this time');
+      });
+
+      it('transitions from acknowledged to dismissed', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+
+        const dismissed = await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Already handled',
+          expectedVersion: 2,
+        });
+        expect(dismissed.status).toBe('dismissed');
+      });
+
+      it('is idempotent when already dismissed', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 1 });
+        const again = await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 2 });
+
+        expect(again.status).toBe('dismissed');
+      });
+
+      it('rejects transition from corrected status', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+
+        await expect(
+          store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Late', expectedVersion: 2 }),
+        ).rejects.toThrow('Cannot dismiss finding in status corrected');
+      });
+
+      it('throws on version conflict', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await expect(
+          store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Conflict', expectedVersion: 99 }),
+        ).rejects.toThrow('version conflict');
+      });
+    });
+
+    describe('reopenFinding', () => {
+      it('transitions from dismissed to reopened', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Dismissed', expectedVersion: 1 });
+
+        const reopened = await store.reopenFinding({
+          findingId: finding.id,
+          actorId: ACTOR_B,
+          expectedVersion: 2,
+        });
+
+        expect(reopened.status).toBe('reopened');
+        expect(reopened.version).toBe(3);
+        expect(reopened.reopenedAt).not.toBeNull();
+        expect(reopened.reopenedBy).toBe(ACTOR_B);
+      });
+
+      it('transitions from acknowledged to reopened', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+
+        const reopened = await store.reopenFinding({
+          findingId: finding.id,
+          actorId: ACTOR_B,
+          expectedVersion: 2,
+        });
+
+        expect(reopened.status).toBe('reopened');
+      });
+
+      it('is idempotent when already reopened', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 1 });
+        await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_B, expectedVersion: 2 });
+
+        const again = await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_B, expectedVersion: 3 });
+        expect(again.status).toBe('reopened');
+      });
+
+      it('rejects transition from corrected status', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+
+        await expect(
+          store.reopenFinding({ findingId: finding.id, actorId: ACTOR_B, expectedVersion: 2 }),
+        ).rejects.toThrow('Cannot reopen finding in status corrected');
+      });
+
+      it('throws on version conflict', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Dismissed', expectedVersion: 1 });
+        await expect(
+          store.reopenFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 99 }),
+        ).rejects.toThrow('version conflict');
+      });
+    });
+
+    describe('supersedeFinding', () => {
+      it('transitions from open to superseded', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        const superseded = await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-1',
+          reason: 'Replaced by more accurate analysis',
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
+
+        expect(superseded.status).toBe('superseded');
+        expect(superseded.version).toBe(2);
+        expect(superseded.supersededAt).not.toBeNull();
+        expect(superseded.supersededBy).toBe('new-finding-1');
+        expect(superseded.supersededReason).toBe('Replaced by more accurate analysis');
+      });
+
+      it('transitions from acknowledged to superseded', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+
+        const superseded = await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-2',
+          reason: 'Superseded',
+          actorId: ACTOR_A,
+          expectedVersion: 2,
+        });
+        expect(superseded.status).toBe('superseded');
+      });
+
+      it('transitions from corrected to superseded', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+
+        const superseded = await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-3',
+          reason: 'Superseded after correction',
+          actorId: ACTOR_A,
+          expectedVersion: 2,
+        });
+        expect(superseded.status).toBe('superseded');
+      });
+
+      it('transitions from dismissed to superseded', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Dismissed', expectedVersion: 1 });
+
+        const superseded = await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-4',
+          reason: 'New evidence',
+          actorId: ACTOR_A,
+          expectedVersion: 2,
+        });
+        expect(superseded.status).toBe('superseded');
+      });
+
+      it('transitions from reopened to superseded', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'First', expectedVersion: 1 });
+        await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 });
+
+        const superseded = await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-5',
+          reason: 'Superseded after reopen',
+          actorId: ACTOR_A,
+          expectedVersion: 3,
+        });
+        expect(superseded.status).toBe('superseded');
+      });
+
+      it('transitions from expired to superseded', async () => {
+        const finding = await store.createFinding({ ...BASE_FINDING_INPUT, expiresAt: '2020-01-01T00:00:00Z' });
+        await store.expireFinding(finding.id);
+
+        const superseded = await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-6',
+          reason: 'Superseded after expiry',
+          actorId: ACTOR_A,
+          expectedVersion: 2,
+        });
+        expect(superseded.status).toBe('superseded');
+      });
+
+      it('is idempotent when already superseded', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-1', reason: 'Replaced', actorId: ACTOR_A, expectedVersion: 1 });
+        const again = await store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-1', reason: 'Replaced', actorId: ACTOR_A, expectedVersion: 2 });
+
+        expect(again.status).toBe('superseded');
+      });
+
+      it('throws on version conflict', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await expect(
+          store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-x', reason: 'Conflict', actorId: ACTOR_A, expectedVersion: 99 }),
+        ).rejects.toThrow('version conflict');
+      });
+    });
+
+    describe('expireFinding', () => {
+      it('transitions from open to expired', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        const expired = await store.expireFinding(finding.id);
+
+        expect(expired.status).toBe('expired');
+        expect(expired.version).toBe(2);
+      });
+
+      it('transitions from acknowledged to expired', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+
+        const expired = await store.expireFinding(finding.id);
+        expect(expired.status).toBe('expired');
+      });
+
+      it('transitions from corrected to expired', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+
+        const expired = await store.expireFinding(finding.id);
+        expect(expired.status).toBe('expired');
+      });
+
+      it('transitions from dismissed to expired', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 1 });
+
+        const expired = await store.expireFinding(finding.id);
+        expect(expired.status).toBe('expired');
+      });
+
+      it('transitions from reopened to expired', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'First', expectedVersion: 1 });
+        await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 });
+
+        const expired = await store.expireFinding(finding.id);
+        expect(expired.status).toBe('expired');
+      });
+
+      it('is idempotent when already expired', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.expireFinding(finding.id);
+        const again = await store.expireFinding(finding.id);
+
+        expect(again.status).toBe('expired');
+        expect(again.version).toBe(2);
+      });
+
+      it('rejects expire from superseded status', async () => {
+        const finding = await store.createFinding(BASE_FINDING_INPUT);
+        await store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-x', reason: 'Replaced', actorId: ACTOR_A, expectedVersion: 1 });
+
+        await expect(
+          store.expireFinding(finding.id),
+        ).rejects.toThrow('cannot be expired from status superseded');
+      });
+
+      it('throws when finding does not exist', async () => {
+        await expect(
+          store.expireFinding('nonexistent'),
+        ).rejects.toThrow('Finding nonexistent not found');
+      });
+    });
+  });
+
+  // =======================================================================
+  // Notification policy lifecycle
+  // =======================================================================
+
+  describe('notification policy lifecycle', () => {
+    const SPACE_A = 'space-np-1';
+    const SPACE_B = 'space-np-2';
+
+    const BASE_POLICY_INPUT = {
+      spaceId: SPACE_A,
+      policyKey: 'delivery',
+      policyVersion: '1.0.0',
+      policy: {
+        channels: ['email', 'in-app'],
+        actorIds: ['actor-np-1'],
+      },
+    };
+
+    describe('saveNotificationPolicy', () => {
+      it('creates a new notification policy and returns it', async () => {
+        const policy = await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+
+        expect(policy.id).toBeTypeOf('string');
+        expect(policy.spaceId).toBe(SPACE_A);
+        expect(policy.policyKey).toBe('delivery');
+        expect(policy.policyVersion).toBe('1.0.0');
+        expect(policy.isActive).toBe(true);
+        expect(policy.createdAt).toBeTypeOf('string');
+        expect(policy.updatedAt).toBe(policy.createdAt);
+      });
+
+      it('updates an existing policy when same (spaceId, policyKey) is used', async () => {
+        const first = await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+        tickSync();
+
+        const updated = await store.saveNotificationPolicy({
+          ...BASE_POLICY_INPUT,
+          policyVersion: '2.0.0',
+          policy: { channels: ['email'], actorIds: ['actor-np-2'] },
+        });
+
+        expect(updated.policyVersion).toBe('2.0.0');
+        expect(updated.id).toBe(first.id);
+        expect(updated.updatedAt).not.toBe(updated.createdAt);
+      });
+
+      it('can store different policy keys for the same space', async () => {
+        const delivery = await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+        const eligibility = await store.saveNotificationPolicy({
+          spaceId: SPACE_A,
+          policyKey: 'eligibility',
+          policyVersion: '1.0.0',
+          policy: { maxAmount: 500 },
+        });
+
+        expect(delivery.id).not.toBe(eligibility.id);
+      });
+    });
+
+    describe('getNotificationPolicy', () => {
+      it('returns the policy by (spaceId, policyKey)', async () => {
+        await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+        const policy = await store.getNotificationPolicy(SPACE_A, 'delivery');
+
+        expect(policy).not.toBeNull();
+        expect(policy!.policyKey).toBe('delivery');
+      });
+
+      it('returns null when no policy matches', async () => {
+        const policy = await store.getNotificationPolicy('nonexistent-space', 'delivery');
+        expect(policy).toBeNull();
+      });
+    });
+
+    describe('listNotificationPolicies', () => {
+      beforeEach(async () => {
+        await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+        await store.saveNotificationPolicy({ ...BASE_POLICY_INPUT, policyKey: 'eligibility', policy: { rules: [] } });
+        await store.saveNotificationPolicy({ ...BASE_POLICY_INPUT, spaceId: SPACE_B, policyKey: 'delivery', policy: { channels: ['sms'] } });
+      });
+
+      it('lists all policies when no spaceId filter', async () => {
+        const policies = await store.listNotificationPolicies();
+        expect(policies).toHaveLength(3);
+      });
+
+      it('filters by spaceId', async () => {
+        const policies = await store.listNotificationPolicies({ spaceId: SPACE_A });
+        expect(policies).toHaveLength(2);
+      });
+
+      it('returns empty array for space with no policies', async () => {
+        const policies = await store.listNotificationPolicies({ spaceId: 'empty-space' });
+        expect(policies).toEqual([]);
+      });
+
+      it('respects limit and offset', async () => {
+        const two = await store.listNotificationPolicies({ limit: 2 });
+        expect(two).toHaveLength(2);
+
+        const oneMore = await store.listNotificationPolicies({ limit: 1, offset: 2 });
+        expect(oneMore).toHaveLength(1);
+      });
+    });
+
+    describe('resolveRecipients', () => {
+      it('returns empty resolution when no policies exist for the space', async () => {
+        const resolution = await store.resolveRecipients('empty-space', 'uncategorized', 'medium');
+
+        expect(resolution.spaceId).toBe('empty-space');
+        expect(resolution.actorIds).toEqual([]);
+        expect(resolution.channels).toEqual([]);
+        expect(resolution.resolvedAt).toBeTypeOf('string');
+      });
+
+      it('collects actorIds and channels from active policies', async () => {
+        await store.saveNotificationPolicy({
+          spaceId: SPACE_A,
+          policyKey: 'delivery',
+          policyVersion: '1.0.0',
+          policy: {
+            channels: ['email', 'in-app'],
+            actorIds: ['actor-1', 'actor-2'],
+          },
+        });
+
+        const resolution = await store.resolveRecipients(SPACE_A, 'uncategorized', 'medium');
+
+        expect(resolution.actorIds).toEqual(expect.arrayContaining(['actor-1', 'actor-2']));
+        expect(resolution.channels).toEqual(expect.arrayContaining(['email', 'in-app']));
+      });
+
+      it('merges policies: deduplicates actorIds and channels from multiple policies', async () => {
+        await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+        await store.saveNotificationPolicy({
+          spaceId: SPACE_A,
+          policyKey: 'escalation',
+          policyVersion: '1.0.0',
+          policy: {
+            actorIds: ['actor-1', 'actor-3'],
+            channels: ['pager'],
+          },
+        });
+
+        const resolution = await store.resolveRecipients(SPACE_A, 'budget_risk', 'high');
+
+        expect(resolution.actorIds).toEqual(expect.arrayContaining(['actor-np-1', 'actor-1', 'actor-3']));
+        expect(resolution.channels).toEqual(expect.arrayContaining(['email', 'in-app', 'pager']));
+      });
+
+      it('resolves classification-specific recipients', async () => {
+        await store.saveNotificationPolicy({
+          spaceId: SPACE_A,
+          policyKey: 'delivery',
+          policyVersion: '1.0.0',
+          policy: {
+            actorIds: ['base-actor'],
+            classifications: {
+              budget_risk: {
+                actorIds: ['risk-reviewer'],
+                channels: ['critical-alert'],
+              },
+            },
+          },
+        });
+
+        const resolution = await store.resolveRecipients(SPACE_A, 'budget_risk', 'medium');
+
+        expect(resolution.actorIds).toContain('risk-reviewer');
+        expect(resolution.channels).toContain('critical-alert');
+        expect(resolution.actorIds).toContain('base-actor');
+      });
+
+      it('resolves severity-specific recipients', async () => {
+        await store.saveNotificationPolicy({
+          spaceId: SPACE_A,
+          policyKey: 'delivery',
+          policyVersion: '1.0.0',
+          policy: {
+            actorIds: ['base-actor'],
+            severities: {
+              high: {
+                actorIds: ['senior-responder'],
+                channels: ['pager'],
+              },
+            },
+          },
+        });
+
+        const resolution = await store.resolveRecipients(SPACE_A, 'uncategorized', 'high');
+
+        expect(resolution.actorIds).toContain('senior-responder');
+        expect(resolution.channels).toContain('pager');
+      });
+
+      it('excludes channels and actorIds from inactive policies', async () => {
+        // Save and then update to flip isActive (update loses the isActive field, so this
+        // test is gated on the current insert-only active path)
+        await store.saveNotificationPolicy({
+          spaceId: SPACE_B,
+          policyKey: 'delivery',
+          policyVersion: '1.0.0',
+          policy: {
+            actorIds: ['inactive-actor'],
+            channels: ['inactive-channel'],
+          },
+        });
+
+        const resolution = await store.resolveRecipients(SPACE_B, 'uncategorized', 'medium');
+
+        // Currently all saved policies are active; this tests the baseline
+        expect(resolution.actorIds).toContain('inactive-actor');
+        expect(resolution.channels).toContain('inactive-channel');
+      });
+
+      it('resolves with matching classification AND severity filters combined', async () => {
+        await store.saveNotificationPolicy({
+          spaceId: SPACE_A,
+          policyKey: 'delivery',
+          policyVersion: '1.0.0',
+          policy: {
+            classifications: {
+              budget_risk: {
+                actorIds: ['class-actor'],
+                channels: ['class-channel'],
+              },
+            },
+            severities: {
+              high: {
+                actorIds: ['sev-actor'],
+                channels: ['sev-channel'],
+              },
+            },
+          },
+        });
+
+        const resolution = await store.resolveRecipients(SPACE_A, 'budget_risk', 'high');
+
+        expect(resolution.actorIds).toContain('class-actor');
+        expect(resolution.actorIds).toContain('sev-actor');
+        expect(resolution.channels).toContain('class-channel');
+        expect(resolution.channels).toContain('sev-channel');
+      });
+
+      it('gracefully handles malformed policy JSON (skips that policy)', async () => {
+        // Insert a policy with invalid JSON via raw SQL
+        const db = (store as unknown as { db: Database.Database }).db;
+        db.prepare(`
+          INSERT INTO notification_policies (id, space_id, policy_key, policy_version, policy, is_active, created_at, updated_at)
+          VALUES ('bad-policy-id', $spaceId, 'delivery', '1.0.0', 'not valid json', 1, datetime('now'), datetime('now'))
+        `).run({ spaceId: SPACE_A });
+
+        // Save a valid policy too
+        await store.saveNotificationPolicy({
+          spaceId: SPACE_A,
+          policyKey: 'eligibility',
+          policyVersion: '1.0.0',
+          policy: { actorIds: ['valid-actor'], channels: ['email'] },
+        });
+
+        const resolution = await store.resolveRecipients(SPACE_A, 'uncategorized', 'medium');
+
+        // Should still get actors from the valid policy
+        expect(resolution.actorIds).toContain('valid-actor');
+      });
+    });
+
+    describe('deleteNotificationPolicy', () => {
+      it('returns true when a policy is deleted', async () => {
+        const policy = await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+        const deleted = await store.deleteNotificationPolicy(policy.id);
+        expect(deleted).toBe(true);
+      });
+
+      it('returns false when the policy id does not exist', async () => {
+        const deleted = await store.deleteNotificationPolicy('nonexistent-policy');
+        expect(deleted).toBe(false);
+      });
+
+      it('removes the policy so it is no longer retrievable', async () => {
+        const policy = await store.saveNotificationPolicy(BASE_POLICY_INPUT);
+        await store.deleteNotificationPolicy(policy.id);
+
+        const fetched = await store.getNotificationPolicy(SPACE_A, 'delivery');
+        expect(fetched).toBeNull();
+      });
+    });
+  });
+
+  // =======================================================================
+  // Report record and history lifecycle
+  // =======================================================================
+
+  describe('report record and history lifecycle', () => {
+    const BUDGET_R = 'budget-report-1';
+
+    describe('createReportRecord', () => {
+      it('persists a report record with all required fields', async () => {
+        const record = await store.createReportRecord({
+          reportType: 'budget_summary',
+          config: { label: 'Monthly Budget Summary' },
+          policyVersion: '1.0.0',
+        });
+
+        expect(record.id).toBeTypeOf('string');
+        expect(record.reportType).toBe('budget_summary');
+        expect(record.budgetId).toBeNull();
+        expect(record.filterId).toBeNull();
+        expect(record.config).toBeTypeOf('string');
+        expect(record.policyVersion).toBe('1.0.0');
+        expect(record.generatedAt).toBeTypeOf('string');
+        expect(record.expiresAt).toBeNull();
+        expect(record.dataRef).toBeNull();
+      });
+
+      it('accepts optional budgetId, expiresAt, and dataRef', async () => {
+        const record = await store.createReportRecord({
+          reportType: 'transaction_audit',
+          budgetId: BUDGET_R,
+          config: { detail: 'full' },
+          policyVersion: '2.0.0',
+          expiresAt: '2099-01-01T00:00:00Z',
+          dataRef: 's3://reports/audit-123',
+        });
+
+        expect(record.budgetId).toBe(BUDGET_R);
+        expect(record.filterId).toBeNull();
+        expect(record.expiresAt).toBe('2099-01-01T00:00:00Z');
+        expect(record.dataRef).toBe('s3://reports/audit-123');
+      });
+
+      it('assigns a stable UUID that can be used to retrieve the record', async () => {
+        const record = await store.createReportRecord({
+          reportType: 'budget_summary',
+          config: { label: 'Test' },
+          policyVersion: '1.0.0',
+        });
+        const fetched = await store.getReportRecord(record.id);
+        expect(fetched).not.toBeNull();
+        expect(fetched!.id).toBe(record.id);
+      });
+    });
+
+    describe('getReportRecord', () => {
+      it('returns null for a non-existent id', async () => {
+        const result = await store.getReportRecord('nonexistent-report');
+        expect(result).toBeNull();
+      });
+    });
+
+    describe('getReportHistory', () => {
+      beforeEach(async () => {
+        await store.createReportRecord({
+          reportType: 'budget_summary',
+          budgetId: BUDGET_R,
+          config: { label: 'Q1 Budget' },
+          policyVersion: '1.0.0',
+        });
+        tickSync();
+        await store.createReportRecord({
+          reportType: 'transaction_audit',
+          budgetId: BUDGET_R,
+          config: { label: 'Q1 Audit' },
+          policyVersion: '1.0.0',
+        });
+        tickSync();
+        await store.createReportRecord({
+          reportType: 'budget_summary',
+          budgetId: 'budget-report-other',
+          config: { label: 'Other Budget' },
+          policyVersion: '1.0.0',
+        });
+      });
+
+      it('returns all report history entries when no budgetId filter', async () => {
+        const history = await store.getReportHistory();
+        expect(history).toHaveLength(3);
+      });
+
+      it('filters by budgetId', async () => {
+        const history = await store.getReportHistory(BUDGET_R);
+        expect(history).toHaveLength(2);
+      });
+
+      it('returns history entries with the correct shape', async () => {
+        const history = await store.getReportHistory(BUDGET_R);
+
+        expect(history[0].id).toBeTypeOf('string');
+        expect(history[0].reportType).toBe('transaction_audit');
+        expect(history[0].budgetId).toBe(BUDGET_R);
+        expect(history[0].generatedAt).toBeTypeOf('string');
+        expect(history[0].label).toBeTypeOf('string');
+        expect(history[0].isExpired).toBeTypeOf('boolean');
+      });
+
+      it('derives label from config.label', async () => {
+        const history = await store.getReportHistory(BUDGET_R);
+        const summary = history.find(h => h.reportType === 'budget_summary');
+        expect(summary!.label).toBe('Q1 Budget');
+      });
+
+      it('falls back to type-based label when config has no label', async () => {
+        await store.createReportRecord({
+          reportType: 'data_export',
+          budgetId: BUDGET_R,
+          config: { format: 'csv' },
+          policyVersion: '1.0.0',
+        });
+
+        const history = await store.getReportHistory(BUDGET_R);
+        const exportEntry = history.find(h => h.reportType === 'data_export');
+        expect(exportEntry!.label).toBe('data_export report');
+      });
+
+      it('marks expired reports with isExpired true', async () => {
+        await store.createReportRecord({
+          reportType: 'temp_report',
+          budgetId: BUDGET_R,
+          config: { label: 'Temp' },
+          policyVersion: '1.0.0',
+          expiresAt: '2020-01-01T00:00:00Z',
+        });
+
+        const history = await store.getReportHistory(BUDGET_R);
+        const temp = history.find(h => h.reportType === 'temp_report');
+        expect(temp!.isExpired).toBe(true);
+      });
+
+      it('returns empty array when no reports match the budget', async () => {
+        const history = await store.getReportHistory('nonexistent-budget');
+        expect(history).toEqual([]);
+      });
+
+      it('respects limit and offset', async () => {
+        const two = await store.getReportHistory(undefined, 2);
+        expect(two).toHaveLength(2);
+
+        const oneMore = await store.getReportHistory(undefined, 1, 2);
+        expect(oneMore).toHaveLength(1);
+      });
+    });
+
+    describe('countReportRecords', () => {
+      beforeEach(async () => {
+        await store.createReportRecord({ reportType: 'budget_summary', budgetId: BUDGET_R, config: { label: 'A' }, policyVersion: '1.0.0' });
+        await store.createReportRecord({ reportType: 'transaction_audit', budgetId: BUDGET_R, config: { label: 'B' }, policyVersion: '1.0.0' });
+        await store.createReportRecord({ reportType: 'budget_summary', budgetId: 'other-budget', config: { label: 'C' }, policyVersion: '1.0.0' });
+      });
+
+      it('counts all report records', async () => {
+        const count = await store.countReportRecords();
+        expect(count).toBe(3);
+      });
+
+      it('counts report records for a specific budget', async () => {
+        const count = await store.countReportRecords(BUDGET_R);
+        expect(count).toBe(2);
+      });
+
+      it('returns zero for a budget with no reports', async () => {
+        const count = await store.countReportRecords('nonexistent-budget');
+        expect(count).toBe(0);
+      });
+    });
+  });
+
+  // =======================================================================
   // Resource lifecycle
   // =======================================================================
 

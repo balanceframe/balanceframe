@@ -14,8 +14,20 @@ pub mod freshness;
 pub mod merchant;
 pub mod money;
 pub mod reconciliation;
+pub mod analytics;
 pub mod snapshots;
 
+pub use analytics::{
+    compute_data_quality_center, compute_liquidity_coverage, compute_bill_calendar,
+    compute_budget_variance, compute_irregular_obligations, compute_income_reliability,
+    compute_forecast_calibration, compare_scenarios, compute_multidimensional_health,
+    AnalysisAvailability, BillCalendar, BillCalendarEntry, BudgetVarianceReport, CalibrationMetric,
+    CategoryTrend, CategoryVariance, CoverageRatio, DataQualityCenter, ForecastCalibration,
+    HealthDimension, IncomeReliabilityReport, IncomeSource, IrregularObligation,
+    IrregularObligationsReport, IrregularityKind, LiquidityCoverage, MultidimensionalHealth,
+    QualityDimension, Scenario, ScenarioComparisonDelta, ScenarioComparisonResult, ScenarioId,
+    ScenarioVersion, TrendDirection, UpcomingObligation,
+};
 pub use analysis::{
     generate_rule_candidates, generate_rule_candidates_from_corrections,
     run_deterministic_analysis, CorrectionEvidence, DeterministicAnalysis,

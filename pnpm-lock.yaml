@@ -53,6 +53,9 @@ importers:
       '@balanceframe/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@balanceframe/protocol-generated':
+        specifier: workspace:*
+        version: link:../../packages/protocol-generated
       '@balanceframe/workflow-store':
         specifier: workspace:*
         version: link:../../packages/workflow-store
