@@ -737,7 +737,7 @@ export async function createNativeAnalysisProtocol(
         id: '',
         accountId: params.accountId ?? '',
         date: new Date().toISOString().slice(0, 10),
-        amount: typeof params.amount === 'string' ? params.amount : params.amount,
+        amount: params.amount,
         payeeId: null,
         payeeName: null,
         categoryId: params.categoryId,
