@@ -733,11 +733,28 @@ export async function createNativeAnalysisProtocol(
           hasEnvelope: false,
         };
       }
+      const proposedTransaction = {
+        id: '',
+        accountId: params.accountId ?? '',
+        date: new Date().toISOString().slice(0, 10),
+        amount: typeof params.amount === 'string' ? params.amount : params.amount,
+        payeeId: null,
+        payeeName: null,
+        categoryId: params.categoryId,
+        categoryName: null,
+        cleared: false,
+        reconciled: false,
+        importedId: null,
+        importedPayee: null,
+        notes: null,
+        tags: [],
+        transferAccountId: null,
+        subtransactions: [],
+      };
       const input = JSON.stringify({
         snapshot: rawSnapshot,
+        proposedTransaction,
         categoryId: params.categoryId,
-        amount: params.amount,
-        accountId: params.accountId ?? null,
       });
       const raw = native.evaluatePurchase(input);
       return parsePurchaseResponse(raw);
@@ -762,8 +779,7 @@ export async function createNativeAnalysisProtocol(
       }
       const input = JSON.stringify({
         snapshot: rawSnapshot,
-        months: params.months,
-        startMonth: params.startMonth ?? null,
+        projectionMonths: params.months,
       });
       const raw = native.projectCashFlow(input);
       return parseCashFlowResponse(raw, params.months);

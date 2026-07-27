@@ -990,6 +990,31 @@ describe('parseArgs — views commands', () => {
     expect(result.cmd.options!.scope).toBe('{"months":3}');
   });
 
+  it('parses views create with --sort', () => {
+    const result = parseArgs(['views', 'create', '--name', 'MyView', '--view-type', 'target_health', '--sort', 'amount:desc', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.sort).toBe('amount:desc');
+  });
+
+  it('parses views create with --sort and --scope together', () => {
+    const result = parseArgs(['views', 'create', '--name', 'N', '--view-type', 'T', '--scope', '{}', '--sort', 'amount:desc', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.name).toBe('N');
+    expect(result.cmd.options!['view-type']).toBe('T');
+    expect(result.cmd.options!.scope).toBe('{}');
+    expect(result.cmd.options!.sort).toBe('amount:desc');
+  });
+
+  it('parses views create with --sort at different position', () => {
+    const result = parseArgs(['views', 'create', '--name', 'N', '--view-type', 'T', '--sort', 'date:asc', '--scope', '{}', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.sort).toBe('date:asc');
+    expect(result.cmd.options!.scope).toBe('{}');
+  });
+
   it('rejects views create without --name', () => {
     const result = parseArgs(['views', 'create', '--view-type', 'target_health', '--json']);
     expect(result.ok).toBe(false);
@@ -1210,6 +1235,28 @@ describe('main — budget intelligence routing', () => {
     expect(parsed.requestId).toBe('req_vcreate');
     expect(parsed.status).toBe('ok');
     expect(parsed.result.view.viewId).toBe('view_001');
+  });
+
+  it('routes views create with --sort and forwards sort param', async () => {
+    const capturedParams: unknown[] = [];
+    const result = await main(['views', 'create', '--name', 'MyView', '--view-type', 'target_health', '--sort', 'amount:desc', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_vcreate_sort',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: {
+        ...mockAnalysisProtocol,
+        async createSavedView(_ledger: unknown, params: unknown) {
+          capturedParams.push(params);
+          return { view: { viewId: 'view_001', name: 'MyView', viewType: 'target_health', scope: {}, sort: 'amount:desc', createdAt: '' } };
+        },
+      },
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(capturedParams).toHaveLength(1);
+    const params = capturedParams[0] as Record<string, unknown>;
+    expect(params.sort).toBe('amount:desc');
   });
 
   it('routes home attention and returns ok envelope', async () => {

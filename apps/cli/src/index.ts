@@ -168,6 +168,7 @@ export function parseArgs(argv: string[]): ParseResult {
     '--label': true,
     '--tag': true,
     '--view-type': true,
+    '--sort': true,
     '--detailed': true,
     '--category-group': true,
   };
@@ -1011,6 +1012,7 @@ export function parseArgs(argv: string[]): ParseResult {
       if (a === '--name') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--name requires a value.' } }; options.name = v; i++; }
       else if (a === '--view-type') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--view-type requires a value.' } }; options['view-type'] = v; i++; }
       else if (a === '--scope') { const v = nextVal(); if (v !== undefined) { options.scope = v; i++; } }
+      else if (a === '--sort') { const v = nextVal(); if (v !== undefined) { options.sort = v; i++; } }
       else if (!a.startsWith('--')) {
         return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'views create': ${a}` } };
       }
@@ -1570,7 +1572,7 @@ export async function main(
           name: cmd.options?.name ?? '',
           viewType: cmd.options?.['view-type'] ?? '',
           scope: parsedScope,
-          sort: undefined,
+          sort: cmd.options?.sort,
         };
         const envelope = await savedViewCreateAnalysis(commandInput, viewParams);
         return JSON.stringify(envelope, null, 2);
