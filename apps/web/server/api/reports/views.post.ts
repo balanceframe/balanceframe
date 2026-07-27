@@ -14,8 +14,34 @@
  * Response envelope: CreateSavedViewOutput
  */
 
+import {
+  createDefaultConnectionManager,
+  createNativeAnalysisProtocol,
+  savedViewCreateAnalysis,
+} from '@balanceframe/application';
+import type { CommandInput, CreateSavedViewParams } from '@balanceframe/application';
 import { readBody, defineEventHandler, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
+
+/** Map an analysis error code to an HTTP status. */
+function httpStatusForCode(code: string): number {
+  if (
+    code.includes('not_connected') ||
+    code.includes('no_analysis') ||
+    code.startsWith('stale_')
+  ) {
+    return 503;
+  }
+  if (
+    code.endsWith('_REQUIRED') ||
+    code.startsWith('invalid') ||
+    code.startsWith('missing') ||
+    code.includes('MISSING')
+  ) {
+    return 400;
+  }
+  return 500;
+}
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -60,29 +86,42 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    // Delegate to the analysis adapter via workflow store seam.
-    // Actual view persistence is performed by the Rust protocol.
-    const view: Record<string, unknown> = {
-      viewId: `view_${crypto.randomUUID().slice(0, 8)}`,
+    const manager = createDefaultConnectionManager({
+      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+    });
+    const connected = await manager.restore();
+    const protocol = await createNativeAnalysisProtocol();
+
+    const input: CommandInput = {
+      args: [],
+      mode: 'observe',
+      actorId: getActorId(event),
+      requestId,
+      ledger: connected.connector,
+      freshness: null,
+      analysisProtocol: protocol,
+      workflowStore: wf.store,
+    };
+
+    const params: CreateSavedViewParams = {
       name,
       viewType,
       scope,
-      createdAt: new Date().toISOString(),
+      ...(sort !== undefined ? { sort } : {}),
     };
 
-    if (sort !== undefined) {
-      view.sort = sort;
+    const envelope = await savedViewCreateAnalysis(input, params);
+
+    if (envelope.status === 'ok') {
+      return okEnvelope(envelope.result, authInfo, envelope.requestId);
     }
 
-    return okEnvelope({ view }, authInfo, requestId);
-  } catch (e) {
+    const status = httpStatusForCode(envelope.error.code);
+    setResponseStatus(event, status);
+    return errorEnvelope(envelope.error.code, envelope.error.message, authInfo, envelope.error.retryable, envelope.requestId);
+  } catch (error) {
+    const safe = sanitizeError(error, requestId, 'ANALYSIS_FAILED', true);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'ANALYSIS_FAILED',
-      e instanceof Error ? e.message : String(e),
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

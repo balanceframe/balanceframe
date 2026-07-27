@@ -73,6 +73,8 @@ import type {
   AttentionHomeParams,
   AttentionHomeResult,
   AttentionHomeOutput,
+  FinancialStateResult,
+  FinancialStateOutput,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -1630,8 +1632,39 @@ export async function reportGenerateAnalysis(
 export async function savedViewsListAnalysis(
   input: CommandInput,
 ): Promise<SavedViewsListOutput['envelope']> {
-  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+  const { requestId, actorId, ledger, freshness, analysisProtocol, workflowStore } = input;
 
+  // Prefer workflow persistence when the supplied store implements the
+  // saved-view contract; test doubles and CLI callers may provide a partial
+  // store and must continue through the protocol fallback.
+  if (workflowStore && typeof workflowStore.listSavedViews === 'function') {
+    try {
+      const views = await workflowStore.listSavedViews(actorId);
+      const result: SavedViewsListResult = {
+        views: views.map(v => ({
+          viewId: v.viewId,
+          name: v.name,
+          viewType: v.viewType,
+          scope: v.scope,
+          ...(v.sort != null ? { sort: v.sort } : {}),
+          createdAt: v.createdAt,
+        })),
+        total: views.length,
+      };
+      return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const errInfo = new ErrorInfo({
+        code: 'store_failed',
+        message,
+        retryable: true,
+        reasonCodes: ['store_error'],
+      });
+      return errorResponse(requestId, errInfo);
+    }
+  }
+
+  // Fallback: protocol path (CLI/no-store environments)
   if (!ledger) {
     const err = new ErrorInfo({
       code: 'not_connected',
@@ -1686,8 +1719,53 @@ export async function savedViewCreateAnalysis(
   input: CommandInput,
   params: CreateSavedViewParams,
 ): Promise<CreateSavedViewOutput['envelope']> {
-  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+  const { requestId, actorId, ledger, freshness, analysisProtocol, workflowStore } = input;
 
+  // Prefer workflow persistence when the supplied store implements the
+  // saved-view contract; partial store doubles use the protocol fallback.
+  if (workflowStore && typeof workflowStore.createSavedView === 'function') {
+    if (!params.name || !params.viewType) {
+      const err = new ErrorInfo({
+        code: 'view_params_required',
+        message: 'A view name and type are required.',
+        retryable: false,
+        reasonCodes: ['view_params_required'],
+      });
+      return errorResponse(requestId, err);
+    }
+
+    try {
+      const savedView = await workflowStore.createSavedView({
+        name: params.name,
+        viewType: params.viewType,
+        scope: params.scope,
+        sort: params.sort,
+        actorId,
+      });
+      const result: CreateSavedViewResult = {
+        view: {
+          viewId: savedView.viewId,
+          name: savedView.name,
+          viewType: savedView.viewType,
+          scope: savedView.scope,
+          ...(savedView.sort != null ? { sort: savedView.sort } : {}),
+          createdAt: savedView.createdAt,
+        },
+      };
+      return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const errInfo = new ErrorInfo({
+        code: 'store_failed',
+        message,
+        retryable: true,
+        reasonCodes: ['store_error'],
+      });
+      return errorResponse(requestId, errInfo);
+    }
+  }
+
+  // Fallback: protocol path (CLI/no-store environments)
   if (!ledger) {
     const err = new ErrorInfo({
       code: 'not_connected',

@@ -8,8 +8,34 @@
  * Response envelope: AttentionHomeOutput
  */
 
+import {
+  createDefaultConnectionManager,
+  createNativeAnalysisProtocol,
+  attentionHomeAnalysis,
+} from '@balanceframe/application';
+import type { CommandInput, AttentionHomeParams } from '@balanceframe/application';
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
+
+/** Map an analysis error code to an HTTP status. */
+function httpStatusForCode(code: string): number {
+  if (
+    code.includes('not_connected') ||
+    code.includes('no_analysis') ||
+    code.startsWith('stale_')
+  ) {
+    return 503;
+  }
+  if (
+    code.endsWith('_REQUIRED') ||
+    code.startsWith('invalid') ||
+    code.startsWith('missing') ||
+    code.includes('MISSING')
+  ) {
+    return 400;
+  }
+  return 500;
+}
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -24,79 +50,53 @@ export default defineEventHandler(async (event) => {
   const month = typeof query.month === 'string' ? query.month.trim() : undefined;
   if (month !== undefined && !/^\d{4}-\d{2}$/.test(month)) {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_MONTH', 'month must be in YYYY-MM format.', authInfo);
+    return errorEnvelope('INVALID_MONTH', 'month must be in YYYY-MM format.', authInfo, false, requestId);
   }
 
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo);
+    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
   try {
-    // Delegate to the analysis adapter via workflow store seam.
-    // Actual attention/home analysis is performed by the Rust protocol.
-    const result = {
-      blockers: [] as Array<{
-        code: string;
-        message: string;
-        severity: string;
-        entityId?: string;
-        entityType?: string;
-      }>,
-      alerts: [] as Array<{
-        code: string;
-        message: string;
-        severity: string;
-        categoryId?: string;
-        categoryName?: string;
-      }>,
-      recurrences: [] as Array<{
-        payeeName: string;
-        amount: { minorUnits: string; currency: string };
-        frequency: string;
-        occurrences: number;
-        lastOccurrence: string;
-        isEstimated: boolean;
-      }>,
-      categoryRisks: [] as Array<{
-        categoryId: string;
-        categoryName: string;
-        risk: string;
-        reasonCodes: string[];
-        remainingBudget: { minorUnits: string; currency: string };
-        daysRemaining: number;
-      }>,
-      targetProgress: {
-        overallLabel: 'healthy',
-        healthyCount: 0,
-        atRiskCount: 0,
-        sinkingFundsOnTrack: 0,
-        totalSinkingFunds: 0,
-      },
-      details: undefined as {
-        uncategorizedCount: number;
-        totalUncategorizedAmount: { minorUnits: string; currency: string };
-        pendingReviewCount: number;
-        overspentCategories: Array<{
-          budgeted: { minorUnits: string; currency: string };
-          spent: { minorUnits: string; currency: string };
-          remaining: { minorUnits: string; currency: string };
-          healthLabel: string;
-          isSinkingFund: boolean;
-          targetAmount: { minorUnits: string; currency: string } | null;
-          targetProgress: number | null;
-        }>;
-      } | undefined,
+    const manager = createDefaultConnectionManager({
+      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+    });
+    const connected = await manager.restore();
+    const protocol = await createNativeAnalysisProtocol();
+
+    const input: CommandInput = {
+      args: [],
+      mode: 'observe',
+      actorId: getActorId(event),
+      requestId,
+      ledger: connected.connector,
+      freshness: null,
+      analysisProtocol: protocol,
     };
 
-    return okEnvelope(result, authInfo, requestId);
-  } catch (e) {
+    const context: AttentionHomeParams['context'] = {};
+    if (categoryGroup !== undefined) context.categoryGroup = categoryGroup;
+    if (detailed !== undefined) context.detailed = detailed;
+    if (month !== undefined) context.month = month;
+
+    const params: AttentionHomeParams = {
+      ...(Object.keys(context).length > 0 ? { context } : {}),
+    };
+
+    const envelope = await attentionHomeAnalysis(input, params);
+
+    if (envelope.status === 'ok') {
+      return okEnvelope(envelope.result, authInfo, envelope.requestId);
+    }
+
+    const status = httpStatusForCode(envelope.error.code);
+    setResponseStatus(event, status);
+    return errorEnvelope(envelope.error.code, envelope.error.message, authInfo, envelope.error.retryable, envelope.requestId);
+  } catch (error) {
+    const safe = sanitizeError(error, requestId, 'ANALYSIS_FAILED', true);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'ANALYSIS_FAILED',
-      e instanceof Error ? e.message : String(e),
-      authInfo,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

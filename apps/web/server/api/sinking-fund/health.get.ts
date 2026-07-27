@@ -7,8 +7,34 @@
  * Response envelope: SinkingFundHealthOutput
  */
 
+import {
+  createDefaultConnectionManager,
+  createNativeAnalysisProtocol,
+  sinkingFundHealthAnalysis,
+} from '@balanceframe/application';
+import type { CommandInput } from '@balanceframe/application';
 import { defineEventHandler, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
+
+/** Map an analysis error code to an HTTP status. */
+function httpStatusForCode(code: string): number {
+  if (
+    code.includes('not_connected') ||
+    code.includes('no_analysis') ||
+    code.startsWith('stale_')
+  ) {
+    return 503;
+  }
+  if (
+    code.endsWith('_REQUIRED') ||
+    code.startsWith('invalid') ||
+    code.startsWith('missing') ||
+    code.includes('MISSING')
+  ) {
+    return 400;
+  }
+  return 500;
+}
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -17,34 +43,38 @@ export default defineEventHandler(async (event) => {
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo);
+    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
   try {
-    // Delegate to the analysis adapter via workflow store seam.
-    // Actual sinking-fund health evaluation is performed by the Rust protocol.
-    const result = {
-      sinkingFunds: [] as Array<{
-        budgeted: { minorUnits: string; currency: string };
-        spent: { minorUnits: string; currency: string };
-        remaining: { minorUnits: string; currency: string };
-        healthLabel: string;
-        isSinkingFund: boolean;
-        targetAmount: { minorUnits: string; currency: string } | null;
-        targetProgress: number | null;
-      }>,
-      fullyFundedCount: 0,
-      partiallyFundedCount: 0,
-      unfundedCount: 0,
+    const manager = createDefaultConnectionManager({
+      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+    });
+    const connected = await manager.restore();
+    const protocol = await createNativeAnalysisProtocol();
+
+    const input: CommandInput = {
+      args: [],
+      mode: 'observe',
+      actorId: getActorId(event),
+      requestId,
+      ledger: connected.connector,
+      freshness: null,
+      analysisProtocol: protocol,
     };
 
-    return okEnvelope(result, authInfo, requestId);
-  } catch (e) {
+    const envelope = await sinkingFundHealthAnalysis(input);
+
+    if (envelope.status === 'ok') {
+      return okEnvelope(envelope.result, authInfo, envelope.requestId);
+    }
+
+    const status = httpStatusForCode(envelope.error.code);
+    setResponseStatus(event, status);
+    return errorEnvelope(envelope.error.code, envelope.error.message, authInfo, envelope.error.retryable, envelope.requestId);
+  } catch (error) {
+    const safe = sanitizeError(error, requestId, 'ANALYSIS_FAILED', true);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'ANALYSIS_FAILED',
-      e instanceof Error ? e.message : String(e),
-      authInfo,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

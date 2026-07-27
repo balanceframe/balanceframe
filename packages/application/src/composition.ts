@@ -57,6 +57,7 @@ import type {
   CashFlowProjectionParams,
   TargetHealthResult,
   SinkingFundHealthResult,
+  FinancialStateResult,
   ReportGenerationResult,
   ReportGenerationParams,
   SavedViewsListResult,
@@ -64,6 +65,11 @@ import type {
   CreateSavedViewParams,
   AttentionHomeResult,
   AttentionHomeParams,
+  CategoryHealthResult,
+  AttentionAlert,
+  AttentionBlocker,
+  RecurrencePattern,
+  CategoryRisk,
 } from './commands.js';
 import type { DataFreshness } from './envelope.js';
 import { ReasonCodes } from './errors.js';
@@ -212,6 +218,16 @@ export interface NativeBindingShim {
   analyzeDeterministic(input: string): string;
   analyzeSnapshot(input: string): string;
   findCategorizationCandidates(input: string): string;
+
+  // Phase 8 — Budget Intelligence N-API methods
+  /** Evaluate a proposed purchase against budget limits. */
+  evaluatePurchase(input: string): string;
+  /** Project future cash flow based on schedules and budgets. */
+  projectCashFlow(input: string): string;
+  /** Evaluate target/sinking-fund health. */
+  evaluateTargetHealth(input: string): string;
+  /** Evaluate overall financial state. */
+  evaluateFinancialState(input: string): string;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +305,114 @@ export async function createNativeAnalysisProtocol(
   nativeOverride?: () => Promise<NativeBindingShim>,
 ): Promise<AnalysisProtocol> {
   const native = await loadNativeBindings(nativeOverride);
+
+  // -----------------------------------------------------------------------
+  // Helper functions — synchronize ledger and extract snapshot data
+  // -----------------------------------------------------------------------
+
+  /**
+   * Synchronize the ledger and extract the snapshot for analysis.
+   * If the ledger is not synchronizable, returns null.
+   */
+  const obtainSnapshot = async (ledger: unknown): Promise<unknown> => {
+    if (!isSynchronizableLedger(ledger)) return null;
+    const syncResult = await ledger.synchronize();
+    if (!syncResult || typeof syncResult !== 'object' || !('snapshot' in syncResult)) return null;
+    return (syncResult as Record<string, unknown>).snapshot;
+  };
+
+  // Native response parsing helpers -----------------------------------------
+
+  const asMoney = (value: unknown): { minorUnits: string; currency: string } | null => {
+    if (!value || typeof value !== 'object') return null;
+    const v = value as Record<string, unknown>;
+    return typeof v.minorUnits === 'string' && typeof v.currency === 'string'
+      ? { minorUnits: v.minorUnits, currency: v.currency }
+      : null;
+  };
+
+  const parsePurchaseResponse = (raw: string): PurchaseEvaluationResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluatePurchase returned invalid JSON.'); }
+    return {
+      allowable: parsed.allowable === true,
+      reasonCodes: Array.isArray(parsed.reasonCodes) ? parsed.reasonCodes.map(String) : ['unknown'],
+      categoryBudget: asMoney(parsed.categoryBudget) ?? { minorUnits: '0', currency: 'USD' },
+      categorySpent: asMoney(parsed.categorySpent) ?? { minorUnits: '0', currency: 'USD' },
+      categoryRemaining: asMoney(parsed.categoryRemaining) ?? { minorUnits: '0', currency: 'USD' },
+      projectedBalance: asMoney(parsed.projectedBalance),
+      hasEnvelope: parsed.hasEnvelope === true,
+    };
+  };
+
+  const parseCashFlowResponse = (raw: string, requestedMonths: number): CashFlowProjectionResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native projectCashFlow returned invalid JSON.'); }
+    const projections = Array.isArray(parsed.monthlyProjections) ? parsed.monthlyProjections : [];
+    return {
+      projectionMonths: requestedMonths,
+      monthlyProjections: projections.map((p: unknown) => {
+        const m = p as Record<string, unknown>;
+        return {
+          month: String(m.month ?? ''),
+          projectedIncome: asMoney(m.projectedIncome) ?? { minorUnits: '0', currency: 'USD' },
+          projectedExpenses: asMoney(m.projectedExpenses) ?? { minorUnits: '0', currency: 'USD' },
+          netChange: asMoney(m.netChange) ?? { minorUnits: '0', currency: 'USD' },
+          endingBalance: asMoney(m.endingBalance) ?? { minorUnits: '0', currency: 'USD' },
+          scheduledIncomeCount: typeof m.scheduledIncomeCount === 'number' ? m.scheduledIncomeCount : 0,
+          scheduledExpenseCount: typeof m.scheduledExpenseCount === 'number' ? m.scheduledExpenseCount : 0,
+        };
+      }),
+      sufficientData: parsed.sufficientData === true,
+      dataWarning: typeof parsed.dataWarning === 'string' ? parsed.dataWarning : null,
+    };
+  };
+
+  const parseTargetHealthResponse = (raw: string): TargetHealthResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluateTargetHealth returned invalid JSON.'); }
+    const categories = Array.isArray(parsed.categories) ? parsed.categories : [];
+    const mapped = categories.map((c: unknown) => {
+      const cat = c as Record<string, unknown>;
+      return {
+        categoryId: String(cat.categoryId ?? ''),
+        categoryName: String(cat.categoryName ?? ''),
+        budgeted: asMoney(cat.budgeted) ?? { minorUnits: '0', currency: 'USD' },
+        spent: asMoney(cat.spent) ?? { minorUnits: '0', currency: 'USD' },
+        remaining: asMoney(cat.remaining) ?? { minorUnits: '0', currency: 'USD' },
+        healthLabel: String(cat.healthLabel ?? 'unknown'),
+        isSinkingFund: cat.isSinkingFund === true,
+        targetAmount: asMoney(cat.targetAmount),
+        targetProgress: typeof cat.targetProgress === 'number' ? cat.targetProgress : null,
+      } as CategoryHealthResult;
+    });
+    return {
+      categories: mapped,
+      overallLabel: String(parsed.overallLabel ?? 'unknown'),
+      healthyCount: typeof parsed.healthyCount === 'number' ? parsed.healthyCount : 0,
+      atRiskCount: typeof parsed.atRiskCount === 'number' ? parsed.atRiskCount : 0,
+      sinkingFundCount: typeof parsed.sinkingFundCount === 'number' ? parsed.sinkingFundCount : 0,
+    };
+  };
+
+  const parseFinancialStateResponse = (raw: string): FinancialStateResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluateFinancialState returned invalid JSON.'); }
+    return {
+      overallLabel: String(parsed.overallLabel ?? 'unknown'),
+      netWorth: asMoney(parsed.netWorth) ?? { minorUnits: '0', currency: 'USD' },
+      monthlyCashFlow: asMoney(parsed.monthlyCashFlow) ?? { minorUnits: '0', currency: 'USD' },
+      budgetAdherencePercent: typeof parsed.budgetAdherencePercent === 'number' ? parsed.budgetAdherencePercent : 0,
+      categoriesAtRisk: typeof parsed.categoriesAtRisk === 'number' ? parsed.categoriesAtRisk : 0,
+      sinkingFundsUnderfunded: typeof parsed.sinkingFundsUnderfunded === 'number' ? parsed.sinkingFundsUnderfunded : 0,
+      advice: Array.isArray(parsed.advice) ? parsed.advice.map(String) : [],
+      freshness: null,
+    };
+  };
 
   return {
     // -----------------------------------------------------------------------
@@ -586,74 +710,168 @@ export async function createNativeAnalysisProtocol(
     },
 
     // -----------------------------------------------------------------------
-    // Budget Intelligence stubs
+    // Budget Intelligence — native-backed analytics
     // -----------------------------------------------------------------------
 
+
+    // purchaseEvaluation
+    // ------------------------------------------------------------------
+
     async purchaseEvaluation(
-      _ledger: unknown,
-      _params: PurchaseEvaluationParams,
+      ledger: unknown,
+      params: PurchaseEvaluationParams,
     ): Promise<PurchaseEvaluationResult> {
-      return {
-        allowable: true,
-        reasonCodes: ['sufficient_budget'],
-        categoryBudget: { minorUnits: '0', currency: 'USD' },
-        categorySpent: { minorUnits: '0', currency: 'USD' },
-        categoryRemaining: { minorUnits: '0', currency: 'USD' },
-        projectedBalance: null,
-        hasEnvelope: true,
-      };
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          allowable: false,
+          reasonCodes: ['no_snapshot'],
+          categoryBudget: { minorUnits: '0', currency: 'USD' },
+          categorySpent: { minorUnits: '0', currency: 'USD' },
+          categoryRemaining: { minorUnits: '0', currency: 'USD' },
+          projectedBalance: null,
+          hasEnvelope: false,
+        };
+      }
+      const input = JSON.stringify({
+        snapshot: rawSnapshot,
+        categoryId: params.categoryId,
+        amount: params.amount,
+        accountId: params.accountId ?? null,
+      });
+      const raw = native.evaluatePurchase(input);
+      return parsePurchaseResponse(raw);
     },
+
+    // ------------------------------------------------------------------
+    // cashFlowProjection
+    // ------------------------------------------------------------------
 
     async cashFlowProjection(
-      _ledger: unknown,
-      _params: CashFlowProjectionParams,
+      ledger: unknown,
+      params: CashFlowProjectionParams,
     ): Promise<CashFlowProjectionResult> {
-      return {
-        projectionMonths: 0,
-        monthlyProjections: [],
-        sufficientData: false,
-        dataWarning: 'Cash-flow projection data is not yet available.',
-      };
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          projectionMonths: params.months,
+          monthlyProjections: [],
+          sufficientData: false,
+          dataWarning: 'Ledger snapshot unavailable.',
+        };
+      }
+      const input = JSON.stringify({
+        snapshot: rawSnapshot,
+        months: params.months,
+        startMonth: params.startMonth ?? null,
+      });
+      const raw = native.projectCashFlow(input);
+      return parseCashFlowResponse(raw, params.months);
     },
+
+    // ------------------------------------------------------------------
+    // targetHealth
+    // ------------------------------------------------------------------
 
     async targetHealth(
-      _ledger: unknown,
+      ledger: unknown,
     ): Promise<TargetHealthResult> {
-      return {
-        categories: [],
-        overallLabel: 'unknown',
-        healthyCount: 0,
-        atRiskCount: 0,
-        sinkingFundCount: 0,
-      };
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { categories: [], overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundCount: 0 };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.evaluateTargetHealth(input);
+      return parseTargetHealthResponse(raw);
     },
+
+    // ------------------------------------------------------------------
+    // sinkingFundHealth — derived from evaluateTargetHealth response
+    // ------------------------------------------------------------------
 
     async sinkingFundHealth(
-      _ledger: unknown,
+      ledger: unknown,
     ): Promise<SinkingFundHealthResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.evaluateTargetHealth(input);
+      const targetHealth = parseTargetHealthResponse(raw);
+
+      const sinkingFunds = targetHealth.categories.filter(c => c.isSinkingFund);
+      let fullyFundedCount = 0;
+      let partiallyFundedCount = 0;
+      let unfundedCount = 0;
+      for (const sf of sinkingFunds) {
+        const progress = sf.targetProgress ?? 0;
+        if (progress >= 1) fullyFundedCount++;
+        else if (progress > 0) partiallyFundedCount++;
+        else unfundedCount++;
+      }
+      return { sinkingFunds, fullyFundedCount, partiallyFundedCount, unfundedCount };
+    },
+
+    // ------------------------------------------------------------------
+    // generateReport — transaction filtering (no native binding)
+    // ------------------------------------------------------------------
+
+    async generateReport(
+      ledger: unknown,
+      params: ReportGenerationParams,
+    ): Promise<ReportGenerationResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          reportId: '',
+          reportType: params.reportType,
+          scope: params.scope,
+          label: params.label ?? '',
+          transactionCount: 0,
+          totalAmount: { minorUnits: '0', currency: 'USD' },
+          generatedAt: new Date().toISOString(),
+          tags: params.tags ?? [],
+        };
+      }
+      const s = rawSnapshot as Record<string, unknown>;
+      const transactions = (s.transactions as Array<Record<string, unknown>> | undefined) ?? [];
+
+      const currency = 'USD';
+      const monthRange = params.scope.monthRange;
+      const [startStr, endStr] = monthRange.includes(':')
+        ? monthRange.split(':')
+        : [monthRange, monthRange];
+
+      const filtered = transactions.filter(tx => {
+        if (tx.pending && !params.scope.includePending) return false;
+        return String(tx.date ?? '') >= startStr && String(tx.date ?? '') <= (endStr + '-31');
+      });
+
+      let totalMinor = 0;
+      for (const tx of filtered) {
+        const amt = tx.amount as Record<string, unknown> | undefined;
+        totalMinor += Math.abs(parseInt(String(amt?.minorUnits ?? '0'), 10));
+      }
+
+      const idInput = `rpt_${params.reportType}_${monthRange}`;
+      const reportId = `rpt_${createHash('sha1').update(idInput).digest('hex').slice(0, 12)}`;
+
       return {
-        sinkingFunds: [],
-        fullyFundedCount: 0,
-        partiallyFundedCount: 0,
-        unfundedCount: 0,
+        reportId,
+        reportType: params.reportType,
+        scope: params.scope,
+        label: params.label ?? '',
+        transactionCount: filtered.length,
+        totalAmount: { minorUnits: String(totalMinor), currency },
+        generatedAt: new Date().toISOString(),
+        tags: params.tags ?? [],
       };
     },
 
-    async generateReport(
-      _ledger: unknown,
-      _params: ReportGenerationParams,
-    ): Promise<ReportGenerationResult> {
-      return {
-        reportId: '',
-        reportType: '',
-        scope: { monthRange: '', includePending: false },
-        label: '',
-        transactionCount: 0,
-        totalAmount: { minorUnits: '0', currency: 'USD' },
-        generatedAt: new Date().toISOString(),
-        tags: [],
-      };
-    },
+    // ------------------------------------------------------------------
+    // listSavedViews
+    // ------------------------------------------------------------------
 
     async listSavedViews(
       _ledger: unknown,
@@ -661,36 +879,191 @@ export async function createNativeAnalysisProtocol(
       return { views: [], total: 0 };
     },
 
+    // ------------------------------------------------------------------
+    // createSavedView
+    // ------------------------------------------------------------------
+
     async createSavedView(
       _ledger: unknown,
-      _params: CreateSavedViewParams,
+      params: CreateSavedViewParams,
     ): Promise<CreateSavedViewResult> {
+      const idInput = `view_${params.name}_${params.viewType}`;
+      const viewId = `view_${createHash('sha1').update(idInput).digest('hex').slice(0, 12)}`;
+
       return {
         view: {
-          viewId: '',
-          name: '',
-          viewType: '',
-          scope: {},
+          viewId,
+          name: params.name,
+          viewType: params.viewType,
+          scope: params.scope,
+          sort: params.sort,
           createdAt: new Date().toISOString(),
         },
       };
     },
 
-    async attentionHome(
-      _ledger: unknown,
-      _params: AttentionHomeParams,
-    ): Promise<AttentionHomeResult> {
-      return {
-        blockers: [],
-        alerts: [],
-        recurrences: [],
-        categoryRisks: [],
-        targetProgress: {
+    // ------------------------------------------------------------------
+    // financialState
+    // ------------------------------------------------------------------
+
+    async financialState(
+      ledger: unknown,
+    ): Promise<FinancialStateResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
           overallLabel: 'unknown',
-          healthyCount: 0,
-          atRiskCount: 0,
-          sinkingFundsOnTrack: 0,
-          totalSinkingFunds: 0,
+          netWorth: { minorUnits: '0', currency: 'USD' },
+          monthlyCashFlow: { minorUnits: '0', currency: 'USD' },
+          budgetAdherencePercent: 0,
+          categoriesAtRisk: 0,
+          sinkingFundsUnderfunded: 0,
+          advice: ['Ledger snapshot unavailable.'],
+          freshness: null,
+        };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.evaluateFinancialState(input);
+      return parseFinancialStateResponse(raw);
+    },
+
+    // ------------------------------------------------------------------
+    // attentionHome — aggregates native deterministic outputs
+    // ------------------------------------------------------------------
+
+    async attentionHome(
+      ledger: unknown,
+      params: AttentionHomeParams,
+    ): Promise<AttentionHomeResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          blockers: [],
+          alerts: [],
+          recurrences: [],
+          categoryRisks: [],
+          targetProgress: { overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundsOnTrack: 0, totalSinkingFunds: 0 },
+        };
+      }
+
+      // Obtain native deterministic outputs
+      const targetHealthInput = JSON.stringify({ snapshot: rawSnapshot });
+      const targetHealthRaw = native.evaluateTargetHealth(targetHealthInput);
+      const targetHealth = parseTargetHealthResponse(targetHealthRaw);
+
+      let financialState: FinancialStateResult | null = null;
+      try {
+        const finStateInput = JSON.stringify({ snapshot: rawSnapshot });
+        const finStateRaw = native.evaluateFinancialState(finStateInput);
+        financialState = parseFinancialStateResponse(finStateRaw);
+      } catch {
+        // Financial state is supplementary; non-fatal if unavailable
+      }
+
+      const s = rawSnapshot as Record<string, unknown>;
+      const transactions = (s.transactions as Array<Record<string, unknown>> | undefined) ?? [];
+      const payees = (s.payees as Array<Record<string, unknown>> | undefined) ?? [];
+      const currency = 'USD';
+
+      // Blockers: uncategorized transactions (counting/filtering only)
+      const uncategorizedTxs = transactions.filter(
+        tx => (!tx.categoryId || tx.categoryId === '') && !tx.pending,
+      );
+      const blockers: AttentionBlocker[] = uncategorizedTxs.length > 0
+        ? [{ code: 'uncategorized_transactions', message: `${uncategorizedTxs.length} transaction(s) lack categories`, severity: 'warning', entityType: 'transaction' }]
+        : [];
+
+      // Alerts: derive from native target health overspent labels
+      const alerts: AttentionAlert[] = [];
+      for (const cat of targetHealth.categories) {
+        if (cat.healthLabel === 'overspent') {
+          alerts.push({
+            code: 'category_overspent',
+            message: `${cat.categoryName} is overspent`,
+            severity: 'warning',
+            categoryId: cat.categoryId,
+            categoryName: cat.categoryName,
+          });
+        }
+      }
+
+      // Recurrences: pattern detection from snapshot (counting/aggregation, not money arithmetic)
+      const recurrences: RecurrencePattern[] = [];
+      const schedCounts: Record<string, { count: number; lastDate: string; amount: string }> = {};
+      for (const tx of transactions) {
+        if (tx.payeeId) {
+          const key = String(tx.payeeId);
+          if (!schedCounts[key]) schedCounts[key] = { count: 0, lastDate: '', amount: '0' };
+          schedCounts[key].count++;
+          const amt = tx.amount as Record<string, unknown> | undefined;
+          if (amt && typeof amt.minorUnits === 'string') {
+            schedCounts[key].amount = amt.minorUnits;
+          }
+          if (String(tx.date ?? '') > schedCounts[key].lastDate) schedCounts[key].lastDate = String(tx.date);
+        }
+      }
+      for (const [payeeId, info] of Object.entries(schedCounts)) {
+        if (info.count >= 3) {
+          const payee = payees.find(p => p.id === payeeId);
+          recurrences.push({
+            payeeName: String(payee?.name ?? payeeId),
+            amount: { minorUnits: info.amount, currency },
+            frequency: info.count >= 6 ? 'monthly' : 'irregular',
+            occurrences: info.count,
+            lastOccurrence: info.lastDate,
+            isEstimated: false,
+          });
+        }
+      }
+
+      // Category risks: derive from native target health labels
+      const categoryRisks: CategoryRisk[] = [];
+      for (const cat of targetHealth.categories) {
+        let risk: 'low' | 'medium' | 'high';
+        const reasonCodes: string[] = [];
+        switch (cat.healthLabel) {
+          case 'overspent':
+            risk = 'high';
+            reasonCodes.push('overspent');
+            break;
+          case 'at_risk':
+            risk = 'medium';
+            reasonCodes.push('nearly_depleted');
+            break;
+          case 'underfunded':
+            risk = 'medium';
+            reasonCodes.push('underfunded');
+            break;
+          default:
+            risk = 'low';
+            reasonCodes.push('on_track');
+            break;
+        }
+        categoryRisks.push({
+          categoryId: cat.categoryId,
+          categoryName: cat.categoryName,
+          risk,
+          reasonCodes,
+          remainingBudget: cat.remaining,
+          daysRemaining: null,
+        });
+      }
+
+      // Target progress: use native counts directly
+      const sinkingFundCategories = targetHealth.categories.filter(c => c.isSinkingFund);
+      const sinkingFundsOnTrack = sinkingFundCategories.filter(sf => (sf.targetProgress ?? 0) >= 0.8).length;
+
+      return {
+        blockers,
+        alerts,
+        recurrences,
+        categoryRisks,
+        targetProgress: {
+          overallLabel: targetHealth.overallLabel,
+          healthyCount: targetHealth.healthyCount,
+          atRiskCount: targetHealth.atRiskCount,
+          sinkingFundsOnTrack,
+          totalSinkingFunds: targetHealth.sinkingFundCount,
         },
       };
     },

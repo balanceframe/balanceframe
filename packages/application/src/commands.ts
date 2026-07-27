@@ -10,6 +10,7 @@
 import type { ResponseEnvelope, DataFreshness } from './envelope.js';
 import { ApplicationError, ObserveWriteError, ReasonCodes } from './errors.js';
 import type { Money } from '@balanceframe/protocol-generated';
+import type { WorkflowStore } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Analysis protocol — Rust-backed analysis interface
@@ -229,6 +230,11 @@ export interface AnalysisProtocol {
     ledger: unknown,
     params: AttentionHomeParams,
   ): Promise<AttentionHomeResult>;
+
+  /** Evaluate overall financial state (comprehensive). */
+  financialState?(
+    ledger: unknown,
+  ): Promise<FinancialStateResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +296,8 @@ export interface CommandInput {
   analysisProtocol?: AnalysisProtocol;
   /** Lifecycle callbacks for export/disconnect/remove-connection. */
   lifecycleCallbacks?: LifecycleCallbacks;
+  /** Workflow store for persistence operations (web routes). */
+  workflowStore?: WorkflowStore;
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,6 +1131,37 @@ export interface CreateSavedViewOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Budget Intelligence — Financial State
+// ---------------------------------------------------------------------------
+
+/**
+ * Overall financial state assessment combining target health, sinking funds,
+ * budget adherence, and cash position.
+ */
+export interface FinancialStateResult {
+  /** Overall label: 'healthy' | 'caution' | 'critical' | 'unknown'. */
+  overallLabel: string;
+  /** Net worth (assets minus liabilities). */
+  netWorth: Money;
+  /** Monthly net cash flow. */
+  monthlyCashFlow: Money;
+  /** Budget adherence as percentage 0-100. */
+  budgetAdherencePercent: number;
+  /** Number of categories at risk. */
+  categoriesAtRisk: number;
+  /** Number of sinking funds that are unfunded or underfunded. */
+  sinkingFundsUnderfunded: number;
+  /** Human-readable advice based on financial state. */
+  advice: string[];
+  /** Data freshness at evaluation time. */
+  freshness: DataFreshness | null;
+}
+
+export interface FinancialStateOutput {
+  envelope: ResponseEnvelope<FinancialStateResult>;
+}
+
+// ---------------------------------------------------------------------------
 // Budget Intelligence — Attention / Home Dashboard
 // ---------------------------------------------------------------------------
 
@@ -1169,7 +1208,7 @@ export interface CategoryRisk {
   risk: 'low' | 'medium' | 'high';
   reasonCodes: string[];
   remainingBudget: Money;
-  daysRemaining: number;
+  daysRemaining: number | null;
 }
 
 /**

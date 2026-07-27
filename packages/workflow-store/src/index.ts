@@ -85,4 +85,6 @@ export type {
   ReportRecord,
   CreateReportRecordInput,
   ReportListOptions,
+  SavedViewResult,
+  CreateSavedViewInput,
 } from './types.js';

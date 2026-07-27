@@ -487,6 +487,45 @@ export interface RecordPolicyVersionInput {
 }
 
 // ---------------------------------------------------------------------------
+// SavedView — saved phase-8 view configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * A saved view configuration persisted for Phase 8.
+ * Each view belongs to a single actor.
+ */
+export interface SavedViewResult {
+  /** Stable unique identifier (UUID v4). */
+  readonly viewId: string;
+  /** Human-readable name for this view. */
+  readonly name: string;
+  /** View type identifier (e.g. "attention", "pending_review", "budget_summary"). */
+  readonly viewType: string;
+  /** JSON-encoded scope/filter configuration. */
+  readonly scope: Record<string, unknown>;
+  /** Optional user-defined sort expression. */
+  readonly sort: string | null;
+  /** Actor who owns this view. */
+  readonly actorId: string;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/** Input to create a new saved view. */
+export interface CreateSavedViewInput {
+  /** Human-readable name for this view. */
+  readonly name: string;
+  /** View type identifier. */
+  readonly viewType: string;
+  /** Scope/filter configuration. */
+  readonly scope: Record<string, unknown>;
+  /** Optional user-defined sort expression. */
+  readonly sort?: string;
+  /** Actor who owns this view. */
+  readonly actorId: string;
+}
+
+// ---------------------------------------------------------------------------
 // SavedFilter — persistable report filter / view configuration
 // ---------------------------------------------------------------------------
 
@@ -1350,6 +1389,21 @@ export interface WorkflowStore {
    * Idempotent on already-expired records.
    */
   expireReportRecord(id: string): Promise<ReportRecord>;
+
+  // ── Saved view lifecycle (Phase 8) ──────────────────────────────
+
+  /**
+   * List all saved views for the given actor.
+   * Views are scoped per-actor; each actor sees only their own saved views.
+   */
+  listSavedViews(actorId: string): Promise<SavedViewResult[]>;
+
+  /**
+   * Create a new saved view for the given actor.
+   *
+   * @returns The newly created saved view with a stable ID and timestamp.
+   */
+  createSavedView(input: CreateSavedViewInput): Promise<SavedViewResult>;
 }
 
 // ---------------------------------------------------------------------------

@@ -64,6 +64,7 @@ import type {
   CreateNotificationEventInput,
   CreateReportRecordInput,
   CreateSavedFilterInput,
+  CreateSavedViewInput,
   DeliveryAttempt,
   DeliveryAttemptStatus,
   EnqueueNotificationInput,
@@ -76,6 +77,7 @@ import type {
   ReportRecord,
   SavedFilter,
   SavedFilterListOptions,
+  SavedViewResult,
   UpdateSavedFilterInput,
 } from './types.js';
 // ---------------------------------------------------------------------------
@@ -399,6 +401,19 @@ function rowToReportRecord(row: ReportRecordRow): ReportRecord {
     dataRef: row.data_ref,
   };
 }
+
+/** Map a raw DB row to a typed SavedViewResult. */
+function rowToSavedViewResult(row: SavedViewRow): SavedViewResult {
+  return {
+    viewId: row.view_id,
+    name: row.name,
+    viewType: row.view_type,
+    scope: JSON.parse(row.scope) as Record<string, unknown>,
+    sort: row.sort,
+    actorId: row.actor_id,
+    createdAt: row.created_at,
+  };
+}
 // ---------------------------------------------------------------------------
 /** Allowed transitions between review statuses. */
 const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
@@ -657,6 +672,16 @@ interface SavedFilterRow {
   updated_at: string;
 }
 
+interface SavedViewRow {
+  view_id: string;
+  name: string;
+  view_type: string;
+  scope: string;
+  sort: string | null;
+  actor_id: string;
+  created_at: string;
+}
+
 interface ReportRecordRow {
   id: string;
   report_type: string;
@@ -853,6 +878,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     listReportRecordsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
     listReportRecordsByType: null as unknown as ReturnType<DatabaseType['prepare']>,
     expireReportRecord: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listSavedViewsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countSavedViewsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
@@ -1315,6 +1344,23 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
         CREATE INDEX IF NOT EXISTS idx_report_records_type
           ON report_records(report_type);
+      `);
+    },
+    // Version 5: Saved views table for Phase 8
+    (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS saved_views (
+          view_id     TEXT PRIMARY KEY,
+          name        TEXT NOT NULL,
+          view_type   TEXT NOT NULL,
+          scope       TEXT NOT NULL,
+          sort        TEXT,
+          actor_id    TEXT NOT NULL,
+          created_at  TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_saved_views_actor
+          ON saved_views(actor_id);
       `);
     },
   ];
@@ -2474,6 +2520,28 @@ export class SqliteWorkflowStore implements WorkflowStore {
       UPDATE report_records
          SET expires_at = @now
        WHERE id = @id
+    `);
+
+    // ── Saved views ────────────────────────────────────────────────────
+
+    this.stmt.insertSavedView = this.db.prepare(`
+      INSERT INTO saved_views (view_id, name, view_type, scope, sort, actor_id, created_at)
+      VALUES (@viewId, @name, @viewType, @scope, @sort, @actorId, @createdAt)
+    `);
+
+    this.stmt.selectSavedView = this.db.prepare(`
+      SELECT * FROM saved_views WHERE view_id = @viewId
+    `);
+
+    this.stmt.listSavedViewsByActor = this.db.prepare(`
+      SELECT * FROM saved_views
+       WHERE actor_id = @actorId
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.countSavedViewsByActor = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM saved_views WHERE actor_id = @actorId
     `);
   }
 
@@ -4777,5 +4845,34 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const row = this.stmt.selectReportRecord.get(id) as ReportRecordRow;
     return rowToReportRecord(row);
+  }
+
+  // ── Saved views ───────────────────────────────────────────────────
+
+  async listSavedViews(actorId: string): Promise<SavedViewResult[]> {
+    const limit = 100;
+    const offset = 0;
+    const rows = this.stmt.listSavedViewsByActor.all({ actorId, limit, offset }) as SavedViewRow[];
+    return rows.map(rowToSavedViewResult);
+  }
+
+  async createSavedView(input: CreateSavedViewInput): Promise<SavedViewResult> {
+    const viewId = randomUUID();
+    const now = nowISO();
+    const scopeJson = JSON.stringify(input.scope);
+
+    this.stmt.insertSavedView.run({
+      viewId,
+      name: input.name,
+      viewType: input.viewType,
+      scope: scopeJson,
+      sort: input.sort ?? null,
+      actorId: input.actorId,
+      createdAt: now,
+    });
+
+    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow;
+    if (!row) throw new Error('Failed to read back saved view');
+    return rowToSavedViewResult(row);
   }
 }

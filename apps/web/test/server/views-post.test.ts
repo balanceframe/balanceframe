@@ -17,11 +17,28 @@ const {
   mockReadBody,
   mockSetResponseStatus,
   mockGetWorkflowStore,
+  mockRestore,
+  mockCreateDefaultConnectionManager,
+  mockCreateNativeAnalysisProtocol,
 } = vi.hoisted(() => ({
   mockReadBody: vi.fn(),
   mockSetResponseStatus: vi.fn(),
   mockGetWorkflowStore: vi.fn(),
+  mockRestore: vi.fn(),
+  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
+  mockCreateNativeAnalysisProtocol: vi.fn(),
 }));
+
+// ---------------------------------------------------------------------------
+// Mock @balanceframe/application — replace connection/protocol factories
+// with deterministic test doubles so the handler can exercise its full path
+// without a real ledger.
+// ---------------------------------------------------------------------------
+
+vi.mock('@balanceframe/application', async (i) => {
+  const a = await i();
+  return { ...a, createDefaultConnectionManager: mockCreateDefaultConnectionManager, createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol };
+});
 
 // ---------------------------------------------------------------------------
 // Mock h3 — defineEventHandler unwraps so we get the raw handler function
@@ -41,6 +58,12 @@ vi.mock('h3', () => ({
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: mockGetWorkflowStore,
   buildAuthorizationInfo: () => null,
+  getActorId: () => 'test-actor',
+  sanitizeError: vi.fn((err: unknown, _requestId: string, code: string, retryable?: boolean) => ({
+    code,
+    message: err instanceof Error ? err.message : String(err),
+    retryable: retryable ?? false,
+  })),
   okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
@@ -107,7 +130,21 @@ function validBody(): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  mockGetWorkflowStore.mockReturnValue({ store: {} });
+  mockGetWorkflowStore.mockReturnValue({
+    store: {
+      createSavedView: vi.fn(async (input: { name: string; viewType: string; scope: Record<string, unknown>; sort?: string }) => ({
+        viewId: 'view_default',
+        name: input.name,
+        viewType: input.viewType,
+        scope: input.scope,
+        ...(input.sort ? { sort: input.sort } : {}),
+        createdAt: '2026-07-27T12:00:00Z',
+      })),
+      listSavedViews: vi.fn(async () => []),
+    },
+  });
+  mockRestore.mockResolvedValue({ connector: { name: 'm' }, budget: { id: 'b', groupId: 'g', name: 'T', encrypted: false }, synchronization: {} });
+  mockCreateNativeAnalysisProtocol.mockResolvedValue({ createSavedView: vi.fn() });
 });
 
 afterEach(() => {
@@ -220,7 +257,7 @@ describe('POST /api/reports/views', () => {
 
     expect(response.status).toBe('ok');
     const view = (response.result as Record<string, unknown>).view as Record<string, unknown>;
-    expect(view).not.toHaveProperty('sort');
+    expect(view.sort).toBeUndefined();
   });
 
   it('returns 503 when store is unavailable', async () => {

@@ -39,6 +39,12 @@ import type {
   RuleListResult,
   RuleShowResult,
   RuleUpdateResult,
+  PurchaseEvaluationResult,
+  CashFlowProjectionResult,
+  TargetHealthResult,
+  SinkingFundHealthResult,
+  FinancialStateResult,
+  AttentionHomeResult,
 } from '../src/commands';
 import { ReasonCodes } from '../src/errors';
 
@@ -61,6 +67,85 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
     findCategorizationCandidates(input: string): string {
       calls.push('findCategorizationCandidates');
       return JSON.stringify([]);
+    },
+
+    // Phase 8 — Budget Intelligence N-API methods
+    evaluatePurchase(input: string): string {
+      calls.push('evaluatePurchase');
+      return JSON.stringify({
+        allowable: true,
+        reasonCodes: ['sufficient_budget'],
+        categoryBudget: { minorUnits: '50000', currency: 'USD' },
+        categorySpent: { minorUnits: '15000', currency: 'USD' },
+        categoryRemaining: { minorUnits: '35000', currency: 'USD' },
+        projectedBalance: { minorUnits: '120000', currency: 'USD' },
+        hasEnvelope: true,
+      });
+    },
+    projectCashFlow(input: string): string {
+      calls.push('projectCashFlow');
+      return JSON.stringify({
+        projectionMonths: 3,
+        monthlyProjections: [
+          {
+            month: '2026-08',
+            projectedIncome: { minorUnits: '500000', currency: 'USD' },
+            projectedExpenses: { minorUnits: '420000', currency: 'USD' },
+            netChange: { minorUnits: '80000', currency: 'USD' },
+            endingBalance: { minorUnits: '580000', currency: 'USD' },
+            scheduledIncomeCount: 2,
+            scheduledExpenseCount: 15,
+          },
+        ],
+        sufficientData: true,
+        dataWarning: null,
+      });
+    },
+    evaluateTargetHealth(input: string): string {
+      calls.push('evaluateTargetHealth');
+      return JSON.stringify({
+        categories: [
+          {
+            categoryId: 'cat_1',
+            categoryName: 'Shopping',
+            budgeted: { minorUnits: '50000', currency: 'USD' },
+            spent: { minorUnits: '15000', currency: 'USD' },
+            remaining: { minorUnits: '35000', currency: 'USD' },
+            healthLabel: 'healthy',
+            isSinkingFund: false,
+            targetAmount: null,
+            targetProgress: null,
+          },
+          {
+            categoryId: 'cat_sink_1',
+            categoryName: 'Car Repair',
+            budgeted: { minorUnits: '120000', currency: 'USD' },
+            spent: { minorUnits: '80000', currency: 'USD' },
+            remaining: { minorUnits: '40000', currency: 'USD' },
+            healthLabel: 'healthy',
+            isSinkingFund: true,
+            targetAmount: { minorUnits: '120000', currency: 'USD' },
+            targetProgress: 0.6667,
+          },
+        ],
+        overallLabel: 'healthy',
+        healthyCount: 2,
+        atRiskCount: 0,
+        sinkingFundCount: 1,
+      });
+    },
+    evaluateFinancialState(input: string): string {
+      calls.push('evaluateFinancialState');
+      return JSON.stringify({
+        overallLabel: 'healthy',
+        netWorth: { minorUnits: '1500000', currency: 'USD' },
+        monthlyCashFlow: { minorUnits: '80000', currency: 'USD' },
+        budgetAdherencePercent: 85,
+        categoriesAtRisk: 2,
+        sinkingFundsUnderfunded: 1,
+        advice: ['You are on track.'],
+        freshness: null,
+      });
     },
   };
   return { shim, calls };
@@ -732,5 +817,262 @@ describe('composition + pendingReviewAnalysis (integration)', () => {
 
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('not_connected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Native delegation via createNativeAnalysisProtocol
+// ---------------------------------------------------------------------------
+
+describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
+  it('purchaseEvaluation calls evaluatePurchase and returns non-zero fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    const ledger = mockLedger();
+
+    const result = await protocol.purchaseEvaluation!(ledger, {
+      categoryId: 'cat_1',
+      amount: { minorUnits: '5000', currency: 'USD' },
+      accountId: 'acct_1',
+    });
+
+    expect(calls).toContain('evaluatePurchase');
+    expect(result.allowable).toBe(true);
+    expect(result.categoryBudget.minorUnits).toBe('50000');
+    expect(result.categorySpent.minorUnits).toBe('15000');
+    expect(result.categoryRemaining.minorUnits).toBe('35000');
+    expect(result.projectedBalance).not.toBeNull();
+    expect(result.projectedBalance!.minorUnits).toBe('120000');
+    expect(result.hasEnvelope).toBe(true);
+  });
+
+  it('purchaseEvaluation returns no-snapshot failure when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+
+    const result = await protocol.purchaseEvaluation!(null, {
+      categoryId: 'cat_1',
+      amount: { minorUnits: '5000', currency: 'USD' },
+    });
+
+    expect(calls).not.toContain('evaluatePurchase');
+    expect(result.allowable).toBe(false);
+    expect(result.reasonCodes).toContain('no_snapshot');
+    expect(result.projectedBalance).toBeNull();
+  });
+
+  it('cashFlowProjection calls projectCashFlow and returns non-zero fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    const ledger = mockLedger();
+
+    const result = await protocol.cashFlowProjection!(ledger, {
+      months: 3,
+      startMonth: '2026-07',
+    });
+
+    expect(calls).toContain('projectCashFlow');
+    expect(result.projectionMonths).toBe(3);
+    expect(result.monthlyProjections.length).toBeGreaterThan(0);
+    expect(result.monthlyProjections[0].month).toBe('2026-08');
+    expect(result.monthlyProjections[0].projectedIncome.minorUnits).toBe('500000');
+    expect(result.monthlyProjections[0].projectedExpenses.minorUnits).toBe('420000');
+    expect(result.monthlyProjections[0].netChange.minorUnits).toBe('80000');
+    expect(result.monthlyProjections[0].endingBalance.minorUnits).toBe('580000');
+    expect(result.sufficientData).toBe(true);
+    expect(result.dataWarning).toBeNull();
+  });
+
+  it('cashFlowProjection returns documented failure when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+
+    const result = await protocol.cashFlowProjection!(null, {
+      months: 3,
+    });
+
+    expect(calls).not.toContain('projectCashFlow');
+    expect(result.sufficientData).toBe(false);
+    expect(result.dataWarning).toBe('Ledger snapshot unavailable.');
+    expect(result.monthlyProjections).toEqual([]);
+  });
+
+  it('targetHealth calls evaluateTargetHealth and returns non-zero fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    const ledger = mockLedger();
+
+    const result = await protocol.targetHealth!(ledger);
+
+    expect(calls).toContain('evaluateTargetHealth');
+    expect(result.overallLabel).toBe('healthy');
+    expect(result.healthyCount).toBe(2);
+    expect(result.categories.length).toBeGreaterThan(0);
+    expect(result.categories[0].budgeted.minorUnits).toBe('50000');
+    expect(result.categories[0].spent.minorUnits).toBe('15000');
+    expect(result.categories[0].healthLabel).toBe('healthy');
+    expect(result.sinkingFundCount).toBe(1);
+  });
+
+  it('targetHealth returns documented failure when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+
+    const result = await protocol.targetHealth!(null);
+
+    expect(calls).not.toContain('evaluateTargetHealth');
+    expect(result.overallLabel).toBe('unknown');
+    expect(result.healthyCount).toBe(0);
+    expect(result.atRiskCount).toBe(0);
+    expect(result.categories).toEqual([]);
+  });
+
+  it('sinkingFundHealth calls evaluateTargetHealth and filters sinking funds', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    const ledger = mockLedger();
+
+    const result = await protocol.sinkingFundHealth!(ledger);
+
+    // Should use evaluateTargetHealth under the hood
+    expect(calls).toContain('evaluateTargetHealth');
+    // Only sinking fund categories are returned
+    expect(result.sinkingFunds.length).toBeGreaterThan(0);
+    expect(result.sinkingFunds.every((sf: unknown) => {
+      return typeof sf === 'object' && sf !== null && 'isSinkingFund' in sf && (sf as Record<string, unknown>).isSinkingFund === true;
+    })).toBe(true);
+    expect(result.fullyFundedCount).toBe(0);
+    // progress 0.6667 is > 0 so it's partially funded
+    expect(result.partiallyFundedCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('sinkingFundHealth returns documented failure when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+
+    const result = await protocol.sinkingFundHealth!(null);
+
+    expect(calls).not.toContain('evaluateTargetHealth');
+    expect(result.sinkingFunds).toEqual([]);
+    expect(result.fullyFundedCount).toBe(0);
+    expect(result.partiallyFundedCount).toBe(0);
+    expect(result.unfundedCount).toBe(0);
+  });
+
+  it('financialState calls evaluateFinancialState and returns non-zero fixture data', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    const ledger = mockLedger();
+
+    const result = await protocol.financialState!(ledger);
+
+    expect(calls).toContain('evaluateFinancialState');
+    expect(result.overallLabel).toBe('healthy');
+    expect(result.netWorth.minorUnits).toBe('1500000');
+    expect(result.monthlyCashFlow.minorUnits).toBe('80000');
+    expect(result.budgetAdherencePercent).toBe(85);
+    expect(result.categoriesAtRisk).toBe(2);
+    expect(result.sinkingFundsUnderfunded).toBe(1);
+    expect(result.advice.length).toBeGreaterThan(0);
+  });
+
+  it('financialState returns documented failure when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+
+    const result = await protocol.financialState!(null);
+
+    expect(calls).not.toContain('evaluateFinancialState');
+    expect(result.overallLabel).toBe('unknown');
+    expect(result.netWorth.minorUnits).toBe('0');
+  });
+
+  it('attentionHome calls evaluateTargetHealth and evaluateFinancialState and returns aggregated result', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    const ledger = mockLedger();
+
+    const result = await protocol.attentionHome!(ledger, {});
+
+    expect(calls).toContain('evaluateTargetHealth');
+    expect(calls).toContain('evaluateFinancialState');
+    expect(Array.isArray(result.blockers)).toBe(true);
+    expect(Array.isArray(result.alerts)).toBe(true);
+    expect(Array.isArray(result.recurrences)).toBe(true);
+    expect(Array.isArray(result.categoryRisks)).toBe(true);
+    expect(result.targetProgress.overallLabel).toBe('healthy');
+    expect(result.targetProgress.healthyCount).toBe(2);
+    expect(result.targetProgress.sinkingFundsOnTrack).toBeGreaterThanOrEqual(0);
+  });
+
+  it('attentionHome returns documented failure when ledger is null', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+
+    const result = await protocol.attentionHome!(null, {});
+
+    expect(calls).not.toContain('evaluateTargetHealth');
+    expect(result.blockers).toEqual([]);
+    expect(result.alerts).toEqual([]);
+    expect(result.recurrences).toEqual([]);
+    expect(result.categoryRisks).toEqual([]);
+    expect(result.targetProgress.overallLabel).toBe('unknown');
+  });
+
+  it('attentionHome categoryRisks use null daysRemaining when native data unavailable (no fabricated zero)', async () => {
+    const { shim, calls } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    const ledger = mockLedger();
+
+    const result = await protocol.attentionHome!(ledger, {});
+
+    expect(calls).toContain('evaluateTargetHealth');
+    expect(result.categoryRisks.length).toBeGreaterThan(0);
+    for (const risk of result.categoryRisks) {
+      // Must be null (uncertain) — never a fabricated positive number
+      expect(risk.daysRemaining).toBeNull();
+    }
+  });
+
+  it('syntax confirms helpers are declared outside return object (no const inside object literal)', async () => {
+    // Verifying by successful invocation: if const-as-property syntax
+    // existed, the import/parse would throw at module evaluation time.
+    const { shim } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(
+      () => Promise.resolve(shim),
+    );
+    expect(protocol).toBeDefined();
+    // Verify all Phase 8 methods exist and are functions
+    expect(typeof protocol.purchaseEvaluation).toBe('function');
+    expect(typeof protocol.cashFlowProjection).toBe('function');
+    expect(typeof protocol.targetHealth).toBe('function');
+    expect(typeof protocol.financialState).toBe('function');
+    expect(typeof protocol.attentionHome).toBe('function');
   });
 });
