@@ -278,12 +278,328 @@ export interface ListProposalsOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Notification Event — immutable outbound event
+// ---------------------------------------------------------------------------
+
+/**
+ * An immutable notification event — the canonical record of a notification
+ * that should be dispatched.  Events are written before any outbox record
+ * is created (persist-before-dispatch).
+ */
+export interface NotificationEvent {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Monotonic event version for ordering and deduplication. */
+  readonly eventVersion: number;
+  /** Budget this event is associated with. */
+  readonly budgetId: string;
+  /** Classification label (e.g. 'budget_alert', 'review_complete'). */
+  readonly classification: string;
+  /**
+   * Intended recipient identifier.
+   * Nullable for extensibility — Phase 7 will supply typed recipient/scope.
+   */
+  readonly recipientId: string | null;
+  /**
+   * Scope the event applies to.
+   * Nullable — Phase 7 will provide typed scope resolution.
+   */
+  readonly scope: string | null;
+  /** Security / redaction class hint (e.g. 'public', 'internal', 'sensitive'). */
+  readonly redactionClass: string | null;
+  /** Version of the channel/provider config active when the event was created. */
+  readonly channelConfigVersion: string | null;
+  /** Policy version active when the event was created. */
+  readonly policyVersion: string;
+  /** Optional correlation ID for grouping related events. */
+  readonly correlationId: string | null;
+  /** JSON-encoded event payload. */
+  readonly payload: string;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/** Input to create a new notification event. */
+export interface CreateNotificationEventInput {
+  readonly budgetId: string;
+  readonly classification: string;
+  readonly payload: Record<string, unknown>;
+  readonly policyVersion: string;
+  readonly recipientId?: string | null;
+  readonly scope?: string | null;
+  readonly redactionClass?: string | null;
+  readonly channelConfigVersion?: string | null;
+  readonly correlationId?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Notification Outbox — delivery-tracked outbound record
+// ---------------------------------------------------------------------------
+
+/** Lifecycle status of a notification outbox record. */
+export type OutboxStatus =
+  | 'pending'
+  | 'delivering'
+  | 'delivered'
+  | 'failed'
+  | 'suppressed';
+
+/**
+ * An outbox record tracking delivery of a single notification to a single
+ * channel.  Supports claim-based dispatch, retry with backoff, and
+ * acknowledgement/failure/suppression lifecycle.
+ */
+export interface NotificationOutboxRecord {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Reference to the immutable notification event. */
+  readonly eventId: string;
+  /**
+   * Canonical delivery / idempotency key — scoped to (eventId, channelType)
+   * to prevent duplicate visible sends.
+   */
+  readonly deliveryKey: string;
+  /** Channel type (e.g. 'email', 'webhook', 'push'). */
+  readonly channelType: string;
+  /** Version of the channel config active when enqueued. */
+  readonly channelConfigVersion: string | null;
+  /** Current delivery lifecycle status. */
+  readonly status: OutboxStatus;
+  /** Number of delivery attempts made so far. */
+  readonly attemptCount: number;
+  /** Maximum delivery attempts before terminal failure. */
+  readonly maxAttempts: number;
+  /** Claim token guarding delivery processing (null when not claimed). */
+  readonly claimToken: string | null;
+  /** ISO-8601 timestamp when the delivery claim expires. */
+  readonly claimExpiresAt: string | null;
+  /** ISO-8601 timestamp of the most recent delivery attempt. */
+  readonly lastAttemptedAt: string | null;
+  /** ISO-8601 timestamp for the next scheduled retry (null if not scheduled). */
+  readonly nextAttemptAt: string | null;
+  /** ISO-8601 timestamp when the notification was acknowledged by the recipient. */
+  readonly acknowledgedAt: string | null;
+  /** ISO-8601 timestamp when delivery was permanently failed. */
+  readonly failedAt: string | null;
+  /** Human-readable failure reason. */
+  readonly failureReason: string | null;
+  /** ISO-8601 timestamp when the record was suppressed. */
+  readonly suppressedAt: string | null;
+  /** Human-readable suppression reason. */
+  readonly suppressedReason: string | null;
+  /** Optional correlation ID propagated from the event. */
+  readonly correlationId: string | null;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+  /** ISO-8601 last-updated timestamp. */
+  readonly updatedAt: string;
+}
+
+/** Input to enqueue a notification for delivery. */
+export interface EnqueueNotificationInput {
+  /** The immutable notification event to deliver. */
+  readonly eventId: string;
+  /**
+   * Delivery idempotency key — must be unique per (eventId, channelType)
+   * to prevent duplicate sends.
+   */
+  readonly deliveryKey: string;
+  /** Channel type for delivery. */
+  readonly channelType: string;
+  /** Version of the channel config to use. */
+  readonly channelConfigVersion?: string | null;
+  /** Maximum delivery attempts (default 3). */
+  readonly maxAttempts?: number;
+  /** Optional correlation ID propagated from the event. */
+  readonly correlationId?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// DeliveryAttempt — immutable record of a single delivery attempt
+// ---------------------------------------------------------------------------
+
+/** Outcome of a single delivery attempt. */
+export type DeliveryAttemptStatus = 'success' | 'failed';
+
+/**
+ * An immutable record of one delivery attempt for a notification outbox
+ * record.  Multiple attempts may exist for the same outbox record during
+ * retry cycles.
+ */
+export interface DeliveryAttempt {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Reference to the notification outbox record. */
+  readonly outboxId: string;
+  /** Monotonic attempt number (1-based). */
+  readonly attemptNumber: number;
+  /** Outcome of this attempt. */
+  readonly status: DeliveryAttemptStatus;
+  /** Response code from the channel provider (if applicable). */
+  readonly responseCode: string | null;
+  /** Response body from the channel provider (if applicable). */
+  readonly responseBody: string | null;
+  /** Error message if the attempt failed. */
+  readonly errorMessage: string | null;
+  /** ISO-8601 timestamp of the attempt. */
+  readonly attemptedAt: string;
+}
+
+/** Input to record a delivery attempt. */
+export interface RecordDeliveryAttemptInput {
+  readonly outboxId: string;
+  readonly attemptNumber: number;
+  readonly status: DeliveryAttemptStatus;
+  readonly responseCode?: string | null;
+  readonly responseBody?: string | null;
+  readonly errorMessage?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// PolicyVersion — immutable policy version tracking
+// ---------------------------------------------------------------------------
+
+/** A tracked policy version.  Versions are append-only once superseded. */
+export interface PolicyVersion {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Policy domain key (e.g. 'authorization', 'notification', 'classification'). */
+  readonly policyKey: string;
+  /** Monotonic version number within the policy domain. */
+  readonly version: number;
+  /** Hex-encoded SHA-256 hash of the policy content. */
+  readonly policyHash: string;
+  /** Human-readable description of this version. */
+  readonly description: string;
+  /** Whether this version is currently the active one for its policy key. */
+  readonly isActive: boolean;
+  /** ISO-8601 timestamp when superseded, or null if still active. */
+  readonly supersededAt: string | null;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+}
+
+/** Input to record a new policy version. */
+export interface RecordPolicyVersionInput {
+  readonly policyKey: string;
+  readonly policyHash: string;
+  readonly description: string;
+}
+
+// ---------------------------------------------------------------------------
+// SavedFilter — persistable report filter / view configuration
+// ---------------------------------------------------------------------------
+
+/** A saved report filter or view.  Policy-aware scope controls visibility. */
+export interface SavedFilter {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Human-readable name for this filter/view. */
+  readonly name: string;
+  /** Budget this filter is scoped to, or null for global filters. */
+  readonly budgetId: string | null;
+  /** JSON-encoded filter configuration. */
+  readonly filterConfig: string;
+  /** JSON-encoded view configuration (display settings), or null. */
+  readonly viewConfig: string | null;
+  /** Policy-aware scope controlling visibility (e.g. 'owner', 'role:admin', 'public'). */
+  readonly scope: string;
+  /** Policy version that was active when this filter was created/updated. */
+  readonly policyVersion: string;
+  /** Whether this is the default filter for its scope/budget combination. */
+  readonly isDefault: boolean;
+  /** Actor who created this filter. */
+  readonly actorId: string;
+  /** ISO-8601 creation timestamp. */
+  readonly createdAt: string;
+  /** ISO-8601 last-updated timestamp. */
+  readonly updatedAt: string;
+}
+
+/** Input to create a new saved filter/view. */
+export interface CreateSavedFilterInput {
+  readonly name: string;
+  readonly filterConfig: Record<string, unknown>;
+  readonly scope: string;
+  readonly policyVersion: string;
+  readonly budgetId?: string | null;
+  readonly viewConfig?: Record<string, unknown> | null;
+  readonly isDefault?: boolean;
+  readonly actorId: string;
+}
+
+/** Input to update an existing saved filter/view. */
+export interface UpdateSavedFilterInput {
+  readonly name?: string;
+  readonly filterConfig?: Record<string, unknown>;
+  readonly viewConfig?: Record<string, unknown> | null;
+  readonly scope?: string;
+  readonly policyVersion?: string;
+  readonly isDefault?: boolean;
+}
+
+/** Options for listing saved filters. */
+export interface SavedFilterListOptions {
+  readonly budgetId?: string;
+  readonly scope?: string;
+  readonly actorId?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+// ---------------------------------------------------------------------------
+// ReportRecord — persisted report metadata
+// ---------------------------------------------------------------------------
+
+/** A report record storing metadata about a generated report. */
+export interface ReportRecord {
+  /** Stable unique identifier (UUID v4). */
+  readonly id: string;
+  /** Report type label (e.g. 'budget_summary', 'transaction_audit'). */
+  readonly reportType: string;
+  /** Budget this report is associated with, or null for global reports. */
+  readonly budgetId: string | null;
+  /** Optional saved filter that was used to generate this report. */
+  readonly filterId: string | null;
+  /** JSON-encoded report configuration/parameters. */
+  readonly config: string;
+  /** Policy version active when the report was generated. */
+  readonly policyVersion: string;
+  /** ISO-8601 generation timestamp. */
+  readonly generatedAt: string;
+  /** ISO-8601 expiry timestamp (null = no expiry). */
+  readonly expiresAt: string | null;
+  /** Reference to stored report data (e.g. file path, blob key). */
+  readonly dataRef: string | null;
+}
+
+/** Input to create a new report record. */
+export interface CreateReportRecordInput {
+  readonly reportType: string;
+  readonly config: Record<string, unknown>;
+  readonly policyVersion: string;
+  readonly budgetId?: string | null;
+  readonly filterId?: string | null;
+  readonly expiresAt?: string | null;
+  readonly dataRef?: string | null;
+}
+
+/** Options for listing report records. */
+export interface ReportListOptions {
+  readonly budgetId?: string;
+  readonly reportType?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+// ---------------------------------------------------------------------------
 // WorkflowStore — public persistence contract
 // ---------------------------------------------------------------------------
 
 /**
  * SQLite-backed persistence store for immutable suggestions, idempotent
- * candidate jobs, and failure records.
+ * candidate jobs, failure records, notification outbox, policy versions,
+ * saved report filters/views, and report records.
  *
  * All methods are async (the implementation wraps synchronous better-sqlite3).
  */
@@ -855,6 +1171,185 @@ export interface WorkflowStore {
     deleted: Record<string, number>;
     retained: { count: number; reasons: string[] };
   }>;
+
+  // ── Notification event lifecycle (immutable) ─────────────────────
+
+  /**
+   * Create an immutable notification event.
+   *
+   * The event is persisted before any outbox record is created
+   * (persist-before-dispatch invariant).
+   */
+  createNotificationEvent(input: CreateNotificationEventInput): Promise<NotificationEvent>;
+
+  /** Retrieve a notification event by ID, or null. */
+  getNotificationEvent(id: string): Promise<NotificationEvent | null>;
+
+  // ── Notification outbox lifecycle ───────────────────────────────
+
+  /**
+   * Enqueue a notification for delivery by creating an outbox record.
+   *
+   * Idempotent: re-enqueuing with the same deliveryKey returns the
+   * existing outbox record unchanged.
+   */
+  enqueueNotification(input: EnqueueNotificationInput): Promise<NotificationOutboxRecord>;
+
+  /**
+   * Claim a pending notification outbox record for delivery.
+   *
+   * Idempotent: re-claiming with the same claimToken returns the
+   * already-claimed record.  Records whose claimExpiresAt is in the
+   * past may be reclaimed (crash recovery).
+   */
+  claimNotificationDelivery(
+    outboxId: string,
+    claimToken: string,
+    claimTimeoutMs?: number,
+  ): Promise<NotificationOutboxRecord | null>;
+
+  /**
+   * Complete a notification delivery.
+   *
+   * Marks the outbox record as delivered, records a delivery attempt,
+   * and clears the claim token.  Requires the active claim token.
+   */
+  completeNotificationDelivery(
+    outboxId: string,
+    claimToken: string,
+    response?: { code?: string; body?: string },
+  ): Promise<NotificationOutboxRecord>;
+
+  /**
+   * Fail a notification delivery.
+   *
+   * Marks the outbox record as failed (or schedules a retry if attempts
+   * remain), records a failed delivery attempt.  Requires the active
+   * claim token.
+   */
+  failNotificationDelivery(
+    outboxId: string,
+    claimToken: string,
+    errorMessage: string,
+    retryable?: boolean,
+  ): Promise<NotificationOutboxRecord>;
+
+  /**
+   * Acknowledge a delivered notification (recipient confirmed receipt).
+   * Only applicable to records in 'delivered' status.
+   */
+  acknowledgeNotification(outboxId: string): Promise<NotificationOutboxRecord>;
+
+  /**
+   * Suppress a notification, preventing future delivery attempts.
+   * Works on any non-terminal outbox record.
+   */
+  suppressNotification(outboxId: string, reason: string): Promise<NotificationOutboxRecord>;
+
+  /** Retrieve an outbox record by ID, or null. */
+  getOutboxRecord(id: string): Promise<NotificationOutboxRecord | null>;
+
+  /**
+   * Return all pending (undelivered, unclaimed) outbox records.
+   * Optionally filtered by channel type.
+   */
+  getPendingNotifications(
+    limit?: number,
+    channelType?: string,
+  ): Promise<NotificationOutboxRecord[]>;
+
+  /**
+   * Return outbox records ready for retry (failed with attempts remaining
+   * and nextAttemptAt <= now).  Optionally filtered by channel type.
+   */
+  getRetryableNotifications(
+    limit?: number,
+    channelType?: string,
+  ): Promise<NotificationOutboxRecord[]>;
+
+  /** Return all delivery attempts for a given outbox record. */
+  getDeliveryAttempts(outboxId: string): Promise<DeliveryAttempt[]>;
+
+  // ── Policy version lifecycle ────────────────────────────────────
+
+  /**
+   * Record a new policy version.
+   *
+   * The created version is automatically set as the active version for
+   * its policyKey.  Any previously active version for the same key is
+   * superseded.
+   */
+  recordPolicyVersion(input: RecordPolicyVersionInput): Promise<PolicyVersion>;
+
+  /** Retrieve a policy version by ID, or null. */
+  getPolicyVersion(id: string): Promise<PolicyVersion | null>;
+
+  /**
+   * Return the currently active policy version for a given policy key,
+   * or null if none is recorded.
+   */
+  getActivePolicyVersion(policyKey: string): Promise<PolicyVersion | null>;
+
+  /**
+   * List policy versions for a given policy key, ordered by version
+   * descending.
+   */
+  listPolicyVersions(
+    policyKey: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<PolicyVersion[]>;
+
+  // ── Saved filter / view lifecycle ───────────────────────────────
+
+  /**
+   * Create a new saved filter or view.
+   *
+   * If isDefault is true, any existing default for the same
+   * (budgetId, scope) combination is demoted.
+   */
+  createSavedFilter(input: CreateSavedFilterInput): Promise<SavedFilter>;
+
+  /**
+   * Update an existing saved filter/view.
+   *
+   * Only the provided fields are changed.  If isDefault is set to true,
+   * any existing default for the same (budgetId, scope) is demoted.
+   */
+  updateSavedFilter(
+    id: string,
+    input: UpdateSavedFilterInput,
+  ): Promise<SavedFilter>;
+
+  /** Retrieve a saved filter by ID, or null. */
+  getSavedFilter(id: string): Promise<SavedFilter | null>;
+
+  /**
+   * List saved filters, optionally filtered by budget, scope, or actor.
+   */
+  listSavedFilters(options?: SavedFilterListOptions): Promise<SavedFilter[]>;
+
+  /** Delete a saved filter by ID. */
+  deleteSavedFilter(id: string): Promise<void>;
+
+  // ── Report record lifecycle ─────────────────────────────────────
+
+  /** Persist a new report record. */
+  createReportRecord(input: CreateReportRecordInput): Promise<ReportRecord>;
+
+  /** Retrieve a report record by ID, or null. */
+  getReportRecord(id: string): Promise<ReportRecord | null>;
+
+  /**
+   * List report records, optionally filtered by budget or report type.
+   */
+  listReportRecords(options?: ReportListOptions): Promise<ReportRecord[]>;
+
+  /**
+   * Expire a report record by setting its expiresAt to now.
+   * Idempotent on already-expired records.
+   */
+  expireReportRecord(id: string): Promise<ReportRecord>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,6 +1545,13 @@ export type AuditClassification =
   | 'invitation_revoked'
   | 'invitation_redeemed'
   | 'invitation_expired'
+  | 'notification_created'
+  | 'notification_enqueued'
+  | 'notification_delivered'
+  | 'notification_failed'
+  | 'notification_acknowledged'
+  | 'notification_suppressed'
+  | 'notification_retried'
   | (string & {});
 
 /** An append-only audit record. Immutable once written. */

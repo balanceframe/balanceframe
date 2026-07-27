@@ -95,6 +95,31 @@ export const ReasonCodes = {
   INSUFFICIENT_SCOPE: 'insufficient_scope',
   /** Backup must be verified before first mutation. */
   BACKUP_NOT_VERIFIED: 'backup_not_verified',
+
+  // -----------------------------------------------------------------------
+  // Budget Intelligence reason codes
+  // -----------------------------------------------------------------------
+
+  /** Purchase evaluation requires a category. */
+  PURCHASE_CATEGORY_REQUIRED: 'purchase_category_required',
+  /** Purchase evaluation requires an amount. */
+  PURCHASE_AMOUNT_REQUIRED: 'purchase_amount_required',
+  /** Cash-flow projection data is insufficient (no schedules or budgets). */
+  INSUFFICIENT_CASH_FLOW_DATA: 'insufficient_cash_flow_data',
+  /** Target health data is insufficient. */
+  INSUFFICIENT_TARGET_DATA: 'insufficient_target_data',
+  /** Snapshot data is stale for budget intelligence operations. */
+  STALE_BUDGET_INTELLIGENCE_DATA: 'stale_budget_intelligence_data',
+  /** Report scope or filters are missing. */
+  REPORT_SCOPE_REQUIRED: 'report_scope_required',
+  /** Saved view not found. */
+  SAVED_VIEW_NOT_FOUND: 'saved_view_not_found',
+  /** Envelope data is insufficient for cash-flow projection. */
+  INSUFFICIENT_ENVELOPE_DATA: 'insufficient_envelope_data',
+  /** Cash-flow data is insufficient for distinction check. */
+  ENVELOPE_VS_CASH_FLOW_DATA: 'envelope_vs_cash_flow_data',
+  /** Scope persistence validation failed. */
+  SCOPE_PERSISTENCE_FAILED: 'scope_persistence_failed',
 } as const;
 
 // ---------------------------------------------------------------------------

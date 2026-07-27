@@ -638,6 +638,129 @@
           "additionalProperties": {}
         }
       }
+    },
+    "PurchaseEvaluation": {
+      "type": "object",
+      "required": [
+        "allowable",
+        "reasonCodes",
+        "categoryBudget",
+        "categorySpent",
+        "categoryRemaining",
+        "projectedBalance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "allowable": { "type": "boolean" },
+        "reasonCodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "categoryBudget": { "$ref": "#/$defs/Money" },
+        "categorySpent": { "$ref": "#/$defs/Money" },
+        "categoryRemaining": { "$ref": "#/$defs/Money" },
+        "projectedBalance": {
+          "anyOf": [
+            { "$ref": "#/$defs/Money" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "MonthlyProjection": {
+      "type": "object",
+      "required": [
+        "month",
+        "projectedIncome",
+        "projectedExpenses",
+        "netChange",
+        "endingBalance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "month": { "type": "string" },
+        "projectedIncome": { "$ref": "#/$defs/Money" },
+        "projectedExpenses": { "$ref": "#/$defs/Money" },
+        "netChange": { "$ref": "#/$defs/Money" },
+        "endingBalance": { "$ref": "#/$defs/Money" }
+      }
+    },
+    "CashFlowProjectionResponse": {
+      "type": "object",
+      "required": [
+        "projectionMonths",
+        "monthlyProjections"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "projectionMonths": { "type": "integer", "minimum": 0 },
+        "monthlyProjections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MonthlyProjection" }
+        }
+      }
+    },
+    "CategoryHealth": {
+      "type": "object",
+      "required": [
+        "categoryId",
+        "categoryName",
+        "budgeted",
+        "spent",
+        "remaining",
+        "healthLabel"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "categoryId": { "type": "string" },
+        "categoryName": { "type": "string" },
+        "budgeted": { "$ref": "#/$defs/Money" },
+        "spent": { "$ref": "#/$defs/Money" },
+        "remaining": { "$ref": "#/$defs/Money" },
+        "healthLabel": {
+          "type": "string",
+          "enum": ["healthy", "overspent", "underfunded", "at_risk"]
+        }
+      }
+    },
+    "TargetHealthResult": {
+      "type": "object",
+      "required": [
+        "categoryHealth",
+        "overallLabel"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "categoryHealth": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CategoryHealth" }
+        },
+        "overallLabel": { "type": "string" }
+      }
+    },
+    "FinancialStateLabel": {
+      "type": "object",
+      "required": [
+        "label",
+        "score",
+        "reasonCodes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "enum": ["healthy", "stable", "at_risk", "critical"]
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
     }
   }
 }

@@ -51,6 +51,19 @@ import type {
   DisconnectResult,
   RemovalResult,
   DeletionResult,
+  PurchaseEvaluationResult,
+  PurchaseEvaluationParams,
+  CashFlowProjectionResult,
+  CashFlowProjectionParams,
+  TargetHealthResult,
+  SinkingFundHealthResult,
+  ReportGenerationResult,
+  ReportGenerationParams,
+  SavedViewsListResult,
+  CreateSavedViewResult,
+  CreateSavedViewParams,
+  AttentionHomeResult,
+  AttentionHomeParams,
 } from './commands.js';
 import type { DataFreshness } from './envelope.js';
 import { ReasonCodes } from './errors.js';
@@ -569,6 +582,116 @@ export async function createNativeAnalysisProtocol(
         status: 'proposed',
         createdAt: new Date().toISOString(),
         correlationId: '',
+      };
+    },
+
+    // -----------------------------------------------------------------------
+    // Budget Intelligence stubs
+    // -----------------------------------------------------------------------
+
+    async purchaseEvaluation(
+      _ledger: unknown,
+      _params: PurchaseEvaluationParams,
+    ): Promise<PurchaseEvaluationResult> {
+      return {
+        allowable: true,
+        reasonCodes: ['sufficient_budget'],
+        categoryBudget: { minorUnits: '0', currency: 'USD' },
+        categorySpent: { minorUnits: '0', currency: 'USD' },
+        categoryRemaining: { minorUnits: '0', currency: 'USD' },
+        projectedBalance: null,
+        hasEnvelope: true,
+      };
+    },
+
+    async cashFlowProjection(
+      _ledger: unknown,
+      _params: CashFlowProjectionParams,
+    ): Promise<CashFlowProjectionResult> {
+      return {
+        projectionMonths: 0,
+        monthlyProjections: [],
+        sufficientData: false,
+        dataWarning: 'Cash-flow projection data is not yet available.',
+      };
+    },
+
+    async targetHealth(
+      _ledger: unknown,
+    ): Promise<TargetHealthResult> {
+      return {
+        categories: [],
+        overallLabel: 'unknown',
+        healthyCount: 0,
+        atRiskCount: 0,
+        sinkingFundCount: 0,
+      };
+    },
+
+    async sinkingFundHealth(
+      _ledger: unknown,
+    ): Promise<SinkingFundHealthResult> {
+      return {
+        sinkingFunds: [],
+        fullyFundedCount: 0,
+        partiallyFundedCount: 0,
+        unfundedCount: 0,
+      };
+    },
+
+    async generateReport(
+      _ledger: unknown,
+      _params: ReportGenerationParams,
+    ): Promise<ReportGenerationResult> {
+      return {
+        reportId: '',
+        reportType: '',
+        scope: { monthRange: '', includePending: false },
+        label: '',
+        transactionCount: 0,
+        totalAmount: { minorUnits: '0', currency: 'USD' },
+        generatedAt: new Date().toISOString(),
+        tags: [],
+      };
+    },
+
+    async listSavedViews(
+      _ledger: unknown,
+    ): Promise<SavedViewsListResult> {
+      return { views: [], total: 0 };
+    },
+
+    async createSavedView(
+      _ledger: unknown,
+      _params: CreateSavedViewParams,
+    ): Promise<CreateSavedViewResult> {
+      return {
+        view: {
+          viewId: '',
+          name: '',
+          viewType: '',
+          scope: {},
+          createdAt: new Date().toISOString(),
+        },
+      };
+    },
+
+    async attentionHome(
+      _ledger: unknown,
+      _params: AttentionHomeParams,
+    ): Promise<AttentionHomeResult> {
+      return {
+        blockers: [],
+        alerts: [],
+        recurrences: [],
+        categoryRisks: [],
+        targetProgress: {
+          overallLabel: 'unknown',
+          healthyCount: 0,
+          atRiskCount: 0,
+          sinkingFundsOnTrack: 0,
+          totalSinkingFunds: 0,
+        },
       };
     },
   };

@@ -14,9 +14,12 @@ use serde::Deserialize;
 
 use balanceframe_core_protocol as cp;
 pub use balanceframe_core_protocol::{
-    AnalysisRequest, AnalysisResult, CreateRulePlan, DeterministicAnalysisRequest,
-    DeterministicAnalysisResponse, MutationPlan, PayeeCondition, ProtocolSnapshot,
-    RuleSimulationResult, Suggestion, ValidationResult, VerificationResult,
+    AnalysisRequest, AnalysisResult, CashFlowProjectionRequest, CashFlowProjectionResponse,
+    CreateRulePlan, DeterministicAnalysisRequest, DeterministicAnalysisResponse,
+    FinancialStateLabel, FinancialStateRequest, MutationPlan, PayeeCondition,
+    ProtocolSnapshot, PurchaseEvaluation, PurchaseEvaluationRequest,
+    RuleSimulationResult, Suggestion, TargetHealthRequest, TargetHealthResult,
+    ValidationResult, VerificationResult,
 };
 pub use balanceframe_financial_core::{
     Category, CategorizationCandidate, Rule, RuleCandidate, Transaction,
@@ -287,5 +290,57 @@ struct AnalyzeRuleCandidatesInput {
 pub fn analyze_rule_candidates(input: String) -> napi::Result<String> {
     run::<AnalyzeRuleCandidatesInput, Vec<RuleCandidate>>(input, |arci| {
         Ok(cp::analyze_rule_candidates(&arci.snapshot, arci.min_consistent_count))
+    })
+}
+
+// ===========================================================================
+// 10. evaluate_purchase
+// ===========================================================================
+
+/// Evaluate whether a proposed purchase is allowable given budget constraints.
+/// Input: PurchaseEvaluationRequest. Returns PurchaseEvaluation JSON.
+#[napi]
+pub fn evaluate_purchase(input: String) -> napi::Result<String> {
+    run::<PurchaseEvaluationRequest, PurchaseEvaluation>(input, |req| {
+        Ok(cp::evaluate_purchase(req))
+    })
+}
+
+// ===========================================================================
+// 11. project_cash_flow
+// ===========================================================================
+
+/// Project future cash flow for a given number of months.
+/// Input: CashFlowProjectionRequest. Returns CashFlowProjectionResponse JSON.
+#[napi]
+pub fn project_cash_flow(input: String) -> napi::Result<String> {
+    run::<CashFlowProjectionRequest, CashFlowProjectionResponse>(input, |req| {
+        Ok(cp::project_cash_flow(req))
+    })
+}
+
+// ===========================================================================
+// 12. evaluate_target_health
+// ===========================================================================
+
+/// Evaluate the health of budget category targets.
+/// Input: TargetHealthRequest. Returns TargetHealthResult JSON.
+#[napi]
+pub fn evaluate_target_health(input: String) -> napi::Result<String> {
+    run::<TargetHealthRequest, TargetHealthResult>(input, |req| {
+        Ok(cp::evaluate_target_health(req))
+    })
+}
+
+// ===========================================================================
+// 13. evaluate_financial_state
+// ===========================================================================
+
+/// Evaluate the overall financial state and return a summary label.
+/// Input: FinancialStateRequest. Returns FinancialStateLabel JSON.
+#[napi]
+pub fn evaluate_financial_state(input: String) -> napi::Result<String> {
+    run::<FinancialStateRequest, FinancialStateLabel>(input, |req| {
+        Ok(cp::evaluate_financial_state(req))
     })
 }

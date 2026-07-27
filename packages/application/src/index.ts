@@ -14,4 +14,5 @@ export * from './rule-mutation.js';
 export * from './analysis.js';
 export * from './composition.js';
 export * from './connection-manager.js';
+export * from './notifications.js';
 export * from './review-persistence.js';

@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+pub mod cash_flow;
+pub mod financial_state;
+pub mod purchase;
+pub mod targets;
 pub mod analysis;
 pub mod blockers;
 pub mod categorization;
@@ -32,6 +36,16 @@ pub use envelope::{AuthorizationContext, ErrorInfo, RequestEnvelope, ResponseEnv
 pub use freshness::{CompatibilityMetadata, DataFreshness};
 pub use merchant::normalize_merchant;
 pub use money::{Money, MoneyError};
+pub use cash_flow::{compute_cash_flow_projection, CashFlowProjection};
+pub use purchase::{
+    evaluate_purchase, PurchaseDataBlocker, PurchaseEvidence, PurchaseOutcome,
+    PurchaseOutcomeKind, PurchasePolicy, PurchaseReasonCode, TransactionSemantic,
+};
+pub use financial_state::{
+    AccountOverrides, DecisionDataPolicy, FinancialStateLabel, PendingMode, UnclearedMode,
+    UncategorizedMode,
+};
+pub use targets::{compute_target_status, TargetHealth, TargetStatus};
 pub use reconciliation::{reconcile_by_imported_id, MatchType, ReconciliationMatch};
 pub use snapshots::{
     Account, BudgetCategory, BudgetMonth, Category, ImportTransaction, Payee, Rule, Schedule, Tag,

@@ -332,6 +332,122 @@ pub struct CorrectionConflictResult {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence types
+// ---------------------------------------------------------------------------
+
+/// Request to evaluate whether a proposed purchase is allowable
+/// given the current budget state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseEvaluationRequest {
+    pub snapshot: ProtocolSnapshot,
+    pub proposed_transaction: Transaction,
+    pub category_id: String,
+}
+
+/// Result of evaluating a proposed purchase against budget limits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseEvaluation {
+    /// Whether the purchase is allowable within budget constraints.
+    pub allowable: bool,
+    /// Machine-readable reason codes for the evaluation.
+    pub reason_codes: Vec<String>,
+    /// How much is budgeted for this category in the current month.
+    pub category_budget: fc::Money,
+    /// How much has been spent in this category so far.
+    pub category_spent: fc::Money,
+    /// Remaining budget after accounting for this purchase.
+    pub category_remaining: fc::Money,
+    /// Projected account balance after purchase (None if account not tracked).
+    #[serde(default)]
+    pub projected_balance: Option<fc::Money>,
+}
+
+/// Request to project future cash flow based on schedules and budgets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowProjectionRequest {
+    pub snapshot: ProtocolSnapshot,
+    pub projection_months: u32,
+}
+
+/// A single month's cash-flow projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyProjection {
+    /// The month in YYYY-MM format.
+    pub month: String,
+    /// Total projected income for this month.
+    pub projected_income: fc::Money,
+    /// Total projected expenses for this month.
+    pub projected_expenses: fc::Money,
+    /// Net change (income - expenses) for this month.
+    pub net_change: fc::Money,
+    /// Ending balance after this month.
+    pub ending_balance: fc::Money,
+}
+
+/// Response containing projected monthly cash flows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowProjectionResponse {
+    pub projection_months: u32,
+    pub monthly_projections: Vec<MonthlyProjection>,
+}
+
+/// Request to evaluate the health of budget targets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetHealthRequest {
+    pub snapshot: ProtocolSnapshot,
+}
+
+/// Health status of a single budget category.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryHealth {
+    pub category_id: String,
+    pub category_name: String,
+    pub budgeted: fc::Money,
+    pub spent: fc::Money,
+    pub remaining: fc::Money,
+    /// One of: "healthy", "overspent", "underfunded", "at_risk".
+    pub health_label: String,
+}
+
+/// Result of evaluating budget target health.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetHealthResult {
+    pub category_health: Vec<CategoryHealth>,
+    pub overall_label: String,
+}
+
+/// Structured request for computing an overall financial state label.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialStateRequest {
+    pub overall_health_label: String,
+    pub positive_cash_flow: bool,
+    pub budget_coverage_ratio: f64,
+    pub overspent_category_count: u32,
+    pub month: String,
+}
+
+/// A label describing the overall financial state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialStateLabel {
+    /// The state label: "healthy", "stable", "at_risk", or "critical".
+    pub label: String,
+    /// Numeric score between 0.0 and 1.0 summarizing overall health.
+    pub score: f64,
+    /// Machine-readable reason codes supporting this label.
+    pub reason_codes: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Protocol functions
 // ---------------------------------------------------------------------------
 
@@ -1407,6 +1523,387 @@ fn extract_action_value(actions: &serde_json::Value) -> Option<String> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence protocol functions
+// ---------------------------------------------------------------------------
+
+/// Evaluate whether a proposed purchase is allowable given budget constraints.
+///
+/// Delegates to [`fc::purchase::evaluate_purchase`] for deterministic
+/// budget-policy evaluation with conservative assumptions.  Returns a
+/// [`PurchaseEvaluation`] that maps the financial-core outcome to the
+/// protocol response format. This is a non-authoritative advisory —
+/// it informs but does not authorize the transaction.
+pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluation {
+    use fc::purchase::{evaluate_purchase as fc_evaluate, PurchasePolicy, TransactionSemantic};
+    use fc::financial_state::DecisionDataPolicy;
+
+    let snapshot = &request.snapshot;
+    let category_id = &request.category_id;
+
+    // Find the category definition
+    let _category = match snapshot.categories.iter().find(|c| c.id == *category_id) {
+        Some(cat) => cat,
+        None => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["category_not_found".into()],
+                category_budget: fc::Money::new(0, "USD"),
+                category_spent: fc::Money::new(0, "USD"),
+                category_remaining: fc::Money::new(0, "USD"),
+                projected_balance: None,
+            };
+        }
+    };
+
+    // Find the current budget month
+    let budget_month = snapshot.budgets.iter().find(|bm| {
+        let month_start = format!("{}-01", &bm.month);
+        month_start <= snapshot.snapshot_date
+    });
+
+    let category_is_budgeted = budget_month
+        .map_or(false, |bm| bm.categories.contains_key(category_id));
+    let budget_amount = budget_month
+        .and_then(|bm| bm.categories.get(category_id))
+        .map(|bc| bc.amount.clone())
+        .unwrap_or_else(|| fc::Money::new(0, "USD"));
+
+    // Sum spent amounts for this category from current transactions
+    let spent_minor: i64 = snapshot
+        .transactions
+        .iter()
+        .filter(|tx| tx.category_id.as_deref() == Some(category_id))
+        .filter_map(|tx| tx.amount.minor_units().checked_abs())
+        .sum();
+
+    let category_spent = fc::Money::new(spent_minor, "USD");
+
+    // Compute pending/uncategorized/uncleared totals from snapshot
+    let pending_total = snapshot
+        .transactions
+        .iter()
+        .filter(|tx| !tx.cleared)
+        .filter_map(|tx| {
+            let amt = tx.amount.minor_units();
+            if amt < 0 { Some(amt.unsigned_abs() as i64) } else { None }
+        })
+        .sum::<i64>();
+
+    let uncategorized_total = snapshot
+        .transactions
+        .iter()
+        .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
+        .filter_map(|tx| {
+            let amt = tx.amount.minor_units();
+            if amt < 0 { Some(amt.unsigned_abs() as i64) } else { None }
+        })
+        .sum::<i64>();
+
+    let pending = fc::Money::new(pending_total, "USD");
+    let uncategorized = fc::Money::new(uncategorized_total, "USD");
+    let uncleared = fc::Money::new(pending_total, "USD"); // approximate
+
+    // Account balance from first account
+    let account_balance = snapshot.accounts.first().map(|a| a.cleared_balance.clone());
+
+    let proposed_amount = fc::Money::new(
+        request.proposed_transaction.amount.minor_units().unsigned_abs() as i64,
+        "USD",
+    );
+
+    // Delegate to financial-core engine
+    let outcome = fc_evaluate(
+        &proposed_amount,
+        &budget_amount,
+        &category_spent,
+        account_balance.as_ref(),
+        &pending,
+        &uncategorized,
+        &uncleared,
+        &PurchasePolicy::default(),
+        &DecisionDataPolicy::default(),
+        TransactionSemantic::Card,
+        None,
+        None,
+        false,
+        false,
+        false,
+    );
+
+    match outcome {
+        Ok(purchase_result) => {
+            let allowable = matches!(
+                purchase_result.outcome,
+                fc::purchase::PurchaseOutcomeKind::Approved
+            );
+
+            // Augment with legacy protocol reason codes while
+            // retaining all future-compatible detailed codes from
+            // the financial-core engine.
+            let mut reason_codes = purchase_result.reason_codes;
+            if allowable {
+                reason_codes.push("budget_sufficient".to_string());
+            } else if !category_is_budgeted {
+                reason_codes.push("category_not_budgeted".to_string());
+            } else {
+                reason_codes.push("budget_insufficient".to_string());
+            }
+
+            PurchaseEvaluation {
+                allowable,
+                reason_codes,
+                category_budget: purchase_result.evidence.category_budget,
+                category_spent: purchase_result.evidence.category_spent,
+                category_remaining: purchase_result.evidence.category_remaining,
+                projected_balance: purchase_result.evidence.available_balance,
+            }
+        }
+        Err(_) => PurchaseEvaluation {
+            allowable: false,
+            reason_codes: vec!["evaluation_error".into()],
+            category_budget: budget_amount.clone(),
+            category_spent,
+            category_remaining: budget_amount,
+            projected_balance: account_balance,
+        },
+    }
+}
+
+/// Project future cash flow for a given number of months.
+///
+/// Uses budget months and schedules to estimate income, expenses, and
+/// ending balances for each projected month.  Returns a
+/// [`CashFlowProjectionResponse`] with one [`MonthlyProjection`] per month.
+pub fn project_cash_flow(request: CashFlowProjectionRequest) -> CashFlowProjectionResponse {
+    let months = std::cmp::max(1, request.projection_months) as usize;
+    let snapshot = &request.snapshot;
+
+    // Parse the snapshot date to determine the starting month
+    let start_month = if snapshot.snapshot_date.len() >= 7 {
+        snapshot.snapshot_date[..7].to_string()
+    } else {
+        "2026-07".to_string()
+    };
+
+    let currency = snapshot
+        .accounts
+        .first()
+        .map(|a| a.cleared_balance.currency().to_string())
+        .unwrap_or_else(|| "USD".to_string());
+
+    let mut running_balance = snapshot
+        .accounts
+        .first()
+        .map(|a| a.cleared_balance.minor_units())
+        .unwrap_or(0);
+
+    let mut monthly_projections = Vec::with_capacity(months);
+
+    // Parse starting year/month
+    let parts: Vec<&str> = start_month.split('-').collect();
+    let mut year: i32 = parts[0].parse().unwrap_or(2026);
+    let mut month_num: u32 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(7);
+
+    for _ in 0..months {
+        let month_str = format!("{:04}-{:02}", year, month_num);
+
+        // Sum schedule-based projections for this month
+        let mut projected_income: i64 = 0;
+        let mut projected_expenses: i64 = 0;
+
+        for sched in &snapshot.schedules {
+            // Check if schedule applies this month (basic frequency matching)
+            let applies = match sched.frequency.as_str() {
+                "monthly" | "everyMonth" => true,
+                "weekly" | "everyWeek" => true, // simplified: every week = applies
+                _ => {
+                    // For non-monthly, check if it matches period
+                    sched.frequency == month_str
+                }
+            };
+
+            if applies {
+                let amount = sched.amount.minor_units();
+                if amount < 0 {
+                    projected_expenses = projected_expenses.saturating_add(amount.unsigned_abs() as i64);
+                } else {
+                    projected_income = projected_income.saturating_add(amount);
+                }
+            }
+        }
+
+        let net = (projected_income as i64).saturating_sub(projected_expenses as i64);
+        running_balance = running_balance.saturating_add(net);
+
+        monthly_projections.push(MonthlyProjection {
+            month: month_str,
+            projected_income: fc::Money::new(projected_income, &currency),
+            projected_expenses: fc::Money::new(projected_expenses, &currency),
+            net_change: fc::Money::new(net, &currency),
+            ending_balance: fc::Money::new(running_balance, &currency),
+        });
+
+        // Advance to next month
+        month_num += 1;
+        if month_num > 12 {
+            month_num = 1;
+            year += 1;
+        }
+    }
+
+    CashFlowProjectionResponse {
+        projection_months: months as u32,
+        monthly_projections,
+    }
+}
+
+/// Evaluate the health of budget category targets.
+///
+/// For each category that has a budget target, computes spent vs. budgeted
+/// and assigns a health label.  Returns a [`TargetHealthResult`] with per-
+/// category health and an overall summary label.
+pub fn evaluate_target_health(request: TargetHealthRequest) -> TargetHealthResult {
+    let snapshot = &request.snapshot;
+
+    let budget_month = snapshot.budgets.iter().find(|bm| {
+        let month_start = format!("{}-01", &bm.month);
+        month_start <= snapshot.snapshot_date
+    });
+
+    let mut category_health = Vec::new();
+    let mut overspent_count: u32 = 0;
+    let mut underfunded_count: u32 = 0;
+    let mut total_budgeted: i64 = 0;
+    let mut total_spent: i64 = 0;
+
+    if let Some(bm) = budget_month {
+        for (cat_id, bc) in &bm.categories {
+            let category_name = snapshot
+                .categories
+                .iter()
+                .find(|c| c.id == *cat_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| cat_id.clone());
+
+            let spent_minor: i64 = snapshot
+                .transactions
+                .iter()
+                .filter(|tx| tx.category_id.as_deref() == Some(cat_id))
+                .filter_map(|tx| tx.amount.minor_units().checked_abs())
+                .sum();
+
+            let budgeted_minor = bc.amount.minor_units();
+            let remaining = budgeted_minor - spent_minor;
+
+            let health_label = if budgeted_minor == 0 {
+                "underfunded"
+            } else if remaining < 0 {
+                overspent_count += 1;
+                "overspent"
+            } else if (remaining as f64 / budgeted_minor as f64) < 0.1 {
+                underfunded_count += 1;
+                "at_risk"
+            } else {
+                "healthy"
+            };
+
+            total_budgeted = total_budgeted.saturating_add(budgeted_minor);
+            total_spent = total_spent.saturating_add(spent_minor);
+
+            category_health.push(CategoryHealth {
+                category_id: cat_id.clone(),
+                category_name,
+                budgeted: bc.amount.clone(),
+                spent: fc::Money::new(spent_minor, bc.amount.currency()),
+                remaining: fc::Money::new(std::cmp::max(0, remaining), bc.amount.currency()),
+                health_label: health_label.to_string(),
+            });
+        }
+    }
+
+    let overall_label = if overspent_count > 0 {
+        "at_risk"
+    } else if underfunded_count > 0 {
+        "caution"
+    } else if category_health.is_empty() {
+        "healthy"
+    } else {
+        "healthy"
+    };
+
+    TargetHealthResult {
+        category_health,
+        overall_label: overall_label.to_string(),
+    }
+}
+
+/// Evaluate the overall financial state and produce a summary label.
+///
+/// Combines target health, cash-flow direction, budget coverage ratio,
+/// and overspent category count into a single [`FinancialStateLabel`].
+/// This is a non-authoritative advisory — it informs assessment but
+/// does not authorize any action.
+pub fn evaluate_financial_state(request: FinancialStateRequest) -> FinancialStateLabel {
+    let has_positive_cash_flow = request.positive_cash_flow;
+    let overspent = request.overspent_category_count;
+    let coverage = request.budget_coverage_ratio;
+    let health = &request.overall_health_label;
+
+    let (label, score, mut reason_codes) = if health == "at_risk" || overspent > 2 {
+        if !has_positive_cash_flow && coverage < 0.5 {
+            (
+                "critical".to_string(),
+                0.15_f64,
+                vec!["negative_cash_flow".to_string(), "low_budget_coverage".to_string()],
+            )
+        } else if !has_positive_cash_flow {
+            (
+                "at_risk".to_string(),
+                0.30_f64,
+                vec!["negative_cash_flow".to_string()],
+            )
+        } else {
+            (
+                "at_risk".to_string(),
+                0.35_f64,
+                vec!["overspent_categories".to_string()],
+            )
+        }
+    } else if coverage < 0.6 {
+        (
+            "at_risk".to_string(),
+            0.40_f64,
+            vec!["low_budget_coverage".to_string()],
+        )
+    } else if coverage < 0.8 || !has_positive_cash_flow {
+        let mut codes = vec![];
+        if coverage < 0.8 {
+            codes.push("moderate_coverage".to_string());
+        }
+        if !has_positive_cash_flow {
+            codes.push("flat_cash_flow".to_string());
+        }
+        ("stable".to_string(), 0.60_f64, codes)
+    } else {
+        (
+            "healthy".to_string(),
+            0.85_f64,
+            vec!["positive_cash_flow".to_string(), "budget_healthy".to_string()],
+        )
+    };
+
+    if overspent > 0 && !reason_codes.contains(&"overspent_categories".to_string()) {
+        reason_codes.push("overspent_categories".to_string());
+    }
+
+    FinancialStateLabel {
+        label,
+        score,
+        reason_codes,
+    }
 }
 
 #[cfg(test)]

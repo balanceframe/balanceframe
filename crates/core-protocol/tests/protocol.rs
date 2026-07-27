@@ -2,6 +2,10 @@ use balanceframe_core_protocol::{
     analyze_deterministic,
     analyze_rule_candidates,
     analyze_snapshot,
+    evaluate_purchase,
+    project_cash_flow,
+    evaluate_target_health,
+    evaluate_financial_state,
     find_categorization_candidates,
     plan_create_rule,
     plan_set_category,
@@ -12,7 +16,9 @@ use balanceframe_core_protocol::{
     verify_rule_mutation,
     AnalysisOptions,
     AnalysisRequest,
+    CashFlowProjectionRequest,
     DeterministicAnalysisRequest,
+    FinancialStateRequest,
     InferencePolicy,
     MutationPlan,
     PayeeCondition,
@@ -20,7 +26,9 @@ use balanceframe_core_protocol::{
     PostconditionType,
     ProtocolSnapshot,
     Provenance,
+    PurchaseEvaluationRequest,
     Suggestion,
+    TargetHealthRequest,
 };
 use balanceframe_financial_core::{
     Account, CandidateStatus, CategorizationCandidate, Category, Evidence, EvidenceKind, Money,
@@ -2625,4 +2633,371 @@ fn test_analyze_rule_candidates_empty_payee_skipped() {
     };
     let candidates = analyze_rule_candidates(&snapshot, 1);
     assert!(candidates.is_empty(), "no payee should yield no candidates");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence foundations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_purchase_evaluation_allowable() {
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![Account {
+            id: "acct1".into(),
+            name: "Checking".into(),
+            account_type: "checking".into(),
+            off_budget: false,
+            is_closed: false,
+            cleared_balance: Money::new(500000, "USD"),
+            imported_balance: Money::new(500000, "USD"),
+            mtid: None,
+        }],
+        transactions: vec![
+            sample_transaction("tx1", Some("cat1"), -20000),
+        ],
+        categories: vec![sample_category("cat1", "Groceries", false)],
+        budgets: vec![balanceframe_financial_core::BudgetMonth {
+            id: "budget-2026-07".into(),
+            month: "2026-07".into(),
+            categories: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
+                    category_id: "cat1".into(),
+                    amount: Money::new(50000, "USD"),
+                    carryover: Money::new(0, "USD"),
+                    carryover_from_previous: Money::new(0, "USD"),
+                    carries_over: true,
+                });
+                m
+            },
+        }],
+        ..empty_snapshot()
+    };
+
+    let request = PurchaseEvaluationRequest {
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-1", Some("cat1"), -10000),
+        category_id: "cat1".into(),
+    };
+
+    let result = evaluate_purchase(request);
+    assert!(result.allowable, "proposal within budget should be allowable");
+    assert!(result.reason_codes.contains(&"budget_sufficient".to_string()));
+    assert_eq!(result.category_budget.minor_units(), 50000);
+}
+
+#[test]
+fn test_purchase_evaluation_overbudget() {
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![],
+        transactions: vec![
+            sample_transaction("tx1", Some("cat1"), -45000),
+        ],
+        categories: vec![sample_category("cat1", "Groceries", false)],
+        budgets: vec![balanceframe_financial_core::BudgetMonth {
+            id: "budget-2026-07".into(),
+            month: "2026-07".into(),
+            categories: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
+                    category_id: "cat1".into(),
+                    amount: Money::new(50000, "USD"),
+                    carryover: Money::new(0, "USD"),
+                    carryover_from_previous: Money::new(0, "USD"),
+                    carries_over: true,
+                });
+                m
+            },
+        }],
+        ..empty_snapshot()
+    };
+
+    let request = PurchaseEvaluationRequest {
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-1", Some("cat1"), -10000),
+        category_id: "cat1".into(),
+    };
+
+    let result = evaluate_purchase(request);
+    assert!(!result.allowable, "exceeding budget should not be allowable");
+    assert!(result.reason_codes.contains(&"budget_insufficient".to_string()));
+}
+
+#[test]
+fn test_purchase_evaluation_no_budget_for_category() {
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![],
+        transactions: vec![],
+        categories: vec![sample_category("cat1", "Groceries", false)],
+        budgets: vec![],
+        ..empty_snapshot()
+    };
+
+    let request = PurchaseEvaluationRequest {
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-1", Some("cat1"), -10000),
+        category_id: "cat1".into(),
+    };
+
+    let result = evaluate_purchase(request);
+    assert!(!result.allowable, "no budget for category should not be allowable");
+    assert!(result.reason_codes.contains(&"category_not_budgeted".to_string()));
+}
+
+#[test]
+fn test_purchase_evaluation_invalid_category() {
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![],
+        transactions: vec![],
+        categories: vec![],
+        budgets: vec![],
+        ..empty_snapshot()
+    };
+
+    let request = PurchaseEvaluationRequest {
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-1", Some("nonexistent"), -10000),
+        category_id: "nonexistent".into(),
+    };
+
+    let result = evaluate_purchase(request);
+    assert!(!result.allowable);
+    assert!(result.reason_codes.contains(&"category_not_found".to_string()));
+}
+
+#[test]
+fn test_purchase_evaluation_with_uncleared_transactions() {
+    // Regression: ensure bool `cleared` field is handled correctly
+    // (not compared to string literals), and uncleared outflows are
+    // properly counted as pending/uncleared totals.
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![Account {
+            id: "a1".into(),
+            name: "Checking".into(),
+            account_type: "checking".into(),
+            off_budget: false,
+            is_closed: false,
+            cleared_balance: Money::new(100000, "USD"),
+            imported_balance: Money::new(100000, "USD"),
+            mtid: None,
+        }],
+        // One uncleared negative (outflow) and one cleared negative — only
+        // the uncleared one should contribute to pending_total.
+        transactions: vec![
+            Transaction {
+                id: "tx-uncleared".into(),
+                account_id: "a1".into(),
+                date: "2026-07-15".into(),
+                payee_id: None,
+                payee_name: Some("Pending".into()),
+                category_id: Some("cat1".into()),
+                category_name: None,
+                amount: Money::new(-5000, "USD"),
+                cleared: false,
+                reconciled: false,
+                imported_id: None,
+                imported_payee: None,
+                notes: None,
+                tags: vec![],
+                transfer_account_id: None,
+                subtransactions: vec![],
+            },
+            Transaction {
+                id: "tx-cleared".into(),
+                account_id: "a1".into(),
+                date: "2026-07-14".into(),
+                payee_id: None,
+                payee_name: Some("Cleared".into()),
+                category_id: Some("cat1".into()),
+                category_name: None,
+                amount: Money::new(-3000, "USD"),
+                cleared: true,
+                reconciled: false,
+                imported_id: None,
+                imported_payee: None,
+                notes: None,
+                tags: vec![],
+                transfer_account_id: None,
+                subtransactions: vec![],
+            },
+        ],
+        categories: vec![sample_category("cat1", "Groceries", false)],
+        budgets: vec![balanceframe_financial_core::BudgetMonth {
+            id: "budget-2026-07".into(),
+            month: "2026-07".into(),
+            categories: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
+                    category_id: "cat1".into(),
+                    amount: Money::new(50000, "USD"),
+                    carryover: Money::new(0, "USD"),
+                    carryover_from_previous: Money::new(0, "USD"),
+                    carries_over: true,
+                });
+                m
+            },
+        }],
+        ..empty_snapshot()
+    };
+
+    let request = PurchaseEvaluationRequest {
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-1", Some("cat1"), -10000),
+        category_id: "cat1".into(),
+    };
+
+    // Must not panic — the bool/sentinel comparison fix is correct.
+    let result = evaluate_purchase(request);
+    // Budget 50000 - 10000 proposed = 40000 remaining, so it should be allowable
+    assert!(result.allowable);
+    assert_eq!(result.category_budget.minor_units(), 50000);
+}
+
+#[test]
+fn test_cash_flow_projection_empty_snapshot() {
+    let snapshot = empty_snapshot();
+    let request = CashFlowProjectionRequest {
+        snapshot,
+        projection_months: 3,
+    };
+    let result = project_cash_flow(request);
+    assert_eq!(result.monthly_projections.len(), 3);
+    assert_eq!(result.projection_months, 3);
+    // First month is current (based on snapshot date), income and expenses zero
+    assert_eq!(result.monthly_projections[0].projected_income.minor_units(), 0);
+    assert_eq!(result.monthly_projections[0].projected_expenses.minor_units(), 0);
+}
+
+#[test]
+fn test_cash_flow_projection_with_schedule() {
+    let snapshot = ProtocolSnapshot {
+        schedules: vec![balanceframe_financial_core::Schedule {
+            id: "sched-1".into(),
+            frequency: "monthly".into(),
+            amount: Money::new(-150000, "USD"),
+            payee_name: Some("Rent".into()),
+            account_id: "acct1".into(),
+            next_expected: "2026-08-01".into(),
+        }],
+        ..empty_snapshot()
+    };
+    let request = CashFlowProjectionRequest {
+        snapshot,
+        projection_months: 2,
+    };
+    let result = project_cash_flow(request);
+    assert_eq!(result.monthly_projections.len(), 2);
+}
+
+#[test]
+fn test_cash_flow_projection_zero_months_defaults_to_one() {
+    let snapshot = empty_snapshot();
+    let request = CashFlowProjectionRequest {
+        snapshot,
+        projection_months: 0,
+    };
+    let result = project_cash_flow(request);
+    assert_eq!(result.monthly_projections.len(), 1);
+}
+
+#[test]
+fn test_target_health_empty_snapshot() {
+    let snapshot = empty_snapshot();
+    let request = TargetHealthRequest {
+        snapshot,
+    };
+    let result = evaluate_target_health(request);
+    assert_eq!(result.overall_label, "healthy");
+    assert!(result.category_health.is_empty());
+}
+
+#[test]
+fn test_target_health_with_healthy_category() {
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            sample_transaction("tx1", Some("cat1"), -20000),
+        ],
+        categories: vec![sample_category("cat1", "Groceries", false)],
+        budgets: vec![balanceframe_financial_core::BudgetMonth {
+            id: "budget-2026-07".into(),
+            month: "2026-07".into(),
+            categories: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
+                    category_id: "cat1".into(),
+                    amount: Money::new(50000, "USD"),
+                    carryover: Money::new(0, "USD"),
+                    carryover_from_previous: Money::new(0, "USD"),
+                    carries_over: true,
+                });
+                m
+            },
+        }],
+        ..empty_snapshot()
+    };
+
+    let request = TargetHealthRequest { snapshot };
+    let result = evaluate_target_health(request);
+    assert_eq!(result.category_health.len(), 1);
+    assert_eq!(result.category_health[0].health_label, "healthy");
+    assert_eq!(result.category_health[0].remaining.minor_units(), 30000);
+}
+
+#[test]
+fn test_target_health_overspent_category() {
+    let snapshot = ProtocolSnapshot {
+        transactions: vec![
+            sample_transaction("tx1", Some("cat1"), -60000),
+        ],
+        categories: vec![sample_category("cat1", "Groceries", false)],
+        budgets: vec![balanceframe_financial_core::BudgetMonth {
+            id: "budget-2026-07".into(),
+            month: "2026-07".into(),
+            categories: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
+                    category_id: "cat1".into(),
+                    amount: Money::new(50000, "USD"),
+                    carryover: Money::new(0, "USD"),
+                    carryover_from_previous: Money::new(0, "USD"),
+                    carries_over: true,
+                });
+                m
+            },
+        }],
+        ..empty_snapshot()
+    };
+
+    let request = TargetHealthRequest { snapshot };
+    let result = evaluate_target_health(request);
+    assert_eq!(result.category_health.len(), 1);
+    assert_eq!(result.category_health[0].health_label, "overspent");
+}
+
+#[test]
+fn test_financial_state_healthy() {
+    let request = FinancialStateRequest {
+        overall_health_label: "healthy".into(),
+        positive_cash_flow: true,
+        budget_coverage_ratio: 0.95,
+        overspent_category_count: 0,
+        month: "2026-07".into(),
+    };
+    let label = evaluate_financial_state(request);
+    assert_eq!(label.label, "healthy");
+    assert!(label.score > 0.5);
+}
+
+#[test]
+fn test_financial_state_at_risk() {
+    let request = FinancialStateRequest {
+        overall_health_label: "at_risk".into(),
+        positive_cash_flow: false,
+        budget_coverage_ratio: 0.4,
+        overspent_category_count: 3,
+        month: "2026-07".into(),
+    };
+    let label = evaluate_financial_state(request);
+    assert_eq!(label.label, "critical");
+    assert!(label.score < 0.5);
 }
