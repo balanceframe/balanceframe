@@ -16,6 +16,14 @@ Add explainable, conservative analysis: alerts, duplicate/anomaly and recurrence
 - Label each displayed amount/conclusion as **ledger fact**, **envelope availability**, **cash-flow projection**, **advice**, **proposal**, or **execution result**. Show account/date/pending/transfer/split/exclusion scope, assumptions, uncertainty, drill-down records, and why balances, availability, and forecasts differ.
 - Keep Actual envelope availability authoritative for Actual-backed spending advice. Cash flow is a separately labelled projection; never add expected income to current availability.
 
+### Phase 8.8 foundation handoff
+
+The implemented Phase 8 analysis baseline evolves through [Phase 8.8](08-8-financial-decision-and-evidence-foundation.md), which adds the canonical normalized financial snapshot, shared decision/evidence/blocker vocabulary, generic prospective-claim analysis input, and compatible presentation/notification contracts. Phase 8 must not introduce a competing snapshot or category-only purchase API that prevents account-aware or evidence-aware decisions.
+
+Purchase evaluation accepts an intended payment-account reference when supplied and keeps category funding distinct from account readiness. Until Phase 8.7 provides a supported account-liquidity result, account readiness is explicitly unavailable rather than inferred from category availability or displayed balance.
+
+Account-readiness blockers, transfer needs, prospective-claim conflicts, evidence-connector degradation, and unresolved material evidence are policy-eligible notification/attention classifications. They retain the ordinary authorization, redaction, idempotency, and independent-failure contract.
+
 ### Insight and reporting surfaces
 
 - Add spending alerts/watchlists, deterministic duplicate/anomaly evidence, recurring charges/subscription candidates, price/forgotten-service candidates, sinking-fund/target health, schedules, category status, reports, saved filters/views, and optional net-worth context.
@@ -52,7 +60,7 @@ decisionDataPolicy:
   maximumBankSyncAgeMinutes: 180
   maximumBudgetSnapshotAgeMinutes: 15
   accountOverrides:
-    - accountId: "stable-ledger-id"
+    - accountId: 'stable-ledger-id'
       pendingTransactions: include_conservatively
 ```
 
@@ -62,16 +70,16 @@ The user controls whether pending transactions affect advice. The system must re
 
 ```ts
 type PurchaseDecision =
-  | { outcome: "safe"; reasons: Reason[]; evidence: DecisionEvidence }
+  | { outcome: 'safe'; reasons: Reason[]; evidence: DecisionEvidence }
   | {
-      outcome: "safe_with_reallocation";
+      outcome: 'safe_with_reallocation';
       proposedReallocations: Reallocation[];
       reasons: Reason[];
       evidence: DecisionEvidence;
     }
-  | { outcome: "not_safe"; reasons: Reason[]; evidence: DecisionEvidence }
+  | { outcome: 'not_safe'; reasons: Reason[]; evidence: DecisionEvidence }
   | {
-      outcome: "insufficient_data";
+      outcome: 'insufficient_data';
       blockers: DataBlocker[];
       evidence: DecisionEvidence;
     };
@@ -109,5 +117,5 @@ Scenario-test fully funded purchase, safe reallocation, protected funds, stale s
 Notification scenarios: authorized and unauthorized recipients; membership/capability revocation between enqueue and delivery; aggregate-only and redacted scopes; verified versus revoked destinations; quiet-hour, rate-limit, digest, escalation, and suppression precedence; duplicate event/retry/crash recovery; provider acknowledgement versus failure; malformed callback; channel/provider outage; all-channels-disabled operation; no ledger mutation from notification acknowledgement/reply; audit completeness; and web/CLI status parity.
 
 **Exit:** deterministic scenarios confirm conservative analysis under stale, incomplete, duplicated, or ambiguously reconciled data; affected conclusions become visible `insufficient_data` blockers; and every notification is recipient-authorized, policy-redacted, idempotent, attributable, auditable, and independently failure-tolerant.
- 
+
 **See also:** [Merchant Intelligence & Enrichment](11-merchant-intelligence-and-enrichment.md)

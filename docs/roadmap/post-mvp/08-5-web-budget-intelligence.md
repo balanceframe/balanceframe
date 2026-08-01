@@ -76,6 +76,10 @@ Implement reusable components with contract-driven props:
 
 Unknown reason codes and semantic classes must render safely without inventing a financial interpretation.
 
+### Phase 8.8 compatibility
+
+Phase 8.8 extends—not replaces—this implemented web baseline. Shared components and route contracts must safely render account liquidity, reservations, commitments, source observations, normalized evidence, economic-event resolutions, and redacted conclusions alongside existing semantic classes. Unknown future classes, reasons, blockers, or evidence references remain visible without a fabricated interpretation. Decision Cards and evidence detail reuse these primitives rather than create parallel freshness, reason, or inbox components. See [Phase 8.8](08-8-financial-decision-and-evidence-foundation.md).
+
 ## Dedicated Phase 8 web surfaces
 
 ### Overview and attention dashboard

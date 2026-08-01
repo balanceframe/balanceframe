@@ -73,7 +73,6 @@ Every phase exit criterion and product review should explicitly consider these r
 - **Policy:** deterministic configuration governing visibility, automation, advice, approvals, mutations, and AI-agent delegation.
 - **AI agent:** a model-backed actor with an independently auditable identity and an explicitly delegated, revocable set of operational capabilities. It is not a human identity and cannot alter its own authority.
 
-
 ## Completed: MVP (phases 00–5)
 
 Phases 00 through 5 — the categorization MVP — are complete in v0.1.5. The
@@ -83,15 +82,15 @@ categorization suggestions, present a responsive review workflow faster than
 direct Actual categorization, apply approved writes with postcondition
 verification, and convert repeated outcomes into deterministic Actual rules.
 
-| Phase | Outcome | Exit gate achieved |
-|---|---|---|
-| [00](mvp/00-development-environment-setup.md) | Reproducible Nix Flake dev environment | `nix develop` provides all tooling; `nix flake check` succeeds. |
-| [0](mvp/00-actual-baseline-and-technical-proof.md) | Actual API proof and Rust–TypeScript contract | Public API works without a fork; N-API artifacts built for Linux x86-64 and ARM64. |
-| [1](mvp/01-read-only-actual-gateway.md) | Read-only gateway and deterministic analysis | CLI lists candidates without modifying Actual. |
-| [2](mvp/02-suggestion-only-classifier.md) | Provider-neutral classification | Suggestions produced without ledger mutations. |
-| [3](mvp/03-review-workflow.md) | Responsive exception inbox | Measured review faster than direct Actual categorization. Product-validation gate passed. |
-| [4](mvp/04-approved-categorization-writes.md) | Approved, verified category writes | Stale, replayed, or unauthorized changes cannot silently alter Actual. |
-| [5](mvp/05-deterministic-learning.md) | Inspectable rule learning | Recurring model use and categorization work decline over time. |
+| Phase                                              | Outcome                                       | Exit gate achieved                                                                        |
+| -------------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| [00](mvp/00-development-environment-setup.md)      | Reproducible Nix Flake dev environment        | `nix develop` provides all tooling; `nix flake check` succeeds.                           |
+| [0](mvp/00-actual-baseline-and-technical-proof.md) | Actual API proof and Rust–TypeScript contract | Public API works without a fork; N-API artifacts built for Linux x86-64 and ARM64.        |
+| [1](mvp/01-read-only-actual-gateway.md)            | Read-only gateway and deterministic analysis  | CLI lists candidates without modifying Actual.                                            |
+| [2](mvp/02-suggestion-only-classifier.md)          | Provider-neutral classification               | Suggestions produced without ledger mutations.                                            |
+| [3](mvp/03-review-workflow.md)                     | Responsive exception inbox                    | Measured review faster than direct Actual categorization. Product-validation gate passed. |
+| [4](mvp/04-approved-categorization-writes.md)      | Approved, verified category writes            | Stale, replayed, or unauthorized changes cannot silently alter Actual.                    |
+| [5](mvp/05-deterministic-learning.md)              | Inspectable rule learning                     | Recurring model use and categorization work decline over time.                            |
 
 ## Post-MVP: open-source product depth
 
@@ -104,8 +103,8 @@ recurrence/subscription detection, notification delivery, sinking-fund health,
 cash-flow context, reports, and purchase evaluation. Analysis-first; advice is
 never permission or execution.
 
-| Exit gate |
-|---|
+| Exit gate                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Scenario tests show conservative analysis under stale or incomplete data; notifications are authorized, redacted, deduplicated, and independently degradable. |
 
 ### v0.3 — Space governance
@@ -115,8 +114,8 @@ independent identities, scoped capabilities, temporal membership, and
 deterministic authorization — no shared credentials or automatic private-data
 disclosure.
 
-| Exit gate |
-|---|
+| Exit gate                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------- |
 | Every read and action is attributable, scoped, and deterministically enforced without depending on shared full-control credentials. |
 
 ### v0.4 — Merchant intelligence and enrichment
@@ -126,8 +125,8 @@ categorization and merchant/entity resolution when bank-imported transactions
 are sparse, while keeping every decision explainable, conservative, and
 privacy-aware.
 
-| Exit gate |
-|---|
+| Exit gate                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------ |
 | Categorization evidence and merchant resolution improve for sparse imports without external-data dependence becoming a hidden requirement. |
 
 ### v0.5 — Controlled reallocations
@@ -136,39 +135,82 @@ privacy-aware.
 `safe_with_reallocation` analysis into exact, policy-governed proposals
 through the same approval and mutation pipeline used for categorization writes.
 
-| Exit gate |
-|---|
+| Exit gate                                                                                   |
+| ------------------------------------------------------------------------------------------- |
 | Stale or concurrent proposals cannot double-use funds or violate protected-category policy. |
 
-### v0.6 — Delegated operational autonomy
+### v0.6 — Financial decision and evidence foundation
+
+[Phase 8.8](post-mvp/08-8-financial-decision-and-evidence-foundation.md):
+evolve the implemented budget-intelligence baseline with one normalized
+financial snapshot and shared contracts for decision state, provenance,
+blockers, redaction, prospective claims, attention, and notifications.
+
+| Exit gate                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Later decision and evidence phases reuse one compatible snapshot, vocabulary, presentation contract, and prioritized attention surface rather than creating competing foundations. |
+
+### v0.7 — Account-aware spendability and liquidity routing
+
+[Phase 8.7](post-mvp/08-7-account-aware-spendability-and-liquidity-routing.md):
+separate category funding from payment-account readiness, derive current
+account backing, and produce policy-backed alternate routes or transfer needs.
+
+| Exit gate                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A funded category is never called ready from an account that cannot settle it; safe capacity protects obligations and buffers, and incomplete evidence blocks the affected conclusion. |
+
+### v0.8 — Pre-Commitment Spending Intelligence
+
+[Phase 8.6](post-mvp/08-6-pre-commitment-spending-intelligence.md): expose a
+deterministic Decision Card and optional Spend Session so users understand a
+purchase's before-and-after plan, commitments, reservations, and tradeoffs
+before payment.
+
+| Exit gate                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Purchase and cart decisions show exact plan/account consequences and valid alternatives without a ledger mutation; competing decisions cannot silently reuse funds. |
+
+### v0.9 — Transaction evidence and intelligent resolution
+
+[Phase 11.5](post-mvp/11-5-transaction-evidence-and-intelligent-resolution.md):
+reconstruct economic events from settlement records, wallet evidence, receipts,
+and completed Spend Sessions, then create exact auditable projections without
+letting models establish monetary relationships.
+
+| Exit gate                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wallet, receipt, tender, refund, reimbursement, and split projections conserve money; material ambiguity becomes focused review work; repeated approved resolutions become inspectable deterministic behavior. |
+
+### v0.10 — Delegated operational autonomy
 
 [Phase 9.5](post-mvp/09-5-delegated-operational-autonomy.md): allow users to
 delegate selected operational capabilities to attributable AI agents without
 creating a global autonomy slider or agent-specific write path.
 
-| Exit gate |
-|---|
+| Exit gate                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Revocation takes effect before the next execution; agents cannot escalate authority; every delegated mutation is bounded, attributable, replay-safe, policy-valid, and postcondition-verified. |
 
-### v0.7 — Built-in conversational interface
+### v0.11 — Built-in conversational interface
 
 [Phase 6](post-mvp/06-built-in-conversational-interface.md): optional
 conversation as an accessibility and explanation surface over the same
 deterministic capability layer used by web and CLI.
 
-| Exit gate |
-|---|
+| Exit gate                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------------------------------- |
 | Chat improves accessibility and explanation without inventing facts, bypassing policy, or making a core workflow chat-dependent. |
 
-### v0.8 — Linked spaces
+### v0.12 — Linked spaces
 
 [Phase 10](post-mvp/10-linked-spaces.md): privacy-preserving cross-instance
 coordination so independently operated BalanceFrame instances can coordinate
 selected expenses and targets without sharing credentials or exposing unrelated
 private ledger data.
 
-| Exit gate |
-|---|
+| Exit gate                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Participants coordinate chosen expenses and targets while unrelated private ledger data, credentials, and identifiers remain undisclosed. |
 
 A future custom Rust ledger is not a scheduled phase. It is considered only
@@ -201,7 +243,6 @@ The following are completed **roadmap and planning decisions**, not implemented 
 - The MVP has no Rust daemon, Rust-owned database, custom ledger, automatic category/rule creation, model-initiated writes, broad chat, federation, MCP dependency, or hosted-service requirement.
 - Model-derived MVP ledger changes always receive `approval_required`. The shared typed-intent/proposal/authorization/mutation pipeline remains ready for later operational delegation without adding an agent-only write path.
 - **The web framework and component library are selected:** Vue 3 with Nuxt 4 and Nuxt UI v4. Nuxt is the presentation/runtime shell over the framework-neutral web controller and TypeScript application services; it is not an authorization or financial authority.
-
 
 ## Non-negotiable acceptance criteria
 

@@ -1,6 +1,6 @@
 # Phase 6 — Built-in conversational interface
 
-**Depends on:** MVP validation, especially Phase 3  
+**Depends on:** MVP validation, especially Phase 3, and Phase 8.8 for financial-decision and evidence contracts  
 **Status:** Post-MVP
 
 ## Objective
@@ -16,6 +16,9 @@ Offer conversation as an optional accessibility and explanation surface over the
 - Publish a narrow JSON CLI for people, scripts, and external agents; commands pass through application services and policy. Prohibit `actual raw-query`, `invoke-method`, and `shell` escape hatches.
 - Add optional Hermes adapter; do not require Hermes or MCP. Later trusted HTTP/webhooks/optional contributed MCP may use the same narrow contracts.
 - Preserve responsive web and CLI parity for review, reconciliation, and approval. The web surface remains Vue 3 + Nuxt 4 with Nuxt UI v4; saved views, filters, preferences, metadata, reviews, approvals, provenance, rules, and policy are documented/exportable. Optional future WebAssembly 3.0 previews remain read-only and non-authoritative.
+- Add typed intents and structured explanation results for Decision Cards, Spend Sessions, liquidity results, transfer proposals, evidence-event review, receipt-item answers, and reimbursement-link proposals. Informal account, merchant, item, and category references must resolve to authorized stable IDs or produce a clarification.
+- A purchase question returns a current canonical Decision Card or `insufficient_data`; a transfer request returns one exact, unexpired proposal and never initiates bank movement. Render authorized redacted results rather than exposing private backing accounts or source evidence.
+- Treat receipt text, payment notes, mailbox messages, retailer descriptions, and uploaded evidence as untrusted content. They cannot alter system instructions, policy, authorization, provider egress, or approval semantics.
 
 ## Skill and CLI contract detail
 
@@ -47,10 +50,10 @@ External integrations may use: project CLI plus Skill; optional Hermes Skill/pro
 
 ```ts
 type ProviderPolicy = {
-  classification: "disabled" | "local_only" | "external_allowed";
-  merchantResearch: "disabled" | "local_only" | "external_allowed";
-  conversation: "disabled" | "local_only" | "external_allowed";
-  telemetry: "disabled" | "anonymous" | "full";
+  classification: 'disabled' | 'local_only' | 'external_allowed';
+  merchantResearch: 'disabled' | 'local_only' | 'external_allowed';
+  conversation: 'disabled' | 'local_only' | 'external_allowed';
+  telemetry: 'disabled' | 'anonymous' | 'full';
   redactBeforeExternalInference: boolean;
   allowedProviders: string[];
 };
@@ -68,12 +71,7 @@ Each operational capability has its own policy; an actor or AI-agent grant can o
 
 ```ts
 type AutomationLevel =
-  | "manual"
-  | "suggest"
-  | "propose"
-  | "deterministic_auto"
-  | "bounded_ai_auto"
-  | "full_delegation";
+  'manual' | 'suggest' | 'propose' | 'deterministic_auto' | 'bounded_ai_auto' | 'full_delegation';
 ```
 
 - `manual`: no model-generated action is applied automatically.
@@ -91,6 +89,6 @@ Disabling all providers retains core budgeting, review, deterministic rules, man
 
 ## Tests and exit
 
-Test unauthorized data disclosure, stale data explanation, prompt injection, malformed typed intent, exact proposal binding, provider outage, provider/model/prompt policy changes, JSON schema stability, and equivalent web/CLI results.
+Test unauthorized data disclosure, stale data explanation, prompt injection from receipt/payment/evidence text, malformed typed intent, stable-ID clarification, canonical Decision Card and `insufficient_data` responses, redacted liquidity/evidence results, exact transfer-proposal binding, provider outage, provider/model/prompt policy changes, JSON schema stability, and equivalent web/CLI results.
 
 **Exit:** chat improves accessibility and explanation without inventing facts, bypassing policy, or making a core workflow chat-dependent.

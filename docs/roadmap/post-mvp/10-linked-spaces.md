@@ -21,6 +21,9 @@ Each participant retains a personal space, private Actual connection, private ac
 
 **Privacy invariant:** a private instance publishes an explicit, approved projection; the linked space never queries through to the private ledger. Do not require a member's Actual credentials, force a joint budget, or expose unrelated private accounts.
 
+- Permit approved, minimum-field projections for shared commitments, reservation impact, shared purchase outcomes, reimbursement obligations/settlement state, and transfer-needed status. A projection may expose a shared effect without exposing a private account, source route, category, wallet balance, receipt, payment note, mailbox evidence, or raw document.
+- Define reconciliation between projected reimbursement/decision references and private economic-event records without granting query-through access. Revocation stops future publication and access but does not erase settled obligations or required historical attribution.
+
 ### Temporal membership and events
 
 - Add temporal membership, revocation, effective departure dates, replacement memberships, export, and historical attribution.
@@ -51,7 +54,7 @@ This supports individuals, couples, families, roommates, co-parents, and tempora
 
 ## Tests
 
-Approved-field-only projections; private backend ID non-disclosure; offline delivery; duplicate/replayed events; conflicting updates; schema/version upgrades; revoked key; departure/replacement; historical retention; outstanding settlement; revocation; coordinator failure/recovery; and export.
+Approved-field-only projections; private backend ID non-disclosure; reservation, commitment, purchase-outcome, reimbursement, and transfer-needed projections; raw account/evidence/receipt/payment-note non-disclosure; projected-reference reconciliation without query-through access; offline delivery; duplicate/replayed events; conflicting updates; schema/version upgrades; revoked key; departure/replacement; historical retention; outstanding settlement; revocation; coordinator failure/recovery; and export.
 
 ## Exit
 

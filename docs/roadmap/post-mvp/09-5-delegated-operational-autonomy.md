@@ -1,6 +1,6 @@
 # Phase 9.5 — Delegated operational autonomy
 
-**Depends on:** Phase 7 governance and the existing proposal/mutation path  
+**Depends on:** Phase 7 governance, Phase 8.8 financial decision and evidence foundation, and the existing proposal/mutation path  
 **Status:** Post-MVP
 
 ## Objective
@@ -18,7 +18,7 @@ Each operational capability has a policy maximum; an actor/agent grant can only 
 - `bounded_ai_auto` — AI may execute within explicit capability, scope, amount/freshness/risk/provider/rate/reversibility limits;
 - `full_delegation` — AI may initiate all explicitly granted operational capabilities without per-operation human approval, while every deterministic safeguard remains mandatory.
 
-Delegation is per capability, not global or per model. It may independently cover categorization, merchant normalization, rules, transaction edits, reconciliation, budget changes, reallocations, notifications, reports, and later operational functions.
+Delegation is per capability, not global or per model. It may independently cover categorization, merchant normalization, evidence interpretation, receipt/product-family inference, deterministic evidence resolution, rules, transaction edits, reconciliation, budget changes, reallocations, transfer proposals, notifications, reports, and later operational functions.
 
 ## Deliverables
 
@@ -27,6 +27,12 @@ Delegation is per capability, not global or per model. It may independently cove
 - Add independently auditable AI-agent identities distinct from delegating humans; versioned delegation records; exact capabilities/resource scopes; account/category restrictions; amount/count/day/week/month limits; cooldowns; provider/model/prompt/tool/locality/redaction restrictions; expiry; revocation; policy version; and delegating space/user.
 - Add global and per-agent emergency stop, dry run, historical simulation, bounded rollout, complete execution/policy/delegation/provenance export, and visible agent audit history.
 - Begin with dry run/simulation, then one low-risk capability in bounded rollout. Do not enable broad `full_delegation` as an early default.
+
+### Evidence and decision delegation boundary
+
+Evidence-layer semantic work—payment-note interpretation, receipt-text interpretation, product-family classification, and explanation—is distinct from proposing or executing a ledger projection. Space policy sets separate maximums, scopes, locality/egress/redaction rules, model/provider/prompt limits, and review requirements for each.
+
+An agent may only act on an exact current snapshot, Decision Card, evidence-resolution version, or transfer-proposal hash. New evidence, a changed cart/account/category/funding path, a balance or freshness change, or a changed payload invalidates that authority. Agents cannot confirm bank-transfer settlement, materialize/migrate a wallet account, create a broad deterministic evidence rule, alter account roles/buffers/routing preferences, grant evidence access, or change evidence-retention/egress policy without a separate human-controlled workflow.
 
 ### Invariants
 
@@ -40,6 +46,6 @@ AI agents may describe or propose, but cannot apply, grant, expand, renew, alter
 
 ## Tests and exit
 
-Test agent attribution, scope/limit/cooldown precedence against space policy, expiry/revocation/emergency stop, provider/model/prompt restrictions, no self-escalation, denied data-quality/provenance/evidence paths, replay/crash recovery, control-plane re-authentication, and preservation of every normal mutation safeguard.
+Test agent attribution, scope/limit/cooldown precedence against space policy, separate evidence-interpretation versus mutation delegation, snapshot/Decision-Card/evidence-resolution/proposal-hash binding, change invalidation, expiry/revocation/emergency stop, provider/model/prompt restrictions, no self-escalation, prohibited settlement confirmation/wallet migration/rule creation/control-plane changes, denied data-quality/provenance/evidence paths, replay/crash recovery, control-plane re-authentication, and preservation of every normal mutation safeguard.
 
 **Exit:** revocation takes effect before the next execution; agents cannot escalate authority; and each delegated mutation is attributable, bounded, replay-safe, policy-valid, and postcondition-verified.
