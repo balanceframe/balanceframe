@@ -15,7 +15,7 @@ import {
 } from '@balanceframe/application';
 import type { CommandInput } from '@balanceframe/application';
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError, envelopeMetadata } from '../../utils/workflow-store';
 
 /** Map an analysis error code to an HTTP status. */
 function httpStatusForCode(code: string): number {
@@ -59,7 +59,7 @@ export default defineEventHandler(async (event) => {
     const envelope = await budgetSummaryAnalysis(input);
 
     if (envelope.status === 'ok') {
-      return okEnvelope(envelope.result, authInfo, envelope.requestId);
+      return okEnvelope(envelope.result, authInfo, envelope.requestId, envelopeMetadata(envelope));
     }
 
     const status = httpStatusForCode(envelope.error!.code);

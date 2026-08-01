@@ -10,9 +10,12 @@
         <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Categories</h3>
         <AnalysisTable :columns="targetColumns" :rows="targetRows" class="mb-6" />
       </div>
-      <div v-if="sinkingData">
+      <div v-if="sinkingData && sinkingRows.length">
         <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Sinking Funds</h3>
         <AnalysisTable :columns="targetColumns" :rows="sinkingRows" />
+      </div>
+      <div v-if="sinkingData && !sinkingRows.length" class="text-center py-4 text-gray-400 dark:text-gray-500 text-sm">
+        No sinking funds configured.
       </div>
     </template>
   </AnalysisPage>

@@ -66,6 +66,7 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result: null,
     error: { code, message, retryable: retryable ?? false },
   }),
+  envelopeMetadata: (envelope: { dataFreshness?: unknown }) => ({ dataFreshness: envelope.dataFreshness ?? null }),
 }));
 
 // ---------------------------------------------------------------------------

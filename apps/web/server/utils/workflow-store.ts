@@ -426,6 +426,27 @@ export interface WebEnvelopeMetadata {
   evidence?: Array<{ source: string; id: string; weight: number }>;
   policyVersion?: string;
 }
+/**
+ * Extract application envelope metadata for forwarding through the web API.
+ * Keeping this structural avoids coupling the web package to application types.
+ */
+export function envelopeMetadata(
+  envelope: {
+    dataFreshness: ApiEnvelope<unknown>['dataFreshness'];
+    scope?: Record<string, unknown>;
+    semanticClasses?: string[];
+    evidence?: Array<{ source: string; id: string; weight: number }>;
+    policyVersion?: string;
+  },
+): WebEnvelopeMetadata {
+  return {
+    dataFreshness: envelope.dataFreshness,
+    ...(envelope.scope !== undefined ? { scope: envelope.scope } : {}),
+    ...(envelope.semanticClasses !== undefined ? { semanticClasses: envelope.semanticClasses } : {}),
+    ...(envelope.evidence !== undefined ? { evidence: envelope.evidence } : {}),
+    ...(envelope.policyVersion !== undefined ? { policyVersion: envelope.policyVersion } : {}),
+  };
+}
 
 /**
  * Build an ok envelope.

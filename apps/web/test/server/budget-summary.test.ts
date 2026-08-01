@@ -25,7 +25,8 @@ vi.mock('../../server/utils/workflow-store', () => ({
   getActorId: vi.fn(() => 'test-actor'),
   sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
   okEnvelope: (r, _a, rid?) => ({ schemaVersion: '1', requestId: rid ?? 'tr', status: 'ok', dataFreshness: null, authorization: null, result: r, error: null }),
-  errorEnvelope: (c, m, _a, ret?, rid?) => ({ schemaVersion: '1', requestId: rid ?? 'tr', status: 'error', dataFreshness: null, authorization: null, result: null, error: { code: c, message: m, retryable: ret ?? false } }),
+  errorEnvelope: (c, m, _a, ret?, rid?, metadata?) => ({ schemaVersion: '1', requestId: rid ?? 'tr', status: 'error', dataFreshness: metadata?.dataFreshness ?? null, authorization: null, result: null, error: { code: c, message: m, retryable: ret ?? false }, ...metadata }),
+  envelopeMetadata: (envelope) => ({ dataFreshness: envelope.dataFreshness ?? null, ...envelope }),
 }));
 
 import handler from '../../server/api/home/budget-summary.get';

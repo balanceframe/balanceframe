@@ -31,7 +31,15 @@ const {
   mockErrorEnvelope,
   mockGetActorId,
   mockSanitizeError,
+  mockEnvelopeMetadata,
 } = vi.hoisted(() => ({
+  mockEnvelopeMetadata: vi.fn((envelope) => ({
+    dataFreshness: envelope.dataFreshness ?? null,
+    ...(envelope.scope !== undefined ? { scope: envelope.scope } : {}),
+    ...(envelope.semanticClasses !== undefined ? { semanticClasses: envelope.semanticClasses } : {}),
+    ...(envelope.evidence !== undefined ? { evidence: envelope.evidence } : {}),
+    ...(envelope.policyVersion !== undefined ? { policyVersion: envelope.policyVersion } : {}),
+  })),
   mockGetWorkflowStore: vi.fn(() => ({ store: {} })),
   mockSetResponseStatus: vi.fn(),
   mockGetQuery: vi.fn(() => ({})),
@@ -67,10 +75,11 @@ const {
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: mockGetWorkflowStore,
+  getActorId: mockGetActorId,
   buildAuthorizationInfo: mockBuildAuthorizationInfo,
   okEnvelope: mockOkEnvelope,
   errorEnvelope: mockErrorEnvelope,
-  getActorId: mockGetActorId,
+  envelopeMetadata: mockEnvelopeMetadata,
   sanitizeError: mockSanitizeError,
 }));
 

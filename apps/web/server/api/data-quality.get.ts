@@ -12,7 +12,7 @@ import {
 } from '@balanceframe/application';
 import type { CommandInput } from '@balanceframe/application';
 import { defineEventHandler, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError, envelopeMetadata } from '../../utils/workflow-store';
 
 /** Map an analysis error code to an HTTP status. */
 function httpStatusForCode(code: string): number {
@@ -64,12 +64,12 @@ export default defineEventHandler(async (event) => {
     const envelope = await dataQualityAnalysis(input);
 
     if (envelope.status === 'ok') {
-      return okEnvelope(envelope.result, authInfo, envelope.requestId);
+      return okEnvelope(envelope.result, authInfo, envelope.requestId, envelopeMetadata(envelope));
     }
 
     const status = httpStatusForCode(envelope.error.code);
     setResponseStatus(event, status);
-    return errorEnvelope(envelope.error.code, envelope.error.message, authInfo, envelope.error.retryable, envelope.requestId);
+    return errorEnvelope(envelope.error.code, envelope.error.message, authInfo, envelope.error.retryable, envelope.requestId, envelopeMetadata(envelope));
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'ANALYSIS_FAILED', true);
     setResponseStatus(event, 500);
