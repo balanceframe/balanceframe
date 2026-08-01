@@ -151,6 +151,33 @@ function createMockProtocol(): {
         },
       };
     },
+
+    async dataQuality(): Promise<DataQualityResult> {
+      return {
+        overallScore: 0.85,
+        dimensions: [
+          {
+            dimension: 'completeness',
+            score: 0.9,
+            explanation: 'All required fields present',
+            worstSeverity: null,
+          },
+          {
+            dimension: 'freshness',
+            score: 0.8,
+            explanation: 'Data is 1 day old',
+            worstSeverity: 'info',
+          },
+          {
+            dimension: 'consistency',
+            score: 0.85,
+            explanation: 'Minor inconsistencies detected',
+            worstSeverity: 'warning',
+          },
+        ],
+        recommendations: ['Sync bank data more frequently'],
+      };
+    },
   };
   return { protocol };
 }
@@ -514,6 +541,130 @@ describe('attentionHomeAnalysis — envelope vs cash-flow distinction', () => {
 // ---------------------------------------------------------------------------
 // Authorization context — all budget intelligence SKIPS gates
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// QualityDimension — Rust/TypeScript field alignment tests
+// ---------------------------------------------------------------------------
+
+describe('QualityDimension — Rust field alignment', () => {
+  it('QualityDimension fields match Rust shape: dimension, score, explanation, worstSeverity', async () => {
+    const { protocol } = createMockProtocol();
+    const input = baseInput({ analysisProtocol: protocol });
+    const envelope = await dataQualityAnalysis(input);
+
+    expect(envelope.status).toBe('ok');
+    const result = envelope.result! as DataQualityResult;
+    expect(result.dimensions).toBeDefined();
+    expect(result.dimensions.length).toBeGreaterThan(0);
+
+    for (const dim of result.dimensions) {
+      // Must have `dimension` (not `name`)
+      expect(dim).toHaveProperty('dimension');
+      expect(typeof dim.dimension).toBe('string');
+      expect(dim.dimension.length).toBeGreaterThan(0);
+
+      // Must have `score`
+      expect(dim).toHaveProperty('score');
+
+      // Must have `explanation` (not `details` array)
+      expect(dim).toHaveProperty('explanation');
+      expect(typeof dim.explanation).toBe('string');
+
+      // Must have `worstSeverity`
+      expect(dim).toHaveProperty('worstSeverity');
+
+      // Must NOT have old fields
+      expect(dim).not.toHaveProperty('name');
+      expect(dim).not.toHaveProperty('severity');
+      expect(dim).not.toHaveProperty('details');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Envelope metadata propagation tests
+// ---------------------------------------------------------------------------
+
+describe('analysis — envelope freshness propagation', () => {
+  it('purchaseEvaluationAnalysis carries freshness on success', async () => {
+    const { protocol } = createMockProtocol();
+    const freshness = {
+      actualDownloadedAt: '2026-07-27T12:00:00Z',
+      bankSyncedAt: '2026-07-27T11:00:00Z',
+      pendingTransactionsIncluded: true,
+      stalenessDays: 0,
+      isStale: false,
+    };
+    const input = baseInput({ analysisProtocol: protocol, freshness });
+    const envelope = await purchaseEvaluationAnalysis(input, {
+      categoryId: 'cat_food',
+      amount: { minorUnits: '5000', currency: 'USD' },
+    });
+
+    expect(envelope.status).toBe('ok');
+    expect(envelope.dataFreshness).not.toBeNull();
+    expect(envelope.dataFreshness!.isStale).toBe(false);
+    expect(envelope.dataFreshness!.stalenessDays).toBe(0);
+  });
+
+  it('dataQualityAnalysis carries freshness on success', async () => {
+    const { protocol } = createMockProtocol();
+    const freshness = {
+      actualDownloadedAt: '2026-07-27T12:00:00Z',
+      bankSyncedAt: '2026-07-27T11:00:00Z',
+      pendingTransactionsIncluded: false,
+      stalenessDays: 1,
+      isStale: false,
+    };
+    const input = baseInput({ analysisProtocol: protocol, freshness });
+    const envelope = await dataQualityAnalysis(input);
+
+    expect(envelope.status).toBe('ok');
+    expect(envelope.dataFreshness).not.toBeNull();
+    expect(envelope.dataFreshness!.isStale).toBe(false);
+  });
+
+  it('does NOT fabricate freshness when input freshness is null', async () => {
+    const { protocol } = createMockProtocol();
+    const input = baseInput({ analysisProtocol: protocol, freshness: null });
+    const envelope = await purchaseEvaluationAnalysis(input, {
+      categoryId: 'cat_food',
+      amount: { minorUnits: '5000', currency: 'USD' },
+    });
+
+    expect(envelope.status).toBe('ok');
+    expect(envelope.dataFreshness).toBeNull();
+  });
+});
+
+describe('analysis — envelope metadata on error paths', () => {
+  it('error envelope carries authorization context', async () => {
+    const input = baseInput({ analysisProtocol: undefined });
+    const envelope = await purchaseEvaluationAnalysis(input, {
+      categoryId: 'cat_food',
+      amount: { minorUnits: '5000', currency: 'USD' },
+    });
+
+    expect(envelope.status).toBe('error');
+    expect(envelope.authorization).not.toBeNull();
+    expect(envelope.authorization!.capability).toBe('observe');
+    expect(envelope.authorization!.allowed).toBe(true);
+  });
+
+  it('error envelope preserves requestId', async () => {
+    const input = baseInput({
+      analysisProtocol: undefined,
+      requestId: 'req_fingerprint_123',
+    });
+    const envelope = await purchaseEvaluationAnalysis(input, {
+      categoryId: 'cat_food',
+      amount: { minorUnits: '5000', currency: 'USD' },
+    });
+
+    expect(envelope.status).toBe('error');
+    expect(envelope.requestId).toBe('req_fingerprint_123');
+  });
+});
 
 describe('budget intelligence — authorization context is observe', () => {
   it('purchaseEvaluationAnalysis uses AuthorizationContext.observe', async () => {

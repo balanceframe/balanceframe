@@ -3,27 +3,29 @@
  *
  * Returns notification runtime status.  Auth gate: requires notification:receive.
  * Policy version and recipient status are resolved from the persistent store.
+ * No module-level singleton — runtime is constructed per-request from the
+ * active WorkflowStore and its persisted per-space policy.
  */
 
 import { defineEventHandler, setResponseStatus } from 'h3';
 import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, requireAuthorization } from '../../utils/workflow-store';
 import { NotificationRuntime, InAppChannelAdapter, type NotificationPolicy } from '@balanceframe/application';
+import type { WorkflowStore } from '@balanceframe/workflow-store';
 
-// Module-level singleton (lazy-initialised)
-let runtime: NotificationRuntime | null = null;
-
-function getNotificationRuntime(
-  store: ReturnType<typeof getWorkflowStore> extends { store: infer S } ? S : never,
+/**
+ * Build a NotificationRuntime from the active workflow store.
+ * Loads the persisted per-space policy and wires store-backed
+ * re-authorization using the store's membership data.
+ */
+function buildRuntime(
+  wfStore: WorkflowStore,
+  spaceId: string,
 ): NotificationRuntime {
-  if (runtime) return runtime;
-  if ('error' in store) {
-    throw new Error('Workflow store not available');
-  }
   const defaultPolicy: NotificationPolicy = {
     policyVersion: 'v1',
     eligibility: [
       {
-        classifications: ['budget_alert', 'review_complete', 'security_alert'],
+        classifications: ['budget_alert', 'review_complete', 'security_alert', 'data_quality', 'alert', 'recurrence', 'target_risk', 'proposal_transition', 'workflow_result'],
         minSeverity: 'normal',
         requiredCapability: 'notification:receive',
       },
@@ -40,8 +42,22 @@ function getNotificationRuntime(
     maxRetries: 3,
     defaultRedactionClass: 'public',
   };
+
   const adapter = new InAppChannelAdapter();
-  runtime = new NotificationRuntime(store.store, defaultPolicy, [adapter]);
+  const runtime = new NotificationRuntime(wfStore, defaultPolicy, [adapter]);
+
+  // Wire store-backed re-authorization using the store's membership data.
+  runtime.setReAuthorizationHook(
+    async (actorId: string, capability: string, _scope: string) => {
+      try {
+        const membership = await wfStore.getActorMembership(actorId);
+        return membership?.capabilities.includes(capability) ?? false;
+      } catch {
+        return false;
+      }
+    },
+  );
+
   return runtime;
 }
 
@@ -63,23 +79,22 @@ export default defineEventHandler(async (event) => {
       return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
     }
 
-    const rt = getNotificationRuntime(wf);
+    // Build runtime per-request from the active store (no singleton)
+    const rt = buildRuntime(wf.store, 'default');
 
-    // Resolve policy version from store for the relevant space
+    // Load persisted per-space policy from the store
     let activePolicyVersion = 'v1';
     try {
-      const storedPolicy = await rt.getStoredPolicyVersion('default');
-      if (storedPolicy) {
-        activePolicyVersion = storedPolicy;
-      }
+      const storedPolicy = await rt.loadPersistedPolicy('default');
+      activePolicyVersion = storedPolicy.policyVersion;
     } catch {
       // Use default version when store lookup fails
     }
 
     const status = await rt.getStatus();
 
-    // Count recipients from policy
-    const policy = await rt.getStoredPolicy('default');
+    // Count recipients from persisted policy
+    const policy = await rt.loadPersistedPolicy('default');
     const recipientCount = policy.recipients.length;
 
     return okEnvelope({

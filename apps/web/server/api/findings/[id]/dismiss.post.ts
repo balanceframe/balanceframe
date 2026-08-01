@@ -9,10 +9,12 @@
  */
 
 import { defineEventHandler, readBody, getRouterParam, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, getActorId, requireAuthorization, sanitizeError } from '../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const authCheck = await requireAuthorization(event, 'finding:transition');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
   const requestId = crypto.randomUUID();
   const findingId = getRouterParam(event, 'id') ?? '';
 

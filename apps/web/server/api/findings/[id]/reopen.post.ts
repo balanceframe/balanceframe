@@ -1,5 +1,6 @@
 /**
- * POST /api/findings/:id/acknowledge — acknowledge an open finding.
+ * POST /api/findings/:id/reopen — reopen a previously dismissed or
+ * acknowledged finding.
  *
  * No-mutation contract: only changes finding state, never mutates ledger.
  * Reads finding ID from URL param, expectedVersion from JSON body.
@@ -9,7 +10,15 @@
  */
 
 import { defineEventHandler, readBody, getRouterParam, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, getActorId, requireAuthorization, sanitizeError } from '../../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  getActorId,
+  requireAuthorization,
+  sanitizeError,
+} from '../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authCheck = await requireAuthorization(event, 'finding:transition');
@@ -44,14 +53,14 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const finding = await wf.store.acknowledgeFinding({
+    const finding = await wf.store.reopenFinding({
       findingId,
       actorId: getActorId(event),
       expectedVersion,
     });
     return okEnvelope(finding, authInfo, requestId);
   } catch (error) {
-    const safe = sanitizeError(error, requestId, 'ACKNOWLEDGE_FAILED', false);
+    const safe = sanitizeError(error, requestId, 'REOPEN_FAILED', false);
     setResponseStatus(event, 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }

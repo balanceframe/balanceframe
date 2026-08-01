@@ -91,6 +91,28 @@ export class ErrorInfo {
   }
 }
 
+/**
+ * Reference to a piece of evidence supporting the analysis result.
+ */
+export interface EvidenceReference {
+  /** Source of the evidence (e.g. 'transaction', 'rule', 'classification'). */
+  source: string;
+  /** Identifier of the evidence item within the source. */
+  id: string;
+  /** Confidence weight 0.0–1.0. */
+  weight: number;
+}
+
+/**
+ * Scope definition attached to analysis results that operate on a
+ * bounded slice of data (reports, saved views, projections).
+ */
+export interface EnvelopeScope {
+  monthRange?: string;
+  includePending?: boolean;
+  [key: string]: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // ResponseEnvelope
 // ---------------------------------------------------------------------------
@@ -100,12 +122,24 @@ export class ErrorInfo {
  * Generic in the success-result type `T`. The `status` discriminant
  * distinguishes success (`result: T`, `error: null`) from error
  * (`result: null`, `error: ErrorInfo`).
+ *
+ * Optional metadata fields (scope, semanticClasses, evidence, policyVersion)
+ * are additive — they carry application-level context through the envelope
+ * without changing the core shape.  Default paths MUST NOT fabricate them.
  */
 export type ResponseEnvelope<T = unknown> = {
   schemaVersion: string;
   requestId: string;
   dataFreshness: DataFreshness | null;
   authorization: AuthorizationContext | null;
+  /** Analysis scope (reports, saved views, projections). */
+  scope?: EnvelopeScope;
+  /** Semantic classification tags. */
+  semanticClasses?: string[];
+  /** Evidence references supporting the result. */
+  evidence?: EvidenceReference[];
+  /** Policy version that produced this result. */
+  policyVersion?: string;
 } & (
   | {
       status: 'ok';
@@ -124,6 +158,16 @@ export type ResponseEnvelope<T = unknown> = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Optional metadata to attach to a response envelope.
+ */
+export interface EnvelopeMetadata {
+  scope?: EnvelopeScope;
+  semanticClasses?: string[];
+  evidence?: EvidenceReference[];
+  policyVersion?: string;
+}
+
+/**
  * Build a successful response envelope.
  * Matches the Rust `ResponseEnvelope::ok` constructor.
  */
@@ -132,6 +176,7 @@ export function okResponse<T>(
   dataFreshness: DataFreshness | null,
   authorization: AuthorizationContext | null,
   result: T,
+  metadata?: EnvelopeMetadata,
 ): ResponseEnvelope<T> {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -139,6 +184,10 @@ export function okResponse<T>(
     status: 'ok',
     dataFreshness,
     authorization,
+    ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
+    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
+    ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
     result,
     error: null,
   };
@@ -151,13 +200,19 @@ export function okResponse<T>(
 export function errorResponse(
   requestId: string,
   error: ErrorInfo,
+  metadata?: EnvelopeMetadata,
+  authorization?: AuthorizationContext | null,
 ): ResponseEnvelope<never> {
   return {
     schemaVersion: SCHEMA_VERSION,
     requestId,
     status: 'error',
     dataFreshness: null,
-    authorization: null,
+    authorization: authorization ?? null,
+    ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
+    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
+    ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
     result: null,
     error,
   };

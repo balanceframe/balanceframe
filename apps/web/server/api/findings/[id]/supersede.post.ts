@@ -1,15 +1,25 @@
 /**
- * POST /api/findings/:id/acknowledge — acknowledge an open finding.
+ * POST /api/findings/:id/supersede — supersede a finding, marking it as
+ * replaced by another finding.
  *
  * No-mutation contract: only changes finding state, never mutates ledger.
- * Reads finding ID from URL param, expectedVersion from JSON body.
+ * Reads finding ID from URL param, expectedVersion, supersededBy, and
+ * reason from JSON body.
  *
- * Request body: { expectedVersion: number }
+ * Request body: { expectedVersion: number, supersededBy: string, reason: string }
  * Response envelope: Finding
  */
 
 import { defineEventHandler, readBody, getRouterParam, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, getActorId, requireAuthorization, sanitizeError } from '../../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  getActorId,
+  requireAuthorization,
+  sanitizeError,
+} from '../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authCheck = await requireAuthorization(event, 'finding:transition');
@@ -37,6 +47,18 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('MISSING_VERSION', 'expectedVersion is required and must be a non-negative number.', authInfo, false, requestId);
   }
 
+  const supersededBy = typeof body.supersededBy === 'string' ? body.supersededBy.trim() : '';
+  if (!supersededBy) {
+    setResponseStatus(event, 400);
+    return errorEnvelope('MISSING_SUPERSEDED_BY', 'supersededBy is required and must reference the replacing finding ID.', authInfo, false, requestId);
+  }
+
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) {
+    setResponseStatus(event, 400);
+    return errorEnvelope('MISSING_REASON', 'Supersession reason is required.', authInfo, false, requestId);
+  }
+
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
     setResponseStatus(event, 503);
@@ -44,14 +66,16 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const finding = await wf.store.acknowledgeFinding({
+    const finding = await wf.store.supersedeFinding({
       findingId,
       actorId: getActorId(event),
+      supersededBy,
+      reason,
       expectedVersion,
     });
     return okEnvelope(finding, authInfo, requestId);
   } catch (error) {
-    const safe = sanitizeError(error, requestId, 'ACKNOWLEDGE_FAILED', false);
+    const safe = sanitizeError(error, requestId, 'SUPERSEDE_FAILED', false);
     setResponseStatus(event, 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }

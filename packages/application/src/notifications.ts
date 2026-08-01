@@ -138,6 +138,71 @@ export interface RuntimeStatus {
   readonly channelStatuses: Array<{ channel: ChannelType; healthy: boolean }>;
   readonly pendingCount: number;
   readonly failedCount: number;
+  /** Channel types that are disabled in the active policy. */
+  readonly disabledChannels: ChannelType[];
+  /** Channel types whose adapter is currently unhealthy (outage). */
+  readonly outageChannels: ChannelType[];
+}
+
+// -----------------------------------------------------------------------
+// Producer input types (deterministic event entry points)
+// -----------------------------------------------------------------------
+
+/** Common fields for all producer inputs. */
+interface ProducerBase {
+  readonly budgetId: string;
+  readonly severity: Severity;
+  readonly scope?: string;
+  readonly recipientId?: string;
+  readonly redactionClass?: string;
+  readonly correlationId?: string;
+}
+
+/** Input for a data-quality finding notification. */
+export interface DataQualityProducerInput extends ProducerBase {
+  readonly findingId: string;
+  readonly title: string;
+  readonly description: string;
+  readonly affectedCount: number;
+}
+
+/** Input for an alert notification. */
+export interface AlertProducerInput extends ProducerBase {
+  readonly alertId: string;
+  readonly title: string;
+  readonly summary: string;
+}
+
+/** Input for a recurrence/duplicate finding notification. */
+export interface RecurrenceProducerInput extends ProducerBase {
+  readonly findingId: string;
+  readonly title: string;
+  readonly merchant: string;
+  readonly duplicateCount: number;
+}
+
+/** Input for a target risk notification. */
+export interface TargetRiskProducerInput extends ProducerBase {
+  readonly findingId: string;
+  readonly title: string;
+  readonly targetName: string;
+  readonly shortfallPercent: number;
+}
+
+/** Input for a proposal transition notification. */
+export interface ProposalTransitionProducerInput extends ProducerBase {
+  readonly proposalId: string;
+  readonly title: string;
+  readonly fromStatus: string;
+  readonly toStatus: string;
+}
+
+/** Input for a workflow result notification. */
+export interface WorkflowResultProducerInput extends ProducerBase {
+  readonly workflowId: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly result: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +467,59 @@ export class NotificationRuntime {
   }
 
   // -----------------------------------------------------------------------
+  // Store-backed policy hydration
+  // -----------------------------------------------------------------------
+
+  /**
+   * Load the persisted notification policy for a space and return the
+   * merged policy (persisted overrides + in-memory defaults).
+   *
+   * This is the canonical way to obtain the active policy — it reads
+   * from the store per-space and does NOT mutate the runtime's internal
+   * policy field (policies are loaded per-call for multi-space use).
+   */
+  async loadPersistedPolicy(spaceId: string): Promise<NotificationPolicy> {
+    const record = await this.store.getNotificationPolicy(spaceId, 'notification');
+    if (!record) return this.policy;
+    try {
+      const parsed = JSON.parse(record.policy) as Partial<NotificationPolicy>;
+      return {
+        ...this.policy,
+        ...parsed,
+        policyVersion: record.policyVersion,
+      };
+    } catch {
+      return this.policy;
+    }
+  }
+
+  /**
+   * Re-authorize a recipient against the store's current membership.
+   *
+   * When a re-authorization hook is registered, it takes precedence.
+   * Otherwise the store's getActorMembership is used to verify:
+   *   - actor membership exists and status is 'active'
+   *   - actor capabilities include the required capability
+   */
+  private async storeBackedReAuth(
+    actorId: string,
+    requiredCapability: string,
+  ): Promise<boolean> {
+    if (this.reAuthHook) {
+      return this.reAuthHook(actorId, requiredCapability, '');
+    }
+    // Fallback: check store membership directly
+    try {
+      const membership = await this.store.getActorMembership(actorId);
+      if (!membership) return false;
+      if (membership.status !== 'active') return false;
+      return membership.capabilities.includes(requiredCapability);
+    } catch {
+      return false;
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Event creation + policy evaluation + outbox enqueue
   // -----------------------------------------------------------------------
 
@@ -450,21 +568,17 @@ export class NotificationRuntime {
     const outboxRecords: NotificationOutboxRecord[] = [];
 
     for (const recipient of recipientSpecs) {
-      // 4. Re-authorization check
-      if (this.reAuthHook) {
-        const eligibilityRule = this.findMatchingRule(input.classification, input.severity);
-        const capability = eligibilityRule?.requiredCapability ?? 'notification:receive';
-        const scope = input.scope ?? '';
-        const authorized = await this.reAuthHook(recipient.actorId, capability, scope);
-        if (!authorized) {
-          // Record suppression via audit
-          await this.recordAudit('notification_suppressed', {
-            eventId: event.id,
-            actorId: recipient.actorId,
-            reason: 're_authorization_failed',
-          });
-          continue;
-        }
+      // 4. Re-authorization check (store-backed or hook-backed)
+      const eligibilityRule = this.findMatchingRule(input.classification, input.severity);
+      const capability = eligibilityRule?.requiredCapability ?? 'notification:receive';
+      const authorized = await this.storeBackedReAuth(recipient.actorId, capability);
+      if (!authorized) {
+        await this.recordAudit('notification_suppressed', {
+          eventId: event.id,
+          actorId: recipient.actorId,
+          reason: 're_authorization_failed',
+        });
+        continue;
       }
 
       // Quiet hours check
@@ -903,6 +1017,19 @@ export class NotificationRuntime {
       channelStatuses.push({ channel: channelType, healthy: adapter.isHealthy() });
     }
 
+    // Disabled channels: channels in the policy with enabled=false
+    const disabledChannels: ChannelType[] = this.policy.channels
+      .filter(c => !c.enabled)
+      .map(c => c.type);
+
+    // Outage channels: channels whose adapter is unhealthy
+    const outageChannels: ChannelType[] = [];
+    for (const [channelType, adapter] of this.adapters) {
+      if (!adapter.isHealthy()) {
+        outageChannels.push(channelType);
+      }
+    }
+
     let pendingCount = 0;
     let failedCount = 0;
     try {
@@ -922,6 +1049,8 @@ export class NotificationRuntime {
       channelStatuses,
       pendingCount,
       failedCount,
+      disabledChannels,
+      outageChannels,
     };
   }
 
@@ -956,6 +1085,142 @@ export class NotificationRuntime {
       this.policy.channels.filter(c => c.enabled).map(c => c.type),
     );
     return recipient.channels.filter(c => enabledChannels.has(c));
+  }
+
+  // -----------------------------------------------------------------------
+  // Deterministic producer entry points
+  // -----------------------------------------------------------------------
+
+  /**
+   * Produce a data-quality finding notification.
+   * Persists immutable event before outbox records.
+   * Deterministic: same input produces same classification.
+   */
+  async produceDataQualityEvent(input: DataQualityProducerInput): Promise<NotificationResult> {
+    return this.create({
+      budgetId: input.budgetId,
+      classification: 'data_quality',
+      severity: input.severity,
+      scope: input.scope,
+      recipientId: input.recipientId,
+      redactionClass: input.redactionClass,
+      correlationId: input.correlationId,
+      payload: {
+        findingId: input.findingId,
+        title: input.title,
+        description: input.description,
+        affectedCount: input.affectedCount,
+      },
+    });
+  }
+
+  /**
+   * Produce an alert notification.
+   * Persists immutable event before outbox records.
+   */
+  async produceAlertEvent(input: AlertProducerInput): Promise<NotificationResult> {
+    return this.create({
+      budgetId: input.budgetId,
+      classification: 'alert',
+      severity: input.severity,
+      scope: input.scope,
+      recipientId: input.recipientId,
+      redactionClass: input.redactionClass,
+      correlationId: input.correlationId,
+      payload: {
+        alertId: input.alertId,
+        title: input.title,
+        summary: input.summary,
+      },
+    });
+  }
+
+  /**
+   * Produce a recurrence/duplicate finding notification.
+   * Persists immutable event before outbox records.
+   */
+  async produceRecurrenceEvent(input: RecurrenceProducerInput): Promise<NotificationResult> {
+    return this.create({
+      budgetId: input.budgetId,
+      classification: 'recurrence',
+      severity: input.severity,
+      scope: input.scope,
+      recipientId: input.recipientId,
+      redactionClass: input.redactionClass,
+      correlationId: input.correlationId,
+      payload: {
+        findingId: input.findingId,
+        title: input.title,
+        merchant: input.merchant,
+        duplicateCount: input.duplicateCount,
+      },
+    });
+  }
+
+  /**
+   * Produce a target risk notification.
+   * Persists immutable event before outbox records.
+   */
+  async produceTargetRiskEvent(input: TargetRiskProducerInput): Promise<NotificationResult> {
+    return this.create({
+      budgetId: input.budgetId,
+      classification: 'target_risk',
+      severity: input.severity,
+      scope: input.scope,
+      recipientId: input.recipientId,
+      redactionClass: input.redactionClass,
+      correlationId: input.correlationId,
+      payload: {
+        findingId: input.findingId,
+        title: input.title,
+        targetName: input.targetName,
+        shortfallPercent: input.shortfallPercent,
+      },
+    });
+  }
+
+  /**
+   * Produce a proposal transition notification.
+   * Persists immutable event before outbox records.
+   */
+  async produceProposalTransitionEvent(input: ProposalTransitionProducerInput): Promise<NotificationResult> {
+    return this.create({
+      budgetId: input.budgetId,
+      classification: 'proposal_transition',
+      severity: input.severity,
+      scope: input.scope,
+      recipientId: input.recipientId,
+      redactionClass: input.redactionClass,
+      correlationId: input.correlationId,
+      payload: {
+        proposalId: input.proposalId,
+        title: input.title,
+        fromStatus: input.fromStatus,
+        toStatus: input.toStatus,
+      },
+    });
+  }
+
+  /**
+   * Produce a consequential workflow result notification.
+   * Persists immutable event before outbox records.
+   */
+  async produceWorkflowResultEvent(input: WorkflowResultProducerInput): Promise<NotificationResult> {
+    return this.create({
+      budgetId: input.budgetId,
+      classification: 'workflow_result',
+      severity: input.severity,
+      scope: input.scope,
+      recipientId: input.recipientId,
+      redactionClass: input.redactionClass,
+      correlationId: input.correlationId,
+      payload: {
+        workflowId: input.workflowId,
+        title: input.title,
+        summary: input.summary,
+        result: input.result,
+      },
+    });
   }
 
   // -----------------------------------------------------------------------

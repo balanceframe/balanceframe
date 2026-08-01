@@ -1,15 +1,24 @@
 /**
- * POST /api/findings/:id/acknowledge — acknowledge an open finding.
+ * POST /api/findings/:id/correct — mark a finding as corrected.
  *
  * No-mutation contract: only changes finding state, never mutates ledger.
- * Reads finding ID from URL param, expectedVersion from JSON body.
+ * Reads finding ID from URL param, expectedVersion and correctionRef from
+ * JSON body.
  *
- * Request body: { expectedVersion: number }
+ * Request body: { expectedVersion: number, correctionRef: string }
  * Response envelope: Finding
  */
 
 import { defineEventHandler, readBody, getRouterParam, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, getActorId, requireAuthorization, sanitizeError } from '../../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  getActorId,
+  requireAuthorization,
+  sanitizeError,
+} from '../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authCheck = await requireAuthorization(event, 'finding:transition');
@@ -37,6 +46,12 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('MISSING_VERSION', 'expectedVersion is required and must be a non-negative number.', authInfo, false, requestId);
   }
 
+  const correctionRef = typeof body.correctionRef === 'string' ? body.correctionRef.trim() : '';
+  if (!correctionRef) {
+    setResponseStatus(event, 400);
+    return errorEnvelope('MISSING_CORRECTION_REF', 'correctionRef is required and must reference a correction record.', authInfo, false, requestId);
+  }
+
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
     setResponseStatus(event, 503);
@@ -44,14 +59,15 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const finding = await wf.store.acknowledgeFinding({
+    const finding = await wf.store.correctFinding({
       findingId,
       actorId: getActorId(event),
+      correctionRef,
       expectedVersion,
     });
     return okEnvelope(finding, authInfo, requestId);
   } catch (error) {
-    const safe = sanitizeError(error, requestId, 'ACKNOWLEDGE_FAILED', false);
+    const safe = sanitizeError(error, requestId, 'CORRECT_FAILED', false);
     setResponseStatus(event, 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }

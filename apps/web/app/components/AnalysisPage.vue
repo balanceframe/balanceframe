@@ -18,20 +18,30 @@
     </div>
 
     <!-- Loading state -->
-    <div v-if="loading" class="flex items-center justify-center py-12">
+    <div v-if="loading" role="status" aria-label="Loading" class="flex items-center justify-center py-12">
       <UIcon name="i-heroicons-arrow-path" class="animate-spin text-2xl text-gray-400" />
       <span class="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading...</span>
     </div>
 
     <!-- Error state -->
-    <UAlert
-      v-else-if="error"
-      :title="error.code"
-      :description="error.message"
-      color="error"
-      variant="soft"
-      class="mb-4"
-    />
+    <template v-else-if="error">
+      <UAlert
+        :title="error.code"
+        :description="error.message"
+        color="error"
+        variant="soft"
+        class="mb-4"
+      />
+      <button
+        v-if="error.retryable"
+        class="inline-flex items-center gap-1 text-sm text-primary-600 dark:text-primary-400 hover:underline"
+        aria-label="Retry loading"
+        @click="$emit('retry')"
+      >
+        <UIcon name="i-heroicons-arrow-path" class="w-4 h-4" />
+        Retry
+      </button>
+    </template>
 
     <!-- Insufficient data -->
     <InsufficientDataPanel v-else-if="insufficientData" :reason="insufficientReason" />
@@ -41,6 +51,7 @@
 
     <!-- Fallback empty state -->
     <div v-if="!loading && !error && !$slots.content && !insufficientData"
+      role="status"
       class="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">
       No data available.
     </div>
@@ -63,6 +74,7 @@ interface Freshness {
 interface ErrorInfo {
   code: string;
   message: string;
+  retryable?: boolean;
 }
 
 defineProps<{
@@ -78,6 +90,7 @@ defineProps<{
 const emit = defineEmits<{
   viewSelect: [viewId: string];
   viewSave: [];
+  retry: [];
 }>();
 
 function handleViewSelect(viewId: string) {

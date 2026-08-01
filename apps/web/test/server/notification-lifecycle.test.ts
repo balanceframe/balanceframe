@@ -14,8 +14,8 @@ const { mockReadBody, mockGetWorkflowStore, mockNotificationRuntime } = vi.hoist
     acknowledgeFromCallback: vi.fn(),
     suppress: vi.fn(),
     getStatus: vi.fn(),
-    getStoredPolicy: vi.fn(),
-    getStoredPolicyVersion: vi.fn(),
+    setReAuthorizationHook: vi.fn(),
+    loadPersistedPolicy: vi.fn(),
     listOutbox: vi.fn(),
     getOutboxDetail: vi.fn(),
   },
@@ -142,22 +142,43 @@ describe('POST /api/notifications/suppress', () => {
 // GET /api/notifications/status
 // ---------------------------------------------------------------------------
 
+const defaultPersistedPolicy = {
+  policyVersion: 'v1',
+  eligibility: [],
+  recipients: [{ actorId: 'usr_a', channels: ['in_app'], quietHours: null }],
+  channels: [{ type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' }],
+  redaction: {
+    sensitive: { visibleFields: ['title'] },
+    public: { visibleFields: ['title', 'summary'] },
+    restricted: { visibleFields: ['title'] },
+  },
+  maxRetries: 3,
+  defaultRedactionClass: 'public',
+};
+
 describe('GET /api/notifications/status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockNotificationRuntime.loadPersistedPolicy.mockResolvedValue(defaultPersistedPolicy);
   });
 
-  it('returns runtime status with policy version', async () => {
+  it('returns runtime status with policy version and recipient count', async () => {
     mockNotificationRuntime.getStatus.mockResolvedValue({
       healthy: true,
       storeConnected: true,
       channelStatuses: [{ channel: 'in_app', healthy: true }],
       pendingCount: 0,
       failedCount: 0,
+      disabledChannels: [],
+      outageChannels: [],
     });
-    mockNotificationRuntime.getStoredPolicyVersion.mockResolvedValue('v2');
-    mockNotificationRuntime.getStoredPolicy.mockResolvedValue({
-      recipients: [{ actorId: 'usr_a', channels: ['in_app'], quietHours: null }],
+    mockNotificationRuntime.loadPersistedPolicy.mockResolvedValue({
+      ...defaultPersistedPolicy,
+      policyVersion: 'v2',
+      recipients: [
+        { actorId: 'usr_a', channels: ['in_app'], quietHours: null },
+        { actorId: 'usr_b', channels: ['in_app'], quietHours: null },
+      ],
     });
 
     const r = await statusHandler({ context: { auth: { authenticated: true } } });
@@ -165,13 +186,13 @@ describe('GET /api/notifications/status', () => {
     expect(r.status).toBe('ok');
     expect(r.result.healthy).toBe(true);
     expect(r.result.policyVersion).toBe('v2');
-    expect(r.result.recipientCount).toBe(1);
+    expect(r.result.recipientCount).toBe(2);
+    // Verify loadPersistedPolicy was called with the space id
+    expect(mockNotificationRuntime.loadPersistedPolicy).toHaveBeenCalledWith('default');
   });
 
   it('returns error when authorization denied', async () => {
     const { requireAuthorization } = await vi.importMock('../../server/utils/workflow-store');
-    // Can't easily override hoisted mock at runtime; this test verifies
-    // the gate by changing the mock before each call
     vi.mocked(requireAuthorization).mockResolvedValueOnce({
       ok: false,
       info: null,
@@ -193,16 +214,16 @@ describe('GET /api/notifications/status', () => {
     expect(r.error?.code).toBe('STORE_UNAVAILABLE');
   });
 
-  it('reports unhealthy runtime when adapter is down', async () => {
+  it('reports unhealthy runtime when adapter is in outage', async () => {
     mockNotificationRuntime.getStatus.mockResolvedValue({
       healthy: false,
       storeConnected: true,
       channelStatuses: [{ channel: 'in_app', healthy: false }],
       pendingCount: 5,
       failedCount: 2,
+      disabledChannels: [],
+      outageChannels: ['in_app'],
     });
-    mockNotificationRuntime.getStoredPolicyVersion.mockResolvedValue('v1');
-    mockNotificationRuntime.getStoredPolicy.mockResolvedValue({ recipients: [] });
 
     const r = await statusHandler({ context: { auth: { authenticated: true } } });
 
@@ -211,6 +232,61 @@ describe('GET /api/notifications/status', () => {
     expect(r.result.channelStatuses[0].healthy).toBe(false);
     expect(r.result.pendingCount).toBe(5);
     expect(r.result.failedCount).toBe(2);
+    expect(r.result.outageChannels).toEqual(['in_app']);
+  });
+
+  it('reports all channels disabled in persisted policy', async () => {
+    mockNotificationRuntime.getStatus.mockResolvedValue({
+      healthy: true,
+      storeConnected: true,
+      channelStatuses: [{ channel: 'in_app', healthy: true }],
+      pendingCount: 0,
+      failedCount: 0,
+      disabledChannels: ['in_app'],
+      outageChannels: [],
+    });
+    mockNotificationRuntime.loadPersistedPolicy.mockResolvedValue({
+      ...defaultPersistedPolicy,
+      channels: [{ type: 'in_app', enabled: false, rateLimitPerMinute: 60, displayName: 'In-App' }],
+    });
+
+    const r = await statusHandler({ context: { auth: { authenticated: true } } });
+
+    expect(r.status).toBe('ok');
+    expect(r.result.healthy).toBe(true);
+    expect(r.result.disabledChannels).toEqual(['in_app']);
+  });
+
+  it('falls back to default policy version when loadPersistedPolicy fails', async () => {
+    mockNotificationRuntime.getStatus.mockResolvedValue({
+      healthy: true,
+      storeConnected: true,
+      channelStatuses: [{ channel: 'in_app', healthy: true }],
+      pendingCount: 0,
+      failedCount: 0,
+      disabledChannels: [],
+      outageChannels: [],
+    });
+    // First call (version) fails, second call (recipients) succeeds
+    mockNotificationRuntime.loadPersistedPolicy
+      .mockRejectedValueOnce(new Error('Store read error'))
+      .mockResolvedValueOnce({ ...defaultPersistedPolicy, recipients: [] });
+
+    const r = await statusHandler({ context: { auth: { authenticated: true } } });
+
+    expect(r.status).toBe('ok');
+    // Falls back to default version 'v1' when store lookup fails
+    expect(r.result.policyVersion).toBe('v1');
+    expect(r.result.recipientCount).toBe(0);
+  });
+
+  it('returns runtime unavailable when getStatus throws', async () => {
+    mockNotificationRuntime.getStatus.mockRejectedValue(new Error('Runtime crash'));
+
+    const r = await statusHandler({ context: { auth: { authenticated: true } } });
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('RUNTIME_UNAVAILABLE');
   });
 });
 

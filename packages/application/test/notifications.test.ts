@@ -24,6 +24,8 @@ import {
   InAppChannelAdapter,
   type NotificationPolicy,
   type CreateNotificationInput,
+  type RuntimeStatus,
+  type ChannelType,
   NotificationRuntimeError,
 } from '../src/notifications';
 
@@ -35,6 +37,8 @@ import type {
   NotificationEvent,
   NotificationOutboxRecord,
   AppendAuditInput,
+  NotificationPolicyRecord,
+  RecipientResolution,
 } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
@@ -57,7 +61,7 @@ function defaultPolicy(overrides: Partial<NotificationPolicy> = {}): Notificatio
     policyVersion: TEST_POLICY_VER,
     eligibility: [
       {
-        classifications: ['budget_alert', 'review_complete'],
+        classifications: ['budget_alert', 'review_complete', 'data_quality', 'alert', 'recurrence', 'target_risk', 'proposal_transition', 'workflow_result'],
         minSeverity: 'normal',
         requiredCapability: 'notification:receive',
         requiredScope: '',
@@ -177,10 +181,16 @@ function createStoreMock(): StoreMock {
     'getPendingNotifications', 'getRetryableNotifications', 'getDeliveryAttempts',
     'listOutboxRecords',
     'getNotificationPolicy', 'saveNotificationPolicy',
+    'resolveRecipients', 'listNotificationPolicies', 'deleteNotificationPolicy',
     'recordPolicyVersion', 'getPolicyVersion', 'getActivePolicyVersion',
     'listPolicyVersions', 'createSavedFilter', 'updateSavedFilter', 'getSavedFilter',
     'listSavedFilters', 'deleteSavedFilter', 'createReportRecord', 'getReportRecord',
     'listReportRecords', 'expireReportRecord', 'cancelPendingJobs',
+    'createFinding', 'getFinding', 'listFindings', 'countFindings',
+    'acknowledgeFinding', 'correctFinding', 'dismissFinding', 'reopenFinding',
+    'supersedeFinding', 'expireFinding',
+    'getReportHistory', 'listSavedViews', 'createSavedView', 'updateSavedView',
+    'duplicateSavedView', 'deleteSavedView', 'recordSavedViewUsage', 'getSavedView',
   ];
   for (const key of storeMethods) {
     proto[key] = vi.fn();
@@ -322,11 +332,17 @@ describe('NotificationRuntime', () => {
       expect(store.enqueueNotification).not.toHaveBeenCalled();
     });
 
-    it('creates notification without re-authorization hook (no hook = no check)', async () => {
+    it('creates notification without re-authorization hook — uses store-backed membership', async () => {
       const event = mockEvent();
       const outbox = mockOutbox();
       store.createNotificationEvent.mockResolvedValue(event);
       store.enqueueNotification.mockResolvedValue(outbox);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
 
       const result = await runtime.create(defaultInput());
 
@@ -484,6 +500,12 @@ describe('NotificationRuntime', () => {
       });
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
+      local.store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
 
       const result = await local.runtime.create(defaultInput());
 
@@ -506,6 +528,12 @@ describe('NotificationRuntime', () => {
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
       local.store.enqueueNotification.mockResolvedValue(mockOutbox());
+      local.store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
 
       const result = await local.runtime.create(defaultInput());
 
@@ -518,6 +546,12 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox();
       store.createNotificationEvent.mockResolvedValue(event);
       store.enqueueNotification.mockResolvedValue(outbox);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
 
       const result = await runtime.create(defaultInput());
 
@@ -539,6 +573,12 @@ describe('NotificationRuntime', () => {
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
       local.store.enqueueNotification.mockResolvedValue(mockOutbox());
+      local.store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
 
       await local.runtime.create(defaultInput({ correlationId: 'first' }));
       expect(local.store.enqueueNotification).toHaveBeenCalledTimes(1);
@@ -558,6 +598,12 @@ describe('NotificationRuntime', () => {
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
       local.store.enqueueNotification.mockResolvedValue(mockOutbox());
+      local.store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
 
       for (let i = 0; i < 4; i++) {
         local.store.createNotificationEvent.mockResolvedValue(
@@ -864,7 +910,8 @@ describe('NotificationRuntime', () => {
       expect(policy.policyVersion).toBe(TEST_POLICY_VER);
       // In-memory policy has 1 eligibility rule covering 2 classifications
       expect(policy.eligibility).toHaveLength(1);
-      expect(policy.eligibility[0].classifications).toEqual(['budget_alert', 'review_complete']);
+      expect(policy.eligibility[0].classifications).toContain('budget_alert');
+      expect(policy.eligibility[0].classifications).toContain('review_complete');
     });
 
     it('merges stored policy with in-memory defaults', async () => {
@@ -1141,6 +1188,381 @@ describe('NotificationRuntime', () => {
       const args = auditInvocationArgs();
       // At least one audit call should carry the event id as correlation
       expect(args.correlationId).toBe(TEST_EVENT_ID);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Enhanced RuntimeStatus — disabled/outage channels
+  // -----------------------------------------------------------------------
+
+  describe('getStatus — disabled/outage channels', () => {
+    it('includes disabledChannels from policy', async () => {
+      store.getPendingNotifications.mockResolvedValue([]);
+      store.getRetryableNotifications.mockResolvedValue([]);
+
+      const policy = defaultPolicy({
+        channels: [
+          { type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+          { type: 'email', enabled: false, rateLimitPerMinute: 10, displayName: 'Email' },
+        ],
+      });
+      const local = createFixture(policy);
+
+      const status = await local.runtime.getStatus();
+
+      expect(status.disabledChannels).toEqual(['email']);
+    });
+
+    it('includes outageChannels when adapter is unhealthy', async () => {
+      store.getPendingNotifications.mockResolvedValue([]);
+      store.getRetryableNotifications.mockResolvedValue([]);
+
+      adapter.setHealthy(false);
+      const status = await runtime.getStatus();
+
+      expect(status.outageChannels).toEqual(['in_app']);
+    });
+
+    it('returns empty disabledChannels when all channels enabled', async () => {
+      store.getPendingNotifications.mockResolvedValue([]);
+      store.getRetryableNotifications.mockResolvedValue([]);
+
+      const status = await runtime.getStatus();
+
+      expect(status.disabledChannels).toEqual([]);
+      expect(status.outageChannels).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Store-backed per-space policy loading
+  // -----------------------------------------------------------------------
+
+  describe('loadPersistedPolicy', () => {
+    it('loads and applies persisted policy for a space', async () => {
+      const persistedPolicy = {
+        id: 'pol_space_1',
+        spaceId: 'space_1',
+        policyKey: 'notification',
+        policyVersion: 'v3',
+        policy: JSON.stringify({
+          maxRetries: 5,
+          defaultRedactionClass: 'restricted',
+        }),
+        isActive: true,
+        createdAt: '2026-07-27T00:00:00Z',
+        updatedAt: '2026-07-27T00:00:00Z',
+      };
+      store.getNotificationPolicy.mockResolvedValue(persistedPolicy);
+
+      const loadedPolicy = await runtime.loadPersistedPolicy('space_1');
+
+      expect(loadedPolicy.policyVersion).toBe('v3');
+      expect(loadedPolicy.maxRetries).toBe(5);
+      expect(loadedPolicy.defaultRedactionClass).toBe('restricted');
+    });
+
+    it('falls back to in-memory policy when no persisted policy exists', async () => {
+      store.getNotificationPolicy.mockResolvedValue(null);
+
+      const loadedPolicy = await runtime.loadPersistedPolicy('space_nonexistent');
+
+      expect(loadedPolicy.policyVersion).toBe(TEST_POLICY_VER);
+      expect(loadedPolicy.maxRetries).toBe(3);
+    });
+
+    it('returns the active policy record for a space', async () => {
+      const persistedPolicy = {
+        id: 'pol_space_2',
+        spaceId: 'space_2',
+        policyKey: 'notification',
+        policyVersion: 'v5',
+        policy: JSON.stringify({ maxRetries: 7 }),
+        isActive: true,
+        createdAt: '2026-07-27T00:00:00Z',
+        updatedAt: '2026-07-27T00:00:00Z',
+      };
+      store.getNotificationPolicy.mockResolvedValue(persistedPolicy);
+
+      const loadedPolicy = await runtime.loadPersistedPolicy('space_2');
+
+      expect(loadedPolicy.policyVersion).toBe('v5');
+      expect(loadedPolicy.maxRetries).toBe(7);
+      // Eligibility rules from default policy preserved
+      expect(loadedPolicy.eligibility).toHaveLength(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Store-backed re-authorization
+  // -----------------------------------------------------------------------
+
+  describe('store-backed re-authorization', () => {
+    it('uses store membership for re-auth when no hook is set', async () => {
+      const event = mockEvent();
+      const outbox = mockOutbox();
+      store.createNotificationEvent.mockResolvedValue(event);
+      store.enqueueNotification.mockResolvedValue(outbox);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+
+      const result = await runtime.create(defaultInput());
+
+      expect(result.outboxRecords).toHaveLength(2);
+      expect(store.getActorMembership).toHaveBeenCalled();
+    });
+
+    it('suppresses notification when store membership is inactive', async () => {
+      const event = mockEvent();
+      store.createNotificationEvent.mockResolvedValue(event);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'inactive',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+
+      runtime.setReAuthorizationHook(null);
+      const result = await runtime.create(defaultInput());
+
+      expect(result.outboxRecords).toHaveLength(0);
+    });
+
+    it('suppresses notification when store membership lacks required capability', async () => {
+      const event = mockEvent();
+      store.createNotificationEvent.mockResolvedValue(event);
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['other:capability'],
+        scope: TEST_BUDGET,
+      });
+
+      runtime.setReAuthorizationHook(null);
+      const result = await runtime.create(defaultInput());
+
+      expect(result.outboxRecords).toHaveLength(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Deterministic producer entry points
+  // -----------------------------------------------------------------------
+
+  describe('producers — deterministic event entry points', () => {
+    beforeEach(() => {
+      store.createNotificationEvent.mockImplementation(async () => {
+        // Return the classification from the most recent call args
+        const args = store.createNotificationEvent.mock.calls;
+        const lastCall = args[args.length - 1]?.[0];
+        return mockEvent({
+          classification: lastCall?.classification ?? 'budget_alert',
+          budgetId: lastCall?.budgetId ?? TEST_BUDGET,
+        });
+      });
+      store.enqueueNotification.mockResolvedValue(mockOutbox());
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+    });
+
+    it('produceDataQualityEvent creates event with data_quality classification', async () => {
+      const result = await runtime.produceDataQualityEvent({
+        budgetId: TEST_BUDGET,
+        findingId: 'fq_001',
+        severity: 'high',
+        title: 'Missing category',
+        description: '3 transactions lack category',
+        affectedCount: 3,
+      });
+
+      expect(result.event.classification).toBe('data_quality');
+      expect(store.createNotificationEvent).toHaveBeenCalledTimes(1);
+      const eventInput = store.createNotificationEvent.mock.calls[0][0];
+      expect(eventInput.classification).toBe('data_quality');
+      const payload = eventInput.payload as Record<string, unknown>;
+      expect(payload.findingId).toBe('fq_001');
+      expect(payload.affectedCount).toBe(3);
+    });
+
+    it('produceAlertEvent creates event with alert classification', async () => {
+      const result = await runtime.produceAlertEvent({
+        budgetId: TEST_BUDGET,
+        alertId: 'alr_001',
+        severity: 'critical',
+        title: 'Budget overspend',
+        summary: 'Dining budget exceeded by $50',
+      });
+
+      expect(result.event.classification).toBe('alert');
+      const eventInput = store.createNotificationEvent.mock.calls[0][0];
+      const payload = eventInput.payload as Record<string, unknown>;
+      expect(payload.alertId).toBe('alr_001');
+      expect(payload.title).toBe('Budget overspend');
+    });
+
+    it('produceRecurrenceEvent creates event with recurrence classification', async () => {
+      const result = await runtime.produceRecurrenceEvent({
+        budgetId: TEST_BUDGET,
+        findingId: 'rec_001',
+        severity: 'normal',
+        title: 'Duplicate transaction detected',
+        merchant: 'Coffee Shop',
+        duplicateCount: 2,
+      });
+
+      expect(result.event.classification).toBe('recurrence');
+      const eventInput = store.createNotificationEvent.mock.calls[0][0];
+      const payload = eventInput.payload as Record<string, unknown>;
+      expect(payload.findingId).toBe('rec_001');
+      expect(payload.duplicateCount).toBe(2);
+    });
+
+    it('produceTargetRiskEvent creates event with target_risk classification', async () => {
+      const result = await runtime.produceTargetRiskEvent({
+        budgetId: TEST_BUDGET,
+        findingId: 'tr_001',
+        severity: 'high',
+        title: 'Sinking fund behind schedule',
+        targetName: 'Vacation Fund',
+        shortfallPercent: 15,
+      });
+
+      expect(result.event.classification).toBe('target_risk');
+      const eventInput = store.createNotificationEvent.mock.calls[0][0];
+      const payload = eventInput.payload as Record<string, unknown>;
+      expect(payload.targetName).toBe('Vacation Fund');
+      expect(payload.shortfallPercent).toBe(15);
+    });
+
+    it('produceProposalTransitionEvent creates event with proposal_transition classification', async () => {
+      const result = await runtime.produceProposalTransitionEvent({
+        budgetId: TEST_BUDGET,
+        proposalId: 'prop_001',
+        severity: 'normal',
+        title: 'Proposal approved',
+        fromStatus: 'pending_review',
+        toStatus: 'approved',
+      });
+
+      expect(result.event.classification).toBe('proposal_transition');
+      const eventInput = store.createNotificationEvent.mock.calls[0][0];
+      const payload = eventInput.payload as Record<string, unknown>;
+      expect(payload.proposalId).toBe('prop_001');
+      expect(payload.fromStatus).toBe('pending_review');
+      expect(payload.toStatus).toBe('approved');
+    });
+
+    it('produceWorkflowResultEvent creates event with workflow_result classification', async () => {
+      const result = await runtime.produceWorkflowResultEvent({
+        budgetId: TEST_BUDGET,
+        workflowId: 'wf_001',
+        severity: 'high',
+        title: 'Analysis complete',
+        summary: '5 transactions reviewed',
+        result: 'completed',
+      });
+
+      expect(result.event.classification).toBe('workflow_result');
+      const eventInput = store.createNotificationEvent.mock.calls[0][0];
+      const payload = eventInput.payload as Record<string, unknown>;
+      expect(payload.workflowId).toBe('wf_001');
+      expect(payload.result).toBe('completed');
+    });
+
+    it('all producer calls are deterministic — same input produces same event classification and delivery key', async () => {
+      const result1 = await runtime.produceDataQualityEvent({
+        budgetId: TEST_BUDGET,
+        findingId: 'fq_det',
+        severity: 'normal',
+        title: 'Test',
+        description: 'Test',
+        affectedCount: 1,
+      });
+      const result2 = await runtime.produceDataQualityEvent({
+        budgetId: TEST_BUDGET,
+        findingId: 'fq_det',
+        severity: 'normal',
+        title: 'Test',
+        description: 'Test',
+        affectedCount: 1,
+      });
+
+      expect(result1.event.classification).toBe(result2.event.classification);
+      // Delivery keys are deterministic per event+channel
+      expect(result1.outboxRecords[0].deliveryKey).toBe(result2.outboxRecords[0].deliveryKey);
+    });
+
+    it('producers persist event before outbox records', async () => {
+      const callOrder: string[] = [];
+      store.createNotificationEvent.mockImplementation(async () => {
+        callOrder.push('event');
+        return mockEvent();
+      });
+      store.enqueueNotification.mockImplementation(async () => {
+        callOrder.push('outbox');
+        return mockOutbox();
+      });
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+
+      await runtime.produceAlertEvent({
+        budgetId: TEST_BUDGET,
+        alertId: 'alr_order',
+        severity: 'normal',
+        title: 'Test',
+        summary: 'Test',
+      });
+
+      // Event must be the first store call, outboxes come after
+      expect(callOrder[0]).toBe('event');
+      expect(callOrder.slice(1).every(c => c === 'outbox')).toBe(true);
+    });
+
+    it('producer events do not mutate ledger state', async () => {
+      const ledgerMutations: string[] = [];
+      // No ledger methods are available on the mock store —
+      // any call to create/save/transition on the store mock
+      // that isn't a notification method represents a ledger mutation.
+      const notificationMethods = new Set([
+        'createNotificationEvent', 'getNotificationEvent',
+        'enqueueNotification', 'claimNotificationDelivery',
+        'completeNotificationDelivery', 'failNotificationDelivery',
+        'acknowledgeNotification', 'suppressNotification',
+        'getOutboxRecord', 'getPendingNotifications',
+        'getRetryableNotifications', 'getDeliveryAttempts',
+        'listOutboxRecords',
+        'getNotificationPolicy', 'getActorMembership',
+        'appendAuditRecord',
+        'resolveRecipients',
+      ]);
+
+      await runtime.produceAlertEvent({
+        budgetId: TEST_BUDGET,
+        alertId: 'alr_nop',
+        severity: 'normal',
+        title: 'Test',
+        summary: 'Test',
+      });
+
+      // Check that no non-notification store methods were called
+      for (const [method, mock] of Object.entries(store)) {
+        if (!notificationMethods.has(method) && mock.mock.calls.length > 0) {
+          ledgerMutations.push(method);
+        }
+      }
+      expect(ledgerMutations).toEqual([]);
     });
   });
 });

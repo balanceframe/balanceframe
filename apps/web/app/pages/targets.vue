@@ -1,6 +1,11 @@
 <template>
   <AnalysisPage title="Targets &amp; Sinking Funds" :loading="loading" :error="error">
     <template #content>
+      <!-- No-config state -->
+      <div v-if="!hasData" class="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">
+        No target categories configured. Connect a budget to see target health and sinking fund progress.
+      </div>
+
       <div v-if="targetData">
         <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Categories</h3>
         <AnalysisTable :columns="targetColumns" :rows="targetRows" class="mb-6" />
@@ -39,6 +44,8 @@ const targetColumns = [
   { key: 'progress', label: 'Progress' },
   { key: 'status', label: 'Status', type: 'badge' as const },
 ];
+
+const hasData = computed(() => (targetData.value?.categories ?? []).length > 0 || (sinkingData.value?.sinkingFunds ?? []).length > 0);
 
 const targetRows = computed(() => (targetData.value?.categories ?? []).map(c => ({ ...c, progress: `${Math.round(c.progress * 100)}%` })));
 const sinkingRows = computed(() => (sinkingData.value?.sinkingFunds ?? []).map(c => ({ ...c, progress: `${Math.round(c.progress * 100)}%` })));

@@ -156,8 +156,8 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       return JSON.stringify({
         overallScore: 85,
         dimensions: [
-          { name: 'completeness', score: 90, severity: 'good', details: ['All fields populated'], worstSeverity: null },
-          { name: 'consistency', score: 80, severity: 'fair', details: ['Minor category mismatches'], worstSeverity: 'warning' },
+          { dimension: 'completeness', score: 90, explanation: 'All fields populated', worstSeverity: null },
+          { dimension: 'consistency', score: 80, explanation: 'Minor category mismatches', worstSeverity: 'warning' },
         ],
         recommendations: ['Review uncategorized transactions.'],
       });
@@ -1427,7 +1427,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(calls).toContain('computeDataQuality');
     expect(result.overallScore).toBe(85);
     expect(result.dimensions.length).toBeGreaterThan(0);
-    expect(result.dimensions[0].name).toBe('completeness');
+    expect(result.dimensions[0].dimension).toBe('completeness');
     expect(result.recommendations.length).toBeGreaterThan(0);
   });
 

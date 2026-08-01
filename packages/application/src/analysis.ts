@@ -1318,6 +1318,7 @@ export async function purchaseEvaluationAnalysis(
   params: PurchaseEvaluationParams,
 ): Promise<PurchaseEvaluationOutput['envelope']> {
   const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+  const auth = AuthorizationContext.observe(actorId);
 
   if (!ledger) {
     const err = new ErrorInfo({
@@ -1326,7 +1327,7 @@ export async function purchaseEvaluationAnalysis(
       retryable: true,
       reasonCodes: ['missing_ledger_config'],
     });
-    return errorResponse(requestId, err);
+    return errorResponse(requestId, err, undefined, auth);
   }
 
   if (freshness && freshness.isStale) {
@@ -1336,7 +1337,7 @@ export async function purchaseEvaluationAnalysis(
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
-    return errorResponse(requestId, err);
+    return errorResponse(requestId, err, undefined, auth);
   }
 
   if (!analysisProtocol || !analysisProtocol.purchaseEvaluation) {
@@ -1346,7 +1347,7 @@ export async function purchaseEvaluationAnalysis(
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
-    return errorResponse(requestId, err);
+    return errorResponse(requestId, err, undefined, auth);
   }
 
   if (!params.categoryId) {
@@ -1356,7 +1357,7 @@ export async function purchaseEvaluationAnalysis(
       retryable: false,
       reasonCodes: [ReasonCodes.PURCHASE_CATEGORY_REQUIRED],
     });
-    return errorResponse(requestId, err);
+    return errorResponse(requestId, err, undefined, auth);
   }
 
   if (!params.amount || params.amount.minorUnits === '0') {
@@ -1366,12 +1367,12 @@ export async function purchaseEvaluationAnalysis(
       retryable: false,
       reasonCodes: [ReasonCodes.PURCHASE_AMOUNT_REQUIRED],
     });
-    return errorResponse(requestId, err);
+    return errorResponse(requestId, err, undefined, auth);
   }
 
   try {
     const result = await analysisProtocol.purchaseEvaluation(ledger, params);
-    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+    return okResponse(requestId, freshness, auth, result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
@@ -1380,7 +1381,7 @@ export async function purchaseEvaluationAnalysis(
       retryable: true,
       reasonCodes: ['analysis_error'],
     });
-    return errorResponse(requestId, errInfo);
+    return errorResponse(requestId, errInfo, undefined, auth);
   }
 }
 

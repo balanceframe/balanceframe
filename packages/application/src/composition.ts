@@ -555,10 +555,9 @@ export async function createNativeAnalysisProtocol(
       dimensions: dims.map((d: unknown) => {
         const dim = d as Record<string, unknown>;
         return {
-          name: String(dim.name ?? ''),
+          dimension: String(dim.dimension ?? dim.name ?? ''),
           score: typeof dim.score === 'number' ? dim.score : null,
-          severity: String(dim.severity ?? 'unknown'),
-          details: Array.isArray(dim.details) ? dim.details.map(String) : [],
+          explanation: String(dim.explanation ?? (Array.isArray(dim.details) ? dim.details[0] : undefined) ?? ''),
           worstSeverity: typeof dim.worstSeverity === 'string' ? dim.worstSeverity : null,
         };
       }),

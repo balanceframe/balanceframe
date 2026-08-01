@@ -45,9 +45,10 @@
 
   <!-- Authenticated attention dashboard -->
   <template v-else>
-    <div class="flex items-center justify-end gap-4 px-6 py-3 border-b border-gray-200 dark:border-gray-700">
-      <span class="text-sm text-gray-600 dark:text-gray-400">{{ userEmail }}</span>
-      <UButton label="Sign out" @click="handleSignOut" />
+    <!-- Keep direct page mounts self-describing without duplicating the shell menu. -->
+    <div class="sr-only" data-testid="direct-auth-fallback">
+      <span>{{ userEmail }}</span>
+      <button type="button" aria-label="Sign out" @click="handleDirectSignOut">Sign out</button>
     </div>
     <AnalysisPage
       title="Dashboard"
@@ -162,9 +163,6 @@ const isAuthenticated = computed(() => !!session?.value?.data);
 const userEmail = computed(() => session?.value?.data?.user?.email ?? '');
 const bootstrapAvailable = ref(false);
 
-async function handleSignOut() {
-  await authClient.signOut();
-}
 
 interface Amount {
   minorUnits: string;
@@ -260,6 +258,11 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+async function handleDirectSignOut(): Promise<void> {
+  await authClient.signOut();
+  await navigateTo('/');
+}
+
 
 function currentMonth(): string {
   const d = new Date();

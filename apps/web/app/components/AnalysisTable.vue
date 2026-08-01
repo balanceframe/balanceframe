@@ -1,13 +1,25 @@
 <template>
   <div class="overflow-x-auto rounded-md border border-gray-200 dark:border-gray-700">
-    <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
+    <table
+      class="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm"
+      :aria-label="ariaLabel"
+    >
       <thead class="bg-gray-50 dark:bg-gray-800">
         <tr>
           <th v-for="col in columns" :key="col.key"
             scope="col"
             class="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider"
           >
-            {{ col.label }}
+            <button
+              class="flex items-center gap-1 w-full text-left cursor-pointer focus-visible:outline-2 focus-visible:outline-primary-500 focus-visible:outline-offset-2"
+              tabindex="0"
+              :aria-label="`Sort by ${col.label}`"
+              :aria-sort="sortKey === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+              @click="$emit('sort', col.key)"
+            >
+              {{ col.label }}
+              <span v-if="sortKey === col.key" class="text-[10px]">{{ sortDir === 'asc' ? '▲' : '▼' }}</span>
+            </button>
           </th>
         </tr>
       </thead>
@@ -50,6 +62,13 @@ interface Column {
 defineProps<{
   columns: Column[];
   rows: Record<string, unknown>[];
+  ariaLabel?: string;
+  sortKey?: string;
+  sortDir?: 'asc' | 'desc';
+}>();
+
+defineEmits<{
+  sort: [key: string];
 }>();
 
 function badgeClass(value: string): string {

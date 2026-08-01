@@ -1224,10 +1224,9 @@ export interface FinancialStateOutput {
  * Fields match the shape returned by the analytics native addon.
  */
 export interface QualityDimension {
-  name: string;
+  dimension: string;
   score: number | null;
-  severity: string;
-  details: string[];
+  explanation: string;
   worstSeverity: string | null;
 }
 
