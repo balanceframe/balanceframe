@@ -8,10 +8,12 @@
  */
 
 import { defineEventHandler, readBody, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, requireAuthorization, sanitizeError } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const authCheck = await requireAuthorization(event, 'notification:admin');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
   const requestId = crypto.randomUUID();
 
   let body: Record<string, unknown>;
@@ -26,6 +28,22 @@ export default defineEventHandler(async (event) => {
   if (!spaceId) {
     setResponseStatus(event, 400);
     return errorEnvelope('MISSING_SPACE_ID', 'spaceId is required.', authInfo, false, requestId);
+  }
+
+  const auth = event.context.auth as {
+    spaceId?: unknown;
+    user?: { spaceId?: unknown; space_id?: unknown };
+  } | undefined;
+  const authorizedSpace = typeof auth?.spaceId === 'string'
+    ? auth.spaceId.trim()
+    : typeof auth?.user?.spaceId === 'string'
+      ? auth.user.spaceId.trim()
+      : typeof auth?.user?.space_id === 'string'
+        ? auth.user.space_id.trim()
+        : '';
+  if (authorizedSpace && authorizedSpace !== spaceId) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('SPACE_SCOPE_MISMATCH', 'The requested space is outside the authorized scope.', authInfo, false, requestId);
   }
 
   const policyKey = typeof body.policyKey === 'string' ? body.policyKey.trim() : 'delivery';

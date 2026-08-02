@@ -2772,7 +2772,7 @@ fn test_purchase_evaluation_with_uncleared_transactions() {
     // properly counted as pending/uncleared totals.
     let snapshot = ProtocolSnapshot {
         accounts: vec![Account {
-            id: "a1".into(),
+            id: "acct1".into(),
             name: "Checking".into(),
             account_type: "checking".into(),
             off_budget: false,
@@ -2851,6 +2851,102 @@ fn test_purchase_evaluation_with_uncleared_transactions() {
     // Budget 50000 - 10000 proposed = 40000 remaining, so it should be allowable
     assert!(result.allowable);
     assert_eq!(result.category_budget.minor_units(), 50000);
+}
+#[test]
+fn purchase_evaluation_uses_requested_account_balance() {
+    let mut proposed = sample_transaction("proposed-account", Some("cat1"), -1000);
+    proposed.account_id = "acct2".into();
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![
+            Account {
+                id: "acct1".into(), name: "Low".into(), account_type: "checking".into(),
+                off_budget: false, is_closed: false, cleared_balance: Money::new(1000, "USD"),
+                imported_balance: Money::new(1000, "USD"), mtid: None,
+            },
+            Account {
+                id: "acct2".into(), name: "High".into(), account_type: "checking".into(),
+                off_budget: false, is_closed: false, cleared_balance: Money::new(100000, "USD"),
+                imported_balance: Money::new(100000, "USD"), mtid: None,
+            },
+        ],
+        categories: vec![sample_category("cat1", "Food", false)],
+        budgets: vec![],
+        ..empty_snapshot()
+    };
+    let result = evaluate_purchase(PurchaseEvaluationRequest {
+        snapshot, proposed_transaction: proposed, category_id: "cat1".into(),
+    });
+    assert_eq!(result.projected_balance.unwrap().minor_units(), 100000);
+}
+
+#[test]
+fn purchase_evaluation_uses_newest_budget_month_not_first() {
+    let category = |amount| {
+        let mut categories = std::collections::HashMap::new();
+        categories.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
+            category_id: "cat1".into(), amount: Money::new(amount, "USD"),
+            carryover: Money::new(0, "USD"), carryover_from_previous: Money::new(0, "USD"),
+            carries_over: false,
+        });
+        categories
+    };
+    let snapshot = ProtocolSnapshot {
+        categories: vec![sample_category("cat1", "Food", false)],
+        budgets: vec![
+            balanceframe_financial_core::BudgetMonth { id: "old".into(), month: "2026-06".into(), categories: category(1000) },
+            balanceframe_financial_core::BudgetMonth { id: "current".into(), month: "2026-07".into(), categories: category(100000) },
+        ],
+        ..empty_snapshot()
+    };
+    let result = evaluate_purchase(PurchaseEvaluationRequest {
+        snapshot, proposed_transaction: sample_transaction("proposed-month", Some("cat1"), -5000),
+        category_id: "cat1".into(),
+    });
+    assert_eq!(result.category_budget.minor_units(), 100000);
+}
+
+#[test]
+fn purchase_evaluation_stale_bank_sync_is_not_allowable_with_cached_balance() {
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![Account {
+            id: "acct1".into(), name: "Checking".into(), account_type: "checking".into(),
+            off_budget: false, is_closed: false, cleared_balance: Money::new(100000, "USD"),
+            imported_balance: Money::new(100000, "USD"), mtid: None,
+        }],
+        categories: vec![sample_category("cat1", "Food", false)],
+        bank_synced_at: Some("2026-07-01T00:00:00Z".into()),
+        ..empty_snapshot()
+    };
+    let result = evaluate_purchase(PurchaseEvaluationRequest {
+        snapshot, proposed_transaction: sample_transaction("proposed-stale", Some("cat1"), -1000),
+        category_id: "cat1".into(),
+    });
+    assert!(!result.allowable);
+    assert!(result.reason_codes.contains(&"stale_bank_sync".to_string()));
+}
+
+#[test]
+fn purchase_evaluation_does_not_double_count_pending_and_uncleared() {
+    let mut pending = sample_transaction("pending", Some("cat1"), -5000);
+    pending.cleared = false;
+    let mut uncleared = sample_transaction("uncleared", Some("cat1"), -4000);
+    uncleared.cleared = true;
+    uncleared.reconciled = false;
+    let snapshot = ProtocolSnapshot {
+        accounts: vec![Account {
+            id: "acct1".into(), name: "Checking".into(), account_type: "checking".into(),
+            off_budget: false, is_closed: false, cleared_balance: Money::new(100000, "USD"),
+            imported_balance: Money::new(100000, "USD"), mtid: None,
+        }],
+        transactions: vec![pending, uncleared],
+        categories: vec![sample_category("cat1", "Food", false)],
+        ..empty_snapshot()
+    };
+    let result = evaluate_purchase(PurchaseEvaluationRequest {
+        snapshot, proposed_transaction: sample_transaction("proposed-totals", Some("cat1"), -1000),
+        category_id: "cat1".into(),
+    });
+    assert_eq!(result.projected_balance.unwrap().minor_units(), 91000);
 }
 
 #[test]

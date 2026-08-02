@@ -599,6 +599,31 @@ pub fn evaluate_purchase(
         reason_codes.push(PurchaseReasonCode::UncategorizedExposure.as_str().to_string());
     }
 
+    // A stale snapshot without a current account balance cannot support any
+    // reliable evaluation.
+    if has_stale_snapshot && account_balance.is_none() {
+        let ev = build_evidence(
+            category_budget,
+            category_spent,
+            account_balance,
+            pending_total,
+            uncategorized_total,
+            uncleared_total,
+            policy,
+            data_policy,
+            rollover_available,
+            donor_available,
+        )?;
+        return Ok(PurchaseOutcome {
+            label: FinancialStateLabel::Advice,
+            outcome: PurchaseOutcomeKind::InsufficientData,
+            reason_codes,
+            evidence: ev,
+            data_blockers,
+            transaction_semantic: semantic,
+        });
+    }
+
     // Insufficient data: uncategorized block mode with uncategorized txns
     if matches!(data_policy.uncategorized_mode, UncategorizedMode::Block)
         && !uncategorized_total.is_zero()
@@ -625,8 +650,9 @@ pub fn evaluate_purchase(
         });
     }
 
-    // Insufficient data: stale snapshot AND no account balance
-    if has_stale_snapshot && account_balance.is_none() {
+    // A stale bank sync invalidates cached balances.  Never approve or
+    // otherwise treat them as safe; callers must refresh the account data.
+    if has_stale_bank_sync {
         let ev = build_evidence(
             category_budget,
             category_spent,
@@ -1792,5 +1818,30 @@ mod tests {
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::FlaggedForReview);
         assert!(outcome.reason_codes.contains(&"exceeds_category_budget".to_string()));
         assert!(!outcome.reason_codes.contains(&"donor_covered".to_string()));
+    }
+
+    #[test]
+    fn stale_bank_sync_with_cached_balance_is_insufficient_data() {
+        let outcome = evaluate_purchase(
+            &usd(1000),
+            &usd(10000),
+            &usd(0),
+            Some(&usd(100000)),
+            &usd(0),
+            &usd(0),
+            &usd(0),
+            &default_policy(),
+            &default_data_policy(),
+            TransactionSemantic::Card,
+            None,
+            None,
+            false,
+            false,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.outcome, PurchaseOutcomeKind::InsufficientData);
+        assert!(outcome.reason_codes.contains(&"stale_bank_sync".to_string()));
     }
 }

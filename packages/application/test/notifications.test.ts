@@ -212,6 +212,12 @@ function createFixture(
   policyOverrides: Partial<NotificationPolicy> = {},
 ): RuntimeFixture {
   const store = createStoreMock();
+  store.getActorMembership.mockResolvedValue({
+    actorId: TEST_ACTOR_A,
+    status: 'active',
+    capabilities: ['notification:receive'],
+    scope: TEST_BUDGET,
+  });
   const adapter = new InAppChannelAdapter();
   const policy = defaultPolicy(policyOverrides);
   const runtime = new NotificationRuntime(store, policy, [adapter]);
@@ -738,6 +744,7 @@ describe('NotificationRuntime', () => {
       store.claimNotificationDelivery.mockResolvedValue(
         mockOutbox({ status: 'pending', attemptCount: 0 }),
       );
+      store.getNotificationEvent.mockResolvedValue(mockEvent());
 
       adapter.setHealthy(false);
 
@@ -825,11 +832,91 @@ describe('NotificationRuntime', () => {
       store.failNotificationDelivery.mockResolvedValue(
         mockOutbox({ status: 'failed', channelType: 'webhook' }),
       );
-
+      store.getNotificationEvent.mockResolvedValue(mockEvent());
       const outcome = await runtime.dispatch(TEST_OUTBOX_ID, 'tok_no_adapter');
 
       expect(outcome.status).toBe('failed');
       expect(outcome.errorMessage).toContain('No adapter registered');
+    });
+
+    it('suppresses delivery when the recipient is revoked after enqueue', async () => {
+      store.claimNotificationDelivery.mockResolvedValue(
+        mockOutbox({ status: 'pending', attemptCount: 1 }),
+      );
+      store.getNotificationEvent.mockResolvedValue(mockEvent());
+      store.getActorMembership.mockResolvedValue({
+        actorId: TEST_ACTOR_A,
+        status: 'revoked',
+        capabilities: ['notification:receive'],
+        scope: TEST_BUDGET,
+      });
+      store.failNotificationDelivery.mockResolvedValue(
+        mockOutbox({ status: 'failed', attemptCount: 2, failureReason: 'Recipient authorization revoked' }),
+      );
+      const deliver = vi.spyOn(adapter, 'deliver');
+      const audit = vi.fn();
+      runtime.setAuditHook(audit);
+
+      const outcome = await runtime.dispatch(TEST_OUTBOX_ID, 'tok_revoked');
+
+      expect(outcome).toEqual({
+        outboxId: TEST_OUTBOX_ID,
+        channelType: 'in_app',
+        status: 'failed',
+        attemptNumber: 2,
+        errorMessage: 'Recipient authorization revoked',
+      });
+      expect(deliver).not.toHaveBeenCalled();
+      expect(store.failNotificationDelivery).toHaveBeenCalledWith(
+        TEST_OUTBOX_ID,
+        'tok_revoked',
+        'Recipient authorization revoked',
+        false,
+      );
+      expect(audit).toHaveBeenCalledWith('notification_suppressed', expect.objectContaining({
+        outboxId: TEST_OUTBOX_ID,
+        eventId: TEST_EVENT_ID,
+        actorId: TEST_ACTOR_A,
+        reason: 're_authorization_failed',
+      }));
+    });
+
+    it('fails deterministically without egress when the event is missing', async () => {
+      store.claimNotificationDelivery.mockResolvedValue(mockOutbox());
+      store.getNotificationEvent.mockResolvedValue(null);
+      store.failNotificationDelivery.mockResolvedValue(mockOutbox({ status: 'failed' }));
+      const deliver = vi.spyOn(adapter, 'deliver');
+
+      const outcome = await runtime.dispatch(TEST_OUTBOX_ID, 'tok_missing_event');
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome.errorMessage).toBe('Referenced event not found');
+      expect(deliver).not.toHaveBeenCalled();
+      expect(store.failNotificationDelivery).toHaveBeenCalledWith(
+        TEST_OUTBOX_ID,
+        'tok_missing_event',
+        'Event not found',
+        false,
+      );
+    });
+
+    it('fails deterministically without egress when the event has no recipient', async () => {
+      store.claimNotificationDelivery.mockResolvedValue(mockOutbox());
+      store.getNotificationEvent.mockResolvedValue(mockEvent({ recipientId: null }));
+      store.failNotificationDelivery.mockResolvedValue(mockOutbox({ status: 'failed' }));
+      const deliver = vi.spyOn(adapter, 'deliver');
+
+      const outcome = await runtime.dispatch(TEST_OUTBOX_ID, 'tok_missing_recipient');
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome.errorMessage).toBe('Recipient not found');
+      expect(deliver).not.toHaveBeenCalled();
+      expect(store.failNotificationDelivery).toHaveBeenCalledWith(
+        TEST_OUTBOX_ID,
+        'tok_missing_recipient',
+        'Recipient not found',
+        false,
+      );
     });
   });
 

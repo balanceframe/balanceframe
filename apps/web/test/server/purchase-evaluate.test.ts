@@ -14,10 +14,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Hoisted mocks — available inside vi.mock factories
 // ---------------------------------------------------------------------------
 
-const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol } = vi.hoisted(() => ({
+const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol, mockRequireAuthorization } = vi.hoisted(() => ({
   mockRestore: vi.fn(),
   mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
   mockCreateNativeAnalysisProtocol: vi.fn(),
+  mockRequireAuthorization: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -50,8 +51,8 @@ vi.mock('h3', () => ({
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: vi.fn(() => ({ store: {} })),
   buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  requireAuthorization: mockRequireAuthorization,
   getActorId: vi.fn(() => 'test-actor'),
-  sanitizeError: vi.fn((err, requestId, code, retryable) => ({ code, message: String(err), retryable })),
   okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
@@ -86,6 +87,11 @@ describe('GET /api/purchase/evaluate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    mockRequireAuthorization.mockResolvedValue({
+      ok: true,
+      info: { actorId: 'test-actor', capability: 'observe', allowed: true },
+    });
+
     // Default: connected ledger + protocol available
     mockRestore.mockResolvedValue({
       connector: { name: 'mock-connector' },
@@ -95,6 +101,18 @@ describe('GET /api/purchase/evaluate', () => {
     mockCreateNativeAnalysisProtocol.mockResolvedValue({
       purchaseEvaluation: vi.fn(),
     });
+  });
+
+  it('rejects unauthenticated callers before restoring the ledger', async () => {
+    mockRequireAuthorization.mockResolvedValueOnce({
+      ok: false,
+      info: null,
+      response: { status: 'error', error: { code: 'AUTHORIZATION_REQUIRED' } },
+    });
+    const response = await handler({ query: { categoryId: 'cat', amount: '100' }, context: {} });
+    expect(response.status).toBe('error');
+    expect(response.error?.code).toBe('AUTHORIZATION_REQUIRED');
+    expect(mockRestore).not.toHaveBeenCalled();
   });
 
   it('must delegate to purchaseEvaluationAnalysis and return non-stub data', async () => {

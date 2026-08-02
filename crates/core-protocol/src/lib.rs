@@ -1554,8 +1554,8 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
     let snapshot = &request.snapshot;
     let category_id = &request.category_id;
 
-    // Find the category definition
-    let _category = match snapshot.categories.iter().find(|c| c.id == *category_id) {
+    // Find the category definition.
+    let category = match snapshot.categories.iter().find(|c| c.id == *category_id) {
         Some(cat) => cat,
         None => {
             return PurchaseEvaluation {
@@ -1569,11 +1569,32 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
         }
     };
 
-    // Find the current budget month
-    let budget_month = snapshot.budgets.iter().find(|bm| {
-        let month_start = format!("{}-01", &bm.month);
-        month_start <= snapshot.snapshot_date
-    });
+    // The proposed transaction identifies the account to evaluate.  Never
+    // silently substitute an unrelated account when it is absent.
+    let account = snapshot
+        .accounts
+        .iter()
+        .find(|account| account.id == request.proposed_transaction.account_id);
+    if !snapshot.accounts.is_empty() && account.is_none() {
+        let zero = fc::Money::zero("USD");
+        return PurchaseEvaluation {
+            allowable: false,
+            reason_codes: vec!["account_unavailable".into()],
+            category_budget: zero.clone(),
+            category_spent: zero.clone(),
+            category_remaining: zero,
+            projected_balance: None,
+        };
+    }
+    let account_balance = account.map(|account| &account.cleared_balance);
+
+    // Select the latest month that is not after the snapshot date.  Input
+    // ordering is not a semantic signal.
+    let budget_month = snapshot
+        .budgets
+        .iter()
+        .filter(|bm| format!("{}-01", bm.month) <= snapshot.snapshot_date)
+        .max_by(|left, right| left.month.cmp(&right.month));
 
     let category_is_budgeted = budget_month
         .map_or(false, |bm| bm.categories.contains_key(category_id));
@@ -1582,55 +1603,119 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
         .map(|bc| bc.amount.clone())
         .unwrap_or_else(|| fc::Money::new(0, "USD"));
 
-    // Sum spent amounts for this category from current transactions
-    let spent_minor: i64 = snapshot
-        .transactions
-        .iter()
-        .filter(|tx| tx.category_id.as_deref() == Some(category_id))
-        .filter_map(|tx| tx.amount.minor_units().checked_abs())
-        .sum();
-
-    let category_spent = fc::Money::new(spent_minor, "USD");
-
-    // Compute pending/uncategorized/uncleared totals from snapshot
-    let pending_total = snapshot
-        .transactions
-        .iter()
-        .filter(|tx| !tx.cleared)
-        .filter_map(|tx| {
-            let amt = tx.amount.minor_units();
-            if amt < 0 { Some(amt.unsigned_abs() as i64) } else { None }
+    // Checked totals keep malformed/extreme snapshots conservative.
+    let checked_outflow_total = |transactions: &[Transaction]| -> Option<i64> {
+        transactions.iter().try_fold(0_i64, |total, tx| {
+            let amount = tx.amount.minor_units();
+            if amount < 0 {
+                total.checked_add(amount.checked_abs()?)
+            } else {
+                Some(total)
+            }
         })
-        .sum::<i64>();
+    };
+    let category_spent = match checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| tx.category_id.as_deref() == Some(category_id))
+            .cloned()
+            .collect::<Vec<_>>(),
+    ) {
+        Some(total) => fc::Money::new(total, "USD"),
+        None => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent: fc::Money::zero("USD"),
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
 
-    let uncategorized_total = snapshot
-        .transactions
-        .iter()
-        .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
-        .filter_map(|tx| {
-            let amt = tx.amount.minor_units();
-            if amt < 0 { Some(amt.unsigned_abs() as i64) } else { None }
-        })
-        .sum::<i64>();
+    let pending_total = checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| !tx.cleared)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let uncleared_total = checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| tx.cleared && !tx.reconciled)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let (pending_total, uncleared_total) = match (pending_total, uncleared_total) {
+        (Some(pending), Some(uncleared)) => (pending, uncleared),
+        _ => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent,
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
+
+    let uncategorized_total = match checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
+            .cloned()
+            .collect::<Vec<_>>(),
+    ) {
+        Some(total) => total,
+        None => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent,
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
 
     let pending = fc::Money::new(pending_total, "USD");
     let uncategorized = fc::Money::new(uncategorized_total, "USD");
-    let uncleared = fc::Money::new(pending_total, "USD"); // approximate
+    let uncleared = fc::Money::new(uncleared_total, "USD");
 
-    // Account balance from first account
-    let account_balance = snapshot.accounts.first().map(|a| a.cleared_balance.clone());
+    let proposed_minor = match request.proposed_transaction.amount.minor_units().checked_abs() {
+        Some(amount) => amount,
+        None => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent,
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
+    let proposed_amount = fc::Money::new(proposed_minor, "USD");
 
-    let proposed_amount = fc::Money::new(
-        request.proposed_transaction.amount.minor_units().unsigned_abs() as i64,
-        "USD",
-    );
+    let has_stale_bank_sync = snapshot.bank_synced_at.as_deref().is_some_and(|synced| {
+        synced.get(..10).map_or(true, |date| date < snapshot.snapshot_date.get(..10).unwrap_or(""))
+    });
+
 
     // Delegate to financial-core engine
     let outcome = fc_evaluate(
         &proposed_amount,
         &budget_amount,
         &category_spent,
-        account_balance.as_ref(),
+        account_balance,
         &pending,
         &uncategorized,
         &uncleared,
@@ -1641,7 +1726,7 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
         None,
         false,
         false,
-        false,
+        has_stale_bank_sync,
     );
 
     match outcome {
@@ -1677,8 +1762,8 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
             reason_codes: vec!["evaluation_error".into()],
             category_budget: budget_amount.clone(),
             category_spent,
-            category_remaining: budget_amount,
-            projected_balance: account_balance,
+            category_remaining: budget_amount.clone(),
+            projected_balance: None,
         },
     }
 }

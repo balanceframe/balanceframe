@@ -1,8 +1,7 @@
 /**
  * GET /api/purchase/evaluate — evaluate a proposed purchase against budget.
  *
- * Read-only deterministic analysis — no model or cloud invocation.
- * Skips authorization gates — results are always observable.
+ * Requires the observe capability before parsing or restoring any ledger connection.
  *
  * Query params: categoryId (required), amount (required), accountId (optional)
  * Response envelope: PurchaseEvaluationOutput
@@ -16,7 +15,7 @@ import {
 import type { CommandInput, PurchaseEvaluationParams } from '@balanceframe/application';
 import type { Money } from '@balanceframe/protocol-generated';
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, requireAuthorization, getActorId, sanitizeError } from '../../utils/workflow-store';
 
 /** Map an analysis error code to an HTTP status. */
 function httpStatusForCode(code: string): number {
@@ -39,7 +38,9 @@ function httpStatusForCode(code: string): number {
 }
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const authCheck = await requireAuthorization(event, 'observe');
+  if (!authCheck.ok) return authCheck.response;
+  const authInfo = authCheck.info;
   const requestId = crypto.randomUUID();
   const query = getQuery(event);
 

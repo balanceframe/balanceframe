@@ -504,9 +504,10 @@ export class NotificationRuntime {
   private async storeBackedReAuth(
     actorId: string,
     requiredCapability: string,
+    scope: string = '',
   ): Promise<boolean> {
     if (this.reAuthHook) {
-      return this.reAuthHook(actorId, requiredCapability, '');
+      return this.reAuthHook(actorId, requiredCapability, scope);
     }
     // Fallback: check store membership directly
     try {
@@ -660,6 +661,53 @@ export class NotificationRuntime {
       };
     }
 
+    const event = await this.store.getNotificationEvent(record.eventId);
+    if (!event) {
+      await this.store.failNotificationDelivery(outboxId, claimToken, 'Event not found', false);
+      return {
+        outboxId,
+        channelType: record.channelType,
+        status: 'failed',
+        attemptNumber: record.attemptCount + 1,
+        errorMessage: 'Referenced event not found',
+      };
+    }
+
+    const recipientId = event.recipientId;
+    if (!recipientId) {
+      await this.store.failNotificationDelivery(outboxId, claimToken, 'Recipient not found', false);
+      return {
+        outboxId,
+        channelType: record.channelType,
+        status: 'failed',
+        attemptNumber: record.attemptCount + 1,
+        errorMessage: 'Recipient not found',
+      };
+    }
+
+    const eligibilityRule = this.policy.eligibility.find(rule =>
+      rule.classifications.includes(event.classification),
+    );
+    const requiredCapability = eligibilityRule?.requiredCapability ?? 'notification:receive';
+    const authorized = await this.storeBackedReAuth(recipientId, requiredCapability, event.scope ?? '');
+    if (!authorized) {
+      const reason = 'Recipient authorization revoked';
+      await this.store.failNotificationDelivery(outboxId, claimToken, reason, false);
+      await this.recordAudit('notification_suppressed', {
+        outboxId,
+        eventId: event.id,
+        actorId: recipientId,
+        reason: 're_authorization_failed',
+      });
+      return {
+        outboxId,
+        channelType: record.channelType,
+        status: 'failed',
+        attemptNumber: record.attemptCount + 1,
+        errorMessage: reason,
+      };
+    }
+
     const adapter = this.adapters.get(record.channelType as ChannelType);
     if (!adapter) {
       await this.store.failNotificationDelivery(
@@ -695,17 +743,6 @@ export class NotificationRuntime {
     }
 
     try {
-      const event = await this.store.getNotificationEvent(record.eventId);
-      if (!event) {
-        await this.store.failNotificationDelivery(outboxId, claimToken, 'Event not found', false);
-        return {
-          outboxId,
-          channelType: record.channelType,
-          status: 'failed',
-          attemptNumber: record.attemptCount + 1,
-          errorMessage: 'Referenced event not found',
-        };
-      }
 
       const payload = JSON.parse(event.payload);
       const result = await adapter.deliver(payload, record.deliveryKey);

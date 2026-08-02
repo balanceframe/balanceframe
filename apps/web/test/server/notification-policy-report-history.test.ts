@@ -5,11 +5,15 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const { mockReadBody, mockGetWorkflowStore, mockGetQuery, mockGetRouterParam } = vi.hoisted(() => ({
+const { mockReadBody, mockGetWorkflowStore, mockGetQuery, mockGetRouterParam, mockRequireAuthorization } = vi.hoisted(() => ({
   mockReadBody: vi.fn(),
   mockGetWorkflowStore: vi.fn(),
   mockGetQuery: vi.fn(() => ({})),
   mockGetRouterParam: vi.fn(),
+  mockRequireAuthorization: vi.fn(() => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'notification:admin', allowed: true },
+  })),
 }));
 
 vi.mock('h3', () => ({
@@ -30,6 +34,7 @@ const mockStore = {
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: vi.fn(() => ({ store: mockStore })),
   buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  requireAuthorization: mockRequireAuthorization,
   getActorId: vi.fn(() => 'test-actor'),
   sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
   okEnvelope: (r) => ({ schemaVersion: '1', requestId: 'tr', status: 'ok', result: r, error: null }),
