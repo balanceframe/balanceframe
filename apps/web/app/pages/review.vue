@@ -56,7 +56,6 @@
           @click="handleSync"
         />
       </div>
-    </div>
 
     <!-- Error state (API errors, not empty queue) -->
     <UAlert

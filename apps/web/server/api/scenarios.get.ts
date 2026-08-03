@@ -12,7 +12,7 @@ import {
 } from '@balanceframe/application';
 import type { CommandInput, ScenarioComparisonParams } from '@balanceframe/application';
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError, envelopeMetadata } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError, envelopeMetadata } from '../utils/workflow-store';
 
 function httpStatusForCode(code: string): number {
   if (code.includes('not_connected') || code.includes('no_analysis') || code.startsWith('stale_')) return 503;

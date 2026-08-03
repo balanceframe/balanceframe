@@ -12,7 +12,7 @@ import {
 } from '@balanceframe/application';
 import type { CommandInput } from '@balanceframe/application';
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError, envelopeMetadata } from '../../utils/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError, envelopeMetadata } from '../utils/workflow-store';
 
 /** Map an analysis error code to an HTTP status. */
 function httpStatusForCode(code: string): number {
