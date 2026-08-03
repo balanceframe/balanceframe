@@ -183,7 +183,7 @@ const currency = ref('USD');
 const accountId = ref('');
 const result = ref<PurchaseResult | null>(null);
 
-const canEvaluate = computed(() => categoryId.value.trim() && amountStr.value.trim());
+const canEvaluate = computed(() => Boolean(String(categoryId.value ?? '').trim() && String(amountStr.value ?? '').trim()));
 
 const verdictLabel = computed(() => {
   switch (result.value?.verdict) {
@@ -211,11 +211,13 @@ async function evaluate() {
   result.value = null;
   try {
     const query: Record<string, string> = {
-      categoryId: categoryId.value.trim(),
-      amount: amountStr.value.trim(),
+      categoryId: String(categoryId.value ?? '').trim(),
+      amount: String(amountStr.value ?? '').trim(),
     };
-    if (currency.value.trim()) query.currency = currency.value.trim();
-    if (accountId.value.trim()) query.accountId = accountId.value.trim();
+    const normalizedCurrency = String(currency.value ?? '').trim();
+    const normalizedAccountId = String(accountId.value ?? '').trim();
+    if (normalizedCurrency) query.currency = normalizedCurrency;
+    if (normalizedAccountId) query.accountId = normalizedAccountId;
 
     const res = await $fetch<{ status: string; result: PurchaseResult }>('/api/purchase/evaluate', { query });
     if (res.status === 'ok') result.value = res.result;

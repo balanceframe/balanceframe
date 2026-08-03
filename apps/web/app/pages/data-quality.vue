@@ -41,7 +41,6 @@
 </template>
 
 <script setup lang="ts">
-import type { Amount } from '../components/types';
 
 definePageMeta({ layout: 'default' });
 
@@ -50,7 +49,22 @@ interface QualityDimension {
   score: number | null;
   severity: string;
   details: string[];
+}
+
+interface QualityDimensionApi {
+  name?: string;
+  dimension?: string;
+  score: number | null;
+  severity?: string;
+  explanation?: string;
+  details?: string[];
   worstSeverity: string | null;
+}
+
+interface DataQualityResult {
+  overallScore: number | null;
+  dimensions: QualityDimensionApi[];
+  recommendations: string[];
 }
 
 interface Envelope<T> {
@@ -62,6 +76,17 @@ interface Envelope<T> {
   result: T | null;
   error: { code: string; message: string; retryable: boolean } | null;
 }
+
+const displayScore = (score: number | null): number | null =>
+  score !== null && score >= 0 && score <= 1 ? score * 100 : score;
+
+const normalizeDimension = (dimension: QualityDimensionApi): QualityDimension => ({
+  name: dimension.name ?? dimension.dimension ?? 'Unknown',
+  score: displayScore(dimension.score),
+  severity: dimension.severity ?? dimension.worstSeverity ?? 'unknown',
+  details: dimension.details ?? (dimension.explanation ? [dimension.explanation] : []),
+});
+
 
 const loading = ref(true);
 const error = ref<{ code: string; message: string } | null>(null);
@@ -90,10 +115,10 @@ const dimensionRows = computed(() =>
 
 onMounted(async () => {
   try {
-    const res = await $fetch<Envelope<{ overallScore: number | null; dimensions: QualityDimension[]; recommendations: string[] }>>('/api/data-quality');
+    const res = await $fetch<Envelope<DataQualityResult>>('/api/data-quality');
     if (res.status === 'ok' && res.result) {
-      overallScore.value = res.result.overallScore;
-      dimensions.value = res.result.dimensions;
+      overallScore.value = displayScore(res.result.overallScore);
+      dimensions.value = res.result.dimensions.map(normalizeDimension);
       recommendations.value = res.result.recommendations;
       freshness.value = res.dataFreshness;
     } else {

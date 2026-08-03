@@ -112,9 +112,18 @@ function setAuthContext(
   actorId: string,
   user?: Record<string, unknown>,
 ): void {
-  const ctx: { authenticated: true; actorId: string; user?: Record<string, unknown> } = {
+  // Better Auth's user ID is the canonical workflow/notification member key.
+  // Keep legacy actor IDs for token and dev-bypass flows, but never let a
+  // stale fallback replace the identity carried by an authenticated session.
+  const canonicalActorId =
+    typeof user?.id === 'string' && user.id.length > 0 ? user.id : actorId;
+  const ctx: {
+    authenticated: true;
+    actorId: string;
+    user?: Record<string, unknown>;
+  } = {
     authenticated: true,
-    actorId,
+    actorId: canonicalActorId,
   };
   if (user) ctx.user = user;
   event.context.auth = ctx;

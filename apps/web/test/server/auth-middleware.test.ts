@@ -7,11 +7,11 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type {
-  ApiEnvelope,
-  AuthorizationInfo,
+import {
+  getActorId,
+  type ApiEnvelope,
+  type AuthorizationInfo,
 } from '../../server/utils/workflow-store';
-
 // ---------------------------------------------------------------------------
 // Mock h3 module — must be before importing the middleware
 // ---------------------------------------------------------------------------
@@ -76,7 +76,11 @@ import authMiddleware from '../../server/middleware/auth';
 interface MockMiddlewareEvent {
   context: {
     runtimeConfig?: Record<string, unknown>;
-    auth?: { authenticated: boolean; actorId?: string };
+    auth?: {
+      authenticated: boolean;
+      actorId?: string;
+      user?: Record<string, unknown>;
+    };
   };
   body?: Record<string, unknown>;
 }
@@ -191,6 +195,20 @@ describe('auth middleware — Better Auth session', () => {
     });
   });
 });
+
+  it('uses the Better Auth user ID when an older actor fallback is present', () => {
+    const event = mockEvent({
+      context: {
+        auth: {
+          authenticated: true,
+          actorId: 'api-user',
+          user: { id: 'owner-from-session', email: 'owner@example.com' },
+        },
+      },
+    });
+
+    expect(getActorId(event)).toBe('owner-from-session');
+  });
 
 describe('auth middleware — no token configured (fail closed)', () => {
   beforeEach(() => {

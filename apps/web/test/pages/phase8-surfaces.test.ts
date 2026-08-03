@@ -250,6 +250,27 @@ describe('Purchase Check page', () => {
     expect(btn.attributes('disabled')).toBeDefined();
   });
 
+  it('enables Evaluate from UInput update:modelValue events and sends the expected query', async () => {
+    mockFetch.mockResolvedValue(okEnvelope(safeResult));
+    const wrapper = shallowMount(PurchaseCheckPage, { global: { stubs: purchaseStubs } });
+    await flushPromises();
+
+    const inputs = wrapper.findAllComponents(purchaseStubs.UInput);
+    inputs[0].vm.$emit('update:modelValue', 'cg');
+    inputs[1].vm.$emit('update:modelValue', 5000);
+    await wrapper.vm.$nextTick();
+
+    const button = wrapper.find('button');
+    expect(button.attributes('disabled')).toBeUndefined();
+    await button.trigger('click');
+    await flushPromises();
+
+    expect(mockFetch).toHaveBeenCalledWith('/api/purchase/evaluate', {
+      query: { categoryId: 'cg', amount: '5000', currency: 'USD' },
+    });
+  });
+
+
   it('calls /api/purchase/evaluate with category and amount', async () => {
     const wrapper = await mountAndEvaluate(safeResult);
     expect(mockFetch).toHaveBeenCalledWith('/api/purchase/evaluate', expect.objectContaining({ query: expect.any(Object) }));

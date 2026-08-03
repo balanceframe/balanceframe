@@ -191,7 +191,11 @@ export interface EventWithContext {
   context: {
     [key: string]: unknown;
     runtimeConfig?: Record<string, unknown>;
-    auth?: { authenticated: boolean; actorId?: string };
+    auth?: {
+      authenticated: boolean;
+      actorId?: string;
+      user?: Record<string, unknown>;
+    };
   };
 }
 
@@ -264,8 +268,15 @@ export function getWorkflowStore(
 export function getActorId(
   event: EventWithContext,
 ): string {
-  if (!event.context.auth?.authenticated) return 'anonymous';
-  return event.context.auth.actorId || 'api-user';
+  const auth = event.context.auth;
+  if (!auth?.authenticated) return 'anonymous';
+
+  // Better Auth sessions carry the canonical member identity in user.id.
+  // Prefer it over a legacy actor fallback so notification re-authorization
+  // checks the same member that was bootstrapped for the authenticated user.
+  const userId = auth.user?.id;
+  if (typeof userId === 'string' && userId.length > 0) return userId;
+  return auth.actorId || 'api-user';
 }
 
 // ---------------------------------------------------------------------------
