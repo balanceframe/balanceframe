@@ -4605,7 +4605,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
       this.stmt.upsertActorMembershipStmt.run({
         actorId: input.ownerUserId,
         status: 'active',
-        capabilities: JSON.stringify(['categorization:execute', 'rule:execute']),
+        capabilities: JSON.stringify([
+          'observe',
+          'finding:transition',
+          'notification:receive',
+          'notification:admin',
+          'categorization:execute',
+          'rule:execute',
+        ]),
         scope: '*',
       });
 

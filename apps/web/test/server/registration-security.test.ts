@@ -34,6 +34,12 @@ describe('auth config — disableSignUp enforcement', () => {
     // Guard against a future toggle that would open public registration
     expect(source).not.toMatch(/disableSignUp:\s*false/);
   });
+
+  it('configures a stable Better Auth secret for browser sessions', () => {
+    const source = readAuthSource();
+    expect(source).toContain('secret:');
+    expect(source).toContain('BETTER_AUTH_SECRET');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1888,6 +1888,10 @@ describe('registration lifecycle', () => {
       const membership = await regStore.getActorMembership(OWNER_USER_ID);
       expect(membership).not.toBeNull();
       expect(membership!.status).toBe('active');
+      expect(membership!.capabilities).toContain('observe');
+      expect(membership!.capabilities).toContain('notification:receive');
+      expect(membership!.capabilities).toContain('notification:admin');
+      expect(membership!.capabilities).toContain('finding:transition');
       expect(membership!.capabilities).toContain('categorization:execute');
       expect(membership!.capabilities).toContain('rule:execute');
     });

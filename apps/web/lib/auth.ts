@@ -37,7 +37,7 @@ const BASE_URL = process.env.BETTER_AUTH_URL || 'http://localhost:3000';
 export const auth = betterAuth({
   database: db,
   baseURL: BASE_URL,
-
+  secret: process.env.BETTER_AUTH_SECRET || process.env.NUXT_BETTER_AUTH_SECRET,
   emailAndPassword: {
     enabled: true,
     /** Disable public self-registration — accounts must be created by an admin. */
