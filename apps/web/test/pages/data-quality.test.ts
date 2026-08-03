@@ -56,6 +56,20 @@ describe('Data Quality page', () => {
     expect(wrapper.text()).toContain('82');
   });
 
+  it('renders dimensions from the analysis API shape', async () => {
+    mockFetch.mockResolvedValue(okEnvelope({
+      overallScore: 50,
+      dimensions: [
+        { dimension: 'completeness', score: 0.5, explanation: '50% uncategorized.', worstSeverity: 'warning' },
+      ],
+      recommendations: ['Categorize transactions'],
+    }));
+    const wrapper = shallowMount(DataQualityPage, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('completeness');
+    expect(wrapper.text()).toContain('50% uncategorized.');
+  });
+
   it('renders quality dimension names', async () => {
     mockFetch.mockResolvedValue(okEnvelope(sampleResult));
     const wrapper = shallowMount(DataQualityPage, { global: { stubs } });
