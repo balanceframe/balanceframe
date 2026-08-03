@@ -3,6 +3,7 @@
  * Must display blockers, alerts, target progress, category risks.
  */
 import { describe, it, expect } from 'vitest';
+import { ref } from 'vue';
 
 describe('Attention Dashboard (/)', () => {
   it('should have a layout with review and rules links', () => {
