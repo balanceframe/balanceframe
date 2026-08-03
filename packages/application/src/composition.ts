@@ -51,10 +51,54 @@ import type {
   DisconnectResult,
   RemovalResult,
   DeletionResult,
+  PurchaseEvaluationResult,
+  PurchaseEvaluationParams,
+  CashFlowProjectionResult,
+  CashFlowProjectionParams,
+  TargetHealthResult,
+  SinkingFundHealthResult,
+  FinancialStateResult,
+  ReportGenerationResult,
+  ReportGenerationParams,
+  SavedViewsListResult,
+  CreateSavedViewResult,
+  CreateSavedViewParams,
+  AttentionHomeResult,
+  AttentionHomeParams,
+  CategoryHealthResult,
+  AttentionAlert,
+  AttentionBlocker,
+  RecurrencePattern,
+  CategoryRisk,
+  DataQualityResult,
+  QualityDimension,
+  LiquidityCoverageResult,
+  UpcomingObligation,
+  BillCalendarResult,
+  BillCalendarEntry,
+  BudgetVarianceResult,
+  CategoryVariance,
+  TrendDirection,
+  CategoryTrend,
+  IrregularObligationsResult,
+  IrregularObligation,
+  IrregularityKind,
+  IncomeReliabilityResult,
+  IncomeSource,
+  ForecastCalibrationResult,
+  CalibrationMetric,
+  ScenarioComparisonResult,
+  ScenarioComparisonDelta,
+  ScenarioComparisonParams,
+  MultidimensionalHealthResult,
+  HealthDimension,
 } from './commands.js';
 import type { DataFreshness } from './envelope.js';
 import { ReasonCodes } from './errors.js';
 import { ApplicationError } from './errors.js';
+import { NotificationRuntime, InAppChannelAdapter } from './notifications.js';
+import type { NotificationPolicy } from './notifications.js';
+import type { WorkflowStore } from '@balanceframe/workflow-store';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile, rename, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -107,9 +151,16 @@ export interface ObserveCompositionOptions {
   lifecycleCallbacks?: LifecycleCallbacks;
 
   /**
-   * Workflow store override for lifecycle operations.
+   * Workflow store override for lifecycle and (optionally) notification
+   * operations.
+   *
    * When provided, destructive lifecycle callbacks perform actual
    * cancellation, credential revocation, and scoped deletion.
+   *
+   * If the store also exposes the notification-store methods defined by
+   * {@link NotificationStoreMethods}, a {@link NotificationRuntime} is
+   * constructed automatically and exposed via
+   * {@link ObserveComposition.notificationRuntime}.
    */
   workflowStore?: {
     cancelPendingJobs(): Promise<number>;
@@ -117,7 +168,7 @@ export interface ObserveCompositionOptions {
     recordExport(input: { budgetName: string; exportPath: string; accountCount: number; transactionCount: number }): Promise<void>;
     getLastExport(): Promise<{ exportedAt: string; budgetName: string; exportPath: string; accountCount: number; transactionCount: number } | null>;
     deleteScopeData(scope: string, options?: { actorId?: string }): Promise<{ deleted: Record<string, number>; retained: { count: number; reasons: string[] } }>;
-  };
+  } & Partial<NotificationStoreMethods>;
 
   /** Actor ID override (default: 'usr_cli'). */
   actorId?: string;
@@ -139,6 +190,20 @@ export interface ObserveCompositionOptions {
    * `createDefaultActualClient` from `@balanceframe/actual-adapter`.
    */
   actualClientFactory?: () => Promise<unknown>;
+
+  /**
+   * Notification runtime override.
+   * When provided, the composition uses this instance instead of constructing
+   * one from the workflow store.
+   */
+  notificationRuntime?: NotificationRuntime;
+
+  /**
+   * Default notification policy for constructing the NotificationRuntime.
+   * Only used when `notificationRuntime` is not explicitly provided and a
+   * workflow store with notification capabilities is available.
+   */
+  notificationPolicy?: NotificationPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +250,69 @@ export interface ObserveComposition {
    * Lifecycle callbacks for export/disconnect/remove-connection/delete-data.
    */
   lifecycleCallbacks?: LifecycleCallbacks;
+
+  /**
+   * Notification runtime for policy evaluation and delivery.
+   * Populated when a workflow store with notification capabilities is
+   * available or when explicitly injected via options.
+   */
+  notificationRuntime: NotificationRuntime | null;
+}
+
+// ---------------------------------------------------------------------------
+// Notification store methods — subset of WorkflowStore for notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * The subset of {@link WorkflowStore} methods required by
+ * {@link NotificationRuntime}.
+ *
+ * When a store passed via {@link ObserveCompositionOptions.workflowStore}
+ * satisfies this interface structurally, a {@link NotificationRuntime} is
+ * constructed automatically (rather than defaulting to `null`).  The
+ * methods are declared as optional in the options type so that callers
+ * providing only lifecycle functionality are not broken.
+ */
+export type NotificationStoreMethods = Pick<WorkflowStore,
+  | 'createNotificationEvent'
+  | 'getNotificationEvent'
+  | 'enqueueNotification'
+  | 'claimNotificationDelivery'
+  | 'completeNotificationDelivery'
+  | 'failNotificationDelivery'
+  | 'acknowledgeNotification'
+  | 'suppressNotification'
+  | 'getOutboxRecord'
+  | 'getPendingNotifications'
+  | 'getRetryableNotifications'
+  | 'getDeliveryAttempts'
+  | 'listOutboxRecords'
+  | 'getNotificationPolicy'
+  | 'getActorMembership'
+  | 'appendAuditRecord'
+>;
+
+/**
+ * Type guard: returns `true` when `store` satisfies
+ * {@link NotificationStoreMethods} (i.e. it has all required notification
+ * methods).  Used in {@link createObserveComposition} to decide whether
+ * to construct a {@link NotificationRuntime} from a generic store.
+ */
+function isNotificationStore(
+  store: Record<string, unknown>,
+): store is NotificationStoreMethods {
+  const required: Array<keyof NotificationStoreMethods> = [
+    'createNotificationEvent',
+    'enqueueNotification',
+    'getNotificationEvent',
+    'getPendingNotifications',
+    'getRetryableNotifications',
+    'listOutboxRecords',
+    'getNotificationPolicy',
+    'getActorMembership',
+    'appendAuditRecord',
+  ];
+  return required.every((method) => typeof store[method] === 'function');
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +327,36 @@ export interface NativeBindingShim {
   analyzeDeterministic(input: string): string;
   analyzeSnapshot(input: string): string;
   findCategorizationCandidates(input: string): string;
+
+  // Phase 8 — Budget Intelligence N-API methods
+  /** Evaluate a proposed purchase against budget limits. */
+  evaluatePurchase(input: string): string;
+  /** Project future cash flow based on schedules and budgets. */
+  projectCashFlow(input: string): string;
+  /** Evaluate target/sinking-fund health. */
+  evaluateTargetHealth(input: string): string;
+  /** Evaluate overall financial state. */
+  evaluateFinancialState(input: string): string;
+
+  // Phase 8.5 — Extended deterministic analytics N-API methods
+  /** Compute composite data-quality report. */
+  computeDataQuality(input: string): string;
+  /** Compute liquidity coverage. */
+  computeLiquidityCoverage(input: string): string;
+  /** Compute bill calendar. */
+  computeBillCalendar(input: string): string;
+  /** Compute budget variance and trends. */
+  computeBudgetVariance(input: string): string;
+  /** Detect irregular obligations. */
+  detectIrregularObligations(input: string): string;
+  /** Assess income reliability. */
+  assessIncomeReliability(input: string): string;
+  /** Evaluate forecast calibration. */
+  evaluateForecastCalibration(input: string): string;
+  /** Compare two immutable scenarios. */
+  compareScenarios(input: string): string;
+  /** Compute multidimensional health assessment. */
+  evaluateMultidimensionalHealth(input: string): string;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +434,318 @@ export async function createNativeAnalysisProtocol(
   nativeOverride?: () => Promise<NativeBindingShim>,
 ): Promise<AnalysisProtocol> {
   const native = await loadNativeBindings(nativeOverride);
+
+  // -----------------------------------------------------------------------
+  // Helper functions — synchronize ledger and extract snapshot data
+  // -----------------------------------------------------------------------
+
+  /**
+   * Synchronize the ledger and extract the snapshot for analysis.
+   * If the ledger is not synchronizable, returns null.
+   */
+  const obtainSnapshot = async (ledger: unknown): Promise<unknown> => {
+    if (!isSynchronizableLedger(ledger)) return null;
+    const syncResult = await ledger.synchronize();
+    if (!syncResult || typeof syncResult !== 'object' || !('snapshot' in syncResult)) return null;
+    return (syncResult as Record<string, unknown>).snapshot;
+  };
+
+  // Native response parsing helpers -----------------------------------------
+
+  const asMoney = (value: unknown): { minorUnits: string; currency: string } | null => {
+    if (!value || typeof value !== 'object') return null;
+    const v = value as Record<string, unknown>;
+    return typeof v.minorUnits === 'string' && typeof v.currency === 'string'
+      ? { minorUnits: v.minorUnits, currency: v.currency }
+      : null;
+  };
+
+  const parsePurchaseResponse = (raw: string): PurchaseEvaluationResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluatePurchase returned invalid JSON.'); }
+    return {
+      allowable: parsed.allowable === true,
+      reasonCodes: Array.isArray(parsed.reasonCodes) ? parsed.reasonCodes.map(String) : ['unknown'],
+      categoryBudget: asMoney(parsed.categoryBudget) ?? { minorUnits: '0', currency: 'USD' },
+      categorySpent: asMoney(parsed.categorySpent) ?? { minorUnits: '0', currency: 'USD' },
+      categoryRemaining: asMoney(parsed.categoryRemaining) ?? { minorUnits: '0', currency: 'USD' },
+      projectedBalance: asMoney(parsed.projectedBalance),
+      hasEnvelope: parsed.hasEnvelope === true,
+    };
+  };
+
+  const parseCashFlowResponse = (raw: string, requestedMonths: number): CashFlowProjectionResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native projectCashFlow returned invalid JSON.'); }
+    const projections = Array.isArray(parsed.monthlyProjections) ? parsed.monthlyProjections : [];
+    return {
+      projectionMonths: requestedMonths,
+      monthlyProjections: projections.map((p: unknown) => {
+        const m = p as Record<string, unknown>;
+        return {
+          month: String(m.month ?? ''),
+          projectedIncome: asMoney(m.projectedIncome) ?? { minorUnits: '0', currency: 'USD' },
+          projectedExpenses: asMoney(m.projectedExpenses) ?? { minorUnits: '0', currency: 'USD' },
+          netChange: asMoney(m.netChange) ?? { minorUnits: '0', currency: 'USD' },
+          endingBalance: asMoney(m.endingBalance) ?? { minorUnits: '0', currency: 'USD' },
+          scheduledIncomeCount: typeof m.scheduledIncomeCount === 'number' ? m.scheduledIncomeCount : 0,
+          scheduledExpenseCount: typeof m.scheduledExpenseCount === 'number' ? m.scheduledExpenseCount : 0,
+        };
+      }),
+      sufficientData: parsed.sufficientData === true,
+      dataWarning: typeof parsed.dataWarning === 'string' ? parsed.dataWarning : null,
+    };
+  };
+
+  const parseTargetHealthResponse = (raw: string): TargetHealthResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluateTargetHealth returned invalid JSON.'); }
+    const categories = Array.isArray(parsed.categories) ? parsed.categories : [];
+    const mapped = categories.map((c: unknown) => {
+      const cat = c as Record<string, unknown>;
+      return {
+        categoryId: String(cat.categoryId ?? ''),
+        categoryName: String(cat.categoryName ?? ''),
+        budgeted: asMoney(cat.budgeted) ?? { minorUnits: '0', currency: 'USD' },
+        spent: asMoney(cat.spent) ?? { minorUnits: '0', currency: 'USD' },
+        remaining: asMoney(cat.remaining) ?? { minorUnits: '0', currency: 'USD' },
+        healthLabel: String(cat.healthLabel ?? 'unknown'),
+        isSinkingFund: cat.isSinkingFund === true,
+        targetAmount: asMoney(cat.targetAmount),
+        targetProgress: typeof cat.targetProgress === 'number' ? cat.targetProgress : null,
+      } as CategoryHealthResult;
+    });
+    return {
+      categories: mapped,
+      overallLabel: String(parsed.overallLabel ?? 'unknown'),
+      healthyCount: typeof parsed.healthyCount === 'number' ? parsed.healthyCount : 0,
+      atRiskCount: typeof parsed.atRiskCount === 'number' ? parsed.atRiskCount : 0,
+      sinkingFundCount: typeof parsed.sinkingFundCount === 'number' ? parsed.sinkingFundCount : 0,
+    };
+  };
+
+  const parseFinancialStateResponse = (raw: string): FinancialStateResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluateFinancialState returned invalid JSON.'); }
+    return {
+      overallLabel: String(parsed.overallLabel ?? 'unknown'),
+      netWorth: asMoney(parsed.netWorth) ?? { minorUnits: '0', currency: 'USD' },
+      monthlyCashFlow: asMoney(parsed.monthlyCashFlow) ?? { minorUnits: '0', currency: 'USD' },
+      budgetAdherencePercent: typeof parsed.budgetAdherencePercent === 'number' ? parsed.budgetAdherencePercent : 0,
+      categoriesAtRisk: typeof parsed.categoriesAtRisk === 'number' ? parsed.categoriesAtRisk : 0,
+      sinkingFundsUnderfunded: typeof parsed.sinkingFundsUnderfunded === 'number' ? parsed.sinkingFundsUnderfunded : 0,
+      advice: Array.isArray(parsed.advice) ? parsed.advice.map(String) : [],
+      freshness: null,
+    };
+  };
+
+  // Phase 8.5 parsing helpers ---------------------------------------------
+
+  const parseDataQualityResponse = (raw: string): DataQualityResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native computeDataQuality returned invalid JSON.'); }
+    const dims = Array.isArray(parsed.dimensions) ? parsed.dimensions : [];
+    return {
+      overallScore: typeof parsed.overallScore === 'number' ? parsed.overallScore : null,
+      dimensions: dims.map((d: unknown) => {
+        const dim = d as Record<string, unknown>;
+        return {
+          dimension: String(dim.dimension ?? dim.name ?? ''),
+          score: typeof dim.score === 'number' ? dim.score : null,
+          explanation: String(dim.explanation ?? (Array.isArray(dim.details) ? dim.details[0] : undefined) ?? ''),
+          worstSeverity: typeof dim.worstSeverity === 'string' ? dim.worstSeverity : null,
+        };
+      }),
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [],
+    };
+  };
+
+  const parseLiquidityCoverageResponse = (raw: string): LiquidityCoverageResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native computeLiquidityCoverage returned invalid JSON.'); }
+    const obligations = Array.isArray(parsed.upcomingObligations) ? parsed.upcomingObligations : [];
+    return {
+      totalLiquid: asMoney(parsed.totalLiquid),
+      totalObligations: asMoney(parsed.totalObligations),
+      coverage: Array.isArray(parsed.coverage) ? parsed.coverage.map((c: unknown) => {
+        const cr = c as Record<string, unknown>;
+        return { ratio: typeof cr.ratio === 'number' ? cr.ratio : 0, label: String(cr.label ?? '') };
+      }) : [],
+      upcomingObligations: obligations.map((o: unknown) => {
+        const ob = o as Record<string, unknown>;
+        return {
+          name: String(ob.name ?? ''),
+          dueDate: String(ob.dueDate ?? ''),
+          amount: asMoney(ob.amount) ?? { minorUnits: '0', currency: 'USD' },
+          categoryId: typeof ob.categoryId === 'string' ? ob.categoryId : null,
+          isRecurring: ob.isRecurring === true,
+        } as UpcomingObligation;
+      }),
+    };
+  };
+
+  const parseBillCalendarResponse = (raw: string): BillCalendarResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native computeBillCalendar returned invalid JSON.'); }
+    const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    return {
+      entries: entries.map((e: unknown) => {
+        const entry = e as Record<string, unknown>;
+        return {
+          name: String(entry.name ?? ''),
+          dueDate: String(entry.dueDate ?? ''),
+          amount: asMoney(entry.amount) ?? { minorUnits: '0', currency: 'USD' },
+          categoryId: typeof entry.categoryId === 'string' ? entry.categoryId : null,
+          status: String(entry.status ?? 'unknown'),
+        } as BillCalendarEntry;
+      }),
+      totalUnpaid: asMoney(parsed.totalUnpaid),
+      unpaidCount: typeof parsed.unpaidCount === 'number' ? parsed.unpaidCount : 0,
+    };
+  };
+
+  const parseBudgetVarianceResponse = (raw: string): BudgetVarianceResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native computeBudgetVariance returned invalid JSON.'); }
+    return {
+      categoryVariances: Array.isArray(parsed.categoryVariances) ? parsed.categoryVariances.map((v: unknown) => {
+        const cv = v as Record<string, unknown>;
+        return {
+          categoryId: String(cv.categoryId ?? ''),
+          categoryName: String(cv.categoryName ?? ''),
+          budgeted: asMoney(cv.budgeted) ?? { minorUnits: '0', currency: 'USD' },
+          actual: asMoney(cv.actual) ?? { minorUnits: '0', currency: 'USD' },
+          variance: asMoney(cv.variance) ?? { minorUnits: '0', currency: 'USD' },
+          variancePercent: typeof cv.variancePercent === 'number' ? cv.variancePercent : 0,
+          label: String(cv.label ?? ''),
+        } as CategoryVariance;
+      }) : [],
+      trends: Array.isArray(parsed.trends) ? parsed.trends.map((t: unknown) => {
+        const tr = t as Record<string, unknown>;
+        return {
+          categoryId: String(tr.categoryId ?? ''),
+          categoryName: String(tr.categoryName ?? ''),
+          direction: String(tr.direction ?? 'stable') as TrendDirection,
+          avgChange: typeof tr.avgChange === 'number' ? tr.avgChange : 0,
+          periodsAnalyzed: typeof tr.periodsAnalyzed === 'number' ? tr.periodsAnalyzed : 0,
+          seasonalityDetected: tr.seasonalityDetected === true,
+        } as CategoryTrend;
+      }) : [],
+      totalBudgeted: asMoney(parsed.totalBudgeted),
+      totalActual: asMoney(parsed.totalActual),
+      totalVariance: asMoney(parsed.totalVariance),
+      overallVariancePercent: typeof parsed.overallVariancePercent === 'number' ? parsed.overallVariancePercent : null,
+    };
+  };
+
+  const parseIrregularObligationsResponse = (raw: string): IrregularObligationsResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native detectIrregularObligations returned invalid JSON.'); }
+    return {
+      obligations: Array.isArray(parsed.obligations) ? parsed.obligations.map((o: unknown) => {
+        const ob = o as Record<string, unknown>;
+        return {
+          name: String(ob.name ?? ''),
+          kind: String(ob.kind ?? 'nonMonthly') as IrregularityKind,
+          typicalAmount: asMoney(ob.typicalAmount) ?? { minorUnits: '0', currency: 'USD' },
+          frequency: String(ob.frequency ?? ''),
+          categoryId: typeof ob.categoryId === 'string' ? ob.categoryId : null,
+          nextExpectedDate: typeof ob.nextExpectedDate === 'string' ? ob.nextExpectedDate : null,
+        } as IrregularObligation;
+      }) : [],
+      totalEstimatedAnnual: asMoney(parsed.totalEstimatedAnnual),
+    };
+  };
+
+  const parseIncomeReliabilityResponse = (raw: string): IncomeReliabilityResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native assessIncomeReliability returned invalid JSON.'); }
+    return {
+      sources: Array.isArray(parsed.sources) ? parsed.sources.map((s: unknown) => {
+        const src = s as Record<string, unknown>;
+        return {
+          name: String(src.name ?? ''),
+          typicalMonthly: asMoney(src.typicalMonthly) ?? { minorUnits: '0', currency: 'USD' },
+          reliabilityScore: typeof src.reliabilityScore === 'number' ? src.reliabilityScore : 0,
+          variability: typeof src.variability === 'number' ? src.variability : 0,
+          paymentCount: typeof src.paymentCount === 'number' ? src.paymentCount : 0,
+          isRegular: src.isRegular === true,
+        } as IncomeSource;
+      }) : [],
+      totalMonthly: asMoney(parsed.totalMonthly),
+      overallScore: typeof parsed.overallScore === 'number' ? parsed.overallScore : null,
+      unreliableSourceCount: typeof parsed.unreliableSourceCount === 'number' ? parsed.unreliableSourceCount : 0,
+    };
+  };
+
+  const parseForecastCalibrationResponse = (raw: string): ForecastCalibrationResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluateForecastCalibration returned invalid JSON.'); }
+    return {
+      metrics: Array.isArray(parsed.metrics) ? parsed.metrics.map((m: unknown) => {
+        const metric = m as Record<string, unknown>;
+        return {
+          metricName: String(metric.metricName ?? ''),
+          mape: typeof metric.mape === 'number' ? metric.mape : null,
+          bias: typeof metric.bias === 'number' ? metric.bias : null,
+          periodsCompared: typeof metric.periodsCompared === 'number' ? metric.periodsCompared : 0,
+          isCalibrated: metric.isCalibrated === true,
+        } as CalibrationMetric;
+      }) : [],
+      overallCalibrated: parsed.overallCalibrated === true,
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [],
+    };
+  };
+
+  const parseScenarioComparisonResponse = (raw: string): ScenarioComparisonResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native compareScenarios returned invalid JSON.'); }
+    return {
+      deltas: Array.isArray(parsed.deltas) ? parsed.deltas.map((d: unknown) => {
+        const delta = d as Record<string, unknown>;
+        return {
+          dimension: String(delta.dimension ?? ''),
+          baselineValue: delta.baselineValue,
+          comparisonValue: delta.comparisonValue,
+          change: String(delta.change ?? ''),
+        } as ScenarioComparisonDelta;
+      }) : [],
+      summary: String(parsed.summary ?? ''),
+    };
+  };
+
+  const parseMultidimensionalHealthResponse = (raw: string): MultidimensionalHealthResult => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error('Native evaluateMultidimensionalHealth returned invalid JSON.'); }
+    return {
+      dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions.map((d: unknown) => {
+        const dim = d as Record<string, unknown>;
+        return {
+          dimension: String(dim.dimension ?? ''),
+          score: typeof dim.score === 'number' ? dim.score : 0,
+          weight: typeof dim.weight === 'number' ? dim.weight : 0,
+          explanation: String(dim.explanation ?? ''),
+          severity: String(dim.severity ?? 'info'),
+        } as HealthDimension;
+      }) : [],
+      compositeScore: typeof parsed.compositeScore === 'number' ? parsed.compositeScore : 0,
+      summary: String(parsed.summary ?? ''),
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [],
+    };
+  };
 
   return {
     // -----------------------------------------------------------------------
@@ -570,6 +1040,475 @@ export async function createNativeAnalysisProtocol(
         createdAt: new Date().toISOString(),
         correlationId: '',
       };
+    },
+
+    // -----------------------------------------------------------------------
+    // Budget Intelligence — native-backed analytics
+    // -----------------------------------------------------------------------
+
+
+    // purchaseEvaluation
+    // ------------------------------------------------------------------
+
+    async purchaseEvaluation(
+      ledger: unknown,
+      params: PurchaseEvaluationParams,
+    ): Promise<PurchaseEvaluationResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          allowable: false,
+          reasonCodes: ['no_snapshot'],
+          categoryBudget: { minorUnits: '0', currency: 'USD' },
+          categorySpent: { minorUnits: '0', currency: 'USD' },
+          categoryRemaining: { minorUnits: '0', currency: 'USD' },
+          projectedBalance: null,
+          hasEnvelope: false,
+        };
+      }
+      const proposedTransaction = {
+        id: '',
+        accountId: params.accountId ?? '',
+        date: new Date().toISOString().slice(0, 10),
+        amount: params.amount,
+        payeeId: null,
+        payeeName: null,
+        categoryId: params.categoryId,
+        categoryName: null,
+        cleared: false,
+        reconciled: false,
+        importedId: null,
+        importedPayee: null,
+        notes: null,
+        tags: [],
+        transferAccountId: null,
+        subtransactions: [],
+      };
+      const input = JSON.stringify({
+        snapshot: rawSnapshot,
+        proposedTransaction,
+        categoryId: params.categoryId,
+      });
+      const raw = native.evaluatePurchase(input);
+      return parsePurchaseResponse(raw);
+    },
+
+    // ------------------------------------------------------------------
+    // cashFlowProjection
+    // ------------------------------------------------------------------
+
+    async cashFlowProjection(
+      ledger: unknown,
+      params: CashFlowProjectionParams,
+    ): Promise<CashFlowProjectionResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          projectionMonths: params.months,
+          monthlyProjections: [],
+          sufficientData: false,
+          dataWarning: 'Ledger snapshot unavailable.',
+        };
+      }
+      const input = JSON.stringify({
+        snapshot: rawSnapshot,
+        projectionMonths: params.months,
+      });
+      const raw = native.projectCashFlow(input);
+      return parseCashFlowResponse(raw, params.months);
+    },
+
+    // ------------------------------------------------------------------
+    // targetHealth
+    // ------------------------------------------------------------------
+
+    async targetHealth(
+      ledger: unknown,
+    ): Promise<TargetHealthResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { categories: [], overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundCount: 0 };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.evaluateTargetHealth(input);
+      return parseTargetHealthResponse(raw);
+    },
+
+    // ------------------------------------------------------------------
+    // sinkingFundHealth — derived from evaluateTargetHealth response
+    // ------------------------------------------------------------------
+
+    async sinkingFundHealth(
+      ledger: unknown,
+    ): Promise<SinkingFundHealthResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.evaluateTargetHealth(input);
+      const targetHealth = parseTargetHealthResponse(raw);
+
+      const sinkingFunds = targetHealth.categories.filter(c => c.isSinkingFund);
+      let fullyFundedCount = 0;
+      let partiallyFundedCount = 0;
+      let unfundedCount = 0;
+      for (const sf of sinkingFunds) {
+        const progress = sf.targetProgress ?? 0;
+        if (progress >= 1) fullyFundedCount++;
+        else if (progress > 0) partiallyFundedCount++;
+        else unfundedCount++;
+      }
+      return { sinkingFunds, fullyFundedCount, partiallyFundedCount, unfundedCount };
+    },
+
+    // ------------------------------------------------------------------
+    // generateReport — transaction filtering (no native binding)
+    // ------------------------------------------------------------------
+
+    async generateReport(
+      ledger: unknown,
+      params: ReportGenerationParams,
+    ): Promise<ReportGenerationResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          reportId: '',
+          reportType: params.reportType,
+          scope: params.scope,
+          label: params.label ?? '',
+          transactionCount: 0,
+          totalAmount: { minorUnits: '0', currency: 'USD' },
+          generatedAt: new Date().toISOString(),
+          tags: params.tags ?? [],
+        };
+      }
+      const s = rawSnapshot as Record<string, unknown>;
+      const transactions = (s.transactions as Array<Record<string, unknown>> | undefined) ?? [];
+
+      const currency = 'USD';
+      const monthRange = params.scope.monthRange;
+      const [startStr, endStr] = monthRange.includes(':')
+        ? monthRange.split(':')
+        : [monthRange, monthRange];
+
+      const filtered = transactions.filter(tx => {
+        if (tx.pending && !params.scope.includePending) return false;
+        return String(tx.date ?? '') >= startStr && String(tx.date ?? '') <= (endStr + '-31');
+      });
+
+      let totalMinor = 0;
+      for (const tx of filtered) {
+        const amt = tx.amount as Record<string, unknown> | undefined;
+        totalMinor += Math.abs(parseInt(String(amt?.minorUnits ?? '0'), 10));
+      }
+
+      const idInput = `rpt_${params.reportType}_${monthRange}`;
+      const reportId = `rpt_${createHash('sha1').update(idInput).digest('hex').slice(0, 12)}`;
+
+      return {
+        reportId,
+        reportType: params.reportType,
+        scope: params.scope,
+        label: params.label ?? '',
+        transactionCount: filtered.length,
+        totalAmount: { minorUnits: String(totalMinor), currency },
+        generatedAt: new Date().toISOString(),
+        tags: params.tags ?? [],
+      };
+    },
+
+    // ------------------------------------------------------------------
+    // listSavedViews
+    // ------------------------------------------------------------------
+
+    async listSavedViews(
+      _ledger: unknown,
+    ): Promise<SavedViewsListResult> {
+      return { views: [], total: 0 };
+    },
+
+    // ------------------------------------------------------------------
+    // createSavedView
+    // ------------------------------------------------------------------
+
+    async createSavedView(
+      _ledger: unknown,
+      params: CreateSavedViewParams,
+    ): Promise<CreateSavedViewResult> {
+      const idInput = `view_${params.name}_${params.viewType}`;
+      const viewId = `view_${createHash('sha1').update(idInput).digest('hex').slice(0, 12)}`;
+
+      return {
+        view: {
+          viewId,
+          name: params.name,
+          viewType: params.viewType,
+          scope: params.scope,
+          sort: params.sort,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    },
+
+    // ------------------------------------------------------------------
+    // financialState
+    // ------------------------------------------------------------------
+
+    async financialState(
+      ledger: unknown,
+    ): Promise<FinancialStateResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          overallLabel: 'unknown',
+          netWorth: { minorUnits: '0', currency: 'USD' },
+          monthlyCashFlow: { minorUnits: '0', currency: 'USD' },
+          budgetAdherencePercent: 0,
+          categoriesAtRisk: 0,
+          sinkingFundsUnderfunded: 0,
+          advice: ['Ledger snapshot unavailable.'],
+          freshness: null,
+        };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.evaluateFinancialState(input);
+      return parseFinancialStateResponse(raw);
+    },
+
+    // ------------------------------------------------------------------
+    // attentionHome — aggregates native deterministic outputs
+    // ------------------------------------------------------------------
+
+    async attentionHome(
+      ledger: unknown,
+      params: AttentionHomeParams,
+    ): Promise<AttentionHomeResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return {
+          blockers: [],
+          alerts: [],
+          recurrences: [],
+          categoryRisks: [],
+          targetProgress: { overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundsOnTrack: 0, totalSinkingFunds: 0 },
+        };
+      }
+
+      // Obtain native deterministic outputs
+      const targetHealthInput = JSON.stringify({ snapshot: rawSnapshot });
+      const targetHealthRaw = native.evaluateTargetHealth(targetHealthInput);
+      const targetHealth = parseTargetHealthResponse(targetHealthRaw);
+
+      let financialState: FinancialStateResult | null = null;
+      try {
+        const finStateInput = JSON.stringify({ snapshot: rawSnapshot });
+        const finStateRaw = native.evaluateFinancialState(finStateInput);
+        financialState = parseFinancialStateResponse(finStateRaw);
+      } catch {
+        // Financial state is supplementary; non-fatal if unavailable
+      }
+
+      const s = rawSnapshot as Record<string, unknown>;
+      const transactions = (s.transactions as Array<Record<string, unknown>> | undefined) ?? [];
+      const payees = (s.payees as Array<Record<string, unknown>> | undefined) ?? [];
+      const currency = 'USD';
+
+      // Blockers: uncategorized transactions (counting/filtering only)
+      const uncategorizedTxs = transactions.filter(
+        tx => (!tx.categoryId || tx.categoryId === '') && !tx.pending,
+      );
+      const blockers: AttentionBlocker[] = uncategorizedTxs.length > 0
+        ? [{ code: 'uncategorized_transactions', message: `${uncategorizedTxs.length} transaction(s) lack categories`, severity: 'warning', entityType: 'transaction' }]
+        : [];
+
+      // Alerts: derive from native target health overspent labels
+      const alerts: AttentionAlert[] = [];
+      for (const cat of targetHealth.categories) {
+        if (cat.healthLabel === 'overspent') {
+          alerts.push({
+            code: 'category_overspent',
+            message: `${cat.categoryName} is overspent`,
+            severity: 'warning',
+            categoryId: cat.categoryId,
+            categoryName: cat.categoryName,
+          });
+        }
+      }
+
+      // Recurrences: pattern detection from snapshot (counting/aggregation, not money arithmetic)
+      const recurrences: RecurrencePattern[] = [];
+      const schedCounts: Record<string, { count: number; lastDate: string; amount: string }> = {};
+      for (const tx of transactions) {
+        if (tx.payeeId) {
+          const key = String(tx.payeeId);
+          if (!schedCounts[key]) schedCounts[key] = { count: 0, lastDate: '', amount: '0' };
+          schedCounts[key].count++;
+          const amt = tx.amount as Record<string, unknown> | undefined;
+          if (amt && typeof amt.minorUnits === 'string') {
+            schedCounts[key].amount = amt.minorUnits;
+          }
+          if (String(tx.date ?? '') > schedCounts[key].lastDate) schedCounts[key].lastDate = String(tx.date);
+        }
+      }
+      for (const [payeeId, info] of Object.entries(schedCounts)) {
+        if (info.count >= 3) {
+          const payee = payees.find(p => p.id === payeeId);
+          recurrences.push({
+            payeeName: String(payee?.name ?? payeeId),
+            amount: { minorUnits: info.amount, currency },
+            frequency: info.count >= 6 ? 'monthly' : 'irregular',
+            occurrences: info.count,
+            lastOccurrence: info.lastDate,
+            isEstimated: false,
+          });
+        }
+      }
+
+      // Category risks: derive from native target health labels
+      const categoryRisks: CategoryRisk[] = [];
+      for (const cat of targetHealth.categories) {
+        let risk: 'low' | 'medium' | 'high';
+        const reasonCodes: string[] = [];
+        switch (cat.healthLabel) {
+          case 'overspent':
+            risk = 'high';
+            reasonCodes.push('overspent');
+            break;
+          case 'at_risk':
+            risk = 'medium';
+            reasonCodes.push('nearly_depleted');
+            break;
+          case 'underfunded':
+            risk = 'medium';
+            reasonCodes.push('underfunded');
+            break;
+          default:
+            risk = 'low';
+            reasonCodes.push('on_track');
+            break;
+        }
+        categoryRisks.push({
+          categoryId: cat.categoryId,
+          categoryName: cat.categoryName,
+          risk,
+          reasonCodes,
+          remainingBudget: cat.remaining,
+          daysRemaining: null,
+        });
+      }
+
+      // Target progress: use native counts directly
+      const sinkingFundCategories = targetHealth.categories.filter(c => c.isSinkingFund);
+      const sinkingFundsOnTrack = sinkingFundCategories.filter(sf => (sf.targetProgress ?? 0) >= 0.8).length;
+
+      return {
+        blockers,
+        alerts,
+        recurrences,
+        categoryRisks,
+        targetProgress: {
+          overallLabel: targetHealth.overallLabel,
+          healthyCount: targetHealth.healthyCount,
+          atRiskCount: targetHealth.atRiskCount,
+          sinkingFundsOnTrack,
+          totalSinkingFunds: targetHealth.sinkingFundCount,
+        },
+      };
+    },
+
+    // -----------------------------------------------------------------------
+    // Phase 8.5 — Extended deterministic analytics
+    // -----------------------------------------------------------------------
+
+    async dataQuality(ledger: unknown): Promise<DataQualityResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { overallScore: null, dimensions: [], recommendations: ['Ledger snapshot unavailable.'] };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.computeDataQuality(input);
+      return parseDataQualityResponse(raw);
+    },
+
+    async liquidityCoverage(ledger: unknown, currentMonth: string): Promise<LiquidityCoverageResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { totalLiquid: null, totalObligations: null, coverage: [], upcomingObligations: [] };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot, currentMonth });
+      const raw = native.computeLiquidityCoverage(input);
+      return parseLiquidityCoverageResponse(raw);
+    },
+
+    async billCalendar(ledger: unknown, referenceDate: string): Promise<BillCalendarResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { entries: [], totalUnpaid: null, unpaidCount: 0 };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot, referenceDate });
+      const raw = native.computeBillCalendar(input);
+      return parseBillCalendarResponse(raw);
+    },
+
+    async budgetVariance(ledger: unknown, referenceDate: string): Promise<BudgetVarianceResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { categoryVariances: [], trends: [], totalBudgeted: null, totalActual: null, totalVariance: null, overallVariancePercent: null };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot, referenceDate });
+      const raw = native.computeBudgetVariance(input);
+      return parseBudgetVarianceResponse(raw);
+    },
+
+    async irregularObligations(ledger: unknown): Promise<IrregularObligationsResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { obligations: [], totalEstimatedAnnual: null };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.detectIrregularObligations(input);
+      return parseIrregularObligationsResponse(raw);
+    },
+
+    async incomeReliability(ledger: unknown): Promise<IncomeReliabilityResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { sources: [], totalMonthly: null, overallScore: null, unreliableSourceCount: 0 };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.assessIncomeReliability(input);
+      return parseIncomeReliabilityResponse(raw);
+    },
+
+    async forecastCalibration(ledger: unknown): Promise<ForecastCalibrationResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { metrics: [], overallCalibrated: false, recommendations: ['Ledger snapshot unavailable.'] };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot });
+      const raw = native.evaluateForecastCalibration(input);
+      return parseForecastCalibrationResponse(raw);
+    },
+
+    async scenarioComparison(ledger: unknown, params: ScenarioComparisonParams): Promise<ScenarioComparisonResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { deltas: [], summary: 'Ledger snapshot unavailable.' };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot, baseline: params.baseline, comparison: params.comparison });
+      const raw = native.compareScenarios(input);
+      return parseScenarioComparisonResponse(raw);
+    },
+
+    async multidimensionalHealth(ledger: unknown, currentMonth: string): Promise<MultidimensionalHealthResult> {
+      const rawSnapshot = await obtainSnapshot(ledger);
+      if (!rawSnapshot) {
+        return { dimensions: [], compositeScore: 0, summary: '', recommendations: ['Ledger snapshot unavailable.'] };
+      }
+      const input = JSON.stringify({ snapshot: rawSnapshot, currentMonth });
+      const raw = native.evaluateMultidimensionalHealth(input);
+      return parseMultidimensionalHealthResponse(raw);
     },
   };
 }
@@ -1088,6 +2027,59 @@ export async function createObserveComposition(
       actorId,
     });
 
+  // Build notification runtime
+  let notificationRuntime: NotificationRuntime | null = null;
+  if (options?.notificationRuntime) {
+    notificationRuntime = options.notificationRuntime;
+  } else if (options?.workflowStore) {
+    const defaultPolicy: NotificationPolicy = {
+      policyVersion: 'v1',
+      eligibility: [
+        {
+          classifications: ['budget_alert', 'review_complete', 'security_alert'],
+          minSeverity: 'normal',
+          requiredCapability: 'notification:receive',
+        },
+      ],
+      recipients: [],
+      channels: [
+        { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+      ],
+      redaction: {
+        sensitive: { visibleFields: ['title', 'summary'] },
+        public: { visibleFields: ['title', 'summary', 'amount', 'account'] },
+        restricted: { visibleFields: ['title'] },
+      },
+      maxRetries: 3,
+      defaultRedactionClass: 'public',
+    };
+    const notificationPolicy = options.notificationPolicy ?? defaultPolicy;
+    const notificationCapableStore = options.workflowStore;
+    notificationRuntime = new NotificationRuntime(
+      notificationCapableStore as unknown as WorkflowStore,
+      notificationPolicy,
+      [new InAppChannelAdapter()],
+    );
+
+    // Wire up persisted re-authorisation hook using store's membership data.
+    // The store satisfies NotificationStoreMethods structurally at runtime
+    // when it is a real WorkflowStore; we use the type guard to convince
+    // TypeScript so the hook can call getActorMembership.
+    if (isNotificationStore(notificationCapableStore as Record<string, unknown>)) {
+      const membershipStore = notificationCapableStore as NotificationStoreMethods;
+      notificationRuntime.setReAuthorizationHook(
+        async (actorId: string, capability: string, _scope: string) => {
+          try {
+            const membership = await membershipStore.getActorMembership(actorId);
+            return membership?.capabilities.includes(capability) ?? false;
+          } catch {
+            return false;
+          }
+        },
+      );
+    }
+  }
+
   return {
     mode,
     actorId,
@@ -1096,5 +2088,6 @@ export async function createObserveComposition(
     freshness,
     analysisProtocol,
     lifecycleCallbacks,
+    notificationRuntime,
   };
 }

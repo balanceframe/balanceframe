@@ -35,12 +35,26 @@ import {
   ruleListAnalysis,
   ruleShowAnalysis,
   ruleUpdateAnalysis,
+  purchaseEvaluationAnalysis,
+  cashFlowProjectionAnalysis,
+  targetHealthAnalysis,
+  sinkingFundHealthAnalysis,
+  reportGenerateAnalysis,
+  savedViewsListAnalysis,
+  savedViewCreateAnalysis,
+  attentionHomeAnalysis,
   type CommandInput,
   type ConnectionMode,
   type AnalysisProtocol,
   type LifecycleCallbacks,
   type AuditQueryOptions,
   type ReviewActionOptions,
+  type PurchaseEvaluationParams,
+  type CashFlowProjectionParams,
+  type ReportGenerationParams,
+  type ReportScope,
+  type CreateSavedViewParams,
+  type AttentionHomeParams,
   ApplicationError,
   okResponse,
   errorResponse,
@@ -144,6 +158,19 @@ export function parseArgs(argv: string[]): ParseResult {
     '--active': true,
     '--rule-id': true,
     '--budget-id': true,
+    '--months': true,
+    '--start-month': true,
+    '--amount': true,
+    '--account-id': true,
+    '--currency': true,
+    '--report-type': true,
+    '--month-range': true,
+    '--label': true,
+    '--tag': true,
+    '--view-type': true,
+    '--sort': true,
+    '--detailed': true,
+    '--category-group': true,
   };
   const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -877,6 +904,145 @@ export function parseArgs(argv: string[]): ParseResult {
     };
   }
 
+  // -----------------------------------------------------------------------
+  // Budget Intelligence commands
+  // -----------------------------------------------------------------------
+
+  // purchase evaluate --category-id CAT --amount AMT [--account-id ACC] [--currency CUR]
+  if (cleanArgs[0] === 'purchase' && cleanArgs[1] === 'evaluate') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--category-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_category_value', message: '--category-id requires a value.' } }; options['category-id'] = v; i++; }
+      else if (a === '--amount') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--amount requires a value.' } }; options.amount = v; i++; }
+      else if (a === '--account-id') { const v = nextVal(); if (v !== undefined) { options['account-id'] = v; i++; } }
+      else if (a === '--currency') { const v = nextVal(); if (v !== undefined) { options.currency = v; i++; } }
+      else if (!a.startsWith('--')) {
+        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'purchase evaluate': ${a}` } };
+      }
+    }
+    // Validate required params
+    if (!options['category-id']) {
+      return { ok: false, error: { code: 'missing_category_value', message: '--category-id is required for purchase evaluate.' } };
+    }
+    if (!options.amount) {
+      return { ok: false, error: { code: 'missing_flag_value', message: '--amount is required for purchase evaluate.' } };
+    }
+    return { ok: true, cmd: { command: 'purchase.evaluate', format, args: normalized, options } };
+  }
+
+  // cash-flow project [--months N] [--start-month YYYY-MM]
+  if (cleanArgs[0] === 'cash-flow' && cleanArgs[1] === 'project') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--months') { const v = nextVal(); if (v !== undefined) { options.months = v; i++; } }
+      else if (a === '--start-month') { const v = nextVal(); if (v !== undefined) { options['start-month'] = v; i++; } }
+      else if (!a.startsWith('--')) {
+        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'cash-flow project': ${a}` } };
+      }
+    }
+    return { ok: true, cmd: { command: 'cash-flow.project', format, args: normalized, options } };
+  }
+
+  // target health
+  if (cleanArgs[0] === 'target' && cleanArgs[1] === 'health') {
+    if (cleanArgs.length > 2) {
+      return { ok: false, error: { code: 'trailing_args', message: `Unexpected arguments after 'target health': ${cleanArgs.slice(2).join(' ')}` } };
+    }
+    return { ok: true, cmd: { command: 'target.health', format, args: normalized } };
+  }
+
+  // sinking-fund health
+  if (cleanArgs[0] === 'sinking-fund' && cleanArgs[1] === 'health') {
+    if (cleanArgs.length > 2) {
+      return { ok: false, error: { code: 'trailing_args', message: `Unexpected arguments after 'sinking-fund health': ${cleanArgs.slice(2).join(' ')}` } };
+    }
+    return { ok: true, cmd: { command: 'sinking-fund.health', format, args: normalized } };
+  }
+
+  // reports generate --report-type TYPE --month-range RANGE [--label LABEL] [--tag TAG]
+  if (cleanArgs[0] === 'reports' && cleanArgs[1] === 'generate') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--report-type') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--report-type requires a value.' } }; options['report-type'] = v; i++; }
+      else if (a === '--month-range') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--month-range requires a value.' } }; options['month-range'] = v; i++; }
+      else if (a === '--label') { const v = nextVal(); if (v !== undefined) { options.label = v; i++; } }
+      else if (a === '--tag') { const v = nextVal(); if (v !== undefined) { options['tag'] = v; i++; } }
+      else if (!a.startsWith('--')) {
+        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'reports generate': ${a}` } };
+      }
+    }
+    // Validate required params
+    if (!options['report-type']) {
+      return { ok: false, error: { code: 'missing_flag_value', message: '--report-type is required for reports generate.' } };
+    }
+    if (!options['month-range']) {
+      return { ok: false, error: { code: 'missing_flag_value', message: '--month-range is required for reports generate.' } };
+    }
+    return { ok: true, cmd: { command: 'reports.generate', format, args: normalized, options } };
+  }
+
+  // views list
+  if (cleanArgs[0] === 'views' && cleanArgs[1] === 'list') {
+    if (cleanArgs.length > 2) {
+      return { ok: false, error: { code: 'trailing_args', message: `Unexpected arguments after 'views list': ${cleanArgs.slice(2).join(' ')}` } };
+    }
+    return { ok: true, cmd: { command: 'views.list', format, args: normalized } };
+  }
+
+  // views create --name NAME --view-type TYPE [--scope JSON]
+  if (cleanArgs[0] === 'views' && cleanArgs[1] === 'create') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--name') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--name requires a value.' } }; options.name = v; i++; }
+      else if (a === '--view-type') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--view-type requires a value.' } }; options['view-type'] = v; i++; }
+      else if (a === '--scope') { const v = nextVal(); if (v !== undefined) { options.scope = v; i++; } }
+      else if (a === '--sort') { const v = nextVal(); if (v !== undefined) { options.sort = v; i++; } }
+      else if (!a.startsWith('--')) {
+        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'views create': ${a}` } };
+      }
+    }
+    if (!options.name) {
+      return { ok: false, error: { code: 'missing_flag_value', message: '--name is required for views create.' } };
+    }
+    if (!options['view-type']) {
+      return { ok: false, error: { code: 'missing_flag_value', message: '--view-type is required for views create.' } };
+    }
+    return { ok: true, cmd: { command: 'views.create', format, args: normalized, options } };
+  }
+
+  // home attention [--detailed] [--category-group GROUP]
+  if (cleanArgs[0] === 'home' && cleanArgs[1] === 'attention') {
+    const options: Record<string, string> = {};
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const a = remaining[i];
+      const nextVal = (): string | undefined =>
+        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
+      if (a === '--detailed') { options.detailed = 'true'; }
+      else if (a === '--category-group') { const v = nextVal(); if (v !== undefined) { options['category-group'] = v; i++; } }
+      else if (!a.startsWith('--')) {
+        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'home attention': ${a}` } };
+      }
+    }
+    return { ok: true, cmd: { command: 'home.attention', format, args: normalized, options } };
+  }
+
   return {
     ok: false,
     error: {
@@ -1328,6 +1494,98 @@ export async function main(
         if (cmd.options?.['category-id']) updateOptions.categoryId = cmd.options['category-id'];
         if (cmd.options?.['rule-id']) updateOptions.message = cmd.options['rule-id'];
         const envelope = await ruleUpdateAnalysis(commandInput, updateOptions);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      // -------------------------------------------------------------------
+      // Budget Intelligence commands (read-only deterministic analysis)
+      // -------------------------------------------------------------------
+
+      case 'purchase.evaluate': {
+        const purchaseParams: PurchaseEvaluationParams = {
+          categoryId: cmd.options?.['category-id'] ?? '',
+          amount: {
+            minorUnits: cmd.options?.amount ?? '0',
+            currency: cmd.options?.currency ?? 'USD',
+          },
+          accountId: cmd.options?.['account-id'],
+        };
+        const envelope = await purchaseEvaluationAnalysis(commandInput, purchaseParams);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'cash-flow.project': {
+        const cfParams: CashFlowProjectionParams = {
+          months: cmd.options?.months ? Number(cmd.options.months) : 3,
+          startMonth: cmd.options?.['start-month'],
+        };
+        const envelope = await cashFlowProjectionAnalysis(commandInput, cfParams);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'target.health': {
+        const envelope = await targetHealthAnalysis(commandInput);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'sinking-fund.health': {
+        const envelope = await sinkingFundHealthAnalysis(commandInput);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'reports.generate': {
+        const scope: ReportScope = {
+          monthRange: cmd.options?.['month-range'] ?? '',
+          includePending: true,
+        };
+        const reportParams: ReportGenerationParams = {
+          reportType: cmd.options?.['report-type'] ?? '',
+          scope,
+          label: cmd.options?.label,
+          tags: cmd.options?.tag ? [cmd.options.tag] : undefined,
+        };
+        const envelope = await reportGenerateAnalysis(commandInput, reportParams);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'views.list': {
+        const envelope = await savedViewsListAnalysis(commandInput);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'views.create': {
+        let parsedScope: Record<string, unknown> = {};
+        if (cmd.options?.scope) {
+          try {
+            parsedScope = JSON.parse(cmd.options.scope);
+          } catch {
+            const info = new ErrorInfo({
+              code: 'invalid_scope_json',
+              message: '--scope must be valid JSON.',
+              retryable: false,
+              reasonCodes: ['cli_error'],
+            });
+            return JSON.stringify(errorResponse(requestId, info), null, 2);
+          }
+        }
+        const viewParams: CreateSavedViewParams = {
+          name: cmd.options?.name ?? '',
+          viewType: cmd.options?.['view-type'] ?? '',
+          scope: parsedScope,
+          sort: cmd.options?.sort,
+        };
+        const envelope = await savedViewCreateAnalysis(commandInput, viewParams);
+        return JSON.stringify(envelope, null, 2);
+      }
+
+      case 'home.attention': {
+        const attentionParams: AttentionHomeParams = {
+          context: {
+            categoryGroup: cmd.options?.['category-group'],
+            detailed: cmd.options?.detailed === 'true',
+          },
+        };
+        const envelope = await attentionHomeAnalysis(commandInput, attentionParams);
         return JSON.stringify(envelope, null, 2);
       }
 

@@ -321,7 +321,10 @@ fn test_validate_provider_suggestion_disabled_policy() {
 
     let parsed: serde_json::Value =
         serde_json::from_str(&result.unwrap()).expect("result should be valid JSON");
-    assert_eq!(parsed["valid"], false, "should be invalid under disabled policy");
+    assert_eq!(
+        parsed["valid"], false,
+        "should be invalid under disabled policy"
+    );
     let codes: Vec<&str> = parsed["reasonCodes"]
         .as_array()
         .unwrap()
@@ -409,13 +412,16 @@ fn test_napi_omitted_policy_fails_closed() {
             "reasons": []
         }
         // NOTE: effectivePolicy is intentionally omitted
-    }).to_string();
+    })
+    .to_string();
 
     let result = validate_provider_suggestion(input);
     assert!(result.is_ok(), "policy block must not cause panic");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&result.unwrap()).expect("valid JSON");
-    assert_eq!(parsed["valid"], false, "omitted policy must be treated as Disabled");
+    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).expect("valid JSON");
+    assert_eq!(
+        parsed["valid"], false,
+        "omitted policy must be treated as Disabled"
+    );
     let codes: Vec<&str> = parsed["reasonCodes"]
         .as_array()
         .unwrap()
@@ -502,17 +508,21 @@ fn test_napi_stale_version_rejected() {
             "reasons": []
         },
         "effectivePolicy": "externalAllowed"
-    }).to_string();
+    })
+    .to_string();
 
     let result = validate_provider_suggestion(input);
     assert!(result.is_ok(), "stale version must not cause panic");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&result.unwrap()).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).expect("valid JSON");
     assert_eq!(parsed["valid"], false);
-    assert!(parsed["reasonCodes"]
-        .as_array().unwrap().iter()
-        .any(|c| c.as_str() == Some("stale_transaction_version")),
-        "must reject stale transaction version");
+    assert!(
+        parsed["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str() == Some("stale_transaction_version")),
+        "must reject stale transaction version"
+    );
 }
 
 #[test]
@@ -569,17 +579,21 @@ fn test_napi_deleted_category_rejected() {
             "reasons": []
         },
         "effectivePolicy": "externalAllowed"
-    }).to_string();
+    })
+    .to_string();
 
     let result = validate_provider_suggestion(input);
     assert!(result.is_ok(), "deleted category must not cause panic");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&result.unwrap()).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).expect("valid JSON");
     assert_eq!(parsed["valid"], false);
-    assert!(parsed["reasonCodes"]
-        .as_array().unwrap().iter()
-        .any(|c| c.as_str() == Some("category_not_found")),
-        "must reject deleted category");
+    assert!(
+        parsed["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str() == Some("category_not_found")),
+        "must reject deleted category"
+    );
 }
 
 #[test]
@@ -636,17 +650,21 @@ fn test_napi_local_only_blocks_external_provider() {
             "reasons": []
         },
         "effectivePolicy": "localOnly"
-    }).to_string();
+    })
+    .to_string();
 
     let result = validate_provider_suggestion(input);
     assert!(result.is_ok(), "policy block must not cause panic");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&result.unwrap()).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).expect("valid JSON");
     assert_eq!(parsed["valid"], false);
-    assert!(parsed["reasonCodes"]
-        .as_array().unwrap().iter()
-        .any(|c| c.as_str() == Some("external_provider_not_allowed")),
-        "LocalOnly must block external provider");
+    assert!(
+        parsed["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str() == Some("external_provider_not_allowed")),
+        "LocalOnly must block external provider"
+    );
 }
 
 #[test]
@@ -705,15 +723,19 @@ fn test_napi_mismatched_tx_id_rejected() {
             "reasons": []
         },
         "effectivePolicy": "externalAllowed"
-    }).to_string();
+    })
+    .to_string();
 
     let result = validate_provider_suggestion(input);
     assert!(result.is_ok(), "mismatched IDs must not cause panic");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&result.unwrap()).expect("valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&result.unwrap()).expect("valid JSON");
     assert_eq!(parsed["valid"], false);
-    assert!(parsed["reasonCodes"]
-        .as_array().unwrap().iter()
-        .any(|c| c.as_str() == Some("transaction_id_mismatch")),
-        "must reject mismatched transaction IDs");
+    assert!(
+        parsed["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str() == Some("transaction_id_mismatch")),
+        "must reject mismatched transaction IDs"
+    );
 }

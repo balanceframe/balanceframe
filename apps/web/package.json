@@ -17,6 +17,7 @@
   "dependencies": {
     "@balanceframe/actual-adapter": "workspace:*",
     "@balanceframe/application": "workspace:*",
+    "@balanceframe/protocol-generated": "workspace:*",
     "@balanceframe/workflow-store": "workspace:*",
     "@better-auth/api-key": "^1.6.23",
     "better-auth": "^1.6.23",

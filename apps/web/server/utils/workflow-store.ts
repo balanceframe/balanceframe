@@ -399,10 +399,53 @@ export interface ApiEnvelope<T> {
   schemaVersion: string;
   requestId: string;
   status: 'ok' | 'error';
-  dataFreshness: unknown | null;
+  dataFreshness: {
+    actualDownloadedAt: string | null;
+    bankSyncedAt: string | null;
+    pendingTransactionsIncluded: boolean;
+    stalenessDays: number;
+    isStale: boolean;
+  } | null;
   authorization: AuthorizationInfo | null;
   result: T;
   error: ApiError | null;
+  /** Optional analysis scope. */
+  scope?: Record<string, unknown>;
+  /** Optional semantic classification tags. */
+  semanticClasses?: string[];
+  /** Optional evidence references. */
+  evidence?: Array<{ source: string; id: string; weight: number }>;
+  /** Optional policy version. */
+  policyVersion?: string;
+}
+
+export interface WebEnvelopeMetadata {
+  dataFreshness?: ApiEnvelope<unknown>['dataFreshness'];
+  scope?: Record<string, unknown>;
+  semanticClasses?: string[];
+  evidence?: Array<{ source: string; id: string; weight: number }>;
+  policyVersion?: string;
+}
+/**
+ * Extract application envelope metadata for forwarding through the web API.
+ * Keeping this structural avoids coupling the web package to application types.
+ */
+export function envelopeMetadata(
+  envelope: {
+    dataFreshness: ApiEnvelope<unknown>['dataFreshness'];
+    scope?: Record<string, unknown>;
+    semanticClasses?: string[];
+    evidence?: Array<{ source: string; id: string; weight: number }>;
+    policyVersion?: string;
+  },
+): WebEnvelopeMetadata {
+  return {
+    dataFreshness: envelope.dataFreshness,
+    ...(envelope.scope !== undefined ? { scope: envelope.scope } : {}),
+    ...(envelope.semanticClasses !== undefined ? { semanticClasses: envelope.semanticClasses } : {}),
+    ...(envelope.evidence !== undefined ? { evidence: envelope.evidence } : {}),
+    ...(envelope.policyVersion !== undefined ? { policyVersion: envelope.policyVersion } : {}),
+  };
 }
 
 /**
@@ -413,15 +456,20 @@ export function okEnvelope<T>(
   result: T,
   auth: AuthorizationInfo | null,
   requestId: string = crypto.randomUUID(),
+  metadata?: WebEnvelopeMetadata,
 ): ApiEnvelope<T> {
   return {
     schemaVersion: '1',
     requestId,
     status: 'ok',
-    dataFreshness: null,
+    dataFreshness: metadata?.dataFreshness ?? null,
     authorization: auth,
     result,
     error: null,
+    ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
+    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
+    ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
   };
 }
 
@@ -435,15 +483,20 @@ export function errorEnvelope(
   auth: AuthorizationInfo | null,
   retryable: boolean = false,
   requestId: string = crypto.randomUUID(),
+  metadata?: WebEnvelopeMetadata,
 ): ApiEnvelope<null> {
   return {
     schemaVersion: '1',
     requestId,
     status: 'error',
-    dataFreshness: null,
+    dataFreshness: metadata?.dataFreshness ?? null,
     authorization: auth,
     result: null,
     error: { code, message, retryable },
+    ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
+    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
+    ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
   };
 }
 

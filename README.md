@@ -106,8 +106,8 @@ docker compose up -d
 ```
 
 BalanceFrame starts on port 3030 by default. Open `http://localhost:3030` in your
-browser, log in, and connect BalanceFrame to your Actual server URL.
-
+browser, log in, open **Connection**, and select the Actual budget to use.
+The selected budget is persisted in the configured BalanceFrame data volume.
 ### Deploy BalanceFrame with a bundled Actual Budget server
 
 For a new single-server setup include the optional overlay:

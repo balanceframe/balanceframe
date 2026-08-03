@@ -104,11 +104,8 @@ impl CompatibilityMetadata {
         encryption_unlocked: bool,
         actual_version: String,
     ) -> Self {
-        let version_compatible = is_version_in_range(
-            &actual_version,
-            Self::MIN_SUPPORTED,
-            Self::MAX_SUPPORTED,
-        );
+        let version_compatible =
+            is_version_in_range(&actual_version, Self::MIN_SUPPORTED, Self::MAX_SUPPORTED);
         let compatibility_message = if !version_compatible {
             Some(format!(
                 "Actual version {} is outside supported range {}..{}",
@@ -163,9 +160,9 @@ fn epoch_days(s: &str) -> Option<i64> {
     }
     let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
     let era = y.div_euclid(400);
-    let yoe = y - era * 400;                                 // [0, 399]
-    let doy = (153 * (m - 3) + 2) / 5 + d - 1;              // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;        // [0, 146096]
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (m - 3) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     Some(era * 146097 + doe - 719468)
 }
 
@@ -288,26 +285,38 @@ mod tests {
 
     #[test]
     fn test_calendar_day_diff_same_day() {
-        assert_eq!(calendar_day_diff("2026-07-18", "2026-07-18").unwrap_or(u32::MAX), 0);
+        assert_eq!(
+            calendar_day_diff("2026-07-18", "2026-07-18").unwrap_or(u32::MAX),
+            0
+        );
     }
 
     #[test]
     fn test_calendar_day_diff_cross_month() {
         // July 31 → Aug 1 = 1 day (would be wrong with YYYYMMDD subtraction)
-        assert_eq!(calendar_day_diff("2026-07-31", "2026-08-01").unwrap_or(u32::MAX), 1);
+        assert_eq!(
+            calendar_day_diff("2026-07-31", "2026-08-01").unwrap_or(u32::MAX),
+            1
+        );
     }
 
     #[test]
     fn test_calendar_day_diff_cross_year() {
         // Dec 31 → Jan 1 = 1 day
-        assert_eq!(calendar_day_diff("2025-12-31", "2026-01-01").unwrap_or(u32::MAX), 1);
+        assert_eq!(
+            calendar_day_diff("2025-12-31", "2026-01-01").unwrap_or(u32::MAX),
+            1
+        );
     }
 
     #[test]
     fn test_calendar_day_diff_leap_year_extra_day() {
         // 2024 is leap year: Feb 28 → Mar 1 = 2 days
         // Non-leap: Feb 28 → Mar 1 = 1 day
-        assert_eq!(calendar_day_diff("2024-02-28", "2024-03-01").unwrap_or(u32::MAX), 2);
+        assert_eq!(
+            calendar_day_diff("2024-02-28", "2024-03-01").unwrap_or(u32::MAX),
+            2
+        );
     }
 
     #[test]
@@ -331,7 +340,12 @@ mod tests {
 
     #[test]
     fn test_bank_sync_stale_when_missing() {
-        let f = DataFreshness::compute(Some("2026-07-18T00:00:00Z".into()), None, true, "2026-07-18");
+        let f = DataFreshness::compute(
+            Some("2026-07-18T00:00:00Z".into()),
+            None,
+            true,
+            "2026-07-18",
+        );
         assert!(f.bank_sync_stale);
         assert_eq!(f.bank_staleness_days, u32::MAX);
     }

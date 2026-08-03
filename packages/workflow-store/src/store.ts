@@ -61,6 +61,42 @@ import type {
   CreateInvitationResult,
   ClaimInvitationInput,
   ClaimInvitationResult,
+  CreateNotificationEventInput,
+  CreateReportRecordInput,
+  CreateSavedFilterInput,
+  CreateSavedViewInput,
+  DeliveryAttempt,
+  DeliveryAttemptStatus,
+  EnqueueNotificationInput,
+  NotificationEvent,
+  NotificationOutboxRecord,
+  OutboxStatus,
+  PolicyVersion,
+  RecordPolicyVersionInput,
+  ReportListOptions,
+  ReportRecord,
+  SavedFilter,
+  SavedFilterListOptions,
+  SavedViewResult,
+  UpdateSavedFilterInput,
+  // Phase 8.5 types
+  Finding,
+  FindingStatus,
+  CreateFindingInput,
+  AcknowledgeFindingInput,
+  CorrectFindingInput,
+  DismissFindingInput,
+  ReopenFindingInput,
+  SupersedeFindingInput,
+  ListFindingsOptions,
+  UpdateSavedViewInput,
+  DuplicateSavedViewInput,
+  NotificationPolicyRecord,
+  SaveNotificationPolicyInput,
+  RecipientResolution,
+  ListNotificationPoliciesOptions,
+  ListOutboxRecordsOptions,
+  ReportHistoryEntry,
 } from './types.js';
 // ---------------------------------------------------------------------------
 // Helpers
@@ -279,6 +315,171 @@ function rowToInvitationMetadata(row: InvitationRow): InvitationMetadata {
     redeemedAt: row.redeemed_at,
   };
 }
+
+/** Map a raw DB row to a typed NotificationEvent. */
+function rowToNotificationEvent(row: NotificationEventRow): NotificationEvent {
+  return {
+    id: row.id,
+    eventVersion: row.event_version,
+    budgetId: row.budget_id,
+    classification: row.classification,
+    recipientId: row.recipient_id,
+    scope: row.scope,
+    redactionClass: row.redaction_class,
+    channelConfigVersion: row.channel_config_version,
+    policyVersion: row.policy_version,
+    correlationId: row.correlation_id,
+    payload: row.payload,
+    createdAt: row.created_at,
+  };
+}
+
+/** Map a raw DB row to a typed NotificationOutboxRecord. */
+function rowToOutbox(row: NotificationOutboxRow): NotificationOutboxRecord {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    deliveryKey: row.delivery_key,
+    channelType: row.channel_type,
+    channelConfigVersion: row.channel_config_version,
+    status: row.status as OutboxStatus,
+    attemptCount: row.attempt_count,
+    maxAttempts: row.max_attempts,
+    claimToken: row.claim_token,
+    claimExpiresAt: row.claim_expires_at,
+    lastAttemptedAt: row.last_attempted_at,
+    nextAttemptAt: row.next_attempt_at,
+    acknowledgedAt: row.acknowledged_at,
+    failedAt: row.failed_at,
+    failureReason: row.failure_reason,
+    suppressedAt: row.suppressed_at,
+    suppressedReason: row.suppressed_reason,
+    correlationId: row.correlation_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Map a raw DB row to a typed DeliveryAttempt. */
+function rowToDeliveryAttempt(row: DeliveryAttemptRow): DeliveryAttempt {
+  return {
+    id: row.id,
+    outboxId: row.outbox_id,
+    attemptNumber: row.attempt_number,
+    status: row.status as DeliveryAttemptStatus,
+    responseCode: row.response_code,
+    responseBody: row.response_body,
+    errorMessage: row.error_message,
+    attemptedAt: row.attempted_at,
+  };
+}
+
+/** Map a raw DB row to a typed PolicyVersion. */
+function rowToPolicyVersion(row: PolicyVersionRow): PolicyVersion {
+  return {
+    id: row.id,
+    policyKey: row.policy_key,
+    version: row.version,
+    policyHash: row.policy_hash,
+    description: row.description,
+    isActive: row.is_active !== 0,
+    supersededAt: row.superseded_at,
+    createdAt: row.created_at,
+  };
+}
+
+/** Map a raw DB row to a typed SavedFilter. */
+function rowToSavedFilter(row: SavedFilterRow): SavedFilter {
+  return {
+    id: row.id,
+    name: row.name,
+    budgetId: row.budget_id,
+    filterConfig: row.filter_config,
+    viewConfig: row.view_config,
+    scope: row.scope,
+    policyVersion: row.policy_version,
+    isDefault: row.is_default !== 0,
+    actorId: row.actor_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Map a raw DB row to a typed ReportRecord. */
+function rowToReportRecord(row: ReportRecordRow): ReportRecord {
+  return {
+    id: row.id,
+    reportType: row.report_type,
+    budgetId: row.budget_id,
+    filterId: row.filter_id,
+    config: row.config,
+    policyVersion: row.policy_version,
+    generatedAt: row.generated_at,
+    expiresAt: row.expires_at,
+    dataRef: row.data_ref,
+  };
+}
+
+/** Map a raw DB row to a typed SavedViewResult. */
+function rowToSavedViewResult(row: SavedViewRow): SavedViewResult {
+  return {
+    viewId: row.view_id,
+    name: row.name,
+    viewType: row.view_type,
+    scope: JSON.parse(row.scope) as Record<string, unknown>,
+    sort: row.sort,
+    actorId: row.actor_id,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+  };
+}
+
+/** Map a raw DB row to a typed Finding. */
+function rowToFinding(row: FindingRow): Finding {
+  return {
+    id: row.id,
+    budgetId: row.budget_id,
+    classification: row.classification,
+    description: row.description,
+    evidence: JSON.parse(row.evidence) as Record<string, unknown>,
+    evidenceRefs: JSON.parse(row.evidence_refs) as string[],
+    severity: row.severity as Finding['severity'],
+    status: row.status as FindingStatus,
+    actorId: row.actor_id,
+    acknowledgedAt: row.acknowledged_at,
+    acknowledgedBy: row.acknowledged_by,
+    correctedAt: row.corrected_at,
+    correctedBy: row.corrected_by,
+    correctionRef: row.correction_ref,
+    dismissedAt: row.dismissed_at,
+    dismissedBy: row.dismissed_by,
+    dismissedReason: row.dismissed_reason,
+    reopenedAt: row.reopened_at,
+    reopenedBy: row.reopened_by,
+    supersededAt: row.superseded_at,
+    supersededBy: row.superseded_by,
+    supersededReason: row.superseded_reason,
+    expiresAt: row.expires_at,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Map a raw DB row to a typed NotificationPolicyRecord. */
+function rowToNotificationPolicy(row: NotificationPolicyRow): NotificationPolicyRecord {
+  return {
+    id: row.id,
+    spaceId: row.space_id,
+    policyKey: row.policy_key,
+    policyVersion: row.policy_version,
+    policy: row.policy,
+    isActive: row.is_active !== 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 // ---------------------------------------------------------------------------
 /** Allowed transitions between review statuses. */
 const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
@@ -300,6 +501,20 @@ const TERMINAL_STATUSES: ReviewStatus[] = ['applied', 'apply_failed', 'rejected'
 
 /** Statuses for which `pending_review` is an undo, not a forward transition. */
 const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting', 'rejected', 'skipped'];
+
+/** Allowed transitions between finding statuses. */
+const FINDING_TRANSITIONS: Record<string, string[]> = {
+  open: ['acknowledged', 'corrected', 'dismissed', 'superseded', 'expired'],
+  acknowledged: ['corrected', 'dismissed', 'reopened', 'superseded', 'expired'],
+  corrected: ['superseded', 'expired'],
+  dismissed: ['reopened', 'superseded'],
+  reopened: ['acknowledged', 'corrected', 'dismissed', 'superseded', 'expired'],
+  expired: ['superseded'],
+  superseded: [],
+};
+
+/** Terminal finding statuses that cannot transition forward (except supersede). */
+const FINDING_TERMINAL_STATUSES: string[] = ['expired', 'superseded'];
 
 
 // ---------------------------------------------------------------------------
@@ -463,6 +678,143 @@ interface InvitationRow {
 }
 
 
+interface NotificationEventRow {
+  id: string;
+  event_version: number;
+  budget_id: string;
+  classification: string;
+  recipient_id: string | null;
+  scope: string | null;
+  redaction_class: string | null;
+  channel_config_version: string | null;
+  policy_version: string;
+  correlation_id: string | null;
+  payload: string;
+  created_at: string;
+}
+
+interface NotificationOutboxRow {
+  id: string;
+  event_id: string;
+  delivery_key: string;
+  channel_type: string;
+  channel_config_version: string | null;
+  status: string;
+  attempt_count: number;
+  max_attempts: number;
+  claim_token: string | null;
+  claim_expires_at: string | null;
+  last_attempted_at: string | null;
+  next_attempt_at: string | null;
+  acknowledged_at: string | null;
+  failed_at: string | null;
+  failure_reason: string | null;
+  suppressed_at: string | null;
+  suppressed_reason: string | null;
+  correlation_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface DeliveryAttemptRow {
+  id: string;
+  outbox_id: string;
+  attempt_number: number;
+  status: string;
+  response_code: string | null;
+  response_body: string | null;
+  error_message: string | null;
+  attempted_at: string;
+}
+
+interface PolicyVersionRow {
+  id: string;
+  policy_key: string;
+  version: number;
+  policy_hash: string;
+  description: string;
+  is_active: number;
+  superseded_at: string | null;
+  created_at: string;
+}
+
+interface SavedFilterRow {
+  id: string;
+  name: string;
+  budget_id: string | null;
+  filter_config: string;
+  view_config: string | null;
+  scope: string;
+  policy_version: string;
+  is_default: number;
+  actor_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SavedViewRow {
+  view_id: string;
+  name: string;
+  view_type: string;
+  scope: string;
+  sort: string | null;
+  actor_id: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+interface FindingRow {
+  id: string;
+  budget_id: string;
+  classification: string;
+  description: string;
+  evidence: string;
+  evidence_refs: string;
+  severity: string;
+  status: string;
+  actor_id: string | null;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  corrected_at: string | null;
+  corrected_by: string | null;
+  correction_ref: string | null;
+  dismissed_at: string | null;
+  dismissed_by: string | null;
+  dismissed_reason: string | null;
+  reopened_at: string | null;
+  reopened_by: string | null;
+  superseded_at: string | null;
+  superseded_by: string | null;
+  superseded_reason: string | null;
+  expires_at: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface NotificationPolicyRow {
+  id: string;
+  space_id: string;
+  policy_key: string;
+  policy_version: string;
+  policy: string;
+  is_active: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ReportRecordRow {
+  id: string;
+  report_type: string;
+  budget_id: string | null;
+  filter_id: string | null;
+  config: string;
+  policy_version: string;
+  generated_at: string;
+  expires_at: string | null;
+  data_ref: string | null;
+}
+
 interface CorrectionRow {
   id: string;
   review_item_id: string;
@@ -601,6 +953,88 @@ export class SqliteWorkflowStore implements WorkflowStore {
     updateInvitationExpired: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateInvitationRedeemed: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectStrandedClaims: null as unknown as ReturnType<DatabaseType['prepare']>,
+    // ── Notification events ──
+    insertNotificationEvent: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectNotificationEvent: null as unknown as ReturnType<DatabaseType['prepare']>,
+    // ── Notification outbox ──
+    insertOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectOutboxByEventChannel: null as unknown as ReturnType<DatabaseType['prepare']>,
+    claimOutboxPending: null as unknown as ReturnType<DatabaseType['prepare']>,
+    claimOutboxExpired: null as unknown as ReturnType<DatabaseType['prepare']>,
+    claimOutboxRetryable: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectClaimedOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    completeOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    failOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    scheduleRetryOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    acknowledgeOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    suppressOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectPendingOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectPendingOutboxByChannel: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectRetryableOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectRetryableOutboxByChannel: null as unknown as ReturnType<DatabaseType['prepare']>,
+    // ── List outbox ──
+    selectListOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectListOutboxByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectListOutboxByChannel: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectListOutboxByStatusChannel: null as unknown as ReturnType<DatabaseType['prepare']>,
+    // ── Delivery attempts ──
+    insertDeliveryAttempt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectDeliveryAttempts: null as unknown as ReturnType<DatabaseType['prepare']>,
+    // ── Policy versions ──
+    insertPolicyVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectPolicyVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectActivePolicyVersion: null as unknown as ReturnType<DatabaseType['prepare']>,
+    supersedePolicyVersions: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listPolicyVersions: null as unknown as ReturnType<DatabaseType['prepare']>,
+    // ── Saved filters ──
+    insertSavedFilter: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectSavedFilter: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateSavedFilter: null as unknown as ReturnType<DatabaseType['prepare']>,
+    demoteDefaultFilter: null as unknown as ReturnType<DatabaseType['prepare']>,
+    deleteSavedFilter: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listSavedFilters: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listSavedFiltersByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listSavedFiltersByScope: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listSavedFiltersByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    // ── Report records ──
+    insertReportRecord: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectReportRecord: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReportRecords: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReportRecordsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReportRecordsByType: null as unknown as ReturnType<DatabaseType['prepare']>,
+    expireReportRecord: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listSavedViewsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countSavedViewsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
+    deleteSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
+    recordSavedViewUsage: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectSavedViewByActorViewType: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertFinding: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectFinding: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listFindings: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listFindingsByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listFindingsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listFindingsByBudgetStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listFindingsByClassification: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listFindingsBySeverity: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countFindings: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countFindingsFiltered: null as unknown as ReturnType<DatabaseType['prepare']>,
+    transitionFinding: null as unknown as ReturnType<DatabaseType['prepare']>,
+    expireFindingStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
+    expireFindingsByDate: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertNotificationPolicy: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateNotificationPolicy: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectNotificationPolicy: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listNotificationPolicies: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listNotificationPoliciesBySpace: null as unknown as ReturnType<DatabaseType['prepare']>,
+    deleteNotificationPolicy: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReportHistory: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReportHistoryByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countAllReportRecords: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countReportRecordsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
   constructor(filename: string = ':memory:') {
@@ -932,6 +1366,219 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
         CREATE INDEX IF NOT EXISTS idx_invitations_claim_id
           ON invitations(claim_id);
+      `);
+    },
+    // Version 4: Notification outbox, policy versions, saved filters, report records
+    (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notification_events (
+          id                    TEXT PRIMARY KEY,
+          event_version         INTEGER NOT NULL DEFAULT 1,
+          budget_id             TEXT NOT NULL,
+          classification        TEXT NOT NULL,
+          recipient_id          TEXT,
+          scope                 TEXT,
+          redaction_class       TEXT,
+          channel_config_version TEXT,
+          policy_version        TEXT NOT NULL,
+          correlation_id        TEXT,
+          payload               TEXT NOT NULL,
+          created_at            TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notif_events_budget
+          ON notification_events(budget_id);
+
+        CREATE INDEX IF NOT EXISTS idx_notif_events_classification
+          ON notification_events(classification);
+
+        CREATE TABLE IF NOT EXISTS notification_outbox (
+          id                    TEXT PRIMARY KEY,
+          event_id              TEXT NOT NULL REFERENCES notification_events(id),
+          delivery_key          TEXT NOT NULL,
+          channel_type          TEXT NOT NULL,
+          channel_config_version TEXT,
+          status                TEXT NOT NULL DEFAULT 'pending'
+                                CHECK(status IN ('pending','delivering','delivered','failed','suppressed')),
+          attempt_count         INTEGER NOT NULL DEFAULT 0,
+          max_attempts          INTEGER NOT NULL DEFAULT 3,
+          claim_token           TEXT,
+          claim_expires_at      TEXT,
+          last_attempted_at     TEXT,
+          next_attempt_at       TEXT,
+          acknowledged_at       TEXT,
+          failed_at             TEXT,
+          failure_reason        TEXT,
+          suppressed_at         TEXT,
+          suppressed_reason     TEXT,
+          correlation_id        TEXT,
+          created_at            TEXT NOT NULL,
+          updated_at            TEXT NOT NULL,
+          UNIQUE(event_id, channel_type, delivery_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_outbox_status
+          ON notification_outbox(status);
+
+        CREATE INDEX IF NOT EXISTS idx_outbox_channel
+          ON notification_outbox(channel_type);
+
+        CREATE INDEX IF NOT EXISTS idx_outbox_next_attempt
+          ON notification_outbox(next_attempt_at)
+          WHERE next_attempt_at IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS delivery_attempts (
+          id              TEXT PRIMARY KEY,
+          outbox_id       TEXT NOT NULL REFERENCES notification_outbox(id),
+          attempt_number  INTEGER NOT NULL,
+          status          TEXT NOT NULL CHECK(status IN ('success','failed')),
+          response_code   TEXT,
+          response_body   TEXT,
+          error_message   TEXT,
+          attempted_at    TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_delivery_attempts_outbox
+          ON delivery_attempts(outbox_id);
+
+        CREATE TABLE IF NOT EXISTS policy_versions (
+          id            TEXT PRIMARY KEY,
+          policy_key    TEXT NOT NULL,
+          version       INTEGER NOT NULL,
+          policy_hash   TEXT NOT NULL,
+          description   TEXT NOT NULL,
+          is_active     INTEGER NOT NULL DEFAULT 1,
+          superseded_at TEXT,
+          created_at    TEXT NOT NULL,
+          UNIQUE(policy_key, version)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_policy_active
+          ON policy_versions(policy_key)
+          WHERE is_active = 1;
+
+        CREATE TABLE IF NOT EXISTS saved_filters (
+          id              TEXT PRIMARY KEY,
+          name            TEXT NOT NULL,
+          budget_id       TEXT,
+          filter_config   TEXT NOT NULL,
+          view_config     TEXT,
+          scope           TEXT NOT NULL,
+          policy_version  TEXT NOT NULL,
+          is_default      INTEGER NOT NULL DEFAULT 0,
+          actor_id        TEXT NOT NULL,
+          created_at      TEXT NOT NULL,
+          updated_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_saved_filters_budget
+          ON saved_filters(budget_id);
+
+        CREATE INDEX IF NOT EXISTS idx_saved_filters_scope
+          ON saved_filters(scope);
+
+        CREATE INDEX IF NOT EXISTS idx_saved_filters_actor
+          ON saved_filters(actor_id);
+
+        CREATE TABLE IF NOT EXISTS report_records (
+          id              TEXT PRIMARY KEY,
+          report_type     TEXT NOT NULL,
+          budget_id       TEXT,
+          filter_id       TEXT REFERENCES saved_filters(id),
+          config          TEXT NOT NULL,
+          policy_version  TEXT NOT NULL,
+          generated_at    TEXT NOT NULL,
+          expires_at      TEXT,
+          data_ref        TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_report_records_budget
+          ON report_records(budget_id);
+
+        CREATE INDEX IF NOT EXISTS idx_report_records_type
+          ON report_records(report_type);
+      `);
+    },
+    // Version 5: Saved views table for Phase 8
+    (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS saved_views (
+          view_id     TEXT PRIMARY KEY,
+          name        TEXT NOT NULL,
+          view_type   TEXT NOT NULL,
+          scope       TEXT NOT NULL,
+          sort        TEXT,
+          actor_id    TEXT NOT NULL,
+          created_at  TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_saved_views_actor
+          ON saved_views(actor_id);
+      `);
+    },
+    // Version 6: Findings, notification policies, last-used view tracking
+    (db) => {
+      db.exec(`
+        -- Add last_used_at to existing saved_views
+        ALTER TABLE saved_views ADD COLUMN last_used_at TEXT;
+
+        CREATE TABLE IF NOT EXISTS findings (
+          id                TEXT PRIMARY KEY,
+          budget_id         TEXT NOT NULL,
+          classification    TEXT NOT NULL,
+          description       TEXT NOT NULL,
+          evidence          TEXT NOT NULL DEFAULT '{}',
+          evidence_refs     TEXT NOT NULL DEFAULT '[]',
+          severity          TEXT NOT NULL DEFAULT 'medium'
+                              CHECK(severity IN ('low','medium','high','critical')),
+          status            TEXT NOT NULL DEFAULT 'open'
+                              CHECK(status IN ('open','acknowledged','corrected',
+                                               'dismissed','reopened','expired','superseded')),
+          actor_id          TEXT,
+          acknowledged_at   TEXT,
+          acknowledged_by   TEXT,
+          corrected_at      TEXT,
+          corrected_by      TEXT,
+          correction_ref    TEXT,
+          dismissed_at      TEXT,
+          dismissed_by      TEXT,
+          dismissed_reason  TEXT,
+          reopened_at       TEXT,
+          reopened_by       TEXT,
+          superseded_at     TEXT,
+          superseded_by     TEXT,
+          superseded_reason TEXT,
+          expires_at        TEXT,
+          version           INTEGER NOT NULL DEFAULT 1,
+          created_at        TEXT NOT NULL,
+          updated_at        TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_findings_budget
+          ON findings(budget_id);
+        CREATE INDEX IF NOT EXISTS idx_findings_status
+          ON findings(status);
+        CREATE INDEX IF NOT EXISTS idx_findings_classification
+          ON findings(classification);
+        CREATE INDEX IF NOT EXISTS idx_findings_severity
+          ON findings(severity);
+
+        CREATE TABLE IF NOT EXISTS notification_policies (
+          id             TEXT PRIMARY KEY,
+          space_id       TEXT NOT NULL,
+          policy_key     TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          policy         TEXT NOT NULL,
+          is_active      INTEGER NOT NULL DEFAULT 1,
+          created_at     TEXT NOT NULL,
+          updated_at     TEXT NOT NULL,
+          UNIQUE(space_id, policy_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notif_policies_space
+          ON notification_policies(space_id);
+        CREATE INDEX IF NOT EXISTS idx_notif_policies_active
+          ON notification_policies(is_active);
       `);
     },
   ];
@@ -1755,8 +2402,616 @@ export class SqliteWorkflowStore implements WorkflowStore {
        WHERE status = 'claimed'
          AND redeemed_user_id IS NULL
     `);
-  }
 
+    // ── Notification events ────────────────────────────────────────────
+
+    this.stmt.insertNotificationEvent = this.db.prepare(`
+      INSERT INTO notification_events (id, event_version, budget_id, classification,
+                                       recipient_id, scope, redaction_class,
+                                       channel_config_version, policy_version,
+                                       correlation_id, payload, created_at)
+      VALUES (@id, @eventVersion, @budgetId, @classification,
+              @recipientId, @scope, @redactionClass,
+              @channelConfigVersion, @policyVersion,
+              @correlationId, @payload, @createdAt)
+    `);
+
+    this.stmt.selectNotificationEvent = this.db.prepare(`
+      SELECT * FROM notification_events WHERE id = ?
+    `);
+
+    // ── Notification outbox ────────────────────────────────────────────
+
+    this.stmt.insertOutbox = this.db.prepare(`
+      INSERT INTO notification_outbox (id, event_id, delivery_key, channel_type,
+                                       channel_config_version, status, attempt_count,
+                                       max_attempts, claim_token, claim_expires_at,
+                                       last_attempted_at, next_attempt_at,
+                                       acknowledged_at, failed_at, failure_reason,
+                                       suppressed_at, suppressed_reason,
+                                       correlation_id, created_at, updated_at)
+      VALUES (@id, @eventId, @deliveryKey, @channelType,
+              @channelConfigVersion, 'pending', 0,
+              @maxAttempts, NULL, NULL,
+              NULL, NULL,
+              NULL, NULL, NULL,
+              NULL, NULL,
+              @correlationId, @now, @now)
+    `);
+
+    this.stmt.selectOutbox = this.db.prepare(`
+      SELECT * FROM notification_outbox WHERE id = ?
+    `);
+
+    this.stmt.selectOutboxByEventChannel = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE event_id = @eventId
+         AND channel_type = @channelType
+         AND delivery_key = @deliveryKey
+       LIMIT 1
+    `);
+
+    this.stmt.claimOutboxPending = this.db.prepare(`
+      UPDATE notification_outbox
+         SET status = 'delivering',
+             claim_token = @claimToken,
+             claim_expires_at = @expiresAt,
+             last_attempted_at = @now,
+             attempt_count = attempt_count + 1,
+             updated_at = @now
+       WHERE id = @outboxId
+         AND status = 'pending'
+    `);
+
+    this.stmt.claimOutboxExpired = this.db.prepare(`
+      UPDATE notification_outbox
+         SET status = 'delivering',
+             claim_token = @claimToken,
+             claim_expires_at = @expiresAt,
+             last_attempted_at = @now,
+             attempt_count = attempt_count + 1,
+             updated_at = @now
+       WHERE id = @outboxId
+         AND status = 'delivering'
+         AND claim_expires_at IS NOT NULL
+         AND claim_expires_at < @now
+    `);
+
+    this.stmt.claimOutboxRetryable = this.db.prepare(`
+      UPDATE notification_outbox
+         SET status = 'delivering',
+             claim_token = @claimToken,
+             claim_expires_at = @expiresAt,
+             last_attempted_at = @now,
+             attempt_count = attempt_count + 1,
+             next_attempt_at = NULL,
+             updated_at = @now
+       WHERE id = @outboxId
+         AND status = 'failed'
+         AND next_attempt_at IS NOT NULL
+         AND next_attempt_at <= @now
+    `);
+
+    this.stmt.selectClaimedOutbox = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE id = @outboxId AND claim_token = @claimToken
+    `);
+
+    this.stmt.completeOutbox = this.db.prepare(`
+      UPDATE notification_outbox
+         SET status = 'delivered',
+             claim_token = NULL,
+             claim_expires_at = NULL,
+             updated_at = @now
+       WHERE id = @outboxId
+         AND status = 'delivering'
+         AND claim_token = @claimToken
+    `);
+
+    this.stmt.failOutbox = this.db.prepare(`
+      UPDATE notification_outbox
+         SET status = 'failed',
+             claim_token = NULL,
+             claim_expires_at = NULL,
+             failed_at = @now,
+             failure_reason = @errorMessage,
+             updated_at = @now
+       WHERE id = @outboxId
+         AND status = 'delivering'
+         AND claim_token = @claimToken
+    `);
+
+    this.stmt.scheduleRetryOutbox = this.db.prepare(`
+      UPDATE notification_outbox
+         SET next_attempt_at = @nextAttemptAt,
+             updated_at = @now
+       WHERE id = @outboxId
+    `);
+
+    this.stmt.acknowledgeOutbox = this.db.prepare(`
+      UPDATE notification_outbox
+         SET acknowledged_at = @now,
+             updated_at = @now
+       WHERE id = @outboxId
+         AND status = 'delivered'
+    `);
+
+    this.stmt.suppressOutbox = this.db.prepare(`
+      UPDATE notification_outbox
+         SET status = 'suppressed',
+             suppressed_at = @now,
+             suppressed_reason = @reason,
+             updated_at = @now
+       WHERE id = @outboxId
+         AND status IN ('pending', 'delivering', 'failed')
+    `);
+
+    this.stmt.selectPendingOutbox = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE status = 'pending'
+       ORDER BY created_at ASC
+       LIMIT @limit
+    `);
+
+    this.stmt.selectPendingOutboxByChannel = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE status = 'pending'
+         AND channel_type = @channelType
+       ORDER BY created_at ASC
+       LIMIT @limit
+    `);
+
+    this.stmt.selectRetryableOutbox = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE status = 'failed'
+         AND next_attempt_at IS NOT NULL
+         AND next_attempt_at <= @now
+       ORDER BY next_attempt_at ASC
+       LIMIT @limit
+    `);
+
+    this.stmt.selectRetryableOutboxByChannel = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE status = 'failed'
+         AND channel_type = @channelType
+         AND next_attempt_at IS NOT NULL
+         AND next_attempt_at <= @now
+       ORDER BY next_attempt_at ASC
+       LIMIT @limit
+    `);
+
+    this.stmt.selectListOutbox = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectListOutboxByStatus = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE status = @status
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectListOutboxByChannel = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE channel_type = @channelType
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.selectListOutboxByStatusChannel = this.db.prepare(`
+      SELECT * FROM notification_outbox
+       WHERE status = @status
+         AND channel_type = @channelType
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    // ── Delivery attempts ──────────────────────────────────────────────
+
+    this.stmt.insertDeliveryAttempt = this.db.prepare(`
+      INSERT INTO delivery_attempts (id, outbox_id, attempt_number, status,
+                                     response_code, response_body, error_message,
+                                     attempted_at)
+      VALUES (@id, @outboxId, @attemptNumber, @status,
+              @responseCode, @responseBody, @errorMessage,
+            @attemptedAt)
+    `);
+
+    this.stmt.selectDeliveryAttempts = this.db.prepare(`
+      SELECT * FROM delivery_attempts
+       WHERE outbox_id = @outboxId
+       ORDER BY attempt_number ASC
+    `);
+
+    // ── Policy versions ────────────────────────────────────────────────
+
+    this.stmt.insertPolicyVersion = this.db.prepare(`
+      INSERT INTO policy_versions (id, policy_key, version, policy_hash,
+                                   description, is_active, superseded_at, created_at)
+      VALUES (@id, @policyKey, @version, @policyHash,
+              @description, 1, NULL, @createdAt)
+    `);
+
+    this.stmt.selectPolicyVersion = this.db.prepare(`
+      SELECT * FROM policy_versions WHERE id = ?
+    `);
+
+    this.stmt.selectActivePolicyVersion = this.db.prepare(`
+      SELECT * FROM policy_versions
+       WHERE policy_key = @policyKey
+         AND is_active = 1
+       LIMIT 1
+    `);
+
+    this.stmt.supersedePolicyVersions = this.db.prepare(`
+      UPDATE policy_versions
+         SET is_active = 0,
+             superseded_at = @now
+       WHERE policy_key = @policyKey
+         AND is_active = 1
+    `);
+
+    this.stmt.listPolicyVersions = this.db.prepare(`
+      SELECT * FROM policy_versions
+       WHERE policy_key = @policyKey
+       ORDER BY version DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    // ── Saved filters ──────────────────────────────────────────────────
+
+    this.stmt.insertSavedFilter = this.db.prepare(`
+      INSERT INTO saved_filters (id, name, budget_id, filter_config,
+                                 view_config, scope, policy_version,
+                                 is_default, actor_id, created_at, updated_at)
+      VALUES (@id, @name, @budgetId, @filterConfig,
+              @viewConfig, @scope, @policyVersion,
+              @isDefault, @actorId, @now, @now)
+    `);
+
+    this.stmt.selectSavedFilter = this.db.prepare(`
+      SELECT * FROM saved_filters WHERE id = ?
+    `);
+
+    this.stmt.updateSavedFilter = this.db.prepare(`
+      UPDATE saved_filters
+         SET name = COALESCE(@name, name),
+             filter_config = COALESCE(@filterConfig, filter_config),
+             view_config = @viewConfig,
+             scope = COALESCE(@scope, scope),
+             policy_version = COALESCE(@policyVersion, policy_version),
+             is_default = COALESCE(@isDefault, is_default),
+             updated_at = @now
+       WHERE id = @id
+    `);
+
+    this.stmt.demoteDefaultFilter = this.db.prepare(`
+      UPDATE saved_filters
+         SET is_default = 0,
+             updated_at = @now
+       WHERE is_default = 1
+         AND (budget_id IS NULL OR budget_id = @budgetId)
+         AND scope = @scope
+    `);
+
+    this.stmt.deleteSavedFilter = this.db.prepare(`
+      DELETE FROM saved_filters WHERE id = ?
+    `);
+
+    this.stmt.listSavedFilters = this.db.prepare(`
+      SELECT * FROM saved_filters
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listSavedFiltersByBudget = this.db.prepare(`
+      SELECT * FROM saved_filters
+       WHERE budget_id = @budgetId
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listSavedFiltersByScope = this.db.prepare(`
+      SELECT * FROM saved_filters
+       WHERE scope = @scope
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listSavedFiltersByActor = this.db.prepare(`
+      SELECT * FROM saved_filters
+       WHERE actor_id = @actorId
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    // ── Report records ─────────────────────────────────────────────────
+
+    this.stmt.insertReportRecord = this.db.prepare(`
+      INSERT INTO report_records (id, report_type, budget_id, filter_id,
+                                  config, policy_version, generated_at,
+                                  expires_at, data_ref)
+      VALUES (@id, @reportType, @budgetId, @filterId,
+              @config, @policyVersion, @generatedAt,
+              @expiresAt, @dataRef)
+    `);
+
+    this.stmt.selectReportRecord = this.db.prepare(`
+      SELECT * FROM report_records WHERE id = ?
+    `);
+
+    this.stmt.listReportRecords = this.db.prepare(`
+      SELECT * FROM report_records
+       ORDER BY generated_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listReportRecordsByBudget = this.db.prepare(`
+      SELECT * FROM report_records
+       WHERE budget_id = @budgetId
+       ORDER BY generated_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listReportRecordsByType = this.db.prepare(`
+      SELECT * FROM report_records
+       WHERE report_type = @reportType
+       ORDER BY generated_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.expireReportRecord = this.db.prepare(`
+      UPDATE report_records
+         SET expires_at = @now
+       WHERE id = @id
+    `);
+
+    // ── Saved views ────────────────────────────────────────────────────
+
+    this.stmt.insertSavedView = this.db.prepare(`
+      INSERT INTO saved_views (view_id, name, view_type, scope, sort, actor_id, created_at)
+      VALUES (@viewId, @name, @viewType, @scope, @sort, @actorId, @createdAt)
+    `);
+
+    this.stmt.selectSavedView = this.db.prepare(`
+      SELECT * FROM saved_views WHERE view_id = @viewId
+    `);
+
+    this.stmt.listSavedViewsByActor = this.db.prepare(`
+      SELECT * FROM saved_views
+       WHERE actor_id = @actorId
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.countSavedViewsByActor = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM saved_views WHERE actor_id = @actorId
+    `);
+
+    this.stmt.updateSavedView = this.db.prepare(`
+      UPDATE saved_views
+         SET name = COALESCE(@name, name),
+             scope = COALESCE(@scope, scope),
+             sort = @sort,
+             last_used_at = COALESCE(@lastUsedAt, last_used_at)
+       WHERE view_id = @viewId
+    `);
+
+    this.stmt.deleteSavedView = this.db.prepare(`
+      DELETE FROM saved_views WHERE view_id = ?
+    `);
+
+    this.stmt.recordSavedViewUsage = this.db.prepare(`
+      UPDATE saved_views SET last_used_at = @now WHERE view_id = @viewId
+    `);
+
+    this.stmt.selectSavedViewByActorViewType = this.db.prepare(`
+      SELECT * FROM saved_views
+       WHERE actor_id = @actorId AND view_type = @viewType
+       ORDER BY created_at DESC
+       LIMIT 1
+    `);
+
+    // ── Findings ────────────────────────────────────────────────────────
+
+    this.stmt.insertFinding = this.db.prepare(`
+      INSERT INTO findings (id, budget_id, classification, description,
+                            evidence, evidence_refs, severity, status,
+                            actor_id, acknowledged_at, acknowledged_by,
+                            corrected_at, corrected_by, correction_ref,
+                            dismissed_at, dismissed_by, dismissed_reason,
+                            reopened_at, reopened_by,
+                            superseded_at, superseded_by, superseded_reason,
+                            expires_at, version, created_at, updated_at)
+      VALUES (@id, @budgetId, @classification, @description,
+              @evidence, @evidenceRefs, @severity, @status,
+              @actorId, @acknowledgedAt, @acknowledgedBy,
+              @correctedAt, @correctedBy, @correctionRef,
+              @dismissedAt, @dismissedBy, @dismissedReason,
+              @reopenedAt, @reopenedBy,
+              @supersededAt, @supersededBy, @supersededReason,
+              @expiresAt, @version, @createdAt, @updatedAt)
+    `);
+
+    this.stmt.selectFinding = this.db.prepare(`
+      SELECT * FROM findings WHERE id = ?
+    `);
+
+    this.stmt.listFindings = this.db.prepare(`
+      SELECT * FROM findings
+       ORDER BY
+         CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+         created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listFindingsByStatus = this.db.prepare(`
+      SELECT * FROM findings
+       WHERE status = @status
+       ORDER BY
+         CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+         created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listFindingsByBudget = this.db.prepare(`
+      SELECT * FROM findings
+       WHERE budget_id = @budgetId
+       ORDER BY
+         CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+         created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listFindingsByBudgetStatus = this.db.prepare(`
+      SELECT * FROM findings
+       WHERE budget_id = @budgetId
+         AND status = @status
+       ORDER BY
+         CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+         created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listFindingsByClassification = this.db.prepare(`
+      SELECT * FROM findings
+       WHERE classification = @classification
+       ORDER BY
+         CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+         created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listFindingsBySeverity = this.db.prepare(`
+      SELECT * FROM findings
+       WHERE severity = @severity
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.countFindings = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM findings
+    `);
+
+    this.stmt.countFindingsFiltered = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM findings
+       WHERE (COALESCE(@status, '') = '' OR status = @status)
+         AND (COALESCE(@budgetId, '') = '' OR budget_id = @budgetId)
+         AND (COALESCE(@classification, '') = '' OR classification = @classification)
+         AND (COALESCE(@severity, '') = '' OR severity = @severity)
+    `);
+
+    this.stmt.transitionFinding = this.db.prepare(`
+      UPDATE findings
+         SET status = @toStatus,
+             acknowledged_at = @acknowledgedAt,
+             acknowledged_by = @acknowledgedBy,
+             corrected_at = @correctedAt,
+             corrected_by = @correctedBy,
+             correction_ref = @correctionRef,
+             dismissed_at = @dismissedAt,
+             dismissed_by = @dismissedBy,
+             dismissed_reason = @dismissedReason,
+             reopened_at = @reopenedAt,
+             reopened_by = @reopenedBy,
+             superseded_at = @supersededAt,
+             superseded_by = @supersededBy,
+             superseded_reason = @supersededReason,
+             updated_at = @now,
+             version = version + 1
+       WHERE id = @id
+         AND status = @fromStatus
+         AND version = @expectedVersion
+    `);
+
+    this.stmt.expireFindingStmt = this.db.prepare(`
+      UPDATE findings
+         SET status = 'expired',
+             updated_at = @now,
+             version = version + 1
+       WHERE id = @id
+         AND status NOT IN ('expired', 'superseded')
+    `);
+
+    this.stmt.expireFindingsByDate = this.db.prepare(`
+      UPDATE findings
+         SET status = 'expired',
+             updated_at = @now,
+             version = version + 1
+       WHERE expires_at IS NOT NULL
+         AND expires_at <= @now
+         AND status NOT IN ('expired', 'superseded')
+    `);
+
+    // ── Notification policies ───────────────────────────────────────────
+
+    this.stmt.insertNotificationPolicy = this.db.prepare(`
+      INSERT INTO notification_policies (id, space_id, policy_key, policy_version,
+                                         policy, is_active, created_at, updated_at)
+      VALUES (@id, @spaceId, @policyKey, @policyVersion,
+              @policy, 1, @now, @now)
+    `);
+
+    this.stmt.updateNotificationPolicy = this.db.prepare(`
+      UPDATE notification_policies
+         SET policy_version = @policyVersion,
+             policy = @policy,
+             is_active = @isActive,
+             updated_at = @now
+       WHERE space_id = @spaceId
+         AND policy_key = @policyKey
+    `);
+
+    this.stmt.selectNotificationPolicy = this.db.prepare(`
+      SELECT * FROM notification_policies
+       WHERE space_id = @spaceId AND policy_key = @policyKey
+       LIMIT 1
+    `);
+
+    this.stmt.listNotificationPolicies = this.db.prepare(`
+      SELECT * FROM notification_policies
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listNotificationPoliciesBySpace = this.db.prepare(`
+      SELECT * FROM notification_policies
+       WHERE space_id = @spaceId
+       ORDER BY created_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.deleteNotificationPolicy = this.db.prepare(`
+      DELETE FROM notification_policies WHERE id = ?
+    `);
+
+    // ── Report history ──────────────────────────────────────────────────
+
+    this.stmt.listReportHistory = this.db.prepare(`
+      SELECT r.id, r.report_type, r.budget_id, r.generated_at, r.config, r.expires_at
+        FROM report_records r
+       ORDER BY r.generated_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.listReportHistoryByBudget = this.db.prepare(`
+      SELECT r.id, r.report_type, r.budget_id, r.generated_at, r.config, r.expires_at
+        FROM report_records r
+       WHERE r.budget_id = @budgetId
+       ORDER BY r.generated_at DESC
+       LIMIT @limit OFFSET @offset
+    `);
+
+    this.stmt.countAllReportRecords = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM report_records
+    `);
+
+    this.stmt.countReportRecordsByBudget = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM report_records WHERE budget_id = @budgetId
+    `);
+  }
 
 
   // ── Suggestion lifecycle ───────────────────────────────────────────
@@ -3166,6 +4421,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
         deleted.memberships = db.prepare('DELETE FROM actor_memberships').run().changes;
         deleted.exports = db.prepare('DELETE FROM export_records').run().changes;
         deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
+        deleted.deliveryAttempts = db.prepare('DELETE FROM delivery_attempts').run().changes;
+        deleted.outboxRecords = db.prepare('DELETE FROM notification_outbox').run().changes;
+        deleted.notificationEvents = db.prepare('DELETE FROM notification_events').run().changes;
+        deleted.policyVersions = db.prepare('DELETE FROM policy_versions').run().changes;
+        deleted.savedFilters = db.prepare('DELETE FROM saved_filters').run().changes;
+        deleted.reportRecords = db.prepare('DELETE FROM report_records').run().changes;
         break;
 
       case 'user':
@@ -3187,6 +4448,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
         deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
         deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
         deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
+        deleted.deliveryAttempts = db.prepare('DELETE FROM delivery_attempts').run().changes;
+        deleted.outboxRecords = db.prepare('DELETE FROM notification_outbox').run().changes;
+        deleted.notificationEvents = db.prepare('DELETE FROM notification_events').run().changes;
+        deleted.policyVersions = db.prepare('DELETE FROM policy_versions').run().changes;
+        deleted.savedFilters = db.prepare('DELETE FROM saved_filters').run().changes;
+        deleted.reportRecords = db.prepare('DELETE FROM report_records').run().changes;
         break;
 
       case 'provider':
@@ -3195,7 +4462,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
         break;
 
       case 'notification':
-        reasons.push('Notification data scope has no corresponding storage tables');
+        deleted.deliveryAttempts = db.prepare('DELETE FROM delivery_attempts').run().changes;
+        deleted.outboxRecords = db.prepare('DELETE FROM notification_outbox').run().changes;
+        deleted.notificationEvents = db.prepare('DELETE FROM notification_events').run().changes;
         break;
 
       default:
@@ -3576,5 +4845,1070 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async reconcileClaimedInvitations(): Promise<number> {
     const rows = this.stmt.selectStrandedClaims.all({}) as InvitationRow[];
     return rows.length;
+  }
+
+  // ── Notification event lifecycle ──────────────────────────────────
+
+  async createNotificationEvent(input: CreateNotificationEventInput): Promise<NotificationEvent> {
+    const id = randomUUID();
+    const now = nowISO();
+    const payloadJson = JSON.stringify(input.payload);
+
+    this.stmt.insertNotificationEvent.run({
+      id,
+      eventVersion: 1,
+      budgetId: input.budgetId,
+      classification: input.classification,
+      recipientId: input.recipientId ?? null,
+      scope: input.scope ?? null,
+      redactionClass: input.redactionClass ?? null,
+      channelConfigVersion: input.channelConfigVersion ?? null,
+      policyVersion: input.policyVersion,
+      correlationId: input.correlationId ?? null,
+      payload: payloadJson,
+      createdAt: now,
+    });
+
+    const row = this.stmt.selectNotificationEvent.get(id) as NotificationEventRow | undefined;
+    if (!row) throw new Error('Failed to read back notification event');
+    return rowToNotificationEvent(row);
+  }
+
+  async getNotificationEvent(id: string): Promise<NotificationEvent | null> {
+    const row = this.stmt.selectNotificationEvent.get(id) as NotificationEventRow | undefined;
+    return row ? rowToNotificationEvent(row) : null;
+  }
+
+  // ── Notification outbox lifecycle ─────────────────────────────────
+
+  async enqueueNotification(input: EnqueueNotificationInput): Promise<NotificationOutboxRecord> {
+    // Verify the referenced event exists (persist-before-dispatch)
+    const event = this.stmt.selectNotificationEvent.get(input.eventId) as NotificationEventRow | undefined;
+    if (!event) throw new Error(`event does not exist: ${input.eventId}`);
+
+    // Check for duplicate delivery key for this (eventId, channelType)
+    const existing = this.stmt.selectOutboxByEventChannel.get({
+      eventId: input.eventId,
+      channelType: input.channelType,
+      deliveryKey: input.deliveryKey,
+    }) as NotificationOutboxRow | undefined;
+    if (existing) {
+      throw new Error(`deliveryKey already exists for this eventId+channelType: ${input.deliveryKey}`);
+    }
+
+    const id = randomUUID();
+    const now = nowISO();
+    const maxAttempts = input.maxAttempts ?? 3;
+
+    this.stmt.insertOutbox.run({
+      id,
+      eventId: input.eventId,
+      deliveryKey: input.deliveryKey,
+      channelType: input.channelType,
+      channelConfigVersion: input.channelConfigVersion ?? null,
+      maxAttempts,
+      correlationId: input.correlationId ?? null,
+      now,
+    });
+
+    const row = this.stmt.selectOutbox.get(id) as NotificationOutboxRow | undefined;
+    if (!row) throw new Error('Failed to read back outbox record');
+    return rowToOutbox(row);
+  }
+
+  async claimNotificationDelivery(
+    outboxId: string,
+    claimToken: string,
+    claimTimeoutMs: number = 60_000,
+  ): Promise<NotificationOutboxRecord | null> {
+    const now = nowISO();
+    const expiresAt = new Date(Date.now() + claimTimeoutMs).toISOString();
+
+    // 1. Try to claim a pending record
+    const pendingResult = this.stmt.claimOutboxPending.run({
+      outboxId,
+      claimToken,
+      now,
+      expiresAt,
+    });
+
+    if (pendingResult.changes > 0) {
+      const row = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow | undefined;
+      return row ? rowToOutbox(row) : null;
+    }
+
+    // 2. Try to claim an expired delivering record (crash recovery)
+    const expiredResult = this.stmt.claimOutboxExpired.run({
+      outboxId,
+      claimToken,
+      now,
+      expiresAt,
+    });
+
+    if (expiredResult.changes > 0) {
+      const row = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow | undefined;
+      return row ? rowToOutbox(row) : null;
+    }
+
+    // 3. Try to claim a retryable failed record (retry scheduling)
+    const retryableResult = this.stmt.claimOutboxRetryable.run({
+      outboxId,
+      claimToken,
+      now,
+      expiresAt,
+    });
+
+    if (retryableResult.changes > 0) {
+      const row = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow | undefined;
+      return row ? rowToOutbox(row) : null;
+    }
+
+    // 4. Idempotent retry: if already claimed with this token, return it
+    const claimedRow = this.stmt.selectClaimedOutbox.get({ outboxId, claimToken }) as NotificationOutboxRow | undefined;
+    if (claimedRow) {
+      return rowToOutbox(claimedRow);
+    }
+
+    return null;
+  }
+
+  async completeNotificationDelivery(
+    outboxId: string,
+    claimToken: string,
+    response?: { code?: string; body?: string },
+  ): Promise<NotificationOutboxRecord> {
+    const now = nowISO();
+
+    const result = this.stmt.completeOutbox.run({ outboxId, claimToken, now });
+    if (result.changes === 0) {
+      throw new Error(`Cannot complete delivery: claim token mismatch or invalid state for outbox ${outboxId}`);
+    }
+
+    // Read the outbox to get the current attempt count
+    const current = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow;
+
+    // Record successful delivery attempt
+    const attemptId = randomUUID();
+    this.stmt.insertDeliveryAttempt.run({
+      id: attemptId,
+      outboxId,
+      attemptNumber: current.attempt_count,
+      status: 'success',
+      responseCode: response?.code ?? null,
+      responseBody: response?.body ?? null,
+      errorMessage: null,
+      attemptedAt: now,
+    });
+
+    return rowToOutbox(current);
+  }
+
+  async failNotificationDelivery(
+    outboxId: string,
+    claimToken: string,
+    errorMessage: string,
+    retryable: boolean = false,
+  ): Promise<NotificationOutboxRecord> {
+    const now = nowISO();
+
+    // Atomically fail the outbox record
+    const result = this.stmt.failOutbox.run({ outboxId, claimToken, errorMessage, now });
+    if (result.changes === 0) {
+      throw new Error(`Cannot fail delivery: claim token mismatch or invalid state for outbox ${outboxId}`);
+    }
+
+    // Read current attempt count
+    const current = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow;
+
+    // Record failed delivery attempt
+    const attemptId = randomUUID();
+    this.stmt.insertDeliveryAttempt.run({
+      id: attemptId,
+      outboxId,
+      attemptNumber: current.attempt_count,
+      status: 'failed',
+      responseCode: null,
+      responseBody: null,
+      errorMessage,
+      attemptedAt: now,
+    });
+
+    // Schedule retry if retryable and attempts remain
+    if (retryable && current.attempt_count < current.max_attempts) {
+      this.stmt.scheduleRetryOutbox.run({ outboxId, nextAttemptAt: now, now });
+    }
+
+    const row = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow;
+    return rowToOutbox(row);
+  }
+
+  async acknowledgeNotification(outboxId: string): Promise<NotificationOutboxRecord> {
+    const now = nowISO();
+
+    const result = this.stmt.acknowledgeOutbox.run({ outboxId, now });
+    if (result.changes === 0) {
+      throw new Error(`Cannot acknowledge: outbox ${outboxId} is not in delivered status`);
+    }
+
+    const row = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow;
+    return rowToOutbox(row);
+  }
+
+  async suppressNotification(outboxId: string, reason: string): Promise<NotificationOutboxRecord> {
+    const now = nowISO();
+
+    const result = this.stmt.suppressOutbox.run({ outboxId, reason, now });
+    if (result.changes === 0) {
+      throw new Error(`Cannot suppress: outbox ${outboxId} is not in a suppressible state`);
+    }
+
+    const row = this.stmt.selectOutbox.get(outboxId) as NotificationOutboxRow;
+    return rowToOutbox(row);
+  }
+
+  async getOutboxRecord(id: string): Promise<NotificationOutboxRecord | null> {
+    const row = this.stmt.selectOutbox.get(id) as NotificationOutboxRow | undefined;
+    return row ? rowToOutbox(row) : null;
+  }
+
+  async getPendingNotifications(
+    limit: number = 50,
+    channelType?: string,
+  ): Promise<NotificationOutboxRecord[]> {
+    let rows: NotificationOutboxRow[];
+    if (channelType) {
+      rows = this.stmt.selectPendingOutboxByChannel.all({ limit, channelType }) as NotificationOutboxRow[];
+    } else {
+      rows = this.stmt.selectPendingOutbox.all({ limit }) as NotificationOutboxRow[];
+    }
+    return rows.map(rowToOutbox);
+  }
+
+  async getRetryableNotifications(
+    limit: number = 50,
+    channelType?: string,
+  ): Promise<NotificationOutboxRecord[]> {
+    const now = nowISO();
+    let rows: NotificationOutboxRow[];
+    if (channelType) {
+      rows = this.stmt.selectRetryableOutboxByChannel.all({ limit, channelType, now }) as NotificationOutboxRow[];
+    } else {
+      rows = this.stmt.selectRetryableOutbox.all({ limit, now }) as NotificationOutboxRow[];
+    }
+    return rows.map(rowToOutbox);
+  }
+
+  async getDeliveryAttempts(outboxId: string): Promise<DeliveryAttempt[]> {
+    const rows = this.stmt.selectDeliveryAttempts.all({ outboxId }) as DeliveryAttemptRow[];
+    return rows.map(rowToDeliveryAttempt);
+  }
+
+  async listOutboxRecords(
+    options?: ListOutboxRecordsOptions,
+  ): Promise<NotificationOutboxRecord[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+    const status = options?.status;
+    const channelType = options?.channelType;
+
+    let rows: NotificationOutboxRow[];
+    if (status && channelType) {
+      rows = this.stmt.selectListOutboxByStatusChannel.all({ limit, offset, status, channelType }) as NotificationOutboxRow[];
+    } else if (status) {
+      rows = this.stmt.selectListOutboxByStatus.all({ limit, offset, status }) as NotificationOutboxRow[];
+    } else if (channelType) {
+      rows = this.stmt.selectListOutboxByChannel.all({ limit, offset, channelType }) as NotificationOutboxRow[];
+    } else {
+      rows = this.stmt.selectListOutbox.all({ limit, offset }) as NotificationOutboxRow[];
+    }
+    return rows.map(rowToOutbox);
+  }
+
+  // ── Policy version lifecycle ──────────────────────────────────────
+
+  async recordPolicyVersion(input: RecordPolicyVersionInput): Promise<PolicyVersion> {
+    const id = randomUUID();
+    const now = nowISO();
+
+    // Determine next version number for this policy key
+    const maxRow = this.db.prepare(
+      'SELECT MAX(version) AS mv FROM policy_versions WHERE policy_key = ?'
+    ).get(input.policyKey) as { mv: number | null } | undefined;
+    const nextVersion = (maxRow?.mv ?? 0) + 1;
+
+    const txn = this.db.transaction(() => {
+      // Supersede any previously active version
+      this.stmt.supersedePolicyVersions.run({ policyKey: input.policyKey, now });
+
+      // Insert the new version as active
+      this.stmt.insertPolicyVersion.run({
+        id,
+        policyKey: input.policyKey,
+        version: nextVersion,
+        policyHash: input.policyHash,
+        description: input.description,
+        createdAt: now,
+      });
+    });
+
+    txn();
+
+    const row = this.stmt.selectPolicyVersion.get(id) as PolicyVersionRow | undefined;
+    if (!row) throw new Error('Failed to read back policy version');
+    return rowToPolicyVersion(row);
+  }
+
+  async getPolicyVersion(id: string): Promise<PolicyVersion | null> {
+    const row = this.stmt.selectPolicyVersion.get(id) as PolicyVersionRow | undefined;
+    return row ? rowToPolicyVersion(row) : null;
+  }
+
+  async getActivePolicyVersion(policyKey: string): Promise<PolicyVersion | null> {
+    const row = this.stmt.selectActivePolicyVersion.get({ policyKey }) as PolicyVersionRow | undefined;
+    return row ? rowToPolicyVersion(row) : null;
+  }
+
+  async listPolicyVersions(
+    policyKey: string,
+    limit: number = 50,
+    offset: number = 0,
+  ): Promise<PolicyVersion[]> {
+    const rows = this.stmt.listPolicyVersions.all({ policyKey, limit, offset }) as PolicyVersionRow[];
+    return rows.map(rowToPolicyVersion);
+  }
+
+  // ── Saved filter / view lifecycle ─────────────────────────────────
+
+  async createSavedFilter(input: CreateSavedFilterInput): Promise<SavedFilter> {
+    const id = randomUUID();
+    const now = nowISO();
+    const filterConfigJson = JSON.stringify(input.filterConfig);
+    const viewConfigJson = input.viewConfig ? JSON.stringify(input.viewConfig) : null;
+    const isDefault = input.isDefault ? 1 : 0;
+
+    const txn = this.db.transaction(() => {
+      // Demote existing default if this one becomes default
+      if (input.isDefault) {
+        this.stmt.demoteDefaultFilter.run({
+          budgetId: input.budgetId ?? null,
+          scope: input.scope,
+          now,
+        });
+      }
+
+      this.stmt.insertSavedFilter.run({
+        id,
+        name: input.name,
+        budgetId: input.budgetId ?? null,
+        filterConfig: filterConfigJson,
+        viewConfig: viewConfigJson,
+        scope: input.scope,
+        policyVersion: input.policyVersion,
+        isDefault,
+        actorId: input.actorId,
+        now,
+      });
+    });
+
+    txn();
+
+    const row = this.stmt.selectSavedFilter.get(id) as SavedFilterRow | undefined;
+    if (!row) throw new Error('Failed to read back saved filter');
+    return rowToSavedFilter(row);
+  }
+
+  async updateSavedFilter(
+    id: string,
+    input: UpdateSavedFilterInput,
+  ): Promise<SavedFilter> {
+    const existing = this.stmt.selectSavedFilter.get(id) as SavedFilterRow | undefined;
+    if (!existing) throw new Error(`Saved filter ${id} not found`);
+
+    const now = nowISO();
+
+    const txn = this.db.transaction(() => {
+      // Demote existing default if this one becomes default
+      if (input.isDefault) {
+        this.stmt.demoteDefaultFilter.run({
+          budgetId: existing.budget_id,
+          scope: input.scope ?? existing.scope,
+          now,
+        });
+      }
+
+      this.stmt.updateSavedFilter.run({
+        id,
+        name: input.name ?? null,
+        filterConfig: input.filterConfig ? JSON.stringify(input.filterConfig) : null,
+        viewConfig: input.viewConfig !== undefined ? (input.viewConfig ? JSON.stringify(input.viewConfig) : null) : null,
+        scope: input.scope ?? null,
+        policyVersion: input.policyVersion ?? null,
+        isDefault: input.isDefault !== undefined ? (input.isDefault ? 1 : 0) : null,
+        now,
+      });
+    });
+
+    txn();
+
+    const row = this.stmt.selectSavedFilter.get(id) as SavedFilterRow;
+    return rowToSavedFilter(row);
+  }
+
+  async getSavedFilter(id: string): Promise<SavedFilter | null> {
+    const row = this.stmt.selectSavedFilter.get(id) as SavedFilterRow | undefined;
+    return row ? rowToSavedFilter(row) : null;
+  }
+
+  async listSavedFilters(options?: SavedFilterListOptions): Promise<SavedFilter[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+
+    let rows: SavedFilterRow[];
+    if (options?.budgetId) {
+      rows = this.stmt.listSavedFiltersByBudget.all({ budgetId: options.budgetId, limit, offset }) as SavedFilterRow[];
+    } else if (options?.scope) {
+      rows = this.stmt.listSavedFiltersByScope.all({ scope: options.scope, limit, offset }) as SavedFilterRow[];
+    } else if (options?.actorId) {
+      rows = this.stmt.listSavedFiltersByActor.all({ actorId: options.actorId, limit, offset }) as SavedFilterRow[];
+    } else {
+      rows = this.stmt.listSavedFilters.all({ limit, offset }) as SavedFilterRow[];
+    }
+    return rows.map(rowToSavedFilter);
+  }
+
+  async deleteSavedFilter(id: string): Promise<void> {
+    this.stmt.deleteSavedFilter.run(id);
+  }
+
+  // ── Report record lifecycle ───────────────────────────────────────
+
+  async createReportRecord(input: CreateReportRecordInput): Promise<ReportRecord> {
+    const id = randomUUID();
+    const now = nowISO();
+    const configJson = JSON.stringify(input.config);
+
+    this.stmt.insertReportRecord.run({
+      id,
+      reportType: input.reportType,
+      budgetId: input.budgetId ?? null,
+      filterId: input.filterId ?? null,
+      config: configJson,
+      policyVersion: input.policyVersion,
+      generatedAt: now,
+      expiresAt: input.expiresAt ?? null,
+      dataRef: input.dataRef ?? null,
+    });
+
+    const row = this.stmt.selectReportRecord.get(id) as ReportRecordRow | undefined;
+    if (!row) throw new Error('Failed to read back report record');
+    return rowToReportRecord(row);
+  }
+
+  async getReportRecord(id: string): Promise<ReportRecord | null> {
+    const row = this.stmt.selectReportRecord.get(id) as ReportRecordRow | undefined;
+    return row ? rowToReportRecord(row) : null;
+  }
+
+  async listReportRecords(options?: ReportListOptions): Promise<ReportRecord[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+
+    let rows: ReportRecordRow[];
+    if (options?.budgetId) {
+      rows = this.stmt.listReportRecordsByBudget.all({ budgetId: options.budgetId, limit, offset }) as ReportRecordRow[];
+    } else if (options?.reportType) {
+      rows = this.stmt.listReportRecordsByType.all({ reportType: options.reportType, limit, offset }) as ReportRecordRow[];
+    } else {
+      rows = this.stmt.listReportRecords.all({ limit, offset }) as ReportRecordRow[];
+    }
+    return rows.map(rowToReportRecord);
+  }
+
+  async expireReportRecord(id: string): Promise<ReportRecord> {
+    const existing = this.stmt.selectReportRecord.get(id) as ReportRecordRow | undefined;
+    if (!existing) throw new Error(`Report record ${id} not found`);
+
+    const now = nowISO();
+    this.stmt.expireReportRecord.run({ id, now });
+
+    const row = this.stmt.selectReportRecord.get(id) as ReportRecordRow;
+    return rowToReportRecord(row);
+  }
+
+  // ── Saved views ───────────────────────────────────────────────────
+
+  async listSavedViews(actorId: string): Promise<SavedViewResult[]> {
+    const limit = 100;
+    const offset = 0;
+    const rows = this.stmt.listSavedViewsByActor.all({ actorId, limit, offset }) as SavedViewRow[];
+    return rows.map(rowToSavedViewResult);
+  }
+
+  async createSavedView(input: CreateSavedViewInput): Promise<SavedViewResult> {
+    const viewId = randomUUID();
+    const now = nowISO();
+    const scopeJson = JSON.stringify(input.scope);
+
+    this.stmt.insertSavedView.run({
+      viewId,
+      name: input.name,
+      viewType: input.viewType,
+      scope: scopeJson,
+      sort: input.sort ?? null,
+      actorId: input.actorId,
+      createdAt: now,
+    });
+
+    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow;
+    if (!row) throw new Error('Failed to read back saved view');
+    return rowToSavedViewResult(row);
+  }
+
+  async getSavedView(viewId: string): Promise<SavedViewResult | null> {
+    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow | undefined;
+    return row ? rowToSavedViewResult(row) : null;
+  }
+
+  async updateSavedView(viewId: string, input: UpdateSavedViewInput): Promise<SavedViewResult> {
+    const existing = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow | undefined;
+    if (!existing) throw new Error(`Saved view ${viewId} not found`);
+
+    const scopeJson = input.scope !== undefined ? JSON.stringify(input.scope) : undefined;
+
+    this.stmt.updateSavedView.run({
+      viewId,
+      name: input.name ?? null,
+      scope: scopeJson ?? null,
+      sort: input.sort !== undefined ? input.sort : null,
+      lastUsedAt: existing.last_used_at,
+    });
+
+    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow;
+    if (!row) throw new Error('Failed to read back updated saved view');
+    return rowToSavedViewResult(row);
+  }
+
+  async duplicateSavedView(input: DuplicateSavedViewInput): Promise<SavedViewResult> {
+    const source = this.stmt.selectSavedView.get({ viewId: input.sourceViewId }) as SavedViewRow | undefined;
+    if (!source) throw new Error(`Source saved view ${input.sourceViewId} not found`);
+
+    const newViewId = randomUUID();
+    const now = nowISO();
+
+    this.stmt.insertSavedView.run({
+      viewId: newViewId,
+      name: input.name,
+      viewType: source.view_type,
+      scope: source.scope,
+      sort: source.sort,
+      actorId: input.actorId,
+      createdAt: now,
+    });
+
+    const row = this.stmt.selectSavedView.get({ viewId: newViewId }) as SavedViewRow;
+    if (!row) throw new Error('Failed to read back duplicated saved view');
+    return rowToSavedViewResult(row);
+  }
+
+  async deleteSavedView(viewId: string): Promise<boolean> {
+    const result = this.stmt.deleteSavedView.run(viewId);
+    return result.changes > 0;
+  }
+
+  async recordSavedViewUsage(viewId: string): Promise<SavedViewResult> {
+    const existing = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow | undefined;
+    if (!existing) throw new Error(`Saved view ${viewId} not found`);
+
+    const now = nowISO();
+    this.stmt.recordSavedViewUsage.run({ viewId, now });
+
+    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow;
+    return rowToSavedViewResult(row);
+  }
+
+  // ── Finding lifecycle ────────────────────────────────────────────
+
+  async createFinding(input: CreateFindingInput): Promise<Finding> {
+    const id = randomUUID();
+    const now = nowISO();
+    const evidenceJson = JSON.stringify(input.evidence);
+    const evidenceRefsJson = JSON.stringify(input.evidenceRefs ?? []);
+
+    this.stmt.insertFinding.run({
+      id,
+      budgetId: input.budgetId,
+      classification: input.classification,
+      description: input.description,
+      evidence: evidenceJson,
+      evidenceRefs: evidenceRefsJson,
+      severity: input.severity ?? 'medium',
+      status: 'open',
+      actorId: input.actorId ?? null,
+      acknowledgedAt: null,
+      acknowledgedBy: null,
+      correctedAt: null,
+      correctedBy: null,
+      correctionRef: null,
+      dismissedAt: null,
+      dismissedBy: null,
+      dismissedReason: null,
+      reopenedAt: null,
+      reopenedBy: null,
+      supersededAt: null,
+      supersededBy: null,
+      supersededReason: null,
+      expiresAt: input.expiresAt ?? null,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const row = this.stmt.selectFinding.get(id) as FindingRow | undefined;
+    if (!row) throw new Error('Failed to read back finding');
+    return rowToFinding(row);
+  }
+
+  async getFinding(id: string): Promise<Finding | null> {
+    const row = this.stmt.selectFinding.get(id) as FindingRow | undefined;
+    return row ? rowToFinding(row) : null;
+  }
+
+  async listFindings(options?: ListFindingsOptions): Promise<Finding[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+
+    let rows: FindingRow[];
+    if (options?.status && options?.budgetId) {
+      rows = this.stmt.listFindingsByBudgetStatus.all({ budgetId: options.budgetId, status: options.status, limit, offset }) as FindingRow[];
+    } else if (options?.status) {
+      rows = this.stmt.listFindingsByStatus.all({ status: options.status, limit, offset }) as FindingRow[];
+    } else if (options?.budgetId) {
+      rows = this.stmt.listFindingsByBudget.all({ budgetId: options.budgetId, limit, offset }) as FindingRow[];
+    } else if (options?.classification) {
+      rows = this.stmt.listFindingsByClassification.all({ classification: options.classification, limit, offset }) as FindingRow[];
+    } else if (options?.severity) {
+      rows = this.stmt.listFindingsBySeverity.all({ severity: options.severity, limit, offset }) as FindingRow[];
+    } else {
+      rows = this.stmt.listFindings.all({ limit, offset }) as FindingRow[];
+    }
+    return rows.map(rowToFinding);
+  }
+
+  async countFindings(options?: ListFindingsOptions): Promise<number> {
+    if (options?.status || options?.budgetId || options?.classification || options?.severity) {
+      const row = this.stmt.countFindingsFiltered.get({
+        status: options.status ?? '',
+        budgetId: options.budgetId ?? '',
+        classification: options.classification ?? '',
+        severity: options.severity ?? '',
+      }) as { count: number };
+      return row.count;
+    }
+    const row = this.stmt.countFindings.get({}) as { count: number };
+    return row.count;
+  }
+
+  async acknowledgeFinding(input: AcknowledgeFindingInput): Promise<Finding> {
+    const existing = this.stmt.selectFinding.get(input.findingId) as FindingRow | undefined;
+    if (!existing) throw new Error(`Finding ${input.findingId} not found`);
+    if (existing.status === 'acknowledged') {
+      return rowToFinding(existing);
+    }
+
+    const allowedTargets = FINDING_TRANSITIONS[existing.status];
+    if (!allowedTargets || !allowedTargets.includes('acknowledged')) {
+      throw new Error(`Cannot acknowledge finding in status ${existing.status}`);
+    }
+
+    const now = nowISO();
+    const result = this.stmt.transitionFinding.run({
+      id: input.findingId,
+      fromStatus: existing.status,
+      toStatus: 'acknowledged',
+      expectedVersion: input.expectedVersion,
+      now,
+      acknowledgedAt: now,
+      acknowledgedBy: input.actorId,
+      correctedAt: null,
+      correctedBy: null,
+      correctionRef: null,
+      dismissedAt: null,
+      dismissedBy: null,
+      dismissedReason: null,
+      reopenedAt: null,
+      reopenedBy: null,
+      supersededAt: null,
+      supersededBy: null,
+      supersededReason: null,
+    });
+
+    if (result.changes === 0) {
+      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to acknowledged`);
+    }
+
+    const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
+    return rowToFinding(row);
+  }
+
+  async correctFinding(input: CorrectFindingInput): Promise<Finding> {
+    const existing = this.stmt.selectFinding.get(input.findingId) as FindingRow | undefined;
+    if (!existing) throw new Error(`Finding ${input.findingId} not found`);
+    if (existing.status === 'corrected') {
+      return rowToFinding(existing);
+    }
+
+    const allowedTargets = FINDING_TRANSITIONS[existing.status];
+    if (!allowedTargets || !allowedTargets.includes('corrected')) {
+      throw new Error(`Cannot correct finding in status ${existing.status}`);
+    }
+
+    const now = nowISO();
+    const result = this.stmt.transitionFinding.run({
+      id: input.findingId,
+      fromStatus: existing.status,
+      toStatus: 'corrected',
+      expectedVersion: input.expectedVersion,
+      now,
+      acknowledgedAt: null,
+      acknowledgedBy: null,
+      correctedAt: now,
+      correctedBy: input.actorId,
+      correctionRef: input.correctionRef,
+      dismissedAt: null,
+      dismissedBy: null,
+      dismissedReason: null,
+      reopenedAt: null,
+      reopenedBy: null,
+      supersededAt: null,
+      supersededBy: null,
+      supersededReason: null,
+    });
+
+    if (result.changes === 0) {
+      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to corrected`);
+    }
+
+    const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
+    return rowToFinding(row);
+  }
+
+  async dismissFinding(input: DismissFindingInput): Promise<Finding> {
+    const existing = this.stmt.selectFinding.get(input.findingId) as FindingRow | undefined;
+    if (!existing) throw new Error(`Finding ${input.findingId} not found`);
+    if (existing.status === 'dismissed') {
+      return rowToFinding(existing);
+    }
+
+    const allowedTargets = FINDING_TRANSITIONS[existing.status];
+    if (!allowedTargets || !allowedTargets.includes('dismissed')) {
+      throw new Error(`Cannot dismiss finding in status ${existing.status}`);
+    }
+
+    const now = nowISO();
+    const result = this.stmt.transitionFinding.run({
+      id: input.findingId,
+      fromStatus: existing.status,
+      toStatus: 'dismissed',
+      expectedVersion: input.expectedVersion,
+      now,
+      acknowledgedAt: null,
+      acknowledgedBy: null,
+      correctedAt: null,
+      correctedBy: null,
+      correctionRef: null,
+      dismissedAt: now,
+      dismissedBy: input.actorId,
+      dismissedReason: input.reason,
+      reopenedAt: null,
+      reopenedBy: null,
+      supersededAt: null,
+      supersededBy: null,
+      supersededReason: null,
+    });
+
+    if (result.changes === 0) {
+      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to dismissed`);
+    }
+
+    const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
+    return rowToFinding(row);
+  }
+
+  async reopenFinding(input: ReopenFindingInput): Promise<Finding> {
+    const existing = this.stmt.selectFinding.get(input.findingId) as FindingRow | undefined;
+    if (!existing) throw new Error(`Finding ${input.findingId} not found`);
+    if (existing.status === 'reopened') {
+      return rowToFinding(existing);
+    }
+
+    const allowedTargets = FINDING_TRANSITIONS[existing.status];
+    if (!allowedTargets || !allowedTargets.includes('reopened')) {
+      throw new Error(`Cannot reopen finding in status ${existing.status}`);
+    }
+
+    const now = nowISO();
+    const result = this.stmt.transitionFinding.run({
+      id: input.findingId,
+      fromStatus: existing.status,
+      toStatus: 'reopened',
+      expectedVersion: input.expectedVersion,
+      now,
+      acknowledgedAt: null,
+      acknowledgedBy: null,
+      correctedAt: null,
+      correctedBy: null,
+      correctionRef: null,
+      dismissedAt: null,
+      dismissedBy: null,
+      dismissedReason: null,
+      reopenedAt: now,
+      reopenedBy: input.actorId,
+      supersededAt: null,
+      supersededBy: null,
+      supersededReason: null,
+    });
+
+    if (result.changes === 0) {
+      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to reopened`);
+    }
+
+    const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
+    return rowToFinding(row);
+  }
+
+  async supersedeFinding(input: SupersedeFindingInput): Promise<Finding> {
+    const existing = this.stmt.selectFinding.get(input.findingId) as FindingRow | undefined;
+    if (!existing) throw new Error(`Finding ${input.findingId} not found`);
+    if (existing.status === 'superseded') {
+      return rowToFinding(existing);
+    }
+
+    const allowedTargets = FINDING_TRANSITIONS[existing.status];
+    if (!allowedTargets || !allowedTargets.includes('superseded')) {
+      throw new Error(`Cannot supersede finding in status ${existing.status}`);
+    }
+
+    const now = nowISO();
+    const result = this.stmt.transitionFinding.run({
+      id: input.findingId,
+      fromStatus: existing.status,
+      toStatus: 'superseded',
+      expectedVersion: input.expectedVersion,
+      now,
+      acknowledgedAt: null,
+      acknowledgedBy: null,
+      correctedAt: null,
+      correctedBy: null,
+      correctionRef: null,
+      dismissedAt: null,
+      dismissedBy: null,
+      dismissedReason: null,
+      reopenedAt: null,
+      reopenedBy: null,
+      supersededAt: now,
+      supersededBy: input.supersededBy,
+      supersededReason: input.reason,
+    });
+
+    if (result.changes === 0) {
+      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to superseded`);
+    }
+
+    const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
+    return rowToFinding(row);
+  }
+
+  async expireFinding(id: string): Promise<Finding> {
+    const existing = this.stmt.selectFinding.get(id) as FindingRow | undefined;
+    if (!existing) throw new Error(`Finding ${id} not found`);
+    if (existing.status === 'expired') {
+      return rowToFinding(existing);
+    }
+
+    const now = nowISO();
+    const result = this.stmt.expireFindingStmt.run({ id, now });
+
+    if (result.changes === 0) {
+      throw new Error(`Finding ${id} cannot be expired from status ${existing.status}`);
+    }
+
+    const row = this.stmt.selectFinding.get(id) as FindingRow;
+    return rowToFinding(row);
+  }
+
+  // ── Notification policy lifecycle ────────────────────────────────
+
+  async saveNotificationPolicy(input: SaveNotificationPolicyInput): Promise<NotificationPolicyRecord> {
+    const existing = this.stmt.selectNotificationPolicy.get({ spaceId: input.spaceId, policyKey: input.policyKey }) as NotificationPolicyRow | undefined;
+
+    const now = nowISO();
+    const policyJson = JSON.stringify(input.policy);
+
+    if (existing) {
+      this.stmt.updateNotificationPolicy.run({
+        spaceId: input.spaceId,
+        policyKey: input.policyKey,
+        policyVersion: input.policyVersion,
+        policy: policyJson,
+        isActive: existing.is_active,
+        now,
+      });
+    } else {
+      const id = randomUUID();
+      this.stmt.insertNotificationPolicy.run({
+        id,
+        spaceId: input.spaceId,
+        policyKey: input.policyKey,
+        policyVersion: input.policyVersion,
+        policy: policyJson,
+        now,
+      });
+    }
+
+    const row = this.stmt.selectNotificationPolicy.get({ spaceId: input.spaceId, policyKey: input.policyKey }) as NotificationPolicyRow;
+    if (!row) throw new Error('Failed to read back notification policy');
+    return rowToNotificationPolicy(row);
+  }
+
+  async getNotificationPolicy(spaceId: string, policyKey: string): Promise<NotificationPolicyRecord | null> {
+    const row = this.stmt.selectNotificationPolicy.get({ spaceId, policyKey }) as NotificationPolicyRow | undefined;
+    return row ? rowToNotificationPolicy(row) : null;
+  }
+
+  async listNotificationPolicies(options?: ListNotificationPoliciesOptions): Promise<NotificationPolicyRecord[]> {
+    const limit = options?.limit ?? 50;
+    const offset = options?.offset ?? 0;
+
+    let rows: NotificationPolicyRow[];
+    if (options?.spaceId) {
+      rows = this.stmt.listNotificationPoliciesBySpace.all({ spaceId: options.spaceId, limit, offset }) as NotificationPolicyRow[];
+    } else {
+      rows = this.stmt.listNotificationPolicies.all({ limit, offset }) as NotificationPolicyRow[];
+    }
+    return rows.map(rowToNotificationPolicy);
+  }
+
+  async resolveRecipients(spaceId: string, classification: string, severity: string): Promise<RecipientResolution> {
+    // Look up active delivery/notification policies for the space to extract recipient configuration
+    const rows = this.stmt.listNotificationPoliciesBySpace.all({ spaceId, limit: 100, offset: 0 }) as NotificationPolicyRow[];
+
+    // Collect actor IDs and channels from active policy configurations
+    const actorIds = new Set<string>();
+    const channels = new Set<string>();
+
+    for (const row of rows) {
+      if (!row.is_active) continue;
+
+      try {
+        const parsed = JSON.parse(row.policy) as Record<string, unknown>;
+
+        // Extract actor IDs if present in the policy
+        if (Array.isArray(parsed.actorIds)) {
+          for (const id of parsed.actorIds) {
+            if (typeof id === 'string') actorIds.add(id);
+          }
+        }
+
+        // Extract channels if present
+        if (Array.isArray(parsed.channels)) {
+          for (const ch of parsed.channels) {
+            if (typeof ch === 'string') channels.add(ch);
+          }
+        }
+
+        // Extract classification/severity-specific recipients
+        if (parsed.classifications && typeof parsed.classifications === 'object' && !Array.isArray(parsed.classifications)) {
+          const classMap = parsed.classifications as Record<string, unknown>;
+          const match = classMap[classification];
+          if (match && typeof match === 'object' && !Array.isArray(match)) {
+            const matchObj = match as Record<string, unknown>;
+            if (Array.isArray(matchObj.actorIds)) {
+              for (const id of matchObj.actorIds) {
+                if (typeof id === 'string') actorIds.add(id);
+              }
+            }
+            if (Array.isArray(matchObj.channels)) {
+              for (const ch of matchObj.channels) {
+                if (typeof ch === 'string') channels.add(ch);
+              }
+            }
+          }
+        }
+
+        // Extract severity-specific recipients
+        if (parsed.severities && typeof parsed.severities === 'object' && !Array.isArray(parsed.severities)) {
+          const sevMap = parsed.severities as Record<string, unknown>;
+          const match = sevMap[severity];
+          if (match && typeof match === 'object' && !Array.isArray(match)) {
+            const matchObj = match as Record<string, unknown>;
+            if (Array.isArray(matchObj.actorIds)) {
+              for (const id of matchObj.actorIds) {
+                if (typeof id === 'string') actorIds.add(id);
+              }
+            }
+            if (Array.isArray(matchObj.channels)) {
+              for (const ch of matchObj.channels) {
+                if (typeof ch === 'string') channels.add(ch);
+              }
+            }
+          }
+        }
+      } catch {
+        // Malformed policy JSON — skip
+      }
+    }
+
+    return {
+      spaceId,
+      actorIds: [...actorIds],
+      channels: [...channels],
+      resolvedAt: nowISO(),
+    };
+  }
+
+  async deleteNotificationPolicy(id: string): Promise<boolean> {
+    const result = this.stmt.deleteNotificationPolicy.run(id);
+    return result.changes > 0;
+  }
+
+  // ── Report history (Phase 8.5) ───────────────────────────────────
+
+  async getReportHistory(budgetId?: string, limit?: number, offset?: number): Promise<ReportHistoryEntry[]> {
+    const lim = limit ?? 50;
+    const off = offset ?? 0;
+
+    const rows = budgetId
+      ? this.stmt.listReportHistoryByBudget.all({ budgetId, limit: lim, offset: off }) as ReportRecordRow[]
+      : this.stmt.listReportHistory.all({ limit: lim, offset: off }) as ReportRecordRow[];
+
+    const now = nowISO();
+    return rows.map(r => ({
+      id: r.id,
+      reportType: r.report_type,
+      budgetId: r.budget_id,
+      generatedAt: r.generated_at,
+      label: this.deriveReportLabel(r),
+      isExpired: r.expires_at !== null && r.expires_at <= now,
+    }));
+  }
+
+  async countReportRecords(budgetId?: string): Promise<number> {
+    if (budgetId) {
+      const row = this.stmt.countReportRecordsByBudget.get({ budgetId }) as { count: number };
+      return row.count;
+    }
+    const row = this.stmt.countAllReportRecords.get({}) as { count: number };
+    return row.count;
+  }
+
+  /** Derive a human-readable label from a report record row. */
+  private deriveReportLabel(row: ReportRecordRow): string {
+    try {
+      const config = JSON.parse(row.config) as Record<string, unknown>;
+      if (typeof config.label === 'string' && config.label) return config.label;
+    } catch {
+      // fall through
+    }
+    return `${row.report_type} report`;
   }
 }

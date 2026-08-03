@@ -50,6 +50,13 @@ else
   fail "balanceframe-data volume missing"
 fi
 
+# Check connection configuration is persisted on the data volume
+if echo "$rendered" | grep -q 'BALANCEFRAME_CONFIG_PATH=/data/config.json'; then
+  ok "connection configuration is persisted under /data"
+else
+  fail "BALANCEFRAME_CONFIG_PATH must point to /data/config.json"
+fi
+
 # Check no dev-only env vars in the rendered config
 for var in NUXT_DEV_BYPASS_AUTH BALANCEFRAME_DEV_BYPASS_AUTH NUXT_REVIEW_AND_APPLY BALANCEFRAME_SEED_ALLOWED; do
   if echo "$rendered" | grep -q "$var"; then

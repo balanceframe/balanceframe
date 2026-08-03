@@ -313,3 +313,183 @@ describe("collection item schema enforcement", () => {
     expect(tagSchema.safeParse({ id: 42, name: "numeric" }).success).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence foundations
+// ---------------------------------------------------------------------------
+
+describe("Phase 8 Budget Intelligence — PurchaseEvaluation", () => {
+  const validPurchaseEval: Record<string, unknown> = {
+    allowable: true,
+    reasonCodes: ["budget_sufficient"],
+    categoryBudget: { minorUnits: "50000", currency: "USD" },
+    categorySpent: { minorUnits: "10000", currency: "USD" },
+    categoryRemaining: { minorUnits: "40000", currency: "USD" },
+    projectedBalance: { minorUnits: "150000", currency: "USD" },
+  };
+
+  it("accepts valid PurchaseEvaluation through JSON Schema", () => {
+    const { purchaseEvaluationSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(purchaseEvaluationSchema.safeParse(validPurchaseEval).success).toBe(true);
+  });
+
+  it("rejects PurchaseEvaluation with non-boolean allowable", () => {
+    const { purchaseEvaluationSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = purchaseEvaluationSchema.safeParse({
+      ...validPurchaseEval,
+      allowable: "yes",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects PurchaseEvaluation with malformed Money", () => {
+    const { purchaseEvaluationSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = purchaseEvaluationSchema.safeParse({
+      ...validPurchaseEval,
+      categoryBudget: { minorUnits: "not-a-number", currency: "USD" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts PurchaseEvaluation with null projectedBalance", () => {
+    const { purchaseEvaluationSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = purchaseEvaluationSchema.safeParse({
+      ...validPurchaseEval,
+      projectedBalance: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects empty PurchaseEvaluation", () => {
+    const { purchaseEvaluationSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(purchaseEvaluationSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("Phase 8 Budget Intelligence — CashFlowProjection", () => {
+  const validMonthlyProjection: Record<string, unknown> = {
+    month: "2026-08",
+    projectedIncome: { minorUnits: "500000", currency: "USD" },
+    projectedExpenses: { minorUnits: "350000", currency: "USD" },
+    netChange: { minorUnits: "150000", currency: "USD" },
+    endingBalance: { minorUnits: "150000", currency: "USD" },
+  };
+
+  const validCashFlowResponse: Record<string, unknown> = {
+    projectionMonths: 3,
+    monthlyProjections: [validMonthlyProjection],
+  };
+
+  it("accepts valid CashFlowProjectionResponse through JSON Schema", () => {
+    const { cashFlowProjectionResponseSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(cashFlowProjectionResponseSchema.safeParse(validCashFlowResponse).success).toBe(true);
+  });
+
+  it("rejects CashFlowProjectionResponse with non-integer projectionMonths", () => {
+    const { cashFlowProjectionResponseSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = cashFlowProjectionResponseSchema.safeParse({
+      ...validCashFlowResponse,
+      projectionMonths: "three",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects MonthlyProjection missing month", () => {
+    const { monthlyProjectionSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = monthlyProjectionSchema.safeParse({
+      projectedIncome: { minorUnits: "500000", currency: "USD" },
+      projectedExpenses: { minorUnits: "350000", currency: "USD" },
+      netChange: { minorUnits: "150000", currency: "USD" },
+      endingBalance: { minorUnits: "150000", currency: "USD" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty CashFlowProjectionResponse", () => {
+    const { cashFlowProjectionResponseSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(cashFlowProjectionResponseSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("Phase 8 Budget Intelligence — TargetHealth", () => {
+  const validCategoryHealth: Record<string, unknown> = {
+    categoryId: "cat-1",
+    categoryName: "Groceries",
+    budgeted: { minorUnits: "50000", currency: "USD" },
+    spent: { minorUnits: "30000", currency: "USD" },
+    remaining: { minorUnits: "20000", currency: "USD" },
+    healthLabel: "healthy",
+  };
+
+  const validTargetHealthResult: Record<string, unknown> = {
+    categoryHealth: [validCategoryHealth],
+    overallLabel: "healthy",
+  };
+
+  it("accepts valid TargetHealthResult through JSON Schema", () => {
+    const { targetHealthResultSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(targetHealthResultSchema.safeParse(validTargetHealthResult).success).toBe(true);
+  });
+
+  it("rejects TargetHealthResult with unknown healthLabel", () => {
+    const { targetHealthResultSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = targetHealthResultSchema.safeParse({
+      ...validTargetHealthResult,
+      categoryHealth: [{
+        ...validCategoryHealth,
+        healthLabel: "super_healthy",
+      }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects CategoryHealth malformed Money", () => {
+    const { categoryHealthSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = categoryHealthSchema.safeParse({
+      ...validCategoryHealth,
+      budgeted: { minorUnits: "abc", currency: "USD" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty TargetHealthResult", () => {
+    const { targetHealthResultSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(targetHealthResultSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("Phase 8 Budget Intelligence — FinancialStateLabel", () => {
+  const validFinancialStateLabel: Record<string, unknown> = {
+    label: "healthy",
+    score: 0.85,
+    reasonCodes: ["positive_cash_flow", "budget_healthy"],
+  };
+
+  it("accepts valid FinancialStateLabel through JSON Schema", () => {
+    const { financialStateLabelSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(financialStateLabelSchema.safeParse(validFinancialStateLabel).success).toBe(true);
+  });
+
+  it("rejects FinancialStateLabel with non-numeric score", () => {
+    const { financialStateLabelSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = financialStateLabelSchema.safeParse({
+      ...validFinancialStateLabel,
+      score: "high",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects FinancialStateLabel missing label", () => {
+    const { financialStateLabelSchema } = require("@balanceframe/protocol-generated/validators");
+    const result = financialStateLabelSchema.safeParse({
+      score: 0.85,
+      reasonCodes: ["positive"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects empty FinancialStateLabel", () => {
+    const { financialStateLabelSchema } = require("@balanceframe/protocol-generated/validators");
+    expect(financialStateLabelSchema.safeParse({}).success).toBe(false);
+  });
+});

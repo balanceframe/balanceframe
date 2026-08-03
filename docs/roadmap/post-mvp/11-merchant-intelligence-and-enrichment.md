@@ -16,6 +16,14 @@ Improve categorization and merchant/entity resolution when bank-imported transac
 - Every suggestion exposes evidence, confidence, contradictory evidence, freshness, provenance, and the reason codes that influenced it.
 - External enrichment is optional, policy-controlled, cached, attributable, and never required for review, rules, or Actual interoperability.
 
+### Shared evidence boundary
+
+Merchant intelligence resolves merchant/entity meaning from sparse ledger imports. It complements, but does not replace, Phase 11.5 economic-event reconstruction: merchant enrichment does not establish settlement matching, reimbursement linkage, wallet funding, receipt balancing, tender allocation, or transaction identity.
+
+Define reusable normalized merchant/payee identity and provenance fields for both phases: stable ledger IDs where available; raw and normalized display text; alias/source field; confidence; contradictory evidence; provider/parser/version; content/query hash; retrieval/source time; expiry; policy; and deletion state. Phase 11.5 consumes these as semantic evidence after deterministic monetary relationships are resolved.
+
+Connector health/capability and source-provenance contracts remain service-neutral. They must distinguish a source observation, normalized evidence, semantic suggestion, deterministic rule, ledger proposal, and confirmed execution.
+
 ## Deliverables
 
 ### Phase A — Local deterministic intelligence
@@ -96,7 +104,7 @@ All providers use the same cache, provenance, authorization, redaction, rate-lim
 
 ```ts
 type MerchantResearchPolicy = {
-  mode: "disabled" | "local_only" | "external_allowed";
+  mode: 'disabled' | 'local_only' | 'external_allowed';
   allowedProviders: string[];
   redactBeforeExternalResearch: boolean;
   maxSearchesPerDay: number;
@@ -117,6 +125,7 @@ Persist enrichment records with the provider, query fingerprint, fields sent, so
 - Every displayed external claim includes provenance and expiry.
 - Native Actual rule exports remain valid and executable without BalanceFrame.
 - Disabling all enrichment providers does not block synchronization, review, proposal approval, rule execution, or recovery.
+- Shared-evidence contract tests distinguish source observations, normalized evidence, semantic suggestions, deterministic rules, ledger proposals, and execution results; verify merchant/payee taxonomy and provenance compatibility with Phase 11.5 without allowing enrichment to assert transaction identity or monetary relationships.
 
 **Exit:** local deterministic evidence materially improves sparse-transaction categorization; calendar and recurrence reasoning is explainable and conservative; optional external enrichment is policy-controlled and failure-tolerant; and every accepted rule remains a complete native Actual rule outside BalanceFrame.
 

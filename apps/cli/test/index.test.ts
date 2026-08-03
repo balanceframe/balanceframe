@@ -815,6 +815,499 @@ describe('main — rule routing', () => {
 // Composition integration — main() produces dispatch without manual opts
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Budget Intelligence command parsing
+// ---------------------------------------------------------------------------
+
+describe('parseArgs — purchase evaluate', () => {
+  it('parses purchase evaluate --category-id CAT --amount AMT --json', () => {
+    const result = parseArgs(['purchase', 'evaluate', '--category-id', 'cat-food', '--amount', '5000', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('purchase.evaluate');
+    expect(result.cmd.options).toBeDefined();
+    expect(result.cmd.options!['category-id']).toBe('cat-food');
+    expect(result.cmd.options!.amount).toBe('5000');
+  });
+
+  it('parses purchase evaluate with --account-id and --currency', () => {
+    const result = parseArgs(['purchase', 'evaluate', '--category-id', 'cat-food', '--amount', '5000', '--account-id', 'acc_checking', '--currency', 'EUR', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!['account-id']).toBe('acc_checking');
+    expect(result.cmd.options!.currency).toBe('EUR');
+  });
+
+  it('rejects purchase evaluate without --category-id', () => {
+    const result = parseArgs(['purchase', 'evaluate', '--amount', '5000', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_category_value');
+  });
+
+  it('rejects purchase evaluate without --amount', () => {
+    const result = parseArgs(['purchase', 'evaluate', '--category-id', 'cat-food', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_flag_value');
+  });
+
+  it('rejects purchase evaluate with trailing positional args', () => {
+    const result = parseArgs(['purchase', 'evaluate', '--category-id', 'cat-food', '--amount', '5000', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+});
+
+describe('parseArgs — cash-flow project', () => {
+  it('parses cash-flow project --json (default options)', () => {
+    const result = parseArgs(['cash-flow', 'project', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('cash-flow.project');
+  });
+
+  it('parses cash-flow project --months 6 --start-month 2026-01 --json', () => {
+    const result = parseArgs(['cash-flow', 'project', '--months', '6', '--start-month', '2026-01', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options).toBeDefined();
+    expect(result.cmd.options!.months).toBe('6');
+    expect(result.cmd.options!['start-month']).toBe('2026-01');
+  });
+
+  it('rejects cash-flow project with trailing positional args', () => {
+    const result = parseArgs(['cash-flow', 'project', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+});
+
+describe('parseArgs — target health', () => {
+  it('parses target health --json', () => {
+    const result = parseArgs(['target', 'health', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('target.health');
+  });
+
+  it('rejects trailing args after target health', () => {
+    const result = parseArgs(['target', 'health', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('rejects unknown subcommand under target', () => {
+    const result = parseArgs(['target', 'list', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('unknown_command');
+  });
+});
+
+describe('parseArgs — sinking-fund health', () => {
+  it('parses sinking-fund health --json', () => {
+    const result = parseArgs(['sinking-fund', 'health', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('sinking-fund.health');
+  });
+
+  it('rejects trailing args after sinking-fund health', () => {
+    const result = parseArgs(['sinking-fund', 'health', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+});
+
+describe('parseArgs — reports generate', () => {
+  it('parses reports generate --report-type spending --month-range 2026-01:2026-03 --json', () => {
+    const result = parseArgs(['reports', 'generate', '--report-type', 'spending', '--month-range', '2026-01:2026-03', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('reports.generate');
+    expect(result.cmd.options!['report-type']).toBe('spending');
+    expect(result.cmd.options!['month-range']).toBe('2026-01:2026-03');
+  });
+
+  it('parses reports generate with --label and --tag', () => {
+    const result = parseArgs(['reports', 'generate', '--report-type', 'income', '--month-range', '2026-02', '--label', 'Feb Income', '--tag', 'income', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.label).toBe('Feb Income');
+    expect(result.cmd.options!['tag']).toBe('income');
+  });
+
+  it('rejects reports generate without --report-type', () => {
+    const result = parseArgs(['reports', 'generate', '--month-range', '2026-01', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_flag_value');
+  });
+
+  it('rejects reports generate without --month-range', () => {
+    const result = parseArgs(['reports', 'generate', '--report-type', 'spending', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_flag_value');
+  });
+
+  it('rejects reports generate with trailing positional args', () => {
+    const result = parseArgs(['reports', 'generate', '--report-type', 'spending', '--month-range', '2026-01', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+});
+
+describe('parseArgs — views commands', () => {
+  it('parses views list --json', () => {
+    const result = parseArgs(['views', 'list', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('views.list');
+  });
+
+  it('parses views create --name MyView --view-type target_health --json', () => {
+    const result = parseArgs(['views', 'create', '--name', 'MyView', '--view-type', 'target_health', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('views.create');
+    expect(result.cmd.options!.name).toBe('MyView');
+    expect(result.cmd.options!['view-type']).toBe('target_health');
+  });
+
+  it('parses views create with optional --scope', () => {
+    const result = parseArgs(['views', 'create', '--name', 'MyView', '--view-type', 'cash_flow', '--scope', '{"months":3}', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.name).toBe('MyView');
+    expect(result.cmd.options!['view-type']).toBe('cash_flow');
+    expect(result.cmd.options!.scope).toBe('{"months":3}');
+  });
+
+  it('parses views create with --sort', () => {
+    const result = parseArgs(['views', 'create', '--name', 'MyView', '--view-type', 'target_health', '--sort', 'amount:desc', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.sort).toBe('amount:desc');
+  });
+
+  it('parses views create with --sort and --scope together', () => {
+    const result = parseArgs(['views', 'create', '--name', 'N', '--view-type', 'T', '--scope', '{}', '--sort', 'amount:desc', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.name).toBe('N');
+    expect(result.cmd.options!['view-type']).toBe('T');
+    expect(result.cmd.options!.scope).toBe('{}');
+    expect(result.cmd.options!.sort).toBe('amount:desc');
+  });
+
+  it('parses views create with --sort at different position', () => {
+    const result = parseArgs(['views', 'create', '--name', 'N', '--view-type', 'T', '--sort', 'date:asc', '--scope', '{}', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.sort).toBe('date:asc');
+    expect(result.cmd.options!.scope).toBe('{}');
+  });
+
+  it('rejects views create without --name', () => {
+    const result = parseArgs(['views', 'create', '--view-type', 'target_health', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_flag_value');
+  });
+
+  it('rejects views create without --view-type', () => {
+    const result = parseArgs(['views', 'create', '--name', 'MyView', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('missing_flag_value');
+  });
+
+  it('rejects trailing args after views create', () => {
+    const result = parseArgs(['views', 'create', '--name', 'MyView', '--view-type', 'target_health', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('rejects trailing args after views list', () => {
+    const result = parseArgs(['views', 'list', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('rejects unknown views subcommand', () => {
+    const result = parseArgs(['views', 'delete', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('unknown_command');
+  });
+});
+
+describe('parseArgs — home attention', () => {
+  it('parses home attention --json', () => {
+    const result = parseArgs(['home', 'attention', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.command).toBe('home.attention');
+  });
+
+  it('parses home attention with --detailed and --category-group', () => {
+    const result = parseArgs(['home', 'attention', '--detailed', '--category-group', 'essentials', '--json']);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.cmd.options!.detailed).toBe('true');
+    expect(result.cmd.options!['category-group']).toBe('essentials');
+  });
+
+  it('rejects trailing args after home attention', () => {
+    const result = parseArgs(['home', 'attention', 'extra', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('trailing_args');
+  });
+
+  it('rejects unknown subcommand under home', () => {
+    const result = parseArgs(['home', 'dashboard', '--json']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('unknown_command');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Executable routing — main() produces a JSON envelope for budget intelligence
+// ---------------------------------------------------------------------------
+
+describe('main — budget intelligence routing', () => {
+  const mockAnalysisProtocol = {
+    async pendingReview() {
+      return {
+        uncategorizedCount: 0,
+        totalUncategorizedAmount: { minorUnits: '0', currency: 'USD' },
+        candidates: [],
+        oldestUncategorizedDate: null,
+        healthState: 'unknown',
+        blockers: [],
+      };
+    },
+    async reviewShow() {
+      return { reviewId: '', generatedAt: '', status: 'not_found', description: '', totalAmount: { minorUnits: '0', currency: 'USD' }, itemCount: 0, items: [] };
+    },
+    async budgetSummary() {
+      return { month: '', totalBudgeted: { minorUnits: '0', currency: 'USD' }, totalSpent: { minorUnits: '0', currency: 'USD' }, totalRemaining: { minorUnits: '0', currency: 'USD' }, categories: [] };
+    },
+    async purchaseEvaluation() {
+      return { allowable: true, reasonCodes: ['sufficient_budget'], categoryBudget: { minorUnits: '0', currency: 'USD' }, categorySpent: { minorUnits: '0', currency: 'USD' }, categoryRemaining: { minorUnits: '0', currency: 'USD' }, projectedBalance: null, hasEnvelope: true };
+    },
+    async cashFlowProjection() {
+      return { projectionMonths: 3, monthlyProjections: [], sufficientData: true, dataWarning: null };
+    },
+    async targetHealth() {
+      return { categories: [], overallLabel: 'healthy', healthyCount: 0, atRiskCount: 0, sinkingFundCount: 0 };
+    },
+    async sinkingFundHealth() {
+      return { sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 };
+    },
+    async generateReport() {
+      return { reportId: 'rpt_001', reportType: 'spending', scope: { monthRange: '2026-01', includePending: false }, label: '', transactionCount: 0, totalAmount: { minorUnits: '0', currency: 'USD' }, generatedAt: '', tags: [] };
+    },
+    async listSavedViews() {
+      return { views: [], total: 0 };
+    },
+    async createSavedView() {
+      return { view: { viewId: 'view_001', name: 'MyView', viewType: 'target_health', scope: {}, createdAt: '' } };
+    },
+    async attentionHome() {
+      return { blockers: [], alerts: [], recurrences: [], categoryRisks: [], targetProgress: { overallLabel: 'healthy', healthyCount: 0, atRiskCount: 0, sinkingFundsOnTrack: 0, totalSinkingFunds: 0 } };
+    },
+  };
+
+  const testLedger = { mockLedger: true };
+
+  it('routes purchase evaluate and returns ok envelope', async () => {
+    const result = await main(['purchase', 'evaluate', '--category-id', 'cat-food', '--amount', '5000', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_purch',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_purch');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.allowable).toBe(true);
+  });
+
+  it('routes cash-flow project and returns ok envelope', async () => {
+    const result = await main(['cash-flow', 'project', '--months', '6', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_cf',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_cf');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.projectionMonths).toBe(3);
+  });
+
+  it('routes target health and returns ok envelope', async () => {
+    const result = await main(['target', 'health', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_th',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_th');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.overallLabel).toBe('healthy');
+  });
+
+  it('routes sinking-fund health and returns ok envelope', async () => {
+    const result = await main(['sinking-fund', 'health', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_sfh',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_sfh');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.fullyFundedCount).toBe(0);
+  });
+
+  it('routes reports generate and returns ok envelope', async () => {
+    const result = await main(['reports', 'generate', '--report-type', 'spending', '--month-range', '2026-01:2026-03', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_rpt',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_rpt');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.reportId).toBe('rpt_001');
+  });
+
+  it('routes views list and returns ok envelope', async () => {
+    const result = await main(['views', 'list', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_vlist',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_vlist');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.views).toEqual([]);
+  });
+
+  it('routes views create and returns ok envelope', async () => {
+    const result = await main(['views', 'create', '--name', 'MyView', '--view-type', 'target_health', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_vcreate',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_vcreate');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.view.viewId).toBe('view_001');
+  });
+
+  it('routes views create with --sort and forwards sort param', async () => {
+    const capturedParams: unknown[] = [];
+    const result = await main(['views', 'create', '--name', 'MyView', '--view-type', 'target_health', '--sort', 'amount:desc', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_vcreate_sort',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: {
+        ...mockAnalysisProtocol,
+        async createSavedView(_ledger: unknown, params: unknown) {
+          capturedParams.push(params);
+          return { view: { viewId: 'view_001', name: 'MyView', viewType: 'target_health', scope: {}, sort: 'amount:desc', createdAt: '' } };
+        },
+      },
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('ok');
+    expect(capturedParams).toHaveLength(1);
+    const params = capturedParams[0] as Record<string, unknown>;
+    expect(params.sort).toBe('amount:desc');
+  });
+
+  it('routes home attention and returns ok envelope', async () => {
+    const result = await main(['home', 'attention', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_home',
+      mode: 'observe',
+      ledger: testLedger,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.schemaVersion).toBe('1');
+    expect(parsed.requestId).toBe('req_home');
+    expect(parsed.status).toBe('ok');
+    expect(parsed.result.targetProgress.overallLabel).toBe('healthy');
+  });
+
+  it('returns error when ledger is missing for purchase evaluate', async () => {
+    const result = await main(['purchase', 'evaluate', '--category-id', 'cat-food', '--amount', '5000', '--json'], {
+      actorId: 'usr_test',
+      requestId: 'req_purch_err',
+      mode: 'observe',
+      ledger: null,
+      analysisProtocol: mockAnalysisProtocol,
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('not_connected');
+  });
+
+  it('returns error for unknown command under home', async () => {
+    const result = await main(['home', 'dashboard', '--json'], {
+      actorId: 'usr_test',
+      mode: 'observe',
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('unknown_command');
+  });
+
+  it('returns error for unknown command under views', async () => {
+    const result = await main(['views', 'delete', '--json'], {
+      actorId: 'usr_test',
+      mode: 'observe',
+    });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('unknown_command');
+  });
+});
+
 describe('main — composition integration', () => {
   it('dispatches pending-review when composition-aligned opts provided', async () => {
     const result = await main(

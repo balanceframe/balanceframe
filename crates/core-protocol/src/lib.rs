@@ -1,14 +1,22 @@
 #![forbid(unsafe_code)]
 
+use balanceframe_financial_core as fc;
 use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{
-    normalize_merchant, Account, BudgetMonth, CandidateStatus, CategorizationCandidate,
-    Category, CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag, Transaction,
+    normalize_merchant, Account, BudgetMonth, CandidateStatus, CategorizationCandidate, Category,
+    CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag, Transaction,
+};
+pub use balanceframe_financial_core::{
+    AnalysisAvailability, BillCalendar, BillCalendarEntry, BudgetVarianceReport, CalibrationMetric,
+    CategoryTrend, CategoryVariance, CoverageRatio, DataQualityCenter, ForecastCalibration,
+    HealthDimension, IncomeReliabilityReport, IncomeSource, IrregularObligation,
+    IrregularObligationsReport, IrregularityKind, LiquidityCoverage, MultidimensionalHealth,
+    QualityDimension, Scenario, ScenarioComparisonDelta, ScenarioComparisonResult, ScenarioId,
+    ScenarioVersion, TrendDirection, UpcomingObligation,
 };
 pub use balanceframe_financial_core::{InferencePolicy, Provenance};
-use balanceframe_financial_core as fc;
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Protocol constants
@@ -105,7 +113,6 @@ pub struct Suggestion {
     // ---- Phase 2: Suggestion-only classifier fields -----------------------
     // All new fields are Option<…> / Vec-defaulted for backward compatibility
     // with existing Suggestion JSON that lacks them.
-
     /// Stable space identifier for multi-space deployments.
     #[serde(default)]
     pub space_id: Option<String>,
@@ -332,6 +339,122 @@ pub struct CorrectionConflictResult {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence types
+// ---------------------------------------------------------------------------
+
+/// Request to evaluate whether a proposed purchase is allowable
+/// given the current budget state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseEvaluationRequest {
+    pub snapshot: ProtocolSnapshot,
+    pub proposed_transaction: Transaction,
+    pub category_id: String,
+}
+
+/// Result of evaluating a proposed purchase against budget limits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseEvaluation {
+    /// Whether the purchase is allowable within budget constraints.
+    pub allowable: bool,
+    /// Machine-readable reason codes for the evaluation.
+    pub reason_codes: Vec<String>,
+    /// How much is budgeted for this category in the current month.
+    pub category_budget: fc::Money,
+    /// How much has been spent in this category so far.
+    pub category_spent: fc::Money,
+    /// Remaining budget after accounting for this purchase.
+    pub category_remaining: fc::Money,
+    /// Projected account balance after purchase (None if account not tracked).
+    #[serde(default)]
+    pub projected_balance: Option<fc::Money>,
+}
+
+/// Request to project future cash flow based on schedules and budgets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowProjectionRequest {
+    pub snapshot: ProtocolSnapshot,
+    pub projection_months: u32,
+}
+
+/// A single month's cash-flow projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyProjection {
+    /// The month in YYYY-MM format.
+    pub month: String,
+    /// Total projected income for this month.
+    pub projected_income: fc::Money,
+    /// Total projected expenses for this month.
+    pub projected_expenses: fc::Money,
+    /// Net change (income - expenses) for this month.
+    pub net_change: fc::Money,
+    /// Ending balance after this month.
+    pub ending_balance: fc::Money,
+}
+
+/// Response containing projected monthly cash flows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowProjectionResponse {
+    pub projection_months: u32,
+    pub monthly_projections: Vec<MonthlyProjection>,
+}
+
+/// Request to evaluate the health of budget targets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetHealthRequest {
+    pub snapshot: ProtocolSnapshot,
+}
+
+/// Health status of a single budget category.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryHealth {
+    pub category_id: String,
+    pub category_name: String,
+    pub budgeted: fc::Money,
+    pub spent: fc::Money,
+    pub remaining: fc::Money,
+    /// One of: "healthy", "overspent", "underfunded", "at_risk".
+    pub health_label: String,
+}
+
+/// Result of evaluating budget target health.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetHealthResult {
+    pub category_health: Vec<CategoryHealth>,
+    pub overall_label: String,
+}
+
+/// Structured request for computing an overall financial state label.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialStateRequest {
+    pub overall_health_label: String,
+    pub positive_cash_flow: bool,
+    pub budget_coverage_ratio: f64,
+    pub overspent_category_count: u32,
+    pub month: String,
+}
+
+/// A label describing the overall financial state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialStateLabel {
+    /// The state label: "healthy", "stable", "at_risk", or "critical".
+    pub label: String,
+    /// Numeric score between 0.0 and 1.0 summarizing overall health.
+    pub score: f64,
+    /// Machine-readable reason codes supporting this label.
+    pub reason_codes: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Protocol functions
 // ---------------------------------------------------------------------------
 
@@ -427,21 +550,21 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         let mut total_minor: i64 = 0;
         for tx in &uncategorized {
             match tx.amount.abs() {
-                Ok(abs) => {
-                    match total_minor.checked_add(abs.minor_units()) {
-                        Some(sum) => total_minor = sum,
-                        None => {
-                            findings.push(Finding {
-                                finding_type: "amount_overflow".into(),
-                                severity: "blocker".into(),
-                                entity_id: tx.id.clone(),
-                                message: "Accumulation overflow while summing uncategorized transactions".to_string(),
-                                drill_down: vec![],
-                            });
-                            reason_codes.push("amount_overflow".into());
-                        }
+                Ok(abs) => match total_minor.checked_add(abs.minor_units()) {
+                    Some(sum) => total_minor = sum,
+                    None => {
+                        findings.push(Finding {
+                            finding_type: "amount_overflow".into(),
+                            severity: "blocker".into(),
+                            entity_id: tx.id.clone(),
+                            message:
+                                "Accumulation overflow while summing uncategorized transactions"
+                                    .to_string(),
+                            drill_down: vec![],
+                        });
+                        reason_codes.push("amount_overflow".into());
                     }
-                }
+                },
                 Err(_) => {
                     findings.push(Finding {
                         finding_type: "amount_overflow".into(),
@@ -581,7 +704,9 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
 /// [`fc::analysis::run_deterministic_analysis`] that builds the
 /// compatibility metadata from the snapshot and returns the wrapped
 /// [`DeterministicAnalysisResponse`].
-pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> DeterministicAnalysisResponse {
+pub fn analyze_deterministic(
+    request: DeterministicAnalysisRequest,
+) -> DeterministicAnalysisResponse {
     let snapshot = &request.snapshot;
     let options = &request.options;
 
@@ -592,24 +717,27 @@ pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> Determini
             schema_version: "1".into(),
             request_id: request.request_id.clone().unwrap_or_default(),
             status: "error".into(),
-            freshness: fc::DataFreshness::compute(None, None, options.include_pending, &snapshot.snapshot_date),
+            freshness: fc::DataFreshness::compute(
+                None,
+                None,
+                options.include_pending,
+                &snapshot.snapshot_date,
+            ),
             compatibility: fc::CompatibilityMetadata::new(
                 snapshot.encrypted.unwrap_or(false),
                 snapshot.actual_downloaded_at.is_some() || !snapshot.encrypted.unwrap_or(true),
                 snapshot.actual_version.clone(),
             ),
-            coverage: fc::build_coverage_report(
-                &snapshot.accounts,
-                &snapshot.transactions,
-                &scope,
-            ),
+            coverage: fc::build_coverage_report(&snapshot.accounts, &snapshot.transactions, &scope),
             analysis: fc::DeterministicAnalysis {
                 freshness: fc::DataFreshness::compute(None, None, false, ""),
                 compatibility: fc::CompatibilityMetadata::new(false, false, String::new()),
                 coverage: fc::build_coverage_report(&[], &[], &scope),
                 readiness: fc::analyze_readiness(&[], &[], &[], ""),
                 uncategorized_backlog: fc::UncategorizedBacklog {
-                    count: 0, oldest_date: None, total_amount: fc::Money::zero("USD"),
+                    count: 0,
+                    oldest_date: None,
+                    total_amount: fc::Money::zero("USD"),
                     transaction_ids: vec![],
                 },
                 repeated_merchants: vec![],
@@ -719,7 +847,6 @@ pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> Determini
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Rule candidate analysis — protocol wrapper
 // ---------------------------------------------------------------------------
@@ -741,7 +868,6 @@ pub fn analyze_rule_candidates(
         min_consistent_count,
     )
 }
-
 
 /// Analyze correction history to produce rule candidates with conflict
 /// detection.  Converts [`CorrectionHistoryInput`] records into
@@ -1014,10 +1140,7 @@ pub fn validate_provider_suggestion(
 }
 
 /// Plan the mutation of a transaction's category.
-pub fn plan_set_category(
-    transaction: &Transaction,
-    category: &Category,
-) -> MutationPlan {
+pub fn plan_set_category(transaction: &Transaction, category: &Category) -> MutationPlan {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1040,10 +1163,7 @@ pub fn plan_set_category(
 }
 
 /// Verify that a mutation plan is still valid against a snapshot.
-pub fn verify_mutation(
-    plan: &MutationPlan,
-    snapshot: &ProtocolSnapshot,
-) -> VerificationResult {
+pub fn verify_mutation(plan: &MutationPlan, snapshot: &ProtocolSnapshot) -> VerificationResult {
     let mut reason_codes: Vec<String> = Vec::new();
     // Collect *failure* reason codes separately so that diagnostic
     // observations (e.g. category_already_matches) do not cause a
@@ -1124,8 +1244,6 @@ pub fn verify_mutation(
     }
 }
 
-
-
 /// Plan the creation of a new rule based on payee conditions and a target category.
 ///
 /// Normalizes the first payee condition's value and produces a trigger/actions
@@ -1189,7 +1307,11 @@ pub fn verify_rule_mutation(
     // Normalize both sides for payee_is comparison — plan_create_rule
     // already normalizes the payee name to lowercase, but existing rules
     // may have original casing.
-    let plan_trigger_value = plan.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    let plan_trigger_value = plan
+        .trigger
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let plan_norm = normalize_merchant(plan_trigger_value);
 
     let exists = snapshot.rules.iter().any(|existing| {
@@ -1203,7 +1325,11 @@ pub fn verify_rule_mutation(
         }
         // Allow normalized match for payee_is triggers
         if existing.trigger.get("type").and_then(|v| v.as_str()) == Some("payee_is") {
-            let existing_val = existing.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            let existing_val = existing
+                .trigger
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let existing_norm = normalize_merchant(existing_val);
             return existing_norm == plan_norm;
         }
@@ -1234,10 +1360,7 @@ pub fn verify_rule_mutation(
 /// - `payee_is` – normalized payee name comparison
 /// - `transaction_added` – matches all transactions
 /// - `amount_less_than` / `amount_greater_than` – compares `amount.minor_units` to the threshold
-pub fn simulate_rule(
-    rule: &Rule,
-    transactions: &[Transaction],
-) -> RuleSimulationResult {
+pub fn simulate_rule(rule: &Rule, transactions: &[Transaction]) -> RuleSimulationResult {
     if rule.inactive {
         return RuleSimulationResult {
             rule_id: rule.id.clone(),
@@ -1271,21 +1394,16 @@ pub fn simulate_rule(
             "payee_is" => {
                 let raw = trigger_value.and_then(|v| v.as_str()).unwrap_or("");
                 let norm_trigger = normalize_merchant(raw);
-                let norm_tx =
-                    normalize_merchant(tx.payee_name.as_deref().unwrap_or(""));
+                let norm_tx = normalize_merchant(tx.payee_name.as_deref().unwrap_or(""));
                 !norm_trigger.is_empty() && norm_trigger == norm_tx
             }
             "transaction_added" => true,
             "amount_less_than" => {
-                let threshold = trigger_value
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(i64::MAX);
+                let threshold = trigger_value.and_then(|v| v.as_i64()).unwrap_or(i64::MAX);
                 tx.amount.minor_units() < threshold
             }
             "amount_greater_than" => {
-                let threshold = trigger_value
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(i64::MIN);
+                let threshold = trigger_value.and_then(|v| v.as_i64()).unwrap_or(i64::MIN);
                 tx.amount.minor_units() > threshold
             }
             _ => false,
@@ -1303,9 +1421,7 @@ pub fn simulate_rule(
                 tx.category_id.is_none() || tx.category_id.as_deref() == Some("")
             };
 
-            let dist_key = target_category
-                .clone()
-                .unwrap_or_default();
+            let dist_key = target_category.clone().unwrap_or_default();
             *category_distribution.entry(dist_key).or_insert(0) += 1;
 
             examples.push(SimulationExample {
@@ -1409,6 +1525,663 @@ fn extract_action_value(actions: &serde_json::Value) -> Option<String> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence protocol functions
+// ---------------------------------------------------------------------------
+
+/// Evaluate whether a proposed purchase is allowable given budget constraints.
+///
+/// Delegates to [`fc::purchase::evaluate_purchase`] for deterministic
+/// budget-policy evaluation with conservative assumptions.  Returns a
+/// [`PurchaseEvaluation`] that maps the financial-core outcome to the
+/// protocol response format. This is a non-authoritative advisory —
+/// it informs but does not authorize the transaction.
+pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluation {
+    use fc::financial_state::DecisionDataPolicy;
+    use fc::purchase::{evaluate_purchase as fc_evaluate, PurchasePolicy, TransactionSemantic};
+
+    let snapshot = &request.snapshot;
+    let category_id = &request.category_id;
+
+    // Find the category definition.
+    if !snapshot
+        .categories
+        .iter()
+        .any(|category| category.id == *category_id)
+    {
+        return PurchaseEvaluation {
+            allowable: false,
+            reason_codes: vec!["category_not_found".into()],
+            category_budget: fc::Money::new(0, "USD"),
+            category_spent: fc::Money::new(0, "USD"),
+            category_remaining: fc::Money::new(0, "USD"),
+            projected_balance: None,
+        };
+    }
+
+    // The proposed transaction identifies the account to evaluate.  Never
+    // silently substitute an unrelated account when it is absent.
+    let account = snapshot
+        .accounts
+        .iter()
+        .find(|account| account.id == request.proposed_transaction.account_id);
+    if !snapshot.accounts.is_empty() && account.is_none() {
+        let zero = fc::Money::zero("USD");
+        return PurchaseEvaluation {
+            allowable: false,
+            reason_codes: vec!["account_unavailable".into()],
+            category_budget: zero.clone(),
+            category_spent: zero.clone(),
+            category_remaining: zero,
+            projected_balance: None,
+        };
+    }
+    let account_balance = account.map(|account| &account.cleared_balance);
+
+    // Select the latest month that is not after the snapshot date.  Input
+    // ordering is not a semantic signal.
+    let budget_month = snapshot
+        .budgets
+        .iter()
+        .filter(|bm| format!("{}-01", bm.month) <= snapshot.snapshot_date)
+        .max_by(|left, right| left.month.cmp(&right.month));
+
+    let category_is_budgeted =
+        budget_month.is_some_and(|bm| bm.categories.contains_key(category_id));
+    let budget_amount = budget_month
+        .and_then(|bm| bm.categories.get(category_id))
+        .map(|bc| bc.amount.clone())
+        .unwrap_or_else(|| fc::Money::new(0, "USD"));
+
+    // Checked totals keep malformed/extreme snapshots conservative.
+    let checked_outflow_total = |transactions: &[Transaction]| -> Option<i64> {
+        transactions.iter().try_fold(0_i64, |total, tx| {
+            let amount = tx.amount.minor_units();
+            if amount < 0 {
+                total.checked_add(amount.checked_abs()?)
+            } else {
+                Some(total)
+            }
+        })
+    };
+    let category_spent = match checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| tx.category_id.as_deref() == Some(category_id))
+            .cloned()
+            .collect::<Vec<_>>(),
+    ) {
+        Some(total) => fc::Money::new(total, "USD"),
+        None => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent: fc::Money::zero("USD"),
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
+
+    let pending_total = checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| !tx.cleared)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let uncleared_total = checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| tx.cleared && !tx.reconciled)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let (pending_total, uncleared_total) = match (pending_total, uncleared_total) {
+        (Some(pending), Some(uncleared)) => (pending, uncleared),
+        _ => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent,
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
+
+    let uncategorized_total = match checked_outflow_total(
+        &snapshot
+            .transactions
+            .iter()
+            .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
+            .cloned()
+            .collect::<Vec<_>>(),
+    ) {
+        Some(total) => total,
+        None => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent,
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
+
+    let pending = fc::Money::new(pending_total, "USD");
+    let uncategorized = fc::Money::new(uncategorized_total, "USD");
+    let uncleared = fc::Money::new(uncleared_total, "USD");
+
+    let proposed_minor = match request
+        .proposed_transaction
+        .amount
+        .minor_units()
+        .checked_abs()
+    {
+        Some(amount) => amount,
+        None => {
+            return PurchaseEvaluation {
+                allowable: false,
+                reason_codes: vec!["evaluation_error".into()],
+                category_budget: budget_amount.clone(),
+                category_spent,
+                category_remaining: budget_amount.clone(),
+                projected_balance: None,
+            };
+        }
+    };
+    let proposed_amount = fc::Money::new(proposed_minor, "USD");
+
+    let has_stale_bank_sync = snapshot.bank_synced_at.as_deref().is_some_and(|synced| {
+        synced
+            .get(..10)
+            .is_none_or(|date| date < snapshot.snapshot_date.get(..10).unwrap_or(""))
+    });
+
+    // Delegate to financial-core engine
+    let outcome = fc_evaluate(
+        &proposed_amount,
+        &budget_amount,
+        &category_spent,
+        account_balance,
+        &pending,
+        &uncategorized,
+        &uncleared,
+        &PurchasePolicy::default(),
+        &DecisionDataPolicy::default(),
+        TransactionSemantic::Card,
+        None,
+        None,
+        false,
+        false,
+        has_stale_bank_sync,
+    );
+
+    match outcome {
+        Ok(purchase_result) => {
+            let allowable = matches!(
+                purchase_result.outcome,
+                fc::purchase::PurchaseOutcomeKind::Approved
+            );
+
+            // Augment with legacy protocol reason codes while
+            // retaining all future-compatible detailed codes from
+            // the financial-core engine.
+            let mut reason_codes = purchase_result.reason_codes;
+            if allowable {
+                reason_codes.push("budget_sufficient".to_string());
+            } else if !category_is_budgeted {
+                reason_codes.push("category_not_budgeted".to_string());
+            } else {
+                reason_codes.push("budget_insufficient".to_string());
+            }
+
+            PurchaseEvaluation {
+                allowable,
+                reason_codes,
+                category_budget: purchase_result.evidence.category_budget,
+                category_spent: purchase_result.evidence.category_spent,
+                category_remaining: purchase_result.evidence.category_remaining,
+                projected_balance: purchase_result.evidence.available_balance,
+            }
+        }
+        Err(_) => PurchaseEvaluation {
+            allowable: false,
+            reason_codes: vec!["evaluation_error".into()],
+            category_budget: budget_amount.clone(),
+            category_spent,
+            category_remaining: budget_amount.clone(),
+            projected_balance: None,
+        },
+    }
+}
+
+/// Project future cash flow for a given number of months.
+///
+/// Uses budget months and schedules to estimate income, expenses, and
+/// ending balances for each projected month.  Returns a
+/// [`CashFlowProjectionResponse`] with one [`MonthlyProjection`] per month.
+pub fn project_cash_flow(request: CashFlowProjectionRequest) -> CashFlowProjectionResponse {
+    let months = std::cmp::max(1, request.projection_months) as usize;
+    let snapshot = &request.snapshot;
+
+    // Parse the snapshot date to determine the starting month
+    let start_month = if snapshot.snapshot_date.len() >= 7 {
+        snapshot.snapshot_date[..7].to_string()
+    } else {
+        "2026-07".to_string()
+    };
+
+    let currency = snapshot
+        .accounts
+        .first()
+        .map(|a| a.cleared_balance.currency().to_string())
+        .unwrap_or_else(|| "USD".to_string());
+
+    let mut running_balance = snapshot
+        .accounts
+        .first()
+        .map(|a| a.cleared_balance.minor_units())
+        .unwrap_or(0);
+
+    let mut monthly_projections = Vec::with_capacity(months);
+
+    // Parse starting year/month
+    let parts: Vec<&str> = start_month.split('-').collect();
+    let mut year: i32 = parts[0].parse().unwrap_or(2026);
+    let mut month_num: u32 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(7);
+
+    for _ in 0..months {
+        let month_str = format!("{:04}-{:02}", year, month_num);
+
+        // Sum schedule-based projections for this month
+        let mut projected_income: i64 = 0;
+        let mut projected_expenses: i64 = 0;
+
+        for sched in &snapshot.schedules {
+            // Check if schedule applies this month (basic frequency matching)
+            let applies = match sched.frequency.as_str() {
+                "monthly" | "everyMonth" => true,
+                "weekly" | "everyWeek" => true, // simplified: every week = applies
+                _ => {
+                    // For non-monthly, check if it matches period
+                    sched.frequency == month_str
+                }
+            };
+
+            if applies {
+                let amount = sched.amount.minor_units();
+                if amount < 0 {
+                    projected_expenses =
+                        projected_expenses.saturating_add(amount.unsigned_abs() as i64);
+                } else {
+                    projected_income = projected_income.saturating_add(amount);
+                }
+            }
+        }
+
+        let net = projected_income.saturating_sub(projected_expenses);
+        running_balance = running_balance.saturating_add(net);
+
+        monthly_projections.push(MonthlyProjection {
+            month: month_str,
+            projected_income: fc::Money::new(projected_income, &currency),
+            projected_expenses: fc::Money::new(projected_expenses, &currency),
+            net_change: fc::Money::new(net, &currency),
+            ending_balance: fc::Money::new(running_balance, &currency),
+        });
+
+        // Advance to next month
+        month_num += 1;
+        if month_num > 12 {
+            month_num = 1;
+            year += 1;
+        }
+    }
+
+    CashFlowProjectionResponse {
+        projection_months: months as u32,
+        monthly_projections,
+    }
+}
+
+/// Evaluate the health of budget category targets.
+///
+/// For each category that has a budget target, computes spent vs. budgeted
+/// and assigns a health label.  Returns a [`TargetHealthResult`] with per-
+/// category health and an overall summary label.
+pub fn evaluate_target_health(request: TargetHealthRequest) -> TargetHealthResult {
+    let snapshot = &request.snapshot;
+
+    let budget_month = snapshot.budgets.iter().find(|bm| {
+        let month_start = format!("{}-01", bm.month);
+        month_start <= snapshot.snapshot_date
+    });
+
+    let mut category_health = Vec::new();
+    let mut overspent_count: u32 = 0;
+    let mut underfunded_count: u32 = 0;
+    let mut total_budgeted: i64 = 0;
+    let mut total_spent: i64 = 0;
+
+    if let Some(bm) = budget_month {
+        for (cat_id, bc) in &bm.categories {
+            let category_name = snapshot
+                .categories
+                .iter()
+                .find(|c| c.id == *cat_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| cat_id.clone());
+
+            let spent_minor: i64 = snapshot
+                .transactions
+                .iter()
+                .filter(|tx| tx.category_id.as_deref() == Some(cat_id))
+                .filter_map(|tx| tx.amount.minor_units().checked_abs())
+                .sum();
+
+            let budgeted_minor = bc.amount.minor_units();
+            let remaining = budgeted_minor - spent_minor;
+
+            let health_label = if budgeted_minor == 0 {
+                "underfunded"
+            } else if remaining < 0 {
+                overspent_count += 1;
+                "overspent"
+            } else if (remaining as f64 / budgeted_minor as f64) < 0.1 {
+                underfunded_count += 1;
+                "at_risk"
+            } else {
+                "healthy"
+            };
+
+            total_budgeted = total_budgeted.saturating_add(budgeted_minor);
+            total_spent = total_spent.saturating_add(spent_minor);
+
+            category_health.push(CategoryHealth {
+                category_id: cat_id.clone(),
+                category_name,
+                budgeted: bc.amount.clone(),
+                spent: fc::Money::new(spent_minor, bc.amount.currency()),
+                remaining: fc::Money::new(std::cmp::max(0, remaining), bc.amount.currency()),
+                health_label: health_label.to_string(),
+            });
+        }
+    }
+
+    let overall_label = if overspent_count > 0 {
+        "at_risk"
+    } else if underfunded_count > 0 {
+        "caution"
+    } else {
+        "healthy"
+    };
+
+    TargetHealthResult {
+        category_health,
+        overall_label: overall_label.to_string(),
+    }
+}
+
+/// Evaluate the overall financial state and produce a summary label.
+///
+/// Combines target health, cash-flow direction, budget coverage ratio,
+/// and overspent category count into a single [`FinancialStateLabel`].
+/// This is a non-authoritative advisory — it informs assessment but
+/// does not authorize any action.
+pub fn evaluate_financial_state(request: FinancialStateRequest) -> FinancialStateLabel {
+    let has_positive_cash_flow = request.positive_cash_flow;
+    let overspent = request.overspent_category_count;
+    let coverage = request.budget_coverage_ratio;
+    let health = &request.overall_health_label;
+
+    let (label, score, mut reason_codes) = if health == "at_risk" || overspent > 2 {
+        if !has_positive_cash_flow && coverage < 0.5 {
+            (
+                "critical".to_string(),
+                0.15_f64,
+                vec![
+                    "negative_cash_flow".to_string(),
+                    "low_budget_coverage".to_string(),
+                ],
+            )
+        } else if !has_positive_cash_flow {
+            (
+                "at_risk".to_string(),
+                0.30_f64,
+                vec!["negative_cash_flow".to_string()],
+            )
+        } else {
+            (
+                "at_risk".to_string(),
+                0.35_f64,
+                vec!["overspent_categories".to_string()],
+            )
+        }
+    } else if coverage < 0.6 {
+        (
+            "at_risk".to_string(),
+            0.40_f64,
+            vec!["low_budget_coverage".to_string()],
+        )
+    } else if coverage < 0.8 || !has_positive_cash_flow {
+        let mut codes = vec![];
+        if coverage < 0.8 {
+            codes.push("moderate_coverage".to_string());
+        }
+        if !has_positive_cash_flow {
+            codes.push("flat_cash_flow".to_string());
+        }
+        ("stable".to_string(), 0.60_f64, codes)
+    } else {
+        (
+            "healthy".to_string(),
+            0.85_f64,
+            vec![
+                "positive_cash_flow".to_string(),
+                "budget_healthy".to_string(),
+            ],
+        )
+    };
+
+    if overspent > 0 && !reason_codes.contains(&"overspent_categories".to_string()) {
+        reason_codes.push("overspent_categories".to_string());
+    }
+
+    FinancialStateLabel {
+        label,
+        score,
+        reason_codes,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Additional Budget Intelligence protocol wrappers
+// ---------------------------------------------------------------------------
+
+/// Compute a composite data-quality center report from snapshot data.
+///
+/// Extracts accounts, transactions, uncategorized and duplicate counts
+/// from the snapshot and delegates to `fc::compute_data_quality_center`.
+pub fn compute_data_quality(snapshot: &ProtocolSnapshot) -> DataQualityCenter {
+    let accounts_count = snapshot.accounts.len();
+    let transactions_count = snapshot.transactions.len();
+    let uncategorized_count = snapshot
+        .transactions
+        .iter()
+        .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
+        .count();
+    // Simplified duplicate detection: count transactions with same imported_id
+    let mut seen_imported = std::collections::HashSet::new();
+    let duplicate_candidates = snapshot
+        .transactions
+        .iter()
+        .filter(|tx| tx.imported_id.is_some())
+        .filter(|tx| !seen_imported.insert(tx.imported_id.as_deref().unwrap_or("")))
+        .count();
+
+    // Staleness is passed as None — computing days-since requires an external
+    // time crate at this layer.  The analytics function handles missing
+    // freshness metadata gracefully.
+
+    fc::compute_data_quality_center(
+        accounts_count,
+        transactions_count,
+        uncategorized_count,
+        duplicate_candidates,
+        None,
+        None,
+    )
+}
+
+/// Compute liquidity coverage for upcoming obligations from snapshot data.
+///
+/// Finds liquid accounts (non-off-budget, non-closed) and extracts their
+/// cleared balance, then delegates to `fc::compute_liquidity_coverage`.
+pub fn compute_liquidity_coverage_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    current_month: &str,
+) -> LiquidityCoverage {
+    // Sum liquid account balances (on-budget, non-closed accounts)
+    let liquid_balance: Option<fc::Money> = {
+        let mut total_minor: i64 = 0;
+        let mut currency: Option<String> = None;
+        for acct in &snapshot.accounts {
+            if !acct.off_budget && !acct.is_closed {
+                total_minor = total_minor.saturating_add(acct.cleared_balance.minor_units());
+                currency = Some(acct.cleared_balance.currency().to_string());
+            }
+        }
+        currency.map(|cur| fc::Money::new(total_minor, &cur))
+    };
+
+    fc::compute_liquidity_coverage(
+        liquid_balance.as_ref(),
+        &snapshot.schedules,
+        &snapshot.budgets,
+        current_month,
+    )
+}
+
+/// Compute the bill/obligation calendar from snapshot schedules and transactions.
+pub fn compute_bill_calendar_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    reference_date: &str,
+) -> BillCalendar {
+    fc::compute_bill_calendar(&snapshot.schedules, &snapshot.transactions, reference_date)
+}
+
+/// Compute budget variance and trends from snapshot budget months and transactions.
+pub fn compute_budget_variance_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    reference_date: &str,
+) -> BudgetVarianceReport {
+    fc::compute_budget_variance(
+        &snapshot.budgets,
+        &snapshot.transactions,
+        &snapshot.categories,
+        reference_date,
+    )
+}
+
+/// Detect irregular obligations from snapshot schedules.
+pub fn compute_irregular_obligations_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+) -> IrregularObligationsReport {
+    fc::compute_irregular_obligations(&snapshot.schedules)
+}
+
+/// Compute income reliability from snapshot transactions, schedules, and categories.
+pub fn compute_income_reliability_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+) -> IncomeReliabilityReport {
+    fc::compute_income_reliability(
+        &snapshot.transactions,
+        &snapshot.schedules,
+        &snapshot.categories,
+    )
+}
+
+/// Compute forecast calibration from snapshot budget months and transactions.
+pub fn compute_forecast_calibration_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+) -> ForecastCalibration {
+    fc::compute_forecast_calibration(&snapshot.budgets, &snapshot.transactions)
+}
+
+/// Compare two immutable scenarios from their JSON payloads.
+/// Deserializes the JSON values into `fc::Scenario` structs and delegates
+/// to `fc::compare_scenarios`.  Returns `Unavailable` when deserialization fails.
+pub fn compare_scenarios_from_json(
+    baseline_json: &serde_json::Value,
+    comparison_json: &serde_json::Value,
+) -> ScenarioComparisonResult {
+    let baseline: Scenario = match serde_json::from_value(baseline_json.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            return ScenarioComparisonResult {
+                availability: AnalysisAvailability::Unavailable,
+                baseline: ScenarioId {
+                    id: String::new(),
+                    name: "deserialization_error".to_string(),
+                },
+                comparison: ScenarioId {
+                    id: String::new(),
+                    name: "deserialization_error".to_string(),
+                },
+                deltas: vec![],
+                summary: format!("Failed to deserialize baseline scenario: {}", e),
+            };
+        }
+    };
+    let comparison: Scenario = match serde_json::from_value(comparison_json.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            return ScenarioComparisonResult {
+                availability: AnalysisAvailability::Unavailable,
+                baseline: baseline.id,
+                comparison: ScenarioId {
+                    id: String::new(),
+                    name: "deserialization_error".to_string(),
+                },
+                deltas: vec![],
+                summary: format!("Failed to deserialize comparison scenario: {}", e),
+            };
+        }
+    };
+    fc::compare_scenarios(&baseline, &comparison)
+}
+
+/// Compute multidimensional health from snapshot data.
+/// Runs all sub-analyses internally and delegates to
+/// `fc::compute_multidimensional_health`.
+pub fn compute_multidimensional_health_from_snapshot(
+    snapshot: &ProtocolSnapshot,
+    current_month: &str,
+) -> MultidimensionalHealth {
+    let data_quality = compute_data_quality(snapshot);
+    let liquidity = compute_liquidity_coverage_from_snapshot(snapshot, current_month);
+    let budget_variance = compute_budget_variance_from_snapshot(snapshot, current_month);
+    let income_reliability = compute_income_reliability_from_snapshot(snapshot);
+    let forecast_calibration = compute_forecast_calibration_from_snapshot(snapshot);
+
+    fc::compute_multidimensional_health(
+        Some(&liquidity),
+        Some(&budget_variance),
+        Some(&income_reliability),
+        Some(&forecast_calibration),
+        Some(&data_quality),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1471,9 +2244,7 @@ mod tests {
             actual_version: "25.1.0".into(),
             snapshot_date: "2026-07-18".into(),
             accounts: vec![sample_account("a1", "Checking")],
-            transactions: vec![
-                sample_tx("tx1", "a1", "2026-07-01", true, None),
-            ],
+            transactions: vec![sample_tx("tx1", "a1", "2026-07-01", true, None)],
             categories: vec![sample_category("c1", "Food", false)],
             payees: vec![],
             rules: vec![],
@@ -1503,7 +2274,10 @@ mod tests {
         // max_results=0 should limit non-essential collections to empty
         assert!(response.analysis.repeated_merchants.is_empty());
         assert!(response.analysis.deterministic_classifications.is_empty());
-        assert_eq!(response.schema_version, "1", "deterministic response must emit schemaVersion '1'");
+        assert_eq!(
+            response.schema_version, "1",
+            "deterministic response must emit schemaVersion '1'"
+        );
     }
 
     #[test]
@@ -1532,7 +2306,10 @@ mod tests {
         if let Some(err) = &response.error {
             assert_eq!(err.code, "analysis_error");
         }
-        assert_eq!(response.schema_version, "1", "blocker error response must emit schemaVersion '1'");
+        assert_eq!(
+            response.schema_version, "1",
+            "blocker error response must emit schemaVersion '1'"
+        );
     }
 
     #[test]
@@ -1551,7 +2328,10 @@ mod tests {
         let response = analyze_deterministic(request);
         assert_eq!(response.status, "ok");
         assert!(response.error.is_none(), "No error when status is ok");
-        assert_eq!(response.schema_version, "1", "ok response must emit schemaVersion '1'");
+        assert_eq!(
+            response.schema_version, "1",
+            "ok response must emit schemaVersion '1'"
+        );
     }
 
     // -- maxResults applied to analyze_snapshot ------------------------------
@@ -1569,7 +2349,10 @@ mod tests {
         };
         let result = analyze_snapshot(request);
         // max_results=0 should truncate findings and suggestions, leading to "success"
-        assert_eq!(result.result_code, "success", "max_results=0 truncates all findings -> no issues");
+        assert_eq!(
+            result.result_code, "success",
+            "max_results=0 truncates all findings -> no issues"
+        );
         assert!(result.findings.is_empty());
         assert!(result.suggestions.is_empty());
     }
@@ -1638,7 +2421,9 @@ mod tests {
             },
         };
         let result = analyze_snapshot(request);
-        assert_ne!(result.result_code, "error",
-            "canonical schema_version '1' must be accepted; got error");
+        assert_ne!(
+            result.result_code, "error",
+            "canonical schema_version '1' must be accepted; got error"
+        );
     }
 }

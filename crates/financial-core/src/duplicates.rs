@@ -44,7 +44,6 @@ pub fn find_duplicates(transactions: &[Transaction]) -> Vec<DuplicateEvidence> {
         let tx_a = &transactions[i];
 
         for tx_b in transactions.iter().skip(i + 1) {
-
             // --- 1. Exact match (imported_id) ---
             if let (Some(imp_a), Some(imp_b)) = (&tx_a.imported_id, &tx_b.imported_id) {
                 if imp_a == imp_b {
@@ -164,7 +163,13 @@ mod tests {
     use super::*;
     use crate::money::Money;
 
-    fn tx(id: &str, payee: Option<&str>, amount: i64, date: &str, imported_id: Option<&str>) -> Transaction {
+    fn tx(
+        id: &str,
+        payee: Option<&str>,
+        amount: i64,
+        date: &str,
+        imported_id: Option<&str>,
+    ) -> Transaction {
         Transaction {
             id: id.into(),
             account_id: "acct1".into(),
@@ -253,7 +258,11 @@ mod tests {
             tx("tx2", Some("Overflow"), i64::MIN, "2026-02-01", None),
         ];
         let result = find_duplicates(&txs);
-        assert!(result.is_empty(), "i64::MIN amounts must not match as duplicates: {:?}", result);
+        assert!(
+            result.is_empty(),
+            "i64::MIN amounts must not match as duplicates: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -264,7 +273,11 @@ mod tests {
             tx("tx2", Some("Same Payee"), i64::MIN, "2026-01-01", None),
         ];
         let result = find_duplicates(&txs);
-        assert!(result.is_empty(), "i64::MIN must not create false duplicate matches: {:?}", result);
+        assert!(
+            result.is_empty(),
+            "i64::MIN must not create false duplicate matches: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -336,19 +349,41 @@ mod tests {
         ];
         let result = find_duplicates(&txs);
         // Chain: tx1→tx2 (exact), tx1→tx3 (amount_date), tx2→tx3 (amount_date)
-        assert_eq!(result.len(), 3, "chain of 3 should produce 3 evidence entries: {:?}", result);
+        assert_eq!(
+            result.len(),
+            3,
+            "chain of 3 should produce 3 evidence entries: {:?}",
+            result
+        );
         // Verify orientations: transaction_id > duplicate_of alphabetically
         for ev in &result {
-            assert!(ev.transaction_id >= ev.duplicate_of,
-                "pair orientation: {} should be >= {}", ev.transaction_id, ev.duplicate_of);
+            assert!(
+                ev.transaction_id >= ev.duplicate_of,
+                "pair orientation: {} should be >= {}",
+                ev.transaction_id,
+                ev.duplicate_of
+            );
         }
         // Verify specific pairs exist
-        let pairs: Vec<(&str, &str)> = result.iter()
+        let pairs: Vec<(&str, &str)> = result
+            .iter()
             .map(|e| (e.transaction_id.as_str(), e.duplicate_of.as_str()))
             .collect();
-        assert!(pairs.contains(&("tx2", "tx1")), "missing tx2→tx1: {:?}", pairs);
-        assert!(pairs.contains(&("tx3", "tx1")), "missing tx3→tx1: {:?}", pairs);
-        assert!(pairs.contains(&("tx3", "tx2")), "missing tx3→tx2: {:?}", pairs);
+        assert!(
+            pairs.contains(&("tx2", "tx1")),
+            "missing tx2→tx1: {:?}",
+            pairs
+        );
+        assert!(
+            pairs.contains(&("tx3", "tx1")),
+            "missing tx3→tx1: {:?}",
+            pairs
+        );
+        assert!(
+            pairs.contains(&("tx3", "tx2")),
+            "missing tx3→tx2: {:?}",
+            pairs
+        );
     }
 
     #[test]
@@ -368,7 +403,12 @@ mod tests {
             let b = &window[1];
             let key_a = (&a.transaction_id, &a.duplicate_of, &a.match_reason);
             let key_b = (&b.transaction_id, &b.duplicate_of, &b.match_reason);
-            assert!(key_a <= key_b, "output not sorted: {:?} > {:?}", key_a, key_b);
+            assert!(
+                key_a <= key_b,
+                "output not sorted: {:?} > {:?}",
+                key_a,
+                key_b
+            );
         }
     }
 
@@ -382,6 +422,9 @@ mod tests {
         // Run twice — must produce identical JSON
         let json1 = serde_json::to_string(&find_duplicates(&txs)).unwrap();
         let json2 = serde_json::to_string(&find_duplicates(&txs)).unwrap();
-        assert_eq!(json1, json2, "duplicate evidence JSON must be deterministic");
+        assert_eq!(
+            json1, json2,
+            "duplicate evidence JSON must be deterministic"
+        );
     }
 }

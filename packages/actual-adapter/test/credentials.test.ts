@@ -65,7 +65,8 @@ describe('EncryptedCredentialStore — corrupt vs missing', () => {
     if (files.length > 0) {
       const filePath = join(dir, files[0]);
       const raw = JSON.parse(readFileSync(filePath, 'utf-8'));
-      raw.payload.ciphertext = raw.payload.ciphertext.slice(0, -1) + '0';
+      const lastCharacter = raw.payload.ciphertext.at(-1);
+      raw.payload.ciphertext = `${raw.payload.ciphertext.slice(0, -1)}${lastCharacter === '0' ? '1' : '0'}`;
       writeFileSync(filePath, JSON.stringify(raw));
     }
 

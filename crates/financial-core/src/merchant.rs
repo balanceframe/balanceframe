@@ -14,10 +14,17 @@ pub fn normalize_merchant(s: &str) -> String {
 
     // Common legal suffixes (order matters: check longer first)
     static SUFFIXES: &[&str] = &[
-        " inc.", " llc.", " ltd.",
-        " inc",  " llc",  " ltd",
-        " corp.", " corp",
-        " incorporated", " limited", " limited liability company",
+        " inc.",
+        " llc.",
+        " ltd.",
+        " inc",
+        " llc",
+        " ltd",
+        " corp.",
+        " corp",
+        " incorporated",
+        " limited",
+        " limited liability company",
     ];
 
     let s = strip_prefixes(&s, PREFIXES);

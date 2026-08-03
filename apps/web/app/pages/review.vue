@@ -1,8 +1,24 @@
 <template>
   <UContainer class="h-dvh overflow-hidden flex flex-col py-4">
     <div class="flex items-center justify-between mb-4 shrink-0">
-      <h1 class="text-xl font-bold">Review Transactions</h1>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-3">
+        <h1 class="text-xl font-bold">Review Transactions</h1>
+        <SavedViewPicker
+          :views="savedViews"
+          :selected-view-id="selectedViewId"
+          :loading="viewsLoading"
+          :error="viewsError"
+          :show-save="true"
+          @select="applyView"
+          @create="createView"
+          @rename="renameView"
+          @update="updateView"
+          @duplicate="duplicateView"
+          @delete="deleteView"
+          @last-used="markViewUsed"
+          @retry="loadViews"
+        />
+      </div>
         <UButton
           variant="ghost"
           color="neutral"
@@ -40,7 +56,6 @@
           @click="handleSync"
         />
       </div>
-    </div>
 
     <!-- Error state (API errors, not empty queue) -->
     <UAlert
@@ -165,6 +180,55 @@
 </template>
 
 <script setup lang="ts">
+interface SavedView {
+  viewId: string;
+  name: string;
+  viewType: string;
+  scope: Record<string, unknown>;
+  sort?: string | null;
+  createdAt: string;
+  lastUsedAt?: string | null;
+}
+interface SavedViewEnvelope<T> {
+  status: 'ok' | 'error';
+  result: T | null;
+  error: { code: string; message: string; retryable?: boolean } | null;
+}
+const savedViews = ref<SavedView[]>([]);
+const selectedViewId = ref('');
+const viewsLoading = ref(false);
+const viewsError = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
+function promptView(message: string, fallback: string) {
+  return import.meta.client ? window.prompt(message, fallback)?.trim() || null : fallback;
+}
+async function loadViews() {
+  viewsLoading.value = true; viewsError.value = null;
+  try {
+    const res = await $fetch<SavedViewEnvelope<{ views: SavedView[] }>>('/api/reports/views');
+    if (res.status === 'ok' && res.result) savedViews.value = res.result.views;
+    else viewsError.value = { code: res.error?.code ?? 'VIEWS_FAILED', message: res.error?.message ?? 'Unable to load saved views.', retryable: !!res.error?.retryable };
+  } catch (e) { viewsError.value = { code: 'FETCH_ERROR', message: String(e), retryable: true }; }
+  finally { viewsLoading.value = false; }
+}
+async function viewAction(viewId: string, method: 'PATCH' | 'POST' | 'DELETE', url = `/api/reports/views/${viewId}`, body?: unknown) {
+  try {
+    const res = await $fetch<SavedViewEnvelope<SavedView | { deleted: boolean }>>(url, { method, body });
+    if (res.status !== 'ok' || !res.result) throw new Error(res.error?.message ?? 'Saved view action failed.');
+    if (method === 'DELETE') savedViews.value = savedViews.value.filter(view => view.viewId !== viewId);
+    else if ('viewId' in res.result) {
+      const view = res.result as SavedView; const index = savedViews.value.findIndex(item => item.viewId === view.viewId);
+      if (index >= 0) savedViews.value[index] = view; else savedViews.value.push(view);
+      selectedViewId.value = view.viewId;
+    }
+  } catch (e) { viewsError.value = { code: 'VIEW_ACTION_FAILED', message: String(e), retryable: true }; }
+}
+function applyView(viewId: string) { selectedViewId.value = viewId; void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`); }
+function createView() { const name = promptView('Name this saved view', 'Review queue'); if (name) void viewAction('', 'POST', '/api/reports/views', { name, viewType: 'pending_review', scope: {} }); }
+function renameView(viewId: string) { const view = savedViews.value.find(item => item.viewId === viewId); const name = promptView('Rename saved view', view?.name ?? ''); if (name) void viewAction(viewId, 'PATCH', undefined, { name }); }
+function updateView(viewId: string) { void viewAction(viewId, 'PATCH', undefined, { scope: {} }); }
+function duplicateView(viewId: string) { const view = savedViews.value.find(item => item.viewId === viewId); const name = promptView('Name duplicated view', `${view?.name ?? 'View'} copy`); if (name) void viewAction(viewId, 'POST', `/api/reports/views/${viewId}/duplicate`, { name }); }
+function deleteView(viewId: string) { if (import.meta.client && !window.confirm('Delete this saved view?')) return; void viewAction(viewId, 'DELETE'); }
+function markViewUsed(viewId: string) { void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`); }
 /**
  * Review transactions page.
  *
@@ -219,6 +283,7 @@ onMounted(() => {
   document.addEventListener('keydown', handleGlobalKeydown);
   keyboardInput.value?.focus();
   load();
+  loadViews();
   fetchProposals();
 });
 onUnmounted(() => {
@@ -261,14 +326,6 @@ const showCorrectModal = ref(false);
 
 function openCorrectModal(_category?: string) {
   if (adapter.state.currentItem) showCorrectModal.value = true;
-}
-
-/** True when any modal overlay is visible — review shortcuts are suppressed. */
-const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
-
-function onCorrectConfirm(categoryId: string) {
-  showCorrectModal.value = false;
-  adapter.correct(categoryId);
 }
 
 function onCorrectCancel() {

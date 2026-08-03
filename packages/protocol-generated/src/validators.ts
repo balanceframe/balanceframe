@@ -186,3 +186,58 @@ export type Tag = z.infer<typeof tagSchema>;
 export type Provenance = z.infer<typeof provenanceSchema>;
 export type HistoryRecord = z.infer<typeof historyRecordSchema>;
 export type Suggestion = z.infer<typeof suggestionSchema>;
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence Zod schemas (camelCase, decimal-string Money)
+// ---------------------------------------------------------------------------
+
+export const purchaseEvaluationSchema = z.object({
+  allowable: z.boolean(),
+  reasonCodes: z.array(z.string()),
+  categoryBudget: moneySchema,
+  categorySpent: moneySchema,
+  categoryRemaining: moneySchema,
+  projectedBalance: moneySchema.nullable(),
+}).strict();
+
+export const monthlyProjectionSchema = z.object({
+  month: z.string(),
+  projectedIncome: moneySchema,
+  projectedExpenses: moneySchema,
+  netChange: moneySchema,
+  endingBalance: moneySchema,
+}).strict();
+
+export const cashFlowProjectionResponseSchema = z.object({
+  projectionMonths: z.number().int(),
+  monthlyProjections: z.array(monthlyProjectionSchema),
+}).strict();
+
+const healthLabelSchema = z.enum(["healthy", "overspent", "underfunded", "at_risk"]);
+
+export const categoryHealthSchema = z.object({
+  categoryId: z.string(),
+  categoryName: z.string(),
+  budgeted: moneySchema,
+  spent: moneySchema,
+  remaining: moneySchema,
+  healthLabel: healthLabelSchema,
+}).strict();
+
+export const targetHealthResultSchema = z.object({
+  categoryHealth: z.array(categoryHealthSchema),
+  overallLabel: z.string(),
+}).strict();
+
+export const financialStateLabelSchema = z.object({
+  label: z.enum(["healthy", "stable", "at_risk", "critical"]),
+  score: z.number(),
+  reasonCodes: z.array(z.string()),
+}).strict();
+
+export type PurchaseEvaluation = z.infer<typeof purchaseEvaluationSchema>;
+export type MonthlyProjection = z.infer<typeof monthlyProjectionSchema>;
+export type CashFlowProjectionResponse = z.infer<typeof cashFlowProjectionResponseSchema>;
+export type CategoryHealth = z.infer<typeof categoryHealthSchema>;
+export type TargetHealthResult = z.infer<typeof targetHealthResultSchema>;
+export type FinancialStateLabel = z.infer<typeof financialStateLabelSchema>;

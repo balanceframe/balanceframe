@@ -71,4 +71,20 @@ describe('ConnectionManager', () => {
     expect(result.budget.name).toBe('Test Budget');
     expect(synchronized).toBe(true);
   });
+  it('reports that a connection must be selected when configuration is absent', async () => {
+    const manager = new ConnectionManager({
+      configPath: '/tmp/missing-config.json',
+      readFile: async () => null,
+      writeFile: async () => {},
+      credentialStore: {
+        load: async () => ({ serverUrl: 'http://actual', secretKey: 'secret' }),
+        store: async () => {},
+      },
+      connectorFactory: async () => fakeConnector(),
+    });
+
+    await expect(manager.restore()).rejects.toThrow(
+      'No BalanceFrame connection configured. Run connect first.',
+    );
+  });
 });

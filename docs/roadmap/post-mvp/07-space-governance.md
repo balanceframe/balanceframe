@@ -17,6 +17,9 @@ A space may be personal or shared-ledger now and linked later. Relationship labe
 - Add deterministic capabilities such as summary/transaction view, classify/review/approve, category/rule creation, affordability evaluation, reallocation proposal/approval/execution, membership/policy management, and audit view.
 - Scope grants by space, selected accounts/categories, aggregate-only visibility, operation type, proposal-only rights, thresholds, and amount/count limits. Separate proposing, approving, and executing; support thresholds and multiple required approvers.
 - Compute authorization from authenticated human or AI-agent identity, active membership/unrevoked delegation, capability, resource/limits, exact payload, current state/data-quality gates, and current policy version. The model never infers any of these from conversation.
+- Add resource-specific capabilities for purchase evaluation/session/reservation, commitments/scenarios, evidence ingest/view/resolve, wallet/receipt visibility, and transfer proposal/approval/confirmation. Scope sensitive account and evidence fields independently: account existence, name, balance, history, liquidity result, transfer-source identity, raw document, normalized evidence, and proposed ledger effect are distinct grants.
+- Support authorized redacted conclusions. A member may learn that an exact transfer is needed, a shared reservation changes availability, or an evidence resolution needs review without receiving an unauthorized source-account balance, receipt, payment note, counterparty, or raw document.
+- Bind approval to the complete canonical payload for composite actions, including every reallocation, transfer recommendation, ledger projection, evidence reference, and exact amount; approving a total alone never authorizes omitted operations or hidden data disclosure.
 
 ### Exact approval semantics
 
@@ -32,6 +35,6 @@ A space may be personal or shared-ledger now and linked later. Relationship labe
 
 ## Tests and exit
 
-Test unauthorized visibility, aggregate-only scope, inactive/departed membership, insufficient capability, threshold/multi-approver rules, expiry, consumed/replayed/mismatched approval, hidden data not sent to models, temporal history, revocation, notification redaction, and audit attribution.
+Test unauthorized visibility, aggregate-only scope, independent account-balance/liquidity/transfer-source grants, raw-versus-normalized evidence access, redacted transfer/reservation/evidence conclusions, inactive/departed membership, insufficient capability, threshold/multi-approver rules, composite payload approval, expiry, consumed/replayed/mismatched approval, hidden data not sent to models, temporal history, revocation, notification redaction, and audit attribution.
 
 **Exit:** every read and action is attributable, scoped, and deterministically enforced without collaboration depending on shared full-control credentials.

@@ -238,3 +238,90 @@ export interface RuleSimulationResult {
   /** Per-transaction examples illustrating the simulation outcome. */
   examples: SimulationExample[];
 }
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Budget Intelligence types (camelCase, matching Rust serde)
+// ---------------------------------------------------------------------------
+
+/** Result of evaluating a proposed purchase against budget limits. */
+export interface PurchaseEvaluation {
+  /** Whether the purchase is allowable within budget constraints. */
+  allowable: boolean;
+  /** Machine-readable reason codes for the evaluation. */
+  reasonCodes: string[];
+  /** How much is budgeted for this category in the current month. */
+  categoryBudget: Money;
+  /** How much has been spent in this category so far. */
+  categorySpent: Money;
+  /** Remaining budget after accounting for this purchase. */
+  categoryRemaining: Money;
+  /** Projected account balance after purchase (null if account not tracked). */
+  projectedBalance: Money | null;
+}
+
+/** Request to project future cash flow based on schedules and budgets. */
+export interface CashFlowProjectionRequest {
+  snapshot: ProtocolSnapshot;
+  projectionMonths: number;
+}
+
+/** A single month's cash-flow projection. */
+export interface MonthlyProjection {
+  /** The month in YYYY-MM format. */
+  month: string;
+  /** Total projected income for this month. */
+  projectedIncome: Money;
+  /** Total projected expenses for this month. */
+  projectedExpenses: Money;
+  /** Net change (income - expenses) for this month. */
+  netChange: Money;
+  /** Ending balance after this month. */
+  endingBalance: Money;
+}
+
+/** Response containing projected monthly cash flows. */
+export interface CashFlowProjectionResponse {
+  projectionMonths: number;
+  monthlyProjections: MonthlyProjection[];
+}
+
+/** Request to evaluate the health of budget targets. */
+export interface TargetHealthRequest {
+  snapshot: ProtocolSnapshot;
+}
+
+/** Health status of a single budget category. */
+export interface CategoryHealth {
+  categoryId: string;
+  categoryName: string;
+  budgeted: Money;
+  spent: Money;
+  remaining: Money;
+  /** One of: "healthy", "overspent", "underfunded", "at_risk". */
+  healthLabel: string;
+}
+
+/** Result of evaluating budget target health. */
+export interface TargetHealthResult {
+  categoryHealth: CategoryHealth[];
+  overallLabel: string;
+}
+
+/** Structured request for computing an overall financial state label. */
+export interface FinancialStateRequest {
+  overallHealthLabel: string;
+  positiveCashFlow: boolean;
+  budgetCoverageRatio: number;
+  overspentCategoryCount: number;
+  month: string;
+}
+
+/** A label describing the overall financial state. */
+export interface FinancialStateLabel {
+  /** The state label: "healthy", "stable", "at_risk", or "critical". */
+  label: string;
+  /** Numeric score between 0.0 and 1.0 summarizing overall health. */
+  score: number;
+  /** Machine-readable reason codes supporting this label. */
+  reasonCodes: string[];
+}
