@@ -52,6 +52,7 @@ const authorization = ref<{ capability?: string; allowed?: boolean } | null>(nul
 const primaryLinks = [
   { to: '/review', label: 'Review' }, { to: '/rules', label: 'Rules' }, { to: '/purchase-check', label: 'Purchase Check' },
   { to: '/cash-flow', label: 'Cash Flow' }, { to: '/targets', label: 'Targets' }, { to: '/reports', label: 'Reports' }, { to: '/notifications', label: 'Notifications' },
+  { to: '/connection', label: 'Connection' },
 ];
 const mobileLinks = [
   { to: '/', label: 'Home' }, ...primaryLinks, { to: '/data-quality', label: 'Data Quality' }, { to: '/liquidity', label: 'Liquidity' }, { to: '/calendar', label: 'Calendar' }, { to: '/trends', label: 'Trends' }, { to: '/obligations', label: 'Obligations' }, { to: '/income', label: 'Income' }, { to: '/forecast-accuracy', label: 'Forecast Accuracy' }, { to: '/scenarios', label: 'Scenarios' }, { to: '/health', label: 'Health' },

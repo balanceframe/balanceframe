@@ -38,6 +38,7 @@ services:
       - balanceframe-data:/data
     environment:
       - NUXT_AUTH_DB_PATH=/data/auth.db
+      - BALANCEFRAME_CONFIG_PATH=/data/config.json
       - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL:-http://actual_server:5006}
       - ACTUAL_SECRET_KEY=${ACTUAL_SECRET_KEY:?required}
       - BALANCEFRAME_WORKFLOW_DB_PATH=/data/workflow.db
