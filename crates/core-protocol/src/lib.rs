@@ -1862,7 +1862,7 @@ pub fn evaluate_target_health(request: TargetHealthRequest) -> TargetHealthResul
     let snapshot = &request.snapshot;
 
     let budget_month = snapshot.budgets.iter().find(|bm| {
-        let month_start = format!("{}-01", &bm.month);
+        let month_start = format!("{}-01", bm.month);
         month_start <= snapshot.snapshot_date
     });
 
