@@ -65,11 +65,7 @@ pub fn reconcile_by_imported_id(
     // Track used transactions
     let mut used_txs: Vec<bool> = txs
         .iter()
-        .map(|tx| {
-            matches
-                .iter()
-                .any(|m| m.tx_id == tx.id)
-        })
+        .map(|tx| matches.iter().any(|m| m.tx_id == tx.id))
         .collect();
 
     // --- 2. Amount + Date matches ---
@@ -145,7 +141,13 @@ mod tests {
     use super::*;
     use crate::money::Money;
 
-    fn make_tx(id: &str, imported_id: Option<&str>, payee: Option<&str>, amount: i64, date: &str) -> Transaction {
+    fn make_tx(
+        id: &str,
+        imported_id: Option<&str>,
+        payee: Option<&str>,
+        amount: i64,
+        date: &str,
+    ) -> Transaction {
         Transaction {
             id: id.into(),
             account_id: "acct1".into(),

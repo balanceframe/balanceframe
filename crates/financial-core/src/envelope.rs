@@ -157,10 +157,7 @@ impl ResponseEnvelope {
         }
     }
 
-    pub fn error(
-        request_id: impl Into<String>,
-        error: ErrorInfo,
-    ) -> Self {
+    pub fn error(request_id: impl Into<String>, error: ErrorInfo) -> Self {
         ResponseEnvelope {
             schema_version: "1".into(),
             request_id: request_id.into(),
@@ -191,14 +188,34 @@ mod tests {
             "timestamp must end with Z: {}",
             env.timestamp
         );
-        assert_eq!(env.timestamp.len(), 20, "ISO 8601 format is YYYY-MM-DDTHH:MM:SSZ (20 chars)");
+        assert_eq!(
+            env.timestamp.len(),
+            20,
+            "ISO 8601 format is YYYY-MM-DDTHH:MM:SSZ (20 chars)"
+        );
         // Check the basic pattern: 2026-07-18T12:34:56Z
         assert_eq!(env.timestamp.as_bytes()[10], b'T', "expected T separator");
         assert_eq!(env.timestamp.as_bytes()[19], b'Z', "expected Z suffix");
-        assert_eq!(env.timestamp.as_bytes()[4], b'-', "expected dash after year");
-        assert_eq!(env.timestamp.as_bytes()[7], b'-', "expected dash after month");
-        assert_eq!(env.timestamp.as_bytes()[13], b':', "expected colon after hour");
-        assert_eq!(env.timestamp.as_bytes()[16], b':', "expected colon after minute");
+        assert_eq!(
+            env.timestamp.as_bytes()[4],
+            b'-',
+            "expected dash after year"
+        );
+        assert_eq!(
+            env.timestamp.as_bytes()[7],
+            b'-',
+            "expected dash after month"
+        );
+        assert_eq!(
+            env.timestamp.as_bytes()[13],
+            b':',
+            "expected colon after hour"
+        );
+        assert_eq!(
+            env.timestamp.as_bytes()[16],
+            b':',
+            "expected colon after minute"
+        );
 
         let json = serde_json::to_string(&env).unwrap();
         let back: RequestEnvelope = serde_json::from_str(&json).unwrap();
@@ -263,33 +280,42 @@ mod tests {
     #[test]
     fn test_request_envelope_schema_version() {
         let env = RequestEnvelope::new("req_sv");
-        assert_eq!(env.schema_version, "1", "request envelope must emit canonical schemaVersion '1'");
+        assert_eq!(
+            env.schema_version, "1",
+            "request envelope must emit canonical schemaVersion '1'"
+        );
     }
 
     #[test]
     fn test_response_envelope_ok_schema_version() {
         let env = ResponseEnvelope::ok("req_sv", None, None, serde_json::json!({}));
-        assert_eq!(env.schema_version, "1", "ok response must emit canonical schemaVersion '1'");
+        assert_eq!(
+            env.schema_version, "1",
+            "ok response must emit canonical schemaVersion '1'"
+        );
     }
 
     #[test]
     fn test_response_envelope_error_schema_version() {
         let err = ErrorInfo::new("err", "test", false);
         let env = ResponseEnvelope::error("req_sv", err);
-        assert_eq!(env.schema_version, "1", "error response must emit canonical schemaVersion '1'");
+        assert_eq!(
+            env.schema_version, "1",
+            "error response must emit canonical schemaVersion '1'"
+        );
     }
 
     #[test]
     fn test_deserialize_legacy_schema_version_1_0() {
         // Backward compatibility: "1.0" must still be accepted as input.
         let legacy_req = r#"{"schemaVersion":"1.0","requestId":"req_legacy","timestamp":"2026-07-18T00:00:00Z"}"#;
-        let req: RequestEnvelope = serde_json::from_str(legacy_req)
-            .expect("legacy schemaVersion '1.0' must deserialize");
+        let req: RequestEnvelope =
+            serde_json::from_str(legacy_req).expect("legacy schemaVersion '1.0' must deserialize");
         assert_eq!(req.schema_version, "1.0");
 
         let legacy_res = r#"{"schemaVersion":"1.0","requestId":"req_legacy","status":"ok","dataFreshness":null,"authorization":null,"result":null,"error":null}"#;
-        let res: ResponseEnvelope = serde_json::from_str(legacy_res)
-            .expect("legacy schemaVersion '1.0' must deserialize");
+        let res: ResponseEnvelope =
+            serde_json::from_str(legacy_res).expect("legacy schemaVersion '1.0' must deserialize");
         assert_eq!(res.schema_version, "1.0");
     }
 

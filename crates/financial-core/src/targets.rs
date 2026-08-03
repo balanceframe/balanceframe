@@ -107,7 +107,8 @@ pub fn compute_target_status(
     };
 
     // Estimated months remaining
-    let months_remaining = compute_months_remaining(goal_amount, current_amount, monthly_contribution);
+    let months_remaining =
+        compute_months_remaining(goal_amount, current_amount, monthly_contribution);
 
     // Uncertainty: further out → more uncertain, capped at 3 years = 1.0
     let uncertainty = months_remaining.map(|m| (m as f64 / 36.0).clamp(0.0, 1.0));
@@ -144,12 +145,7 @@ fn compute_progress_percent(goal: &Money, current: &Money) -> f64 {
 }
 
 /// Whether progress is behind the expected linear pace.
-fn is_behind(
-    goal: &Money,
-    current: &Money,
-    months_elapsed: u32,
-    total_months: u32,
-) -> bool {
+fn is_behind(goal: &Money, current: &Money, months_elapsed: u32, total_months: u32) -> bool {
     if total_months == 0 {
         return false;
     }
@@ -176,11 +172,7 @@ fn is_behind(
 
 /// Compute months remaining to reach the goal at the current contribution
 /// rate.  Returns `None` when the goal is met or contribution is zero.
-fn compute_months_remaining(
-    goal: &Money,
-    current: &Money,
-    monthly: &Money,
-) -> Option<u32> {
+fn compute_months_remaining(goal: &Money, current: &Money, monthly: &Money) -> Option<u32> {
     if monthly.is_zero() || monthly.minor_units() == 0 {
         return None;
     }
@@ -207,9 +199,13 @@ mod tests {
     #[test]
     fn test_complete_when_current_equals_goal() {
         let status = compute_target_status(
-            "tgt_1", "Vacation", &Money::new(100_000, "USD"),
-            &Money::new(100_000, "USD"), &Money::new(10_000, "USD"),
-            6, 12,
+            "tgt_1",
+            "Vacation",
+            &Money::new(100_000, "USD"),
+            &Money::new(100_000, "USD"),
+            &Money::new(10_000, "USD"),
+            6,
+            12,
         );
         assert_eq!(status.health, TargetHealth::Complete);
         assert_eq!(status.progress_percent, 100.0);
@@ -219,9 +215,13 @@ mod tests {
     #[test]
     fn test_complete_when_exceeds_goal() {
         let status = compute_target_status(
-            "tgt_2", "Emergency Fund", &Money::new(50_000, "USD"),
-            &Money::new(75_000, "USD"), &Money::new(5_000, "USD"),
-            12, 12,
+            "tgt_2",
+            "Emergency Fund",
+            &Money::new(50_000, "USD"),
+            &Money::new(75_000, "USD"),
+            &Money::new(5_000, "USD"),
+            12,
+            12,
         );
         assert_eq!(status.health, TargetHealth::Complete);
         assert_eq!(status.progress_percent, 100.0);
@@ -230,9 +230,13 @@ mod tests {
     #[test]
     fn test_complete_at_exact_goal() {
         let status = compute_target_status(
-            "tgt_exact", "New Laptop", &Money::new(200_000, "USD"),
-            &Money::new(200_000, "USD"), &Money::zero("USD"),
-            10, 10,
+            "tgt_exact",
+            "New Laptop",
+            &Money::new(200_000, "USD"),
+            &Money::new(200_000, "USD"),
+            &Money::zero("USD"),
+            10,
+            10,
         );
         assert_eq!(status.health, TargetHealth::Complete);
         assert_eq!(status.progress_percent, 100.0);
@@ -243,9 +247,13 @@ mod tests {
     #[test]
     fn test_on_track_when_meeting_pace() {
         let status = compute_target_status(
-            "tgt_3", "Car Fund", &Money::new(120_000, "USD"),
-            &Money::new(60_000, "USD"), &Money::new(10_000, "USD"),
-            6, 12,
+            "tgt_3",
+            "Car Fund",
+            &Money::new(120_000, "USD"),
+            &Money::new(60_000, "USD"),
+            &Money::new(10_000, "USD"),
+            6,
+            12,
         );
         assert_eq!(status.health, TargetHealth::OnTrack);
         assert!((49.0..=51.0).contains(&status.progress_percent));
@@ -256,9 +264,13 @@ mod tests {
     #[test]
     fn test_on_track_exceeding_pace() {
         let status = compute_target_status(
-            "tgt_4", "Travel", &Money::new(60_000, "USD"),
-            &Money::new(40_000, "USD"), &Money::new(10_000, "USD"),
-            3, 12,
+            "tgt_4",
+            "Travel",
+            &Money::new(60_000, "USD"),
+            &Money::new(40_000, "USD"),
+            &Money::new(10_000, "USD"),
+            3,
+            12,
         );
         // Expected at 3 months: 60k * 3/12 = 15k. Current is 40k → ahead → OnTrack
         assert_eq!(status.health, TargetHealth::OnTrack);
@@ -267,9 +279,13 @@ mod tests {
     #[test]
     fn test_on_track_zero_elapsed() {
         let status = compute_target_status(
-            "tgt_new", "New Target", &Money::new(120_000, "USD"),
-            &Money::zero("USD"), &Money::new(10_000, "USD"),
-            0, 12,
+            "tgt_new",
+            "New Target",
+            &Money::new(120_000, "USD"),
+            &Money::zero("USD"),
+            &Money::new(10_000, "USD"),
+            0,
+            12,
         );
         // No time elapsed, so cannot be behind
         assert_eq!(status.health, TargetHealth::OnTrack);
@@ -282,9 +298,13 @@ mod tests {
     #[test]
     fn test_behind_when_below_expected_pace() {
         let status = compute_target_status(
-            "tgt_5", "House Down Payment", &Money::new(240_000, "USD"),
-            &Money::new(30_000, "USD"), &Money::new(10_000, "USD"),
-            6, 12,
+            "tgt_5",
+            "House Down Payment",
+            &Money::new(240_000, "USD"),
+            &Money::new(30_000, "USD"),
+            &Money::new(10_000, "USD"),
+            6,
+            12,
         );
         // Expected at 6 months: 240k * 6/12 = 120k. Current is 30k → Behind
         assert_eq!(status.health, TargetHealth::Behind);
@@ -293,9 +313,13 @@ mod tests {
     #[test]
     fn test_behind_when_nothing_saved() {
         let status = compute_target_status(
-            "tgt_6", "Wedding", &Money::new(100_000, "USD"),
-            &Money::zero("USD"), &Money::new(5_000, "USD"),
-            10, 12,
+            "tgt_6",
+            "Wedding",
+            &Money::new(100_000, "USD"),
+            &Money::zero("USD"),
+            &Money::new(5_000, "USD"),
+            10,
+            12,
         );
         // Expected at 10 months: 100k * 10/12 ≈ 83k. Current is 0 → Behind
         assert_eq!(status.health, TargetHealth::Behind);
@@ -306,9 +330,13 @@ mod tests {
     #[test]
     fn test_zero_goal_amount() {
         let status = compute_target_status(
-            "tgt_zero", "No Goal", &Money::zero("USD"),
-            &Money::zero("USD"), &Money::zero("USD"),
-            0, 0,
+            "tgt_zero",
+            "No Goal",
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            0,
+            0,
         );
         assert_eq!(status.health, TargetHealth::Complete);
         assert_eq!(status.progress_percent, 100.0);
@@ -318,9 +346,13 @@ mod tests {
     #[test]
     fn test_zero_total_months() {
         let status = compute_target_status(
-            "tgt_no_time", "Flexible", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            0, 0,
+            "tgt_no_time",
+            "Flexible",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            0,
+            0,
         );
         // No time frame → not behind (can't compute expectation)
         assert_eq!(status.health, TargetHealth::OnTrack);
@@ -330,9 +362,13 @@ mod tests {
     #[test]
     fn test_zero_contribution() {
         let status = compute_target_status(
-            "tgt_no_contrib", "Legacy", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::zero("USD"),
-            6, 12,
+            "tgt_no_contrib",
+            "Legacy",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::zero("USD"),
+            6,
+            12,
         );
         assert_eq!(status.health, TargetHealth::OnTrack); // at 50% at 6mo of 12mo → exactly on pace
         assert!(status.months_remaining.is_none()); // can't estimate
@@ -341,9 +377,13 @@ mod tests {
     #[test]
     fn test_overfunding() {
         let status = compute_target_status(
-            "tgt_over", "Overfunded", &Money::new(50_000, "USD"),
-            &Money::new(100_000, "USD"), &Money::new(5_000, "USD"),
-            12, 12,
+            "tgt_over",
+            "Overfunded",
+            &Money::new(50_000, "USD"),
+            &Money::new(100_000, "USD"),
+            &Money::new(5_000, "USD"),
+            12,
+            12,
         );
         assert_eq!(status.health, TargetHealth::Complete);
         assert_eq!(status.progress_percent, 100.0);
@@ -370,9 +410,13 @@ mod tests {
     #[test]
     fn test_target_status_camelcase_keys() {
         let status = compute_target_status(
-            "tgt_json", "Test", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            5, 10,
+            "tgt_json",
+            "Test",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            5,
+            10,
         );
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("targetId"));
@@ -387,9 +431,13 @@ mod tests {
     #[test]
     fn test_target_status_roundtrip() {
         let status = compute_target_status(
-            "tgt_rt", "Round Trip", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            5, 10,
+            "tgt_rt",
+            "Round Trip",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            5,
+            10,
         );
         let json = serde_json::to_string(&status).unwrap();
         let back: TargetStatus = serde_json::from_str(&json).unwrap();
@@ -455,9 +503,13 @@ mod tests {
     #[test]
     fn test_target_status_label_is_advice() {
         let status = compute_target_status(
-            "tgt_lbl", "Label Test", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            5, 10,
+            "tgt_lbl",
+            "Label Test",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            5,
+            10,
         );
         assert_eq!(status.label, FinancialStateLabel::Advice);
     }
@@ -465,30 +517,49 @@ mod tests {
     #[test]
     fn test_target_status_assumptions_populated() {
         let status = compute_target_status(
-            "tgt_asc", "Assumptions", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            5, 10,
+            "tgt_asc",
+            "Assumptions",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            5,
+            10,
         );
         assert!(!status.assumptions.is_empty());
-        assert!(status.assumptions.iter().any(|a| a.contains("contribution")));
+        assert!(status
+            .assumptions
+            .iter()
+            .any(|a| a.contains("contribution")));
     }
 
     #[test]
     fn test_target_status_uncertainty_scales() {
         // 5 months remaining (50k/10k) → 5/36 ≈ 0.139
         let status = compute_target_status(
-            "tgt_unc", "Uncertainty", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            5, 10,
+            "tgt_unc",
+            "Uncertainty",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            5,
+            10,
         );
         let u = status.uncertainty.unwrap();
-        assert!((u - 0.139).abs() < 0.01, "uncertainty={} expected ~0.139", u);
+        assert!(
+            (u - 0.139).abs() < 0.01,
+            "uncertainty={} expected ~0.139",
+            u
+        );
 
         // Completed goal → no uncertainty
         let status2 = compute_target_status(
-            "tgt_unc2", "Complete", &Money::new(100_000, "USD"),
-            &Money::new(100_000, "USD"), &Money::new(10_000, "USD"),
-            10, 10,
+            "tgt_unc2",
+            "Complete",
+            &Money::new(100_000, "USD"),
+            &Money::new(100_000, "USD"),
+            &Money::new(10_000, "USD"),
+            10,
+            10,
         );
         assert!(status2.uncertainty.is_none());
     }
@@ -496,9 +567,13 @@ mod tests {
     #[test]
     fn test_target_status_new_fields_camelcase_json() {
         let status = compute_target_status(
-            "tgt_j2", "JSON Test", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            5, 10,
+            "tgt_j2",
+            "JSON Test",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            5,
+            10,
         );
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("label"));
@@ -510,9 +585,13 @@ mod tests {
     #[test]
     fn test_target_status_new_fields_roundtrip() {
         let status = compute_target_status(
-            "tgt_rt2", "RT", &Money::new(100_000, "USD"),
-            &Money::new(50_000, "USD"), &Money::new(10_000, "USD"),
-            5, 10,
+            "tgt_rt2",
+            "RT",
+            &Money::new(100_000, "USD"),
+            &Money::new(50_000, "USD"),
+            &Money::new(10_000, "USD"),
+            5,
+            10,
         );
         let json = serde_json::to_string(&status).unwrap();
         let back: TargetStatus = serde_json::from_str(&json).unwrap();

@@ -30,7 +30,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::financial_state::{
-    DecisionDataPolicy, FinancialStateLabel, PendingMode, UnclearedMode, UncategorizedMode,
+    DecisionDataPolicy, FinancialStateLabel, PendingMode, UncategorizedMode, UnclearedMode,
 };
 use crate::money::{Money, MoneyError};
 
@@ -413,10 +413,11 @@ fn build_evidence(
         data_policy,
     )?;
 
-    let projected_balance = match &available_balance {
-        Some(b) => Some(b.sub(category_budget).unwrap_or_else(|_| Money::zero(b.currency()))),
-        None => None,
-    };
+    let projected_balance = available_balance.as_ref().map(|balance| {
+        balance
+            .sub(category_budget)
+            .unwrap_or_else(|_| Money::zero(balance.currency()))
+    });
 
     let buffer_remaining = match &available_balance {
         Some(b) => {
@@ -596,7 +597,11 @@ pub fn evaluate_purchase(
             UncategorizedMode::ReserveFullAmount | UncategorizedMode::Block
         )
     {
-        reason_codes.push(PurchaseReasonCode::UncategorizedExposure.as_str().to_string());
+        reason_codes.push(
+            PurchaseReasonCode::UncategorizedExposure
+                .as_str()
+                .to_string(),
+        );
     }
 
     // A stale snapshot without a current account balance cannot support any
@@ -700,7 +705,11 @@ pub fn evaluate_purchase(
     // -- 4. Semantic adjustments ------------------------------------------
     match semantic {
         TransactionSemantic::Reimbursement => {
-            reason_codes.push(PurchaseReasonCode::ReimbursementExpected.as_str().to_string());
+            reason_codes.push(
+                PurchaseReasonCode::ReimbursementExpected
+                    .as_str()
+                    .to_string(),
+            );
             let mut ev = build_evidence(
                 category_budget,
                 category_spent,
@@ -742,7 +751,11 @@ pub fn evaluate_purchase(
         // Protected account: minimum balance check
         if is_protected_account && !policy.minimum_balance.is_zero() {
             if bal.minor_units() < policy.minimum_balance.minor_units() {
-                reason_codes.push(PurchaseReasonCode::ExceedsProtectedBalance.as_str().to_string());
+                reason_codes.push(
+                    PurchaseReasonCode::ExceedsProtectedBalance
+                        .as_str()
+                        .to_string(),
+                );
                 let mut ev = build_evidence(
                     category_budget,
                     category_spent,
@@ -767,7 +780,7 @@ pub fn evaluate_purchase(
             }
             if projected_balance.minor_units() < policy.minimum_balance.minor_units() {
                 let deficit = policy.minimum_balance.sub(&projected_balance)?;
-                if let Some(ref donor) = donor_available {
+                if let Some(donor) = donor_available {
                     if donor.minor_units() >= deficit.minor_units() {
                         reason_codes.push(PurchaseReasonCode::DonorCovered.as_str().to_string());
                         let mut ev = build_evidence(
@@ -793,7 +806,11 @@ pub fn evaluate_purchase(
                         });
                     }
                 }
-                reason_codes.push(PurchaseReasonCode::ExceedsProtectedBalance.as_str().to_string());
+                reason_codes.push(
+                    PurchaseReasonCode::ExceedsProtectedBalance
+                        .as_str()
+                        .to_string(),
+                );
                 let mut ev = build_evidence(
                     category_budget,
                     category_spent,
@@ -828,7 +845,7 @@ pub fn evaluate_purchase(
                 let deficit = remaining_after_reservation.abs()?;
 
                 // Check donor
-                if let Some(ref donor) = donor_available {
+                if let Some(donor) = donor_available {
                     if donor.minor_units() >= deficit.minor_units() {
                         reason_codes.push(PurchaseReasonCode::DonorCovered.as_str().to_string());
                         let mut ev = build_evidence(
@@ -883,7 +900,11 @@ pub fn evaluate_purchase(
                 }
 
                 // Below minimum
-                reason_codes.push(PurchaseReasonCode::InsufficientMinimumBalance.as_str().to_string());
+                reason_codes.push(
+                    PurchaseReasonCode::InsufficientMinimumBalance
+                        .as_str()
+                        .to_string(),
+                );
                 let mut ev = build_evidence(
                     category_budget,
                     category_spent,
@@ -937,9 +958,13 @@ pub fn evaluate_purchase(
     let exceeds_category = amount.minor_units() > adjusted_remaining.minor_units();
 
     if exceeds_category {
-        reason_codes.push(PurchaseReasonCode::ExceedsCategoryBudget.as_str().to_string());
+        reason_codes.push(
+            PurchaseReasonCode::ExceedsCategoryBudget
+                .as_str()
+                .to_string(),
+        );
 
-        if let Some(ref donor) = donor_available {
+        if let Some(donor) = donor_available {
             let deficit = amount.sub(&adjusted_remaining)?;
             if donor.minor_units() >= deficit.minor_units() {
                 reason_codes.push(PurchaseReasonCode::DonorCovered.as_str().to_string());
@@ -1087,7 +1112,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::Approved);
-        assert!(outcome.reason_codes.contains(&"reimbursement_expected".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"reimbursement_expected".to_string()));
     }
 
     #[test]
@@ -1137,7 +1164,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::Approved);
-        assert!(outcome.reason_codes.contains(&"rollover_applied".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"rollover_applied".to_string()));
         assert!(outcome.reason_codes.contains(&"within_budget".to_string()));
     }
 
@@ -1192,7 +1221,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::Declined);
-        assert!(outcome.reason_codes.contains(&"exceeds_protected_balance".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"exceeds_protected_balance".to_string()));
     }
 
     #[test]
@@ -1217,7 +1248,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::Declined);
-        assert!(outcome.reason_codes.contains(&"insufficient_minimum_balance".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"insufficient_minimum_balance".to_string()));
     }
 
     #[test]
@@ -1242,7 +1275,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::Declined);
-        assert!(outcome.reason_codes.contains(&"exceeds_protected_balance".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"exceeds_protected_balance".to_string()));
     }
 
     // ======================================================================
@@ -1271,7 +1306,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::FlaggedForReview);
-        assert!(outcome.reason_codes.contains(&"exceeds_category_budget".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"exceeds_category_budget".to_string()));
     }
 
     #[test]
@@ -1352,7 +1389,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::InsufficientData);
-        assert!(outcome.reason_codes.contains(&"uncategorized_exposure".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"uncategorized_exposure".to_string()));
     }
 
     #[test]
@@ -1453,7 +1492,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(outcome.reason_codes.contains(&"scheduled_payment".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"scheduled_payment".to_string()));
     }
 
     // ======================================================================
@@ -1481,7 +1522,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(outcome.reason_codes.contains(&"pending_exposure".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"pending_exposure".to_string()));
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::Approved);
     }
 
@@ -1506,7 +1549,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(outcome.reason_codes.contains(&"uncategorized_exposure".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"uncategorized_exposure".to_string()));
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::Approved);
     }
 
@@ -1816,7 +1861,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::FlaggedForReview);
-        assert!(outcome.reason_codes.contains(&"exceeds_category_budget".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"exceeds_category_budget".to_string()));
         assert!(!outcome.reason_codes.contains(&"donor_covered".to_string()));
     }
 
@@ -1842,6 +1889,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.outcome, PurchaseOutcomeKind::InsufficientData);
-        assert!(outcome.reason_codes.contains(&"stale_bank_sync".to_string()));
+        assert!(outcome
+            .reason_codes
+            .contains(&"stale_bank_sync".to_string()));
     }
 }

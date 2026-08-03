@@ -1,25 +1,22 @@
 #![forbid(unsafe_code)]
 
+use balanceframe_financial_core as fc;
 use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{
-    normalize_merchant, Account, BudgetMonth, CandidateStatus, CategorizationCandidate,
-    Category, CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag, Transaction,
+    normalize_merchant, Account, BudgetMonth, CandidateStatus, CategorizationCandidate, Category,
+    CompatibilityMetadata, HistoryRecord, Payee, Rule, Schedule, Tag, Transaction,
+};
+pub use balanceframe_financial_core::{
+    AnalysisAvailability, BillCalendar, BillCalendarEntry, BudgetVarianceReport, CalibrationMetric,
+    CategoryTrend, CategoryVariance, CoverageRatio, DataQualityCenter, ForecastCalibration,
+    HealthDimension, IncomeReliabilityReport, IncomeSource, IrregularObligation,
+    IrregularObligationsReport, IrregularityKind, LiquidityCoverage, MultidimensionalHealth,
+    QualityDimension, Scenario, ScenarioComparisonDelta, ScenarioComparisonResult, ScenarioId,
+    ScenarioVersion, TrendDirection, UpcomingObligation,
 };
 pub use balanceframe_financial_core::{InferencePolicy, Provenance};
-pub use balanceframe_financial_core::{
-    DataQualityCenter, QualityDimension, AnalysisAvailability,
-    LiquidityCoverage, UpcomingObligation, CoverageRatio,
-    BillCalendar, BillCalendarEntry,
-    BudgetVarianceReport, CategoryVariance, CategoryTrend, TrendDirection,
-    IrregularObligationsReport, IrregularObligation, IrregularityKind,
-    IncomeReliabilityReport, IncomeSource,
-    ForecastCalibration, CalibrationMetric,
-    Scenario, ScenarioId, ScenarioVersion, ScenarioComparisonDelta, ScenarioComparisonResult,
-    MultidimensionalHealth, HealthDimension,
-};
-use balanceframe_financial_core as fc;
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Protocol constants
@@ -116,7 +113,6 @@ pub struct Suggestion {
     // ---- Phase 2: Suggestion-only classifier fields -----------------------
     // All new fields are Option<…> / Vec-defaulted for backward compatibility
     // with existing Suggestion JSON that lacks them.
-
     /// Stable space identifier for multi-space deployments.
     #[serde(default)]
     pub space_id: Option<String>,
@@ -554,21 +550,21 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
         let mut total_minor: i64 = 0;
         for tx in &uncategorized {
             match tx.amount.abs() {
-                Ok(abs) => {
-                    match total_minor.checked_add(abs.minor_units()) {
-                        Some(sum) => total_minor = sum,
-                        None => {
-                            findings.push(Finding {
-                                finding_type: "amount_overflow".into(),
-                                severity: "blocker".into(),
-                                entity_id: tx.id.clone(),
-                                message: "Accumulation overflow while summing uncategorized transactions".to_string(),
-                                drill_down: vec![],
-                            });
-                            reason_codes.push("amount_overflow".into());
-                        }
+                Ok(abs) => match total_minor.checked_add(abs.minor_units()) {
+                    Some(sum) => total_minor = sum,
+                    None => {
+                        findings.push(Finding {
+                            finding_type: "amount_overflow".into(),
+                            severity: "blocker".into(),
+                            entity_id: tx.id.clone(),
+                            message:
+                                "Accumulation overflow while summing uncategorized transactions"
+                                    .to_string(),
+                            drill_down: vec![],
+                        });
+                        reason_codes.push("amount_overflow".into());
                     }
-                }
+                },
                 Err(_) => {
                     findings.push(Finding {
                         finding_type: "amount_overflow".into(),
@@ -708,7 +704,9 @@ pub fn analyze_snapshot(request: AnalysisRequest) -> AnalysisResult {
 /// [`fc::analysis::run_deterministic_analysis`] that builds the
 /// compatibility metadata from the snapshot and returns the wrapped
 /// [`DeterministicAnalysisResponse`].
-pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> DeterministicAnalysisResponse {
+pub fn analyze_deterministic(
+    request: DeterministicAnalysisRequest,
+) -> DeterministicAnalysisResponse {
     let snapshot = &request.snapshot;
     let options = &request.options;
 
@@ -719,24 +717,27 @@ pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> Determini
             schema_version: "1".into(),
             request_id: request.request_id.clone().unwrap_or_default(),
             status: "error".into(),
-            freshness: fc::DataFreshness::compute(None, None, options.include_pending, &snapshot.snapshot_date),
+            freshness: fc::DataFreshness::compute(
+                None,
+                None,
+                options.include_pending,
+                &snapshot.snapshot_date,
+            ),
             compatibility: fc::CompatibilityMetadata::new(
                 snapshot.encrypted.unwrap_or(false),
                 snapshot.actual_downloaded_at.is_some() || !snapshot.encrypted.unwrap_or(true),
                 snapshot.actual_version.clone(),
             ),
-            coverage: fc::build_coverage_report(
-                &snapshot.accounts,
-                &snapshot.transactions,
-                &scope,
-            ),
+            coverage: fc::build_coverage_report(&snapshot.accounts, &snapshot.transactions, &scope),
             analysis: fc::DeterministicAnalysis {
                 freshness: fc::DataFreshness::compute(None, None, false, ""),
                 compatibility: fc::CompatibilityMetadata::new(false, false, String::new()),
                 coverage: fc::build_coverage_report(&[], &[], &scope),
                 readiness: fc::analyze_readiness(&[], &[], &[], ""),
                 uncategorized_backlog: fc::UncategorizedBacklog {
-                    count: 0, oldest_date: None, total_amount: fc::Money::zero("USD"),
+                    count: 0,
+                    oldest_date: None,
+                    total_amount: fc::Money::zero("USD"),
                     transaction_ids: vec![],
                 },
                 repeated_merchants: vec![],
@@ -846,7 +847,6 @@ pub fn analyze_deterministic(request: DeterministicAnalysisRequest) -> Determini
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Rule candidate analysis — protocol wrapper
 // ---------------------------------------------------------------------------
@@ -868,7 +868,6 @@ pub fn analyze_rule_candidates(
         min_consistent_count,
     )
 }
-
 
 /// Analyze correction history to produce rule candidates with conflict
 /// detection.  Converts [`CorrectionHistoryInput`] records into
@@ -1141,10 +1140,7 @@ pub fn validate_provider_suggestion(
 }
 
 /// Plan the mutation of a transaction's category.
-pub fn plan_set_category(
-    transaction: &Transaction,
-    category: &Category,
-) -> MutationPlan {
+pub fn plan_set_category(transaction: &Transaction, category: &Category) -> MutationPlan {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1167,10 +1163,7 @@ pub fn plan_set_category(
 }
 
 /// Verify that a mutation plan is still valid against a snapshot.
-pub fn verify_mutation(
-    plan: &MutationPlan,
-    snapshot: &ProtocolSnapshot,
-) -> VerificationResult {
+pub fn verify_mutation(plan: &MutationPlan, snapshot: &ProtocolSnapshot) -> VerificationResult {
     let mut reason_codes: Vec<String> = Vec::new();
     // Collect *failure* reason codes separately so that diagnostic
     // observations (e.g. category_already_matches) do not cause a
@@ -1251,8 +1244,6 @@ pub fn verify_mutation(
     }
 }
 
-
-
 /// Plan the creation of a new rule based on payee conditions and a target category.
 ///
 /// Normalizes the first payee condition's value and produces a trigger/actions
@@ -1316,7 +1307,11 @@ pub fn verify_rule_mutation(
     // Normalize both sides for payee_is comparison — plan_create_rule
     // already normalizes the payee name to lowercase, but existing rules
     // may have original casing.
-    let plan_trigger_value = plan.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    let plan_trigger_value = plan
+        .trigger
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let plan_norm = normalize_merchant(plan_trigger_value);
 
     let exists = snapshot.rules.iter().any(|existing| {
@@ -1330,7 +1325,11 @@ pub fn verify_rule_mutation(
         }
         // Allow normalized match for payee_is triggers
         if existing.trigger.get("type").and_then(|v| v.as_str()) == Some("payee_is") {
-            let existing_val = existing.trigger.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            let existing_val = existing
+                .trigger
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let existing_norm = normalize_merchant(existing_val);
             return existing_norm == plan_norm;
         }
@@ -1361,10 +1360,7 @@ pub fn verify_rule_mutation(
 /// - `payee_is` – normalized payee name comparison
 /// - `transaction_added` – matches all transactions
 /// - `amount_less_than` / `amount_greater_than` – compares `amount.minor_units` to the threshold
-pub fn simulate_rule(
-    rule: &Rule,
-    transactions: &[Transaction],
-) -> RuleSimulationResult {
+pub fn simulate_rule(rule: &Rule, transactions: &[Transaction]) -> RuleSimulationResult {
     if rule.inactive {
         return RuleSimulationResult {
             rule_id: rule.id.clone(),
@@ -1398,21 +1394,16 @@ pub fn simulate_rule(
             "payee_is" => {
                 let raw = trigger_value.and_then(|v| v.as_str()).unwrap_or("");
                 let norm_trigger = normalize_merchant(raw);
-                let norm_tx =
-                    normalize_merchant(tx.payee_name.as_deref().unwrap_or(""));
+                let norm_tx = normalize_merchant(tx.payee_name.as_deref().unwrap_or(""));
                 !norm_trigger.is_empty() && norm_trigger == norm_tx
             }
             "transaction_added" => true,
             "amount_less_than" => {
-                let threshold = trigger_value
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(i64::MAX);
+                let threshold = trigger_value.and_then(|v| v.as_i64()).unwrap_or(i64::MAX);
                 tx.amount.minor_units() < threshold
             }
             "amount_greater_than" => {
-                let threshold = trigger_value
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(i64::MIN);
+                let threshold = trigger_value.and_then(|v| v.as_i64()).unwrap_or(i64::MIN);
                 tx.amount.minor_units() > threshold
             }
             _ => false,
@@ -1430,9 +1421,7 @@ pub fn simulate_rule(
                 tx.category_id.is_none() || tx.category_id.as_deref() == Some("")
             };
 
-            let dist_key = target_category
-                .clone()
-                .unwrap_or_default();
+            let dist_key = target_category.clone().unwrap_or_default();
             *category_distribution.entry(dist_key).or_insert(0) += 1;
 
             examples.push(SimulationExample {
@@ -1548,26 +1537,27 @@ fn extract_action_value(actions: &serde_json::Value) -> Option<String> {
 /// protocol response format. This is a non-authoritative advisory —
 /// it informs but does not authorize the transaction.
 pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluation {
-    use fc::purchase::{evaluate_purchase as fc_evaluate, PurchasePolicy, TransactionSemantic};
     use fc::financial_state::DecisionDataPolicy;
+    use fc::purchase::{evaluate_purchase as fc_evaluate, PurchasePolicy, TransactionSemantic};
 
     let snapshot = &request.snapshot;
     let category_id = &request.category_id;
 
     // Find the category definition.
-    let category = match snapshot.categories.iter().find(|c| c.id == *category_id) {
-        Some(cat) => cat,
-        None => {
-            return PurchaseEvaluation {
-                allowable: false,
-                reason_codes: vec!["category_not_found".into()],
-                category_budget: fc::Money::new(0, "USD"),
-                category_spent: fc::Money::new(0, "USD"),
-                category_remaining: fc::Money::new(0, "USD"),
-                projected_balance: None,
-            };
-        }
-    };
+    if !snapshot
+        .categories
+        .iter()
+        .any(|category| category.id == *category_id)
+    {
+        return PurchaseEvaluation {
+            allowable: false,
+            reason_codes: vec!["category_not_found".into()],
+            category_budget: fc::Money::new(0, "USD"),
+            category_spent: fc::Money::new(0, "USD"),
+            category_remaining: fc::Money::new(0, "USD"),
+            projected_balance: None,
+        };
+    }
 
     // The proposed transaction identifies the account to evaluate.  Never
     // silently substitute an unrelated account when it is absent.
@@ -1596,8 +1586,8 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
         .filter(|bm| format!("{}-01", bm.month) <= snapshot.snapshot_date)
         .max_by(|left, right| left.month.cmp(&right.month));
 
-    let category_is_budgeted = budget_month
-        .map_or(false, |bm| bm.categories.contains_key(category_id));
+    let category_is_budgeted =
+        budget_month.is_some_and(|bm| bm.categories.contains_key(category_id));
     let budget_amount = budget_month
         .and_then(|bm| bm.categories.get(category_id))
         .map(|bc| bc.amount.clone())
@@ -1690,7 +1680,12 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
     let uncategorized = fc::Money::new(uncategorized_total, "USD");
     let uncleared = fc::Money::new(uncleared_total, "USD");
 
-    let proposed_minor = match request.proposed_transaction.amount.minor_units().checked_abs() {
+    let proposed_minor = match request
+        .proposed_transaction
+        .amount
+        .minor_units()
+        .checked_abs()
+    {
         Some(amount) => amount,
         None => {
             return PurchaseEvaluation {
@@ -1706,9 +1701,10 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
     let proposed_amount = fc::Money::new(proposed_minor, "USD");
 
     let has_stale_bank_sync = snapshot.bank_synced_at.as_deref().is_some_and(|synced| {
-        synced.get(..10).map_or(true, |date| date < snapshot.snapshot_date.get(..10).unwrap_or(""))
+        synced
+            .get(..10)
+            .is_none_or(|date| date < snapshot.snapshot_date.get(..10).unwrap_or(""))
     });
-
 
     // Delegate to financial-core engine
     let outcome = fc_evaluate(
@@ -1824,14 +1820,15 @@ pub fn project_cash_flow(request: CashFlowProjectionRequest) -> CashFlowProjecti
             if applies {
                 let amount = sched.amount.minor_units();
                 if amount < 0 {
-                    projected_expenses = projected_expenses.saturating_add(amount.unsigned_abs() as i64);
+                    projected_expenses =
+                        projected_expenses.saturating_add(amount.unsigned_abs() as i64);
                 } else {
                     projected_income = projected_income.saturating_add(amount);
                 }
             }
         }
 
-        let net = (projected_income as i64).saturating_sub(projected_expenses as i64);
+        let net = projected_income.saturating_sub(projected_expenses);
         running_balance = running_balance.saturating_add(net);
 
         monthly_projections.push(MonthlyProjection {
@@ -1924,8 +1921,6 @@ pub fn evaluate_target_health(request: TargetHealthRequest) -> TargetHealthResul
         "at_risk"
     } else if underfunded_count > 0 {
         "caution"
-    } else if category_health.is_empty() {
-        "healthy"
     } else {
         "healthy"
     };
@@ -1953,7 +1948,10 @@ pub fn evaluate_financial_state(request: FinancialStateRequest) -> FinancialStat
             (
                 "critical".to_string(),
                 0.15_f64,
-                vec!["negative_cash_flow".to_string(), "low_budget_coverage".to_string()],
+                vec![
+                    "negative_cash_flow".to_string(),
+                    "low_budget_coverage".to_string(),
+                ],
             )
         } else if !has_positive_cash_flow {
             (
@@ -1987,7 +1985,10 @@ pub fn evaluate_financial_state(request: FinancialStateRequest) -> FinancialStat
         (
             "healthy".to_string(),
             0.85_f64,
-            vec!["positive_cash_flow".to_string(), "budget_healthy".to_string()],
+            vec![
+                "positive_cash_flow".to_string(),
+                "budget_healthy".to_string(),
+            ],
         )
     };
 
@@ -2013,12 +2014,16 @@ pub fn evaluate_financial_state(request: FinancialStateRequest) -> FinancialStat
 pub fn compute_data_quality(snapshot: &ProtocolSnapshot) -> DataQualityCenter {
     let accounts_count = snapshot.accounts.len();
     let transactions_count = snapshot.transactions.len();
-    let uncategorized_count = snapshot.transactions.iter()
+    let uncategorized_count = snapshot
+        .transactions
+        .iter()
         .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
         .count();
     // Simplified duplicate detection: count transactions with same imported_id
     let mut seen_imported = std::collections::HashSet::new();
-    let duplicate_candidates = snapshot.transactions.iter()
+    let duplicate_candidates = snapshot
+        .transactions
+        .iter()
         .filter(|tx| tx.imported_id.is_some())
         .filter(|tx| !seen_imported.insert(tx.imported_id.as_deref().unwrap_or("")))
         .count();
@@ -2239,9 +2244,7 @@ mod tests {
             actual_version: "25.1.0".into(),
             snapshot_date: "2026-07-18".into(),
             accounts: vec![sample_account("a1", "Checking")],
-            transactions: vec![
-                sample_tx("tx1", "a1", "2026-07-01", true, None),
-            ],
+            transactions: vec![sample_tx("tx1", "a1", "2026-07-01", true, None)],
             categories: vec![sample_category("c1", "Food", false)],
             payees: vec![],
             rules: vec![],
@@ -2271,7 +2274,10 @@ mod tests {
         // max_results=0 should limit non-essential collections to empty
         assert!(response.analysis.repeated_merchants.is_empty());
         assert!(response.analysis.deterministic_classifications.is_empty());
-        assert_eq!(response.schema_version, "1", "deterministic response must emit schemaVersion '1'");
+        assert_eq!(
+            response.schema_version, "1",
+            "deterministic response must emit schemaVersion '1'"
+        );
     }
 
     #[test]
@@ -2300,7 +2306,10 @@ mod tests {
         if let Some(err) = &response.error {
             assert_eq!(err.code, "analysis_error");
         }
-        assert_eq!(response.schema_version, "1", "blocker error response must emit schemaVersion '1'");
+        assert_eq!(
+            response.schema_version, "1",
+            "blocker error response must emit schemaVersion '1'"
+        );
     }
 
     #[test]
@@ -2319,7 +2328,10 @@ mod tests {
         let response = analyze_deterministic(request);
         assert_eq!(response.status, "ok");
         assert!(response.error.is_none(), "No error when status is ok");
-        assert_eq!(response.schema_version, "1", "ok response must emit schemaVersion '1'");
+        assert_eq!(
+            response.schema_version, "1",
+            "ok response must emit schemaVersion '1'"
+        );
     }
 
     // -- maxResults applied to analyze_snapshot ------------------------------
@@ -2337,7 +2349,10 @@ mod tests {
         };
         let result = analyze_snapshot(request);
         // max_results=0 should truncate findings and suggestions, leading to "success"
-        assert_eq!(result.result_code, "success", "max_results=0 truncates all findings -> no issues");
+        assert_eq!(
+            result.result_code, "success",
+            "max_results=0 truncates all findings -> no issues"
+        );
         assert!(result.findings.is_empty());
         assert!(result.suggestions.is_empty());
     }
@@ -2406,7 +2421,9 @@ mod tests {
             },
         };
         let result = analyze_snapshot(request);
-        assert_ne!(result.result_code, "error",
-            "canonical schema_version '1' must be accepted; got error");
+        assert_ne!(
+            result.result_code, "error",
+            "canonical schema_version '1' must be accepted; got error"
+        );
     }
 }

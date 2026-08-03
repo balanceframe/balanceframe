@@ -154,9 +154,8 @@ pub fn analyze_transactions(
             .as_deref()
             .map(|cid| !active_cats.contains(cid))
             .unwrap_or(false);
-        let is_uncategorized = tx.category_id.is_none()
-            || tx.category_id.as_deref() == Some("")
-            || is_sub;
+        let is_uncategorized =
+            tx.category_id.is_none() || tx.category_id.as_deref() == Some("") || is_sub;
 
         // --- Pending exposure ---
         if !tx.cleared {
@@ -177,7 +176,10 @@ pub fn analyze_transactions(
                 None => issues.push(QualityIssue::new(
                     Severity::Blocker,
                     "AMOUNT_OVERFLOW",
-                    format!("Transaction {} has an unrepresentable absolute amount", tx.id),
+                    format!(
+                        "Transaction {} has an unrepresentable absolute amount",
+                        tx.id
+                    ),
                     "Transaction",
                     &tx.id,
                 )),
@@ -197,7 +199,9 @@ pub fn analyze_transactions(
                     "SPLIT_MISMATCH",
                     format!(
                         "Transaction {} splits sum to {} but parent amount is {}",
-                        tx.id, sub_sum, tx.amount.minor_units()
+                        tx.id,
+                        sub_sum,
+                        tx.amount.minor_units()
                     ),
                     "Transaction",
                     &tx.id,
@@ -230,7 +234,10 @@ pub fn analyze_transactions(
                 issues.push(QualityIssue::new(
                     Severity::Blocker,
                     "AMOUNT_OVERFLOW",
-                    format!("Transaction {} has an unrepresentable absolute amount", tx.id),
+                    format!(
+                        "Transaction {} has an unrepresentable absolute amount",
+                        tx.id
+                    ),
                     "Transaction",
                     &tx.id,
                 ));
@@ -239,10 +246,9 @@ pub fn analyze_transactions(
         };
         let date = &tx.date;
 
-        if let Some((_prev_payee, _prev_amt, _prev_date)) =
-            seen.iter().find(|(p, a, d)| {
-                *p == payee_key && *a == amount_abs && *d == date.as_str()
-            })
+        if let Some((_prev_payee, _prev_amt, _prev_date)) = seen
+            .iter()
+            .find(|(p, a, d)| *p == payee_key && *a == amount_abs && *d == date.as_str())
         {
             issues.push(QualityIssue::new(
                 Severity::Warning,
@@ -346,9 +352,18 @@ pub fn analyze_readiness(
     issues.extend(analyze_transactions(transactions, categories));
     issues.extend(analyze_categories(categories, transactions));
 
-    let blockers = issues.iter().filter(|i| i.severity == Severity::Blocker).count();
-    let warnings = issues.iter().filter(|i| i.severity == Severity::Warning).count();
-    let info = issues.iter().filter(|i| i.severity == Severity::Info).count();
+    let blockers = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Blocker)
+        .count();
+    let warnings = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Warning)
+        .count();
+    let info = issues
+        .iter()
+        .filter(|i| i.severity == Severity::Info)
+        .count();
 
     let summary = QualitySummary {
         total_issues: issues.len(),
@@ -373,11 +388,17 @@ fn is_stale(date: &str, reference_date: &str, max_days: u32) -> bool {
         return false;
     }
 
-    let date_compact: String = date.chars().take(10).collect::<String>()
+    let date_compact: String = date
+        .chars()
+        .take(10)
+        .collect::<String>()
         .chars()
         .filter(|c| c.is_ascii_digit())
         .collect();
-    let ref_compact: String = reference_date.chars().take(10).collect::<String>()
+    let ref_compact: String = reference_date
+        .chars()
+        .take(10)
+        .collect::<String>()
         .chars()
         .filter(|c| c.is_ascii_digit())
         .collect();
@@ -420,9 +441,18 @@ mod tests {
         let report = DataQualityReport {
             summary: QualitySummary {
                 total_issues: issues.len(),
-                blockers: issues.iter().filter(|i| i.severity == Severity::Blocker).count(),
-                warnings: issues.iter().filter(|i| i.severity == Severity::Warning).count(),
-                info: issues.iter().filter(|i| i.severity == Severity::Info).count(),
+                blockers: issues
+                    .iter()
+                    .filter(|i| i.severity == Severity::Blocker)
+                    .count(),
+                warnings: issues
+                    .iter()
+                    .filter(|i| i.severity == Severity::Warning)
+                    .count(),
+                info: issues
+                    .iter()
+                    .filter(|i| i.severity == Severity::Info)
+                    .count(),
             },
             issues,
         };
@@ -498,7 +528,10 @@ mod tests {
             report.issues,
         );
         assert!(
-            report.issues.iter().any(|i| i.severity == Severity::Blocker),
+            report
+                .issues
+                .iter()
+                .any(|i| i.severity == Severity::Blocker),
             "expected at least one blocker",
         );
     }

@@ -195,10 +195,7 @@ impl Money {
     /// Returns `MoneyError::Overflow` when `minor_units` is `i64::MIN`
     /// because `-i64::MIN` overflows `i64`.
     pub fn abs(&self) -> Result<Money, MoneyError> {
-        let abs = self
-            .minor_units
-            .checked_abs()
-            .ok_or(MoneyError::Overflow)?;
+        let abs = self.minor_units.checked_abs().ok_or(MoneyError::Overflow)?;
         Ok(Money {
             minor_units: abs,
             currency: self.currency.clone(),

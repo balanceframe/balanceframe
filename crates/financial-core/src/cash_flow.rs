@@ -83,11 +83,8 @@ pub fn compute_cash_flow_projection(
 
     // Estimate days until balance would become negative.
     let net_flow = expected_inflows.sub(expected_outflows)?; // signed
-    let days_until_negative = compute_days_until_negative(
-        current_balance,
-        &net_flow,
-        projection_days,
-    );
+    let days_until_negative =
+        compute_days_until_negative(current_balance, &net_flow, projection_days);
 
     let uncertainty = if projection_days > 0 {
         Some((projection_days as f64 / 365.0).clamp(0.0, 1.0))
@@ -138,7 +135,7 @@ fn compute_days_until_negative(
     // Conservative (ceiling) burn-per-day estimate.
     let burn_abs = net_flow.minor_units().unsigned_abs();
     let days = projection_days as u64;
-    let burn_per_day = (burn_abs + days - 1) / days; // ceiling division
+    let burn_per_day = burn_abs.div_ceil(days);
 
     if burn_per_day == 0 {
         return None;
@@ -319,16 +316,24 @@ mod tests {
     #[test]
     fn test_projection_label_is_cash_flow() {
         let proj = compute_cash_flow_projection(
-            &Money::new(1000, "USD"), &Money::zero("USD"), &Money::zero("USD"), 30,
-        ).unwrap();
+            &Money::new(1000, "USD"),
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            30,
+        )
+        .unwrap();
         assert_eq!(proj.label, FinancialStateLabel::CashFlowProjection);
     }
 
     #[test]
     fn test_projection_assumptions_populated() {
         let proj = compute_cash_flow_projection(
-            &Money::new(1000, "USD"), &Money::zero("USD"), &Money::zero("USD"), 30,
-        ).unwrap();
+            &Money::new(1000, "USD"),
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            30,
+        )
+        .unwrap();
         assert!(!proj.assumptions.is_empty());
         assert!(proj.assumptions.iter().any(|a| a.contains("burn rate")));
     }
@@ -336,19 +341,31 @@ mod tests {
     #[test]
     fn test_projection_uncertainty_scales_with_days() {
         let proj_0 = compute_cash_flow_projection(
-            &Money::new(1000, "USD"), &Money::zero("USD"), &Money::zero("USD"), 0,
-        ).unwrap();
+            &Money::new(1000, "USD"),
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            0,
+        )
+        .unwrap();
         assert!(proj_0.uncertainty.is_none());
 
         let proj_365 = compute_cash_flow_projection(
-            &Money::new(1000, "USD"), &Money::zero("USD"), &Money::zero("USD"), 365,
-        ).unwrap();
+            &Money::new(1000, "USD"),
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            365,
+        )
+        .unwrap();
         assert!(proj_365.uncertainty.is_some());
         assert!((proj_365.uncertainty.unwrap() - 1.0).abs() < 0.001);
 
         let proj_182 = compute_cash_flow_projection(
-            &Money::new(1000, "USD"), &Money::zero("USD"), &Money::zero("USD"), 182,
-        ).unwrap();
+            &Money::new(1000, "USD"),
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            182,
+        )
+        .unwrap();
         let u = proj_182.uncertainty.unwrap();
         assert!((0.48..=0.50).contains(&u), "uncertainty={} for 182 days", u);
     }
@@ -356,8 +373,12 @@ mod tests {
     #[test]
     fn test_projection_new_fields_camelcase_json() {
         let proj = compute_cash_flow_projection(
-            &Money::new(1000, "USD"), &Money::zero("USD"), &Money::zero("USD"), 30,
-        ).unwrap();
+            &Money::new(1000, "USD"),
+            &Money::zero("USD"),
+            &Money::zero("USD"),
+            30,
+        )
+        .unwrap();
         let json = serde_json::to_string(&proj).unwrap();
         assert!(json.contains("label"));
         assert!(json.contains("cashFlowProjection"));
@@ -368,8 +389,12 @@ mod tests {
     #[test]
     fn test_projection_new_fields_roundtrip() {
         let proj = compute_cash_flow_projection(
-            &Money::new(1000, "USD"), &Money::new(500, "USD"), &Money::new(300, "USD"), 30,
-        ).unwrap();
+            &Money::new(1000, "USD"),
+            &Money::new(500, "USD"),
+            &Money::new(300, "USD"),
+            30,
+        )
+        .unwrap();
         let json = serde_json::to_string(&proj).unwrap();
         let back: CashFlowProjection = serde_json::from_str(&json).unwrap();
         assert_eq!(proj.label, back.label);

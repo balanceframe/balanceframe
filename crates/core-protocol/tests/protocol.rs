@@ -1,34 +1,11 @@
 use balanceframe_core_protocol::{
-    analyze_deterministic,
-    analyze_rule_candidates,
-    analyze_snapshot,
-    evaluate_purchase,
-    project_cash_flow,
-    evaluate_target_health,
-    evaluate_financial_state,
-    find_categorization_candidates,
-    plan_create_rule,
-    plan_set_category,
-    simulate_rule,
-    validate_provider_suggestion,
-    validate_suggestion,
-    verify_mutation,
-    verify_rule_mutation,
-    AnalysisOptions,
-    AnalysisRequest,
-    CashFlowProjectionRequest,
-    DeterministicAnalysisRequest,
-    FinancialStateRequest,
-    InferencePolicy,
-    MutationPlan,
-    PayeeCondition,
-    Postcondition,
-    PostconditionType,
-    ProtocolSnapshot,
-    Provenance,
-    PurchaseEvaluationRequest,
-    Suggestion,
-    TargetHealthRequest,
+    analyze_deterministic, analyze_rule_candidates, analyze_snapshot, evaluate_financial_state,
+    evaluate_purchase, evaluate_target_health, find_categorization_candidates, plan_create_rule,
+    plan_set_category, project_cash_flow, simulate_rule, validate_provider_suggestion,
+    validate_suggestion, verify_mutation, verify_rule_mutation, AnalysisOptions, AnalysisRequest,
+    CashFlowProjectionRequest, DeterministicAnalysisRequest, FinancialStateRequest,
+    InferencePolicy, MutationPlan, PayeeCondition, Postcondition, PostconditionType,
+    ProtocolSnapshot, Provenance, PurchaseEvaluationRequest, Suggestion, TargetHealthRequest,
 };
 use balanceframe_financial_core::{
     Account, CandidateStatus, CategorizationCandidate, Category, Evidence, EvidenceKind, Money,
@@ -84,7 +61,6 @@ fn sample_transaction(id: &str, category_id: Option<&str>, amount: i64) -> Trans
         subtransactions: vec![],
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Round-trip serialization of ProtocolSnapshot
@@ -192,7 +168,10 @@ fn test_analysis_uncategorized() {
 
     let result = analyze_snapshot(request);
     assert_eq!(result.result_code, "warning");
-    assert!(result.findings.iter().any(|f| f.finding_type == "uncategorized"));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.finding_type == "uncategorized"));
 }
 
 // ---------------------------------------------------------------------------
@@ -330,10 +309,10 @@ fn test_plan_set_category() {
     let plan = plan_set_category(&tx, &cat);
     assert_eq!(plan.transaction_id, "tx1");
     assert_eq!(plan.proposed_category_id, "cat1");
-    assert!(plan.postconditions.iter().any(|pc| matches!(
-        pc.condition_type,
-        PostconditionType::CategoryExists
-    )));
+    assert!(plan
+        .postconditions
+        .iter()
+        .any(|pc| matches!(pc.condition_type, PostconditionType::CategoryExists)));
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +426,9 @@ fn test_verify_mutation_emits_postcondition_verified() {
     let result = verify_mutation(&plan, &snapshot);
     assert!(result.verified);
     assert!(
-        result.reason_codes.contains(&"postcondition_verified".to_string()),
+        result
+            .reason_codes
+            .contains(&"postcondition_verified".to_string()),
         "Expected postcondition_verified in reason_codes: {:?}",
         result.reason_codes
     );
@@ -490,7 +471,9 @@ fn test_verify_mutation_category_already_matches() {
         result.reason_codes,
     );
     assert!(
-        result.reason_codes.contains(&"category_already_matches".to_string()),
+        result
+            .reason_codes
+            .contains(&"category_already_matches".to_string()),
         "Expected category_already_matches in reason_codes: {:?}",
         result.reason_codes
     );
@@ -531,7 +514,9 @@ fn test_verify_mutation_empty_proposed_category() {
     let result = verify_mutation(&plan, &snapshot);
     assert!(!result.verified, "Empty proposed category must not verify");
     assert!(
-        result.reason_codes.contains(&"proposed_category_not_found".to_string()),
+        result
+            .reason_codes
+            .contains(&"proposed_category_not_found".to_string()),
         "Expected proposed_category_not_found in reason_codes: {:?}",
         result.reason_codes
     );
@@ -579,7 +564,9 @@ fn test_verify_mutation_missing_postcondition_category() {
         "Missing declared postcondition must fail verification"
     );
     assert!(
-        result.reason_codes.contains(&"postcondition_not_met".to_string()),
+        result
+            .reason_codes
+            .contains(&"postcondition_not_met".to_string()),
         "Expected postcondition_not_met in reason_codes: {:?}",
         result.reason_codes
     );
@@ -620,7 +607,9 @@ fn test_verify_mutation_zero_amount_transaction() {
     let result = verify_mutation(&plan, &snapshot);
     assert!(result.verified, "Zero-amount transaction must verify");
     assert!(
-        result.reason_codes.contains(&"postcondition_verified".to_string()),
+        result
+            .reason_codes
+            .contains(&"postcondition_verified".to_string()),
         "Expected postcondition_verified in reason_codes: {:?}",
         result.reason_codes
     );
@@ -661,7 +650,10 @@ fn test_analysis_i64_min_overflow_as_finding() {
     // Must not panic; must produce a finding about the overflow
     let result = analyze_snapshot(request);
     assert!(
-        result.findings.iter().any(|f| f.finding_type == "amount_overflow"),
+        result
+            .findings
+            .iter()
+            .any(|f| f.finding_type == "amount_overflow"),
         "i64::MIN abs overflow should produce an amount_overflow finding; got: {:?}",
         result.findings,
     );
@@ -707,7 +699,10 @@ fn test_analysis_zero_amount_success() {
         result.findings,
     );
     assert!(
-        !result.findings.iter().any(|f| f.finding_type == "amount_overflow"),
+        !result
+            .findings
+            .iter()
+            .any(|f| f.finding_type == "amount_overflow"),
         "Zero amount must not produce amount_overflow finding",
     );
 }
@@ -747,12 +742,17 @@ fn test_analysis_rejects_unsupported_schema_version() {
     let result = analyze_snapshot(request);
     assert_eq!(result.result_code, "error");
     assert!(
-        result.reason_codes.contains(&"unsupported_schema_version".into()),
+        result
+            .reason_codes
+            .contains(&"unsupported_schema_version".into()),
         "reason_codes should contain unsupported_schema_version; got: {:?}",
         result.reason_codes,
     );
     assert!(
-        result.findings.iter().any(|f| f.finding_type == "unsupported_schema_version"),
+        result
+            .findings
+            .iter()
+            .any(|f| f.finding_type == "unsupported_schema_version"),
         "findings should include unsupported_schema_version",
     );
 }
@@ -764,8 +764,8 @@ fn test_analysis_rejects_unsupported_schema_version() {
 #[test]
 fn test_analysis_data_quality_readiness_findings() {
     let fixture = include_str!("../../../protocol/fixtures/data-quality.json");
-    let snapshot: ProtocolSnapshot = serde_json::from_str(fixture)
-        .expect("data-quality fixture must be valid");
+    let snapshot: ProtocolSnapshot =
+        serde_json::from_str(fixture).expect("data-quality fixture must be valid");
 
     let request = AnalysisRequest {
         snapshot,
@@ -780,18 +780,31 @@ fn test_analysis_data_quality_readiness_findings() {
 
     // Should have readiness findings -- at minimum pending exposure from
     // the many cleared=false filler transactions and uncategorized summary.
-    assert!(!result.findings.is_empty(), "analysis of data-quality fixture must return findings");
+    assert!(
+        !result.findings.is_empty(),
+        "analysis of data-quality fixture must return findings"
+    );
 
     // The readiness analyzer surfaces per-transaction PENDING_EXPOSURE
     assert!(
-        result.findings.iter().any(|f| f.finding_type == "PENDING_EXPOSURE"),
+        result
+            .findings
+            .iter()
+            .any(|f| f.finding_type == "PENDING_EXPOSURE"),
         "expected PENDING_EXPOSURE finding from readiness analysis; got: {:?}",
-        result.findings.iter().map(|f| &f.finding_type).collect::<Vec<_>>(),
+        result
+            .findings
+            .iter()
+            .map(|f| &f.finding_type)
+            .collect::<Vec<_>>(),
     );
 
     // The readiness analyzer surfaces an UNCATEGORIZED_TRANSACTIONS summary
     assert!(
-        result.findings.iter().any(|f| f.finding_type == "UNCATEGORIZED_TRANSACTIONS"),
+        result
+            .findings
+            .iter()
+            .any(|f| f.finding_type == "UNCATEGORIZED_TRANSACTIONS"),
         "expected UNCATEGORIZED_TRANSACTIONS finding from readiness analysis",
     );
 }
@@ -809,68 +822,115 @@ fn test_protocol_duplicate_i64_min_skipped() {
         sample_transaction("tx_b", None, i64::MIN),
     ];
     let result = find_duplicates(&txs);
-    assert!(result.is_empty(), "i64::MIN must not produce duplicates: {:?}", result);
+    assert!(
+        result.is_empty(),
+        "i64::MIN must not produce duplicates: {:?}",
+        result
+    );
 }
 
 #[test]
 fn test_protocol_duplicate_plus_one_day_window() {
     let txs = vec![
-        Transaction { date: "2026-03-01".into(), ..sample_transaction("tx_1", None, -1000) },
-        Transaction { date: "2026-03-02".into(), ..sample_transaction("tx_2", None, -1000) },
+        Transaction {
+            date: "2026-03-01".into(),
+            ..sample_transaction("tx_1", None, -1000)
+        },
+        Transaction {
+            date: "2026-03-02".into(),
+            ..sample_transaction("tx_2", None, -1000)
+        },
     ];
     let result = find_duplicates(&txs);
     assert_eq!(result.len(), 1, "±1 day window should match: {:?}", result);
     assert_eq!(result[0].match_reason, "amount_date");
 }
 
- #[test]
- fn test_protocol_duplicate_outside_window_no_match() {
-     let payee_a = Some("Different Store");
-     let payee_b = Some("Other Shop");
-     let tx_a = Transaction {
-         date: "2026-03-01".into(),
-         payee_name: payee_a.map(|s| s.into()),
-         ..sample_transaction("tx_a", None, -1000)
-     };
-     let tx_b = Transaction {
-         date: "2026-03-03".into(),
-         payee_name: payee_b.map(|s| s.into()),
-         ..sample_transaction("tx_b", None, -1000)
-     };
-     let txs = vec![tx_a, tx_b];
-     let result = find_duplicates(&txs);
-     assert!(result.is_empty(), "2 days apart and different merchants must not match: {:?}", result);
- }
+#[test]
+fn test_protocol_duplicate_outside_window_no_match() {
+    let payee_a = Some("Different Store");
+    let payee_b = Some("Other Shop");
+    let tx_a = Transaction {
+        date: "2026-03-01".into(),
+        payee_name: payee_a.map(|s| s.into()),
+        ..sample_transaction("tx_a", None, -1000)
+    };
+    let tx_b = Transaction {
+        date: "2026-03-03".into(),
+        payee_name: payee_b.map(|s| s.into()),
+        ..sample_transaction("tx_b", None, -1000)
+    };
+    let txs = vec![tx_a, tx_b];
+    let result = find_duplicates(&txs);
+    assert!(
+        result.is_empty(),
+        "2 days apart and different merchants must not match: {:?}",
+        result
+    );
+}
 
 #[test]
 fn test_protocol_duplicate_chain_preserved() {
     let txs = vec![
-        Transaction { imported_id: Some("imp001".into()), ..sample_transaction("tx_a", None, -500) },
-        Transaction { imported_id: Some("imp001".into()), ..sample_transaction("tx_b", None, -500) },
-        Transaction { imported_id: None, payee_name: Some("Other".into()), ..sample_transaction("tx_c", None, -500) },
+        Transaction {
+            imported_id: Some("imp001".into()),
+            ..sample_transaction("tx_a", None, -500)
+        },
+        Transaction {
+            imported_id: Some("imp001".into()),
+            ..sample_transaction("tx_b", None, -500)
+        },
+        Transaction {
+            imported_id: None,
+            payee_name: Some("Other".into()),
+            ..sample_transaction("tx_c", None, -500)
+        },
     ];
     let result = find_duplicates(&txs);
-    assert_eq!(result.len(), 3, "chain of 3 should produce 3 evidence entries: {:?}", result);
+    assert_eq!(
+        result.len(),
+        3,
+        "chain of 3 should produce 3 evidence entries: {:?}",
+        result
+    );
 }
 
 #[test]
 fn test_protocol_duplicate_json_deterministic() {
     let txs = vec![
-        Transaction { imported_id: Some("imp1".into()), ..sample_transaction("tx_z", None, -300) },
-        Transaction { imported_id: None, ..sample_transaction("tx_y", None, -300) },
-        Transaction { imported_id: Some("imp2".into()), ..sample_transaction("tx_x", None, -300) },
+        Transaction {
+            imported_id: Some("imp1".into()),
+            ..sample_transaction("tx_z", None, -300)
+        },
+        Transaction {
+            imported_id: None,
+            ..sample_transaction("tx_y", None, -300)
+        },
+        Transaction {
+            imported_id: Some("imp2".into()),
+            ..sample_transaction("tx_x", None, -300)
+        },
     ];
     let json1 = serde_json::to_string(&find_duplicates(&txs)).unwrap();
     let json2 = serde_json::to_string(&find_duplicates(&txs)).unwrap();
-    assert_eq!(json1, json2, "duplicate evidence JSON must be deterministic");
+    assert_eq!(
+        json1, json2,
+        "duplicate evidence JSON must be deterministic"
+    );
 }
 
 #[test]
 fn test_protocol_duplicate_same_date_exact_match() {
     // Existing contract: exact date match still works (regression)
     let txs = vec![
-        Transaction { date: "2026-05-15".into(), ..sample_transaction("tx_p", None, -200) },
-        Transaction { date: "2026-05-15".into(), ..sample_transaction("tx_q", None, -200) },
+        Transaction {
+            date: "2026-05-15".into(),
+            ..sample_transaction("tx_p", None, -200)
+        },
+        Transaction {
+            date: "2026-05-15".into(),
+            ..sample_transaction("tx_q", None, -200)
+        },
     ];
     let result = find_duplicates(&txs);
     assert_eq!(result.len(), 1);
@@ -919,8 +979,10 @@ fn test_deterministic_analysis_schema_version_ok() {
         actor_id: None,
     };
     let response = analyze_deterministic(request);
-    assert_eq!(response.schema_version, "1",
-        "deterministic analysis ok response must emit canonical schemaVersion '1'");
+    assert_eq!(
+        response.schema_version, "1",
+        "deterministic analysis ok response must emit canonical schemaVersion '1'"
+    );
     assert_eq!(response.status, "ok");
 }
 
@@ -954,8 +1016,10 @@ fn test_deterministic_analysis_unsupported_version_emits_schema_version_1() {
         actor_id: None,
     };
     let response = analyze_deterministic(request);
-    assert_eq!(response.schema_version, "1",
-        "deterministic analysis error response must emit canonical schemaVersion '1'");
+    assert_eq!(
+        response.schema_version, "1",
+        "deterministic analysis error response must emit canonical schemaVersion '1'"
+    );
     assert_eq!(response.status, "error");
     if let Some(err) = &response.error {
         assert_eq!(err.code, "unsupported_schema_version");
@@ -1003,8 +1067,10 @@ fn test_deterministic_analysis_accepts_legacy_schema_version_1_0() {
         actor_id: None,
     };
     let response = analyze_deterministic(request);
-    assert_eq!(response.schema_version, "1",
-        "response for legacy '1.0' input must emit canonical schemaVersion '1'");
+    assert_eq!(
+        response.schema_version, "1",
+        "response for legacy '1.0' input must emit canonical schemaVersion '1'"
+    );
     assert_eq!(response.status, "ok");
 }
 
@@ -1076,7 +1142,11 @@ fn test_validate_provider_suggestion_valid() {
         history: vec![],
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
-    assert!(result.valid, "Expected valid suggestion: {:?}", result.reason_codes);
+    assert!(
+        result.valid,
+        "Expected valid suggestion: {:?}",
+        result.reason_codes
+    );
     assert!(result.reason_codes.is_empty());
 }
 
@@ -1105,7 +1175,10 @@ fn test_validate_provider_suggestion_resolved_candidate_rejected() {
     // ExactPayee candidate -> Resolved
     let candidate = sample_candidate(
         "tx1",
-        vec![Evidence::new(EvidenceKind::ExactPayee, "Payee 'Store' (id=p1)")],
+        vec![Evidence::new(
+            EvidenceKind::ExactPayee,
+            "Payee 'Store' (id=p1)",
+        )],
     );
     let suggestion = Suggestion {
         transaction_id: "tx1".into(),
@@ -1143,7 +1216,9 @@ fn test_validate_provider_suggestion_resolved_candidate_rejected() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid, "Resolved candidate must be rejected");
-    assert!(result.reason_codes.contains(&"candidate_already_resolved".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"candidate_already_resolved".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1182,7 +1257,9 @@ fn test_validate_provider_suggestion_tx_not_found() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"transaction_not_found".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"transaction_not_found".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1304,7 +1381,9 @@ fn test_validate_provider_suggestion_disabled_policy_blocked() {
         Some(InferencePolicy::Disabled),
     );
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"provider_inference_disabled".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"provider_inference_disabled".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1372,7 +1451,9 @@ fn test_validate_provider_suggestion_local_only_blocks_external() {
         Some(InferencePolicy::LocalOnly),
     );
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"external_provider_not_allowed".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"external_provider_not_allowed".into()));
 }
 
 #[test]
@@ -1434,7 +1515,10 @@ fn test_validate_provider_suggestion_local_only_allows_local() {
         &candidate,
         Some(InferencePolicy::LocalOnly),
     );
-    assert!(result.valid, "Local provider under LocalOnly policy must be accepted");
+    assert!(
+        result.valid,
+        "Local provider under LocalOnly policy must be accepted"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1608,7 +1692,9 @@ fn test_validate_provider_suggestion_invalid_transaction_version() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"invalid_transaction_version".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"invalid_transaction_version".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1620,13 +1706,19 @@ fn test_deterministic_classification_yields_resolved_candidate() {
     // ExactPayee evidence from deterministic classification produces a Resolved candidate
     let candidate = sample_candidate(
         "tx1",
-        vec![Evidence::new(EvidenceKind::ExactPayee, "Payee 'Acme' (id=p1)")],
+        vec![Evidence::new(
+            EvidenceKind::ExactPayee,
+            "Payee 'Acme' (id=p1)",
+        )],
     );
     assert_eq!(candidate.eligibility(), CandidateStatus::Resolved);
     // Historical evidence also resolves
     let candidate2 = sample_candidate(
         "tx2",
-        vec![Evidence::new(EvidenceKind::Historical, "Previously categorized as Food")],
+        vec![Evidence::new(
+            EvidenceKind::Historical,
+            "Previously categorized as Food",
+        )],
     );
     assert_eq!(candidate2.eligibility(), CandidateStatus::Resolved);
 }
@@ -1636,13 +1728,19 @@ fn test_non_deterministic_classification_yields_unresolved_candidate() {
     // AmountPattern and ImportMatch leave candidate unresolved
     let candidate = sample_candidate(
         "tx1",
-        vec![Evidence::new(EvidenceKind::AmountPattern, "Recurring $9.99")],
+        vec![Evidence::new(
+            EvidenceKind::AmountPattern,
+            "Recurring $9.99",
+        )],
     );
     assert_eq!(candidate.eligibility(), CandidateStatus::Unresolved);
 
     let candidate2 = sample_candidate(
         "tx2",
-        vec![Evidence::new(EvidenceKind::ImportMatch, "Matched by imp001")],
+        vec![Evidence::new(
+            EvidenceKind::ImportMatch,
+            "Matched by imp001",
+        )],
     );
     assert_eq!(candidate2.eligibility(), CandidateStatus::Unresolved);
 }
@@ -1712,7 +1810,10 @@ fn test_extended_suggestion_round_trip_full() {
     };
     let json = serde_json::to_string(&suggestion).unwrap();
     // Verify camelCase field naming
-    assert!(json.contains("transactionId"), "must use camelCase transactionId");
+    assert!(
+        json.contains("transactionId"),
+        "must use camelCase transactionId"
+    );
     assert!(json.contains("proposedCategoryId"));
     assert!(json.contains("spaceId"), "must use camelCase spaceId");
     assert!(json.contains("connectionId"));
@@ -1792,7 +1893,9 @@ fn test_validate_provider_suggestion_tx_id_mismatch() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"transaction_id_mismatch".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"transaction_id_mismatch".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1854,7 +1957,9 @@ fn test_validate_provider_suggestion_candidate_tx_not_found() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"candidate_transaction_not_found".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"candidate_transaction_not_found".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1917,7 +2022,9 @@ fn test_validate_provider_suggestion_stale_transaction_version() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"stale_transaction_version".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"stale_transaction_version".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1979,7 +2086,9 @@ fn test_validate_provider_suggestion_provenance_provider_mismatch() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"provenance_provider_mismatch".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"provenance_provider_mismatch".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -2041,7 +2150,9 @@ fn test_validate_provider_suggestion_provenance_timestamp_mismatch() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"provenance_timestamp_mismatch".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"provenance_timestamp_mismatch".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -2165,7 +2276,9 @@ fn test_validate_provider_suggestion_provenance_empty_hash() {
     };
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"provenance_payload_hash_empty".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"provenance_payload_hash_empty".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -2191,11 +2304,14 @@ fn test_validate_provider_suggestion_evidence_ranking_resolves_anywhere() {
         bank_synced_at: None,
     };
     // ExactPayee is second but must still resolve the candidate
-    let candidate = sample_candidate("tx1", vec![
-        Evidence::new(EvidenceKind::ImportMatch, "imp001"),
-        Evidence::new(EvidenceKind::ExactPayee, "Payee 'Store' (id=p1)"),
-        Evidence::new(EvidenceKind::AmountPattern, "$9.99 pattern"),
-    ]);
+    let candidate = sample_candidate(
+        "tx1",
+        vec![
+            Evidence::new(EvidenceKind::ImportMatch, "imp001"),
+            Evidence::new(EvidenceKind::ExactPayee, "Payee 'Store' (id=p1)"),
+            Evidence::new(EvidenceKind::AmountPattern, "$9.99 pattern"),
+        ],
+    );
     let suggestion = Suggestion {
         transaction_id: "tx1".into(),
         proposed_category_id: "cat1".into(),
@@ -2233,7 +2349,9 @@ fn test_validate_provider_suggestion_evidence_ranking_resolves_anywhere() {
     let result = validate_provider_suggestion(&suggestion, &snapshot, &candidate, None);
     assert!(!result.valid);
     // Must be rejected as resolved (regardless of evidence position)
-    assert!(result.reason_codes.contains(&"candidate_already_resolved".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"candidate_already_resolved".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -2301,8 +2419,12 @@ fn test_validate_provider_suggestion_disabled_policy_no_provider() {
         Some(InferencePolicy::Disabled),
     );
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"provider_inference_disabled".into()),
-        "Disabled policy must reject suggestions even without a provider field");
+    assert!(
+        result
+            .reason_codes
+            .contains(&"provider_inference_disabled".into()),
+        "Disabled policy must reject suggestions even without a provider field"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2370,8 +2492,12 @@ fn test_validate_provider_suggestion_local_only_no_provider() {
         Some(InferencePolicy::LocalOnly),
     );
     assert!(!result.valid);
-    assert!(result.reason_codes.contains(&"external_provider_not_allowed".into()),
-        "LocalOnly must reject suggestions without an explicit 'local' provider");
+    assert!(
+        result
+            .reason_codes
+            .contains(&"external_provider_not_allowed".into()),
+        "LocalOnly must reject suggestions without an explicit 'local' provider"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2432,7 +2558,9 @@ fn test_verify_rule_mutation_no_conflict() {
     let result = verify_rule_mutation(&plan, &snapshot);
 
     assert!(result.verified);
-    assert!(result.reason_codes.contains(&"rule_creation_verified".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"rule_creation_verified".into()));
     assert!(result.message.is_none());
 }
 
@@ -2495,7 +2623,9 @@ fn test_verify_rule_mutation_different_trigger_no_conflict() {
 
     let result = verify_rule_mutation(&plan, &snapshot);
     assert!(result.verified);
-    assert!(result.reason_codes.contains(&"rule_creation_verified".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"rule_creation_verified".into()));
 }
 
 // ---------------------------------------------------------------------------
@@ -2547,15 +2677,16 @@ fn test_analyze_rule_candidates_consistent_merchant() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].proposed_category_id, "c1");
     assert_eq!(candidates[0].matching_tx_count, 2);
-    assert!(candidates[0].rule_id.is_empty(), "new-rule suggestion has no rule_id");
+    assert!(
+        candidates[0].rule_id.is_empty(),
+        "new-rule suggestion has no rule_id"
+    );
 }
 
 #[test]
 fn test_analyze_rule_candidates_below_threshold() {
     let snapshot = ProtocolSnapshot {
-        transactions: vec![
-            sample_transaction("tx1", Some("c1"), -500),
-        ],
+        transactions: vec![sample_transaction("tx1", Some("c1"), -500)],
         categories: vec![sample_category("c1", "Food", false)],
         ..empty_snapshot()
     };
@@ -2588,7 +2719,11 @@ fn test_analyze_rule_candidates_multiple_categories_dominant_wins() {
         ..empty_snapshot()
     };
     let candidates = analyze_rule_candidates(&snapshot, 2);
-    assert_eq!(candidates.len(), 1, "dominant category Food should reach threshold");
+    assert_eq!(
+        candidates.len(),
+        1,
+        "dominant category Food should reach threshold"
+    );
     assert_eq!(candidates[0].proposed_category_id, "c1");
     assert_eq!(candidates[0].matching_tx_count, 2);
 }
@@ -2622,12 +2757,10 @@ fn test_analyze_rule_candidates_only_categorized_counted() {
 #[test]
 fn test_analyze_rule_candidates_empty_payee_skipped() {
     let snapshot = ProtocolSnapshot {
-        transactions: vec![
-            Transaction {
-                payee_name: None,
-                ..sample_transaction("tx1", Some("c1"), -500)
-            },
-        ],
+        transactions: vec![Transaction {
+            payee_name: None,
+            ..sample_transaction("tx1", Some("c1"), -500)
+        }],
         categories: vec![sample_category("c1", "Food", false)],
         ..empty_snapshot()
     };
@@ -2652,22 +2785,23 @@ fn test_purchase_evaluation_allowable() {
             imported_balance: Money::new(500000, "USD"),
             mtid: None,
         }],
-        transactions: vec![
-            sample_transaction("tx1", Some("cat1"), -20000),
-        ],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), -20000)],
         categories: vec![sample_category("cat1", "Groceries", false)],
         budgets: vec![balanceframe_financial_core::BudgetMonth {
             id: "budget-2026-07".into(),
             month: "2026-07".into(),
             categories: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
-                    category_id: "cat1".into(),
-                    amount: Money::new(50000, "USD"),
-                    carryover: Money::new(0, "USD"),
-                    carryover_from_previous: Money::new(0, "USD"),
-                    carries_over: true,
-                });
+                m.insert(
+                    "cat1".into(),
+                    balanceframe_financial_core::BudgetCategory {
+                        category_id: "cat1".into(),
+                        amount: Money::new(50000, "USD"),
+                        carryover: Money::new(0, "USD"),
+                        carryover_from_previous: Money::new(0, "USD"),
+                        carries_over: true,
+                    },
+                );
                 m
             },
         }],
@@ -2681,8 +2815,13 @@ fn test_purchase_evaluation_allowable() {
     };
 
     let result = evaluate_purchase(request);
-    assert!(result.allowable, "proposal within budget should be allowable");
-    assert!(result.reason_codes.contains(&"budget_sufficient".to_string()));
+    assert!(
+        result.allowable,
+        "proposal within budget should be allowable"
+    );
+    assert!(result
+        .reason_codes
+        .contains(&"budget_sufficient".to_string()));
     assert_eq!(result.category_budget.minor_units(), 50000);
 }
 
@@ -2690,22 +2829,23 @@ fn test_purchase_evaluation_allowable() {
 fn test_purchase_evaluation_overbudget() {
     let snapshot = ProtocolSnapshot {
         accounts: vec![],
-        transactions: vec![
-            sample_transaction("tx1", Some("cat1"), -45000),
-        ],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), -45000)],
         categories: vec![sample_category("cat1", "Groceries", false)],
         budgets: vec![balanceframe_financial_core::BudgetMonth {
             id: "budget-2026-07".into(),
             month: "2026-07".into(),
             categories: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
-                    category_id: "cat1".into(),
-                    amount: Money::new(50000, "USD"),
-                    carryover: Money::new(0, "USD"),
-                    carryover_from_previous: Money::new(0, "USD"),
-                    carries_over: true,
-                });
+                m.insert(
+                    "cat1".into(),
+                    balanceframe_financial_core::BudgetCategory {
+                        category_id: "cat1".into(),
+                        amount: Money::new(50000, "USD"),
+                        carryover: Money::new(0, "USD"),
+                        carryover_from_previous: Money::new(0, "USD"),
+                        carries_over: true,
+                    },
+                );
                 m
             },
         }],
@@ -2719,8 +2859,13 @@ fn test_purchase_evaluation_overbudget() {
     };
 
     let result = evaluate_purchase(request);
-    assert!(!result.allowable, "exceeding budget should not be allowable");
-    assert!(result.reason_codes.contains(&"budget_insufficient".to_string()));
+    assert!(
+        !result.allowable,
+        "exceeding budget should not be allowable"
+    );
+    assert!(result
+        .reason_codes
+        .contains(&"budget_insufficient".to_string()));
 }
 
 #[test]
@@ -2740,8 +2885,13 @@ fn test_purchase_evaluation_no_budget_for_category() {
     };
 
     let result = evaluate_purchase(request);
-    assert!(!result.allowable, "no budget for category should not be allowable");
-    assert!(result.reason_codes.contains(&"category_not_budgeted".to_string()));
+    assert!(
+        !result.allowable,
+        "no budget for category should not be allowable"
+    );
+    assert!(result
+        .reason_codes
+        .contains(&"category_not_budgeted".to_string()));
 }
 
 #[test]
@@ -2762,7 +2912,9 @@ fn test_purchase_evaluation_invalid_category() {
 
     let result = evaluate_purchase(request);
     assert!(!result.allowable);
-    assert!(result.reason_codes.contains(&"category_not_found".to_string()));
+    assert!(result
+        .reason_codes
+        .contains(&"category_not_found".to_string()));
 }
 
 #[test]
@@ -2827,13 +2979,16 @@ fn test_purchase_evaluation_with_uncleared_transactions() {
             month: "2026-07".into(),
             categories: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
-                    category_id: "cat1".into(),
-                    amount: Money::new(50000, "USD"),
-                    carryover: Money::new(0, "USD"),
-                    carryover_from_previous: Money::new(0, "USD"),
-                    carries_over: true,
-                });
+                m.insert(
+                    "cat1".into(),
+                    balanceframe_financial_core::BudgetCategory {
+                        category_id: "cat1".into(),
+                        amount: Money::new(50000, "USD"),
+                        carryover: Money::new(0, "USD"),
+                        carryover_from_previous: Money::new(0, "USD"),
+                        carries_over: true,
+                    },
+                );
                 m
             },
         }],
@@ -2859,14 +3014,24 @@ fn purchase_evaluation_uses_requested_account_balance() {
     let snapshot = ProtocolSnapshot {
         accounts: vec![
             Account {
-                id: "acct1".into(), name: "Low".into(), account_type: "checking".into(),
-                off_budget: false, is_closed: false, cleared_balance: Money::new(1000, "USD"),
-                imported_balance: Money::new(1000, "USD"), mtid: None,
+                id: "acct1".into(),
+                name: "Low".into(),
+                account_type: "checking".into(),
+                off_budget: false,
+                is_closed: false,
+                cleared_balance: Money::new(1000, "USD"),
+                imported_balance: Money::new(1000, "USD"),
+                mtid: None,
             },
             Account {
-                id: "acct2".into(), name: "High".into(), account_type: "checking".into(),
-                off_budget: false, is_closed: false, cleared_balance: Money::new(100000, "USD"),
-                imported_balance: Money::new(100000, "USD"), mtid: None,
+                id: "acct2".into(),
+                name: "High".into(),
+                account_type: "checking".into(),
+                off_budget: false,
+                is_closed: false,
+                cleared_balance: Money::new(100000, "USD"),
+                imported_balance: Money::new(100000, "USD"),
+                mtid: None,
             },
         ],
         categories: vec![sample_category("cat1", "Food", false)],
@@ -2874,7 +3039,9 @@ fn purchase_evaluation_uses_requested_account_balance() {
         ..empty_snapshot()
     };
     let result = evaluate_purchase(PurchaseEvaluationRequest {
-        snapshot, proposed_transaction: proposed, category_id: "cat1".into(),
+        snapshot,
+        proposed_transaction: proposed,
+        category_id: "cat1".into(),
     });
     assert_eq!(result.projected_balance.unwrap().minor_units(), 100000);
 }
@@ -2883,23 +3050,37 @@ fn purchase_evaluation_uses_requested_account_balance() {
 fn purchase_evaluation_uses_newest_budget_month_not_first() {
     let category = |amount| {
         let mut categories = std::collections::HashMap::new();
-        categories.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
-            category_id: "cat1".into(), amount: Money::new(amount, "USD"),
-            carryover: Money::new(0, "USD"), carryover_from_previous: Money::new(0, "USD"),
-            carries_over: false,
-        });
+        categories.insert(
+            "cat1".into(),
+            balanceframe_financial_core::BudgetCategory {
+                category_id: "cat1".into(),
+                amount: Money::new(amount, "USD"),
+                carryover: Money::new(0, "USD"),
+                carryover_from_previous: Money::new(0, "USD"),
+                carries_over: false,
+            },
+        );
         categories
     };
     let snapshot = ProtocolSnapshot {
         categories: vec![sample_category("cat1", "Food", false)],
         budgets: vec![
-            balanceframe_financial_core::BudgetMonth { id: "old".into(), month: "2026-06".into(), categories: category(1000) },
-            balanceframe_financial_core::BudgetMonth { id: "current".into(), month: "2026-07".into(), categories: category(100000) },
+            balanceframe_financial_core::BudgetMonth {
+                id: "old".into(),
+                month: "2026-06".into(),
+                categories: category(1000),
+            },
+            balanceframe_financial_core::BudgetMonth {
+                id: "current".into(),
+                month: "2026-07".into(),
+                categories: category(100000),
+            },
         ],
         ..empty_snapshot()
     };
     let result = evaluate_purchase(PurchaseEvaluationRequest {
-        snapshot, proposed_transaction: sample_transaction("proposed-month", Some("cat1"), -5000),
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-month", Some("cat1"), -5000),
         category_id: "cat1".into(),
     });
     assert_eq!(result.category_budget.minor_units(), 100000);
@@ -2909,16 +3090,22 @@ fn purchase_evaluation_uses_newest_budget_month_not_first() {
 fn purchase_evaluation_stale_bank_sync_is_not_allowable_with_cached_balance() {
     let snapshot = ProtocolSnapshot {
         accounts: vec![Account {
-            id: "acct1".into(), name: "Checking".into(), account_type: "checking".into(),
-            off_budget: false, is_closed: false, cleared_balance: Money::new(100000, "USD"),
-            imported_balance: Money::new(100000, "USD"), mtid: None,
+            id: "acct1".into(),
+            name: "Checking".into(),
+            account_type: "checking".into(),
+            off_budget: false,
+            is_closed: false,
+            cleared_balance: Money::new(100000, "USD"),
+            imported_balance: Money::new(100000, "USD"),
+            mtid: None,
         }],
         categories: vec![sample_category("cat1", "Food", false)],
         bank_synced_at: Some("2026-07-01T00:00:00Z".into()),
         ..empty_snapshot()
     };
     let result = evaluate_purchase(PurchaseEvaluationRequest {
-        snapshot, proposed_transaction: sample_transaction("proposed-stale", Some("cat1"), -1000),
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-stale", Some("cat1"), -1000),
         category_id: "cat1".into(),
     });
     assert!(!result.allowable);
@@ -2934,16 +3121,22 @@ fn purchase_evaluation_does_not_double_count_pending_and_uncleared() {
     uncleared.reconciled = false;
     let snapshot = ProtocolSnapshot {
         accounts: vec![Account {
-            id: "acct1".into(), name: "Checking".into(), account_type: "checking".into(),
-            off_budget: false, is_closed: false, cleared_balance: Money::new(100000, "USD"),
-            imported_balance: Money::new(100000, "USD"), mtid: None,
+            id: "acct1".into(),
+            name: "Checking".into(),
+            account_type: "checking".into(),
+            off_budget: false,
+            is_closed: false,
+            cleared_balance: Money::new(100000, "USD"),
+            imported_balance: Money::new(100000, "USD"),
+            mtid: None,
         }],
         transactions: vec![pending, uncleared],
         categories: vec![sample_category("cat1", "Food", false)],
         ..empty_snapshot()
     };
     let result = evaluate_purchase(PurchaseEvaluationRequest {
-        snapshot, proposed_transaction: sample_transaction("proposed-totals", Some("cat1"), -1000),
+        snapshot,
+        proposed_transaction: sample_transaction("proposed-totals", Some("cat1"), -1000),
         category_id: "cat1".into(),
     });
     assert_eq!(result.projected_balance.unwrap().minor_units(), 91000);
@@ -2960,8 +3153,16 @@ fn test_cash_flow_projection_empty_snapshot() {
     assert_eq!(result.monthly_projections.len(), 3);
     assert_eq!(result.projection_months, 3);
     // First month is current (based on snapshot date), income and expenses zero
-    assert_eq!(result.monthly_projections[0].projected_income.minor_units(), 0);
-    assert_eq!(result.monthly_projections[0].projected_expenses.minor_units(), 0);
+    assert_eq!(
+        result.monthly_projections[0].projected_income.minor_units(),
+        0
+    );
+    assert_eq!(
+        result.monthly_projections[0]
+            .projected_expenses
+            .minor_units(),
+        0
+    );
 }
 
 #[test]
@@ -2999,9 +3200,7 @@ fn test_cash_flow_projection_zero_months_defaults_to_one() {
 #[test]
 fn test_target_health_empty_snapshot() {
     let snapshot = empty_snapshot();
-    let request = TargetHealthRequest {
-        snapshot,
-    };
+    let request = TargetHealthRequest { snapshot };
     let result = evaluate_target_health(request);
     assert_eq!(result.overall_label, "healthy");
     assert!(result.category_health.is_empty());
@@ -3010,22 +3209,23 @@ fn test_target_health_empty_snapshot() {
 #[test]
 fn test_target_health_with_healthy_category() {
     let snapshot = ProtocolSnapshot {
-        transactions: vec![
-            sample_transaction("tx1", Some("cat1"), -20000),
-        ],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), -20000)],
         categories: vec![sample_category("cat1", "Groceries", false)],
         budgets: vec![balanceframe_financial_core::BudgetMonth {
             id: "budget-2026-07".into(),
             month: "2026-07".into(),
             categories: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
-                    category_id: "cat1".into(),
-                    amount: Money::new(50000, "USD"),
-                    carryover: Money::new(0, "USD"),
-                    carryover_from_previous: Money::new(0, "USD"),
-                    carries_over: true,
-                });
+                m.insert(
+                    "cat1".into(),
+                    balanceframe_financial_core::BudgetCategory {
+                        category_id: "cat1".into(),
+                        amount: Money::new(50000, "USD"),
+                        carryover: Money::new(0, "USD"),
+                        carryover_from_previous: Money::new(0, "USD"),
+                        carries_over: true,
+                    },
+                );
                 m
             },
         }],
@@ -3042,22 +3242,23 @@ fn test_target_health_with_healthy_category() {
 #[test]
 fn test_target_health_overspent_category() {
     let snapshot = ProtocolSnapshot {
-        transactions: vec![
-            sample_transaction("tx1", Some("cat1"), -60000),
-        ],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), -60000)],
         categories: vec![sample_category("cat1", "Groceries", false)],
         budgets: vec![balanceframe_financial_core::BudgetMonth {
             id: "budget-2026-07".into(),
             month: "2026-07".into(),
             categories: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("cat1".into(), balanceframe_financial_core::BudgetCategory {
-                    category_id: "cat1".into(),
-                    amount: Money::new(50000, "USD"),
-                    carryover: Money::new(0, "USD"),
-                    carryover_from_previous: Money::new(0, "USD"),
-                    carries_over: true,
-                });
+                m.insert(
+                    "cat1".into(),
+                    balanceframe_financial_core::BudgetCategory {
+                        category_id: "cat1".into(),
+                        amount: Money::new(50000, "USD"),
+                        carryover: Money::new(0, "USD"),
+                        carryover_from_previous: Money::new(0, "USD"),
+                        carries_over: true,
+                    },
+                );
                 m
             },
         }],

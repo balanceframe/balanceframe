@@ -92,7 +92,7 @@ pub enum UnclearedMode {
 
 /// Account-level overrides that narrow or exclude accounts from
 /// decision-making.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountOverrides {
     /// If set, only these account IDs are considered in decisions.
@@ -101,15 +101,6 @@ pub struct AccountOverrides {
     /// These account IDs are explicitly excluded from consideration.
     #[serde(default)]
     pub exclude: Vec<String>,
-}
-
-impl Default for AccountOverrides {
-    fn default() -> Self {
-        AccountOverrides {
-            include_only: None,
-            exclude: Vec::new(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +255,11 @@ mod tests {
         assert!(json.contains(r#""uncategorizedMode":"ignore""#), "{}", json);
         assert!(json.contains(r#""unclearedMode":"exclude""#), "{}", json);
         assert!(json.contains(r#""maxBankSyncAgeMinutes":1440"#), "{}", json);
-        assert!(json.contains(r#""maxBudgetSnapshotAgeMinutes":60"#), "{}", json);
+        assert!(
+            json.contains(r#""maxBudgetSnapshotAgeMinutes":60"#),
+            "{}",
+            json
+        );
         assert!(json.contains(r#""includeOnly""#), "{}", json);
         assert!(json.contains(r#""exclude""#), "{}", json);
 
@@ -281,7 +276,11 @@ mod tests {
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains(r#""maxBankSyncAgeMinutes":null"#), "{}", json);
-        assert!(json.contains(r#""maxBudgetSnapshotAgeMinutes":null"#), "{}", json);
+        assert!(
+            json.contains(r#""maxBudgetSnapshotAgeMinutes":null"#),
+            "{}",
+            json
+        );
         let back: DecisionDataPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(back.max_bank_sync_age_minutes, None);
         assert_eq!(back.max_budget_snapshot_age_minutes, None);

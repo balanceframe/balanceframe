@@ -112,10 +112,7 @@ pub fn build_coverage_report(
     scope: &InclusionScope,
 ) -> CoverageReport {
     // Filtered set of transactions that match the inclusion criteria.
-    let filtered: Vec<&Transaction> = transactions
-        .iter()
-        .filter(|tx| scope.matches(tx))
-        .collect();
+    let filtered: Vec<&Transaction> = transactions.iter().filter(|tx| scope.matches(tx)).collect();
 
     let total_transactions = filtered.len() as u32;
 
@@ -124,7 +121,10 @@ pub fn build_coverage_report(
     let mut accounts_missing: Vec<String> = Vec::new();
 
     for acct in accounts {
-        let txns: Vec<&&Transaction> = filtered.iter().filter(|tx| tx.account_id == acct.id).collect();
+        let txns: Vec<&&Transaction> = filtered
+            .iter()
+            .filter(|tx| tx.account_id == acct.id)
+            .collect();
         let count = txns.len() as u32;
         if count == 0 {
             accounts_missing.push(acct.id.clone());

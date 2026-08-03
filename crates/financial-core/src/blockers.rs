@@ -20,7 +20,11 @@ pub struct Blocker {
 }
 
 impl Blocker {
-    pub fn new(code: impl Into<String>, message: impl Into<String>, entity_id: impl Into<String>) -> Self {
+    pub fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        entity_id: impl Into<String>,
+    ) -> Self {
         Blocker {
             code: code.into(),
             message: message.into(),
@@ -119,23 +123,26 @@ impl<'de> Deserialize<'de> for ReasonCode {
             "encryption_locked" => Ok(ReasonCode::EncryptionLocked),
             "stale_metadata" => Ok(ReasonCode::StaleMetadata),
             "excluded_by_policy" => Ok(ReasonCode::ExcludedByPolicy),
-            _ => Err(serde::de::Error::unknown_variant(&s, &[
-                "stale_snapshot",
-                "missing_account",
-                "stale_bank_sync",
-                "pending_policy",
-                "duplicate_detected",
-                "unresolved_metadata_ref",
-                "unsupported_schema_version",
-                "amount_overflow",
-                "uncategorized_exposure",
-                "deleted_category_referenced",
-                "missing_ledger_config",
-                "connection_unhealthy",
-                "encryption_locked",
-                "stale_metadata",
-                "excluded_by_policy",
-            ])),
+            _ => Err(serde::de::Error::unknown_variant(
+                &s,
+                &[
+                    "stale_snapshot",
+                    "missing_account",
+                    "stale_bank_sync",
+                    "pending_policy",
+                    "duplicate_detected",
+                    "unresolved_metadata_ref",
+                    "unsupported_schema_version",
+                    "amount_overflow",
+                    "uncategorized_exposure",
+                    "deleted_category_referenced",
+                    "missing_ledger_config",
+                    "connection_unhealthy",
+                    "encryption_locked",
+                    "stale_metadata",
+                    "excluded_by_policy",
+                ],
+            )),
         }
     }
 }
@@ -159,7 +166,12 @@ impl BlockerCollector {
         }
     }
 
-    pub fn add_blocker(&mut self, code: impl Into<String>, message: impl Into<String>, entity_id: impl Into<String>) {
+    pub fn add_blocker(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        entity_id: impl Into<String>,
+    ) {
         self.blockers.push(Blocker::new(code, message, entity_id));
     }
 
@@ -174,7 +186,10 @@ impl BlockerCollector {
     }
 
     pub fn string_reasons(&self) -> Vec<String> {
-        self.reason_codes.iter().map(|r| r.as_str().to_string()).collect()
+        self.reason_codes
+            .iter()
+            .map(|r| r.as_str().to_string())
+            .collect()
     }
 }
 
@@ -197,7 +212,10 @@ mod tests {
         assert_eq!(ReasonCode::StaleSnapshot.as_str(), "stale_snapshot");
         assert_eq!(ReasonCode::MissingAccount.as_str(), "missing_account");
         assert_eq!(ReasonCode::DuplicateDetected.as_str(), "duplicate_detected");
-        assert_eq!(ReasonCode::UnsupportedSchemaVersion.as_str(), "unsupported_schema_version");
+        assert_eq!(
+            ReasonCode::UnsupportedSchemaVersion.as_str(),
+            "unsupported_schema_version"
+        );
     }
 
     #[test]
@@ -237,7 +255,11 @@ mod tests {
 
     #[test]
     fn test_blocker_roundtrip_json() {
-        let b = Blocker::new("missing_account", "Account 'Savings' not found", "savings_acct");
+        let b = Blocker::new(
+            "missing_account",
+            "Account 'Savings' not found",
+            "savings_acct",
+        );
         let json = serde_json::to_string(&b).unwrap();
         let back: Blocker = serde_json::from_str(&json).unwrap();
         assert_eq!(b, back);

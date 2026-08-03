@@ -16,13 +16,12 @@ use balanceframe_core_protocol as cp;
 pub use balanceframe_core_protocol::{
     AnalysisRequest, AnalysisResult, CashFlowProjectionRequest, CashFlowProjectionResponse,
     CreateRulePlan, DeterministicAnalysisRequest, DeterministicAnalysisResponse,
-    FinancialStateLabel, FinancialStateRequest, MutationPlan, PayeeCondition,
-    ProtocolSnapshot, PurchaseEvaluation, PurchaseEvaluationRequest,
-    RuleSimulationResult, Suggestion, TargetHealthRequest, TargetHealthResult,
-    ValidationResult, VerificationResult,
+    FinancialStateLabel, FinancialStateRequest, MutationPlan, PayeeCondition, ProtocolSnapshot,
+    PurchaseEvaluation, PurchaseEvaluationRequest, RuleSimulationResult, Suggestion,
+    TargetHealthRequest, TargetHealthResult, ValidationResult, VerificationResult,
 };
 pub use balanceframe_financial_core::{
-    Category, CategorizationCandidate, Rule, RuleCandidate, Transaction,
+    CategorizationCandidate, Category, Rule, RuleCandidate, Transaction,
 };
 
 // Declare fuzz tests.
@@ -156,7 +155,10 @@ pub fn validate_provider_suggestion(input: String) -> napi::Result<String> {
             &vpsi.suggestion,
             &vpsi.snapshot,
             &vpsi.candidate,
-            Some(vpsi.effective_policy.unwrap_or(cp::InferencePolicy::Disabled)),
+            Some(
+                vpsi.effective_policy
+                    .unwrap_or(cp::InferencePolicy::Disabled),
+            ),
         ))
     })
 }
@@ -289,7 +291,10 @@ struct AnalyzeRuleCandidatesInput {
 #[napi]
 pub fn analyze_rule_candidates(input: String) -> napi::Result<String> {
     run::<AnalyzeRuleCandidatesInput, Vec<RuleCandidate>>(input, |arci| {
-        Ok(cp::analyze_rule_candidates(&arci.snapshot, arci.min_consistent_count))
+        Ok(cp::analyze_rule_candidates(
+            &arci.snapshot,
+            arci.min_consistent_count,
+        ))
     })
 }
 
@@ -327,9 +332,7 @@ pub fn project_cash_flow(input: String) -> napi::Result<String> {
 /// Input: TargetHealthRequest. Returns TargetHealthResult JSON.
 #[napi]
 pub fn evaluate_target_health(input: String) -> napi::Result<String> {
-    run::<TargetHealthRequest, TargetHealthResult>(input, |req| {
-        Ok(cp::evaluate_target_health(req))
-    })
+    run::<TargetHealthRequest, TargetHealthResult>(input, |req| Ok(cp::evaluate_target_health(req)))
 }
 
 // ===========================================================================

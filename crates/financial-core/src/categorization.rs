@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::merchant::normalize_merchant;
 use crate::money::Money;
 use crate::snapshots::{Payee, Transaction};
-use crate::merchant::normalize_merchant;
 
 // ---------------------------------------------------------------------------
 // HistoryRecord
@@ -69,18 +69,15 @@ pub struct CategorizationCandidate {
 /// Attempt to match a transaction to a known payee.  If the payee is found,
 /// the returned candidate carries the payee id as context and marks the
 /// evidence as `ExactPayee`.
-pub fn classify_exact_match(
-    tx: &Transaction,
-    payees: &[Payee],
-) -> Option<CategorizationCandidate> {
+pub fn classify_exact_match(tx: &Transaction, payees: &[Payee]) -> Option<CategorizationCandidate> {
     let tx_normalized = normalize_merchant(tx.payee_name.as_deref().unwrap_or(""));
     if tx_normalized.is_empty() {
         return None;
     }
 
-    let matched = payees.iter().find(|p| {
-        normalize_merchant(&p.name) == tx_normalized
-    })?;
+    let matched = payees
+        .iter()
+        .find(|p| normalize_merchant(&p.name) == tx_normalized)?;
 
     // Build a candidate referencing the matched payee
     Some(CategorizationCandidate {
@@ -190,12 +187,10 @@ impl CategorizationCandidate {
         // Scan all evidence and rank by priority.  Any ExactPayee or Historical
         // evidence (deterministic / resolved) takes precedence over non-deterministic
         // kinds, making the candidate ineligible for provider inference.
-        let has_deterministic = self.reasons.iter().any(|e| {
-            matches!(
-                e.kind,
-                EvidenceKind::ExactPayee | EvidenceKind::Historical
-            )
-        });
+        let has_deterministic = self
+            .reasons
+            .iter()
+            .any(|e| matches!(e.kind, EvidenceKind::ExactPayee | EvidenceKind::Historical));
         if has_deterministic {
             CandidateStatus::Resolved
         } else {
