@@ -2372,6 +2372,18 @@ describe('registration lifecycle', () => {
         expect(views).toEqual([]);
       });
 
+      it('returns an empty scope for malformed persisted JSON', async () => {
+        const view = await store.createSavedView(BASE_VIEW_INPUT);
+        store['db'].prepare(
+          'UPDATE saved_views SET scope = ? WHERE view_id = ?',
+        ).run('not-json', view.viewId);
+
+        const views = await store.listSavedViews(ACTOR_ID);
+
+        expect(views).toHaveLength(1);
+        expect(views[0].scope).toEqual({});
+      });
+
       it('does not return views belonging to other actors', async () => {
         await store.createSavedView(BASE_VIEW_INPUT);
         await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'Other View', actorId: 'actor-sv-other' });
