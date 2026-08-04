@@ -7,11 +7,7 @@
  * Response envelope: SavedViewsListOutput
  */
 
-import {
-  createDefaultConnectionManager,
-  createNativeAnalysisProtocol,
-  savedViewsListAnalysis,
-} from '@balanceframe/application';
+import { savedViewsListAnalysis } from '@balanceframe/application';
 import type { CommandInput } from '@balanceframe/application';
 import { defineEventHandler, setResponseStatus } from 'h3';
 import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../utils/workflow-store';
@@ -47,20 +43,14 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const manager = createDefaultConnectionManager({
-      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
-    });
-    const connected = await manager.restore();
-    const protocol = await createNativeAnalysisProtocol();
-
     const input: CommandInput = {
       args: [],
       mode: 'observe',
       actorId: getActorId(event),
       requestId,
-      ledger: connected.connector,
+      ledger: null,
       freshness: null,
-      analysisProtocol: protocol,
+      analysisProtocol: null,
       workflowStore: wf.store,
     };
 

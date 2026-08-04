@@ -5,29 +5,8 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-
-// ---------------------------------------------------------------------------
-// Hoisted mocks
-// ---------------------------------------------------------------------------
-
-const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol } = vi.hoisted(() => ({
-  mockRestore: vi.fn(),
-  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
-  mockCreateNativeAnalysisProtocol: vi.fn(),
-}));
-
-// ---------------------------------------------------------------------------
-// Mock @balanceframe/application
-// ---------------------------------------------------------------------------
-
-vi.mock('@balanceframe/application', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    createDefaultConnectionManager: mockCreateDefaultConnectionManager,
-    createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol,
-  };
-});
+import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Mock h3
@@ -43,7 +22,7 @@ vi.mock('h3', () => ({
 // ---------------------------------------------------------------------------
 
 vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: vi.fn(() => ({ store: undefined as unknown as import('@balanceframe/workflow-store').SqliteWorkflowStore })),
+  getWorkflowStore: vi.fn(() => ({ store: undefined as unknown as SqliteWorkflowStore })),
   buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
   getActorId: vi.fn(() => 'test-actor'),
   sanitizeError: vi.fn((err, requestId, code, retryable) => ({ code, message: String(err), retryable })),
@@ -67,47 +46,49 @@ vi.mock('../../server/utils/workflow-store', () => ({
   }),
 }));
 
-// ---------------------------------------------------------------------------
-// Import handler
-// ---------------------------------------------------------------------------
-
 import handler from '../../server/api/reports/views.get';
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe('GET /api/reports/views', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRestore.mockResolvedValue({
-      connector: { name: 'mock-connector' },
-      budget: { id: 'budget_test', groupId: 'group_test', name: 'Test', encrypted: false },
-      synchronization: {},
+    vi.mocked(getWorkflowStore).mockReset();
+    vi.mocked(getWorkflowStore).mockReturnValue({
+      store: undefined as unknown as SqliteWorkflowStore,
     });
-    mockCreateNativeAnalysisProtocol.mockResolvedValue({ listSavedViews: vi.fn() });
   });
 
-  it('must delegate and return non-stub data', async () => {
-    const p = await mockCreateNativeAnalysisProtocol();
-    p.listSavedViews.mockResolvedValue({
-      views: [
-        { viewId: 'v1', name: 'Monthly', viewType: 'pending_review', scope: {}, createdAt: '2026-07-01T00:00:00Z' },
-        { viewId: 'v2', name: 'Health', viewType: 'target_health', scope: {}, createdAt: '2026-07-15T00:00:00Z' },
-      ],
-      total: 2,
+  it('lists persisted views without restoring the external ledger', async () => {
+    const listSavedViews = vi.fn().mockResolvedValue([
+      { viewId: 'v1', name: 'Monthly', viewType: 'pending_review', scope: {}, sort: null, createdAt: '2026-07-01T00:00:00Z' },
+    ]);
+    vi.mocked(getWorkflowStore).mockReturnValue({
+      store: { listSavedViews } as unknown as SqliteWorkflowStore,
     });
+
     const r = await handler({ context: { auth: { authenticated: true } } });
+
     expect(r.status).toBe('ok');
-    expect(r.result.views).toHaveLength(2);
-    expect(r.result.total).toBe(2);
-    expect(r.result.views[0].name).toBe('Monthly');
-    expect(r.result.views[1].viewId).toBe('v2');
+    expect(r.result.views).toEqual([{
+      viewId: 'v1',
+      name: 'Monthly',
+      viewType: 'pending_review',
+      scope: {},
+      createdAt: '2026-07-01T00:00:00Z',
+    }]);
+    expect(listSavedViews).toHaveBeenCalledWith('test-actor');
   });
 
-  it('must error when analysis fails', async () => {
-    mockRestore.mockResolvedValue({ connector: null, budget: { id: 'b', groupId: 'g', name: 'T', encrypted: false }, synchronization: {} });
+  it('returns a retryable store failure when view persistence fails', async () => {
+    const listSavedViews = vi.fn().mockRejectedValue(new Error('database is locked'));
+    vi.mocked(getWorkflowStore).mockReturnValue({
+      store: { listSavedViews } as unknown as SqliteWorkflowStore,
+    });
+
     const r = await handler({ context: { auth: { authenticated: true } } });
+
     expect(r.status).toBe('error');
+    expect(r.error.code).toBe('store_failed');
+    expect(r.error.retryable).toBe(true);
   });
+
 });
