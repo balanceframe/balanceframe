@@ -420,13 +420,25 @@ function rowToReportRecord(row: ReportRecordRow): ReportRecord {
   };
 }
 
+/** Decode persisted saved-view scope without allowing malformed legacy data to break listing. */
+function parseSavedViewScope(scope: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(scope);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 /** Map a raw DB row to a typed SavedViewResult. */
 function rowToSavedViewResult(row: SavedViewRow): SavedViewResult {
   return {
     viewId: row.view_id,
     name: row.name,
     viewType: row.view_type,
-    scope: JSON.parse(row.scope) as Record<string, unknown>,
+    scope: parseSavedViewScope(row.scope),
     sort: row.sort,
     actorId: row.actor_id,
     createdAt: row.created_at,
