@@ -107,39 +107,7 @@ never permission or execution.
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Scenario tests show conservative analysis under stale or incomplete data; notifications are authorized, redacted, deduplicated, and independently degradable. |
 
-### v0.3 — Space governance
-
-[Phase 7](post-mvp/07-space-governance.md): controlled collaboration with
-independent identities, scoped capabilities, temporal membership, and
-deterministic authorization — no shared credentials or automatic private-data
-disclosure.
-
-| Exit gate                                                                                                                           |
-| ----------------------------------------------------------------------------------------------------------------------------------- |
-| Every read and action is attributable, scoped, and deterministically enforced without depending on shared full-control credentials. |
-
-### v0.4 — Merchant intelligence and enrichment
-
-[Phase 11](post-mvp/11-merchant-intelligence-and-enrichment.md): improve
-categorization and merchant/entity resolution when bank-imported transactions
-are sparse, while keeping every decision explainable, conservative, and
-privacy-aware.
-
-| Exit gate                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Categorization evidence and merchant resolution improve for sparse imports without external-data dependence becoming a hidden requirement. |
-
-### v0.5 — Controlled reallocations
-
-[Phase 9](post-mvp/09-controlled-reallocations.md): turn conservative
-`safe_with_reallocation` analysis into exact, policy-governed proposals
-through the same approval and mutation pipeline used for categorization writes.
-
-| Exit gate                                                                                   |
-| ------------------------------------------------------------------------------------------- |
-| Stale or concurrent proposals cannot double-use funds or violate protected-category policy. |
-
-### v0.6 — Financial decision and evidence foundation
+### v0.3.0 — Financial decision and evidence foundation
 
 [Phase 8.8](post-mvp/08-8-financial-decision-and-evidence-foundation.md):
 evolve the implemented budget-intelligence baseline with one normalized
@@ -150,7 +118,7 @@ blockers, redaction, prospective claims, attention, and notifications.
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Later decision and evidence phases reuse one compatible snapshot, vocabulary, presentation contract, and prioritized attention surface rather than creating competing foundations. |
 
-### v0.7 — Account-aware spendability and liquidity routing
+### v0.4.0 — Account-aware spendability and liquidity routing
 
 [Phase 8.7](post-mvp/08-7-account-aware-spendability-and-liquidity-routing.md):
 separate category funding from payment-account readiness, derive current
@@ -160,7 +128,7 @@ account backing, and produce policy-backed alternate routes or transfer needs.
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A funded category is never called ready from an account that cannot settle it; safe capacity protects obligations and buffers, and incomplete evidence blocks the affected conclusion. |
 
-### v0.8 — Pre-Commitment Spending Intelligence
+### v0.5.0 — Pre-Commitment Spending Intelligence
 
 [Phase 8.6](post-mvp/08-6-pre-commitment-spending-intelligence.md): expose a
 deterministic Decision Card and optional Spend Session so users understand a
@@ -171,7 +139,39 @@ before payment.
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Purchase and cart decisions show exact plan/account consequences and valid alternatives without a ledger mutation; competing decisions cannot silently reuse funds. |
 
-### v0.9 — Transaction evidence and intelligent resolution
+### v0.6.0 — Space governance
+
+[Phase 7](post-mvp/07-space-governance.md): controlled collaboration with
+independent identities, scoped capabilities, temporal membership, and
+deterministic authorization — no shared credentials or automatic private-data
+disclosure.
+
+| Exit gate                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------- |
+| Every read and action is attributable, scoped, and deterministically enforced without depending on shared full-control credentials. |
+
+### v0.7.0 — Merchant intelligence and enrichment
+
+[Phase 11](post-mvp/11-merchant-intelligence-and-enrichment.md): improve
+categorization and merchant/entity resolution when bank-imported transactions
+are sparse, while keeping every decision explainable, conservative, and
+privacy-aware.
+
+| Exit gate                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Categorization evidence and merchant resolution improve for sparse imports without external-data dependence becoming a hidden requirement. |
+
+### v0.8.0 — Controlled reallocations
+
+[Phase 9](post-mvp/09-controlled-reallocations.md): turn conservative
+`safe_with_reallocation` analysis into exact, policy-governed proposals
+through the same approval and mutation pipeline used for categorization writes.
+
+| Exit gate                                                                                   |
+| ------------------------------------------------------------------------------------------- |
+| Stale or concurrent proposals cannot double-use funds or violate protected-category policy. |
+
+### v0.9.0 — Transaction evidence and intelligent resolution
 
 [Phase 11.5](post-mvp/11-5-transaction-evidence-and-intelligent-resolution.md):
 reconstruct economic events from settlement records, wallet evidence, receipts,
@@ -182,7 +182,7 @@ letting models establish monetary relationships.
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Wallet, receipt, tender, refund, reimbursement, and split projections conserve money; material ambiguity becomes focused review work; repeated approved resolutions become inspectable deterministic behavior. |
 
-### v0.10 — Delegated operational autonomy
+### v0.10.0 — Delegated operational autonomy
 
 [Phase 9.5](post-mvp/09-5-delegated-operational-autonomy.md): allow users to
 delegate selected operational capabilities to attributable AI agents without
@@ -192,7 +192,7 @@ creating a global autonomy slider or agent-specific write path.
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Revocation takes effect before the next execution; agents cannot escalate authority; every delegated mutation is bounded, attributable, replay-safe, policy-valid, and postcondition-verified. |
 
-### v0.11 — Built-in conversational interface
+### v0.11.0 — Built-in conversational interface
 
 [Phase 6](post-mvp/06-built-in-conversational-interface.md): optional
 conversation as an accessibility and explanation surface over the same
@@ -202,7 +202,7 @@ deterministic capability layer used by web and CLI.
 | -------------------------------------------------------------------------------------------------------------------------------- |
 | Chat improves accessibility and explanation without inventing facts, bypassing policy, or making a core workflow chat-dependent. |
 
-### v0.12 — Linked spaces
+### v0.12.0 — Linked spaces
 
 [Phase 10](post-mvp/10-linked-spaces.md): privacy-preserving cross-instance
 coordination so independently operated BalanceFrame instances can coordinate
