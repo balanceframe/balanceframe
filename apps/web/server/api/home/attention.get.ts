@@ -53,16 +53,20 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('INVALID_MONTH', 'month must be in YYYY-MM format.', authInfo, false, requestId);
   }
 
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
-    setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
-  }
-
   try {
     const manager = createDefaultConnectionManager({
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,
     });
+    const config = await manager.loadConfig();
+    if (!config) {
+      setResponseStatus(event, 503);
+      return errorEnvelope('not_connected', 'No ledger connected. Configure an Actual budget first.', authInfo, true, requestId);
+    }
+    const wf = getWorkflowStore(event);
+    if ('error' in wf) {
+      setResponseStatus(event, 503);
+      return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+    }
     const connected = await manager.restore();
     const protocol = await createNativeAnalysisProtocol();
 

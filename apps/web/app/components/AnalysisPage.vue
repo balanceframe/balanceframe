@@ -41,6 +41,8 @@
         <UIcon name="i-heroicons-arrow-path" class="w-4 h-4" />
         Retry
       </button>
+      <!-- Pages may supply a recovery control (e.g. Configure Actual connection) -->
+      <slot name="error-actions" />
     </template>
 
     <!-- Insufficient data -->

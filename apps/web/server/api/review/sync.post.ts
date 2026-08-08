@@ -25,15 +25,20 @@ export interface SyncReviewResult {
 export default defineEventHandler(async event => {
   const auth = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
-  const workflow = getWorkflowStore(event);
-  if ('error' in workflow) {
-    setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', workflow.error, auth, false, requestId);
-  }
   try {
     const manager = createDefaultConnectionManager({
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,
     });
+    const config = await manager.loadConfig();
+    if (!config) {
+      setResponseStatus(event, 503);
+      return errorEnvelope('not_connected', 'No ledger connected. Configure an Actual budget first.', auth, true, requestId);
+    }
+    const workflow = getWorkflowStore(event);
+    if ('error' in workflow) {
+      setResponseStatus(event, 503);
+      return errorEnvelope('STORE_UNAVAILABLE', workflow.error, auth, false, requestId);
+    }
     const connected = await manager.restore();
     const protocol = await createNativeAnalysisProtocol();
     const result = await protocol.pendingReview(connected.connector, null);

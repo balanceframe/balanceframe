@@ -56,7 +56,16 @@
       :error="error"
       :freshness="freshness"
       :insufficient-data="false"
+      @retry="loadAttention"
     >
+      <template #error-actions>
+        <UButton
+          v-if="error?.code === 'not_connected'"
+          label="Configure Actual connection"
+          to="/connection"
+          icon="i-heroicons-plug"
+        />
+      </template>
       <template #content>
       <!-- Blocker alerts -->
       <section v-if="data?.blockers?.length" aria-label="Blockers" class="mb-6">
@@ -159,8 +168,14 @@ definePageMeta({
 import { authClient } from '../../lib/auth-client';
 
 const session = authClient.useSession();
-const isAuthenticated = computed(() => !!session?.value?.data);
-const userEmail = computed(() => session?.value?.data?.user?.email ?? '');
+const isSessionPending = computed(() => session.value?.isPending ?? false);
+const isAuthenticated = computed(() => !!session.value?.data);
+const userEmail = computed(() => session.value?.data?.user?.email ?? '');
+const sessionLoadKey = computed(() => {
+  if (isSessionPending.value) return null;
+  const user = session.value?.data?.user;
+  return user ? `user:${user.id ?? user.email}` : 'anonymous';
+});
 const bootstrapAvailable = ref(false);
 
 
@@ -218,31 +233,42 @@ interface AttentionData {
   targetProgress: TargetProgress;
 }
 
+interface AttentionError {
+  code: string;
+  message: string;
+  retryable?: boolean;
+}
+
 const loading = ref(true);
-const error = ref<{ code: string; message: string } | null>(null);
+const error = ref<AttentionError | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const data = ref<AttentionData | null>(null);
 
-onMounted(async () => {
-  if (isAuthenticated.value) {
-    try {
-      const res = await $fetch<{
-        status: string;
-        result: AttentionData;
-        dataFreshness: { isStale: boolean; lastSync: string | null; label: string } | null;
-      }>('/api/home/attention', { query: { detailed: 'true', month: currentMonth() } });
-      if (res.status === 'ok') {
-        data.value = res.result;
-        freshness.value = res.dataFreshness;
-      } else {
-        error.value = { code: 'EMPTY', message: 'No attention data returned.' };
-      }
-    } catch (e) {
-      error.value = { code: 'FETCH_ERROR', message: String(e) };
-    } finally {
-      loading.value = false;
-    }
-  } else {
+function isAttentionErrorResponse(cause: unknown): cause is { data: { error: AttentionError } } {
+  if (typeof cause !== 'object' || cause === null || !('data' in cause)) {
+    return false;
+  }
+
+  const { data } = cause;
+  if (typeof data !== 'object' || data === null || !('error' in data)) {
+    return false;
+  }
+
+  const { error } = data;
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && typeof error.code === 'string'
+    && 'message' in error
+    && typeof error.message === 'string'
+    && (!('retryable' in error) || typeof error.retryable === 'boolean');
+}
+
+let loadGeneration = 0;
+
+async function loadAttention(): Promise<void> {
+  const generation = ++loadGeneration;
+  if (!isAuthenticated.value) {
     try {
       const config = await $fetch<{
         result: {
@@ -251,13 +277,63 @@ onMounted(async () => {
           invitationRequired: boolean;
         };
       }>('/api/auth/config');
-      bootstrapAvailable.value = config.result.bootstrapAvailable;
+      if (generation === loadGeneration) {
+        bootstrapAvailable.value = config.result.bootstrapAvailable;
+      }
     } catch {
       // Config unavailable — default to invite-only mode (no bootstrap link).
+    } finally {
+      if (generation === loadGeneration) {
+        loading.value = false;
+      }
     }
-    loading.value = false;
+    return;
   }
-});
+
+  loading.value = true;
+  data.value = null;
+  error.value = null;
+  freshness.value = null;
+  try {
+    const res = await $fetch<{
+      status: string;
+      result: AttentionData;
+      dataFreshness: { isStale: boolean; lastSync: string | null; label: string } | null;
+    }>('/api/home/attention', {
+      query: { detailed: 'true', month: currentMonth() },
+      retry: 0,
+    });
+    if (generation !== loadGeneration) return;
+    if (res.status === 'ok') {
+      data.value = res.result;
+      freshness.value = res.dataFreshness;
+    } else {
+      error.value = { code: 'EMPTY', message: 'No attention data returned.' };
+    }
+  } catch (cause: unknown) {
+    if (generation !== loadGeneration) return;
+    if (isAttentionErrorResponse(cause)) {
+      error.value = cause.data.error;
+    } else {
+      error.value = {
+        code: 'FETCH_ERROR',
+        message: cause instanceof Error ? cause.message : String(cause),
+        retryable: true,
+      };
+    }
+  } finally {
+    if (generation === loadGeneration) {
+      loading.value = false;
+    }
+  }
+}
+
+let lastAutomaticLoadKey: string | null = null;
+watch(sessionLoadKey, (loadKey) => {
+  if (loadKey === null || loadKey === lastAutomaticLoadKey) return;
+  lastAutomaticLoadKey = loadKey;
+  void loadAttention();
+}, { immediate: true });
 async function handleDirectSignOut(): Promise<void> {
   await authClient.signOut();
   await navigateTo('/');

@@ -22,9 +22,9 @@ vi.mock('../../lib/auth-client', () => ({ authClient: { useSession: () => ({ val
 
 const envelope = (result: unknown = {}) => ({ schemaVersion: '1', requestId: 'acceptance', status: 'ok', dataFreshness: { isStale: false, lastSync: '2026-07-15T10:00:00Z', label: 'current' }, authorization: { capability: 'read:budget', allowed: true }, scope: { budgetId: 'fixture', accounts: ['checking'] }, result, error: null });
 const stubs = {
-  AnalysisPage: { template: '<section><div v-if="error" role="alert">{{ error.code }} {{ error.message }}</div><div v-else-if="insufficientData">Insufficient data</div><slot name="content" /></section>', props: ['error', 'loading', 'freshness', 'insufficientData'] },
+  AnalysisPage: { template: '<section><div v-if="error" role="alert">{{ error.code }} {{ error.message }}</div><div v-else-if="insufficientData">Insufficient data</div><slot name="error-actions" /><slot name="content" /></section>', props: ['error', 'loading', 'freshness', 'insufficientData'] },
   UContainer: { template: '<div><slot /></div>' }, UCard: { template: '<article><slot name="header"/><slot/></article>' },
-  UButton: { template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot>{{ label }}</slot></button>', props: ['disabled','label'] },
+  UButton: { template: '<a v-if="to" :href="to"><slot>{{ label }}</slot></a><button v-else :disabled="disabled" @click="$emit(\'click\')"><slot>{{ label }}</slot></button>', props: ['disabled','label','to'] },
   UInput: { template: '<input :value="modelValue" @input="$emit(\'update:modelValue\',$event.target.value)"/>', props: ['modelValue'] },
   UFormGroup: { template: '<label><span>{{ label }}</span><slot/></label>', props: ['label'] },
   AnalysisTable: { template: '<table aria-label="Analysis results"><tbody><tr v-for="(row,i) in rows" :key="i"><td v-for="col in columns" :key="col.key">{{ row[col.key] }}</td></tr></tbody></table>', props: ['rows','columns'] },
@@ -83,4 +83,12 @@ describe('Phase 8.5 deterministic browser acceptance workflows', () => {
   it('P8.5-23 unauthorized evidence access', async () => { fetchMock.mockResolvedValue(envelope({ items: [{ outbox: { id: 'n', status: 'failed', channelType: 'in_app', attemptCount: 1, acknowledgedAt: null, suppressedAt: null }, redactedPayload: { title: 'Restricted notification', summary: 'Evidence unavailable: unauthorized' }, deliveryAttempts: [] }], count: 1 })); expect((await mount(NotificationsPage)).text()).toMatch(/unauthorized|restricted|not authoriz/i); });
   it('P8.5-24 responsive mobile navigation', async () => { const w=await mount(NotificationsPage); expect(w.exists()).toBe(true); });
   it('P8.5-25 disabled notification channels', async () => { expect((await mount(NotificationsPage)).text()).toMatch(/disabled|unavailable/i); });
+  it('P8.5-26 dashboard shows not_connected recovery directing to /connection', async () => {
+    fetchMock.mockRejectedValue({ data: { error: { code: 'not_connected', message: 'No ledger connected. Configure an Actual budget first.', retryable: true } } });
+    const w = await mount(IndexPage);
+    await nextTick();
+    expect(w.text()).toMatch(/No ledger connected/i);
+    expect(w.text()).toMatch(/Configure Actual connection/i);
+    expect(w.find('a[href="/connection"]').exists()).toBe(true);
+  });
 });

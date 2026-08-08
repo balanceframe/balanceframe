@@ -61,7 +61,12 @@ export class ConnectionManager {
     this.credentialStore = options.credentialStore;
     this.connectorFactory = options.connectorFactory;
     this.readConfigFile = options.readFile ?? (async path => {
-      try { return await readFile(path, 'utf8'); } catch { return null; }
+      try {
+        return await readFile(path, 'utf8');
+      } catch (error: unknown) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+        throw error;
+      }
     });
     this.writeConfigFile = options.writeFile ?? (async (path, value) => {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -115,10 +120,10 @@ export class ConnectionManager {
     return { budget, connector, synchronization };
   }
 
-  /** Read and validate the selected-budget configuration, or return null. */
+  /** Read and validate the selected-budget configuration; null means the file is missing, while invalid or unreadable content throws. */
   async loadConfig(): Promise<ConnectionConfig | null> {
     const raw = await this.readConfigFile(this.configPath);
-    if (!raw) return null;
+    if (raw === null) return null;
     const value = JSON.parse(raw) as Partial<ConnectionConfig>;
     if (value.version !== 1 || !value.serverUrl || !value.budgetId || !value.budgetName || !value.groupId) {
       throw new Error('Invalid BalanceFrame connection configuration.');

@@ -189,7 +189,7 @@ function promptValue(message: string, fallback: string): string | null {
   return value?.trim() || null;
 }
 
-async function mutateView(viewId: string, method: 'PATCH' | 'POST' | 'DELETE', url = `/api/reports/views/${viewId}`, body?: unknown) {
+async function mutateView(viewId: string, method: 'PATCH' | 'POST' | 'DELETE', url = `/api/reports/views/${viewId}`, body?: Record<string, unknown>) {
   viewsError.value = null;
   try {
     const res = await $fetch<Envelope<SavedView | { deleted: boolean }>>(url, { method, body });

@@ -9,7 +9,32 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mount, shallowMount, flushPromises } from '@vue/test-utils';
+import { mount, shallowMount, flushPromises, type VueWrapper } from '@vue/test-utils';
+import { ref, type Ref } from 'vue';
+
+type SessionData = {
+  data: { user: { email: string } } | null;
+  isPending: boolean;
+};
+
+const auth = vi.hoisted(() => ({
+  session: undefined as unknown as Ref<SessionData>,
+  signOut: vi.fn(),
+}));
+
+auth.session = ref<SessionData>({
+  data: { user: { email: 'shared-components@example.test' } },
+  isPending: false,
+});
+
+vi.mock('../../lib/auth-client', () => ({
+  authClient: {
+    useSession: () => auth.session,
+    signOut: auth.signOut,
+  },
+}));
+
+import CategoryCorrectModal from '../../app/components/CategoryCorrectModal.vue';
 
 /* ------------------------------------------------------------------ */
 /* Stubs                                                              */
@@ -280,6 +305,51 @@ describe('AnalysisPage', () => {
     await wrapper.find('button[aria-label="Retry loading"]').trigger('click');
     expect(wrapper.emitted('retry')).toBeTruthy();
     expect(wrapper.emitted('retry')!.length).toBe(1);
+  });
+
+  it('renders error actions only in the error branch after alert and retry controls', () => {
+    const errorWrapper = shallowMount(AnalysisPage, {
+      props: {
+        title: 'Test Page',
+        error: { code: 'NETWORK_ERROR', message: 'Timeout', retryable: true },
+      },
+      global: {
+        stubs: {
+          ...stubs,
+          FreshnessBanner: {
+            template: '<div data-testid="freshness-banner" />',
+            props: ['freshness'],
+          },
+        },
+      },
+      slots: {
+        'error-actions': '<a href="/connection">Configure Actual connection</a>',
+      },
+    });
+    const errorControls = errorWrapper
+      .findAll('[role="alert"], button[aria-label="Retry loading"], a[href="/connection"]')
+      .map(control => control.element.tagName);
+
+    expect(errorControls).toEqual(['DIV', 'BUTTON', 'A']);
+
+    const contentWrapper = shallowMount(AnalysisPage, {
+      props: { title: 'Test Page' },
+      global: {
+        stubs: {
+          ...stubs,
+          FreshnessBanner: {
+            template: '<div data-testid="freshness-banner" />',
+            props: ['freshness'],
+          },
+        },
+      },
+      slots: {
+        content: '<p>Attention content</p>',
+        'error-actions': '<a href="/connection">Configure Actual connection</a>',
+      },
+    });
+
+    expect(contentWrapper.find('a[href="/connection"]').exists()).toBe(false);
   });
 
   it('shows insufficient data panel when insufficientData is true', () => {
@@ -749,5 +819,113 @@ describe('EvidenceDrawer', () => {
     await wrapper.find('button').trigger('click');
     // Browser renders the HTML entity as actual character •
     expect(wrapper.html()).toContain('•');
+  });
+});
+
+/* ================================================================== */
+/* CATEGORY CORRECTION MODAL                                          */
+/* ================================================================== */
+
+const categoryCorrectModalStubs = {
+  UModal: {
+    name: 'UModal',
+    props: ['open'],
+    template: '<div v-if="open"><slot name="content" /></div>',
+  },
+  UCard: {
+    name: 'UCard',
+    template: '<section><slot name="header" /><slot /><slot name="footer" /></section>',
+  },
+  USelectMenu: {
+    name: 'USelectMenu',
+    props: ['modelValue', 'items'],
+    emits: ['update:modelValue'],
+    template: '<select><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }}</option></select>',
+  },
+  UButton: {
+    name: 'UButton',
+    props: ['label', 'disabled', 'loading'],
+    emits: ['click'],
+    template: '<button :disabled="disabled" :data-loading="loading" @click="!disabled && $emit(\'click\')">{{ label }}</button>',
+  },
+};
+
+describe('CategoryCorrectModal', () => {
+  const item = {
+    evidence: {
+      normalizedMerchant: 'Test Grocer',
+      currentCategory: 'cat-uncategorized',
+      suggestedCategory: 'cat-groceries',
+      alternatives: ['cat-dining'],
+      categoryNames: {
+        'cat-dining': 'Dining',
+        'cat-groceries': 'Groceries',
+      },
+      changePreview: {
+        fromCategory: 'cat-uncategorized',
+        toCategory: 'cat-groceries',
+        affectsEnvelope: true,
+      },
+    },
+  };
+
+  function confirmButton(wrapper: VueWrapper) {
+    const button = wrapper.findAll('button').find((candidate) => candidate.text() === 'Confirm');
+    if (!button) throw new Error('Category correction confirm control was not rendered.');
+    return button;
+  }
+
+  it('disables and marks Confirm loading while submitting so no second correction emits', async () => {
+    const wrapper = mount(CategoryCorrectModal as never, {
+      props: {
+        open: false,
+        item,
+        submitting: false,
+      },
+      global: { stubs: categoryCorrectModalStubs },
+    });
+
+    await wrapper.setProps({ open: true });
+    await confirmButton(wrapper).trigger('click');
+    expect(wrapper.emitted('confirm')).toEqual([['cat-groceries']]);
+
+    await wrapper.setProps({ submitting: true });
+    const confirm = confirmButton(wrapper);
+    expect(confirm.element.disabled).toBe(true);
+    expect(confirm.attributes('data-loading')).toBe('true');
+
+    await confirm.trigger('click');
+    expect(wrapper.emitted('confirm')).toEqual([['cat-groceries']]);
+  });
+
+  it('restores focus to enabled Confirm when a failed submission finishes with the modal open', async () => {
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    const wrapper = mount(CategoryCorrectModal as never, {
+      attachTo: document.body,
+      props: {
+        open: false,
+        item,
+        submitting: false,
+      },
+      global: { stubs: categoryCorrectModalStubs },
+    });
+
+    try {
+      await wrapper.setProps({ open: true });
+      await wrapper.setProps({ submitting: true });
+      outside.focus();
+      expect(document.activeElement).toBe(outside);
+
+      await wrapper.setProps({ submitting: false });
+      await flushPromises();
+
+      const confirm = confirmButton(wrapper);
+      expect(confirm.element.disabled).toBe(false);
+      expect(document.activeElement).toBe(confirm.element);
+    } finally {
+      wrapper.unmount();
+      outside.remove();
+    }
   });
 });

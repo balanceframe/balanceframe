@@ -163,6 +163,7 @@
 <CategoryCorrectModal
   :open="showCorrectModal"
   :item="adapter.state.currentItem"
+  :submitting="correcting"
   @confirm="onCorrectConfirm"
   @cancel="onCorrectCancel"
 />
@@ -210,7 +211,7 @@ async function loadViews() {
   } catch (e) { viewsError.value = { code: 'FETCH_ERROR', message: String(e), retryable: true }; }
   finally { viewsLoading.value = false; }
 }
-async function viewAction(viewId: string, method: 'PATCH' | 'POST' | 'DELETE', url = `/api/reports/views/${viewId}`, body?: unknown) {
+async function viewAction(viewId: string, method: 'PATCH' | 'POST' | 'DELETE', url = `/api/reports/views/${viewId}`, body?: Record<string, unknown>) {
   try {
     const res = await $fetch<SavedViewEnvelope<SavedView | { deleted: boolean }>>(url, { method, body });
     if (res.status !== 'ok' || !res.result) throw new Error(res.error?.message ?? 'Saved view action failed.');
@@ -262,13 +263,20 @@ const actions = useReviewActions(adapter, openCorrectModal);
 // pointer-triggered actions (which would otherwise steal focus from the
 // hidden input).
 const keyboardInput = ref<HTMLInputElement | null>(null);
+
+// Suppress review shortcuts while either correction/proposals modal is open.
+const showCorrectModal = ref(false);
+const correcting = ref(false);
+const showProposalsModal = ref(false);
+const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
+
 function handleGlobalKeydown(event: KeyboardEvent) {
   // Ignore events in editable elements to avoid interfering with typing.
   const target = event.target as HTMLElement | null;
   if (!target) return;
   if (target.isContentEditable) return;
   const tag = target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (target !== keyboardInput.value && (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')) return;
 
   // Suppress review shortcuts while a modal is open (Enter on modal
   // buttons must not approve, C must not re-open correction, etc.)
@@ -300,7 +308,6 @@ async function load() {
   keyboardInput.value?.focus();
 }
 
-const showProposalsModal = ref(false);
 const activeProposals = ref<CategorizationProposalListItem[]>([]);
 
 async function openProposalsModal(): Promise<void> {
@@ -322,14 +329,29 @@ async function fetchProposals(): Promise<void> {
   }
 }
 
-const showCorrectModal = ref(false);
 
 function openCorrectModal(_category?: string) {
   if (adapter.state.currentItem) showCorrectModal.value = true;
 }
 
 function onCorrectCancel() {
+  if (correcting.value) return;
   showCorrectModal.value = false;
+}
+
+async function onCorrectConfirm(categoryId: string): Promise<void> {
+  if (correcting.value) return;
+  correcting.value = true;
+  try {
+    const result = await adapter.correct(categoryId);
+    if (result?.success) {
+      showCorrectModal.value = false;
+      await nextTick();
+      keyboardInput.value?.focus();
+    }
+  } finally {
+    correcting.value = false;
+  }
 }
 
 async function promptProposeRule(): Promise<void> {
@@ -393,7 +415,21 @@ async function handleSync() {
       await adapter.refresh();
     } else {
       const toast = useToast();
-      toast.add({ title: 'Sync failed', description: data.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+      const error = data.error;
+      toast.add({
+        title: 'Sync failed',
+        description: error?.message ?? 'Unknown error',
+        color: 'error',
+        duration: 10000,
+        ...(error?.code === 'not_connected'
+          ? {
+              actions: [{
+                label: 'Configure connection',
+                onClick: () => navigateTo('/connection'),
+              }],
+            }
+          : {}),
+      });
     }
   } catch (e) {
     const toast = useToast();

@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ConnectionManager } from '../src/connection-manager.js';
 
@@ -11,6 +14,18 @@ function fakeConnector() {
       watermark: {},
     }),
   };
+}
+
+function managerWithDefaultReader(configPath: string): ConnectionManager {
+  return new ConnectionManager({
+    configPath,
+    writeFile: async () => {},
+    credentialStore: {
+      load: async () => ({ serverUrl: 'http://actual', secretKey: 'secret' }),
+      store: async () => {},
+    },
+    connectorFactory: async () => fakeConnector(),
+  });
 }
 
 describe('ConnectionManager', () => {
@@ -70,6 +85,43 @@ describe('ConnectionManager', () => {
     const result = await manager.restore();
     expect(result.budget.name).toBe('Test Budget');
     expect(synchronized).toBe(true);
+  });
+
+  it('treats only an absent production config as unconfigured', async () => {
+    const fixtureDirectory = await mkdtemp(join(tmpdir(), 'balanceframe-config-'));
+    try {
+      const manager = managerWithDefaultReader(join(fixtureDirectory, 'missing.json'));
+
+      await expect(manager.loadConfig()).resolves.toBeNull();
+    } finally {
+      await rm(fixtureDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a zero-byte production config instead of treating it as absent', async () => {
+    const fixtureDirectory = await mkdtemp(join(tmpdir(), 'balanceframe-config-'));
+    const configPath = join(fixtureDirectory, 'config.json');
+    try {
+      await writeFile(configPath, '');
+      const manager = managerWithDefaultReader(configPath);
+
+      await expect(manager.loadConfig()).rejects.toThrow(SyntaxError);
+    } finally {
+      await rm(fixtureDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('propagates a non-ENOENT production config read failure', async () => {
+    const fixtureDirectory = await mkdtemp(join(tmpdir(), 'balanceframe-config-'));
+    const configDirectory = join(fixtureDirectory, 'config-directory');
+    try {
+      await mkdir(configDirectory);
+      const manager = managerWithDefaultReader(configDirectory);
+
+      await expect(manager.loadConfig()).rejects.toMatchObject({ code: 'EISDIR' });
+    } finally {
+      await rm(fixtureDirectory, { recursive: true, force: true });
+    }
   });
   it('reports that a connection must be selected when configuration is absent', async () => {
     const manager = new ConnectionManager({

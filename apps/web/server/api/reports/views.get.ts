@@ -50,7 +50,6 @@ export default defineEventHandler(async (event) => {
       requestId,
       ledger: null,
       freshness: null,
-      analysisProtocol: null,
       workflowStore: wf.store,
     };
 

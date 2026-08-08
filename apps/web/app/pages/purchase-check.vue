@@ -35,8 +35,8 @@
           <!-- Category budget summary -->
           <div v-if="result.categoryBudget" class="mt-3 grid grid-cols-3 gap-2 text-xs text-gray-600 dark:text-gray-400">
             <div>Budget: <SemanticAmount :amount="result.categoryBudget" /></div>
-            <div>Spent: <SemanticAmount :amount="result.categorySpent" /></div>
-            <div>Remaining: <SemanticAmount :amount="result.categoryRemaining" /></div>
+            <div v-if="result.categorySpent">Spent: <SemanticAmount :amount="result.categorySpent" /></div>
+            <div v-if="result.categoryRemaining">Remaining: <SemanticAmount :amount="result.categoryRemaining" /></div>
           </div>
           <div v-if="result.projectedBalance" class="mt-1 text-xs text-gray-600 dark:text-gray-400">
             Projected balance: <SemanticAmount :amount="result.projectedBalance" />

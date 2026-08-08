@@ -5,10 +5,20 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol } = vi.hoisted(() => ({
+const {
+  mockRestore,
+  mockLoadConfig,
+  mockCreateDefaultConnectionManager,
+  mockCreateNativeAnalysisProtocol,
+  mockSetResponseStatus,
+  mockGetWorkflowStore,
+} = vi.hoisted(() => ({
   mockRestore: vi.fn(),
-  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
+  mockLoadConfig: vi.fn(),
+  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore, loadConfig: mockLoadConfig })),
   mockCreateNativeAnalysisProtocol: vi.fn(),
+  mockSetResponseStatus: vi.fn(),
+  mockGetWorkflowStore: vi.fn(() => ({ store: {} })),
 }));
 
 vi.mock('@balanceframe/application', async (i) => {
@@ -16,10 +26,14 @@ vi.mock('@balanceframe/application', async (i) => {
   return { ...a, createDefaultConnectionManager: mockCreateDefaultConnectionManager, createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol };
 });
 
-vi.mock('h3', () => ({ defineEventHandler: <T>(h: T) => h, getQuery: (e: Record<string, unknown>) => e.query ?? {}, setResponseStatus: vi.fn() }));
+vi.mock('h3', () => ({
+  defineEventHandler: <T>(h: T) => h,
+  getQuery: (e: Record<string, unknown>) => e.query ?? {},
+  setResponseStatus: mockSetResponseStatus,
+}));
 
 vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: vi.fn(() => ({ store: {} })),
+  getWorkflowStore: mockGetWorkflowStore,
   buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
   getActorId: vi.fn(() => 'test-actor'),
   sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
@@ -33,6 +47,8 @@ import handler from '../../server/api/home/attention.get';
 describe('GET /api/home/attention', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockResolvedValue({ version: 1, serverUrl: 'x', budgetId: 'b', budgetName: 'Test', groupId: 'g' });
+    mockGetWorkflowStore.mockReturnValue({ store: {} });
     mockRestore.mockResolvedValue({ connector: { name: 'm' }, budget: { id: 'b', groupId: 'g', name: 'T', encrypted: false }, synchronization: {} });
     mockCreateNativeAnalysisProtocol.mockResolvedValue({ attentionHome: vi.fn() });
   });
@@ -54,6 +70,9 @@ describe('GET /api/home/attention', () => {
     expect(r.result.categoryRisks[0].risk).toBe('high');
     expect(r.result.blockers.length).toBeGreaterThan(0);
     expect(r.result.targetProgress.overallLabel).not.toBe('healthy');
+    expect(mockCreateDefaultConnectionManager).toHaveBeenCalledWith({
+      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+    });
   });
 
   it('must error when analysis fails', async () => {
@@ -66,5 +85,40 @@ describe('GET /api/home/attention', () => {
     const r = await handler({ query: { month: '2026-1' }, context: { auth: { authenticated: true } } });
     expect(r.status).toBe('error');
     expect(r.error?.code).toBe('INVALID_MONTH');
+  });
+
+  it('must return not_connected when no budget is configured without touching the connector', async () => {
+    mockLoadConfig.mockResolvedValue(null);
+    const r = await handler({ query: {}, context: { auth: { authenticated: true } } });
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('not_connected');
+    expect(r.error?.message).toBe('No ledger connected. Configure an Actual budget first.');
+    expect(r.error?.retryable).toBe(true);
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
+    expect(mockRestore).not.toHaveBeenCalled();
+    expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
+  });
+
+  it('returns not_connected before workflow-store initialization when configuration is absent', async () => {
+    mockLoadConfig.mockResolvedValue(null);
+    mockGetWorkflowStore.mockReturnValue({ error: 'workflow unavailable' });
+
+    const r = await handler({ query: {}, context: { auth: { authenticated: true } } });
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('not_connected');
+    expect(mockGetWorkflowStore).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes an unreadable configuration as an operational analysis failure', async () => {
+    mockLoadConfig.mockRejectedValue(new Error('config unreadable'));
+
+    const r = await handler({ query: {}, context: { auth: { authenticated: true } } });
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('ANALYSIS_FAILED');
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 500);
+    expect(mockRestore).not.toHaveBeenCalled();
+    expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
   });
 });
