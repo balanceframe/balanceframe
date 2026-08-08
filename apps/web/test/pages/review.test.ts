@@ -214,7 +214,7 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-function requestUrl(input: RequestInfo | URL): string {
+function requestUrl(input: Parameters<typeof fetch>[0]): string {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.pathname;
   return new URL(input.url).pathname;
