@@ -495,6 +495,29 @@ describe('review page recovery behavior', () => {
     expect(document.activeElement).toBe(page.get('input[aria-hidden="true"]').element);
   });
 
+  it('records a valid saved view selection without PATCHing an empty selection', async () => {
+    const page = await mountPage();
+    const picker = page.findComponent({ name: 'SavedViewPicker' });
+    if (!picker.exists()) throw new Error('Saved view picker stub was not rendered.');
+    dollarFetchSpy.mockClear();
+
+    picker.vm.$emit('select', 'review-view-001');
+    await flushPromises();
+
+    expect(dollarFetchSpy).toHaveBeenCalledWith(
+      '/api/reports/views/review-view-001/last-used',
+      { method: 'PATCH', body: undefined },
+    );
+
+    picker.vm.$emit('select', '');
+    await flushPromises();
+
+    expect(picker.props('selectedViewId')).toBe('');
+    expect(dollarFetchSpy.mock.calls.map(([url]) => url)).not.toContain(
+      '/api/reports/views//last-used',
+    );
+  });
+
   it('keeps the correction modal open and resets submission when correction fails', async () => {
     correctSpy.mockResolvedValue({ itemId: CURRENT_ITEM.reviewItem.id, success: false, error: 'Category rejected' });
     const page = await mountPage();

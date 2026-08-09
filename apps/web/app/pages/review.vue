@@ -223,7 +223,10 @@ async function viewAction(viewId: string, method: 'PATCH' | 'POST' | 'DELETE', u
     }
   } catch (e) { viewsError.value = { code: 'VIEW_ACTION_FAILED', message: String(e), retryable: true }; }
 }
-function applyView(viewId: string) { selectedViewId.value = viewId; void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`); }
+function applyView(viewId: string) {
+  selectedViewId.value = viewId;
+  if (viewId) void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`);
+}
 function createView() { const name = promptView('Name this saved view', 'Review queue'); if (name) void viewAction('', 'POST', '/api/reports/views', { name, viewType: 'pending_review', scope: {} }); }
 function renameView(viewId: string) { const view = savedViews.value.find(item => item.viewId === viewId); const name = promptView('Rename saved view', view?.name ?? ''); if (name) void viewAction(viewId, 'PATCH', undefined, { name }); }
 function updateView(viewId: string) { void viewAction(viewId, 'PATCH', undefined, { scope: {} }); }
