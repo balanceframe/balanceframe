@@ -1,4 +1,8 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
+import { createRequire } from 'node:module';
+
+const actualApiEntry = createRequire(import.meta.url).resolve('@actual-app/api');
+
 export default defineNuxtConfig({
   srcDir: 'app/',
   ssr: false,
@@ -8,16 +12,11 @@ export default defineNuxtConfig({
   app: {
     head: {
       title: 'BalanceFrame — Transaction Review',
-      meta: [
-        { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-      ],
+      meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
     },
   },
 
-  ui: {
-    /** Nuxt UI v4 global theme overrides — no-op until customised. */
-  },
-
+  ui: {/** Nuxt UI v4 global theme overrides — no-op until customised. */},
 
   runtimeConfig: {
     /** API Bearer token for operational routes (legacy migration fallback). */
@@ -48,9 +47,16 @@ export default defineNuxtConfig({
 
   nitro: {
     preset: 'node-server',
+    // Rollup evaluates `external` before Nitro's node-externals plugin. Keep
+    // Actual's CommonJS filesystem code in its package context. `traceInclude`
+    // is an input path for node-file-trace, so resolve the direct production
+    // dependency instead of passing its package specifier.
     externals: {
-      // better-sqlite3 is a native addon — must not be bundled.
       external: ['better-sqlite3'],
+      traceInclude: [actualApiEntry],
+    },
+    rollupConfig: {
+      external: (id) => id === '@actual-app/api' || id.startsWith('@actual-app/api/'),
     },
   },
 });

@@ -12,33 +12,75 @@ vi.stubGlobal('$fetch', mockFetch);
 import DataQualityPage from '../../app/pages/data-quality.vue';
 
 const stubs = {
-  AnalysisPage: { template: '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>', props: ['title', 'loading', 'error', 'freshness', 'insufficientData'] },
-  SemanticAmount: { template: '<span data-testid="semantic-amount">{{ amount.minorUnits }}</span>', props: ['amount'] },
+  AnalysisPage: {
+    template:
+      '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>',
+    props: ['title', 'loading', 'error', 'freshness', 'insufficientData'],
+  },
+  SemanticAmount: {
+    template: '<span data-testid="semantic-amount">{{ amount.minorUnits }}</span>',
+    props: ['amount'],
+  },
   UCard: { template: '<div><slot name="header" /><slot /></div>' },
-  AnalysisTable: { template: '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>', props: ['columns', 'rows'] },
+  AnalysisTable: {
+    template:
+      '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>',
+    props: ['columns', 'rows'],
+  },
   ScopeSummary: { template: '<div>{{ scope.label }}</div>', props: ['scope'] },
   UIcon: { template: '<span />', props: ['name'] },
 };
 
 function okEnvelope(result: unknown) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'ok' as const, dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' }, authorization: null, result, error: null };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'ok' as const,
+    dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' },
+    authorization: null,
+    result,
+    error: null,
+  };
 }
 
 function errorEnvelope(code: string, retryable = false) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'error' as const, dataFreshness: null, authorization: null, result: null, error: { code, message: `Simulated ${code}`, retryable } };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'error' as const,
+    dataFreshness: null,
+    authorization: null,
+    result: null,
+    error: { code, message: `Simulated ${code}`, retryable },
+  };
 }
 
 const sampleResult = {
-  overallScore: 82,
+  overallScore: 0.82,
   dimensions: [
-    { name: 'Categorization', score: 90, severity: 'good', details: ['90% categorized'], worstSeverity: null },
-    { name: 'Payee Coverage', score: 74, severity: 'warning', details: ['26% missing payees'], worstSeverity: 'warning' },
+    {
+      name: 'Categorization',
+      score: 0.9,
+      severity: 'good',
+      details: ['90% categorized'],
+      worstSeverity: null,
+    },
+    {
+      name: 'Payee Coverage',
+      score: 0.74,
+      severity: 'warning',
+      details: ['26% missing payees'],
+      worstSeverity: 'warning',
+    },
   ],
   recommendations: ['Review uncategorized transactions', 'Add missing payee information'],
 };
 
 describe('Data Quality page', () => {
-  beforeEach(() => { vi.clearAllMocks(); mockFetch.mockReset(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+  });
 
   it('calls /api/data-quality on mount', async () => {
     mockFetch.mockResolvedValue(okEnvelope(sampleResult));
@@ -56,14 +98,51 @@ describe('Data Quality page', () => {
     expect(wrapper.text()).toContain('82');
   });
 
+  it('rounds normalized API scores to whole percentages', async () => {
+    mockFetch.mockResolvedValue(
+      okEnvelope({
+        overallScore: 0.5077881619937695,
+        dimensions: [
+          {
+            dimension: 'completeness',
+            score: 0.5233644859813085,
+            explanation: '48% uncategorized.',
+            worstSeverity: 'warning',
+          },
+          {
+            dimension: 'consistency',
+            score: 1,
+            explanation: 'No duplicates.',
+            worstSeverity: null,
+          },
+        ],
+        recommendations: [],
+      }),
+    );
+    const wrapper = shallowMount(DataQualityPage, { global: { stubs } });
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="overall-score"]').text()).toBe('51/ 100');
+    expect(wrapper.text()).toContain('52 / 100');
+    expect(wrapper.text()).toContain('100 / 100');
+    expect(wrapper.text()).not.toContain('50.778819937695');
+  });
+
   it('renders dimensions from the analysis API shape', async () => {
-    mockFetch.mockResolvedValue(okEnvelope({
-      overallScore: 50,
-      dimensions: [
-        { dimension: 'completeness', score: 0.5, explanation: '50% uncategorized.', worstSeverity: 'warning' },
-      ],
-      recommendations: ['Categorize transactions'],
-    }));
+    mockFetch.mockResolvedValue(
+      okEnvelope({
+        overallScore: 50,
+        dimensions: [
+          {
+            dimension: 'completeness',
+            score: 0.5,
+            explanation: '50% uncategorized.',
+            worstSeverity: 'warning',
+          },
+        ],
+        recommendations: ['Categorize transactions'],
+      }),
+    );
     const wrapper = shallowMount(DataQualityPage, { global: { stubs } });
     await flushPromises();
     expect(wrapper.text()).toContain('completeness');
@@ -123,7 +202,9 @@ describe('Data Quality page', () => {
   });
 
   it('renders empty state when no dimensions', async () => {
-    mockFetch.mockResolvedValue(okEnvelope({ overallScore: null, dimensions: [], recommendations: [] }));
+    mockFetch.mockResolvedValue(
+      okEnvelope({ overallScore: null, dimensions: [], recommendations: [] }),
+    );
     const wrapper = shallowMount(DataQualityPage, { global: { stubs } });
     await flushPromises();
     expect(wrapper.text()).toContain('No data quality metrics available');

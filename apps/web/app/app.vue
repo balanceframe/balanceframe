@@ -1,6 +1,8 @@
 <template>
   <UApp>
-    <NuxtPage />
+    <NuxtLayout>
+      <NuxtPage />
+    </NuxtLayout>
   </UApp>
 </template>
 
@@ -9,6 +11,6 @@
 // ReviewController and authentication are wired per-page via composables.
 </script>
 <style>
-@import "tailwindcss";
-@import "@nuxt/ui";
+@import 'tailwindcss';
+@import '@nuxt/ui';
 </style>

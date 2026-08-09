@@ -12,7 +12,11 @@
       {{ open ? 'Hide' : 'Show' }} evidence
     </UButton>
 
-    <div v-if="open" id="evidence-drawer-content" class="mt-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700 text-sm">
+    <div
+      v-if="open"
+      id="evidence-drawer-content"
+      class="mt-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700 text-sm"
+    >
       <div v-if="(evidence?.length ?? 0) === 0" class="text-gray-400 dark:text-gray-500 italic">
         No evidence available.
       </div>
@@ -21,13 +25,18 @@
           <span class="text-gray-400 dark:text-gray-500 mt-0.5 shrink-0" aria-hidden="true">•</span>
           <div>
             <p class="text-gray-700 dark:text-gray-300">{{ item.description }}</p>
-            <p v-if="item.detail" class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{{ item.detail }}</p>
+            <p v-if="item.detail" class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+              {{ item.detail }}
+            </p>
           </div>
         </li>
       </ul>
     </div>
 
-    <div v-if="open" class="mt-2 p-3 bg-gray-50 dark:bg-gray-800/50 rounded-md border border-gray-200 dark:border-gray-700">
+    <div
+      v-if="open"
+      class="mt-2 p-3 bg-gray-50 dark:bg-gray-800/50 rounded-md border border-gray-200 dark:border-gray-700"
+    >
       <p class="text-xs text-gray-400 dark:text-gray-500">{{ fallbackMessage }}</p>
     </div>
   </div>

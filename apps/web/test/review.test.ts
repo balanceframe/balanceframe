@@ -13,10 +13,7 @@ import type {
   ReviewItem,
 } from '@balanceframe/workflow-store';
 import { ReviewController } from '../src/review.js';
-import type {
-  ReviewSurfaceState,
-  ReviewMetricsSnapshot,
-} from '../src/review.js';
+import type { ReviewSurfaceState, ReviewMetricsSnapshot } from '../src/review.js';
 
 // ---------------------------------------------------------------------------
 // Deterministic fixtures
@@ -36,7 +33,9 @@ const BASE_CREATE: CreateReviewItemInput = {
 /** Wait just enough for fresh timestamps. */
 function tickSync(): void {
   const start = Date.now();
-  while (Date.now() === start) { /* spin */ }
+  while (Date.now() === start) {
+    /* spin */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,19 +102,27 @@ describe('ReviewController', () => {
       const item2 = await seedPendingReview(store, { transactionId: 'txn-b' });
       // Transition item2 through full lifecycle to 'applied'
       const t1 = await store.transitionReviewItem(item2.id, {
-        toStatus: 'approved', actor: ACTOR, reason: 'Approved',
+        toStatus: 'approved',
+        actor: ACTOR,
+        reason: 'Approved',
         expectedVersion: item2.version,
       });
       const t2 = await store.transitionReviewItem(item2.id, {
-        toStatus: 'correcting', actor: ACTOR, reason: 'Correcting',
+        toStatus: 'correcting',
+        actor: ACTOR,
+        reason: 'Correcting',
         expectedVersion: t1.version,
       });
       const t3 = await store.transitionReviewItem(item2.id, {
-        toStatus: 'applying', actor: 'system', reason: 'Applying',
+        toStatus: 'applying',
+        actor: 'system',
+        reason: 'Applying',
         expectedVersion: t2.version,
       });
       await store.transitionReviewItem(item2.id, {
-        toStatus: 'applied', actor: 'system', reason: 'Applied',
+        toStatus: 'applied',
+        actor: 'system',
+        reason: 'Applied',
         expectedVersion: t3.version,
       });
 
@@ -289,7 +296,7 @@ describe('ReviewController', () => {
       const ids = stateBefore.selectedIndices
         .concat([0, 1])
         .filter((v, i, a) => a.indexOf(v) === i)
-        .map(i => stateBefore.items[i].reviewItem.id);
+        .map((i) => stateBefore.items[i].reviewItem.id);
 
       controller.getBindings().toggleSelection(0);
       controller.getBindings().toggleSelection(1);
@@ -398,46 +405,46 @@ describe('ReviewController', () => {
     });
   });
 
-    it('undo restores the undone item back into the queue', async () => {
-      const item1 = await seedPendingReview(store, { transactionId: 'txn-a' });
-      await tickSync();
-      const item2 = await seedPendingReview(store, { transactionId: 'txn-b' });
+  it('undo restores the undone item back into the queue', async () => {
+    const item1 = await seedPendingReview(store, { transactionId: 'txn-a' });
+    await tickSync();
+    const item2 = await seedPendingReview(store, { transactionId: 'txn-b' });
 
-      await controller.loadNextPage();
-      expect(controller.getState().currentItem?.reviewItem.id).toBe(item1.id);
+    await controller.loadNextPage();
+    expect(controller.getState().currentItem?.reviewItem.id).toBe(item1.id);
 
-      // Approve item1 (consumed, queue moves to item2)
-      await controller.getBindings().approve();
-      expect(controller.getState().items).toHaveLength(1);
-      expect(controller.getState().currentItem?.reviewItem.id).toBe(item2.id);
+    // Approve item1 (consumed, queue moves to item2)
+    await controller.getBindings().approve();
+    expect(controller.getState().items).toHaveLength(1);
+    expect(controller.getState().currentItem?.reviewItem.id).toBe(item2.id);
 
-      // Undo — should restore item1 at current position
-      await controller.getBindings().undo();
-      const state = controller.getState();
-      expect(state.items).toHaveLength(2);
-      // Item1 should be restored at index 0 (before item2)
-      expect(state.items[0].reviewItem.id).toBe(item1.id);
-      expect(state.currentItem?.reviewItem.id).toBe(item1.id);
-    });
+    // Undo — should restore item1 at current position
+    await controller.getBindings().undo();
+    const state = controller.getState();
+    expect(state.items).toHaveLength(2);
+    // Item1 should be restored at index 0 (before item2)
+    expect(state.items[0].reviewItem.id).toBe(item1.id);
+    expect(state.currentItem?.reviewItem.id).toBe(item1.id);
+  });
 
-    it('undo uses lastActedItemId, not the current queue item', async () => {
-      const item1 = await seedPendingReview(store, { transactionId: 'txn-a' });
-      await tickSync();
-      const item2 = await seedPendingReview(store, { transactionId: 'txn-b' });
+  it('undo uses lastActedItemId, not the current queue item', async () => {
+    const item1 = await seedPendingReview(store, { transactionId: 'txn-a' });
+    await tickSync();
+    const item2 = await seedPendingReview(store, { transactionId: 'txn-b' });
 
-      await controller.loadNextPage();
-      // Consume both items
-      await controller.getBindings().approve(); // consumes item1, current=item2
-      await controller.getBindings().approve(); // consumes item2, queue empty
-      expect(controller.getState().items).toHaveLength(0);
+    await controller.loadNextPage();
+    // Consume both items
+    await controller.getBindings().approve(); // consumes item1, current=item2
+    await controller.getBindings().approve(); // consumes item2, queue empty
+    expect(controller.getState().items).toHaveLength(0);
 
-      // Undo — should undo item2 (last acted), not fail with "no current"
-      await controller.getBindings().undo();
-      const state = controller.getState();
-      expect(state.items).toHaveLength(1);
-      expect(state.items[0].reviewItem.transactionId).toBe('txn-b');
-      expect(state.items[0].reviewItem.status).toBe('pending_review');
-    });
+    // Undo — should undo item2 (last acted), not fail with "no current"
+    await controller.getBindings().undo();
+    const state = controller.getState();
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0].reviewItem.transactionId).toBe('txn-b');
+    expect(state.items[0].reviewItem.status).toBe('pending_review');
+  });
 
   // =======================================================================
   // Inaccessible provider / model-disabled states
@@ -496,10 +503,14 @@ describe('ReviewController', () => {
       const item = await store.createReviewItem(BASE_CREATE);
       // Advance the item to pending_review so it enters the queue
       const sg = await store.transitionReviewItem(item.id, {
-        toStatus: 'suggestion_generated', actor: 'system', expectedVersion: 1,
+        toStatus: 'suggestion_generated',
+        actor: 'system',
+        expectedVersion: 1,
       });
       await store.transitionReviewItem(sg.id, {
-        toStatus: 'pending_review', actor: 'system', expectedVersion: sg.version,
+        toStatus: 'pending_review',
+        actor: 'system',
+        expectedVersion: sg.version,
       });
       await store.createReviewItem(BASE_CREATE); // idempotent, returns same item
 
@@ -578,9 +589,7 @@ describe('ReviewController', () => {
       const item2 = await seedPendingReview(store, { transactionId: 'txn-b' });
 
       await controller.loadNextPage();
-      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe(
-        'txn-a',
-      );
+      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe('txn-a');
 
       await controller.getBindings().approve();
       const state = controller.getState();
@@ -610,9 +619,7 @@ describe('ReviewController', () => {
       controller.getBindings().toggleSelection(1);
 
       // The controller should resolve the promise with results
-      await expect(
-        controller.getBindings().bulkApprove(),
-      ).resolves.toBeDefined();
+      await expect(controller.getBindings().bulkApprove()).resolves.toBeDefined();
     });
   });
 
@@ -910,14 +917,10 @@ describe('ReviewController', () => {
       const item2 = await seedPendingReview(store, { transactionId: 'txn-b' });
 
       await controller.loadNextPage();
-      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe(
-        'txn-a',
-      );
+      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe('txn-a');
 
       await controller.getBindings().skip();
-      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe(
-        'txn-b',
-      );
+      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe('txn-b');
     });
 
     it('advances to the next item after reject action', async () => {
@@ -927,9 +930,7 @@ describe('ReviewController', () => {
 
       await controller.loadNextPage();
       await controller.getBindings().reject();
-      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe(
-        'txn-b',
-      );
+      expect(controller.getState().currentItem?.reviewItem.transactionId).toBe('txn-b');
     });
 
     it('shows previously consumed items as null when all items acted upon', async () => {
@@ -958,7 +959,7 @@ describe('ReviewController', () => {
       await controller.getBindings().undo();
       const state = controller.getState();
       const restored = state.items.find(
-        i => i.reviewItem.status === 'pending_review' && i.reviewItem.transactionId === 'txn-b',
+        (i) => i.reviewItem.status === 'pending_review' && i.reviewItem.transactionId === 'txn-b',
       );
       expect(restored).toBeDefined();
     });

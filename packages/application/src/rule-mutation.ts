@@ -39,9 +39,7 @@ import type {
   RuleProposal,
 } from '@balanceframe/actual-adapter';
 
-import type {
-  ProtocolSnapshot,
-} from '@balanceframe/protocol-generated';
+import type { ProtocolSnapshot } from '@balanceframe/protocol-generated';
 
 import { VerificationResult } from './mutation.js';
 
@@ -122,16 +120,10 @@ export interface RuleSimulationResult {
 
 export interface RustRuleMutationProtocol {
   /** Plan a rule creation mutation against the current snapshot. */
-  planCreateRule(
-    input: RuleProposalInput,
-    snapshot: ProtocolSnapshot,
-  ): RuleMutationPlan;
+  planCreateRule(input: RuleProposalInput, snapshot: ProtocolSnapshot): RuleMutationPlan;
 
   /** Verify that a rule mutation was applied correctly. */
-  verifyRuleMutation(
-    plan: RuleMutationPlan,
-    snapshot: ProtocolSnapshot,
-  ): VerificationResult;
+  verifyRuleMutation(plan: RuleMutationPlan, snapshot: ProtocolSnapshot): VerificationResult;
 
   /** Simulate a rule against snapshot transactions and return evidence. */
   simulateRule(
@@ -198,12 +190,14 @@ export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutati
     planCreateRule(input, snapshot) {
       const payeeName = getConditionValue(input.conditions) || input.name;
       const categoryId = getActionValue(input.actions);
-      const json = native.planCreateRule(JSON.stringify({
-        ruleName: input.name,
-        payeeName,
-        categoryId,
-        snapshot,
-      }));
+      const json = native.planCreateRule(
+        JSON.stringify({
+          ruleName: input.name,
+          payeeName,
+          categoryId,
+          snapshot,
+        }),
+      );
       return JSON.parse(json) as RuleMutationPlan;
     },
     verifyRuleMutation(plan, snapshot) {
@@ -211,19 +205,21 @@ export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutati
       return JSON.parse(json) as VerificationResult;
     },
     simulateRule(rule, snapshot) {
-      const json = native.simulateRule(JSON.stringify({
-        rule: {
-          id: '',
-          name: rule.name,
-          order: 0,
-          trigger: rule.trigger,
-          actions: rule.actions,
-          inactive: false,
-        },
-        transactions: snapshot.transactions,
-      }));
+      const json = native.simulateRule(
+        JSON.stringify({
+          rule: {
+            id: '',
+            name: rule.name,
+            order: 0,
+            trigger: rule.trigger,
+            actions: rule.actions,
+            inactive: false,
+          },
+          transactions: snapshot.transactions,
+        }),
+      );
       return JSON.parse(json) as RuleSimulationResult;
-     },
+    },
   };
 }
 
@@ -408,9 +404,12 @@ export class RuleMutationService {
       });
     } catch (e) {
       await this.appendFailureAudit(input, proposal, auth, 'invalid_preconditions');
-      return this.fail(baseResult, 'invalid_preconditions',
+      return this.fail(
+        baseResult,
+        'invalid_preconditions',
         e instanceof Error ? e.message : 'Proposal preconditions are invalid',
-        input);
+        input,
+      );
     }
 
     let idemClaim: IdempotencyClaim;
@@ -423,9 +422,12 @@ export class RuleMutationService {
       });
     } catch (err) {
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_replay_mismatch');
-      return this.fail(baseResult, 'idempotency_replay_mismatch',
+      return this.fail(
+        baseResult,
+        'idempotency_replay_mismatch',
         err instanceof Error ? err.message : 'Idempotency record creation failed',
-        input);
+        input,
+      );
     }
 
     if (!idemClaim.isOwner) {
@@ -436,10 +438,13 @@ export class RuleMutationService {
       // In-flight: another execution is using this key — or previous run crashed
       // and the lease hasn't expired yet. The caller should retry later.
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
-      return this.fail(baseResult, 'idempotency_in_progress',
-        'Execution with this idempotency key is already in progress', input);
+      return this.fail(
+        baseResult,
+        'idempotency_in_progress',
+        'Execution with this idempotency key is already in progress',
+        input,
+      );
     }
-
 
     // We own the claim — proceed with execution
 
@@ -456,27 +461,44 @@ export class RuleMutationService {
     // Bind approval to the exact proposal ID
     if (approval.proposalId !== input.proposalId) {
       await this.appendFailureAudit(input, proposal, auth, 'approval_proposal_mismatch');
-      return this.fail(baseResult, 'approval_proposal_mismatch',
-        'Approval proposal ID does not match the input proposal', input);
+      return this.fail(
+        baseResult,
+        'approval_proposal_mismatch',
+        'Approval proposal ID does not match the input proposal',
+        input,
+      );
     }
 
     // Bind approval payload hash to proposal payload hash
     if (approval.payloadHash !== proposal.payloadHash) {
       await this.appendFailureAudit(input, proposal, auth, 'payload_hash_mismatch');
-      return this.fail(baseResult, 'payload_hash_mismatch',
-        'Approval payload hash does not match proposal', input);
+      return this.fail(
+        baseResult,
+        'payload_hash_mismatch',
+        'Approval payload hash does not match proposal',
+        input,
+      );
     }
 
     // Verify operation is supported
     if (proposal.operation !== 'create_rule') {
       await this.appendFailureAudit(input, proposal, auth, 'unsupported_operation');
-      return this.fail(baseResult, 'unsupported_operation',
-        `Proposal operation "${proposal.operation}" is not supported`, input);
+      return this.fail(
+        baseResult,
+        'unsupported_operation',
+        `Proposal operation "${proposal.operation}" is not supported`,
+        input,
+      );
     }
 
     if (approval.status === 'consumed') {
       await this.appendFailureAudit(input, proposal, auth, 'approval_consumed');
-      return this.fail(baseResult, 'approval_consumed', 'Approval has already been consumed', input);
+      return this.fail(
+        baseResult,
+        'approval_consumed',
+        'Approval has already been consumed',
+        input,
+      );
     }
 
     if (approval.status === 'expired' || new Date(approval.expiresAt).getTime() <= Date.now()) {
@@ -498,8 +520,12 @@ export class RuleMutationService {
     } catch (err) {
       await this.recordFailure(input, err);
       await this.appendFailureAudit(input, proposal, auth, 'approval_consumption_failed');
-      return this.fail(baseResult, 'approval_consumption_failed',
-        err instanceof Error ? err.message : 'Failed to consume approval', input);
+      return this.fail(
+        baseResult,
+        'approval_consumption_failed',
+        err instanceof Error ? err.message : 'Failed to consume approval',
+        input,
+      );
     }
 
     // =====================================================================
@@ -536,10 +562,18 @@ export class RuleMutationService {
       snapshotResult = await this.ledger.synchronize();
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth,
-        err instanceof Error ? err.message : 'sync_failed');
-      return this.fail(baseResult, 'sync_failed',
-        err instanceof Error ? err.message : 'Synchronization failed', input);
+      await this.appendFailureAudit(
+        input,
+        proposal,
+        auth,
+        err instanceof Error ? err.message : 'sync_failed',
+      );
+      return this.fail(
+        baseResult,
+        'sync_failed',
+        err instanceof Error ? err.message : 'Synchronization failed',
+        input,
+      );
     }
 
     const { snapshot } = snapshotResult;
@@ -561,10 +595,18 @@ export class RuleMutationService {
       ruleInput = this.extractRuleInput(proposal);
     } catch (e) {
       await this.recordFailure(input, e);
-      await this.appendFailureAudit(input, proposal, auth,
-        e instanceof Error ? e.message : 'invalid_preconditions');
-      return this.fail(baseResult, 'invalid_preconditions',
-        e instanceof Error ? e.message : 'Proposal preconditions are invalid', input);
+      await this.appendFailureAudit(
+        input,
+        proposal,
+        auth,
+        e instanceof Error ? e.message : 'invalid_preconditions',
+      );
+      return this.fail(
+        baseResult,
+        'invalid_preconditions',
+        e instanceof Error ? e.message : 'Proposal preconditions are invalid',
+        input,
+      );
     }
 
     let plan: RuleMutationPlan;
@@ -572,10 +614,18 @@ export class RuleMutationService {
       plan = this.rust.planCreateRule(ruleInput, snapshot);
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth,
-        err instanceof Error ? err.message : 'plan_failed');
-      return this.fail(baseResult, 'plan_failed',
-        err instanceof Error ? err.message : 'Rule mutation planning failed', input);
+      await this.appendFailureAudit(
+        input,
+        proposal,
+        auth,
+        err instanceof Error ? err.message : 'plan_failed',
+      );
+      return this.fail(
+        baseResult,
+        'plan_failed',
+        err instanceof Error ? err.message : 'Rule mutation planning failed',
+        input,
+      );
     }
 
     // =====================================================================
@@ -585,8 +635,12 @@ export class RuleMutationService {
     if (!plan.preconditions.ruleNameAvailable) {
       await this.recordFailure(input, new Error('Rule name is not available'));
       await this.appendFailureAudit(input, proposal, auth, 'rule_name_conflict');
-      return this.fail(baseResult, 'rule_name_conflict',
-        `A rule with the name "${plan.ruleName}" already exists`, input);
+      return this.fail(
+        baseResult,
+        'rule_name_conflict',
+        `A rule with the name "${plan.ruleName}" already exists`,
+        input,
+      );
     }
 
     // =====================================================================
@@ -605,10 +659,18 @@ export class RuleMutationService {
       );
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth,
-        err instanceof Error ? err.message : 'simulation_failed');
-      return this.fail(baseResult, 'simulation_failed',
-        err instanceof Error ? err.message : 'Rule simulation failed', input);
+      await this.appendFailureAudit(
+        input,
+        proposal,
+        auth,
+        err instanceof Error ? err.message : 'simulation_failed',
+      );
+      return this.fail(
+        baseResult,
+        'simulation_failed',
+        err instanceof Error ? err.message : 'Rule simulation failed',
+        input,
+      );
     }
 
     // Proposals cannot execute without simulation evidence
@@ -616,8 +678,12 @@ export class RuleMutationService {
       baseResult.simulation = simulation;
       await this.recordFailure(input, new Error('Rule would match zero transactions'));
       await this.appendFailureAudit(input, proposal, auth, 'simulation_no_matches');
-      return this.fail(baseResult, 'simulation_no_matches',
-        'Rule simulation matched zero transactions — no evidence for execution', input);
+      return this.fail(
+        baseResult,
+        'simulation_no_matches',
+        'Rule simulation matched zero transactions — no evidence for execution',
+        input,
+      );
     }
 
     // Surface conflicts from overlapping rules
@@ -625,14 +691,17 @@ export class RuleMutationService {
       baseResult.simulation = simulation;
       await this.recordFailure(input, new Error('Simulation revealed conflicts'));
       await this.appendFailureAudit(input, proposal, auth, 'simulation_conflicts');
-      return this.fail(baseResult, 'simulation_conflicts',
-        `Rule simulation revealed conflicts: ${simulation.conflicts.join('; ')}`, input);
+      return this.fail(
+        baseResult,
+        'simulation_conflicts',
+        `Rule simulation revealed conflicts: ${simulation.conflicts.join('; ')}`,
+        input,
+      );
     }
 
     // =====================================================================
     // 12. Write via ledger.createRule
     // =====================================================================
-
 
     let writeResult: MutationResult;
     try {
@@ -640,8 +709,12 @@ export class RuleMutationService {
     } catch (err) {
       await this.recordFailure(input, err);
       await this.auditFailure(input, proposal, auth, err);
-      return this.fail(baseResult, 'write_failed',
-        err instanceof Error ? err.message : 'Write operation failed', input);
+      return this.fail(
+        baseResult,
+        'write_failed',
+        err instanceof Error ? err.message : 'Write operation failed',
+        input,
+      );
     }
 
     if (!writeResult.success) {
@@ -664,8 +737,12 @@ export class RuleMutationService {
       // Write happened but we can't verify
       await this.recordFailure(input, err);
       await this.appendFailureAudit(input, proposal, auth, 'reread_failed');
-      return this.fail(baseResult, 'reread_failed',
-        err instanceof Error ? err.message : 'Post-write reread failed', input);
+      return this.fail(
+        baseResult,
+        'reread_failed',
+        err instanceof Error ? err.message : 'Post-write reread failed',
+        input,
+      );
     }
 
     let verified = false;
@@ -705,7 +782,6 @@ export class RuleMutationService {
         // Non-fatal
       }
     }
-
 
     // =====================================================================
     // 14. Append completion or failure audit
@@ -755,7 +831,6 @@ export class RuleMutationService {
     };
   }
 
-
   /**
    * Extract rule name from proposal preconditions.
    * Supports both flat format ({ name }) and nativeRule-nested ({ nativeRule: { name } }).
@@ -770,9 +845,10 @@ export class RuleMutationService {
     }
 
     // Support both flat format and nativeRule-nested format
-    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
-      ? parsed.nativeRule as Record<string, unknown>
-      : parsed;
+    const ruleData: Record<string, unknown> =
+      parsed.nativeRule && typeof parsed.nativeRule === 'object'
+        ? (parsed.nativeRule as Record<string, unknown>)
+        : parsed;
 
     const name = ruleData.name;
     if (typeof name !== 'string' || name.trim().length === 0) {
@@ -795,9 +871,10 @@ export class RuleMutationService {
     }
 
     // Support both flat format and nativeRule-nested format
-    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
-      ? parsed.nativeRule as Record<string, unknown>
-      : parsed;
+    const ruleData: Record<string, unknown> =
+      parsed.nativeRule && typeof parsed.nativeRule === 'object'
+        ? (parsed.nativeRule as Record<string, unknown>)
+        : parsed;
 
     const name = ruleData.name;
     if (typeof name !== 'string' || name.trim().length === 0) {
@@ -828,7 +905,8 @@ export class RuleMutationService {
   private deniedReasonCode(auth: AuthorizationResult): string {
     if (auth.membershipStatus !== 'active') return 'member_inactive';
     if (auth.disposition.kind === 'denied') {
-      if (auth.disposition.reason.startsWith('Missing capability')) return 'insufficient_capability';
+      if (auth.disposition.reason.startsWith('Missing capability'))
+        return 'insufficient_capability';
       if (auth.disposition.reason.startsWith('Scope')) return 'insufficient_scope';
     }
     return 'authorization_denied';
@@ -863,7 +941,6 @@ export class RuleMutationService {
       // Non-fatal
     }
   }
-
 
   /**
    * Append an execution_failed audit record after a write error (best-effort).
@@ -928,10 +1005,7 @@ export class RuleMutationService {
   /**
    * Build a replay result from a previously completed idempotency record.
    */
-  private replayResult(
-    idem: IdempotencyRecord,
-    input: ExecuteRuleInput,
-  ): ExecuteRuleResult {
+  private replayResult(idem: IdempotencyRecord, input: ExecuteRuleInput): ExecuteRuleResult {
     let ruleId: string | null = null;
     try {
       const effect = JSON.parse(idem.serialisedEffect);
@@ -954,7 +1028,6 @@ export class RuleMutationService {
     };
   }
 
-
   /**
    * Build a RuleProposal for ledger.createRule from proposal preconditions,
    * supporting both flat format ({ name, conditions, actions, conditionsOp, stage })
@@ -972,9 +1045,10 @@ export class RuleMutationService {
     }
 
     // Support both flat format and nativeRule-nested format
-    const ruleData: Record<string, unknown> = parsed.nativeRule && typeof parsed.nativeRule === 'object'
-      ? parsed.nativeRule as Record<string, unknown>
-      : parsed;
+    const ruleData: Record<string, unknown> =
+      parsed.nativeRule && typeof parsed.nativeRule === 'object'
+        ? (parsed.nativeRule as Record<string, unknown>)
+        : parsed;
 
     const name = ruleData.name;
     if (typeof name !== 'string' || name.trim().length === 0) {
@@ -993,9 +1067,7 @@ export class RuleMutationService {
 
     const stageVal = ruleData.stage;
     const stage: 'pre' | 'post' | undefined =
-      stageVal === 'pre' ? 'pre' :
-      stageVal === 'post' ? 'post' :
-      undefined;
+      stageVal === 'pre' ? 'pre' : stageVal === 'post' ? 'post' : undefined;
 
     return {
       name: name.trim(),
@@ -1005,5 +1077,4 @@ export class RuleMutationService {
       stage,
     };
   }
-
- }
+}

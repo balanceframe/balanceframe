@@ -28,7 +28,13 @@ import {
   reviewGroupAnalysis,
 } from '../src/analysis';
 import { ReasonCodes } from '../src/errors';
-import { type ResponseEnvelope, AuthorizationContext, ErrorInfo, errorResponse, okResponse } from '../src/envelope';
+import {
+  type ResponseEnvelope,
+  AuthorizationContext,
+  ErrorInfo,
+  errorResponse,
+  okResponse,
+} from '../src/envelope';
 import { type Money } from '@balanceframe/protocol-generated';
 
 // ---------------------------------------------------------------------------
@@ -191,7 +197,7 @@ function mockProtocol(): {
         total: reviewIds.length,
         succeeded: reviewIds.length,
         failed: 0,
-        results: reviewIds.map(id => ({
+        results: reviewIds.map((id) => ({
           reviewId: id,
           action: 'approved',
           status: 'ok' as const,
@@ -204,7 +210,7 @@ function mockProtocol(): {
     async reviewGroup(ledger, reviewIds, options) {
       calls.reviewGroup.push({ ledger, reviewIds, options });
       return {
-        items: reviewIds.map(id => mockReviewItem({ reviewId: id })),
+        items: reviewIds.map((id) => mockReviewItem({ reviewId: id })),
         homogeneous: true,
         totalAmount: mockMoney('10000', 'USD'),
         itemCount: reviewIds.length,
@@ -348,14 +354,23 @@ describe('routeCommand — review action routing', () => {
 // ---------------------------------------------------------------------------
 
 describe('routeCommand — observe mode blocks review actions', () => {
-  const reviewActions = ['approve', 'correct', 'reject', 'skip', 'undo', 'approve-bulk', 'group'] as const;
+  const reviewActions = [
+    'approve',
+    'correct',
+    'reject',
+    'skip',
+    'undo',
+    'approve-bulk',
+    'group',
+  ] as const;
 
   for (const action of reviewActions) {
-    const args = action === 'approve-bulk' || action === 'group'
-      ? ['reviews', action, 'rev_abc', 'rev_def']
-      : action === 'correct'
-      ? ['reviews', action, 'rev_abc', 'cat_xyz']
-      : ['reviews', action, 'rev_abc'];
+    const args =
+      action === 'approve-bulk' || action === 'group'
+        ? ['reviews', action, 'rev_abc', 'rev_def']
+        : action === 'correct'
+          ? ['reviews', action, 'rev_abc', 'cat_xyz']
+          : ['reviews', action, 'rev_abc'];
     const cmdName = `reviews.${action}`;
 
     it(`blocks '${cmdName}' in observe mode`, () => {
@@ -473,16 +488,36 @@ describe('review handler — observe mode blocks review actions', () => {
 
 function throwingProtocol(): AnalysisProtocol {
   return {
-    async pendingReview() { return {} as PendingReviewResult; },
-    async reviewShow() { return {} as ReviewDetailResult; },
-    async budgetSummary() { return {} as BudgetSummaryResult; },
-    async reviewApprove() { throw new Error('Provider unreachable'); },
-    async reviewCorrect() { throw new Error('Provider unreachable'); },
-    async reviewReject() { throw new Error('Provider unreachable'); },
-    async reviewSkip() { throw new Error('Provider unreachable'); },
-    async reviewUndo() { throw new Error('Provider unreachable'); },
-    async reviewApproveBulk() { throw new Error('Provider unreachable'); },
-    async reviewGroup() { throw new Error('Provider unreachable'); },
+    async pendingReview() {
+      return {} as PendingReviewResult;
+    },
+    async reviewShow() {
+      return {} as ReviewDetailResult;
+    },
+    async budgetSummary() {
+      return {} as BudgetSummaryResult;
+    },
+    async reviewApprove() {
+      throw new Error('Provider unreachable');
+    },
+    async reviewCorrect() {
+      throw new Error('Provider unreachable');
+    },
+    async reviewReject() {
+      throw new Error('Provider unreachable');
+    },
+    async reviewSkip() {
+      throw new Error('Provider unreachable');
+    },
+    async reviewUndo() {
+      throw new Error('Provider unreachable');
+    },
+    async reviewApproveBulk() {
+      throw new Error('Provider unreachable');
+    },
+    async reviewGroup() {
+      throw new Error('Provider unreachable');
+    },
   };
 }
 
@@ -517,9 +552,15 @@ describe('review handler — provider failure returns analysis_failed', () => {
 
 describe('Analysis-only protocol compatibility', () => {
   const analysisOnlyProtocol: AnalysisProtocol = {
-    async pendingReview() { return {} as PendingReviewResult; },
-    async reviewShow() { return {} as ReviewDetailResult; },
-    async budgetSummary() { return {} as BudgetSummaryResult; },
+    async pendingReview() {
+      return {} as PendingReviewResult;
+    },
+    async reviewShow() {
+      return {} as ReviewDetailResult;
+    },
+    async budgetSummary() {
+      return {} as BudgetSummaryResult;
+    },
   };
 
   const cases: Array<{
@@ -603,16 +644,36 @@ describe('reviewApproveAnalysis', () => {
 
   it('returns error envelope when protocol throws', async () => {
     const protocol: AnalysisProtocol = {
-      async pendingReview() { return {} as PendingReviewResult; },
-      async reviewShow() { return {} as ReviewDetailResult; },
-      async budgetSummary() { return {} as BudgetSummaryResult; },
-      async reviewApprove() { throw new Error('Protocol unavailable'); },
-      async reviewCorrect() { return {} as ReviewActionResult; },
-      async reviewReject() { return {} as ReviewActionResult; },
-      async reviewSkip() { return {} as ReviewActionResult; },
-      async reviewUndo() { return {} as ReviewActionResult; },
-      async reviewApproveBulk() { return {} as ReviewBulkActionResult; },
-      async reviewGroup() { return {} as ReviewGroupResult; },
+      async pendingReview() {
+        return {} as PendingReviewResult;
+      },
+      async reviewShow() {
+        return {} as ReviewDetailResult;
+      },
+      async budgetSummary() {
+        return {} as BudgetSummaryResult;
+      },
+      async reviewApprove() {
+        throw new Error('Protocol unavailable');
+      },
+      async reviewCorrect() {
+        return {} as ReviewActionResult;
+      },
+      async reviewReject() {
+        return {} as ReviewActionResult;
+      },
+      async reviewSkip() {
+        return {} as ReviewActionResult;
+      },
+      async reviewUndo() {
+        return {} as ReviewActionResult;
+      },
+      async reviewApproveBulk() {
+        return {} as ReviewBulkActionResult;
+      },
+      async reviewGroup() {
+        return {} as ReviewGroupResult;
+      },
     };
     const input = baseInput({ analysisProtocol: protocol });
     const envelope = await reviewApproveAnalysis(input, 'rev_abc');
@@ -647,7 +708,13 @@ describe('reviewCorrectAnalysis', () => {
     const { protocol } = mockProtocol();
     const input = baseInput({
       analysisProtocol: protocol,
-      freshness: { actualDownloadedAt: '2026-06-01T00:00:00Z', bankSyncedAt: null, pendingTransactionsIncluded: false, stalenessDays: 30, isStale: true },
+      freshness: {
+        actualDownloadedAt: '2026-06-01T00:00:00Z',
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 30,
+        isStale: true,
+      },
     });
     const envelope = await reviewCorrectAnalysis(input, 'rev_abc', 'cat_xyz');
     expect(envelope.status).toBe('error');
@@ -790,7 +857,13 @@ describe('Review action error guard parity', () => {
       const { protocol } = mockProtocol();
       const input = baseInput({
         analysisProtocol: protocol,
-        freshness: { actualDownloadedAt: '2026-06-01T00:00:00Z', bankSyncedAt: null, pendingTransactionsIncluded: false, stalenessDays: 30, isStale: true },
+        freshness: {
+          actualDownloadedAt: '2026-06-01T00:00:00Z',
+          bankSyncedAt: null,
+          pendingTransactionsIncluded: false,
+          stalenessDays: 30,
+          isStale: true,
+        },
       });
       const envelope = await handler(input);
       expect(envelope.status).toBe('error');
@@ -814,7 +887,16 @@ describe('Review action error guard parity', () => {
 
   it('approve-bulk shares the same error guards', async () => {
     const { protocol } = mockProtocol();
-    const input = baseInput({ analysisProtocol: protocol, freshness: { actualDownloadedAt: '2026-06-01T00:00:00Z', bankSyncedAt: null, pendingTransactionsIncluded: false, stalenessDays: 30, isStale: true } });
+    const input = baseInput({
+      analysisProtocol: protocol,
+      freshness: {
+        actualDownloadedAt: '2026-06-01T00:00:00Z',
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 30,
+        isStale: true,
+      },
+    });
     const envelope = await reviewApproveBulkAnalysis(input, ['rev_test']);
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('stale_snapshot');
@@ -822,7 +904,16 @@ describe('Review action error guard parity', () => {
 
   it('group shares the same error guards', async () => {
     const { protocol } = mockProtocol();
-    const input = baseInput({ analysisProtocol: protocol, freshness: { actualDownloadedAt: '2026-06-01T00:00:00Z', bankSyncedAt: null, pendingTransactionsIncluded: false, stalenessDays: 30, isStale: true } });
+    const input = baseInput({
+      analysisProtocol: protocol,
+      freshness: {
+        actualDownloadedAt: '2026-06-01T00:00:00Z',
+        bankSyncedAt: null,
+        pendingTransactionsIncluded: false,
+        stalenessDays: 30,
+        isStale: true,
+      },
+    });
     const envelope = await reviewGroupAnalysis(input, ['rev_test']);
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('stale_snapshot');

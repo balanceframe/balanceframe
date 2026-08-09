@@ -4,8 +4,12 @@
       <div class="flex items-start gap-2 min-w-0">
         <span class="shrink-0 mt-0.5" :class="severityIcon" :style="{ color: severityColor }" />
         <div class="min-w-0">
-          <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{{ finding.title }}</h4>
-          <p v-if="finding.category" class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{{ finding.category }}</p>
+          <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+            {{ finding.title }}
+          </h4>
+          <p v-if="finding.category" class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            {{ finding.category }}
+          </p>
         </div>
       </div>
       <div v-if="finding.amount" class="shrink-0">

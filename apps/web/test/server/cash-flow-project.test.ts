@@ -10,9 +10,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Hoisted mocks
 // ---------------------------------------------------------------------------
 
-const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol } = vi.hoisted(() => ({
+const {
+  mockRestore,
+  mockWithConnection,
+  mockCreateDefaultConnectionManager,
+  mockCreateNativeAnalysisProtocol,
+} = vi.hoisted(() => ({
   mockRestore: vi.fn(),
-  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
+  mockWithConnection: vi.fn(),
+  mockCreateDefaultConnectionManager: vi.fn(() => ({
+    restore: mockRestore,
+    withConnection: mockWithConnection,
+  })),
   mockCreateNativeAnalysisProtocol: vi.fn(),
 }));
 
@@ -45,9 +54,17 @@ vi.mock('h3', () => ({
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: vi.fn(() => ({ store: {} })),
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'test-actor',
+    capability: 'observe',
+    allowed: true,
+  })),
   getActorId: vi.fn(() => 'test-actor'),
-  sanitizeError: vi.fn((err, requestId, code, retryable) => ({ code, message: String(err), retryable })),
+  sanitizeError: vi.fn((err, requestId, code, retryable) => ({
+    code,
+    message: String(err),
+    retryable,
+  })),
   okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
@@ -57,7 +74,13 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result,
     error: null,
   }),
-  errorEnvelope: (code: string, message: string, _auth: unknown, retryable?: boolean, requestId?: string) => ({
+  errorEnvelope: (
+    code: string,
+    message: string,
+    _auth: unknown,
+    retryable?: boolean,
+    requestId?: string,
+  ) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
     status: 'error' as const,
@@ -66,7 +89,9 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result: null,
     error: { code, message, retryable: retryable ?? false },
   }),
-  envelopeMetadata: (envelope: { dataFreshness?: unknown }) => ({ dataFreshness: envelope.dataFreshness ?? null }),
+  envelopeMetadata: (envelope: { dataFreshness?: unknown }) => ({
+    dataFreshness: envelope.dataFreshness ?? null,
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -88,6 +113,9 @@ describe('GET /api/cash-flow/project', () => {
       budget: { id: 'budget_test', groupId: 'group_test', name: 'Test', encrypted: false },
       synchronization: {},
     });
+    mockWithConnection.mockImplementation(
+      async (operation: (connected: unknown) => Promise<unknown>) => operation(await mockRestore()),
+    );
     mockCreateNativeAnalysisProtocol.mockResolvedValue({
       cashFlowProjection: vi.fn(),
     });

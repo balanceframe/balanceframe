@@ -88,9 +88,7 @@ describe('auth.global middleware — session check', () => {
   });
 
   it('bypasses session check for /api/auth/* routes', async () => {
-    const result = await authMiddleware(
-      mockRoute({ path: '/api/auth/get-session' }),
-    );
+    const result = await authMiddleware(mockRoute({ path: '/api/auth/get-session' }));
     expect(result).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
   });

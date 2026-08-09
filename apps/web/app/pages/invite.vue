@@ -3,9 +3,7 @@
     <UCard class="w-full max-w-md">
       <template #header>
         <h1 class="text-2xl font-bold">BalanceFrame</h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Create your account
-        </p>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Create your account</p>
       </template>
 
       <div v-if="!token" class="text-center py-4">
@@ -15,12 +13,7 @@
         <UButton to="/login" label="Sign in" size="lg" />
       </div>
 
-      <UForm
-        v-else
-        :state="{ name, email, password }"
-        class="space-y-4"
-        @submit="handleRedeem"
-      >
+      <UForm v-else :state="{ name, email, password }" class="space-y-4" @submit="handleRedeem">
         <UFormField label="Name" name="name" required>
           <UInput
             v-model="name"
@@ -59,13 +52,7 @@
           icon="i-heroicons-exclamation-triangle"
         />
 
-        <UButton
-          type="submit"
-          :loading="loading"
-          label="Create account"
-          size="lg"
-          class="w-full"
-        />
+        <UButton type="submit" :loading="loading" label="Create account" size="lg" class="w-full" />
       </UForm>
 
       <template #footer>
@@ -148,7 +135,8 @@ async function handleRedeem() {
     await navigateTo('/login');
   } catch (e: unknown) {
     // Extract structured error data from the $fetch response
-    const errorData = (e as { data?: { error?: { message?: string; retryable?: boolean } } })?.data?.error;
+    const errorData = (e as { data?: { error?: { message?: string; retryable?: boolean } } })?.data
+      ?.error;
     const serverMessage = errorData?.message;
     const msg =
       serverMessage ||

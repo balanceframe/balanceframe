@@ -13,7 +13,10 @@
 
 import type { ReviewItem } from '@balanceframe/workflow-store';
 import {
-  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
   buildReviewQueueItem,
 } from '../../utils/workflow-store';
 import type { ReviewQueueItem } from '../../utils/workflow-store';
@@ -37,16 +40,9 @@ export default defineEventHandler(async (event) => {
     const pendingTotal = await wf.store.countReviewItems({ status: 'pending_review' });
     const correctingTotal = await wf.store.countReviewItems({ status: 'correcting' });
 
-    return okEnvelope(
-      { items: queueItems, total: pendingTotal + correctingTotal },
-      authInfo,
-    );
+    return okEnvelope({ items: queueItems, total: pendingTotal + correctingTotal }, authInfo);
   } catch (e) {
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'LIST_FAILED',
-      e instanceof Error ? e.message : String(e),
-      authInfo,
-    );
+    return errorEnvelope('LIST_FAILED', e instanceof Error ? e.message : String(e), authInfo);
   }
 });

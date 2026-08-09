@@ -6,11 +6,7 @@
           Rule Details
         </h2>
         <div class="flex items-center gap-2">
-          <UBadge
-            :color="rule.inactive ? 'neutral' : 'success'"
-            variant="solid"
-            size="sm"
-          >
+          <UBadge :color="rule.inactive ? 'neutral' : 'success'" variant="solid" size="sm">
             {{ rule.inactive ? 'Inactive' : 'Active' }}
           </UBadge>
           <span class="text-xs text-gray-400">#{{ rule.order }}</span>
@@ -22,14 +18,7 @@
           >
             {{ rule.inactive ? 'Activate' : 'Deactivate' }}
           </UButton>
-          <UButton
-            size="xs"
-            color="error"
-            variant="outline"
-            @click="deleteRule"
-          >
-            Delete
-          </UButton>
+          <UButton size="xs" color="error" variant="outline" @click="deleteRule"> Delete </UButton>
         </div>
       </div>
     </template>
@@ -56,12 +45,7 @@
       <!-- State badge -->
       <div v-if="proposalState">
         <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400">Proposal State</h3>
-        <UBadge
-          :color="stateBadgeColor"
-          variant="solid"
-          size="sm"
-          class="mt-1"
-        >
+        <UBadge :color="stateBadgeColor" variant="solid" size="sm" class="mt-1">
           {{ proposalState }}
         </UBadge>
         <p v-if="stateDescription" class="text-xs text-gray-500 dark:text-gray-400 mt-1">
@@ -72,13 +56,17 @@
       <!-- Trigger conditions -->
       <div v-if="rule.trigger">
         <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400">Trigger</h3>
-        <pre class="mt-1 text-xs bg-gray-50 dark:bg-gray-800 rounded-md p-3 overflow-x-auto font-mono">{{ formatJson(rule.trigger) }}</pre>
+        <pre
+          class="mt-1 text-xs bg-gray-50 dark:bg-gray-800 rounded-md p-3 overflow-x-auto font-mono"
+          >{{ formatJson(rule.trigger) }}</pre>
       </div>
 
       <!-- Actions -->
       <div v-if="rule.actions">
         <h3 class="text-sm font-medium text-gray-500 dark:text-gray-400">Actions</h3>
-        <pre class="mt-1 text-xs bg-gray-50 dark:bg-gray-800 rounded-md p-3 overflow-x-auto font-mono">{{ formatJson(rule.actions) }}</pre>
+        <pre
+          class="mt-1 text-xs bg-gray-50 dark:bg-gray-800 rounded-md p-3 overflow-x-auto font-mono"
+          >{{ formatJson(rule.actions) }}</pre>
       </div>
 
       <!-- Simulation evidence -->
@@ -118,7 +106,9 @@
 
         <!-- Category distribution -->
         <div v-if="distributionItems.length > 0">
-          <h4 class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+          <h4
+            class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2"
+          >
             Category Distribution
           </h4>
           <div class="space-y-1">
@@ -141,7 +131,9 @@
 
         <!-- Conflicts -->
         <div v-if="simulation.conflicts.length > 0">
-          <h4 class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+          <h4
+            class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2"
+          >
             Rule Overlap / Conflicts
           </h4>
           <ul class="space-y-1">
@@ -157,7 +149,9 @@
 
         <!-- Example transactions -->
         <div v-if="simulation.examples.length > 0">
-          <h4 class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
+          <h4
+            class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2"
+          >
             Example Matches
           </h4>
           <div class="space-y-2 max-h-64 overflow-y-auto">
@@ -168,7 +162,9 @@
             >
               <div class="flex justify-between">
                 <span class="font-medium">{{ ex.payee ?? 'Unknown' }}</span>
-                <span :class="ex.wouldChange ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500'">
+                <span
+                  :class="ex.wouldChange ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500'"
+                >
                   {{ formatAmount(ex.amount) }}
                 </span>
               </div>
@@ -179,19 +175,14 @@
                 </span>
               </div>
             </div>
-            <p
-              v-if="simulation.examples.length > 5"
-              class="text-xs text-gray-400 text-center pt-1"
-            >
+            <p v-if="simulation.examples.length > 5" class="text-xs text-gray-400 text-center pt-1">
               +{{ simulation.examples.length - 5 }} more
             </p>
           </div>
         </div>
 
         <!-- Simulated at timestamp -->
-        <p class="text-xs text-gray-400">
-          Simulated: {{ formatDate(simulation.simulatedAt) }}
-        </p>
+        <p class="text-xs text-gray-400">Simulated: {{ formatDate(simulation.simulatedAt) }}</p>
       </template>
 
       <!-- Missing simulation warning -->
@@ -289,32 +280,44 @@ const distributionItems = computed(() => {
 
 const conflictColor = computed(() => {
   const n = props.simulation?.conflicts.length ?? 0;
-  return n > 0
-    ? 'text-red-600 dark:text-red-400'
-    : 'text-green-600 dark:text-green-400';
+  return n > 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400';
 });
 
 const stateBadgeColor = computed(() => {
   switch (props.proposalState) {
-    case 'proposal': return 'primary';
-    case 'approved': return 'success';
-    case 'executing': return 'warning';
-    case 'verified': return 'success';
-    case 'failed': return 'error';
-    case 'stale': return 'neutral';
-    default: return 'neutral';
+    case 'proposal':
+      return 'primary';
+    case 'approved':
+      return 'success';
+    case 'executing':
+      return 'warning';
+    case 'verified':
+      return 'success';
+    case 'failed':
+      return 'error';
+    case 'stale':
+      return 'neutral';
+    default:
+      return 'neutral';
   }
 });
 
 const stateDescription = computed(() => {
   switch (props.proposalState) {
-    case 'proposal': return 'Proposed — awaiting approval and execution.';
-    case 'approved': return 'Approved — ready for execution.';
-    case 'executing': return 'Currently being applied to the ledger.';
-    case 'verified': return 'Applied and verified against the ledger snapshot.';
-    case 'failed': return 'Execution failed — review the audit trail for details.';
-    case 'stale': return 'The simulation evidence has expired. Re-run simulation before approving.';
-    default: return null;
+    case 'proposal':
+      return 'Proposed — awaiting approval and execution.';
+    case 'approved':
+      return 'Approved — ready for execution.';
+    case 'executing':
+      return 'Currently being applied to the ledger.';
+    case 'verified':
+      return 'Applied and verified against the ledger snapshot.';
+    case 'failed':
+      return 'Execution failed — review the audit trail for details.';
+    case 'stale':
+      return 'The simulation evidence has expired. Re-run simulation before approving.';
+    default:
+      return null;
   }
 });
 

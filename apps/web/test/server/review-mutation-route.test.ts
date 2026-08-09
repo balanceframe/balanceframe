@@ -59,7 +59,9 @@ const BASE_CREATE: CreateReviewItemInput = {
 
 function tickSync(): void {
   const end = Date.now() + 5;
-  while (Date.now() < end) { /* spin */ }
+  while (Date.now() < end) {
+    /* spin */
+  }
 }
 
 async function seedPendingReview(
@@ -212,7 +214,13 @@ describe('Observe mode — route behavior contract', () => {
   it('errorEnvelope still works for error paths', async () => {
     const ev = mockEvent({ authenticated: true });
     const authInfo = buildAuthorizationInfo(ev, 'categorization:execute');
-    const envelope = errorEnvelope('NOT_FOUND', 'Review item not found', authInfo, false, 'err-req');
+    const envelope = errorEnvelope(
+      'NOT_FOUND',
+      'Review item not found',
+      authInfo,
+      false,
+      'err-req',
+    );
     expect(envelope.status).toBe('error');
     expect(envelope.error?.code).toBe('NOT_FOUND');
     expect(envelope.error?.retryable).toBe(false);
@@ -439,11 +447,7 @@ describe('reviewAndApply mode — route behavior contract', () => {
 
     const executor = getReviewMutationExecutor()!;
     const reviewItem = await store.getReviewItem(item.id);
-    await executor(
-      { reviewId: item.id, actorId, requestId: 'test-req' },
-      store,
-      reviewItem!,
-    );
+    await executor({ reviewId: item.id, actorId, requestId: 'test-req' }, store, reviewItem!);
 
     expect(capturedActorId).toBe(ACTOR);
     expect(capturedActorId).not.toBe('anonymous');
@@ -929,13 +933,7 @@ describe('mutation state transitions', () => {
       };
     };
 
-    await applyReviewMutationWithTransition(
-      store,
-      item.id,
-      actorId,
-      executor,
-      'test-auth',
-    );
+    await applyReviewMutationWithTransition(store, item.id, actorId, executor, 'test-auth');
 
     expect(capturedActorId).toBe(ACTOR);
     expect(capturedActorId).not.toBe('anonymous');

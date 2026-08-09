@@ -9,9 +9,20 @@
  */
 
 import { defineEventHandler, setResponseStatus, getQuery } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, requireAuthorization, getActorId } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  requireAuthorization,
+  getActorId,
+} from '../../utils/workflow-store';
 import type { OutboxStatus } from '@balanceframe/workflow-store';
-import { NotificationRuntime, InAppChannelAdapter, type NotificationPolicy } from '@balanceframe/application';
+import {
+  NotificationRuntime,
+  InAppChannelAdapter,
+  type NotificationPolicy,
+} from '@balanceframe/application';
 
 // Module-level singleton (lazy-initialised)
 let runtime: NotificationRuntime | null = null;
@@ -23,7 +34,9 @@ function getRuntime(store: ReturnType<typeof getWorkflowStore>): NotificationRun
     policyVersion: 'v1',
     eligibility: [],
     recipients: [],
-    channels: [{ type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' }],
+    channels: [
+      { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+    ],
     redaction: { public: { visibleFields: ['title', 'summary'] } },
     maxRetries: 3,
     defaultRedactionClass: 'public',
@@ -61,7 +74,13 @@ export default defineEventHandler(async (event) => {
     const actorId = getActorId(event);
     const query = getQuery(event) as InboxQuery;
 
-    const validStatuses: OutboxStatus[] = ['pending', 'delivering', 'delivered', 'failed', 'suppressed'];
+    const validStatuses: OutboxStatus[] = [
+      'pending',
+      'delivering',
+      'delivered',
+      'failed',
+      'suppressed',
+    ];
     const statusFilter: OutboxStatus | undefined =
       query.status && validStatuses.includes(query.status as OutboxStatus)
         ? (query.status as OutboxStatus)

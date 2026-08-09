@@ -49,7 +49,7 @@ const PUBLIC_API_ALLOWLIST = [
 if (process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true') {
   console.warn(
     '[auth] WARNING: Development auth bypass is ACTIVE via BALANCEFRAME_DEV_BYPASS_AUTH. ' +
-    'This should only be enabled in local development environments.',
+      'This should only be enabled in local development environments.',
   );
 }
 // ---------------------------------------------------------------------------
@@ -106,7 +106,6 @@ function readConfig(event: EventWithContext): Record<string, unknown> {
   }
 }
 
-
 function setAuthContext(
   event: EventWithContext,
   actorId: string,
@@ -115,8 +114,7 @@ function setAuthContext(
   // Better Auth's user ID is the canonical workflow/notification member key.
   // Keep legacy actor IDs for token and dev-bypass flows, but never let a
   // stale fallback replace the identity carried by an authenticated session.
-  const canonicalActorId =
-    typeof user?.id === 'string' && user.id.length > 0 ? user.id : actorId;
+  const canonicalActorId = typeof user?.id === 'string' && user.id.length > 0 ? user.id : actorId;
   const ctx: {
     authenticated: true;
     actorId: string;
@@ -129,18 +127,13 @@ function setAuthContext(
   event.context.auth = ctx;
 }
 
-function validateSessionToken(
-  token: string,
-  apiToken: string,
-): Record<string, unknown> | null {
+function validateSessionToken(token: string, apiToken: string): Record<string, unknown> | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   const [encHeader, encPayload, encSignature] = parts as [string, string, string];
   const signingInput = `${encHeader}.${encPayload}`;
 
-  const expectedSig = createHmac('sha256', apiToken)
-    .update(signingInput)
-    .digest('base64url');
+  const expectedSig = createHmac('sha256', apiToken).update(signingInput).digest('base64url');
 
   const sigBuf = Buffer.from(encSignature);
   const expectedBuf = Buffer.from(expectedSig);
@@ -179,31 +172,26 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 503);
     return serviceUnavailable(
       `Auth database migration failed: ${authMigrationMessage ?? 'unknown error'}. ` +
-      'Server cannot accept authenticated requests until resolved.',
+        'Server cannot accept authenticated requests until resolved.',
     );
   }
 
   // 3. Check environment configuration.
   const config = readConfig(event);
-  const legacyToken =
-    (config.apiToken as string) || process.env.BALANCEFRAME_API_TOKEN || '';
+  const legacyToken = (config.apiToken as string) || process.env.BALANCEFRAME_API_TOKEN || '';
 
   // 4. Dev bypass (local development only).
   const nodeEnv = process.env.NODE_ENV;
   const bypassRequested =
-    config.devBypassAuth === true ||
-    process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
+    config.devBypassAuth === true || process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
 
   if (bypassRequested) {
     // Never honor bypass in production — guard against misconfiguration.
-    if (
-      !nodeEnv ||
-      (nodeEnv !== 'development' && nodeEnv !== 'test')
-    ) {
+    if (!nodeEnv || (nodeEnv !== 'development' && nodeEnv !== 'test')) {
       setResponseStatus(event, 503);
       return serviceUnavailable(
         'Dev bypass is not allowed in production. ' +
-        'Set NODE_ENV=development or NODE_ENV=test for local development.',
+          'Set NODE_ENV=development or NODE_ENV=test for local development.',
       );
     }
     const actorId = (config.authActorId as string) || 'dev-bypass';

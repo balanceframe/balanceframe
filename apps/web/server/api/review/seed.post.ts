@@ -26,7 +26,6 @@ interface SeedTemplate {
   originalName?: string;
 }
 
-
 /** Human-friendly names for seed category IDs. */
 const CATEGORY_NAMES: Record<string, string> = {
   ID_GROCERIES: 'Groceries',

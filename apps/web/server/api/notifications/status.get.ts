@@ -8,8 +8,18 @@
  */
 
 import { defineEventHandler, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, requireAuthorization } from '../../utils/workflow-store';
-import { NotificationRuntime, InAppChannelAdapter, type NotificationPolicy } from '@balanceframe/application';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  requireAuthorization,
+} from '../../utils/workflow-store';
+import {
+  NotificationRuntime,
+  InAppChannelAdapter,
+  type NotificationPolicy,
+} from '@balanceframe/application';
 import type { WorkflowStore } from '@balanceframe/workflow-store';
 
 /**
@@ -17,15 +27,22 @@ import type { WorkflowStore } from '@balanceframe/workflow-store';
  * Loads the persisted per-space policy and wires store-backed
  * re-authorization using the store's membership data.
  */
-function buildRuntime(
-  wfStore: WorkflowStore,
-  spaceId: string,
-): NotificationRuntime {
+function buildRuntime(wfStore: WorkflowStore, spaceId: string): NotificationRuntime {
   const defaultPolicy: NotificationPolicy = {
     policyVersion: 'v1',
     eligibility: [
       {
-        classifications: ['budget_alert', 'review_complete', 'security_alert', 'data_quality', 'alert', 'recurrence', 'target_risk', 'proposal_transition', 'workflow_result'],
+        classifications: [
+          'budget_alert',
+          'review_complete',
+          'security_alert',
+          'data_quality',
+          'alert',
+          'recurrence',
+          'target_risk',
+          'proposal_transition',
+          'workflow_result',
+        ],
         minSeverity: 'normal',
         requiredCapability: 'notification:receive',
       },
@@ -47,16 +64,14 @@ function buildRuntime(
   const runtime = new NotificationRuntime(wfStore, defaultPolicy, [adapter]);
 
   // Wire store-backed re-authorization using the store's membership data.
-  runtime.setReAuthorizationHook(
-    async (actorId: string, capability: string, _scope: string) => {
-      try {
-        const membership = await wfStore.getActorMembership(actorId);
-        return membership?.capabilities.includes(capability) ?? false;
-      } catch {
-        return false;
-      }
-    },
-  );
+  runtime.setReAuthorizationHook(async (actorId: string, capability: string, _scope: string) => {
+    try {
+      const membership = await wfStore.getActorMembership(actorId);
+      return membership?.capabilities.includes(capability) ?? false;
+    } catch {
+      return false;
+    }
+  });
 
   return runtime;
 }
@@ -97,13 +112,23 @@ export default defineEventHandler(async (event) => {
     const policy = await rt.loadPersistedPolicy('default');
     const recipientCount = policy.recipients.length;
 
-    return okEnvelope({
-      ...status,
-      policyVersion: activePolicyVersion,
-      recipientCount,
-    }, auth.info, requestId);
+    return okEnvelope(
+      {
+        ...status,
+        policyVersion: activePolicyVersion,
+        recipientCount,
+      },
+      auth.info,
+      requestId,
+    );
   } catch (err) {
     setResponseStatus(event, 503);
-    return errorEnvelope('RUNTIME_UNAVAILABLE', 'Notification runtime not available', authInfo, false, requestId);
+    return errorEnvelope(
+      'RUNTIME_UNAVAILABLE',
+      'Notification runtime not available',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 });

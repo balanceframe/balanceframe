@@ -9,9 +9,16 @@
     <template #content>
       <div class="space-y-6">
         <!-- Planning input notice -->
-        <div class="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 flex items-start gap-2">
-          <span class="shrink-0 mt-0.5 i-heroicons-information-circle text-amber-600 dark:text-amber-400" />
-          <p class="text-sm text-amber-700 dark:text-amber-400">These are <strong>planning inputs</strong> derived from schedule patterns, not confirmed ledger facts. Amounts and dates are estimates.</p>
+        <div
+          class="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 flex items-start gap-2"
+        >
+          <span
+            class="shrink-0 mt-0.5 i-heroicons-information-circle text-amber-600 dark:text-amber-400"
+          />
+          <p class="text-sm text-amber-700 dark:text-amber-400">
+            These are <strong>planning inputs</strong> derived from schedule patterns, not confirmed
+            ledger facts. Amounts and dates are estimates.
+          </p>
         </div>
 
         <!-- Summary -->
@@ -22,7 +29,9 @@
 
         <!-- Obligations table -->
         <div v-if="obligations.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Detected Obligations</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Detected Obligations
+          </h3>
           <AnalysisTable :columns="obligationColumns" :rows="obligationRows" />
         </div>
 
@@ -76,7 +85,7 @@ const obligationColumns = [
 ];
 
 const obligationRows = computed(() =>
-  obligations.value.map(o => ({
+  obligations.value.map((o) => ({
     name: o.name,
     typicalAmount: o.typicalAmount,
     kind: o.kind,
@@ -87,16 +96,21 @@ const obligationRows = computed(() =>
 
 onMounted(async () => {
   try {
-    const res = await $fetch<Envelope<{
-      obligations: IrregularObligation[];
-      totalEstimatedAnnual: Amount | null;
-    }>>('/api/obligations');
+    const res = await $fetch<
+      Envelope<{
+        obligations: IrregularObligation[];
+        totalEstimatedAnnual: Amount | null;
+      }>
+    >('/api/obligations');
     if (res.status === 'ok' && res.result) {
       obligations.value = res.result.obligations;
       totalEstimatedAnnual.value = res.result.totalEstimatedAnnual;
       freshness.value = res.dataFreshness;
     } else {
-      error.value = { code: res.error?.code ?? 'UNKNOWN', message: res.error?.message ?? 'Obligations analysis returned an error.' };
+      error.value = {
+        code: res.error?.code ?? 'UNKNOWN',
+        message: res.error?.message ?? 'Obligations analysis returned an error.',
+      };
     }
   } catch (e) {
     error.value = { code: 'FETCH_ERROR', message: String(e) };

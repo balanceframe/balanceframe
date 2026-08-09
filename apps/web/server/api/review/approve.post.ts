@@ -35,7 +35,13 @@ export default defineEventHandler(async (event) => {
     body = (await readBody(event)) ?? {};
   } catch {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_JSON', 'Request body must be valid JSON', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_JSON',
+      'Request body must be valid JSON',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const reviewId = typeof body.reviewId === 'string' ? body.reviewId.trim() : '';
@@ -73,7 +79,13 @@ export default defineEventHandler(async (event) => {
     }
     console.error(`[${requestId}] ${code}: ${outcome.error ?? 'Unknown error'}`);
     setResponseStatus(event, status);
-    return errorEnvelope(code, sanitizeErrorMessage(outcome.error ?? 'Unknown error'), authInfo, false, requestId);
+    return errorEnvelope(
+      code,
+      sanitizeErrorMessage(outcome.error ?? 'Unknown error'),
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   // Only invoke mutation when the item has reached full 'approved' status
@@ -112,7 +124,7 @@ export default defineEventHandler(async (event) => {
         );
       } catch (e) {
         const safe = sanitizeError(e, requestId, 'MUTATION_FAILED', false);
-        setResponseStatus(event, 500);
+        setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
         return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
       }
     }

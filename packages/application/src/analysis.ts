@@ -8,7 +8,6 @@
  * shapes results into CLI envelope outputs.
  */
 
-
 import { ReasonCodes, ApplicationError } from './errors.js';
 import {
   okResponse,
@@ -189,7 +188,6 @@ export async function reviewShowAnalysis(
     return errorResponse(requestId, err);
   }
 
-
   if (!analysisProtocol) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
@@ -240,7 +238,6 @@ export async function budgetSummaryAnalysis(
     return errorResponse(requestId, err);
   }
 
-
   if (!analysisProtocol) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
@@ -277,7 +274,14 @@ export async function budgetSummaryAnalysis(
 async function guardReviewAction(
   input: CommandInput,
 ): Promise<
-  | { ok: true; requestId: string; actorId: string; ledger: unknown; freshness: DataFreshness | null; analysisProtocol: AnalysisProtocol }
+  | {
+      ok: true;
+      requestId: string;
+      actorId: string;
+      ledger: unknown;
+      freshness: DataFreshness | null;
+      analysisProtocol: AnalysisProtocol;
+    }
   | { ok: false; envelope: ResponseEnvelope<never> }
 > {
   const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
@@ -315,7 +319,8 @@ async function guardReviewAction(
   if (input.mode === 'observe') {
     const err = new ErrorInfo({
       code: 'write_rejected',
-      message: 'Write operation is not permitted in Observe mode. Switch to a mode that permits writes, or disconnect.',
+      message:
+        'Write operation is not permitted in Observe mode. Switch to a mode that permits writes, or disconnect.',
       retryable: false,
       reasonCodes: ['observe_mode_write_blocked'],
     });
@@ -390,7 +395,12 @@ export async function reviewCorrectAnalysis(
 
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
-    const result = await analysisProtocol.reviewCorrect(ledger, reviewId, categoryId, mergedOptions);
+    const result = await analysisProtocol.reviewCorrect(
+      ledger,
+      reviewId,
+      categoryId,
+      mergedOptions,
+    );
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -612,7 +622,14 @@ export async function reviewGroupAnalysis(
 async function guardProposalAction(
   input: CommandInput,
 ): Promise<
-  | { ok: true; requestId: string; actorId: string; ledger: unknown; freshness: DataFreshness | null; analysisProtocol: AnalysisProtocol }
+  | {
+      ok: true;
+      requestId: string;
+      actorId: string;
+      ledger: unknown;
+      freshness: DataFreshness | null;
+      analysisProtocol: AnalysisProtocol;
+    }
   | { ok: false; envelope: ResponseEnvelope<never> }
 > {
   const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
@@ -650,7 +667,8 @@ async function guardProposalAction(
   if (input.mode === 'observe') {
     const err = new ErrorInfo({
       code: 'write_rejected',
-      message: 'Write operation is not permitted in Observe mode. Proposal mutations require a write-enabled mode.',
+      message:
+        'Write operation is not permitted in Observe mode. Proposal mutations require a write-enabled mode.',
       retryable: false,
       reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
     });
@@ -685,15 +703,23 @@ export async function proposalCreateAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.proposalCreate(ledger, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'proposal.create'), result);
+    return okResponse(
+      requestId,
+      freshness,
+      AuthorizationContext.mutation(actorId, 'proposal.create'),
+      result,
+    );
   } catch (err) {
     if (err instanceof ApplicationError) {
-      return errorResponse(requestId, new ErrorInfo({
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-        reasonCodes: err.reasonCodes,
-      }));
+      return errorResponse(
+        requestId,
+        new ErrorInfo({
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          reasonCodes: err.reasonCodes,
+        }),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
@@ -800,15 +826,23 @@ export async function proposalApproveAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.proposalApprove(ledger, proposalId, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'proposal.approve'), result);
+    return okResponse(
+      requestId,
+      freshness,
+      AuthorizationContext.mutation(actorId, 'proposal.approve'),
+      result,
+    );
   } catch (err) {
     if (err instanceof ApplicationError) {
-      return errorResponse(requestId, new ErrorInfo({
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-        reasonCodes: err.reasonCodes,
-      }));
+      return errorResponse(
+        requestId,
+        new ErrorInfo({
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          reasonCodes: err.reasonCodes,
+        }),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
@@ -847,15 +881,23 @@ export async function proposalExecuteAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.proposalExecute(ledger, proposalId, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'proposal.execute'), result);
+    return okResponse(
+      requestId,
+      freshness,
+      AuthorizationContext.mutation(actorId, 'proposal.execute'),
+      result,
+    );
   } catch (err) {
     if (err instanceof ApplicationError) {
-      return errorResponse(requestId, new ErrorInfo({
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-        reasonCodes: err.reasonCodes,
-      }));
+      return errorResponse(
+        requestId,
+        new ErrorInfo({
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          reasonCodes: err.reasonCodes,
+        }),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
@@ -1043,7 +1085,8 @@ export async function ruleCreateAnalysis(
   if (input.mode === 'observe') {
     const err = new ErrorInfo({
       code: 'write_rejected',
-      message: 'Write operation is not permitted in Observe mode. Rule creation requires a write-enabled mode.',
+      message:
+        'Write operation is not permitted in Observe mode. Rule creation requires a write-enabled mode.',
       retryable: false,
       reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
     });
@@ -1063,15 +1106,23 @@ export async function ruleCreateAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.ruleCreate(ledger, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'rule.create'), result);
+    return okResponse(
+      requestId,
+      freshness,
+      AuthorizationContext.mutation(actorId, 'rule.create'),
+      result,
+    );
   } catch (err) {
     if (err instanceof ApplicationError) {
-      return errorResponse(requestId, new ErrorInfo({
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-        reasonCodes: err.reasonCodes,
-      }));
+      return errorResponse(
+        requestId,
+        new ErrorInfo({
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          reasonCodes: err.reasonCodes,
+        }),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
@@ -1092,9 +1143,7 @@ export async function ruleCreateAnalysis(
  * List automation rules.
  * Uses the read-only path via the ledger directly.
  */
-export async function ruleListAnalysis(
-  input: CommandInput,
-): Promise<RuleListOutput['envelope']> {
+export async function ruleListAnalysis(input: CommandInput): Promise<RuleListOutput['envelope']> {
   const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
 
   if (!ledger) {
@@ -1185,7 +1234,7 @@ export async function ruleShowAnalysis(
 
   try {
     const allRules: RuleShowResult[] = await (ledger as any).listRules();
-    const rule = allRules.find(r => r.id === ruleId);
+    const rule = allRules.find((r) => r.id === ruleId);
     if (!rule) {
       const err = new ErrorInfo({
         code: 'rule_not_found',
@@ -1198,12 +1247,15 @@ export async function ruleShowAnalysis(
     return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), rule);
   } catch (err) {
     if (err instanceof ApplicationError) {
-      return errorResponse(requestId, new ErrorInfo({
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-        reasonCodes: err.reasonCodes,
-      }));
+      return errorResponse(
+        requestId,
+        new ErrorInfo({
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          reasonCodes: err.reasonCodes,
+        }),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
@@ -1263,7 +1315,8 @@ export async function ruleUpdateAnalysis(
   if (input.mode === 'observe') {
     const err = new ErrorInfo({
       code: 'write_rejected',
-      message: 'Write operation is not permitted in Observe mode. Rule update requires a write-enabled mode.',
+      message:
+        'Write operation is not permitted in Observe mode. Rule update requires a write-enabled mode.',
       retryable: false,
       reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
     });
@@ -1283,15 +1336,23 @@ export async function ruleUpdateAnalysis(
   try {
     const mergedOptions: ReviewActionOptions = { ...options, actorId, requestId };
     const result = await analysisProtocol.ruleUpdate(ledger, mergedOptions);
-    return okResponse(requestId, freshness, AuthorizationContext.mutation(actorId, 'rule.update'), result);
+    return okResponse(
+      requestId,
+      freshness,
+      AuthorizationContext.mutation(actorId, 'rule.update'),
+      result,
+    );
   } catch (err) {
     if (err instanceof ApplicationError) {
-      return errorResponse(requestId, new ErrorInfo({
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-        reasonCodes: err.reasonCodes,
-      }));
+      return errorResponse(
+        requestId,
+        new ErrorInfo({
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          reasonCodes: err.reasonCodes,
+        }),
+      );
     }
     const message = err instanceof Error ? err.message : String(err);
     const errInfo = new ErrorInfo({
@@ -1343,7 +1404,8 @@ export async function purchaseEvaluationAnalysis(
   if (!analysisProtocol || !analysisProtocol.purchaseEvaluation) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Purchase evaluation is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Purchase evaluation is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -1423,7 +1485,8 @@ export async function cashFlowProjectionAnalysis(
   if (!analysisProtocol || !analysisProtocol.cashFlowProjection) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Cash-flow projection is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Cash-flow projection is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -1493,7 +1556,8 @@ export async function targetHealthAnalysis(
   if (!analysisProtocol || !analysisProtocol.targetHealth) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Target health evaluation is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Target health evaluation is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -1538,7 +1602,8 @@ export async function sinkingFundHealthAnalysis(
   if (freshness && freshness.isStale) {
     const err = new ErrorInfo({
       code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before evaluating sinking fund health.',
+      message:
+        'Snapshot data is stale. Reconnect or re-download before evaluating sinking fund health.',
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
@@ -1548,7 +1613,8 @@ export async function sinkingFundHealthAnalysis(
   if (!analysisProtocol || !analysisProtocol.sinkingFundHealth) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Sinking fund health evaluation is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Sinking fund health evaluation is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -1661,7 +1727,7 @@ export async function savedViewsListAnalysis(
     try {
       const views = await workflowStore.listSavedViews(actorId);
       const result: SavedViewsListResult = {
-        views: views.map(v => ({
+        views: views.map((v) => ({
           viewId: v.viewId,
           name: v.name,
           viewType: v.viewType,
@@ -1809,7 +1875,8 @@ export async function savedViewCreateAnalysis(
   if (!analysisProtocol || !analysisProtocol.createSavedView) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Saved view creation is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Saved view creation is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -1870,7 +1937,8 @@ export async function attentionHomeAnalysis(
   if (freshness && freshness.isStale) {
     const err = new ErrorInfo({
       code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before loading the attention dashboard.',
+      message:
+        'Snapshot data is stale. Reconnect or re-download before loading the attention dashboard.',
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
@@ -1880,7 +1948,8 @@ export async function attentionHomeAnalysis(
   if (!analysisProtocol || !analysisProtocol.attentionHome) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Attention dashboard is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Attention dashboard is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -1939,7 +2008,8 @@ export async function dataQualityAnalysis(
   if (!analysisProtocol || !analysisProtocol.dataQuality) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Data quality analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Data quality analysis is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -1989,7 +2059,8 @@ export async function liquidityCoverageAnalysis(
   if (freshness && freshness.isStale) {
     const err = new ErrorInfo({
       code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before analyzing liquidity coverage.',
+      message:
+        'Snapshot data is stale. Reconnect or re-download before analyzing liquidity coverage.',
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
@@ -1999,7 +2070,8 @@ export async function liquidityCoverageAnalysis(
   if (!analysisProtocol || !analysisProtocol.liquidityCoverage) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Liquidity coverage analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Liquidity coverage analysis is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -2139,7 +2211,8 @@ export async function budgetVarianceAnalysis(
   if (!analysisProtocol || !analysisProtocol.budgetVariance) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Budget variance analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Budget variance analysis is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -2198,7 +2271,8 @@ export async function irregularObligationsAnalysis(
   if (freshness && freshness.isStale) {
     const err = new ErrorInfo({
       code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before analyzing irregular obligations.',
+      message:
+        'Snapshot data is stale. Reconnect or re-download before analyzing irregular obligations.',
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
@@ -2208,7 +2282,8 @@ export async function irregularObligationsAnalysis(
   if (!analysisProtocol || !analysisProtocol.irregularObligations) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Irregular obligations analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Irregular obligations analysis is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -2257,7 +2332,8 @@ export async function incomeReliabilityAnalysis(
   if (freshness && freshness.isStale) {
     const err = new ErrorInfo({
       code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before analyzing income reliability.',
+      message:
+        'Snapshot data is stale. Reconnect or re-download before analyzing income reliability.',
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
@@ -2267,7 +2343,8 @@ export async function incomeReliabilityAnalysis(
   if (!analysisProtocol || !analysisProtocol.incomeReliability) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Income reliability analysis is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Income reliability analysis is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -2316,7 +2393,8 @@ export async function forecastCalibrationAnalysis(
   if (freshness && freshness.isStale) {
     const err = new ErrorInfo({
       code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before computing forecast calibration.',
+      message:
+        'Snapshot data is stale. Reconnect or re-download before computing forecast calibration.',
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
@@ -2326,7 +2404,8 @@ export async function forecastCalibrationAnalysis(
   if (!analysisProtocol || !analysisProtocol.forecastCalibration) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Forecast calibration is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Forecast calibration is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -2386,7 +2465,8 @@ export async function scenarioComparisonAnalysis(
   if (!analysisProtocol || !analysisProtocol.scenarioComparison) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Scenario comparison is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Scenario comparison is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });
@@ -2446,7 +2526,8 @@ export async function multidimensionalHealthAnalysis(
   if (freshness && freshness.isStale) {
     const err = new ErrorInfo({
       code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before computing multidimensional health.',
+      message:
+        'Snapshot data is stale. Reconnect or re-download before computing multidimensional health.',
       retryable: true,
       reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
     });
@@ -2456,7 +2537,8 @@ export async function multidimensionalHealthAnalysis(
   if (!analysisProtocol || !analysisProtocol.multidimensionalHealth) {
     const err = new ErrorInfo({
       code: 'no_analysis_protocol',
-      message: 'Multidimensional health assessment is not available. Ensure the Rust protocol bindings are loaded.',
+      message:
+        'Multidimensional health assessment is not available. Ensure the Rust protocol bindings are loaded.',
       retryable: true,
       reasonCodes: ['missing_analysis_protocol'],
     });

@@ -13,31 +13,82 @@ vi.stubGlobal('$fetch', mockFetch);
 import ObligationsPage from '../../app/pages/obligations.vue';
 
 const stubs = {
-  AnalysisPage: { template: '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>', props: ['title', 'loading', 'error', 'freshness', 'insufficientData'] },
-  SemanticAmount: { template: '<span data-testid="semantic-amount">{{ amount.minorUnits }}</span>', props: ['amount'] },
+  AnalysisPage: {
+    template:
+      '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>',
+    props: ['title', 'loading', 'error', 'freshness', 'insufficientData'],
+  },
+  SemanticAmount: {
+    template: '<span data-testid="semantic-amount">{{ amount.minorUnits }}</span>',
+    props: ['amount'],
+  },
   UCard: { template: '<div><slot name="header" /><slot /></div>' },
-  AnalysisTable: { template: '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>', props: ['columns', 'rows'] },
+  AnalysisTable: {
+    template:
+      '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>',
+    props: ['columns', 'rows'],
+  },
 };
 
 function okEnvelope(result: unknown) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'ok' as const, dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' }, authorization: null, result, error: null };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'ok' as const,
+    dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' },
+    authorization: null,
+    result,
+    error: null,
+  };
 }
 
 function errorEnvelope(code: string) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'error' as const, dataFreshness: null, authorization: null, result: null, error: { code, message: `Simulated ${code}`, retryable: true } };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'error' as const,
+    dataFreshness: null,
+    authorization: null,
+    result: null,
+    error: { code, message: `Simulated ${code}`, retryable: true },
+  };
 }
 
 const sampleResult = {
   obligations: [
-    { name: 'Annual Insurance', kind: 'nonMonthly', typicalAmount: { minorUnits: '120000', currency: 'USD' }, frequency: 'yearly', categoryId: 'cat-1', nextExpectedDate: '2026-06-15' },
-    { name: 'Holiday Gifts', kind: 'seasonal', typicalAmount: { minorUnits: '50000', currency: 'USD' }, frequency: 'yearly', categoryId: 'cat-2', nextExpectedDate: '2026-12-01' },
-    { name: 'Car Maintenance', kind: 'variableAmount', typicalAmount: { minorUnits: '30000', currency: 'USD' }, frequency: 'as-needed', categoryId: null, nextExpectedDate: null },
+    {
+      name: 'Annual Insurance',
+      kind: 'nonMonthly',
+      typicalAmount: { minorUnits: '120000', currency: 'USD' },
+      frequency: 'yearly',
+      categoryId: 'cat-1',
+      nextExpectedDate: '2026-06-15',
+    },
+    {
+      name: 'Holiday Gifts',
+      kind: 'seasonal',
+      typicalAmount: { minorUnits: '50000', currency: 'USD' },
+      frequency: 'yearly',
+      categoryId: 'cat-2',
+      nextExpectedDate: '2026-12-01',
+    },
+    {
+      name: 'Car Maintenance',
+      kind: 'variableAmount',
+      typicalAmount: { minorUnits: '30000', currency: 'USD' },
+      frequency: 'as-needed',
+      categoryId: null,
+      nextExpectedDate: null,
+    },
   ],
   totalEstimatedAnnual: { minorUnits: '200000', currency: 'USD' },
 };
 
 describe('Obligations page', () => {
-  beforeEach(() => { vi.clearAllMocks(); mockFetch.mockReset(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+  });
 
   it('calls /api/obligations on mount', async () => {
     mockFetch.mockResolvedValue(okEnvelope(sampleResult));

@@ -8,8 +8,33 @@
  * current space/budget, sync status, mobile navigation.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mount, shallowMount, flushPromises } from '@vue/test-utils';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mount, shallowMount, flushPromises, type VueWrapper } from '@vue/test-utils';
+import { ref, type Ref } from 'vue';
+
+type SessionData = {
+  data: { user: { email: string } } | null;
+  isPending: boolean;
+};
+
+const auth = vi.hoisted(() => ({
+  session: undefined as unknown as Ref<SessionData>,
+  signOut: vi.fn(),
+}));
+
+auth.session = ref<SessionData>({
+  data: { user: { email: 'shared-components@example.test' } },
+  isPending: false,
+});
+
+vi.mock('../../lib/auth-client', () => ({
+  authClient: {
+    useSession: () => auth.session,
+    signOut: auth.signOut,
+  },
+}));
+
+import CategoryCorrectModal from '../../app/components/CategoryCorrectModal.vue';
 
 /* ------------------------------------------------------------------ */
 /* Stubs                                                              */
@@ -41,29 +66,35 @@ const stubs = {
     template: '<div class="container"><slot /></div>',
   },
   UAlert: {
-    template: '<div data-testid="alert" role="alert"><strong>{{ title }}</strong> {{ description }}</div>',
+    template:
+      '<div data-testid="alert" role="alert"><strong>{{ title }}</strong> {{ description }}</div>',
     props: ['title', 'description', 'color', 'variant'],
   },
   USelectMenu: {
-    template: '<select data-testid="select-menu" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="v in items" :key="v.viewId" :value="v.viewId">{{ v.name }}</option></select>',
+    template:
+      '<select data-testid="select-menu" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="v in items" :key="v.viewId" :value="v.viewId">{{ v.name }}</option></select>',
     props: ['items', 'optionAttribute', 'valueAttribute', 'modelValue', 'size'],
     emits: ['update:modelValue'],
   },
   SavedViewPicker: {
-    template: '<div data-testid="saved-view-picker"><span v-for="v in views" :key="v.viewId">{{ v.name }}</span></div>',
+    template:
+      '<div data-testid="saved-view-picker"><span v-for="v in views" :key="v.viewId">{{ v.name }}</span></div>',
     props: ['views', 'showSave'],
     emits: ['select', 'save'],
   },
   SemanticAmount: {
-    template: '<span data-testid="semantic-amount">{{ amount.minorUnits }} {{ amount.currency }}</span>',
+    template:
+      '<span data-testid="semantic-amount">{{ amount.minorUnits }} {{ amount.currency }}</span>',
     props: ['amount', 'negative'],
   },
   InsufficientDataPanel: {
-    template: '<div data-testid="insufficient-data" role="status">{{ reason || "Insufficient data" }}</div>',
+    template:
+      '<div data-testid="insufficient-data" role="status">{{ reason || "Insufficient data" }}</div>',
     props: ['reason'],
   },
   ReasonCodeList: {
-    template: '<div data-testid="reason-codes"><span v-for="c in codes" :key="c">{{ c }}</span></div>',
+    template:
+      '<div data-testid="reason-codes"><span v-for="c in codes" :key="c">{{ c }}</span></div>',
     props: ['codes'],
   },
 };
@@ -105,11 +136,68 @@ function errorEnvelope(code: string) {
 import DefaultLayout from '../../app/layouts/default.vue';
 
 describe('DefaultLayout', () => {
-  function mountLayout() {
+  const availableAuthenticatedHrefs = [
+    '/',
+    '/review',
+    '/notifications',
+    '/data-quality',
+    '/liquidity',
+    '/calendar',
+    '/trends',
+    '/income',
+    '/health',
+    '/cash-flow',
+    '/targets',
+    '/obligations',
+    '/forecast-accuracy',
+    '/scenarios',
+    '/reports',
+    '/rules',
+    '/purchase-check',
+    '/connection',
+  ];
+  const directDesktopHrefs = ['/', '/review', '/notifications'];
+  const routePath = ref('/');
+  const routeGlobal = globalThis as typeof globalThis & {
+    useRoute?: () => { readonly path: string; readonly fullPath: string };
+  };
+  let originalUseRoute: typeof routeGlobal.useRoute;
+
+  beforeEach(() => {
+    routePath.value = '/';
+    originalUseRoute = routeGlobal.useRoute;
+    routeGlobal.useRoute = () => ({
+      get path() {
+        return routePath.value;
+      },
+      get fullPath() {
+        return routePath.value;
+      },
+    });
+  });
+
+  afterEach(() => {
+    if (originalUseRoute) routeGlobal.useRoute = originalUseRoute;
+    else delete routeGlobal.useRoute;
+  });
+
+  function mountLayout(path = '/') {
+    routePath.value = path;
     return mount(DefaultLayout, {
       global: { stubs: { ...stubs, NuxtLink } },
       slots: { default: '<div>page content</div>' },
     });
+  }
+
+  function renderedHrefs(wrapper: VueWrapper) {
+    return wrapper
+      .findAll('a[href]')
+      .map((link) => link.attributes('href'))
+      .sort();
+  }
+
+  function desktopGroupTriggers(wrapper: VueWrapper) {
+    return wrapper.findAll('nav[aria-label="Main navigation"] button[aria-expanded]');
   }
 
   it('renders the app brand link', () => {
@@ -124,7 +212,7 @@ describe('DefaultLayout', () => {
     const nav = wrapper.find('nav[aria-label="Main navigation"]');
     expect(nav.exists()).toBe(true);
     expect(nav.text()).toContain('Review');
-    expect(nav.text()).toContain('Reports');
+    expect(nav.text()).toContain('Planning');
     expect(nav.text()).toContain('Notifications');
   });
 
@@ -152,13 +240,191 @@ describe('DefaultLayout', () => {
     await toggle.trigger('click');
     const mobileNav = wrapper.find('nav[aria-label="Mobile navigation"]');
     const text = mobileNav.text();
-    expect(text).toContain('Home');
+    expect(text).toContain('Dashboard');
     expect(text).toContain('Review');
     expect(text).toContain('Rules');
     expect(text).toContain('Reports');
     expect(text).toContain('Notifications');
     expect(text).toContain('Scenarios');
     expect(text).toContain('Health');
+  });
+
+  it('exposes exactly all available authenticated routes through desktop links and opened groups', async () => {
+    const wrapper = mountLayout();
+    const desktopNavigation = wrapper.get('nav[aria-label="Main navigation"]');
+    expect(renderedHrefs(desktopNavigation)).toEqual([...directDesktopHrefs].sort());
+
+    const exposedHrefs = new Set(renderedHrefs(desktopNavigation));
+    for (const trigger of desktopGroupTriggers(wrapper)) {
+      await trigger.trigger('click');
+      for (const href of renderedHrefs(wrapper)) exposedHrefs.add(href);
+    }
+
+    expect([...exposedHrefs].sort()).toEqual([...availableAuthenticatedHrefs].sort());
+  });
+
+  it('links to the operable Scenarios route from desktop navigation', async () => {
+    const wrapper = mountLayout();
+    const planningTrigger = desktopGroupTriggers(wrapper).find(
+      (trigger) => trigger.text().trim() === 'Planning',
+    );
+    if (!planningTrigger) throw new Error('Planning trigger not found');
+    await planningTrigger.trigger('click');
+
+    expect(wrapper.get('a[href="/scenarios"]').text()).toBe('Scenarios');
+    expect(wrapper.find('[data-navigation-disabled="/scenarios"]').exists()).toBe(false);
+  });
+
+  it('skips disabled items when keyboard navigation opens a desktop group', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const wrapper = mount(DefaultLayout, {
+      attachTo: host,
+      global: { stubs: { ...stubs, NuxtLink } },
+      slots: { default: '<div>page content</div>' },
+    });
+
+    try {
+      const planningTrigger = desktopGroupTriggers(wrapper).find(
+        (trigger) => trigger.text().trim() === 'Planning',
+      );
+      if (!planningTrigger) throw new Error('Planning trigger not found');
+      await planningTrigger.trigger('keydown', { key: 'ArrowUp' });
+      await wrapper.vm.$nextTick();
+      expect(document.activeElement?.textContent?.trim()).toBe('Reports');
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
+  });
+
+  it('opens named desktop groups and closes them on Escape', async () => {
+    const wrapper = mountLayout();
+    const triggers = desktopGroupTriggers(wrapper);
+    expect(triggers.map((trigger) => trigger.text().trim())).toEqual([
+      'Analysis',
+      'Planning',
+      'System',
+    ]);
+    expect(triggers.map((trigger) => trigger.attributes('aria-expanded'))).toEqual([
+      'false',
+      'false',
+      'false',
+    ]);
+
+    for (const trigger of triggers) {
+      await trigger.trigger('click');
+      expect(trigger.attributes('aria-expanded')).toBe('true');
+      await trigger.trigger('keydown', { key: 'Escape' });
+      expect(trigger.attributes('aria-expanded')).toBe('false');
+    }
+  });
+
+  it('returns focus to the group trigger when Escape closes an open panel', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const wrapper = mount(DefaultLayout, {
+      attachTo: host,
+      global: { stubs: { ...stubs, NuxtLink } },
+      slots: { default: '<div>page content</div>' },
+    });
+
+    try {
+      const analysisTrigger = desktopGroupTriggers(wrapper).find(
+        (trigger) => trigger.text().trim() === 'Analysis',
+      );
+      if (!analysisTrigger) throw new Error('Analysis trigger not found');
+      await analysisTrigger.trigger('click');
+      const firstLink = wrapper.get('#navigation-analysis-panel a');
+      (firstLink.element as HTMLAnchorElement).focus();
+      expect(document.activeElement).toBe(firstLink.element);
+
+      await firstLink.trigger('keydown', { key: 'Escape' });
+      await wrapper.vm.$nextTick();
+      expect(document.activeElement).toBe(analysisTrigger.element);
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
+  });
+
+  it('closes navigation and user popovers when page content is clicked', async () => {
+    const wrapper = mountLayout();
+    const analysisTrigger = desktopGroupTriggers(wrapper).find(
+      (trigger) => trigger.text().trim() === 'Analysis',
+    );
+    if (!analysisTrigger) throw new Error('Analysis trigger not found');
+
+    await analysisTrigger.trigger('click');
+    expect(analysisTrigger.attributes('aria-expanded')).toBe('true');
+    await wrapper.get('main').trigger('click');
+    expect(analysisTrigger.attributes('aria-expanded')).toBe('false');
+
+    const userTrigger = wrapper.get('button[aria-label="Open user menu"]');
+    await userTrigger.trigger('click');
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true);
+    await wrapper.get('main').trigger('click');
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+  });
+
+  it('closes the user menu on Escape and restores focus to its trigger', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const wrapper = mount(DefaultLayout, {
+      attachTo: host,
+      global: { stubs: { ...stubs, NuxtLink } },
+      slots: { default: '<div>page content</div>' },
+    });
+
+    try {
+      const userTrigger = wrapper.get('button[aria-label="Open user menu"]');
+      await userTrigger.trigger('click');
+      const signOut = wrapper.get('[role="menuitem"]');
+      (signOut.element as HTMLButtonElement).focus();
+      await signOut.trigger('keydown', { key: 'Escape' });
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+      expect(document.activeElement).toBe(userTrigger.element);
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
+  });
+
+  it('closes the user menu when the active route changes', async () => {
+    const wrapper = mountLayout();
+    await wrapper.get('button[aria-label="Open user menu"]').trigger('click');
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true);
+
+    routePath.value = '/reports';
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+  });
+
+  it('indicates the Analysis section when a child analysis route is active', () => {
+    const wrapper = mountLayout('/liquidity');
+    const analysisTrigger = desktopGroupTriggers(wrapper).find(
+      (trigger) => trigger.text().trim() === 'Analysis',
+    );
+    expect(analysisTrigger?.attributes('aria-current')).toBe('page');
+  });
+
+  it('exposes the same available authenticated routes in opened mobile navigation', async () => {
+    const wrapper = mountLayout();
+    await wrapper.get('button[aria-label="Toggle navigation menu"]').trigger('click');
+    const mobileNavigation = wrapper.get('nav[aria-label="Mobile navigation"]');
+    expect(renderedHrefs(mobileNavigation)).toEqual([...availableAuthenticatedHrefs].sort());
+  });
+
+  it('links to the operable Scenarios route from mobile navigation', async () => {
+    const wrapper = mountLayout();
+    await wrapper.get('button[aria-label="Toggle navigation menu"]').trigger('click');
+    const mobileNavigation = wrapper.get('nav[aria-label="Mobile navigation"]');
+
+    expect(mobileNavigation.get('a[href="/scenarios"]').text()).toBe('Scenarios');
+    expect(
+      mobileNavigation.find('[data-navigation-disabled="/scenarios"]').exists(),
+    ).toBe(false);
   });
 
   it('has visible focus-visible styles via classes on nav links', () => {
@@ -224,7 +490,8 @@ describe('AnalysisPage', () => {
         stubs: {
           ...stubs,
           FreshnessBanner: {
-            template: '<div data-testid="freshness-banner">{{ freshness?.isStale ? "Stale data" : "Data current" }}</div>',
+            template:
+              '<div data-testid="freshness-banner">{{ freshness?.isStale ? "Stale data" : "Data current" }}</div>',
             props: ['freshness'],
           },
         },
@@ -280,6 +547,51 @@ describe('AnalysisPage', () => {
     await wrapper.find('button[aria-label="Retry loading"]').trigger('click');
     expect(wrapper.emitted('retry')).toBeTruthy();
     expect(wrapper.emitted('retry')!.length).toBe(1);
+  });
+
+  it('renders error actions only in the error branch after alert and retry controls', () => {
+    const errorWrapper = shallowMount(AnalysisPage, {
+      props: {
+        title: 'Test Page',
+        error: { code: 'NETWORK_ERROR', message: 'Timeout', retryable: true },
+      },
+      global: {
+        stubs: {
+          ...stubs,
+          FreshnessBanner: {
+            template: '<div data-testid="freshness-banner" />',
+            props: ['freshness'],
+          },
+        },
+      },
+      slots: {
+        'error-actions': '<a href="/connection">Configure Actual connection</a>',
+      },
+    });
+    const errorControls = errorWrapper
+      .findAll('[role="alert"], button[aria-label="Retry loading"], a[href="/connection"]')
+      .map((control) => control.element.tagName);
+
+    expect(errorControls).toEqual(['DIV', 'BUTTON', 'A']);
+
+    const contentWrapper = shallowMount(AnalysisPage, {
+      props: { title: 'Test Page' },
+      global: {
+        stubs: {
+          ...stubs,
+          FreshnessBanner: {
+            template: '<div data-testid="freshness-banner" />',
+            props: ['freshness'],
+          },
+        },
+      },
+      slots: {
+        content: '<p>Attention content</p>',
+        'error-actions': '<a href="/connection">Configure Actual connection</a>',
+      },
+    });
+
+    expect(contentWrapper.find('a[href="/connection"]').exists()).toBe(false);
   });
 
   it('shows insufficient data panel when insufficientData is true', () => {
@@ -350,7 +662,11 @@ describe('AnalysisPage', () => {
 
   it('unknown error codes render visibly without interpretation', () => {
     const wrapper = mountPage({
-      error: { code: 'FUTURE_UNKNOWN_ERROR_XYZ', message: 'Something new happened', retryable: false },
+      error: {
+        code: 'FUTURE_UNKNOWN_ERROR_XYZ',
+        message: 'Something new happened',
+        retryable: false,
+      },
     });
     expect(wrapper.text()).toContain('FUTURE_UNKNOWN_ERROR_XYZ');
     expect(wrapper.text()).toContain('Something new happened');
@@ -457,7 +773,7 @@ describe('FreshnessBanner', () => {
 
   it('high contrast mode: uses visible border colors', () => {
     const wrapper = mountBanner();
-    expect(wrapper.classes().some(c => c.includes('border'))).toBe(true);
+    expect(wrapper.classes().some((c) => c.includes('border'))).toBe(true);
   });
 });
 
@@ -512,7 +828,7 @@ describe('AnalysisTable', () => {
     const badges = wrapper.findAll('span.inline-flex');
     expect(badges.length).toBeGreaterThan(0);
     // on_track badge should have emerald styling
-    const onTrackBadge = badges.find(b => b.text() === 'on_track');
+    const onTrackBadge = badges.find((b) => b.text() === 'on_track');
     expect(onTrackBadge?.classes()).toContain('bg-emerald-100');
   });
 
@@ -523,7 +839,13 @@ describe('AnalysisTable', () => {
 
   it('unknown badge values render visibly without interpretation', () => {
     const wrapper = mountTable({
-      rows: [{ name: 'Test', amount: { minorUnits: '0', currency: 'USD' }, status: 'future_unknown_status_xyz' }],
+      rows: [
+        {
+          name: 'Test',
+          amount: { minorUnits: '0', currency: 'USD' },
+          status: 'future_unknown_status_xyz',
+        },
+      ],
     });
     expect(wrapper.text()).toContain('future_unknown_status_xyz');
   });
@@ -602,8 +924,18 @@ import EvidenceDrawer from '../../app/components/EvidenceDrawer.vue';
 
 describe('EvidenceDrawer', () => {
   const evidenceItems = [
-    { description: 'Transaction matched rule #42', detail: 'Category: Groceries', source: 'ledger', authorized: true },
-    { description: 'Pattern detected in recurring spend', detail: 'Frequency: monthly', source: 'analysis', authorized: true },
+    {
+      description: 'Transaction matched rule #42',
+      detail: 'Category: Groceries',
+      source: 'ledger',
+      authorized: true,
+    },
+    {
+      description: 'Pattern detected in recurring spend',
+      detail: 'Frequency: monthly',
+      source: 'analysis',
+      authorized: true,
+    },
     { description: 'User override applied', detail: null, source: 'user', authorized: false },
   ];
 
@@ -675,7 +1007,14 @@ describe('EvidenceDrawer', () => {
 
   it('unknown source values render visibly', async () => {
     const wrapper = mountDrawer({
-      evidence: [{ description: 'Future source item', detail: 'Some detail', source: 'future_unknown_source', authorized: true }],
+      evidence: [
+        {
+          description: 'Future source item',
+          detail: 'Some detail',
+          source: 'future_unknown_source',
+          authorized: true,
+        },
+      ],
     });
     await wrapper.find('button').trigger('click');
     expect(wrapper.text()).toContain('Future source item');
@@ -684,7 +1023,14 @@ describe('EvidenceDrawer', () => {
 
   it('unknown detail values render as raw text', async () => {
     const wrapper = mountDrawer({
-      evidence: [{ description: 'Test item', detail: 'Unexpected: {{template}} syntax', source: 'test', authorized: true }],
+      evidence: [
+        {
+          description: 'Test item',
+          detail: 'Unexpected: {{template}} syntax',
+          source: 'test',
+          authorized: true,
+        },
+      ],
     });
     await wrapper.find('button').trigger('click');
     expect(wrapper.text()).toContain('Unexpected: {{template}} syntax');
@@ -726,7 +1072,7 @@ describe('EvidenceDrawer', () => {
     // Drawer content should not have animate- classes
     const drawerContent = wrapper.find('.mt-2');
     if (drawerContent.exists()) {
-      expect(drawerContent.classes().some(c => c.startsWith('animate-'))).toBe(false);
+      expect(drawerContent.classes().some((c) => c.startsWith('animate-'))).toBe(false);
     }
   });
 
@@ -749,5 +1095,115 @@ describe('EvidenceDrawer', () => {
     await wrapper.find('button').trigger('click');
     // Browser renders the HTML entity as actual character •
     expect(wrapper.html()).toContain('•');
+  });
+});
+
+/* ================================================================== */
+/* CATEGORY CORRECTION MODAL                                          */
+/* ================================================================== */
+
+const categoryCorrectModalStubs = {
+  UModal: {
+    name: 'UModal',
+    props: ['open'],
+    template: '<div v-if="open"><slot name="content" /></div>',
+  },
+  UCard: {
+    name: 'UCard',
+    template: '<section><slot name="header" /><slot /><slot name="footer" /></section>',
+  },
+  USelectMenu: {
+    name: 'USelectMenu',
+    props: ['modelValue', 'items'],
+    emits: ['update:modelValue'],
+    template:
+      '<select><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }}</option></select>',
+  },
+  UButton: {
+    name: 'UButton',
+    props: ['label', 'disabled', 'loading'],
+    emits: ['click'],
+    template:
+      '<button :disabled="disabled" :data-loading="loading" @click="!disabled && $emit(\'click\')">{{ label }}</button>',
+  },
+};
+
+describe('CategoryCorrectModal', () => {
+  const item = {
+    evidence: {
+      normalizedMerchant: 'Test Grocer',
+      currentCategory: 'cat-uncategorized',
+      suggestedCategory: 'cat-groceries',
+      alternatives: ['cat-dining'],
+      categoryNames: {
+        'cat-dining': 'Dining',
+        'cat-groceries': 'Groceries',
+      },
+      changePreview: {
+        fromCategory: 'cat-uncategorized',
+        toCategory: 'cat-groceries',
+        affectsEnvelope: true,
+      },
+    },
+  };
+
+  function confirmButton(wrapper: VueWrapper) {
+    const button = wrapper.findAll('button').find((candidate) => candidate.text() === 'Confirm');
+    if (!button) throw new Error('Category correction confirm control was not rendered.');
+    return button;
+  }
+
+  it('disables and marks Confirm loading while submitting so no second correction emits', async () => {
+    const wrapper = mount(CategoryCorrectModal as never, {
+      props: {
+        open: false,
+        item,
+        submitting: false,
+      },
+      global: { stubs: categoryCorrectModalStubs },
+    });
+
+    await wrapper.setProps({ open: true });
+    await confirmButton(wrapper).trigger('click');
+    expect(wrapper.emitted('confirm')).toEqual([['cat-groceries']]);
+
+    await wrapper.setProps({ submitting: true });
+    const confirm = confirmButton(wrapper);
+    expect(confirm.element.disabled).toBe(true);
+    expect(confirm.attributes('data-loading')).toBe('true');
+
+    await confirm.trigger('click');
+    expect(wrapper.emitted('confirm')).toEqual([['cat-groceries']]);
+  });
+
+  it('restores focus to enabled Confirm when a failed submission finishes with the modal open', async () => {
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    const wrapper = mount(CategoryCorrectModal as never, {
+      attachTo: document.body,
+      props: {
+        open: false,
+        item,
+        submitting: false,
+      },
+      global: { stubs: categoryCorrectModalStubs },
+    });
+
+    try {
+      await wrapper.setProps({ open: true });
+      await wrapper.setProps({ submitting: true });
+      outside.focus();
+      expect(document.activeElement).toBe(outside);
+
+      await wrapper.setProps({ submitting: false });
+      await flushPromises();
+
+      const confirm = confirmButton(wrapper);
+      expect(confirm.element.disabled).toBe(false);
+      expect(document.activeElement).toBe(confirm.element);
+    } finally {
+      wrapper.unmount();
+      outside.remove();
+    }
   });
 });

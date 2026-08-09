@@ -8,7 +8,7 @@
  *   2. Validate it is not superseded or expired
  *   3. Extract rule data from the proposal's preconditions
  *   4. Verify the actor has an active approval for this proposal payload
- *   5. Connect to the Actual ledger via ConnectionManager.restore()
+ *   5. Acquire a disposable scoped Actual ledger connection
  *   6. Create the native rule mutation protocol (or return NOT_IMPLEMENTED)
  *   7. Compose RuleMutationService and execute
  *   8. Supersede the proposal on success
@@ -36,10 +36,7 @@ import {
   sanitizeError,
 } from '../../../utils/workflow-store';
 import { createMutationConnectionManager } from '../../../utils/mutation-executor';
-import {
-  RuleMutationService,
-  createNativeRuleMutationProtocol,
-} from '@balanceframe/application';
+import { RuleMutationService, createNativeRuleMutationProtocol } from '@balanceframe/application';
 import type { BudgetLedger } from '@balanceframe/actual-adapter';
 import type { RustRuleMutationProtocol, ExecuteRuleResult } from '@balanceframe/application';
 
@@ -47,7 +44,11 @@ import type { RustRuleMutationProtocol, ExecuteRuleResult } from '@balanceframe/
  * Map reason codes from the service to HTTP status codes and public error codes.
  * All transient/unexpected failures are marked retryable.
  */
-function mapServiceError(reasonCodes: string[]): { status: number; code: string; retryable: boolean } {
+function mapServiceError(reasonCodes: string[]): {
+  status: number;
+  code: string;
+  retryable: boolean;
+} {
   // Replay of a previously failed or successful execution — idempotent
   if (reasonCodes.includes('idempotency_replay')) {
     return { status: 200, code: 'IDEMPOTENCY_REPLAY', retryable: false };
@@ -59,10 +60,20 @@ function mapServiceError(reasonCodes: string[]): { status: number; code: string;
   }
 
   // Authorization / approval failures — NOT retryable
-  if (reasonCodes.includes('member_inactive') || reasonCodes.includes('insufficient_capability') || reasonCodes.includes('insufficient_scope')) {
+  if (
+    reasonCodes.includes('member_inactive') ||
+    reasonCodes.includes('insufficient_capability') ||
+    reasonCodes.includes('insufficient_scope')
+  ) {
     return { status: 403, code: 'AUTHORIZATION_DENIED', retryable: false };
   }
-  if (reasonCodes.includes('approval_not_found') || reasonCodes.includes('approval_consumed') || reasonCodes.includes('approval_expired') || reasonCodes.includes('approval_superseded') || reasonCodes.includes('approval_proposal_mismatch')) {
+  if (
+    reasonCodes.includes('approval_not_found') ||
+    reasonCodes.includes('approval_consumed') ||
+    reasonCodes.includes('approval_expired') ||
+    reasonCodes.includes('approval_superseded') ||
+    reasonCodes.includes('approval_proposal_mismatch')
+  ) {
     return { status: 409, code: 'APPROVAL_FAILED', retryable: false };
   }
   if (reasonCodes.includes('payload_hash_mismatch')) {
@@ -84,7 +95,11 @@ function mapServiceError(reasonCodes: string[]): { status: number; code: string;
   }
 
   // Precondition / simulation failures — NOT retryable (bad proposal data)
-  if (reasonCodes.includes('rule_name_conflict') || reasonCodes.includes('simulation_no_matches') || reasonCodes.includes('simulation_conflicts')) {
+  if (
+    reasonCodes.includes('rule_name_conflict') ||
+    reasonCodes.includes('simulation_no_matches') ||
+    reasonCodes.includes('simulation_conflicts')
+  ) {
     return { status: 422, code: 'PRECONDITION_FAILED', retryable: false };
   }
 
@@ -94,7 +109,11 @@ function mapServiceError(reasonCodes: string[]): { status: number; code: string;
   }
 
   // Sync / reread failures — transient
-  if (reasonCodes.includes('sync_failed') || reasonCodes.includes('reread_failed') || reasonCodes.includes('stale_snapshot')) {
+  if (
+    reasonCodes.includes('sync_failed') ||
+    reasonCodes.includes('reread_failed') ||
+    reasonCodes.includes('stale_snapshot')
+  ) {
     return { status: 503, code: 'LEDGER_SYNC_FAILED', retryable: true };
   }
 
@@ -127,7 +146,13 @@ export default defineEventHandler(async (event) => {
   const proposalId = event.context.params?.id;
   if (!proposalId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_PROPOSAL_ID', 'Proposal ID is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_PROPOSAL_ID',
+      'Proposal ID is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   try {
@@ -222,16 +247,6 @@ export default defineEventHandler(async (event) => {
     // -------------------------------------------------------------------
     const manager = createMutationConnectionManager();
 
-    let ledger: BudgetLedger;
-    try {
-      const connected = await manager.restore();
-      ledger = connected.connector as unknown as BudgetLedger;
-    } catch (err) {
-      const safe = sanitizeError(err, requestId, 'LEDGER_UNAVAILABLE', true);
-      setResponseStatus(event, 503);
-      return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
-    }
-
     // -------------------------------------------------------------------
     // 6. Create native rule mutation protocol
     //
@@ -274,22 +289,40 @@ export default defineEventHandler(async (event) => {
     //   - Audit completion
     // -------------------------------------------------------------------
     const idempotencyKey = `${proposalId}:execute:${actorId}`;
-    const service = new RuleMutationService(wf.store, ledger, rust);
-
-    let result: ExecuteRuleResult;
+    let execution: { result: ExecuteRuleResult | null; error: unknown };
     try {
-      result = await service.execute({
-        proposalId,
-        actorId,
-        idempotencyKey,
-        approvalId: matchingApproval.id,
-        requestId,
-      });
+      execution = await manager.withConnection(
+        async ({ connector }) => {
+          const ledger = connector as unknown as BudgetLedger;
+          const service = new RuleMutationService(wf.store, ledger, rust);
+          try {
+            return {
+              result: await service.execute({
+                proposalId,
+                actorId,
+                idempotencyKey,
+                approvalId: matchingApproval.id,
+                requestId,
+              }),
+              error: null,
+            };
+          } catch (error) {
+            return { result: null, error };
+          }
+        },
+        { dispose: true },
+      );
     } catch (err) {
-      const safe = sanitizeError(err, requestId, 'RULE_EXECUTION_FAILED', true);
-      setResponseStatus(event, 500);
+      const safe = sanitizeError(err, requestId, 'LEDGER_UNAVAILABLE', true);
+      setResponseStatus(event, 503);
       return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
     }
+    if (execution.error !== null || !execution.result) {
+      const safe = sanitizeError(execution.error, requestId, 'RULE_EXECUTION_FAILED', true);
+      setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
+      return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+    }
+    const result = execution.result;
 
     // -------------------------------------------------------------------
     // 8. Handle replay (idempotent completion)
@@ -358,7 +391,7 @@ export default defineEventHandler(async (event) => {
     );
   } catch (e) {
     const safe = sanitizeError(e, requestId, 'RULE_EXECUTION_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

@@ -12,31 +12,61 @@ vi.stubGlobal('$fetch', mockFetch);
 import ForecastAccuracyPage from '../../app/pages/forecast-accuracy.vue';
 
 const stubs = {
-  AnalysisPage: { template: '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot name="content" /></div>', props: ['title', 'loading', 'error', 'freshness', 'insufficientData'] },
+  AnalysisPage: {
+    template:
+      '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot name="content" /></div>',
+    props: ['title', 'loading', 'error', 'freshness', 'insufficientData'],
+  },
   UCard: { template: '<div><slot name="header" /><slot /></div>' },
-  AnalysisTable: { template: '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>', props: ['columns', 'rows'] },
+  AnalysisTable: {
+    template:
+      '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>',
+    props: ['columns', 'rows'],
+  },
   ScopeSummary: { template: '<div>{{ scope.label }}</div>', props: ['scope'] },
 };
 
 function okEnvelope(result: unknown) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'ok' as const, dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' }, authorization: null, result, error: null };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'ok' as const,
+    dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' },
+    authorization: null,
+    result,
+    error: null,
+  };
 }
 
 function errorEnvelope(code: string) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'error' as const, dataFreshness: null, authorization: null, result: null, error: { code, message: `Simulated ${code}`, retryable: true } };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'error' as const,
+    dataFreshness: null,
+    authorization: null,
+    result: null,
+    error: { code, message: `Simulated ${code}`, retryable: true },
+  };
 }
 
 const sampleResult = {
   metrics: [
-    { metricName: 'Groceries', mape: 8.5, bias: -2.1, periodsCompared: 12, isCalibrated: true },
-    { metricName: 'Utilities', mape: 15.2, bias: 5.3, periodsCompared: 12, isCalibrated: false },
+    { metricName: 'Groceries', mape: 0.085, bias: -0.021, periodsCompared: 12, isCalibrated: true },
+    { metricName: 'Utilities', mape: 0.152, bias: 0.053, periodsCompared: 12, isCalibrated: false },
   ],
   overallCalibrated: false,
-  recommendations: ['Review utility budget allocation', 'Add seasonal adjustment for heating costs'],
+  recommendations: [
+    'Review utility budget allocation',
+    'Add seasonal adjustment for heating costs',
+  ],
 };
 
 describe('Forecast Accuracy page', () => {
-  beforeEach(() => { vi.clearAllMocks(); mockFetch.mockReset(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+  });
 
   it('calls /api/forecast-accuracy on mount', async () => {
     mockFetch.mockResolvedValue(okEnvelope(sampleResult));
@@ -60,11 +90,12 @@ describe('Forecast Accuracy page', () => {
     expect(wrapper.text()).toContain('Utilities');
   });
 
-  it('renders MAPE values', async () => {
+  it('renders normalized MAPE and bias values as percentages', async () => {
     mockFetch.mockResolvedValue(okEnvelope(sampleResult));
     const wrapper = shallowMount(ForecastAccuracyPage, { global: { stubs } });
     await flushPromises();
     expect(wrapper.text()).toContain('8.5%');
+    expect(wrapper.text()).toContain('-2.1%');
   });
 
   it('renders recommendations', async () => {
@@ -89,7 +120,9 @@ describe('Forecast Accuracy page', () => {
   });
 
   it('shows empty state when no data', async () => {
-    mockFetch.mockResolvedValue(okEnvelope({ metrics: [], overallCalibrated: false, recommendations: [] }));
+    mockFetch.mockResolvedValue(
+      okEnvelope({ metrics: [], overallCalibrated: false, recommendations: [] }),
+    );
     const wrapper = shallowMount(ForecastAccuracyPage, { global: { stubs } });
     await flushPromises();
     expect(wrapper.text()).toContain('No forecast accuracy data available');

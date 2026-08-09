@@ -52,7 +52,11 @@ mockGetWorkflowStore.mockReturnValue({ store: mockStore });
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: mockGetWorkflowStore,
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'test-actor',
+    capability: 'observe',
+    allowed: true,
+  })),
   getActorId: vi.fn(() => 'test-actor'),
   requireAuthorization: mockRequireAuthorization,
   sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
@@ -134,7 +138,11 @@ function denyAuth() {
       dataFreshness: null,
       authorization: null,
       result: null,
-      error: { code: 'AUTHORIZATION_DENIED', message: 'Insufficient capabilities.', retryable: false },
+      error: {
+        code: 'AUTHORIZATION_DENIED',
+        message: 'Insufficient capabilities.',
+        retryable: false,
+      },
     },
   });
 }
@@ -144,7 +152,10 @@ function denyAuth() {
 // ---------------------------------------------------------------------------
 
 describe('GET /api/findings', () => {
-  beforeEach(() => { vi.clearAllMocks(); mockGetQuery.mockReturnValue({}); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetQuery.mockReturnValue({});
+  });
 
   it('must list findings', async () => {
     mockStore.listFindings.mockResolvedValue([SAMPLE_FINDING]);
@@ -181,7 +192,9 @@ describe('GET /api/findings', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /api/findings/[id]', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   it('must return a finding by ID', async () => {
     mockGetRouterParam.mockReturnValue('f_001');
@@ -212,12 +225,19 @@ describe('GET /api/findings/[id]', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/findings/[id]/acknowledge', () => {
-  beforeEach(() => { vi.clearAllMocks(); allowAuth(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    allowAuth();
+  });
 
   it('must acknowledge a finding', async () => {
     mockGetRouterParam.mockReturnValue('f_001');
     mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    mockStore.acknowledgeFinding.mockResolvedValue({ ...SAMPLE_FINDING, status: 'acknowledged', version: 2 });
+    mockStore.acknowledgeFinding.mockResolvedValue({
+      ...SAMPLE_FINDING,
+      status: 'acknowledged',
+      version: 2,
+    });
     const r = await ackHandler(mockAuthEvent());
     expect(r.status).toBe('ok');
     expect(r.result.status).toBe('acknowledged');
@@ -266,12 +286,19 @@ describe('POST /api/findings/[id]/acknowledge', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/findings/[id]/dismiss', () => {
-  beforeEach(() => { vi.clearAllMocks(); allowAuth(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    allowAuth();
+  });
 
   it('must dismiss a finding', async () => {
     mockGetRouterParam.mockReturnValue('f_001');
     mockReadBody.mockResolvedValue({ expectedVersion: 1, reason: 'Not actionable' });
-    mockStore.dismissFinding.mockResolvedValue({ ...SAMPLE_FINDING, status: 'dismissed', version: 2 });
+    mockStore.dismissFinding.mockResolvedValue({
+      ...SAMPLE_FINDING,
+      status: 'dismissed',
+      version: 2,
+    });
     const r = await dismissHandler(mockAuthEvent());
     expect(r.status).toBe('ok');
     expect(r.result.status).toBe('dismissed');
@@ -311,7 +338,10 @@ describe('POST /api/findings/[id]/dismiss', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/findings/[id]/correct', () => {
-  beforeEach(() => { vi.clearAllMocks(); allowAuth(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    allowAuth();
+  });
 
   it('must correct a finding with evidence reference', async () => {
     mockGetRouterParam.mockReturnValue('f_001');
@@ -435,7 +465,10 @@ describe('POST /api/findings/[id]/correct', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/findings/[id]/reopen', () => {
-  beforeEach(() => { vi.clearAllMocks(); allowAuth(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    allowAuth();
+  });
 
   it('must reopen a previously dismissed finding', async () => {
     mockGetRouterParam.mockReturnValue('f_001');
@@ -497,9 +530,7 @@ describe('POST /api/findings/[id]/reopen', () => {
   it('must handle transition constraint violation', async () => {
     mockGetRouterParam.mockReturnValue('f_001');
     mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    mockStore.reopenFinding.mockRejectedValue(
-      new Error('Cannot reopen finding in status expired'),
-    );
+    mockStore.reopenFinding.mockRejectedValue(new Error('Cannot reopen finding in status expired'));
     const r = await reopenHandler(mockAuthEvent());
     expect(r.status).toBe('error');
     expect(r.error?.code).toBe('REOPEN_FAILED');
@@ -538,7 +569,10 @@ describe('POST /api/findings/[id]/reopen', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/findings/[id]/supersede', () => {
-  beforeEach(() => { vi.clearAllMocks(); allowAuth(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    allowAuth();
+  });
 
   it('must supersede a finding with reason and replacement ref', async () => {
     mockGetRouterParam.mockReturnValue('f_001');

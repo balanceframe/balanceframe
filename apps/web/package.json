@@ -15,6 +15,7 @@
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {
+    "@actual-app/api": "^26.7.0",
     "@balanceframe/actual-adapter": "workspace:*",
     "@balanceframe/application": "workspace:*",
     "@balanceframe/protocol-generated": "workspace:*",
@@ -39,6 +40,6 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^5.0.0",
     "vitest": "^3.0.0",
-    "vue-tsc": "^2.2.0"
+    "vue-tsc": "^3.3.9"
   }
 }

@@ -8,9 +8,9 @@
  * Tests:
  * - Observe-mode default returns null (no executor).
  * - reviewAndApply opt-in creates an executor.
- * - The executor calls manager.restore() to get the ledger.
+ * - The executor uses a scoped connection that is always disposed after execution.
  * - It creates a proposal and approval in the workflow store.
- * - The executor returns apply_failed when restore throws.
+ * - The executor returns apply_failed when connection restoration throws.
  * - Existing interfaces remain type-safe.
  */
 
@@ -62,14 +62,22 @@ function fakeConnectionManager(overrides?: {
   const restoreResult = overrides?.restoreResult ?? {};
   const connector = (restoreResult.connector ?? defaultConnector) as typeof defaultConnector;
 
+  const connected = {
+    budget: restoreResult.budget ?? {
+      id: 'budget-1',
+      groupId: 'group-1',
+      name: 'Test Budget',
+      encrypted: false,
+    },
+    connector,
+    synchronization: restoreResult.synchronization ?? null,
+  };
+  const restore = vi.fn().mockResolvedValue(connected);
   const manager = {
-    restore: vi.fn().mockResolvedValue({
-      budget: restoreResult.budget ?? {
-        id: 'budget-1', groupId: 'group-1', name: 'Test Budget', encrypted: false,
-      },
-      connector,
-      synchronization: restoreResult.synchronization ?? null,
-    }),
+    restore,
+    withConnection: vi.fn(async (operation: (connection: typeof connected) => Promise<unknown>) =>
+      operation(await restore()),
+    ),
     connect: vi.fn(),
     listBudgets: vi.fn(),
     loadConfig: vi.fn(),
@@ -78,11 +86,21 @@ function fakeConnectionManager(overrides?: {
   return { manager, connector: connector as typeof defaultConnector };
 }
 
-function fakeReviewItem(overrides: Partial<{
-  id: string; transactionId: string; budgetId: string; categoryId: string;
-  classifier: string; provenance: string; status: string; version: number;
-  createdAt: Date; updatedAt: Date; evidence: Record<string, unknown>;
-}> = {}): ReviewItem {
+function fakeReviewItem(
+  overrides: Partial<{
+    id: string;
+    transactionId: string;
+    budgetId: string;
+    categoryId: string;
+    classifier: string;
+    provenance: string;
+    status: string;
+    version: number;
+    createdAt: Date;
+    updatedAt: Date;
+    evidence: Record<string, unknown>;
+  }> = {},
+): ReviewItem {
   return {
     id: 'review-001',
     transactionId: TEST_TX_ID,
@@ -136,21 +154,20 @@ describe('createDefaultExecutorFactory', () => {
     expect(executor).not.toBeNull();
   });
 
-  it('uses ConnectionManager.restore() to get the ledger', async () => {
+  it('uses a disposable scoped connection to get the ledger', async () => {
     const store = new SqliteWorkflowStore(':memory:');
     const { manager } = fakeConnectionManager();
     const factory = createDefaultExecutorFactory(manager);
     const ev = mockEvent({ reviewAndApply: true });
     const executor = factory(ev)!;
 
-    const result = await executor(
+    await executor(
       { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-1' },
       store,
       fakeReviewItem(),
     );
 
-    // The bridge calls manager.restore() to get the ledger
-    expect(manager.restore).toHaveBeenCalledTimes(1);
+    expect(manager.withConnection).toHaveBeenCalledWith(expect.any(Function), { dispose: true });
   });
 
   it('creates a proposal and approval in the store before executing', async () => {
@@ -173,10 +190,37 @@ describe('createDefaultExecutorFactory', () => {
     expect(createApprovalSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('returns apply_failed when restore throws', async () => {
+  it('rethrows a missing-selection connection error for the route recovery layer', async () => {
     const store = new SqliteWorkflowStore(':memory:');
+    const missingSelection = Object.assign(new Error('No BalanceFrame connection configured.'), {
+      code: 'not_connected',
+    });
     const brokenManager = {
-      restore: vi.fn().mockRejectedValue(new Error('No BalanceFrame connection configured.')),
+      restore: vi.fn().mockRejectedValue(missingSelection),
+      withConnection: vi.fn().mockRejectedValue(missingSelection),
+      connect: vi.fn(),
+      listBudgets: vi.fn(),
+      loadConfig: vi.fn(),
+    };
+
+    const factory = createDefaultExecutorFactory(brokenManager);
+    const executor = factory(mockEvent({ reviewAndApply: true }))!;
+
+    await expect(
+      executor(
+        { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-5' },
+        store,
+        fakeReviewItem(),
+      ),
+    ).rejects.toBe(missingSelection);
+  });
+
+  it('returns apply_failed when restoration encounters an ordinary operational failure', async () => {
+    const store = new SqliteWorkflowStore(':memory:');
+    const operationalFailure = new Error('Could not read Actual configuration.');
+    const brokenManager = {
+      restore: vi.fn().mockRejectedValue(operationalFailure),
+      withConnection: vi.fn().mockRejectedValue(operationalFailure),
       connect: vi.fn(),
       listBudgets: vi.fn(),
       loadConfig: vi.fn(),
@@ -187,13 +231,14 @@ describe('createDefaultExecutorFactory', () => {
     const executor = factory(ev)!;
 
     const result = await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-5' },
+      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-6' },
       store,
       fakeReviewItem(),
     );
 
     expect(result.success).toBe(false);
     expect(result.mutationStatus).toBe('apply_failed');
+    expect(result.error).toBe('Could not read Actual configuration.');
   });
 
   it('construction without connectionManager returns a working factory (production path)', () => {

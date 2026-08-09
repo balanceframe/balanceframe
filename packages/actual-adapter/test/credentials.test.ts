@@ -10,7 +10,15 @@ import {
   EnvCredentialStore,
   NullCredentialStore,
 } from '../src/credentials';
-import { mkdtempSync, writeFileSync, readdirSync, existsSync, unlinkSync, rmSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  readdirSync,
+  existsSync,
+  unlinkSync,
+  rmSync,
+  readFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -61,7 +69,7 @@ describe('EncryptedCredentialStore — corrupt vs missing', () => {
       secretKey: 'my-secret',
     });
     // Find and corrupt the .enc file specifically
-    const files = readdirSync(dir).filter(f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME);
+    const files = readdirSync(dir).filter((f) => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME);
     if (files.length > 0) {
       const filePath = join(dir, files[0]);
       const raw = JSON.parse(readFileSync(filePath, 'utf-8'));

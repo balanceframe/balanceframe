@@ -1,5 +1,10 @@
 <template>
-  <AnalysisPage title="Cash Flow Projection" :loading="loading" :error="error" :insufficient-data="!projectionMonths && !loading && !error">
+  <AnalysisPage
+    title="Cash Flow Projection"
+    :loading="loading"
+    :error="error"
+    :insufficient-data="!projectionMonths && !loading && !error"
+  >
     <template #content>
       <div class="mb-4">
         <UFormGroup label="Months to project" class="mb-3">
@@ -22,11 +27,17 @@
           <span class="font-semibold">Envelope Availability</span>
         </template>
         <div class="text-xs text-gray-600 dark:text-gray-400">
-          <p>{{ envelopeAvailability.available ? 'Envelopes active' : 'No envelopes configured' }}</p>
-          <p v-if="envelopeAvailability.envelopeCount">{{ envelopeAvailability.envelopeCount }} envelope{{ envelopeAvailability.envelopeCount !== 1 ? 's' : '' }}</p>
+          <p>
+            {{ envelopeAvailability.available ? 'Envelopes active' : 'No envelopes configured' }}
+          </p>
+          <p v-if="envelopeAvailability.envelopeCount">
+            {{ envelopeAvailability.envelopeCount }} envelope{{
+              envelopeAvailability.envelopeCount !== 1 ? 's' : ''
+            }}
+          </p>
           <div v-if="envelopeAvailability.totalBudgeted" class="mt-1">
-            Total budgeted: <SemanticAmount :amount="envelopeAvailability.totalBudgeted" />
-            &middot; Spent: <SemanticAmount :amount="envelopeAvailability.totalSpent" />
+            Total budgeted: <SemanticAmount :amount="envelopeAvailability.totalBudgeted" /> &middot;
+            Spent: <SemanticAmount :amount="envelopeAvailability.totalSpent" />
           </div>
         </div>
       </UCard>
@@ -35,9 +46,9 @@
       <div v-if="projections.length" class="mt-4">
         <AnalysisTable :columns="flowColumns" :rows="projections" />
         <p v-if="summary" class="text-xs text-gray-500 dark:text-gray-400 mt-2">
-          Net: <SemanticAmount :amount="summary.netProjection" />
-          &middot; Min: <SemanticAmount :amount="summary.minBalance" />
-          &middot; Max: <SemanticAmount :amount="summary.maxBalance" />
+          Net: <SemanticAmount :amount="summary.netProjection" /> &middot; Min:
+          <SemanticAmount :amount="summary.minBalance" /> &middot; Max:
+          <SemanticAmount :amount="summary.maxBalance" />
         </p>
       </div>
 
@@ -58,8 +69,12 @@
           <span class="font-semibold">Scope</span>
         </template>
         <div class="text-xs text-gray-600 dark:text-gray-400">
-          <p v-if="scope.accountsIncluded?.length">Accounts: {{ scope.accountsIncluded.join(', ') }}</p>
-          <p v-if="scope.categoriesIncluded?.length">Categories: {{ scope.categoriesIncluded.join(', ') }}</p>
+          <p v-if="scope.accountsIncluded?.length">
+            Accounts: {{ scope.accountsIncluded.join(', ') }}
+          </p>
+          <p v-if="scope.categoriesIncluded?.length">
+            Categories: {{ scope.categoriesIncluded.join(', ') }}
+          </p>
         </div>
       </UCard>
     </template>
@@ -118,7 +133,13 @@ async function project() {
       status: string;
       result: {
         projectionMonths: number;
-        projections: Array<{ month: string; income: Amount; expenses: Amount; netFlow: Amount; endingBalance: Amount }>;
+        projections: Array<{
+          month: string;
+          income: Amount;
+          expenses: Amount;
+          netFlow: Amount;
+          endingBalance: Amount;
+        }>;
         summary: { netProjection: Amount; minBalance: Amount; maxBalance: Amount };
         assumptions: Assumptions;
         scope: Scope;
@@ -129,7 +150,7 @@ async function project() {
     }>('/api/cash-flow/project', { query: { months: String(months.value) } });
     if (res.status === 'ok') {
       projectionMonths.value = res.result.projectionMonths;
-      projections.value = res.result.projections.map(p => ({ ...p }));
+      projections.value = res.result.projections.map((p) => ({ ...p }));
       summary.value = res.result.summary;
       assumptions.value = res.result.assumptions ?? null;
       scope.value = res.result.scope ?? null;

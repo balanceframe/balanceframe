@@ -55,11 +55,7 @@ import type {
   LedgerSnapshotResult,
 } from '@balanceframe/actual-adapter';
 
-import type {
-  Transaction,
-  Category,
-  ProtocolSnapshot,
-} from '@balanceframe/protocol-generated';
+import type { Transaction, Category, ProtocolSnapshot } from '@balanceframe/protocol-generated';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -176,13 +172,15 @@ function mockIdempotencyRecord(overrides: Partial<IdempotencyRecord> = {}): Idem
     completed: false,
     status: 'in_progress',
     leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-    serialisedEffect: JSON.stringify({ transactionId: TEST_TX_ID, newCategoryId: TEST_CATEGORY_ID }),
+    serialisedEffect: JSON.stringify({
+      transactionId: TEST_TX_ID,
+      newCategoryId: TEST_CATEGORY_ID,
+    }),
     errorMessage: null,
     updatedAt: '2026-07-20T11:00:00Z',
     ...overrides,
   };
 }
-
 
 function mockSetCategoryResult(overrides: Partial<SetCategoryResult> = {}): SetCategoryResult {
   return {
@@ -356,7 +354,9 @@ describe('CategorizationMutationService', () => {
   let rust: RustProtocolMock;
   let service: CategorizationMutationService;
 
-  function makeInput(overrides: Partial<ExecuteCategorizationInput> = {}): ExecuteCategorizationInput {
+  function makeInput(
+    overrides: Partial<ExecuteCategorizationInput> = {},
+  ): ExecuteCategorizationInput {
     return {
       requestId: TEST_REQUEST,
       actorId: TEST_ACTOR,
@@ -394,7 +394,9 @@ describe('CategorizationMutationService', () => {
     // Approval lookup - active, matching proposalId + payloadHash
     store.getApproval.mockResolvedValue(mockApproval());
     store.findActiveApprovals.mockResolvedValue([mockApproval()]);
-    store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed', consumedAt: '2026-07-20T11:00:00Z' }));
+    store.consumeApproval.mockResolvedValue(
+      mockApproval({ status: 'consumed', consumedAt: '2026-07-20T11:00:00Z' }),
+    );
     // Idempotency: fresh insert
     store.createIdempotencyRecord.mockResolvedValue({
       record: mockIdempotencyRecord({ completed: false }),
@@ -444,7 +446,10 @@ describe('CategorizationMutationService', () => {
       authorizationDisposition: null,
       idempotencyKey: TEST_NONCE,
       expectedPriorState: null,
-      observedResultState: JSON.stringify({ transactionId: TEST_TX_ID, newCategoryId: TEST_CATEGORY_ID }),
+      observedResultState: JSON.stringify({
+        transactionId: TEST_TX_ID,
+        newCategoryId: TEST_CATEGORY_ID,
+      }),
       providerModel: null,
       correlationId: 'corr_exec_001',
       requestId: TEST_REQUEST,
@@ -485,9 +490,7 @@ describe('CategorizationMutationService', () => {
 
   describe('proposal expiry', () => {
     it('rejects when proposal is expired', async () => {
-      store.getProposal.mockResolvedValue(
-        mockProposal({ expiresAt: '2020-01-01T00:00:00Z' }),
-      );
+      store.getProposal.mockResolvedValue(mockProposal({ expiresAt: '2020-01-01T00:00:00Z' }));
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('proposal_expired');
@@ -510,7 +513,9 @@ describe('CategorizationMutationService', () => {
 
     it('rejects execution when no backup audit record exists', async () => {
       store.queryAuditRecords.mockResolvedValue([]);
-      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const svc = new CategorizationMutationService(store, ledger, rust, {
+        requireBackupVerification: true,
+      });
       const result = await svc.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toEqual(['backup_not_verified']);
@@ -520,17 +525,19 @@ describe('CategorizationMutationService', () => {
       store.queryAuditRecords.mockResolvedValue([
         mockBackupVerification({ budgetId: 'budget_other' }),
       ]);
-      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const svc = new CategorizationMutationService(store, ledger, rust, {
+        requireBackupVerification: true,
+      });
       const result = await svc.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('backup_not_verified');
     });
 
     it('rejects when backup record result is not verified/completed', async () => {
-      store.queryAuditRecords.mockResolvedValue([
-        mockBackupVerification({ result: 'failed' }),
-      ]);
-      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      store.queryAuditRecords.mockResolvedValue([mockBackupVerification({ result: 'failed' })]);
+      const svc = new CategorizationMutationService(store, ledger, rust, {
+        requireBackupVerification: true,
+      });
       const result = await svc.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('backup_not_verified');
@@ -541,7 +548,9 @@ describe('CategorizationMutationService', () => {
       store.queryAuditRecords.mockResolvedValue([
         mockBackupVerification({ timestamp: oldTimestamp }),
       ]);
-      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const svc = new CategorizationMutationService(store, ledger, rust, {
+        requireBackupVerification: true,
+      });
       const result = await svc.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('backup_not_verified');
@@ -549,7 +558,9 @@ describe('CategorizationMutationService', () => {
 
     it('proceeds when matching backup record is fresh, verified, and has correct budget', async () => {
       store.queryAuditRecords.mockResolvedValue([mockBackupVerification()]);
-      const svc = new CategorizationMutationService(store, ledger, rust, { requireBackupVerification: true });
+      const svc = new CategorizationMutationService(store, ledger, rust, {
+        requireBackupVerification: true,
+      });
       const result = await svc.execute(makeInput());
       expect(result.success).toBe(true);
     });
@@ -637,27 +648,21 @@ describe('CategorizationMutationService', () => {
     });
 
     it('rejects when approval proposalId does not match input proposalId', async () => {
-      store.getApproval.mockResolvedValue(
-        mockApproval({ proposalId: 'prop_different' }),
-      );
+      store.getApproval.mockResolvedValue(mockApproval({ proposalId: 'prop_different' }));
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('approval_proposal_mismatch');
     });
 
     it('rejects when approval payload hash does not match proposal', async () => {
-      store.getApproval.mockResolvedValue(
-        mockApproval({ payloadHash: 'different_hash' }),
-      );
+      store.getApproval.mockResolvedValue(mockApproval({ payloadHash: 'different_hash' }));
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('payload_hash_mismatch');
     });
 
     it('rejects when approval is expired', async () => {
-      store.getApproval.mockResolvedValue(
-        mockApproval({ expiresAt: '2020-01-01T00:00:00Z' }),
-      );
+      store.getApproval.mockResolvedValue(mockApproval({ expiresAt: '2020-01-01T00:00:00Z' }));
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('approval_expired');
@@ -682,7 +687,9 @@ describe('CategorizationMutationService', () => {
     });
 
     it('rejects with unsupported_operation for non-set_category proposals', async () => {
-      store.getProposal.mockResolvedValue(mockProposal({ operation: 'delete' as unknown as 'set_category' }));
+      store.getProposal.mockResolvedValue(
+        mockProposal({ operation: 'delete' as unknown as 'set_category' }),
+      );
       const result = await service.execute(makeInput());
       expect(result.success).toBe(false);
       expect(result.reasonCodes).toContain('unsupported_operation');
@@ -694,7 +701,6 @@ describe('CategorizationMutationService', () => {
   // =========================================================================
 
   describe('idempotency gating', () => {
-
     it('creates idempotency record before consuming approval', async () => {
       await service.execute(makeInput());
       const idemCreateOrder = (store.createIdempotencyRecord as Mock).mock.invocationCallOrder[0];
@@ -750,10 +756,7 @@ describe('CategorizationMutationService', () => {
 
     it('completes idempotency record after successful execution', async () => {
       await service.execute(makeInput());
-      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(
-        TEST_NONCE,
-        null,
-      );
+      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(TEST_NONCE, null);
     });
 
     it('records error on idempotency record when write fails', async () => {
@@ -1276,7 +1279,6 @@ describe('CategorizationMutationService', () => {
       expect(ledger.synchronize).not.toHaveBeenCalled();
     });
 
-
     it('calls setTransactionCategory exactly once on successful execution', async () => {
       await service.execute(makeInput());
       expect(ledger.setTransactionCategory).toHaveBeenCalledTimes(1);
@@ -1490,17 +1492,23 @@ describe('CategorizationMutationService', () => {
 
       // Verify ordering of major phases
       expect(order.indexOf('getProposal')).toBeLessThan(order.indexOf('evaluateAuthorization'));
-      expect(order.indexOf('evaluateAuthorization')).toBeLessThan(order.indexOf('createIdempotencyRecord'));
+      expect(order.indexOf('evaluateAuthorization')).toBeLessThan(
+        order.indexOf('createIdempotencyRecord'),
+      );
       expect(order.indexOf('createIdempotencyRecord')).toBeLessThan(order.indexOf('getApproval'));
       expect(order.indexOf('getApproval')).toBeLessThan(order.indexOf('consumeApproval'));
       expect(order.indexOf('consumeApproval')).toBeLessThan(order.indexOf('synchronize(1)'));
       expect(order.indexOf('synchronize(1)')).toBeLessThan(order.indexOf('planSetCategory'));
-      expect(order.indexOf('planSetCategory')).toBeLessThan(order.indexOf('setTransactionCategory'));
+      expect(order.indexOf('planSetCategory')).toBeLessThan(
+        order.indexOf('setTransactionCategory'),
+      );
       expect(order.indexOf('setTransactionCategory')).toBeLessThan(order.indexOf('synchronize(2)'));
       expect(order.indexOf('synchronize(2)')).toBeLessThan(order.indexOf('verifyMutation'));
-      expect(order.indexOf('verifyMutation')).toBeLessThan(order.indexOf('completeIdempotencyRecord'));
+      expect(order.indexOf('verifyMutation')).toBeLessThan(
+        order.indexOf('completeIdempotencyRecord'),
+      );
       // Audit records are appended throughout
-      expect(order.filter(s => s === 'appendAuditRecord').length).toBeGreaterThanOrEqual(1);
+      expect(order.filter((s) => s === 'appendAuditRecord').length).toBeGreaterThanOrEqual(1);
     });
   });
 });

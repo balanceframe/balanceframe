@@ -55,10 +55,7 @@ export interface ReviewActionOptions {
 
 export interface AnalysisProtocol {
   /** Analyze pending uncategorized transactions from the ledger snapshot. */
-  pendingReview(
-    ledger: unknown,
-    freshness: DataFreshness | null,
-  ): Promise<PendingReviewResult>;
+  pendingReview(ledger: unknown, freshness: DataFreshness | null): Promise<PendingReviewResult>;
   /** Show a specific review by ID. */
   reviewShow(ledger: unknown, reviewId: string): Promise<ReviewDetailResult>;
   /** Generate a budget summary from ledger data. */
@@ -123,16 +120,10 @@ export interface AnalysisProtocol {
   // -----------------------------------------------------------------------
 
   /** Create a new proposal. */
-  proposalCreate?(
-    ledger: unknown,
-    options?: ReviewActionOptions,
-  ): Promise<ProposalCreateResult>;
+  proposalCreate?(ledger: unknown, options?: ReviewActionOptions): Promise<ProposalCreateResult>;
 
   /** Show a proposal by ID. */
-  proposalShow?(
-    ledger: unknown,
-    proposalId: string,
-  ): Promise<ProposalDetailResult>;
+  proposalShow?(ledger: unknown, proposalId: string): Promise<ProposalDetailResult>;
 
   /** Approve a proposal. */
   proposalApprove?(
@@ -149,38 +140,21 @@ export interface AnalysisProtocol {
   ): Promise<ProposalActionResult>;
 
   /** List pending proposals. */
-  proposalList?(
-    ledger: unknown,
-  ): Promise<ProposalListResult>;
+  proposalList?(ledger: unknown): Promise<ProposalListResult>;
 
   /** Query the audit trail. */
-  auditQuery?(
-    ledger: unknown,
-    query?: AuditQueryOptions,
-  ): Promise<AuditQueryResult>;
-
+  auditQuery?(ledger: unknown, query?: AuditQueryOptions): Promise<AuditQueryResult>;
 
   /** List automation rules. */
-  ruleList?(
-    ledger: unknown,
-  ): Promise<RuleListResult>;
+  ruleList?(ledger: unknown): Promise<RuleListResult>;
 
   /** Show a single rule by ID. */
-  ruleShow?(
-    ledger: unknown,
-    ruleId: string,
-  ): Promise<RuleShowResult>;
+  ruleShow?(ledger: unknown, ruleId: string): Promise<RuleShowResult>;
 
   /** Update a rule via proposal. */
-  ruleUpdate?(
-    ledger: unknown,
-    options?: ReviewActionOptions,
-  ): Promise<RuleCreateResult>;
+  ruleUpdate?(ledger: unknown, options?: ReviewActionOptions): Promise<RuleCreateResult>;
   /** Create a new rule proposal. */
-  ruleCreate?(
-    ledger: unknown,
-    options?: ReviewActionOptions,
-  ): Promise<RuleCreateResult>;
+  ruleCreate?(ledger: unknown, options?: ReviewActionOptions): Promise<RuleCreateResult>;
 
   // -----------------------------------------------------------------------
   // Budget Intelligence — read-only deterministic analysis
@@ -199,84 +173,50 @@ export interface AnalysisProtocol {
   ): Promise<CashFlowProjectionResult>;
 
   /** Evaluate target/sinking-fund health. */
-  targetHealth?(
-    ledger: unknown,
-  ): Promise<TargetHealthResult>;
+  targetHealth?(ledger: unknown): Promise<TargetHealthResult>;
 
   /** Evaluate sinking fund health specifically. */
-  sinkingFundHealth?(
-    ledger: unknown,
-  ): Promise<SinkingFundHealthResult>;
+  sinkingFundHealth?(ledger: unknown): Promise<SinkingFundHealthResult>;
 
   /** Generate a report with persisted scope/filters. */
-  generateReport?(
-    ledger: unknown,
-    params: ReportGenerationParams,
-  ): Promise<ReportGenerationResult>;
+  generateReport?(ledger: unknown, params: ReportGenerationParams): Promise<ReportGenerationResult>;
 
   /** List saved views. */
-  listSavedViews?(
-    ledger: unknown,
-  ): Promise<SavedViewsListResult>;
+  listSavedViews?(ledger: unknown): Promise<SavedViewsListResult>;
 
   /** Create a saved view. */
-  createSavedView?(
-    ledger: unknown,
-    params: CreateSavedViewParams,
-  ): Promise<CreateSavedViewResult>;
+  createSavedView?(ledger: unknown, params: CreateSavedViewParams): Promise<CreateSavedViewResult>;
 
   /** Get prioritized attention/home dashboard. */
-  attentionHome?(
-    ledger: unknown,
-    params: AttentionHomeParams,
-  ): Promise<AttentionHomeResult>;
+  attentionHome?(ledger: unknown, params: AttentionHomeParams): Promise<AttentionHomeResult>;
 
   /** Evaluate overall financial state (comprehensive). */
-  financialState?(
-    ledger: unknown,
-  ): Promise<FinancialStateResult>;
+  financialState?(ledger: unknown): Promise<FinancialStateResult>;
 
   // -----------------------------------------------------------------------
   // Phase 8 — Additional Budget Intelligence methods
   // -----------------------------------------------------------------------
 
   /** Compute composite data-quality report from snapshot data. */
-  dataQuality?(
-    ledger: unknown,
-  ): Promise<DataQualityResult>;
+  dataQuality?(ledger: unknown): Promise<DataQualityResult>;
 
   /** Compute liquidity coverage for upcoming obligations. */
-  liquidityCoverage?(
-    ledger: unknown,
-    currentMonth: string,
-  ): Promise<LiquidityCoverageResult>;
+  liquidityCoverage?(ledger: unknown, currentMonth: string): Promise<LiquidityCoverageResult>;
 
   /** Compute the bill/obligation calendar. */
-  billCalendar?(
-    ledger: unknown,
-    referenceDate: string,
-  ): Promise<BillCalendarResult>;
+  billCalendar?(ledger: unknown, referenceDate: string): Promise<BillCalendarResult>;
 
   /** Compute budget variance and trends. */
-  budgetVariance?(
-    ledger: unknown,
-    referenceDate: string,
-  ): Promise<BudgetVarianceResult>;
+  budgetVariance?(ledger: unknown, referenceDate: string): Promise<BudgetVarianceResult>;
 
   /** Detect irregular obligations from schedules. */
-  irregularObligations?(
-    ledger: unknown,
-  ): Promise<IrregularObligationsResult>;
+  irregularObligations?(ledger: unknown): Promise<IrregularObligationsResult>;
 
   /** Compute income reliability assessment. */
-  incomeReliability?(
-    ledger: unknown,
-  ): Promise<IncomeReliabilityResult>;
+  incomeReliability?(ledger: unknown): Promise<IncomeReliabilityResult>;
 
   /** Compute forecast calibration by comparing projections to actuals. */
-  forecastCalibration?(
-    ledger: unknown,
-  ): Promise<ForecastCalibrationResult>;
+  forecastCalibration?(ledger: unknown): Promise<ForecastCalibrationResult>;
 
   /** Compare two immutable scenarios. */
   scenarioComparison?(
@@ -317,7 +257,8 @@ export interface LifecycleCallbacks {
 // Connection mode (mirrors actual-adapter types without importing)
 // ---------------------------------------------------------------------------
 
-export type ConnectionMode = 'observe' | 'reviewAndApply' | 'managedAutomation' | 'disposableSandbox';
+export type ConnectionMode =
+  'observe' | 'reviewAndApply' | 'managedAutomation' | 'disposableSandbox';
 
 // ---------------------------------------------------------------------------
 // Command route
@@ -420,9 +361,24 @@ const WRITE_COMMAND_PREFIXES: Array<{ prefix: string[]; capability: string }> = 
 // ---------------------------------------------------------------------------
 
 const REJECTED_COMMANDS: Array<{ args: string[]; code: string; reason: string; rc: string }> = [
-  { args: ['raw-query'], code: 'unknown_command', reason: 'raw-query is not supported', rc: ReasonCodes.UNSUPPORTED_RAW_QUERY },
-  { args: ['invoke-method'], code: 'unknown_command', reason: 'invoke-method is not supported', rc: ReasonCodes.UNSUPPORTED_RAW_QUERY },
-  { args: ['shell'], code: 'unknown_command', reason: 'shell is not supported', rc: ReasonCodes.UNSUPPORTED_RAW_QUERY },
+  {
+    args: ['raw-query'],
+    code: 'unknown_command',
+    reason: 'raw-query is not supported',
+    rc: ReasonCodes.UNSUPPORTED_RAW_QUERY,
+  },
+  {
+    args: ['invoke-method'],
+    code: 'unknown_command',
+    reason: 'invoke-method is not supported',
+    rc: ReasonCodes.UNSUPPORTED_RAW_QUERY,
+  },
+  {
+    args: ['shell'],
+    code: 'unknown_command',
+    reason: 'shell is not supported',
+    rc: ReasonCodes.UNSUPPORTED_RAW_QUERY,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -435,7 +391,11 @@ const KNOWN_COMMANDS: Array<{
   route: CommandRoute;
 }> = [
   // Analysis commands
-  { args: ['transactions', 'pending-review'], command: 'transactions.pending-review', route: 'analysis' },
+  {
+    args: ['transactions', 'pending-review'],
+    command: 'transactions.pending-review',
+    route: 'analysis',
+  },
   { args: ['reviews', 'show'], command: 'reviews.show', route: 'analysis' },
   { args: ['budget', 'summary'], command: 'budget.summary', route: 'analysis' },
 
@@ -490,7 +450,7 @@ function argsMatch(pattern: string[], args: string[]): boolean {
 }
 
 function stripFlags(args: string[]): string[] {
-  return args.filter(a => !a.startsWith('--'));
+  return args.filter((a) => !a.startsWith('--'));
 }
 
 // ---------------------------------------------------------------------------
@@ -880,8 +840,6 @@ export interface RuleUpdateOutput {
   envelope: ResponseEnvelope<RuleUpdateResult>;
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Audit result types
 // ---------------------------------------------------------------------------
@@ -1259,10 +1217,10 @@ export interface UpcomingObligation {
 }
 
 /**
- * Coverage ratio against upcoming obligations.
+ * Coverage ratio against upcoming obligations. `null` means the window has no obligations.
  */
 export interface CoverageRatio {
-  ratio: number;
+  ratio: number | null;
   label: string;
 }
 
@@ -1337,7 +1295,7 @@ export interface CategoryTrend {
   categoryId: string;
   categoryName: string;
   direction: TrendDirection;
-  avgChange: number;
+  avgChange: Money;
   periodsAnalyzed: number;
   seasonalityDetected: boolean;
 }

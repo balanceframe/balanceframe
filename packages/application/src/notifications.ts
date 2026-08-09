@@ -242,10 +242,7 @@ export type ReAuthorizationHook = (
  * Optional audit hook.
  * Called after significant lifecycle events to allow external audit logging.
  */
-export type AuditHook = (
-  action: string,
-  details: Record<string, unknown>,
-) => Promise<void>;
+export type AuditHook = (action: string, details: Record<string, unknown>) => Promise<void>;
 
 // ---------------------------------------------------------------------------
 // In-App channel adapter
@@ -284,7 +281,11 @@ export class InAppChannelAdapter implements ChannelAdapter {
       payload,
       deliveredAt: new Date().toISOString(),
     });
-    return Promise.resolve({ ok: true, code: '200', body: JSON.stringify({ status: 'delivered' }) });
+    return Promise.resolve({
+      ok: true,
+      code: '200',
+      body: JSON.stringify({ status: 'delivered' }),
+    });
   }
 
   isHealthy(): boolean {
@@ -331,7 +332,7 @@ class InProcessRateLimiter {
       this.windows.set(key, timestamps);
     }
     // Prune expired entries
-    const active = timestamps.filter(t => t > windowStart);
+    const active = timestamps.filter((t) => t > windowStart);
     this.windows.set(key, active);
     if (active.length >= limitPerMinute) {
       return false;
@@ -417,9 +418,7 @@ function redactPayload(
  * This ensures idempotent outbox enqueue.
  */
 function generateDeliveryKey(eventId: string, channelType: string): string {
-  return createHash('sha256')
-    .update(`${eventId}:${channelType}`)
-    .digest('hex');
+  return createHash('sha256').update(`${eventId}:${channelType}`).digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -441,14 +440,10 @@ export class NotificationRuntime {
   private reAuthHook: ReAuthorizationHook | null = null;
   private auditHook: AuditHook | null = null;
 
-  constructor(
-    store: WorkflowStore,
-    policy: NotificationPolicy,
-    adapters: ChannelAdapter[],
-  ) {
+  constructor(store: WorkflowStore, policy: NotificationPolicy, adapters: ChannelAdapter[]) {
     this.store = store;
     this.policy = policy;
-    this.adapters = new Map(adapters.map(a => [a.channelType, a]));
+    this.adapters = new Map(adapters.map((a) => [a.channelType, a]));
     this.rateLimiter = new InProcessRateLimiter();
   }
 
@@ -597,7 +592,7 @@ export class NotificationRuntime {
       const channels = this.resolveChannels(recipient);
 
       for (const channelType of channels) {
-        const channelConfig = this.policy.channels.find(c => c.type === channelType);
+        const channelConfig = this.policy.channels.find((c) => c.type === channelType);
         if (!channelConfig || !channelConfig.enabled) {
           continue; // Skip disabled channels
         }
@@ -685,11 +680,15 @@ export class NotificationRuntime {
       };
     }
 
-    const eligibilityRule = this.policy.eligibility.find(rule =>
+    const eligibilityRule = this.policy.eligibility.find((rule) =>
       rule.classifications.includes(event.classification),
     );
     const requiredCapability = eligibilityRule?.requiredCapability ?? 'notification:receive';
-    const authorized = await this.storeBackedReAuth(recipientId, requiredCapability, event.scope ?? '');
+    const authorized = await this.storeBackedReAuth(
+      recipientId,
+      requiredCapability,
+      event.scope ?? '',
+    );
     if (!authorized) {
       const reason = 'Recipient authorization revoked';
       await this.store.failNotificationDelivery(outboxId, claimToken, reason, false);
@@ -743,7 +742,6 @@ export class NotificationRuntime {
     }
 
     try {
-
       const payload = JSON.parse(event.payload);
       const result = await adapter.deliver(payload, record.deliveryKey);
 
@@ -767,7 +765,9 @@ export class NotificationRuntime {
       }
 
       // Provider returned failure
-      const isRetryable = this.classifyFailure(result.error ?? 'unknown') && record.attemptCount < this.policy.maxRetries;
+      const isRetryable =
+        this.classifyFailure(result.error ?? 'unknown') &&
+        record.attemptCount < this.policy.maxRetries;
       await this.store.failNotificationDelivery(
         outboxId,
         claimToken,
@@ -934,12 +934,14 @@ export class NotificationRuntime {
   async listOutbox(
     actorId: string,
     options?: { status?: OutboxStatus; channelType?: string; limit?: number; offset?: number },
-  ): Promise<Array<{
-    outbox: NotificationOutboxRecord;
-    event: NotificationEvent;
-    redactedPayload: Record<string, unknown>;
-    deliveryAttempts: DeliveryAttempt[];
-  }>> {
+  ): Promise<
+    Array<{
+      outbox: NotificationOutboxRecord;
+      event: NotificationEvent;
+      redactedPayload: Record<string, unknown>;
+      deliveryAttempts: DeliveryAttempt[];
+    }>
+  > {
     const storeOptions: ListOutboxRecordsOptions = {
       status: options?.status,
       channelType: options?.channelType,
@@ -1056,8 +1058,8 @@ export class NotificationRuntime {
 
     // Disabled channels: channels in the policy with enabled=false
     const disabledChannels: ChannelType[] = this.policy.channels
-      .filter(c => !c.enabled)
-      .map(c => c.type);
+      .filter((c) => !c.enabled)
+      .map((c) => c.type);
 
     // Outage channels: channels whose adapter is unhealthy
     const outageChannels: ChannelType[] = [];
@@ -1078,7 +1080,7 @@ export class NotificationRuntime {
       // Store errors are reflected in storeConnected
     }
 
-    const healthy = storeConnected && channelStatuses.every(cs => cs.healthy);
+    const healthy = storeConnected && channelStatuses.every((cs) => cs.healthy);
 
     return {
       healthy,
@@ -1098,17 +1100,14 @@ export class NotificationRuntime {
   /** Evaluate whether a notification is eligible for delivery. */
   evaluateEligibility(classification: string, severity: Severity): boolean {
     return this.policy.eligibility.some(
-      rule =>
+      (rule) =>
         rule.classifications.includes(classification) &&
         SEVERITY_ORDER.indexOf(severity) <= SEVERITY_ORDER.indexOf(rule.minSeverity),
     );
   }
 
   /** Resolve recipients for a given classification and severity. */
-  resolveRecipients(
-    classification: string,
-    severity: Severity,
-  ): RecipientSpec[] {
+  resolveRecipients(classification: string, severity: Severity): RecipientSpec[] {
     const matchingRule = this.findMatchingRule(classification, severity);
     if (!matchingRule) return [];
     // Use policy-level recipients; a Phase 7 enhancement would scope to
@@ -1119,9 +1118,9 @@ export class NotificationRuntime {
   /** Resolve channels for a recipient based on enabled policy channels. */
   resolveChannels(recipient: RecipientSpec): ChannelType[] {
     const enabledChannels = new Set(
-      this.policy.channels.filter(c => c.enabled).map(c => c.type),
+      this.policy.channels.filter((c) => c.enabled).map((c) => c.type),
     );
-    return recipient.channels.filter(c => enabledChannels.has(c));
+    return recipient.channels.filter((c) => enabledChannels.has(c));
   }
 
   // -----------------------------------------------------------------------
@@ -1220,7 +1219,9 @@ export class NotificationRuntime {
    * Produce a proposal transition notification.
    * Persists immutable event before outbox records.
    */
-  async produceProposalTransitionEvent(input: ProposalTransitionProducerInput): Promise<NotificationResult> {
+  async produceProposalTransitionEvent(
+    input: ProposalTransitionProducerInput,
+  ): Promise<NotificationResult> {
     return this.create({
       budgetId: input.budgetId,
       classification: 'proposal_transition',
@@ -1242,7 +1243,9 @@ export class NotificationRuntime {
    * Produce a consequential workflow result notification.
    * Persists immutable event before outbox records.
    */
-  async produceWorkflowResultEvent(input: WorkflowResultProducerInput): Promise<NotificationResult> {
+  async produceWorkflowResultEvent(
+    input: WorkflowResultProducerInput,
+  ): Promise<NotificationResult> {
     return this.create({
       budgetId: input.budgetId,
       classification: 'workflow_result',
@@ -1270,7 +1273,7 @@ export class NotificationRuntime {
     severity: Severity,
   ): EligibilityRule | undefined {
     return this.policy.eligibility.find(
-      rule =>
+      (rule) =>
         rule.classifications.includes(classification) &&
         SEVERITY_ORDER.indexOf(severity) <= SEVERITY_ORDER.indexOf(rule.minSeverity),
     );
@@ -1286,7 +1289,7 @@ export class NotificationRuntime {
     if (lower.includes('timeout') || lower.includes('network') || lower.includes('econnrefused')) {
       return true;
     }
-    if (lower.includes('5') && lower.includes('xx') || lower.includes('server_error')) {
+    if ((lower.includes('5') && lower.includes('xx')) || lower.includes('server_error')) {
       return true;
     }
     // Provider-level classification: specific error patterns
@@ -1294,7 +1297,11 @@ export class NotificationRuntime {
       return true;
     }
     // Terminal failures
-    if (lower.includes('4') && lower.includes('xx') || lower.includes('invalid') || lower.includes('bad_request')) {
+    if (
+      (lower.includes('4') && lower.includes('xx')) ||
+      lower.includes('invalid') ||
+      lower.includes('bad_request')
+    ) {
       return false;
     }
     // Default: retry once more
@@ -1302,10 +1309,7 @@ export class NotificationRuntime {
   }
 
   /** Record an audit record if an audit hook is registered. */
-  private async recordAudit(
-    action: string,
-    details: Record<string, unknown>,
-  ): Promise<void> {
+  private async recordAudit(action: string, details: Record<string, unknown>): Promise<void> {
     if (this.auditHook) {
       try {
         await this.auditHook(action, details);

@@ -15,7 +15,12 @@
  *   }
  */
 
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+} from '../../utils/workflow-store';
 import type { CategorizationProposal } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
@@ -94,14 +99,26 @@ export default defineEventHandler(async (event) => {
   const proposalId = event.context.params?.id;
   if (!proposalId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_PROPOSAL_ID', 'Proposal ID is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_PROPOSAL_ID',
+      'Proposal ID is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   try {
     const proposal = await wf.store.getProposal(proposalId);
     if (!proposal) {
       setResponseStatus(event, 404);
-      return errorEnvelope('PROPOSAL_NOT_FOUND', `Proposal not found: ${proposalId}`, authInfo, false, requestId);
+      return errorEnvelope(
+        'PROPOSAL_NOT_FOUND',
+        `Proposal not found: ${proposalId}`,
+        authInfo,
+        false,
+        requestId,
+      );
     }
 
     // Decode simulation evidence from stored preconditions
@@ -123,10 +140,7 @@ export default defineEventHandler(async (event) => {
       expired = true;
     }
 
-    simulationStatus =
-      !simulation ? 'missing'
-      : expired ? 'stale'
-      : 'present';
+    simulationStatus = !simulation ? 'missing' : expired ? 'stale' : 'present';
 
     const detail: CategorizationProposalDetail = {
       id: proposal.id,

@@ -43,7 +43,6 @@ export type {
   MutationPrecondition,
   MutationResult,
   SetCategoryResult,
-
   AutomationRule,
   RuleProposal,
   BudgetInfo,
@@ -57,13 +56,10 @@ export type {
   WatermarkStore,
   CacheState,
   LedgerSnapshotResult,
+  SynchronizeOptions,
   VersionRange,
 } from './types.js';
-export {
-  DEFAULT_MODE,
-  DEFAULT_OVERLAP_DAYS,
-  BROAD_ACCESS_CAVEAT,
-} from './types.js';
+export { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from './types.js';
 
 export type { ActualClient, ActualConnectorConfig } from './connector.js';
 export { ActualConnector, createDefaultActualClient } from './connector.js';

@@ -10,10 +10,7 @@
 
 import { defineEventHandler, setResponseStatus } from 'h3';
 import { resolveAuthDbPath } from '../../../lib/auth-db-path';
-import {
-  authMigrationFailed,
-  authMigrationMessage,
-} from '../../utils/auth-migration-status';
+import { authMigrationFailed, authMigrationMessage } from '../../utils/auth-migration-status';
 import { getWorkflowStore } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -29,18 +26,14 @@ export default defineEventHandler(async (event) => {
 
   // 2. Auth migration passed (startup schema migration)
   const migrationOk = !authMigrationFailed;
-  const migrationDetail = migrationOk
-    ? 'ok'
-    : `failed: ${authMigrationMessage ?? 'unknown error'}`;
+  const migrationDetail = migrationOk ? 'ok' : `failed: ${authMigrationMessage ?? 'unknown error'}`;
 
   // 3. Auth configured — apiToken or dev bypass
   const apiTokenOk = !!(config.apiToken || process.env.BALANCEFRAME_API_TOKEN);
   const bypassRequested =
-    config.devBypassAuth === true ||
-    process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
+    config.devBypassAuth === true || process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
   const devBypassActive =
-    bypassRequested &&
-    (environment === 'development' || environment === 'test');
+    bypassRequested && (environment === 'development' || environment === 'test');
   const authConfigured = apiTokenOk || devBypassActive;
 
   // 4. Workflow DB path configured
@@ -52,9 +45,7 @@ export default defineEventHandler(async (event) => {
 
   // 5. Workflow store accessible (real probe — tries to open if not yet
   //    initialised, reports existing error if it previously failed).
-  const storeResult = getWorkflowStore(
-    event as { context: Record<string, unknown> },
-  );
+  const storeResult = getWorkflowStore(event as { context: Record<string, unknown> });
   const workflowStoreOk = !('error' in storeResult);
 
   const checks = {
@@ -71,8 +62,7 @@ export default defineEventHandler(async (event) => {
     workflowStore: workflowStoreOk ? 'ok' : 'unavailable',
   };
 
-  const ready =
-    authDbOk && migrationOk && authConfigured && workflowDbOk && workflowStoreOk;
+  const ready = authDbOk && migrationOk && authConfigured && workflowDbOk && workflowStoreOk;
 
   if (!ready) {
     setResponseStatus(event, 503);

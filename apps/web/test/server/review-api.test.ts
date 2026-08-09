@@ -147,7 +147,7 @@ describe('performReviewAction', () => {
 
     // Verify the item was actually transitioned
     const refreshed = await store.getReviewItem(item.id);
-    expect(refreshed!.status).toBe("approved");
+    expect(refreshed!.status).toBe('approved');
   });
 
   it('corrects a pending review item (transitions to correcting with category metadata)', async () => {
@@ -184,7 +184,12 @@ describe('performReviewAction', () => {
   });
 
   it('returns not-found error for a non-existent review ID', async () => {
-    const outcome = await performReviewAction(store, '00000000-0000-0000-0000-000000000000', 'approve', ACTOR);
+    const outcome = await performReviewAction(
+      store,
+      '00000000-0000-0000-0000-000000000000',
+      'approve',
+      ACTOR,
+    );
     expect(outcome.success).toBe(false);
     expect(outcome.error).toBe('Review item not found');
   });
@@ -330,7 +335,7 @@ describe('buildReviewQueueItem evidence enrichment', () => {
       originalName: 'COFFEE SHOP #42',
       normalizedMerchant: 'Coffee Shop Inc.',
       account: 'Checking (1234)',
-      amount: 12.50,
+      amount: 12.5,
       currentCategory: 'cat-food',
       alternatives: ['cat-dining', 'cat-entertainment'],
       history: [
@@ -357,7 +362,7 @@ describe('buildReviewQueueItem evidence enrichment', () => {
     // Transaction details grid: originalImportedName, account, amount, provenance
     expect(queueItem.evidence.originalImportedName).toBe('COFFEE SHOP #42');
     expect(queueItem.evidence.account).toBe('Checking (1234)');
-    expect(queueItem.evidence.amount).toBe(12.50);
+    expect(queueItem.evidence.amount).toBe(12.5);
     expect(queueItem.evidence.provenance).toBe('classifier-v2');
 
     // Proposal metadata: correlationId, promptVersion
@@ -369,23 +374,16 @@ describe('buildReviewQueueItem evidence enrichment', () => {
     expect(queueItem.evidence.suggestedCategory).toBe(item.categoryId);
     expect(queueItem.evidence.changePreview.fromCategory).toBe('cat-food');
     expect(queueItem.evidence.changePreview.toCategory).toBe(item.categoryId);
-    expect(queueItem.evidence.changePreview.affectsEnvelope).toBe(
-      'cat-food' !== item.categoryId,
-    );
+    expect(queueItem.evidence.changePreview.affectsEnvelope).toBe('cat-food' !== item.categoryId);
 
     // Alternatives list
-    expect(queueItem.evidence.alternatives).toEqual([
-      'cat-dining',
-      'cat-entertainment',
-    ]);
+    expect(queueItem.evidence.alternatives).toEqual(['cat-dining', 'cat-entertainment']);
 
     // History entries
     expect(queueItem.evidence.history).toHaveLength(2);
     expect(queueItem.evidence.history[0].categoryId).toBe('cat-food');
     expect(queueItem.evidence.history[0].count).toBe(3);
-    expect(queueItem.evidence.history[0].lastClassified).toBe(
-      '2026-06-01T00:00:00.000Z',
-    );
+    expect(queueItem.evidence.history[0].lastClassified).toBe('2026-06-01T00:00:00.000Z');
 
     // Rule candidates derived from history
     expect(queueItem.evidence.ruleCandidates).toHaveLength(2);

@@ -47,7 +47,11 @@ describe('ErrorInfo', () => {
   });
 
   it('defaults to empty reason codes', () => {
-    const err = new ErrorInfo({ code: 'unknown', message: 'Something went wrong', retryable: false });
+    const err = new ErrorInfo({
+      code: 'unknown',
+      message: 'Something went wrong',
+      retryable: false,
+    });
     expect(err.reasonCodes).toEqual([]);
   });
 });
@@ -259,7 +263,7 @@ describe('schemaVersion canonical', () => {
 
   it('envelope with schemaVersion "1.0" is still parseable (backward compat)', () => {
     const legacyJson = JSON.parse(
-      '{"schemaVersion":"1.0","requestId":"req_legacy","status":"ok","dataFreshness":null,"authorization":null,"result":{},"error":null}'
+      '{"schemaVersion":"1.0","requestId":"req_legacy","status":"ok","dataFreshness":null,"authorization":null,"result":{},"error":null}',
     );
     const parsed: ResponseEnvelope = legacyJson;
     expect(parsed.schemaVersion).toBe('1.0');

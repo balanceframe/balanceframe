@@ -1,7 +1,7 @@
 <template>
-  <UContainer class="h-dvh overflow-hidden flex flex-col py-4">
-    <div class="flex items-center justify-between mb-4 shrink-0">
-      <div class="flex items-center gap-3">
+  <UContainer class="h-[calc(100dvh-3.5rem)] overflow-hidden flex flex-col py-4">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-4 shrink-0">
+      <div class="flex min-w-0 max-w-full flex-wrap items-center gap-3">
         <h1 class="text-xl font-bold">Review Transactions</h1>
         <SavedViewPicker
           :views="savedViews"
@@ -19,32 +19,10 @@
           @retry="loadViews"
         />
       </div>
-        <UButton
-          variant="ghost"
-          color="neutral"
-          size="sm"
-          label="Sign out"
-          icon="i-heroicons-arrow-right-on-rectangle"
-          @click="handleSignOut"
-        />
-        <UBadge
-          v-if="adapter.loading"
-          color="warning"
-          variant="soft"
-          label="Loading…"
-        />
-        <UBadge
-          v-else-if="adapter.error"
-          color="error"
-          variant="soft"
-          :label="adapter.error"
-        />
-        <UBadge
-          v-else
-          color="neutral"
-          variant="solid"
-          :label="`${currentCount} items`"
-        />
+      <div class="ml-auto flex shrink-0 items-center gap-2">
+        <UBadge v-if="adapter.loading" color="warning" variant="soft" label="Loading…" />
+        <UBadge v-else-if="adapter.error" color="error" variant="soft" :label="adapter.error" />
+        <UBadge v-else color="neutral" variant="solid" :label="`${currentCount} items`" />
         <UButton
           size="sm"
           color="neutral"
@@ -56,6 +34,7 @@
           @click="handleSync"
         />
       </div>
+    </div>
 
     <!-- Error state (API errors, not empty queue) -->
     <UAlert
@@ -80,9 +59,7 @@
 
     <!-- Empty state -->
     <UCard v-if="!adapter.state.currentItem && !adapter.loading" class="text-center py-8">
-      <p class="text-gray-500 dark:text-gray-400 text-lg">
-        No items to review.
-      </p>
+      <p class="text-gray-500 dark:text-gray-400 text-lg">No items to review.</p>
       <UButton
         v-if="adapter.state.hasMore"
         label="Load more"
@@ -112,11 +89,7 @@
           </div>
           <!-- Current item detail -->
           <div class="lg:col-span-2 order-1 lg:order-2 flex flex-col min-h-0">
-            <ReviewItem
-              :item="adapter.state.currentItem"
-              :state="adapter.state"
-              class="flex-1"
-            />
+            <ReviewItem :item="adapter.state.currentItem" :state="adapter.state" class="flex-1" />
           </div>
         </div>
 
@@ -139,7 +112,7 @@
           @approve="adapter.approve()"
           @reject="adapter.reject()"
           @refresh="adapter.refresh()"
-  :proposal-count="activeProposals.length"
+          :proposal-count="activeProposals.length"
           @undo="adapter.undo()"
           @bulk-approve="adapter.bulkApprove()"
           @bulk-reject="adapter.bulkReject()"
@@ -159,23 +132,24 @@
       tabindex="-1"
     />
 
-<!-- Category correction modal -->
-<CategoryCorrectModal
-  :open="showCorrectModal"
-  :item="adapter.state.currentItem"
-  @confirm="onCorrectConfirm"
-  @cancel="onCorrectCancel"
-/>
+    <!-- Category correction modal -->
+    <CategoryCorrectModal
+      :open="showCorrectModal"
+      :item="adapter.state.currentItem"
+      :submitting="correcting"
+      @confirm="onCorrectConfirm"
+      @cancel="onCorrectCancel"
+    />
 
-<!-- Proposed rules modal -->
-<ProposedRulesModal
-  :open="showProposalsModal"
-  :proposals="activeProposals"
-  @close="showProposalsModal = false"
-  @accepted="handleProposalAccepted"
-  @discarded="handleProposalDiscarded"
-  @error="handleProposalError"
-/>
+    <!-- Proposed rules modal -->
+    <ProposedRulesModal
+      :open="showProposalsModal"
+      :proposals="activeProposals"
+      @close="showProposalsModal = false"
+      @accepted="handleProposalAccepted"
+      @discarded="handleProposalDiscarded"
+      @error="handleProposalError"
+    />
   </UContainer>
 </template>
 
@@ -202,33 +176,82 @@ function promptView(message: string, fallback: string) {
   return import.meta.client ? window.prompt(message, fallback)?.trim() || null : fallback;
 }
 async function loadViews() {
-  viewsLoading.value = true; viewsError.value = null;
+  viewsLoading.value = true;
+  viewsError.value = null;
   try {
     const res = await $fetch<SavedViewEnvelope<{ views: SavedView[] }>>('/api/reports/views');
     if (res.status === 'ok' && res.result) savedViews.value = res.result.views;
-    else viewsError.value = { code: res.error?.code ?? 'VIEWS_FAILED', message: res.error?.message ?? 'Unable to load saved views.', retryable: !!res.error?.retryable };
-  } catch (e) { viewsError.value = { code: 'FETCH_ERROR', message: String(e), retryable: true }; }
-  finally { viewsLoading.value = false; }
+    else
+      viewsError.value = {
+        code: res.error?.code ?? 'VIEWS_FAILED',
+        message: res.error?.message ?? 'Unable to load saved views.',
+        retryable: !!res.error?.retryable,
+      };
+  } catch (e) {
+    viewsError.value = { code: 'FETCH_ERROR', message: String(e), retryable: true };
+  } finally {
+    viewsLoading.value = false;
+  }
 }
-async function viewAction(viewId: string, method: 'PATCH' | 'POST' | 'DELETE', url = `/api/reports/views/${viewId}`, body?: unknown) {
+async function viewAction(
+  viewId: string,
+  method: 'PATCH' | 'POST' | 'DELETE',
+  url = `/api/reports/views/${viewId}`,
+  body?: Record<string, unknown>,
+) {
   try {
-    const res = await $fetch<SavedViewEnvelope<SavedView | { deleted: boolean }>>(url, { method, body });
-    if (res.status !== 'ok' || !res.result) throw new Error(res.error?.message ?? 'Saved view action failed.');
-    if (method === 'DELETE') savedViews.value = savedViews.value.filter(view => view.viewId !== viewId);
+    const res = await $fetch<SavedViewEnvelope<SavedView | { deleted: boolean }>>(url, {
+      method,
+      body,
+    });
+    if (res.status !== 'ok' || !res.result)
+      throw new Error(res.error?.message ?? 'Saved view action failed.');
+    if (method === 'DELETE')
+      savedViews.value = savedViews.value.filter((view) => view.viewId !== viewId);
     else if ('viewId' in res.result) {
-      const view = res.result as SavedView; const index = savedViews.value.findIndex(item => item.viewId === view.viewId);
-      if (index >= 0) savedViews.value[index] = view; else savedViews.value.push(view);
+      const view = res.result as SavedView;
+      const index = savedViews.value.findIndex((item) => item.viewId === view.viewId);
+      if (index >= 0) savedViews.value[index] = view;
+      else savedViews.value.push(view);
       selectedViewId.value = view.viewId;
     }
-  } catch (e) { viewsError.value = { code: 'VIEW_ACTION_FAILED', message: String(e), retryable: true }; }
+  } catch (e) {
+    viewsError.value = { code: 'VIEW_ACTION_FAILED', message: String(e), retryable: true };
+  }
 }
-function applyView(viewId: string) { selectedViewId.value = viewId; void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`); }
-function createView() { const name = promptView('Name this saved view', 'Review queue'); if (name) void viewAction('', 'POST', '/api/reports/views', { name, viewType: 'pending_review', scope: {} }); }
-function renameView(viewId: string) { const view = savedViews.value.find(item => item.viewId === viewId); const name = promptView('Rename saved view', view?.name ?? ''); if (name) void viewAction(viewId, 'PATCH', undefined, { name }); }
-function updateView(viewId: string) { void viewAction(viewId, 'PATCH', undefined, { scope: {} }); }
-function duplicateView(viewId: string) { const view = savedViews.value.find(item => item.viewId === viewId); const name = promptView('Name duplicated view', `${view?.name ?? 'View'} copy`); if (name) void viewAction(viewId, 'POST', `/api/reports/views/${viewId}/duplicate`, { name }); }
-function deleteView(viewId: string) { if (import.meta.client && !window.confirm('Delete this saved view?')) return; void viewAction(viewId, 'DELETE'); }
-function markViewUsed(viewId: string) { void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`); }
+function applyView(viewId: string) {
+  selectedViewId.value = viewId;
+  if (viewId) void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`);
+}
+function createView() {
+  const name = promptView('Name this saved view', 'Review queue');
+  if (name)
+    void viewAction('', 'POST', '/api/reports/views', {
+      name,
+      viewType: 'pending_review',
+      scope: {},
+    });
+}
+function renameView(viewId: string) {
+  const view = savedViews.value.find((item) => item.viewId === viewId);
+  const name = promptView('Rename saved view', view?.name ?? '');
+  if (name) void viewAction(viewId, 'PATCH', undefined, { name });
+}
+function updateView(viewId: string) {
+  void viewAction(viewId, 'PATCH', undefined, { scope: {} });
+}
+function duplicateView(viewId: string) {
+  const view = savedViews.value.find((item) => item.viewId === viewId);
+  const name = promptView('Name duplicated view', `${view?.name ?? 'View'} copy`);
+  if (name) void viewAction(viewId, 'POST', `/api/reports/views/${viewId}/duplicate`, { name });
+}
+function deleteView(viewId: string) {
+  if (import.meta.client && !window.confirm('Delete this saved view?')) return;
+  void viewAction(viewId, 'DELETE');
+}
+function markViewUsed(viewId: string) {
+  void viewAction(viewId, 'PATCH', `/api/reports/views/${viewId}/last-used`);
+}
 /**
  * Review transactions page.
  *
@@ -237,7 +260,6 @@ function markViewUsed(viewId: string) { void viewAction(viewId, 'PATCH', `/api/r
  * NEVER falls back to an in-memory SqliteWorkflowStore or exposes mutation
  * controls without a remote backend.
  */
-import { authClient } from '../../lib/auth-client';
 import { useApiReviewController } from '../../composables/useApiReviewController';
 import { createUnavailableAdapter } from '../../composables/createUnavailableAdapter';
 import { useReviewActions } from '../../composables/useReviewActions';
@@ -252,9 +274,7 @@ const apiBase = config.public.apiBase || (import.meta.client ? window.location.o
 
 // Session auth is provided by Better Auth's HttpOnly session cookie, sent
 // automatically with same-origin fetch requests — no Bearer token needed.
-const adapter = apiBase
-  ? useApiReviewController(apiBase)
-  : createUnavailableAdapter();
+const adapter = apiBase ? useApiReviewController(apiBase) : createUnavailableAdapter();
 const actions = useReviewActions(adapter, openCorrectModal);
 
 // Focus the hidden keyboard input so shortcuts work on page load.
@@ -262,14 +282,22 @@ const actions = useReviewActions(adapter, openCorrectModal);
 // pointer-triggered actions (which would otherwise steal focus from the
 // hidden input).
 const keyboardInput = ref<HTMLInputElement | null>(null);
-function handleGlobalKeydown(event: KeyboardEvent) {
-  // Ignore events in editable elements to avoid interfering with typing.
-  const target = event.target as HTMLElement | null;
-  if (!target) return;
-  if (target.isContentEditable) return;
-  const tag = target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
+// Suppress review shortcuts while either correction/proposals modal is open.
+const showCorrectModal = ref(false);
+const correcting = ref(false);
+const showProposalsModal = ref(false);
+const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
+const interactiveControlSelector =
+  'a, button, input, textarea, select, summary, [contenteditable], [role="button"], [role="link"], [role="menuitem"]';
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  // The hidden input owns review shortcuts. Other editable and interactive
+  // controls — including the shared shell navigation — keep normal keyboard behavior.
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.isContentEditable) return;
+  if (target !== keyboardInput.value && target.closest(interactiveControlSelector)) return;
   // Suppress review shortcuts while a modal is open (Enter on modal
   // buttons must not approve, C must not re-open correction, etc.)
   if (modalOpen.value) return;
@@ -300,7 +328,6 @@ async function load() {
   keyboardInput.value?.focus();
 }
 
-const showProposalsModal = ref(false);
 const activeProposals = ref<CategorizationProposalListItem[]>([]);
 
 async function openProposalsModal(): Promise<void> {
@@ -322,14 +349,28 @@ async function fetchProposals(): Promise<void> {
   }
 }
 
-const showCorrectModal = ref(false);
-
 function openCorrectModal(_category?: string) {
   if (adapter.state.currentItem) showCorrectModal.value = true;
 }
 
 function onCorrectCancel() {
+  if (correcting.value) return;
   showCorrectModal.value = false;
+}
+
+async function onCorrectConfirm(categoryId: string): Promise<void> {
+  if (correcting.value) return;
+  correcting.value = true;
+  try {
+    const result = await adapter.correct(categoryId);
+    if (result?.success) {
+      showCorrectModal.value = false;
+      await nextTick();
+      keyboardInput.value?.focus();
+    }
+  } finally {
+    correcting.value = false;
+  }
 }
 
 async function promptProposeRule(): Promise<void> {
@@ -347,11 +388,15 @@ async function promptProposeRule(): Promise<void> {
         icon: 'i-heroicons-sparkles',
         color: 'success',
         duration: 10000,
-        actions: [{
-          label: 'Review proposal',
-          color: 'neutral',
-          onClick: () => { showProposalsModal.value = true; },
-        }],
+        actions: [
+          {
+            label: 'Review proposal',
+            color: 'neutral',
+            onClick: () => {
+              showProposalsModal.value = true;
+            },
+          },
+        ],
       });
       // Refresh proposals list so count is accurate
       await fetchProposals();
@@ -373,9 +418,7 @@ function handleProposalError(message: string, retryable: boolean): void {
   const toast = useToast();
   toast.add({
     title: 'Rule activation failed',
-    description: retryable
-      ? `${message} Try again after fixing the connection.`
-      : message,
+    description: retryable ? `${message} Try again after fixing the connection.` : message,
     color: 'error',
     duration: 10000,
   });
@@ -393,18 +436,34 @@ async function handleSync() {
       await adapter.refresh();
     } else {
       const toast = useToast();
-      toast.add({ title: 'Sync failed', description: data.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+      const error = data.error;
+      toast.add({
+        title: 'Sync failed',
+        description: error?.message ?? 'Unknown error',
+        color: 'error',
+        duration: 10000,
+        ...(error?.code === 'not_connected'
+          ? {
+              actions: [
+                {
+                  label: 'Configure connection',
+                  onClick: () => navigateTo('/connection'),
+                },
+              ],
+            }
+          : {}),
+      });
     }
   } catch (e) {
     const toast = useToast();
-    toast.add({ title: 'Sync failed', description: e instanceof Error ? e.message : 'Connection error', color: 'error', duration: 10000 });
+    toast.add({
+      title: 'Sync failed',
+      description: e instanceof Error ? e.message : 'Connection error',
+      color: 'error',
+      duration: 10000,
+    });
   } finally {
     syncing.value = false;
   }
-}
-
-async function handleSignOut() {
-  await authClient.signOut();
-  await navigateTo('/');
 }
 </script>

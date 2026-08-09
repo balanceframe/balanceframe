@@ -59,9 +59,15 @@ function createMockProtocol(): {
   protocol: AnalysisProtocol;
 } {
   const protocol: AnalysisProtocol = {
-    async pendingReview() { throw new Error('not implemented'); },
-    async reviewShow() { throw new Error('not implemented'); },
-    async budgetSummary() { throw new Error('not implemented'); },
+    async pendingReview() {
+      throw new Error('not implemented');
+    },
+    async reviewShow() {
+      throw new Error('not implemented');
+    },
+    async budgetSummary() {
+      throw new Error('not implemented');
+    },
 
     async purchaseEvaluation(
       _ledger: unknown,

@@ -77,24 +77,21 @@ WORKDIR /app
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Ensure the N-API addon target directory exists
-RUN mkdir -p /app/node_modules/@balanceframe/native
-
 # Copy built application from builder
 COPY --from=builder /app/apps/web/.output ./web-output
 COPY --from=builder /app/node_modules ./node_modules
 
-# Copy the compiled N-API addon with its JS wrapper and type declarations.
-# The builder stage always produces these files, so unconditional COPY is safe.
+# Prune development-only dependencies for smaller attack surface
+RUN npm prune --omit=dev && rm -rf /tmp/*
+
+# Restore the N-API addon after pruning, which removes workspace-only packages.
+RUN mkdir -p /app/node_modules/@balanceframe/native
 COPY --from=builder /app/crates/node-binding/balanceframe.node ./node_modules/@balanceframe/native/balanceframe.node
 COPY --from=builder /app/crates/node-binding/index.js ./node_modules/@balanceframe/native/index.js
 COPY --from=builder /app/crates/node-binding/index.d.ts ./node_modules/@balanceframe/native/index.d.ts
 
 # Create data directory with writable ownership
 RUN mkdir -p /data && chown balanceframe:balanceframe /data
-
-# Prune development-only dependencies for smaller attack surface
-RUN npm prune --omit=dev && rm -rf /tmp/*
 
 # Switch to non-root user
 USER balanceframe

@@ -19,11 +19,7 @@
 import { readBody, defineEventHandler, setResponseStatus } from 'h3';
 import { auth } from '../../../lib/auth';
 import { getWorkflowStore } from '../../utils/workflow-store';
-import {
-  normalizeEmail,
-  validateEmail,
-  invitationError,
-} from '../../utils/registration';
+import { normalizeEmail, validateEmail, invitationError } from '../../utils/registration';
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
@@ -50,7 +46,11 @@ export default defineEventHandler(async (event) => {
 
   if (password.length < 8) {
     setResponseStatus(event, 400);
-    return invitationError('Password must be at least 8 characters', requestId, 'validation.password_too_short');
+    return invitationError(
+      'Password must be at least 8 characters',
+      requestId,
+      'validation.password_too_short',
+    );
   }
   const email = normalizeEmail(emailRaw);
   if (!validateEmail(email)) {
@@ -126,12 +126,7 @@ export default defineEventHandler(async (event) => {
           }
           // Assign empty membership
           try {
-            await wf.store.upsertActorMembership(
-              redeemedUserId,
-              'active',
-              [],
-              '*',
-            );
+            await wf.store.upsertActorMembership(redeemedUserId, 'active', [], '*');
           } catch {
             // Membership missing but invitation is redeemed — reconcile can fix
             setResponseStatus(event, 500);
@@ -160,18 +155,18 @@ export default defineEventHandler(async (event) => {
 
     // Could not recover — invitation remains claimed for same-email retry
     setResponseStatus(event, 400);
-    return invitationError('Could not create account', requestId, 'invitation.user_creation_failed');
+    return invitationError(
+      'Could not create account',
+      requestId,
+      'invitation.user_creation_failed',
+    );
   }
 
   // 6. Complete redemption — updates invitation state with the user ID.
   //    The store appends the authoritative invitation_redeemed audit record.
   //    On failure the invitation stays claimed (recoverable by reconcile).
   try {
-    await wf.store.completeInvitationRedemption(
-      claimResult.claimId,
-      redeemedUserId,
-      requestId,
-    );
+    await wf.store.completeInvitationRedemption(claimResult.claimId, redeemedUserId, requestId);
   } catch {
     setResponseStatus(event, 500);
     return invitationError(

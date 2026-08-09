@@ -1,6 +1,6 @@
 /**
- * Mutation executor factory — uses ConnectionManager.restore() to load the
- * persisted selected budget and synchronize it before applying a mutation.
+ * Mutation executor factory — uses ConnectionManager.withConnection() to hold
+ * the selected Actual budget for the complete mutation and dispose it afterward.
  *
  * This module contains only pure functions and types; the Nitro plugin
  * registration lives in server/plugins/mutation-composition.ts.
@@ -19,13 +19,18 @@ import type {
   RustMutationProtocol,
   VerificationResult,
 } from '@balanceframe/application';
-import { ActualConnector, createDefaultActualClient, EnvCredentialStore } from '@balanceframe/actual-adapter';
+import {
+  ActualConnector,
+  createDefaultActualClient,
+  EnvCredentialStore,
+} from '@balanceframe/actual-adapter';
 import type {
   EventWithContext,
   ReviewMutationExecutor,
   ReviewMutationExecutorFactory,
   MutationStatus,
 } from './workflow-store';
+import { classifyConnectionError } from './workflow-store';
 import type { ReviewItem } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
@@ -33,17 +38,18 @@ import type { ReviewItem } from '@balanceframe/workflow-store';
 // ---------------------------------------------------------------------------
 
 /** Create a production ConnectionManager configured for mutation (reviewAndApply) mode. */
-export function createMutationConnectionManager(
-  options?: { configPath?: string },
-): ConnectionManager {
+export function createMutationConnectionManager(options?: {
+  configPath?: string;
+}): ConnectionManager {
   return new ConnectionManager({
     configPath: options?.configPath,
     credentialStore: new EnvCredentialStore(),
-    connectorFactory: async () => new ActualConnector({
-      client: await createDefaultActualClient(),
-      credentialStore: new EnvCredentialStore(),
-      mode: 'reviewAndApply',
-    }),
+    connectorFactory: async () =>
+      new ActualConnector({
+        client: await createDefaultActualClient(),
+        credentialStore: new EnvCredentialStore(),
+        mode: 'reviewAndApply',
+      }),
   });
 }
 
@@ -75,7 +81,8 @@ function originalCategory(item: ReviewItem): string | null {
  */
 async function tryCreateNativeRustProtocol(): Promise<RustMutationProtocol | null> {
   try {
-    const { createNativeCategorizationMutationProtocol } = await import('@balanceframe/application');
+    const { createNativeCategorizationMutationProtocol } =
+      await import('@balanceframe/application');
     return await createNativeCategorizationMutationProtocol();
   } catch {
     return null;
@@ -128,85 +135,93 @@ export function createDefaultExecutorFactory(
 
     return async (input, store, item) => {
       try {
-        // Restore connection to get the BudgetLedger
-        const { connector } = await manager.restore();
-        const ledger = connector as unknown as BudgetLedger;
+        return await manager.withConnection(
+          async ({ connector }) => {
+            const ledger = connector as unknown as BudgetLedger;
 
-        // Create RustMutationProtocol (try native first, fallback to noop)
-        const rust = await tryCreateNativeRustProtocol() ?? createFallbackRustProtocol();
+            // Create RustMutationProtocol (try native first, fallback to noop)
+            const rust = (await tryCreateNativeRustProtocol()) ?? createFallbackRustProtocol();
 
-        // Build proposal content hash
-        const payloadContent = {
-          transactionId: item.transactionId,
-          categoryId: input.categoryId ?? item.categoryId,
-          budgetId: item.budgetId,
-          operation: 'set_category',
-        };
-        const payloadHash = crypto.createHash('sha256')
-          .update(JSON.stringify(payloadContent))
-          .digest('hex');
+            // Build proposal content hash
+            const payloadContent = {
+              transactionId: item.transactionId,
+              categoryId: input.categoryId ?? item.categoryId,
+              budgetId: item.budgetId,
+              operation: 'set_category',
+            };
+            const payloadHash = crypto
+              .createHash('sha256')
+              .update(JSON.stringify(payloadContent))
+              .digest('hex');
 
-        const preconditions = JSON.stringify({
-          currentCategoryId: originalCategory(item),
-        });
+            const preconditions = JSON.stringify({
+              currentCategoryId: originalCategory(item),
+            });
 
-        // Create proposal in the workflow store
-        const proposal = await store.createProposal({
-          operation: 'set_category',
-          budgetId: item.budgetId,
-          transactionId: item.transactionId,
-          categoryId: input.categoryId ?? item.categoryId,
-          payloadHash,
-          policyVersion: '1.0',
-          preconditions,
-          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-          actorId: input.actorId,
-          provenance: 'review-and-apply',
-          providerModel: null,
-          correlationId: input.correlationId ?? undefined,
-        });
+            // Create proposal in the workflow store
+            const proposal = await store.createProposal({
+              operation: 'set_category',
+              budgetId: item.budgetId,
+              transactionId: item.transactionId,
+              categoryId: input.categoryId ?? item.categoryId,
+              payloadHash,
+              policyVersion: '1.0',
+              preconditions,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+              actorId: input.actorId,
+              provenance: 'review-and-apply',
+              providerModel: null,
+              correlationId: input.correlationId ?? undefined,
+            });
 
-        // Create approval for the acting reviewer
-        const approval = await store.createApproval({
-          proposalId: proposal.id,
-          payloadHash,
-          actorId: input.actorId,
-          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-        });
+            // Create approval for the acting reviewer
+            const approval = await store.createApproval({
+              proposalId: proposal.id,
+              payloadHash,
+              actorId: input.actorId,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            });
 
-        // Construct CategorizationMutationService and execute
-        const service = new CategorizationMutationService(store, ledger, rust);
-        const result = await service.execute({
-          requestId: input.requestId,
-          actorId: input.actorId,
-          proposalId: proposal.id,
-          approvalId: approval.id,
-          idempotencyKey: `review-${item.id}-${input.requestId}`,
-          correlationId: input.correlationId ?? undefined,
-        });
+            // Construct CategorizationMutationService and execute
+            const service = new CategorizationMutationService(store, ledger, rust);
+            const result = await service.execute({
+              requestId: input.requestId,
+              actorId: input.actorId,
+              proposalId: proposal.id,
+              approvalId: approval.id,
+              idempotencyKey: `review-${item.id}-${input.requestId}`,
+              correlationId: input.correlationId ?? undefined,
+            });
 
-        // Map ExecuteCategorizationResult to ReviewMutationResult
-        let mutationStatus: MutationStatus;
-        if (result.verified) {
-          mutationStatus = 'verified';
-        } else if (result.reasonCodes.includes('stale_snapshot')) {
-          mutationStatus = 'stale';
-        } else {
-          mutationStatus = 'apply_failed';
+            // Map ExecuteCategorizationResult to ReviewMutationResult
+            let mutationStatus: MutationStatus;
+            if (result.verified) {
+              mutationStatus = 'verified';
+            } else if (result.reasonCodes.includes('stale_snapshot')) {
+              mutationStatus = 'stale';
+            } else {
+              mutationStatus = 'apply_failed';
+            }
+
+            return {
+              mutationStatus,
+              success: result.success,
+              applied: result.verified,
+              verified: result.verified,
+              stale: result.reasonCodes.includes('stale_snapshot'),
+              transactionId: result.transactionId ?? item.transactionId,
+              previousCategoryId: result.previousCategoryId ?? item.categoryId,
+              newCategoryId: result.newCategoryId ?? null,
+              error: result.message ?? null,
+            };
+          },
+          { dispose: true },
+        );
+      } catch (error) {
+        if (classifyConnectionError(error)) {
+          throw error;
         }
 
-        return {
-          mutationStatus,
-          success: result.success,
-          applied: result.verified,
-          verified: result.verified,
-          stale: result.reasonCodes.includes('stale_snapshot'),
-          transactionId: result.transactionId ?? item.transactionId,
-          previousCategoryId: result.previousCategoryId ?? item.categoryId,
-          newCategoryId: result.newCategoryId ?? null,
-          error: result.message ?? null,
-        };
-      } catch (error) {
         return {
           mutationStatus: 'apply_failed' as MutationStatus,
           success: false,

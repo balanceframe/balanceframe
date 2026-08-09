@@ -9,7 +9,13 @@
  */
 
 import { defineEventHandler, readBody, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  sanitizeError,
+} from '../../utils/workflow-store';
 import { NotificationRuntime, InAppChannelAdapter } from '@balanceframe/application';
 
 /** Module-level singleton — lazy-initialised from workflow store. */
@@ -24,11 +30,21 @@ function getRuntime(event: { context: Record<string, unknown> }): NotificationRu
   const policy = {
     policyVersion: 'v1',
     eligibility: [
-      { classifications: ['budget_alert', 'review_complete', 'security_alert'], minSeverity: 'normal' as const, requiredCapability: 'notification:receive' },
+      {
+        classifications: ['budget_alert', 'review_complete', 'security_alert'],
+        minSeverity: 'normal' as const,
+        requiredCapability: 'notification:receive',
+      },
     ],
     recipients: [],
-    channels: [{ type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' }],
-    redaction: { sensitive: { visibleFields: ['title', 'summary'] }, public: { visibleFields: ['title', 'summary', 'amount', 'account'] }, restricted: { visibleFields: ['title'] } },
+    channels: [
+      { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+    ],
+    redaction: {
+      sensitive: { visibleFields: ['title', 'summary'] },
+      public: { visibleFields: ['title', 'summary', 'amount', 'account'] },
+      restricted: { visibleFields: ['title'] },
+    },
     maxRetries: 3,
     defaultRedactionClass: 'public',
   };
@@ -46,7 +62,13 @@ export default defineEventHandler(async (event) => {
     body = (await readBody(event)) ?? {};
   } catch {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_BODY', 'Request body must be valid JSON.', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_BODY',
+      'Request body must be valid JSON.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const outboxId = typeof body.outboxId === 'string' ? body.outboxId.trim() : '';
@@ -67,7 +89,7 @@ export default defineEventHandler(async (event) => {
     return okEnvelope({ outboxId: record.id, status: record.status }, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'SUPPRESS_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

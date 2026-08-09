@@ -48,12 +48,12 @@ const BASE_CREATE: CreateReviewItemInput = {
 function tickSync(): void {
   // Small delay so IsoStrings differ
   const target = Date.now() + 5;
-  while (Date.now() < target) { /* spin */ }
+  while (Date.now() < target) {
+    /* spin */
+  }
 }
 
-async function seedStore(
-  store: SqliteWorkflowStore,
-): Promise<{ review: ReviewItem }> {
+async function seedStore(store: SqliteWorkflowStore): Promise<{ review: ReviewItem }> {
   // Create a review item
   const item = await store.createReviewItem(BASE_CREATE);
   await store.transitionReviewItem(item.id, {
@@ -74,7 +74,7 @@ function validSimulation() {
   return {
     transactionsMatched: 5,
     transactionsAffected: ['tx_001', 'tx_002'],
-    categoryDistribution: { 'cat_food_001': 3, 'cat_other': 2 },
+    categoryDistribution: { cat_food_001: 3, cat_other: 2 },
     conflicts: [],
     examples: [
       {
@@ -109,7 +109,6 @@ interface StoredSimulation {
   readonly examples: readonly SimulationExample[];
   readonly simulatedAt: string;
 }
-
 
 function isValidSimulation(value: unknown): value is StoredSimulation {
   if (!value || typeof value !== 'object') return false;
@@ -158,7 +157,7 @@ describe('proposal API — simulation evidence', () => {
     const seeded = await seedStore(store);
     review = seeded.review;
   });
-  
+
   // -----------------------------------------------------------------------
   // Simulation validation
   // -----------------------------------------------------------------------
@@ -314,11 +313,12 @@ describe('proposal API — simulation evidence', () => {
     });
 
     // Bypass validation to set expiry in the past (same seam as store proposal.test.ts)
-    const s = store as unknown as { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } };
-    s.db.prepare('UPDATE categorization_proposals SET expires_at = ? WHERE id = ?').run(
-      new Date(Date.now() - 86_400_000).toISOString(),
-      proposal.id,
-    );
+    const s = store as unknown as {
+      db: { prepare(sql: string): { run(...params: unknown[]): unknown } };
+    };
+    s.db
+      .prepare('UPDATE categorization_proposals SET expires_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 86_400_000).toISOString(), proposal.id);
 
     const staleProposal = await store.getProposal(proposal.id);
     expect(staleProposal).not.toBeNull();
@@ -367,7 +367,7 @@ describe('proposal API — simulation evidence', () => {
     const proposals = await store.listProposals({ superseded: false });
     expect(proposals).toHaveLength(2);
 
-    const statuses = proposals.map(p => computeSimulationStatus(p));
+    const statuses = proposals.map((p) => computeSimulationStatus(p));
     expect(statuses).toContain('present');
     expect(statuses).toContain('missing');
   });
@@ -580,7 +580,7 @@ function normalizeRuleShape(raw: unknown): NormalizedRuleShape {
 
   const ruleData: Record<string, unknown> =
     obj.nativeRule && typeof obj.nativeRule === 'object'
-      ? obj.nativeRule as Record<string, unknown>
+      ? (obj.nativeRule as Record<string, unknown>)
       : obj;
 
   const name = ruleData.name;
@@ -600,9 +600,7 @@ function normalizeRuleShape(raw: unknown): NormalizedRuleShape {
 
   const stageVal = ruleData.stage;
   const stage: 'pre' | 'post' | undefined =
-    stageVal === 'pre' ? 'pre' :
-    stageVal === 'post' ? 'post' :
-    undefined;
+    stageVal === 'pre' ? 'pre' : stageVal === 'post' ? 'post' : undefined;
 
   return {
     name: name.trim(),
@@ -651,48 +649,60 @@ describe('normalizeRuleShape', () => {
   });
 
   it('rejects empty name', () => {
-    expect(() => normalizeRuleShape({
-      name: '',
-      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
-      actions: [{ type: 'set_category', value: 'cat_test' }],
-    })).toThrow('Rule name is required');
+    expect(() =>
+      normalizeRuleShape({
+        name: '',
+        conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+        actions: [{ type: 'set_category', value: 'cat_test' }],
+      }),
+    ).toThrow('Rule name is required');
   });
 
   it('rejects missing name', () => {
-    expect(() => normalizeRuleShape({
-      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
-      actions: [{ type: 'set_category', value: 'cat_test' }],
-    })).toThrow('Rule name is required');
+    expect(() =>
+      normalizeRuleShape({
+        conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+        actions: [{ type: 'set_category', value: 'cat_test' }],
+      }),
+    ).toThrow('Rule name is required');
   });
 
   it('rejects missing conditions', () => {
-    expect(() => normalizeRuleShape({
-      name: 'Test',
-      actions: [{ type: 'set_category', value: 'cat_test' }],
-    })).toThrow('Rule conditions are required');
+    expect(() =>
+      normalizeRuleShape({
+        name: 'Test',
+        actions: [{ type: 'set_category', value: 'cat_test' }],
+      }),
+    ).toThrow('Rule conditions are required');
   });
 
   it('rejects empty conditions array', () => {
-    expect(() => normalizeRuleShape({
-      name: 'Test',
-      conditions: [],
-      actions: [{ type: 'set_category', value: 'cat_test' }],
-    })).toThrow('Rule conditions are required');
+    expect(() =>
+      normalizeRuleShape({
+        name: 'Test',
+        conditions: [],
+        actions: [{ type: 'set_category', value: 'cat_test' }],
+      }),
+    ).toThrow('Rule conditions are required');
   });
 
   it('rejects missing actions', () => {
-    expect(() => normalizeRuleShape({
-      name: 'Test',
-      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
-    })).toThrow('Rule actions are required');
+    expect(() =>
+      normalizeRuleShape({
+        name: 'Test',
+        conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+      }),
+    ).toThrow('Rule actions are required');
   });
 
   it('rejects empty actions array', () => {
-    expect(() => normalizeRuleShape({
-      name: 'Test',
-      conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
-      actions: [],
-    })).toThrow('Rule actions are required');
+    expect(() =>
+      normalizeRuleShape({
+        name: 'Test',
+        conditions: [{ field: 'payee_name', op: 'is', value: 'Store' }],
+        actions: [],
+      }),
+    ).toThrow('Rule actions are required');
   });
 
   it('accepts stage=pre and conditionsOp=or', () => {

@@ -20,13 +20,14 @@ const { mockGetRequestHeaders } = vi.hoisted(() => ({
   mockGetRequestHeaders: vi.fn().mockReturnValue({}),
 }));
 
-const { mockGetRequestPath, mockGetHeader, mockGetCookie, mockSetResponseStatus, mockSetHeader } = vi.hoisted(() => ({
-  mockGetRequestPath: vi.fn(),
-  mockGetHeader: vi.fn(),
-  mockGetCookie: vi.fn().mockReturnValue(undefined),
-  mockSetResponseStatus: vi.fn(),
-  mockSetHeader: vi.fn(),
-}));
+const { mockGetRequestPath, mockGetHeader, mockGetCookie, mockSetResponseStatus, mockSetHeader } =
+  vi.hoisted(() => ({
+    mockGetRequestPath: vi.fn(),
+    mockGetHeader: vi.fn(),
+    mockGetCookie: vi.fn().mockReturnValue(undefined),
+    mockSetResponseStatus: vi.fn(),
+    mockSetHeader: vi.fn(),
+  }));
 
 vi.mock('h3', () => ({
   defineEventHandler: <T>(handler: T) => handler,
@@ -175,7 +176,6 @@ describe('auth middleware — Better Auth session', () => {
     mockGetRequestHeaders.mockReturnValue({});
   });
 
-
   it('authenticates an API request from the Better Auth session cookie', async () => {
     const event = mockEvent({ context: { runtimeConfig: {} } });
 
@@ -196,19 +196,19 @@ describe('auth middleware — Better Auth session', () => {
   });
 });
 
-  it('uses the Better Auth user ID when an older actor fallback is present', () => {
-    const event = mockEvent({
-      context: {
-        auth: {
-          authenticated: true,
-          actorId: 'api-user',
-          user: { id: 'owner-from-session', email: 'owner@example.com' },
-        },
+it('uses the Better Auth user ID when an older actor fallback is present', () => {
+  const event = mockEvent({
+    context: {
+      auth: {
+        authenticated: true,
+        actorId: 'api-user',
+        user: { id: 'owner-from-session', email: 'owner@example.com' },
       },
-    });
-
-    expect(getActorId(event)).toBe('owner-from-session');
+    },
   });
+
+  expect(getActorId(event)).toBe('owner-from-session');
+});
 
 describe('auth middleware — no token configured (fail closed)', () => {
   beforeEach(() => {

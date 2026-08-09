@@ -13,7 +13,12 @@ describe('Attention Dashboard (/)', () => {
 
   it('should render blockers section from analysis data', () => {
     const blockers = [
-      { code: 'uncategorized', message: '5 uncategorized', severity: 'warning', entityType: 'transaction' },
+      {
+        code: 'uncategorized',
+        message: '5 uncategorized',
+        severity: 'warning',
+        entityType: 'transaction',
+      },
     ];
     expect(blockers).toHaveLength(1);
     expect(blockers[0].severity).toBe('warning');
@@ -21,20 +26,39 @@ describe('Attention Dashboard (/)', () => {
 
   it('should render alerts section with category info', () => {
     const alerts = [
-      { code: 'overspent', message: 'Groceries overspent', severity: 'warning', categoryId: 'cg', categoryName: 'Groceries' },
+      {
+        code: 'overspent',
+        message: 'Groceries overspent',
+        severity: 'warning',
+        categoryId: 'cg',
+        categoryName: 'Groceries',
+      },
     ];
     expect(alerts[0].categoryName).toBe('Groceries');
     expect(alerts[0].code).toBe('overspent');
   });
 
   it('should render target progress summary', () => {
-    const progress = { overallLabel: 'at_risk', healthyCount: 3, atRiskCount: 2, sinkingFundsOnTrack: 1, totalSinkingFunds: 2 };
+    const progress = {
+      overallLabel: 'at_risk',
+      healthyCount: 3,
+      atRiskCount: 2,
+      sinkingFundsOnTrack: 1,
+      totalSinkingFunds: 2,
+    };
     expect(progress.overallLabel).toBe('at_risk');
     expect(progress.healthyCount).toBe(3);
   });
 
   it('should render category risk cards with remaining budget', () => {
-    const risk = { categoryId: 'cg', categoryName: 'Groceries', risk: 'high', reasonCodes: ['overspent'], remainingBudget: { minorUnits: '0', currency: 'USD' }, daysRemaining: 5 };
+    const risk = {
+      categoryId: 'cg',
+      categoryName: 'Groceries',
+      risk: 'high',
+      reasonCodes: ['overspent'],
+      remainingBudget: { minorUnits: '0', currency: 'USD' },
+      daysRemaining: 5,
+    };
     expect(risk.risk).toBe('high');
     expect(risk.remainingBudget.minorUnits).toBe('0');
   });
@@ -114,7 +138,12 @@ describe('InsufficientDataPanel', () => {
 
 describe('FindingCard', () => {
   it('should render finding title and severity', () => {
-    const finding = { title: 'Groceries overspent by 15%', severity: 'warning', category: 'Groceries', amount: { minorUnits: '4500', currency: 'USD' } };
+    const finding = {
+      title: 'Groceries overspent by 15%',
+      severity: 'warning',
+      category: 'Groceries',
+      amount: { minorUnits: '4500', currency: 'USD' },
+    };
     expect(finding.title).toContain('overspent');
     expect(finding.severity).toBe('warning');
   });
@@ -128,7 +157,9 @@ describe('AnalysisTable', () => {
   });
 
   it('should render row data', () => {
-    const rows = [{ category: 'Groceries', budgeted: 50000, spent: 45000, remaining: 5000, status: 'on_track' }];
+    const rows = [
+      { category: 'Groceries', budgeted: 50000, spent: 45000, remaining: 5000, status: 'on_track' },
+    ];
     expect(rows[0].status).toBe('on_track');
   });
 });
@@ -149,7 +180,7 @@ describe('NotificationStatusBadge', () => {
       { status: 'failed', label: 'Failed' },
       { status: 'suppressed', label: 'Suppressed' },
     ];
-    expect(statuses.find(s => s.status === 'delivered')?.label).toBe('Delivered');
-    expect(statuses.find(s => s.status === 'pending')?.label).toBe('Pending');
+    expect(statuses.find((s) => s.status === 'delivered')?.label).toBe('Delivered');
+    expect(statuses.find((s) => s.status === 'pending')?.label).toBe('Pending');
   });
 });

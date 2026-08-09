@@ -1,9 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import {
-  pendingReviewAnalysis,
-  reviewShowAnalysis,
-  budgetSummaryAnalysis,
-} from '../src/analysis';
+import { pendingReviewAnalysis, reviewShowAnalysis, budgetSummaryAnalysis } from '../src/analysis';
 import type {
   CommandInput,
   AnalysisProtocol,

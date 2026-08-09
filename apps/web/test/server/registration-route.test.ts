@@ -18,19 +18,14 @@ import type { Mock } from 'vitest';
 // Module-level mocks — hoisted so they are available inside vi.mock factories
 // ---------------------------------------------------------------------------
 
-const {
-  mockReadBody,
-  mockSetResponseStatus,
-  mockCreateUser,
-  mockListUsers,
-  mockGetWorkflowStore,
-} = vi.hoisted(() => ({
-  mockReadBody: vi.fn(),
-  mockSetResponseStatus: vi.fn(),
-  mockCreateUser: vi.fn(),
-  mockListUsers: vi.fn(),
-  mockGetWorkflowStore: vi.fn(),
-}));
+const { mockReadBody, mockSetResponseStatus, mockCreateUser, mockListUsers, mockGetWorkflowStore } =
+  vi.hoisted(() => ({
+    mockReadBody: vi.fn(),
+    mockSetResponseStatus: vi.fn(),
+    mockCreateUser: vi.fn(),
+    mockListUsers: vi.fn(),
+    mockGetWorkflowStore: vi.fn(),
+  }));
 
 // ---------------------------------------------------------------------------
 // Mock h3 — defineEventHandler unwraps so we get the raw handler function
@@ -168,7 +163,7 @@ describe('GET /api/auth/config', () => {
       bootstrappedAt: null,
     });
 
-    const response = await configHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await configHandler(mockEvent())) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     expect(response.result).not.toBeNull();
@@ -186,7 +181,7 @@ describe('GET /api/auth/config', () => {
   it('returns safe defaults when store is unavailable', async () => {
     mockGetWorkflowStore.mockReturnValue({ error: 'Store not ready' });
 
-    const response = await configHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await configHandler(mockEvent())) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     expect(response.result).toMatchObject({
@@ -213,12 +208,9 @@ describe('POST /api/registration/bootstrap', () => {
   it('rejects malformed body with stable generic error', async () => {
     mockReadBody.mockResolvedValue({});
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.status).toBe('error');
     expect(response.error).not.toBeNull();
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
@@ -234,12 +226,9 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrapSecret: BOOTSTRAP_SECRET,
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
     expect(response.error).not.toHaveProperty('reasonCodes');
   });
@@ -252,12 +241,9 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrapSecret: 'this-is-the-wrong-secret-value-here!!!',
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
     // No indication of what went wrong
     expect(JSON.stringify(response)).not.toContain('wrong');
@@ -273,12 +259,9 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrapSecret: BOOTSTRAP_SECRET,
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     // claimBootstrap and createUser must NOT be called — email rejected before claim
     expect(mockStore.claimBootstrap).not.toHaveBeenCalled();
     expect(mockCreateUser).not.toHaveBeenCalled();
@@ -294,12 +277,9 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrapSecret: BOOTSTRAP_SECRET,
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(mockStore.claimBootstrap).not.toHaveBeenCalled();
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
   });
@@ -318,12 +298,9 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrappedAt: '2025-01-01T00:00:00.000Z',
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      409,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 409);
     // Must not attempt claim or BA user creation
     expect(mockStore.claimBootstrap).not.toHaveBeenCalled();
     expect(mockCreateUser).not.toHaveBeenCalled();
@@ -342,16 +319,11 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrapSecret: BOOTSTRAP_SECRET,
     });
     // Store throws because a different email already claimed the slot
-    mockStore.claimBootstrap.mockRejectedValue(
-      new Error('Bootstrap already claimed'),
-    );
+    mockStore.claimBootstrap.mockRejectedValue(new Error('Bootstrap already claimed'));
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      409,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 409);
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
     expect(JSON.stringify(response)).not.toContain('already');
     expect(JSON.stringify(response)).not.toContain('claimed');
@@ -365,16 +337,11 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrapSecret: BOOTSTRAP_SECRET,
     });
     // Store throws a generic error (missing migration, db locked, etc.)
-    mockStore.claimBootstrap.mockRejectedValue(
-      new Error('no such table: registration_state'),
-    );
+    mockStore.claimBootstrap.mockRejectedValue(new Error('no such table: registration_state'));
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      503,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
   });
 
@@ -396,20 +363,23 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrappedAt: '2025-01-01T00:00:00.000Z',
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
     // Verifies createUser was called without forwarded request headers
     expect(mockCreateUser).toHaveBeenCalledTimes(1);
     const createUserArg = mockCreateUser.mock.calls[0][0] as Record<string, unknown>;
     expect(createUserArg).toHaveProperty('body');
     expect(createUserArg).not.toHaveProperty('headers');
-    expect((createUserArg.body as Record<string, unknown>)).toMatchObject({
+    expect(createUserArg.body as Record<string, unknown>).toMatchObject({
       name: 'Owner User',
       email: 'owner@example.com',
     });
     // Verifies claimBootstrap received a claimId
     expect(mockStore.claimBootstrap).toHaveBeenCalledTimes(1);
-    const claimBootstrapInput = mockStore.claimBootstrap.mock.calls[0][0] as Record<string, unknown>;
+    const claimBootstrapInput = mockStore.claimBootstrap.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
     expect(claimBootstrapInput).toMatchObject({
       name: 'Owner User',
       email: 'owner@example.com',
@@ -442,7 +412,7 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrappedAt: '2025-01-01T00:00:00.000Z',
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
     // Route must use the returned claimId, not generate a new random one
     expect(mockStore.finalizeBootstrap).toHaveBeenCalledWith({
@@ -474,7 +444,7 @@ describe('POST /api/registration/bootstrap', () => {
       bootstrappedAt: '2025-01-01T00:00:00.000Z',
     });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
     // Should have called listUsers to find the existing user
     expect(mockListUsers).toHaveBeenCalledTimes(1);
@@ -502,12 +472,9 @@ describe('POST /api/registration/bootstrap', () => {
     // listUsers returns empty — no existing user to recover
     mockListUsers.mockResolvedValue({ users: [] });
 
-    const response = await bootstrapHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await bootstrapHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.error!.code).toBe('REGISTRATION_FAILED');
     expect(mockStore.finalizeBootstrap).not.toHaveBeenCalled();
   });
@@ -533,16 +500,11 @@ describe('POST /api/invitations', () => {
       auth: { authenticated: true, actorId: 'other-user-99' },
     });
 
-    const response = await createInviteHandler(event) as ResponseEnvelope;
+    const response = (await createInviteHandler(event)) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      403,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 403);
     expect(response.error!.code).toBe('FORBIDDEN');
-    expect(response.error!.message).toBe(
-      'Only the instance owner can perform this action',
-    );
+    expect(response.error!.message).toBe('Only the instance owner can perform this action');
     expect(mockStore.createInvitation).not.toHaveBeenCalled();
   });
 
@@ -561,21 +523,17 @@ describe('POST /api/invitations', () => {
       auth: { authenticated: true, actorId: OWNER_ID },
     });
 
-    const response = await createInviteHandler(event) as ResponseEnvelope;
+    const response = (await createInviteHandler(event)) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     // The raw token must only appear in the inviteUrl fragment
     expect(response.result).toHaveProperty('inviteUrl');
-    expect((response.result as Record<string, unknown>).inviteUrl).toMatch(
-      /#token=.+$/,
-    );
-    expect((response.result as Record<string, unknown>).inviteUrl).toContain(
+    expect((response.result as Record<string, unknown>).inviteUrl).toMatch(/#token=.+$/);
+    expect((response.result as Record<string, unknown>).inviteUrl).toContain(rawToken);
+    // Other response fields must NOT contain the raw token
+    expect(JSON.stringify((response.result as Record<string, unknown>).invitation)).not.toContain(
       rawToken,
     );
-    // Other response fields must NOT contain the raw token
-    expect(
-      JSON.stringify((response.result as Record<string, unknown>).invitation),
-    ).not.toContain(rawToken);
     expect(response.result).not.toHaveProperty('token');
   });
 });
@@ -600,16 +558,11 @@ describe('POST /api/invitations/redeem', () => {
       email: 'newuser@example.com',
       password: 'password12345678',
     });
-    mockStore.claimInvitation.mockRejectedValue(
-      new Error('Invitation not found'),
-    );
+    mockStore.claimInvitation.mockRejectedValue(new Error('Invitation not found'));
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.error!.code).toBe('INVITATION_FAILED');
     // Must not leak reasonCodes or lifecycle/state information — neutral contract
     expect(response.error!.reasonCodes).toBeUndefined();
@@ -627,12 +580,9 @@ describe('POST /api/invitations/redeem', () => {
       password: 'password12345678',
     });
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     // claimInvitation must NOT be called — email rejected before claim
     expect(mockStore.claimInvitation).not.toHaveBeenCalled();
     expect(response.error!.code).toBe('INVITATION_FAILED');
@@ -646,8 +596,7 @@ describe('POST /api/invitations/redeem', () => {
   it('succeeds and calls completeInvitationRedemption with empty membership', async () => {
     const claimId = 'claim-for-redeem-01';
     const redeemedUserId = 'redeemed-user-abc-456';
-    const validToken =
-      'valid-token-sixty-four-chars-for-test-purposes-0123456789abcdef';
+    const validToken = 'valid-token-sixty-four-chars-for-test-purposes-0123456789abcdef';
     mockReadBody.mockResolvedValue({
       token: validToken,
       name: 'Redeemed User',
@@ -661,15 +610,10 @@ describe('POST /api/invitations/redeem', () => {
     mockStore.upsertActorMembership.mockResolvedValue(undefined);
     mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
     // Verify empty membership was assigned
-    expect(mockStore.upsertActorMembership).toHaveBeenCalledWith(
-      redeemedUserId,
-      'active',
-      [],
-      '*',
-    );
+    expect(mockStore.upsertActorMembership).toHaveBeenCalledWith(redeemedUserId, 'active', [], '*');
     // Verify redemption was completed with the correct IDs and requestId
     expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
       claimId,
@@ -691,16 +635,11 @@ describe('POST /api/invitations/redeem', () => {
       email: 'attacker@example.com',
       password: 'password12345678',
     });
-    mockStore.claimInvitation.mockRejectedValue(
-      new Error('Invitation has been revoked'),
-    );
+    mockStore.claimInvitation.mockRejectedValue(new Error('Invitation has been revoked'));
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.error!.code).toBe('INVITATION_FAILED');
     // Must not distinguish revoked from invalid
     expect(JSON.stringify(response)).not.toContain('revoked');
@@ -714,16 +653,11 @@ describe('POST /api/invitations/redeem', () => {
       password: 'password12345678',
     });
     // claimInvitation throws on replayed (already claimed/redeemed) tokens
-    mockStore.claimInvitation.mockRejectedValue(
-      new Error('Invitation already claimed'),
-    );
+    mockStore.claimInvitation.mockRejectedValue(new Error('Invitation already claimed'));
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.error!.code).toBe('INVITATION_FAILED');
     // Must not leak the token value or distinguish the failure reason
     expect(JSON.stringify(response)).not.toContain('replayed-token-value');
@@ -742,12 +676,9 @@ describe('POST /api/invitations/redeem', () => {
     // createUser fails with a non-duplicate error
     mockCreateUser.mockRejectedValue(new Error('Database connection error'));
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.error!.code).toBe('INVITATION_FAILED');
     // completeInvitationRedemption must NOT be called — invitation stays claimed
     expect(mockStore.completeInvitationRedemption).not.toHaveBeenCalled();
@@ -769,16 +700,14 @@ describe('POST /api/invitations/redeem', () => {
     });
     mockStore.claimInvitation.mockResolvedValue({ claimId });
     // createUser throws duplicate email error
-    mockCreateUser.mockRejectedValue(
-      new Error('User with this email already exists'),
-    );
+    mockCreateUser.mockRejectedValue(new Error('User with this email already exists'));
     mockListUsers.mockResolvedValue({
       users: [{ id: existingUserId, email: 'existing@example.com' }],
     });
     mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
     mockStore.upsertActorMembership.mockResolvedValue(undefined);
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
     // Should have called listUsers to find the existing user
     expect(mockListUsers).toHaveBeenCalledTimes(1);
@@ -788,12 +717,7 @@ describe('POST /api/invitations/redeem', () => {
       existingUserId,
       expect.any(String),
     );
-    expect(mockStore.upsertActorMembership).toHaveBeenCalledWith(
-      existingUserId,
-      'active',
-      [],
-      '*',
-    );
+    expect(mockStore.upsertActorMembership).toHaveBeenCalledWith(existingUserId, 'active', [], '*');
     expect(response.status).toBe('ok');
     // No route-level audit — store handles it
     expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
@@ -812,16 +736,11 @@ describe('POST /api/invitations/redeem', () => {
     mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
     mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
     // membership assignment fails
-    mockStore.upsertActorMembership.mockRejectedValue(
-      new Error('Store write conflict'),
-    );
+    mockStore.upsertActorMembership.mockRejectedValue(new Error('Store write conflict'));
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      500,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 500);
     expect(response.error!.code).toBe('INVITATION_FAILED');
     expect(response.status).toBe('error');
     // Redemption was completed — invitation is redeemed even though membership failed
@@ -846,16 +765,11 @@ describe('POST /api/invitations/redeem', () => {
     mockStore.claimInvitation.mockResolvedValue({ claimId });
     mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
     // completeInvitationRedemption throws
-    mockStore.completeInvitationRedemption.mockRejectedValue(
-      new Error('Update failed'),
-    );
+    mockStore.completeInvitationRedemption.mockRejectedValue(new Error('Update failed'));
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      500,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 500);
     expect(response.error!.code).toBe('INVITATION_FAILED');
     expect(response.status).toBe('error');
     // upsertActorMembership should not be called since finalization failed
@@ -878,7 +792,7 @@ describe('POST /api/invitations/redeem', () => {
     mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
     mockStore.upsertActorMembership.mockResolvedValue(undefined);
 
-    const response = await redeemHandler(mockEvent()) as ResponseEnvelope;
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     // CompleteInvitationRedemption was called — its internal audit is the only one

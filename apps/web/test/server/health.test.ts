@@ -97,9 +97,10 @@ describe('/api/health — liveness', () => {
 
   it('returns ok status with version', async () => {
     const event: MockEvent = { context: {} };
-    const result = await (healthHandler as (event: MockEvent) => unknown)(
-      event,
-    ) as Record<string, unknown>;
+    const result = (await (healthHandler as (event: MockEvent) => unknown)(event)) as Record<
+      string,
+      unknown
+    >;
 
     expect(result.status).toBe('ok');
     expect(result.version).toBe('0.1.0');
@@ -123,9 +124,10 @@ describe('/api/health/ready — readiness', () => {
       context: { runtimeConfig: { apiToken: 's3cret' } },
     };
 
-    const result = await (readyHandler as (event: MockEvent) => unknown)(
-      event,
-    ) as Record<string, unknown>;
+    const result = (await (readyHandler as (event: MockEvent) => unknown)(event)) as Record<
+      string,
+      unknown
+    >;
 
     expect(result.status).toBe('ok');
     expect(mockSetResponseStatus).not.toHaveBeenCalled();
@@ -139,14 +141,13 @@ describe('/api/health/ready — readiness', () => {
       context: { runtimeConfig: { apiToken: 's3cret' } },
     };
 
-    const result = await (readyHandler as (event: MockEvent) => unknown)(
-      event,
-    ) as Record<string, unknown>;
+    const result = (await (readyHandler as (event: MockEvent) => unknown)(event)) as Record<
+      string,
+      unknown
+    >;
 
     expect(result.status).toBe('degraded');
-    expect((result.checks as Record<string, string>).authMigration).toContain(
-      'failed',
-    );
+    expect((result.checks as Record<string, string>).authMigration).toContain('failed');
     expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
   });
 
@@ -157,9 +158,10 @@ describe('/api/health/ready — readiness', () => {
       context: { runtimeConfig: { apiToken: 's3cret' } },
     };
 
-    const result = await (readyHandler as (event: MockEvent) => unknown)(
-      event,
-    ) as Record<string, unknown>;
+    const result = (await (readyHandler as (event: MockEvent) => unknown)(event)) as Record<
+      string,
+      unknown
+    >;
 
     expect(result.status).toBe('degraded');
     expect((result.checks as Record<string, string>).authDb).toBe('missing');
@@ -175,28 +177,26 @@ describe('/api/health/ready — readiness', () => {
       context: { runtimeConfig: { apiToken: 's3cret' } },
     };
 
-    const result = await (readyHandler as (event: MockEvent) => unknown)(
-      event,
-    ) as Record<string, unknown>;
+    const result = (await (readyHandler as (event: MockEvent) => unknown)(event)) as Record<
+      string,
+      unknown
+    >;
 
     expect(result.status).toBe('degraded');
-    expect((result.checks as Record<string, string>).workflowStore).toBe(
-      'unavailable',
-    );
+    expect((result.checks as Record<string, string>).workflowStore).toBe('unavailable');
     expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
   });
 
   it('returns degraded when no auth is configured', async () => {
     const event: MockEvent = { context: { runtimeConfig: {} } };
 
-    const result = await (readyHandler as (event: MockEvent) => unknown)(
-      event,
-    ) as Record<string, unknown>;
+    const result = (await (readyHandler as (event: MockEvent) => unknown)(event)) as Record<
+      string,
+      unknown
+    >;
 
     expect(result.status).toBe('degraded');
-    expect((result.checks as Record<string, string>).authConfigured).toBe(
-      'missing',
-    );
+    expect((result.checks as Record<string, string>).authConfigured).toBe('missing');
     expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
   });
 });

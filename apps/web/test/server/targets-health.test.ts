@@ -10,11 +10,16 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Hoisted mocks
 // ---------------------------------------------------------------------------
 
-const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol } = vi.hoisted(() => ({
-  mockRestore: vi.fn(),
-  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
-  mockCreateNativeAnalysisProtocol: vi.fn(),
-}));
+const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol } =
+  vi.hoisted(() => ({
+    mockRestore: vi.fn(),
+    mockCreateDefaultConnectionManager: vi.fn(() => ({
+      restore: mockRestore,
+      withConnection: async (operation: (connected: unknown) => Promise<unknown>) =>
+        operation(await mockRestore()),
+    })),
+    mockCreateNativeAnalysisProtocol: vi.fn(),
+  }));
 
 // ---------------------------------------------------------------------------
 // Mock @balanceframe/application
@@ -44,9 +49,17 @@ vi.mock('h3', () => ({
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: vi.fn(() => ({ store: {} })),
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'test-actor',
+    capability: 'observe',
+    allowed: true,
+  })),
   getActorId: vi.fn(() => 'test-actor'),
-  sanitizeError: vi.fn((err, requestId, code, retryable) => ({ code, message: String(err), retryable })),
+  sanitizeError: vi.fn((err, requestId, code, retryable) => ({
+    code,
+    message: String(err),
+    retryable,
+  })),
   okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
@@ -56,7 +69,13 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result,
     error: null,
   }),
-  errorEnvelope: (code: string, message: string, _auth: unknown, retryable?: boolean, requestId?: string) => ({
+  errorEnvelope: (
+    code: string,
+    message: string,
+    _auth: unknown,
+    retryable?: boolean,
+    requestId?: string,
+  ) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
     status: 'error' as const,

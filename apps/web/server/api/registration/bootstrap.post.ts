@@ -48,7 +48,11 @@ export default defineEventHandler(async (event) => {
 
   if (password.length < 8) {
     setResponseStatus(event, 400);
-    return registrationError('Password must be at least 8 characters', requestId, 'validation.password_too_short');
+    return registrationError(
+      'Password must be at least 8 characters',
+      requestId,
+      'validation.password_too_short',
+    );
   }
 
   const email = normalizeEmail(emailRaw);
@@ -85,7 +89,11 @@ export default defineEventHandler(async (event) => {
     const regState = await wf.store.getRegistrationState();
     if (regState.mode === 'complete') {
       setResponseStatus(event, 409);
-      return registrationError('Bootstrap is not available', requestId, 'bootstrap.already_completed');
+      return registrationError(
+        'Bootstrap is not available',
+        requestId,
+        'bootstrap.already_completed',
+      );
     }
   } catch {
     // If we can't read the state, treat as unavailable
@@ -110,7 +118,11 @@ export default defineEventHandler(async (event) => {
     }
     // Everything else (missing migration, db locked, etc.) — 503
     setResponseStatus(event, 503);
-    return registrationError('Registration store not initialised', requestId, 'store.missing_migration');
+    return registrationError(
+      'Registration store not initialised',
+      requestId,
+      'store.missing_migration',
+    );
   }
 
   // 8. Create the Better Auth user (trusted server call — no headers forwarded)
@@ -152,7 +164,11 @@ export default defineEventHandler(async (event) => {
             await wf.store.finalizeBootstrap({ claimId: effectiveClaimId, ownerUserId: baUserId });
           } catch {
             setResponseStatus(event, 500);
-            return registrationError('Could not complete setup', requestId, 'bootstrap.finalization_failed');
+            return registrationError(
+              'Could not complete setup',
+              requestId,
+              'bootstrap.finalization_failed',
+            );
           }
 
           return {
@@ -174,7 +190,11 @@ export default defineEventHandler(async (event) => {
 
     // Could not recover — claim remains for same-email retry
     setResponseStatus(event, 400);
-    return registrationError('Could not create account', requestId, 'bootstrap.user_creation_failed');
+    return registrationError(
+      'Could not create account',
+      requestId,
+      'bootstrap.user_creation_failed',
+    );
   }
 
   // 9. Finalize bootstrap using the effective (possibly reused) claim ID
@@ -182,7 +202,11 @@ export default defineEventHandler(async (event) => {
     await wf.store.finalizeBootstrap({ claimId: effectiveClaimId, ownerUserId: baUserId });
   } catch (err) {
     setResponseStatus(event, 500);
-    return registrationError('Could not complete setup', requestId, 'bootstrap.finalization_failed');
+    return registrationError(
+      'Could not complete setup',
+      requestId,
+      'bootstrap.finalization_failed',
+    );
   }
 
   return {

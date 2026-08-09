@@ -278,9 +278,15 @@ function baseProposalInput(overrides: Partial<CommandInput> = {}): CommandInput 
 
 function throwingProtocol(): AnalysisProtocol {
   return {
-    async proposalCreate() { throw new Error('Provider unreachable'); },
-    async proposalApprove() { throw new Error('Provider unreachable'); },
-    async proposalExecute() { throw new Error('Provider unreachable'); },
+    async proposalCreate() {
+      throw new Error('Provider unreachable');
+    },
+    async proposalApprove() {
+      throw new Error('Provider unreachable');
+    },
+    async proposalExecute() {
+      throw new Error('Provider unreachable');
+    },
   };
 }
 
@@ -296,7 +302,10 @@ describe('proposalCreateAnalysis', () => {
 
     expect(calls.proposalCreate).toHaveLength(1);
     expect(calls.proposalCreate[0]).toMatchObject({ ledger: input.ledger });
-    expect(calls.proposalCreate[0].options).toMatchObject({ actorId: 'usr_test', requestId: 'req_prop' });
+    expect(calls.proposalCreate[0].options).toMatchObject({
+      actorId: 'usr_test',
+      requestId: 'req_prop',
+    });
     expect(envelope.status).toBe('ok');
     expect(envelope.result).toBeTruthy();
     expect(envelope.result!.proposalId).toBe('prop_new');
@@ -369,8 +378,14 @@ describe('proposalApproveAnalysis', () => {
     const envelope = await proposalApproveAnalysis(input, 'prop_abc');
 
     expect(calls.proposalApprove).toHaveLength(1);
-    expect(calls.proposalApprove[0]).toMatchObject({ ledger: input.ledger, proposalId: 'prop_abc' });
-    expect(calls.proposalApprove[0].options).toMatchObject({ actorId: 'usr_test', requestId: 'req_prop' });
+    expect(calls.proposalApprove[0]).toMatchObject({
+      ledger: input.ledger,
+      proposalId: 'prop_abc',
+    });
+    expect(calls.proposalApprove[0].options).toMatchObject({
+      actorId: 'usr_test',
+      requestId: 'req_prop',
+    });
     expect(envelope.status).toBe('ok');
     expect(envelope.result!.proposalId).toBe('prop_abc');
     expect(envelope.result!.action).toBe('approved');
@@ -522,8 +537,14 @@ describe('proposalExecuteAnalysis', () => {
     const envelope = await proposalExecuteAnalysis(input, 'prop_abc');
 
     expect(calls.proposalExecute).toHaveLength(1);
-    expect(calls.proposalExecute[0]).toMatchObject({ ledger: input.ledger, proposalId: 'prop_abc' });
-    expect(calls.proposalExecute[0].options).toMatchObject({ actorId: 'usr_test', requestId: 'req_prop' });
+    expect(calls.proposalExecute[0]).toMatchObject({
+      ledger: input.ledger,
+      proposalId: 'prop_abc',
+    });
+    expect(calls.proposalExecute[0].options).toMatchObject({
+      actorId: 'usr_test',
+      requestId: 'req_prop',
+    });
     expect(envelope.status).toBe('ok');
     expect(envelope.result!.proposalId).toBe('prop_abc');
     expect(envelope.result!.action).toBe('executed');

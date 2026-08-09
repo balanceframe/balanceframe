@@ -49,10 +49,7 @@ import type {
   LedgerSnapshotResult,
 } from '@balanceframe/actual-adapter';
 
-import type {
-  ProtocolSnapshot,
-  Rule,
-} from '@balanceframe/protocol-generated';
+import type { ProtocolSnapshot, Rule } from '@balanceframe/protocol-generated';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -86,7 +83,10 @@ function mockRuleMutationPlan(overrides: Partial<RuleMutationPlan> = {}): RuleMu
     preconditions: { ruleNameAvailable: true },
     expectedOutcome: {
       name: TEST_RULE_NAME,
-      trigger: { type: 'transaction_added', conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }] },
+      trigger: {
+        type: 'transaction_added',
+        conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
+      },
       actions: [{ type: 'set_category', value: 'cat_groceries' }],
     },
     ...overrides,
@@ -161,7 +161,6 @@ function mockIdempotencyRecord(overrides: Partial<IdempotencyRecord> = {}): Idem
   };
 }
 
-
 function mockProtocolSnapshot(overrides: Partial<ProtocolSnapshot> = {}): ProtocolSnapshot {
   return {
     schemaVersion: '1.0',
@@ -187,7 +186,9 @@ function mockMutationResult(overrides: Partial<MutationResult> = {}): MutationRe
   } as MutationResult;
 }
 
-function mockRuleSimulationResult(overrides: Partial<RuleSimulationResult> = {}): RuleSimulationResult {
+function mockRuleSimulationResult(
+  overrides: Partial<RuleSimulationResult> = {},
+): RuleSimulationResult {
   return {
     ruleId: '',
     name: TEST_RULE_NAME,
@@ -424,7 +425,9 @@ describe('RuleMutationService', () => {
     ledger.createRule.mockResolvedValue(mockMutationResult());
 
     // Second synchronize (reread after write)
-    ledger.synchronize.mockResolvedValue({ snapshot: { ...snapshot, rules: [mockRule()] } } as LedgerSnapshotResult);
+    ledger.synchronize.mockResolvedValue({
+      snapshot: { ...snapshot, rules: [mockRule()] },
+    } as LedgerSnapshotResult);
 
     // Completion audit
     store.appendAuditRecord.mockResolvedValue({ id: 'audit_completed_001' } as AuditRecord);
@@ -441,7 +444,10 @@ describe('RuleMutationService', () => {
     // Verify the flow calls
     expect(store.getProposal).toHaveBeenCalledWith(TEST_PROPOSAL_ID);
     expect(store.evaluateAuthorization).toHaveBeenCalledWith(
-      TEST_ACTOR, 'rule:execute', 'budget:' + TEST_BUDGET_ID, '1.0',
+      TEST_ACTOR,
+      'rule:execute',
+      'budget:' + TEST_BUDGET_ID,
+      '1.0',
     );
     expect(store.createIdempotencyRecord).toHaveBeenCalledWith({
       idempotencyKey: TEST_NONCE,
@@ -486,9 +492,7 @@ describe('RuleMutationService', () => {
   // -----------------------------------------------------------------------
 
   it('should fail when proposal is superseded', async () => {
-    store.getProposal.mockResolvedValue(
-      mockProposal({ supersededAt: '2026-07-21T10:00:00Z' }),
-    );
+    store.getProposal.mockResolvedValue(mockProposal({ supersededAt: '2026-07-21T10:00:00Z' }));
 
     const result = await service.execute(defaultInput());
 
@@ -501,9 +505,7 @@ describe('RuleMutationService', () => {
   // -----------------------------------------------------------------------
 
   it('should fail when proposal has expired', async () => {
-    store.getProposal.mockResolvedValue(
-      mockProposal({ expiresAt: '2020-01-01T00:00:00Z' }),
-    );
+    store.getProposal.mockResolvedValue(mockProposal({ expiresAt: '2020-01-01T00:00:00Z' }));
 
     const result = await service.execute(defaultInput());
 
@@ -550,7 +552,11 @@ describe('RuleMutationService', () => {
     store.getProposal.mockResolvedValue(mockProposal());
     store.evaluateAuthorization.mockResolvedValue(allowedAuth());
 
-    const completedRecord = mockIdempotencyRecord({ completed: true, errorMessage: null, status: 'succeeded' });
+    const completedRecord = mockIdempotencyRecord({
+      completed: true,
+      errorMessage: null,
+      status: 'succeeded',
+    });
     store.createIdempotencyRecord.mockResolvedValue({
       isOwner: false,
       record: completedRecord,
@@ -615,9 +621,7 @@ describe('RuleMutationService', () => {
       isOwner: true,
       record: mockIdempotencyRecord(),
     });
-    store.getApproval.mockResolvedValue(
-      mockApproval({ proposalId: 'prop_wrong' }),
-    );
+    store.getApproval.mockResolvedValue(mockApproval({ proposalId: 'prop_wrong' }));
 
     const result = await service.execute(defaultInput());
 
@@ -636,9 +640,7 @@ describe('RuleMutationService', () => {
       isOwner: true,
       record: mockIdempotencyRecord(),
     });
-    store.getApproval.mockResolvedValue(
-      mockApproval({ payloadHash: 'wrong_hash' }),
-    );
+    store.getApproval.mockResolvedValue(mockApproval({ payloadHash: 'wrong_hash' }));
 
     const result = await service.execute(defaultInput());
 
@@ -651,9 +653,7 @@ describe('RuleMutationService', () => {
   // -----------------------------------------------------------------------
 
   it('should fail when proposal operation is not create_rule', async () => {
-    store.getProposal.mockResolvedValue(
-      mockProposal({ operation: 'set_category' }),
-    );
+    store.getProposal.mockResolvedValue(mockProposal({ operation: 'set_category' }));
     store.evaluateAuthorization.mockResolvedValue(allowedAuth());
     store.createIdempotencyRecord.mockResolvedValue({
       isOwner: true,
@@ -678,9 +678,7 @@ describe('RuleMutationService', () => {
       isOwner: true,
       record: mockIdempotencyRecord(),
     });
-    store.getApproval.mockResolvedValue(
-      mockApproval({ status: 'consumed' }),
-    );
+    store.getApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
 
     const result = await service.execute(defaultInput());
 
@@ -833,7 +831,6 @@ describe('RuleMutationService', () => {
     expect(result.reasonCodes).toContain('invalid_preconditions');
   });
 
-
   it('should accept nativeRule-nested format and hash matches execution side', async () => {
     const ruleName = 'Nested Format Rule';
     const conditions = [{ field: 'payee_name', op: 'is', value: 'Some Store' }];
@@ -866,9 +863,7 @@ describe('RuleMutationService', () => {
       isOwner: true,
       record: mockIdempotencyRecord(),
     });
-    store.getApproval.mockResolvedValue(
-      mockApproval({ payloadHash: expectedHash }),
-    );
+    store.getApproval.mockResolvedValue(mockApproval({ payloadHash: expectedHash }));
     store.consumeApproval.mockResolvedValue(mockApproval({ status: 'consumed' }));
     store.appendAuditRecord.mockResolvedValue({ id: 'audit_started_001' } as AuditRecord);
 
@@ -889,9 +884,11 @@ describe('RuleMutationService', () => {
       reasonCodes: [],
       message: null,
     });
-    rust.simulateRule.mockReturnValue(mockRuleSimulationResult({
-      name: ruleName,
-    }));
+    rust.simulateRule.mockReturnValue(
+      mockRuleSimulationResult({
+        name: ruleName,
+      }),
+    );
 
     ledger.createRule.mockResolvedValue(mockMutationResult());
     ledger.synchronize.mockResolvedValue({
@@ -1042,9 +1039,7 @@ describe('RuleMutationService', () => {
       isOwner: true,
       record: mockIdempotencyRecord(),
     });
-    store.getApproval.mockResolvedValue(
-      mockApproval({ status: 'expired' }),
-    );
+    store.getApproval.mockResolvedValue(mockApproval({ status: 'expired' }));
 
     const result = await service.execute(defaultInput());
 
@@ -1064,9 +1059,7 @@ describe('RuleMutationService', () => {
       isOwner: true,
       record: mockIdempotencyRecord(),
     });
-    store.getApproval.mockResolvedValue(
-      mockApproval({ status: 'superseded' }),
-    );
+    store.getApproval.mockResolvedValue(mockApproval({ status: 'superseded' }));
 
     const result = await service.execute(defaultInput());
 
@@ -1199,7 +1192,9 @@ describe('RuleMutationService', () => {
     const snapshot = mockProtocolSnapshot();
     ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
     rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
-    rust.simulateRule.mockReturnValue(mockRuleSimulationResult({ transactionsMatched: 0, transactionsAffected: [], examples: [] }));
+    rust.simulateRule.mockReturnValue(
+      mockRuleSimulationResult({ transactionsMatched: 0, transactionsAffected: [], examples: [] }),
+    );
 
     const result = await service.execute(defaultInput());
 
@@ -1229,9 +1224,11 @@ describe('RuleMutationService', () => {
     const snapshot = mockProtocolSnapshot();
     ledger.synchronize.mockResolvedValue({ snapshot } as LedgerSnapshotResult);
     rust.planCreateRule.mockReturnValue(mockRuleMutationPlan());
-    rust.simulateRule.mockReturnValue(mockRuleSimulationResult({
-      conflicts: ['Overlaps with existing rule "Auto-categorize dining"'],
-    }));
+    rust.simulateRule.mockReturnValue(
+      mockRuleSimulationResult({
+        conflicts: ['Overlaps with existing rule "Auto-categorize dining"'],
+      }),
+    );
 
     const result = await service.execute(defaultInput());
 

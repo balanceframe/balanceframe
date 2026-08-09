@@ -3,7 +3,13 @@ import {
   createNativeAnalysisProtocol,
   persistPendingReviewResult,
 } from '@balanceframe/application';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  sanitizeError,
+} from '../../utils/workflow-store';
 
 /** Structured sync result with per-item outcome counts. */
 export interface SyncReviewResult {
@@ -21,27 +27,45 @@ export interface SyncReviewResult {
   readonly result: unknown;
 }
 
+/** Return whether an unknown failure carries the requested application error code. */
+function errorHasCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+
 /** Synchronize the configured Actual budget and persist deterministic review candidates. */
-export default defineEventHandler(async event => {
+export default defineEventHandler(async (event) => {
   const auth = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
-  const workflow = getWorkflowStore(event);
-  if ('error' in workflow) {
-    setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', workflow.error, auth, false, requestId);
-  }
   try {
     const manager = createDefaultConnectionManager({
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,
     });
-    const connected = await manager.restore();
-    const protocol = await createNativeAnalysisProtocol();
-    const result = await protocol.pendingReview(connected.connector, null);
-    const created = await persistPendingReviewResult(
-      workflow.store,
-      connected.budget.id || connected.budget.groupId,
-      result,
-    );
+    const config = await manager.loadConfig();
+    if (!config) {
+      setResponseStatus(event, 503);
+      return errorEnvelope(
+        'not_connected',
+        'No ledger connected. Configure an Actual budget first.',
+        auth,
+        true,
+        requestId,
+      );
+    }
+    const workflow = getWorkflowStore(event);
+    if ('error' in workflow) {
+      setResponseStatus(event, 503);
+      return errorEnvelope('STORE_UNAVAILABLE', workflow.error, auth, false, requestId);
+    }
+    const { result, created } = await manager.withConnection(async (connected) => {
+      const protocol = await createNativeAnalysisProtocol();
+      const result = await protocol.pendingReview(connected.connector, null);
+      const created = await persistPendingReviewResult(
+        workflow.store,
+        connected.budget.id || connected.budget.groupId,
+        result,
+      );
+      return { result, created };
+    });
 
     // Transition all discovered items to pending_review with structured reporting.
     const discovered = await workflow.store.listReviewItems({ status: 'discovered' });
@@ -86,6 +110,16 @@ export default defineEventHandler(async event => {
 
     return okEnvelope(syncResult, auth, requestId);
   } catch (error) {
+    if (errorHasCode(error, 'not_connected')) {
+      setResponseStatus(event, 503);
+      return errorEnvelope(
+        'not_connected',
+        'No ledger connected. Configure an Actual budget first.',
+        auth,
+        true,
+        requestId,
+      );
+    }
     const safe = sanitizeError(error, requestId, 'SYNC_REVIEW_FAILED', true);
     setResponseStatus(event, 500);
     return errorEnvelope(safe.code, safe.message, auth, safe.retryable, requestId);

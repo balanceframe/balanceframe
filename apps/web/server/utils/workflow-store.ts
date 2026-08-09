@@ -100,47 +100,39 @@ export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
   const pay = item.evidence as Record<string, unknown> | undefined;
 
   const originalImportedName: string =
-    typeof pay?.originalName === 'string'
-      ? pay.originalName
-      : item.transactionId;
+    typeof pay?.originalName === 'string' ? pay.originalName : item.transactionId;
 
   const normalizedMerchant: string =
-    typeof pay?.normalizedMerchant === 'string'
-      ? pay.normalizedMerchant
-      : item.transactionId;
+    typeof pay?.normalizedMerchant === 'string' ? pay.normalizedMerchant : item.transactionId;
 
-  const account: string =
-    typeof pay?.account === 'string' ? pay.account : '';
+  const account: string = typeof pay?.account === 'string' ? pay.account : '';
 
-  const amount: number =
-    typeof pay?.amount === 'number' ? pay.amount : 0;
+  const amount: number = typeof pay?.amount === 'number' ? pay.amount : 0;
 
-  const alternativesList: readonly string[] =
-    Array.isArray(pay?.alternatives)
-      ? (pay.alternatives as string[])
-      : [];
+  const alternativesList: readonly string[] = Array.isArray(pay?.alternatives)
+    ? (pay.alternatives as string[])
+    : [];
 
-  const historyList: readonly ClassificationHistoryEntry[] =
-    Array.isArray(pay?.history)
-      ? (pay.history as ClassificationHistoryEntry[])
-      : [];
+  const historyList: readonly ClassificationHistoryEntry[] = Array.isArray(pay?.history)
+    ? (pay.history as ClassificationHistoryEntry[])
+    : [];
 
   const totalCount = historyList.reduce((sum, h) => sum + h.count, 0);
-  const ruleCandidates: RuleCandidate[] = totalCount > 0
-    ? historyList.map((h) => ({
-        merchant: normalizedMerchant,
-        currentCategory: h.categoryId,
-        matchCount: h.count,
-        consistency: h.count / totalCount,
-      }))
-    : [];
+  const ruleCandidates: RuleCandidate[] =
+    totalCount > 0
+      ? historyList.map((h) => ({
+          merchant: normalizedMerchant,
+          currentCategory: h.categoryId,
+          matchCount: h.count,
+          consistency: h.count / totalCount,
+        }))
+      : [];
 
   const fromCategory: string =
     typeof pay?.currentCategory === 'string' && pay.currentCategory
       ? pay.currentCategory
-      : (item.categoryId || 'Uncategorized');
+      : item.categoryId || 'Uncategorized';
   const toCategory: string = item.categoryId || '—';
-
 
   return {
     reviewItem: item,
@@ -242,7 +234,6 @@ export function getWorkflowStore(
     // Directory creation failed — let the store constructor report the error.
   }
 
-
   try {
     store = new SqliteWorkflowStore(dbPath);
     return { store };
@@ -265,9 +256,7 @@ export function getWorkflowStore(
  * allow spoofing) — it comes from trusted server configuration via the
  * middleware.
  */
-export function getActorId(
-  event: EventWithContext,
-): string {
+export function getActorId(event: EventWithContext): string {
   const auth = event.context.auth;
   if (!auth?.authenticated) return 'anonymous';
 
@@ -368,11 +357,7 @@ export async function performReviewAction(
     // After a correct action, also update the item's category_id so
     // downstream display (change preview, queue) reflects the edit.
     if (action === 'correct' && categoryId) {
-      await store.updateReviewItemCategory(
-        reviewId,
-        categoryId,
-        result.version,
-      );
+      await store.updateReviewItemCategory(reviewId, categoryId, result.version);
     }
 
     return { itemId: result.id, success: true, error: null, status: result.status };
@@ -441,19 +426,19 @@ export interface WebEnvelopeMetadata {
  * Extract application envelope metadata for forwarding through the web API.
  * Keeping this structural avoids coupling the web package to application types.
  */
-export function envelopeMetadata(
-  envelope: {
-    dataFreshness: ApiEnvelope<unknown>['dataFreshness'];
-    scope?: Record<string, unknown>;
-    semanticClasses?: string[];
-    evidence?: Array<{ source: string; id: string; weight: number }>;
-    policyVersion?: string;
-  },
-): WebEnvelopeMetadata {
+export function envelopeMetadata(envelope: {
+  dataFreshness: ApiEnvelope<unknown>['dataFreshness'];
+  scope?: Record<string, unknown>;
+  semanticClasses?: string[];
+  evidence?: Array<{ source: string; id: string; weight: number }>;
+  policyVersion?: string;
+}): WebEnvelopeMetadata {
   return {
     dataFreshness: envelope.dataFreshness,
     ...(envelope.scope !== undefined ? { scope: envelope.scope } : {}),
-    ...(envelope.semanticClasses !== undefined ? { semanticClasses: envelope.semanticClasses } : {}),
+    ...(envelope.semanticClasses !== undefined
+      ? { semanticClasses: envelope.semanticClasses }
+      : {}),
     ...(envelope.evidence !== undefined ? { evidence: envelope.evidence } : {}),
     ...(envelope.policyVersion !== undefined ? { policyVersion: envelope.policyVersion } : {}),
   };
@@ -478,7 +463,9 @@ export function okEnvelope<T>(
     result,
     error: null,
     ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
-    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.semanticClasses !== undefined
+      ? { semanticClasses: metadata.semanticClasses }
+      : {}),
     ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
     ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
   };
@@ -505,12 +492,13 @@ export function errorEnvelope(
     result: null,
     error: { code, message, retryable },
     ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
-    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.semanticClasses !== undefined
+      ? { semanticClasses: metadata.semanticClasses }
+      : {}),
     ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
     ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
   };
 }
-
 
 /** Build the authorization info for the response envelope. */
 export function buildAuthorizationInfo(
@@ -532,8 +520,7 @@ export function buildAuthorizationInfo(
  * When `ok` is false, `response` is the error envelope (status code already set).
  */
 export type AuthGuardResult =
-  | { ok: true; info: AuthorizationInfo }
-  | { ok: false; response: ApiEnvelope<null> };
+  { ok: true; info: AuthorizationInfo } | { ok: false; response: ApiEnvelope<null> };
 
 /**
  * Require that the request is authenticated and has the given capability.
@@ -619,6 +606,28 @@ export interface SanitizedError {
 }
 
 /**
+ * Map a missing selected-budget failure to the canonical recoverable API error.
+ *
+ * Other configuration failures remain operational errors so unreadable or
+ * invalid configuration is never misreported as an unconfigured installation.
+ */
+export function classifyConnectionError(error: unknown): SanitizedError | null {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    !('code' in error) ||
+    error.code !== 'not_connected'
+  ) {
+    return null;
+  }
+  return {
+    code: 'not_connected',
+    message: 'No ledger connected. Configure an Actual budget first.',
+    retryable: true,
+  };
+}
+
+/**
  * Strip filesystem paths, source references, and adapter-internal details
  * from a raw error message, returning a user-safe summary.
  */
@@ -662,15 +671,16 @@ export function sanitizeError(
 ): SanitizedError {
   const rawMessage = err instanceof Error ? err.message : String(err);
   const stack = err instanceof Error && err.stack ? `\n${err.stack}` : '';
-
   // Log EVERYTHING with the correlation ID for server-side debugging
   console.error(`[${requestId}] ${code}: ${rawMessage}${stack}`);
 
-  return {
-    code,
-    message: sanitizeErrorMessage(rawMessage),
-    retryable,
-  };
+  return (
+    classifyConnectionError(err) ?? {
+      code,
+      message: sanitizeErrorMessage(rawMessage),
+      retryable,
+    }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -694,7 +704,8 @@ export function sanitizeError(
  * - `stale`      — mutation was not attempted because snapshot data is stale.
  * - `verified`   — mutation write succeeded AND postcondition verification passed.
  */
-export type MutationStatus = 'noop' | 'denied' | 'applying' | 'applied' | 'apply_failed' | 'stale' | 'verified';
+export type MutationStatus =
+  'noop' | 'denied' | 'applying' | 'applied' | 'apply_failed' | 'stale' | 'verified';
 
 /** Input to the review mutation executor. */
 export interface ReviewMutationInput {
@@ -777,9 +788,7 @@ let _executorFactory: ReviewMutationExecutorFactory | null = null;
  * Register an executor factory (called once by the composition root).
  * Clears any previously set module-level factory.
  */
-export function setReviewMutationExecutorFactory(
-  fn: ReviewMutationExecutorFactory | null,
-): void {
+export function setReviewMutationExecutorFactory(fn: ReviewMutationExecutorFactory | null): void {
   _executorFactory = fn;
 }
 
@@ -889,7 +898,9 @@ export async function applyReviewMutationWithTransition(
       };
     }
     // Lease still active — another worker is handling this item
-    throw new Error(`Review apply ${reviewId} is already in progress (idempotency key ${idempotencyKey})`);
+    throw new Error(
+      `Review apply ${reviewId} is already in progress (idempotency key ${idempotencyKey})`,
+    );
   }
 
   // ===================================================================
@@ -932,7 +943,11 @@ export async function applyReviewMutationWithTransition(
         },
       });
     }
-    await store.completeIdempotencyRecord(idempotencyKey, err instanceof Error ? err.message : String(err), true);
+    await store.completeIdempotencyRecord(
+      idempotencyKey,
+      err instanceof Error ? err.message : String(err),
+      true,
+    );
     return {
       mutationResult: {
         success: false,
@@ -1019,7 +1034,6 @@ export async function applyReviewMutationWithTransition(
 
   return { mutationResult, finalStatus };
 }
-
 
 /** Re-export ReviewStatus for route handler convenience. */
 export type { ReviewStatus } from '@balanceframe/workflow-store';

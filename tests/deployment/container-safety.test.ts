@@ -30,6 +30,17 @@ describe('Docker image safety', () => {
     expect(dockerfile).toContain('balanceframe');
   });
 
+  it('copies the native addon after pruning runtime dependencies', () => {
+    const dockerfile = readFileSync(resolve(PROJECT_ROOT, 'Dockerfile'), 'utf-8');
+    const pruneIndex = dockerfile.indexOf('RUN npm prune --omit=dev');
+    const nativeAddonIndex = dockerfile.indexOf(
+      'COPY --from=builder /app/crates/node-binding/balanceframe.node',
+    );
+
+    expect(pruneIndex).toBeGreaterThanOrEqual(0);
+    expect(nativeAddonIndex).toBeGreaterThan(pruneIndex);
+  });
+
   it('entrypoint rejects development-only environment variables', () => {
     const entrypoint = readFileSync(resolve(PROJECT_ROOT, 'docker-entrypoint.sh'), 'utf-8');
     const forbiddenVars = [

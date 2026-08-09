@@ -30,17 +30,28 @@ function getFetchMock(): FetchMock {
 describe('connection.vue', () => {
   it('lists budgets and persists the selected budget', async () => {
     getFetchMock()
-      .mockResolvedValueOnce({ status: 'ok', result: { budgets: [{ id: 'budget-1', groupId: 'group-1', name: 'Household', encrypted: false }] }, error: null })
+      .mockResolvedValueOnce({
+        status: 'ok',
+        result: {
+          budgets: [{ id: 'budget-1', groupId: 'group-1', name: 'Household', encrypted: false }],
+        },
+        error: null,
+      })
       .mockResolvedValueOnce({ status: 'ok', result: { connected: true }, error: null });
 
     const wrapper = mount(ConnectionPage, { global: { stubs: uiStubs } });
     await vi.waitFor(() => expect(wrapper.text()).toContain('Household'));
 
     await wrapper.get('button').trigger('click');
-    await vi.waitFor(() => expect(getFetchMock()).toHaveBeenCalledWith('/api/connection', expect.objectContaining({
-      method: 'POST',
-      body: { budgetId: 'budget-1' },
-    })));
+    await vi.waitFor(() =>
+      expect(getFetchMock()).toHaveBeenCalledWith(
+        '/api/connection',
+        expect.objectContaining({
+          method: 'POST',
+          body: { budgetId: 'budget-1' },
+        }),
+      ),
+    );
     expect(wrapper.text()).toContain('Connection saved');
   });
 

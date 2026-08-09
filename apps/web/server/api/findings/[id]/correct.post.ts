@@ -29,7 +29,13 @@ export default defineEventHandler(async (event) => {
 
   if (!findingId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_FINDING_ID', 'Finding ID is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_FINDING_ID',
+      'Finding ID is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   let body: Record<string, unknown>;
@@ -37,19 +43,37 @@ export default defineEventHandler(async (event) => {
     body = (await readBody(event)) ?? {};
   } catch {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_BODY', 'Request body must be valid JSON.', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_BODY',
+      'Request body must be valid JSON.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const expectedVersion = typeof body.expectedVersion === 'number' ? body.expectedVersion : -1;
   if (expectedVersion < 0) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_VERSION', 'expectedVersion is required and must be a non-negative number.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_VERSION',
+      'expectedVersion is required and must be a non-negative number.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const correctionRef = typeof body.correctionRef === 'string' ? body.correctionRef.trim() : '';
   if (!correctionRef) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_CORRECTION_REF', 'correctionRef is required and must reference a correction record.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_CORRECTION_REF',
+      'correctionRef is required and must reference a correction record.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const wf = getWorkflowStore(event);
@@ -68,7 +92,7 @@ export default defineEventHandler(async (event) => {
     return okEnvelope(finding, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'CORRECT_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

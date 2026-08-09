@@ -17,15 +17,28 @@
           </UCard>
           <UCard>
             <template #header><span class="font-semibold">Total Obligations</span></template>
-            <SemanticAmount v-if="totalObligations" :amount="totalObligations" data-testid="total-obligations" />
+            <SemanticAmount
+              v-if="totalObligations"
+              :amount="totalObligations"
+              data-testid="total-obligations"
+            />
             <span v-else class="text-gray-400 dark:text-gray-500 text-sm">Unavailable</span>
           </UCard>
           <UCard>
             <template #header><span class="font-semibold">Coverage Ratio</span></template>
             <div v-if="coverage.length">
-              <p v-for="(c, i) in coverage" :key="i" class="text-2xl font-bold text-gray-900 dark:text-white" data-testid="coverage-ratio">
-                {{ c.label }}
-                <span class="text-xs font-normal text-gray-500 dark:text-gray-400 ml-1">{{ c.ratio }}x</span>
+              <p
+                v-for="(c, i) in coverage"
+                :key="i"
+                class="text-2xl font-bold text-gray-900 dark:text-white"
+                data-testid="coverage-ratio"
+              >
+                {{ coverageLabel(c) }}
+                <span
+                  v-if="c.ratio !== null"
+                  class="text-xs font-normal text-gray-500 dark:text-gray-400 ml-1"
+                  >{{ formatCoverageRatio(c.ratio) }}x</span
+                >
               </p>
             </div>
             <span v-else class="text-gray-400 dark:text-gray-500 text-sm">No coverage data</span>
@@ -34,7 +47,9 @@
 
         <!-- Upcoming obligations table -->
         <div v-if="upcomingObligations.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Upcoming Obligations</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Upcoming Obligations
+          </h3>
           <AnalysisTable :columns="obligationColumns" :rows="obligationRows" />
         </div>
 
@@ -78,11 +93,14 @@ const error = ref<{ code: string; message: string } | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const totalLiquid = ref<Amount | null>(null);
 const totalObligations = ref<Amount | null>(null);
-const coverage = ref<Array<{ ratio: number; label: string }>>([]);
+const coverage = ref<Array<{ ratio: number | null; label: string }>>([]);
 const upcomingObligations = ref<UpcomingObligation[]>([]);
 
-const hasData = computed(() =>
-  totalLiquid.value !== null || totalObligations.value !== null || upcomingObligations.value.length > 0,
+const hasData = computed(
+  () =>
+    totalLiquid.value !== null ||
+    totalObligations.value !== null ||
+    upcomingObligations.value.length > 0,
 );
 
 const currentMonth = computed(() => {
@@ -92,6 +110,21 @@ const currentMonth = computed(() => {
 
 const scopeLabel = computed(() => `Month: ${currentMonth.value}`);
 
+function coverageLabel(coverageRatio: { ratio: number | null; label: string }): string {
+  if (coverageRatio.ratio !== null) return coverageRatio.label;
+  if (coverageRatio.label === 'no obligations') {
+    return `No upcoming obligations in ${currentMonth.value}`;
+  }
+  if (coverageRatio.label === 'no 30-day obligations') {
+    return `No scheduled obligations in ${currentMonth.value}`;
+  }
+  return coverageRatio.label;
+}
+
+function formatCoverageRatio(ratio: number): string {
+  return ratio.toFixed(2).replace(/\.?0+$/, '');
+}
+
 const obligationColumns = [
   { key: 'name', label: 'Obligation' },
   { key: 'amount', label: 'Amount', type: 'amount' as const },
@@ -100,7 +133,7 @@ const obligationColumns = [
 ];
 
 const obligationRows = computed(() =>
-  upcomingObligations.value.map(o => ({
+  upcomingObligations.value.map((o) => ({
     name: o.name,
     amount: o.amount,
     dueDate: o.dueDate,
@@ -110,12 +143,14 @@ const obligationRows = computed(() =>
 
 onMounted(async () => {
   try {
-    const res = await $fetch<Envelope<{
-      totalLiquid: Amount | null;
-      totalObligations: Amount | null;
-      coverage: Array<{ ratio: number; label: string }>;
-      upcomingObligations: UpcomingObligation[];
-    }>>('/api/liquidity', { query: { currentMonth: currentMonth.value } });
+    const res = await $fetch<
+      Envelope<{
+        totalLiquid: Amount | null;
+        totalObligations: Amount | null;
+        coverage: Array<{ ratio: number | null; label: string }>;
+        upcomingObligations: UpcomingObligation[];
+      }>
+    >('/api/liquidity', { query: { currentMonth: currentMonth.value } });
     if (res.status === 'ok' && res.result) {
       totalLiquid.value = res.result.totalLiquid;
       totalObligations.value = res.result.totalObligations;
@@ -123,7 +158,10 @@ onMounted(async () => {
       upcomingObligations.value = res.result.upcomingObligations;
       freshness.value = res.dataFreshness;
     } else {
-      error.value = { code: res.error?.code ?? 'UNKNOWN', message: res.error?.message ?? 'Liquidity analysis returned an error.' };
+      error.value = {
+        code: res.error?.code ?? 'UNKNOWN',
+        message: res.error?.message ?? 'Liquidity analysis returned an error.',
+      };
     }
   } catch (e) {
     error.value = { code: 'FETCH_ERROR', message: String(e) };

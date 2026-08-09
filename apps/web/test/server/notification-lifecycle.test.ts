@@ -36,12 +36,36 @@ vi.mock('h3', () => ({
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: mockGetWorkflowStore,
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'test-actor',
+    capability: 'observe',
+    allowed: true,
+  })),
   getActorId: vi.fn(() => 'test-actor'),
   sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
-  requireAuthorization: vi.fn(async () => ({ ok: true, info: { actorId: 'test-actor', capability: 'notification:receive', allowed: true }, response: null })),
-  okEnvelope: (r, _a, _rid) => ({ schemaVersion: '1', requestId: 'tr', status: 'ok', dataFreshness: null, authorization: null, result: r, error: null }),
-  errorEnvelope: (c, m, _a, _r, _rid) => ({ schemaVersion: '1', requestId: 'tr', status: 'error', dataFreshness: null, authorization: null, result: null, error: { code: c, message: m, retryable: false } }),
+  requireAuthorization: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'notification:receive', allowed: true },
+    response: null,
+  })),
+  okEnvelope: (r, _a, _rid) => ({
+    schemaVersion: '1',
+    requestId: 'tr',
+    status: 'ok',
+    dataFreshness: null,
+    authorization: null,
+    result: r,
+    error: null,
+  }),
+  errorEnvelope: (c, m, _a, _r, _rid) => ({
+    schemaVersion: '1',
+    requestId: 'tr',
+    status: 'error',
+    dataFreshness: null,
+    authorization: null,
+    result: null,
+    error: { code: c, message: m, retryable: false },
+  }),
 }));
 
 vi.mock('@balanceframe/application', () => ({
@@ -196,7 +220,14 @@ describe('GET /api/notifications/status', () => {
     vi.mocked(requireAuthorization).mockResolvedValueOnce({
       ok: false,
       info: null,
-      response: { status: 'error', error: { code: 'UNAUTHORIZED', message: 'Capability required: notification:receive', retryable: false } },
+      response: {
+        status: 'error',
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Capability required: notification:receive',
+          retryable: false,
+        },
+      },
     });
 
     const r = await statusHandler({ context: { auth: { authenticated: true } } });
@@ -317,7 +348,12 @@ describe('GET /api/notifications/inbox', () => {
   });
 
   it('passes query filters to the runtime', async () => {
-    mockGetQuery.mockReturnValueOnce({ status: 'delivered', channel: 'in_app', limit: '10', offset: '0' });
+    mockGetQuery.mockReturnValueOnce({
+      status: 'delivered',
+      channel: 'in_app',
+      limit: '10',
+      offset: '0',
+    });
     mockNotificationRuntime.listOutbox.mockResolvedValue([]);
 
     await inboxHandler({ context: { auth: { authenticated: true } } });
@@ -350,7 +386,10 @@ describe('GET /api/notifications/inbox', () => {
     vi.mocked(requireAuthorization).mockResolvedValueOnce({
       ok: false,
       info: null,
-      response: { status: 'error', error: { code: 'UNAUTHORIZED', message: 'Capability required', retryable: false } },
+      response: {
+        status: 'error',
+        error: { code: 'UNAUTHORIZED', message: 'Capability required', retryable: false },
+      },
     });
 
     const r = await inboxHandler({ context: { auth: { authenticated: true } } });
@@ -409,7 +448,10 @@ describe('GET /api/notifications/:id', () => {
     vi.mocked(requireAuthorization).mockResolvedValueOnce({
       ok: false,
       info: null,
-      response: { status: 'error', error: { code: 'UNAUTHORIZED', message: 'Capability required', retryable: false } },
+      response: {
+        status: 'error',
+        error: { code: 'UNAUTHORIZED', message: 'Capability required', retryable: false },
+      },
     });
 
     mockGetRouterParam.mockReturnValue('obx_001');

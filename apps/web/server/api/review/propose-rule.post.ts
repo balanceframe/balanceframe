@@ -84,7 +84,7 @@ export function normalizeRuleShape(raw: unknown): NormalizedRuleShape {
   // Support both flat format and nativeRule-nested format
   const ruleData: Record<string, unknown> =
     obj.nativeRule && typeof obj.nativeRule === 'object'
-      ? obj.nativeRule as Record<string, unknown>
+      ? (obj.nativeRule as Record<string, unknown>)
       : obj;
 
   const name = ruleData.name;
@@ -104,9 +104,7 @@ export function normalizeRuleShape(raw: unknown): NormalizedRuleShape {
 
   const stageVal = ruleData.stage;
   const stage: 'pre' | 'post' | undefined =
-    stageVal === 'pre' ? 'pre' :
-    stageVal === 'post' ? 'post' :
-    undefined;
+    stageVal === 'pre' ? 'pre' : stageVal === 'post' ? 'post' : undefined;
 
   return {
     name: name.trim(),
@@ -130,7 +128,13 @@ export default defineEventHandler(async (event) => {
     body = (await readBody(event)) ?? {};
   } catch {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_JSON', 'Request body must be valid JSON', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_JSON',
+      'Request body must be valid JSON',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const reviewId = typeof body.reviewId === 'string' ? body.reviewId.trim() : '';
@@ -149,9 +153,10 @@ export default defineEventHandler(async (event) => {
   }
 
   // Derive a rule name from the body or construct one from merchant/category
-  const ruleName = typeof body.name === 'string' && body.name.trim().length > 0
-    ? body.name.trim()
-    : `Auto-rule: ${merchant} -> ${categoryId}`;
+  const ruleName =
+    typeof body.name === 'string' && body.name.trim().length > 0
+      ? body.name.trim()
+      : `Auto-rule: ${merchant} -> ${categoryId}`;
 
   // Build the raw rule shape and normalize it once before hashing
   const rawRule = {
@@ -176,7 +181,8 @@ export default defineEventHandler(async (event) => {
   }
 
   // Hash the exact normalized shape — this is what execution will produce
-  const payloadHash = crypto.createHash('sha256')
+  const payloadHash = crypto
+    .createHash('sha256')
     .update(JSON.stringify(normalizedRule))
     .digest('hex');
 
@@ -198,7 +204,8 @@ export default defineEventHandler(async (event) => {
     }
     simulation = rawSimulation as StoredSimulation;
   } else {
-    simulationWarning = 'No simulation evidence provided. The proposal will require simulation before execution.';
+    simulationWarning =
+      'No simulation evidence provided. The proposal will require simulation before execution.';
   }
 
   const actorId = getActorId(event);
@@ -253,7 +260,7 @@ export default defineEventHandler(async (event) => {
         categoryId,
         name: normalizedRule.name,
         simulation,
-        simulationStatus: simulation ? 'present' as const : 'missing' as const,
+        simulationStatus: simulation ? ('present' as const) : ('missing' as const),
         simulationWarning,
         message: simulation
           ? `Rule proposal created. Simulation matched ${simulation.transactionsMatched} transaction(s).`

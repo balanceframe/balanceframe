@@ -8,8 +8,7 @@
 
 /** Structured result from a rule mutation operation. */
 export type RuleOperationResult =
-  | { success: true }
-  | { success: false; error: string; code: string };
+  { success: true } | { success: false; error: string; code: string };
 
 /** List item for rule listing. */
 export interface RuleListItem {
@@ -61,9 +60,9 @@ export interface LedgerHandle {
  * The ledger is injected into `event.context.ledger` by the lifecycle
  * plugin that initialises the Actual-adapter connector.
  */
-export function getLedgerFromEvent(
-  event: { readonly context: Record<string, unknown> },
-): LedgerHandle | null {
+export function getLedgerFromEvent(event: {
+  readonly context: Record<string, unknown>;
+}): LedgerHandle | null {
   const maybe = event.context.ledger;
   if (maybe && typeof (maybe as LedgerHandle).listRules === 'function') {
     return maybe as LedgerHandle;

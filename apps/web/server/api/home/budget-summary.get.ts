@@ -15,12 +15,27 @@ import {
 } from '@balanceframe/application';
 import type { CommandInput } from '@balanceframe/application';
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError, envelopeMetadata } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  getActorId,
+  sanitizeError,
+  envelopeMetadata,
+} from '../../utils/workflow-store';
 
 /** Map an analysis error code to an HTTP status. */
 function httpStatusForCode(code: string): number {
-  if (code.includes('not_connected') || code.includes('no_analysis') || code.startsWith('stale_')) return 503;
-  if (code.endsWith('_REQUIRED') || code.startsWith('invalid') || code.startsWith('missing') || code.includes('MISSING')) return 400;
+  if (code.includes('not_connected') || code.includes('no_analysis') || code.startsWith('stale_'))
+    return 503;
+  if (
+    code.toUpperCase().endsWith('_REQUIRED') ||
+    code.startsWith('invalid') ||
+    code.startsWith('missing') ||
+    code.includes('MISSING')
+  )
+    return 400;
   return 500;
 }
 
@@ -32,7 +47,13 @@ export default defineEventHandler(async (event) => {
   const month = typeof query.month === 'string' ? query.month.trim() : undefined;
   if (month !== undefined && !/^\d{4}-\d{2}$/.test(month)) {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_MONTH', 'month must be in YYYY-MM format.', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_MONTH',
+      'month must be in YYYY-MM format.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const wf = getWorkflowStore(event);
@@ -42,32 +63,46 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const manager = createDefaultConnectionManager({ configPath: process.env.BALANCEFRAME_CONFIG_PATH });
-    const connected = await manager.restore();
-    const protocol = await createNativeAnalysisProtocol();
+    const manager = createDefaultConnectionManager({
+      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+    });
+    return await manager.withConnection(async (connected) => {
+      const protocol = await createNativeAnalysisProtocol();
 
-    const input: CommandInput = {
-      args: [],
-      mode: 'observe',
-      actorId: getActorId(event),
-      requestId,
-      ledger: connected.connector,
-      freshness: null,
-      analysisProtocol: protocol,
-    };
+      const input: CommandInput = {
+        args: [],
+        mode: 'observe',
+        actorId: getActorId(event),
+        requestId,
+        ledger: connected.connector,
+        freshness: null,
+        analysisProtocol: protocol,
+      };
 
-    const envelope = await budgetSummaryAnalysis(input);
+      const envelope = await budgetSummaryAnalysis(input);
 
-    if (envelope.status === 'ok') {
-      return okEnvelope(envelope.result, authInfo, envelope.requestId, envelopeMetadata(envelope));
-    }
+      if (envelope.status === 'ok') {
+        return okEnvelope(
+          envelope.result,
+          authInfo,
+          envelope.requestId,
+          envelopeMetadata(envelope),
+        );
+      }
 
-    const status = httpStatusForCode(envelope.error!.code);
-    setResponseStatus(event, status);
-    return errorEnvelope(envelope.error!.code, envelope.error!.message, authInfo, envelope.error!.retryable, envelope.requestId);
+      const status = httpStatusForCode(envelope.error!.code);
+      setResponseStatus(event, status);
+      return errorEnvelope(
+        envelope.error!.code,
+        envelope.error!.message,
+        authInfo,
+        envelope.error!.retryable,
+        envelope.requestId,
+      );
+    });
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'ANALYSIS_FAILED', true);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

@@ -15,7 +15,13 @@ export default defineEventHandler(async (event) => {
 
   if (!proposalId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_PROPOSAL_ID', 'Proposal ID is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_PROPOSAL_ID',
+      'Proposal ID is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const wf = getWorkflowStore(event);
@@ -32,11 +38,7 @@ export default defineEventHandler(async (event) => {
     }
 
     const superseded = await wf.store.supersedeProposal(proposalId);
-    return okEnvelope(
-      { proposalId: superseded.id, discarded: true },
-      authInfo,
-      requestId,
-    );
+    return okEnvelope({ proposalId: superseded.id, discarded: true }, authInfo, requestId);
   } catch (error) {
     setResponseStatus(event, 500);
     return errorEnvelope(

@@ -9,7 +9,13 @@
  */
 
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  sanitizeError,
+} from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -21,7 +27,13 @@ export default defineEventHandler(async (event) => {
 
   if (!spaceId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_SPACE_ID', 'spaceId query parameter is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_SPACE_ID',
+      'spaceId query parameter is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const wf = getWorkflowStore(event);
@@ -34,12 +46,18 @@ export default defineEventHandler(async (event) => {
     const policy = await wf.store.getNotificationPolicy(spaceId, policyKey);
     if (!policy) {
       setResponseStatus(event, 404);
-      return errorEnvelope('POLICY_NOT_FOUND', `No notification policy found for space "${spaceId}" with key "${policyKey}".`, authInfo, false, requestId);
+      return errorEnvelope(
+        'POLICY_NOT_FOUND',
+        `No notification policy found for space "${spaceId}" with key "${policyKey}".`,
+        authInfo,
+        false,
+        requestId,
+      );
     }
     return okEnvelope(policy, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'FETCH_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

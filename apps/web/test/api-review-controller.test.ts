@@ -75,11 +75,7 @@ function okEnvelope(result: unknown) {
 }
 
 /** A valid error envelope. */
-function errorEnvelope(
-  code: string,
-  message: string,
-  retryable = false,
-) {
+function errorEnvelope(code: string, message: string, retryable = false) {
   return {
     schemaVersion: '1',
     requestId: 'req-test',
@@ -97,10 +93,12 @@ function successResult(itemId: string): { itemId: string; success: true; error: 
 }
 
 /** A valid SingleActionResult for a failed action (result-level). */
-function failureResult(itemId: string, errorMsg: string): { itemId: string; success: false; error: string } {
+function failureResult(
+  itemId: string,
+  errorMsg: string,
+): { itemId: string; success: false; error: string } {
   return { itemId, success: false, error: errorMsg };
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -171,10 +169,7 @@ describe('useApiReviewController', () => {
       // First load: seed an item into state
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve(
-            okEnvelope({ items: [makeItem()], total: 1 }),
-          ),
+        json: () => Promise.resolve(okEnvelope({ items: [makeItem()], total: 1 })),
       });
 
       const adapter = useApiReviewController('http://test.local');
@@ -240,8 +235,7 @@ describe('useApiReviewController', () => {
     it('rejects envelope with invalid status value', async () => {
       fetchMock.mockResolvedValue({
         ok: true,
-        json: () =>
-          Promise.resolve({ status: 'maybe', requestId: 'x', result: null, error: null }),
+        json: () => Promise.resolve({ status: 'maybe', requestId: 'x', result: null, error: null }),
       });
 
       const adapter = useApiReviewController('http://test.local');
@@ -257,10 +251,7 @@ describe('useApiReviewController', () => {
     async function setupWithItem(): Promise<ReviewControllerAdapter> {
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve(
-            okEnvelope({ items: [makeItem()], total: 1 }),
-          ),
+        json: () => Promise.resolve(okEnvelope({ items: [makeItem()], total: 1 })),
       });
 
       const adapter = useApiReviewController('http://test.local');
@@ -275,11 +266,7 @@ describe('useApiReviewController', () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () =>
-          Promise.resolve(
-            okEnvelope(
-              failureResult('item-001', 'Workflow transition rejected'),
-            ),
-          ),
+          Promise.resolve(okEnvelope(failureResult('item-001', 'Workflow transition rejected'))),
       });
 
       const result = await adapter.approve();
@@ -295,10 +282,7 @@ describe('useApiReviewController', () => {
       fetchMock.mockResolvedValueOnce({
         ok: false,
         status: 500,
-        json: () =>
-          Promise.resolve(
-            errorEnvelope('INTERNAL', 'Server error occurred'),
-          ),
+        json: () => Promise.resolve(errorEnvelope('INTERNAL', 'Server error occurred')),
       });
 
       const result = await adapter.approve();
@@ -354,10 +338,7 @@ describe('useApiReviewController', () => {
     async function setupWithOneItem(): Promise<ReviewControllerAdapter> {
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve(
-            okEnvelope({ items: [makeItem()], total: 1 }),
-          ),
+        json: () => Promise.resolve(okEnvelope({ items: [makeItem()], total: 1 })),
       });
 
       const adapter = useApiReviewController('http://test.local');
@@ -373,8 +354,7 @@ describe('useApiReviewController', () => {
       // Mock the POST approve response
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve(okEnvelope(successResult('item-001'))),
+        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
       });
 
       const result = await adapter.approve();
@@ -410,8 +390,7 @@ describe('useApiReviewController', () => {
       // Approve the first item
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        json: () =>
-          Promise.resolve(okEnvelope(successResult('item-001'))),
+        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
       });
 
       await adapter.approve();

@@ -10,8 +10,19 @@
  */
 
 import { defineEventHandler, setResponseStatus, getRouterParam } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, requireAuthorization, getActorId } from '../../utils/workflow-store';
-import { NotificationRuntime, InAppChannelAdapter, type NotificationPolicy } from '@balanceframe/application';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  requireAuthorization,
+  getActorId,
+} from '../../utils/workflow-store';
+import {
+  NotificationRuntime,
+  InAppChannelAdapter,
+  type NotificationPolicy,
+} from '@balanceframe/application';
 
 // Module-level singleton (lazy-initialised)
 let runtime: NotificationRuntime | null = null;
@@ -23,7 +34,9 @@ function getRuntime(store: ReturnType<typeof getWorkflowStore>): NotificationRun
     policyVersion: 'v1',
     eligibility: [],
     recipients: [],
-    channels: [{ type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' }],
+    channels: [
+      { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
+    ],
     redaction: { public: { visibleFields: ['title', 'summary'] } },
     maxRetries: 3,
     defaultRedactionClass: 'public',
@@ -56,14 +69,26 @@ export default defineEventHandler(async (event) => {
 
     if (!outboxId) {
       setResponseStatus(event, 400);
-      return errorEnvelope('MISSING_ID', 'Notification outbox ID is required.', authInfo, false, requestId);
+      return errorEnvelope(
+        'MISSING_ID',
+        'Notification outbox ID is required.',
+        authInfo,
+        false,
+        requestId,
+      );
     }
 
     const detail = await rt.getOutboxDetail(outboxId, actorId);
 
     if (!detail) {
       setResponseStatus(event, 404);
-      return errorEnvelope('NOT_FOUND', 'Notification not found or access denied.', authInfo, false, requestId);
+      return errorEnvelope(
+        'NOT_FOUND',
+        'Notification not found or access denied.',
+        authInfo,
+        false,
+        requestId,
+      );
     }
 
     return okEnvelope(detail, auth.info, requestId);
