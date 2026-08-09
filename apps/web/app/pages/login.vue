@@ -83,6 +83,10 @@
  * users are redirected to /review by the global route middleware.
  */
 
+definePageMeta({
+  layout: false,
+});
+
 import { authClient } from '../../lib/auth-client';
 
 // Sign-in form

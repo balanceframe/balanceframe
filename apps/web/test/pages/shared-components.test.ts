@@ -8,7 +8,7 @@
  * current space/budget, sync status, mobile navigation.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, shallowMount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { ref, type Ref } from 'vue';
 
@@ -130,11 +130,45 @@ function errorEnvelope(code: string) {
 import DefaultLayout from '../../app/layouts/default.vue';
 
 describe('DefaultLayout', () => {
-  function mountLayout() {
+  const availableAuthenticatedHrefs = [
+    '/', '/review', '/notifications',
+    '/data-quality', '/liquidity', '/calendar', '/trends', '/income', '/health',
+    '/cash-flow', '/targets', '/obligations', '/forecast-accuracy', '/reports',
+    '/rules', '/purchase-check', '/connection',
+  ];
+  const directDesktopHrefs = ['/', '/review', '/notifications'];
+  const routePath = ref('/');
+  const routeGlobal = globalThis as typeof globalThis & { useRoute?: () => { readonly path: string; readonly fullPath: string } };
+  let originalUseRoute: typeof routeGlobal.useRoute;
+
+  beforeEach(() => {
+    routePath.value = '/';
+    originalUseRoute = routeGlobal.useRoute;
+    routeGlobal.useRoute = () => ({
+      get path() { return routePath.value; },
+      get fullPath() { return routePath.value; },
+    });
+  });
+
+  afterEach(() => {
+    if (originalUseRoute) routeGlobal.useRoute = originalUseRoute;
+    else delete routeGlobal.useRoute;
+  });
+
+  function mountLayout(path = '/') {
+    routePath.value = path;
     return mount(DefaultLayout, {
       global: { stubs: { ...stubs, NuxtLink } },
       slots: { default: '<div>page content</div>' },
     });
+  }
+
+  function renderedHrefs(wrapper: VueWrapper) {
+    return wrapper.findAll('a[href]').map((link) => link.attributes('href')).sort();
+  }
+
+  function desktopGroupTriggers(wrapper: VueWrapper) {
+    return wrapper.findAll('nav[aria-label="Main navigation"] button[aria-expanded]');
   }
 
   it('renders the app brand link', () => {
@@ -149,7 +183,7 @@ describe('DefaultLayout', () => {
     const nav = wrapper.find('nav[aria-label="Main navigation"]');
     expect(nav.exists()).toBe(true);
     expect(nav.text()).toContain('Review');
-    expect(nav.text()).toContain('Reports');
+    expect(nav.text()).toContain('Planning');
     expect(nav.text()).toContain('Notifications');
   });
 
@@ -177,13 +211,179 @@ describe('DefaultLayout', () => {
     await toggle.trigger('click');
     const mobileNav = wrapper.find('nav[aria-label="Mobile navigation"]');
     const text = mobileNav.text();
-    expect(text).toContain('Home');
+    expect(text).toContain('Dashboard');
     expect(text).toContain('Review');
     expect(text).toContain('Rules');
     expect(text).toContain('Reports');
     expect(text).toContain('Notifications');
     expect(text).toContain('Scenarios');
     expect(text).toContain('Health');
+  });
+
+  it('exposes exactly all available authenticated routes through desktop links and opened groups', async () => {
+    const wrapper = mountLayout();
+    const desktopNavigation = wrapper.get('nav[aria-label="Main navigation"]');
+    expect(renderedHrefs(desktopNavigation)).toEqual([...directDesktopHrefs].sort());
+
+    const exposedHrefs = new Set(renderedHrefs(desktopNavigation));
+    for (const trigger of desktopGroupTriggers(wrapper)) {
+      await trigger.trigger('click');
+      for (const href of renderedHrefs(wrapper)) exposedHrefs.add(href);
+    }
+
+    expect([...exposedHrefs].sort()).toEqual([...availableAuthenticatedHrefs].sort());
+  });
+
+  it('disables the non-operable Scenarios route with a Coming Soon hover message on desktop', async () => {
+    const wrapper = mountLayout();
+    const planningTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Planning');
+    if (!planningTrigger) throw new Error('Planning trigger not found');
+    await planningTrigger.trigger('click');
+
+    const disabledItem = wrapper.get('[data-navigation-disabled="/scenarios"]');
+    expect(disabledItem.element.tagName).toBe('BUTTON');
+    expect(disabledItem.attributes('disabled')).toBeDefined();
+    expect(disabledItem.attributes('title')).toBe('Coming Soon');
+    expect(disabledItem.attributes('aria-label')).toBe('Scenarios — Coming Soon');
+    expect(wrapper.find('a[href="/scenarios"]').exists()).toBe(false);
+  });
+
+  it('skips disabled items when keyboard navigation opens a desktop group', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const wrapper = mount(DefaultLayout, {
+      attachTo: host,
+      global: { stubs: { ...stubs, NuxtLink } },
+      slots: { default: '<div>page content</div>' },
+    });
+
+    try {
+      const planningTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Planning');
+      if (!planningTrigger) throw new Error('Planning trigger not found');
+      await planningTrigger.trigger('keydown', { key: 'ArrowUp' });
+      await wrapper.vm.$nextTick();
+      expect(document.activeElement?.textContent?.trim()).toBe('Reports');
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
+  });
+
+  it('opens named desktop groups and closes them on Escape', async () => {
+    const wrapper = mountLayout();
+    const triggers = desktopGroupTriggers(wrapper);
+    expect(triggers.map((trigger) => trigger.text().trim())).toEqual(['Analysis', 'Planning', 'System']);
+    expect(triggers.map((trigger) => trigger.attributes('aria-expanded'))).toEqual(['false', 'false', 'false']);
+
+    for (const trigger of triggers) {
+      await trigger.trigger('click');
+      expect(trigger.attributes('aria-expanded')).toBe('true');
+      await trigger.trigger('keydown', { key: 'Escape' });
+      expect(trigger.attributes('aria-expanded')).toBe('false');
+    }
+  });
+
+  it('returns focus to the group trigger when Escape closes an open panel', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const wrapper = mount(DefaultLayout, {
+      attachTo: host,
+      global: { stubs: { ...stubs, NuxtLink } },
+      slots: { default: '<div>page content</div>' },
+    });
+
+    try {
+      const analysisTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Analysis');
+      if (!analysisTrigger) throw new Error('Analysis trigger not found');
+      await analysisTrigger.trigger('click');
+      const firstLink = wrapper.get('#navigation-analysis-panel a');
+      (firstLink.element as HTMLAnchorElement).focus();
+      expect(document.activeElement).toBe(firstLink.element);
+
+      await firstLink.trigger('keydown', { key: 'Escape' });
+      await wrapper.vm.$nextTick();
+      expect(document.activeElement).toBe(analysisTrigger.element);
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
+  });
+
+  it('closes navigation and user popovers when page content is clicked', async () => {
+    const wrapper = mountLayout();
+    const analysisTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Analysis');
+    if (!analysisTrigger) throw new Error('Analysis trigger not found');
+
+    await analysisTrigger.trigger('click');
+    expect(analysisTrigger.attributes('aria-expanded')).toBe('true');
+    await wrapper.get('main').trigger('click');
+    expect(analysisTrigger.attributes('aria-expanded')).toBe('false');
+
+    const userTrigger = wrapper.get('button[aria-label="Open user menu"]');
+    await userTrigger.trigger('click');
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true);
+    await wrapper.get('main').trigger('click');
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+  });
+
+  it('closes the user menu on Escape and restores focus to its trigger', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const wrapper = mount(DefaultLayout, {
+      attachTo: host,
+      global: { stubs: { ...stubs, NuxtLink } },
+      slots: { default: '<div>page content</div>' },
+    });
+
+    try {
+      const userTrigger = wrapper.get('button[aria-label="Open user menu"]');
+      await userTrigger.trigger('click');
+      const signOut = wrapper.get('[role="menuitem"]');
+      (signOut.element as HTMLButtonElement).focus();
+      await signOut.trigger('keydown', { key: 'Escape' });
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+      expect(document.activeElement).toBe(userTrigger.element);
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
+  });
+
+  it('closes the user menu when the active route changes', async () => {
+    const wrapper = mountLayout();
+    await wrapper.get('button[aria-label="Open user menu"]').trigger('click');
+    expect(wrapper.find('[role="menu"]').exists()).toBe(true);
+
+    routePath.value = '/reports';
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+  });
+
+  it('indicates the Analysis section when a child analysis route is active', () => {
+    const wrapper = mountLayout('/liquidity');
+    const analysisTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Analysis');
+    expect(analysisTrigger?.attributes('aria-current')).toBe('page');
+  });
+
+  it('exposes the same available authenticated routes in opened mobile navigation', async () => {
+    const wrapper = mountLayout();
+    await wrapper.get('button[aria-label="Toggle navigation menu"]').trigger('click');
+    const mobileNavigation = wrapper.get('nav[aria-label="Mobile navigation"]');
+    expect(renderedHrefs(mobileNavigation)).toEqual([...availableAuthenticatedHrefs].sort());
+  });
+
+  it('disables the non-operable Scenarios route with a Coming Soon hover message on mobile', async () => {
+    const wrapper = mountLayout();
+    await wrapper.get('button[aria-label="Toggle navigation menu"]').trigger('click');
+    const mobileNavigation = wrapper.get('nav[aria-label="Mobile navigation"]');
+    const disabledItem = mobileNavigation.get('[data-navigation-disabled="/scenarios"]');
+
+    expect(disabledItem.element.tagName).toBe('BUTTON');
+    expect(disabledItem.attributes('disabled')).toBeDefined();
+    expect(disabledItem.attributes('title')).toBe('Coming Soon');
+    expect(disabledItem.attributes('aria-label')).toBe('Scenarios — Coming Soon');
+    expect(mobileNavigation.find('a[href="/scenarios"]').exists()).toBe(false);
   });
 
   it('has visible focus-visible styles via classes on nav links', () => {

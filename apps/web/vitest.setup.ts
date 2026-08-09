@@ -15,6 +15,7 @@ vi.stubGlobal('shallowRef', shallowRef);
 vi.stubGlobal('navigateTo', vi.fn());
 vi.stubGlobal('definePageMeta', vi.fn(() => {}));
 vi.stubGlobal('$fetch', vi.fn());
+vi.stubGlobal('useRoute', vi.fn(() => ({ path: '/', fullPath: '/' })));
 
 // Nuxt server auto-imports used by api handlers (not imported from h3).
 vi.stubGlobal('defineEventHandler', (handler: unknown) => handler);

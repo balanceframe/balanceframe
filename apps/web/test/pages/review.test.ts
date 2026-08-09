@@ -424,6 +424,23 @@ describe('review page recovery behavior', () => {
     expect(composableDoubles.handleKeyboard).toHaveBeenCalledWith(event);
   });
 
+  it('does not route review shortcuts while a shell navigation control is focused', async () => {
+    await mountPage();
+    const shellLink = document.createElement('a');
+    shellLink.href = '/reports';
+    shellLink.textContent = 'Reports';
+    document.body.append(shellLink);
+
+    try {
+      shellLink.focus();
+      expect(document.activeElement).toBe(shellLink);
+      shellLink.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a' }));
+      expect(composableDoubles.handleKeyboard).not.toHaveBeenCalled();
+    } finally {
+      shellLink.remove();
+    }
+  });
+
   it('suppresses shortcuts dispatched from the hidden keyboard input while the correction modal is open', async () => {
     const page = await mountPage();
 

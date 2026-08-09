@@ -1,7 +1,7 @@
 <template>
-  <UContainer class="h-dvh overflow-hidden flex flex-col py-4">
-    <div class="flex items-center justify-between mb-4 shrink-0">
-      <div class="flex items-center gap-3">
+  <UContainer class="h-[calc(100dvh-3.5rem)] overflow-hidden flex flex-col py-4">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-4 shrink-0">
+      <div class="flex min-w-0 max-w-full flex-wrap items-center gap-3">
         <h1 class="text-xl font-bold">Review Transactions</h1>
         <SavedViewPicker
           :views="savedViews"
@@ -19,14 +19,7 @@
           @retry="loadViews"
         />
       </div>
-        <UButton
-          variant="ghost"
-          color="neutral"
-          size="sm"
-          label="Sign out"
-          icon="i-heroicons-arrow-right-on-rectangle"
-          @click="handleSignOut"
-        />
+      <div class="ml-auto flex shrink-0 items-center gap-2">
         <UBadge
           v-if="adapter.loading"
           color="warning"
@@ -56,6 +49,7 @@
           @click="handleSync"
         />
       </div>
+    </div>
 
     <!-- Error state (API errors, not empty queue) -->
     <UAlert
@@ -241,7 +235,6 @@ function markViewUsed(viewId: string) { void viewAction(viewId, 'PATCH', `/api/r
  * NEVER falls back to an in-memory SqliteWorkflowStore or exposes mutation
  * controls without a remote backend.
  */
-import { authClient } from '../../lib/auth-client';
 import { useApiReviewController } from '../../composables/useApiReviewController';
 import { createUnavailableAdapter } from '../../composables/createUnavailableAdapter';
 import { useReviewActions } from '../../composables/useReviewActions';
@@ -272,15 +265,15 @@ const showCorrectModal = ref(false);
 const correcting = ref(false);
 const showProposalsModal = ref(false);
 const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
+const interactiveControlSelector = 'a, button, input, textarea, select, summary, [contenteditable], [role="button"], [role="link"], [role="menuitem"]';
 
 function handleGlobalKeydown(event: KeyboardEvent) {
-  // Ignore events in editable elements to avoid interfering with typing.
-  const target = event.target as HTMLElement | null;
-  if (!target) return;
+  // The hidden input owns review shortcuts. Other editable and interactive
+  // controls — including the shared shell navigation — keep normal keyboard behavior.
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
   if (target.isContentEditable) return;
-  const tag = target.tagName;
-  if (target !== keyboardInput.value && (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')) return;
-
+  if (target !== keyboardInput.value && target.closest(interactiveControlSelector)) return;
   // Suppress review shortcuts while a modal is open (Enter on modal
   // buttons must not approve, C must not re-open correction, etc.)
   if (modalOpen.value) return;
@@ -442,8 +435,4 @@ async function handleSync() {
   }
 }
 
-async function handleSignOut() {
-  await authClient.signOut();
-  await navigateTo('/');
-}
 </script>
