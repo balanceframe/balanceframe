@@ -79,7 +79,7 @@ function deriveAccountType(account: APIAccountEntity): Account['accountType'] {
 }
 
 export function normalizeAccounts(accounts: APIAccountEntity[], currency = 'USD'): Account[] {
-  return accounts.map(a => normalizeAccount(a, currency));
+  return accounts.map((a) => normalizeAccount(a, currency));
 }
 
 // ---------------------------------------------------------------------------
@@ -141,25 +141,11 @@ export function normalizeTransactions(
     // Orphaned children (is_child without parent_id) are filtered out
   }
 
-  return parents.map(txn => {
-    const children = (childrenByParent[txn.id] ?? []).map(child =>
-      normalizeTransaction(
-        child,
-        payeeMap,
-        categoryMap,
-        transferAcctMap,
-        [],
-        currency,
-      ),
+  return parents.map((txn) => {
+    const children = (childrenByParent[txn.id] ?? []).map((child) =>
+      normalizeTransaction(child, payeeMap, categoryMap, transferAcctMap, [], currency),
     );
-    return normalizeTransaction(
-      txn,
-      payeeMap,
-      categoryMap,
-      transferAcctMap,
-      children,
-      currency,
-    );
+    return normalizeTransaction(txn, payeeMap, categoryMap, transferAcctMap, children, currency);
   });
 }
 
@@ -190,7 +176,7 @@ export function normalizeCategories(
   for (const g of groups) {
     groupsById[g.id] = g.name;
   }
-  return categories.map(cat => normalizeCategory(cat, groupsById));
+  return categories.map((cat) => normalizeCategory(cat, groupsById));
 }
 
 // ---------------------------------------------------------------------------
@@ -220,9 +206,7 @@ export function normalizeRule(rule: RuleEntity): Rule {
   // name field in Actual is empty.  Fall back to the payee_name condition value.
   const ruleAny = rule as Record<string, unknown>;
   const payeeCondition = Array.isArray(rule.conditions)
-    ? rule.conditions.find(
-        (c: unknown) => (c as Record<string, unknown>).field === 'payee_name',
-      )
+    ? rule.conditions.find((c: unknown) => (c as Record<string, unknown>).field === 'payee_name')
     : undefined;
   const derivedName = payeeCondition
     ? String((payeeCondition as Record<string, unknown>).value ?? '')
@@ -238,7 +222,7 @@ export function normalizeRule(rule: RuleEntity): Rule {
 }
 
 export function normalizeRules(rules: RuleEntity[]): Rule[] {
-  return rules.filter(r => !r.tombstone).map(normalizeRule);
+  return rules.filter((r) => !r.tombstone).map(normalizeRule);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,13 +232,11 @@ export function normalizeRules(rules: RuleEntity[]): Rule[] {
 export function normalizeSchedule(schedule: APIScheduleEntity, currency = 'USD'): Schedule {
   return {
     id: schedule.id,
-    frequency: typeof schedule.date === 'object' && schedule.date !== null
-      ? String((schedule.date as Record<string, unknown>).frequency ?? '')
-      : String(schedule.date ?? ''),
-    amount: integerToMoney(
-      typeof schedule.amount === 'number' ? schedule.amount : 0,
-      currency,
-    ),
+    frequency:
+      typeof schedule.date === 'object' && schedule.date !== null
+        ? String((schedule.date as Record<string, unknown>).frequency ?? '')
+        : String(schedule.date ?? ''),
+    amount: integerToMoney(typeof schedule.amount === 'number' ? schedule.amount : 0, currency),
     payeeName: schedule.payee ?? null,
     accountId: schedule.account ?? '',
     nextExpected: schedule.next_date ?? '',
@@ -262,9 +244,7 @@ export function normalizeSchedule(schedule: APIScheduleEntity, currency = 'USD')
 }
 
 export function normalizeSchedules(schedules: APIScheduleEntity[], currency = 'USD'): Schedule[] {
-  return schedules
-    .filter(s => !s.completed)
-    .map(s => normalizeSchedule(s, currency));
+  return schedules.filter((s) => !s.completed).map((s) => normalizeSchedule(s, currency));
 }
 
 // ---------------------------------------------------------------------------

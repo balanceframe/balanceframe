@@ -19,7 +19,14 @@ import {
   LifecycleCallbacks,
   routeCommand,
 } from '../src/commands';
-import { AuthorizationContext, DataFreshness, okResponse, errorResponse, ErrorInfo, ResponseEnvelope } from '../src/envelope';
+import {
+  AuthorizationContext,
+  DataFreshness,
+  okResponse,
+  errorResponse,
+  ErrorInfo,
+  ResponseEnvelope,
+} from '../src/envelope';
 import { ReasonCodes } from '../src/errors';
 
 // ---------------------------------------------------------------------------
@@ -278,9 +285,7 @@ describe('PendingReviewOutput — exact envelope fields', () => {
       candidates: [],
       oldestUncategorizedDate: null,
       healthState: 'degraded',
-      blockers: [
-        { code: 'stale_snapshot', message: 'No recent download', entityId: '_overview' },
-      ],
+      blockers: [{ code: 'stale_snapshot', message: 'No recent download', entityId: '_overview' }],
     };
     const envelope = okResponse('req_blocked', null, auth, result);
 
@@ -442,7 +447,12 @@ describe('Lifecycle callbacks', () => {
       accountCount: 5,
       transactionCount: 250,
     }));
-    const callbacks: LifecycleCallbacks = { doExport, doDisconnect: vi.fn(), doRemoveConnection: vi.fn(), doDeleteData: vi.fn() };
+    const callbacks: LifecycleCallbacks = {
+      doExport,
+      doDisconnect: vi.fn(),
+      doRemoveConnection: vi.fn(),
+      doDeleteData: vi.fn(),
+    };
     const ledger = { mockLedger: true };
     const result = await callbacks.doExport(ledger);
     expect(doExport).toHaveBeenCalledWith(ledger);
@@ -456,7 +466,12 @@ describe('Lifecycle callbacks', () => {
       credentialsRemoved: true,
       message: 'Connection removed. Actual server was not modified.',
     }));
-    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect, doRemoveConnection: vi.fn(), doDeleteData: vi.fn() };
+    const callbacks: LifecycleCallbacks = {
+      doExport: vi.fn(),
+      doDisconnect,
+      doRemoveConnection: vi.fn(),
+      doDeleteData: vi.fn(),
+    };
     const result = await callbacks.doDisconnect({ mockLedger: true });
     expect(doDisconnect).toHaveBeenCalledTimes(1);
     expect(result.disconnected).toBe(true);
@@ -474,7 +489,12 @@ describe('Lifecycle callbacks', () => {
         'Project-side filtering does not reduce the broad access held by the connector. ' +
         'Ensure your Actual server and backups have appropriate security.',
     }));
-    const callbacks: LifecycleCallbacks = { doExport: vi.fn(), doDisconnect: vi.fn(), doRemoveConnection, doDeleteData: vi.fn() };
+    const callbacks: LifecycleCallbacks = {
+      doExport: vi.fn(),
+      doDisconnect: vi.fn(),
+      doRemoveConnection,
+      doDeleteData: vi.fn(),
+    };
     const result = await callbacks.doRemoveConnection({});
     expect(doRemoveConnection).toHaveBeenCalledTimes(1);
     expect(result.removed).toBe(true);

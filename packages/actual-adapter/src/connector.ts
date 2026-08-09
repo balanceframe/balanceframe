@@ -12,7 +12,15 @@
  * - Broad-access caveat exposed as a constant.
  */
 
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -51,7 +59,6 @@ import type {
   MutationPrecondition,
   MutationResult,
   SetCategoryResult,
-
   AutomationRule,
   RuleProposal,
   HealthReport,
@@ -65,6 +72,7 @@ import type {
   CacheState,
   BudgetInfo,
   LedgerSnapshotResult,
+  SynchronizeOptions,
   VersionRange,
 } from './types.js';
 import { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from './types.js';
@@ -106,9 +114,15 @@ export interface ActualClient {
   sync(): Promise<void>;
   getServerVersion(): Promise<{ version: string } | { error: string }>;
   getAccounts(): Promise<APIAccountEntity[]>;
-  getTransactions(accountId: string, startDate: string, endDate: string): Promise<TransactionEntity[]>;
+  getTransactions(
+    accountId: string,
+    startDate: string,
+    endDate: string,
+  ): Promise<TransactionEntity[]>;
   getPayees(): Promise<APIPayeeEntity[]>;
-  getCategories(opts?: { hidden?: boolean }): Promise<(APICategoryEntity | APICategoryGroupEntity)[]>;
+  getCategories(opts?: {
+    hidden?: boolean;
+  }): Promise<(APICategoryEntity | APICategoryGroupEntity)[]>;
   getCategoryGroups(opts?: { hidden?: boolean }): Promise<APICategoryGroupEntity[]>;
   getBudgetMonths(): Promise<string[]>;
   getBudgetMonth(month: string): Promise<{
@@ -121,7 +135,11 @@ export interface ActualClient {
   getTags(): Promise<APITagEntity[]>;
   runBankSync(_args?: { accountId: string }): Promise<void>;
   // Write methods (rejected in Observe mode)
-  addTransactions(accountId: string, transactions: unknown[], opts?: { learnCategories?: boolean; runTransfers?: boolean }): Promise<'ok'>;
+  addTransactions(
+    accountId: string,
+    transactions: unknown[],
+    opts?: { learnCategories?: boolean; runTransfers?: boolean },
+  ): Promise<'ok'>;
   createAccount(account: Omit<APIAccountEntity, 'id'>, initialBalance?: number): Promise<string>;
   updateTransaction(id: string, fields: Record<string, unknown>): Promise<unknown>;
   createRule(rule: Record<string, unknown>): Promise<{ id: string }>;
@@ -182,14 +200,13 @@ export async function createDefaultActualClient(): Promise<ActualClient> {
         txns as unknown as Parameters<typeof actual.addTransactions>[1],
         opts as Parameters<typeof actual.addTransactions>[2],
       ),
-    createAccount: (account, initialBalance) =>
-      actual.createAccount(account, initialBalance),
+    createAccount: (account, initialBalance) => actual.createAccount(account, initialBalance),
     updateTransaction: (id, fields) => actual.updateTransaction(id, fields),
     createRule: (rule) => actual.createRule(rule as Parameters<typeof actual.createRule>[0]),
-    updateRule: (id, rule) => actual.updateRule({ id, ...rule } as Parameters<typeof actual.updateRule>[0]),
+    updateRule: (id, rule) =>
+      actual.updateRule({ id, ...rule } as Parameters<typeof actual.updateRule>[0]),
     deleteRule: (id) => actual.deleteRule(id),
-    setBudgetAmount: (month, categoryId, value) =>
-      actual.setBudgetAmount(month, categoryId, value),
+    setBudgetAmount: (month, categoryId, value) => actual.setBudgetAmount(month, categoryId, value),
   };
 }
 
@@ -237,6 +254,10 @@ export class ActualConnector implements BudgetLedger {
   private _connectedAt: string | null = null;
   /** Promise guard for synchronize() — prevents concurrent sync operations. */
   private _syncPromise: Promise<LedgerSnapshotResult> | null = null;
+  /** Whether the in-flight synchronization includes a remote refresh. */
+  private _syncRefresh = false;
+  /** Most recent immutable synchronization result for request-local analysis reuse. */
+  private _latestSynchronization: LedgerSnapshotResult | null = null;
 
   constructor(config: ActualConnectorConfig) {
     this.client = config.client;
@@ -270,28 +291,42 @@ export class ActualConnector implements BudgetLedger {
 
   // -------------------------------------------------------------------------
   // Synchronize
-  async synchronize(): Promise<LedgerSnapshotResult> {
+  async synchronize(options: SynchronizeOptions = {}): Promise<LedgerSnapshotResult> {
     this.assertInitialized();
 
     if (!this._budgetInfo) {
       throw new Error('No budget selected; call discoverBudgets() and selectBudget() first');
     }
 
-    // Deduplicate concurrent synchronize() calls: if a sync is already in
-    // progress, return the in-flight promise instead of starting a new one.
+    const refresh = options.refresh !== false;
     if (this._syncPromise) {
-      return this._syncPromise;
+      const inFlight = this._syncPromise;
+      if (!refresh || this._syncRefresh) return inFlight;
+      await inFlight;
+      return this.synchronize({ refresh: true });
     }
 
-    this._syncPromise = this._doSynchronize();
+    const pending = this._doSynchronize(refresh);
+    this._syncPromise = pending;
+    this._syncRefresh = refresh;
     try {
-      return await this._syncPromise;
+      const synchronization = await pending;
+      this._latestSynchronization = synchronization;
+      return synchronization;
     } finally {
-      this._syncPromise = null;
+      if (this._syncPromise === pending) {
+        this._syncPromise = null;
+        this._syncRefresh = false;
+      }
     }
   }
 
-  private async _doSynchronize(): Promise<LedgerSnapshotResult> {
+  /** Return the latest normalized result without performing another remote download. */
+  getLatestSynchronization(): LedgerSnapshotResult | null {
+    return this._latestSynchronization;
+  }
+
+  private async _doSynchronize(refresh: boolean): Promise<LedgerSnapshotResult> {
     const budgetId = this._budgetInfo!.id;
     const groupId = this._budgetInfo!.groupId;
 
@@ -306,14 +341,18 @@ export class ActualConnector implements BudgetLedger {
         overlapStart = d.toISOString();
       }
 
-      // In Observe mode, re-download the budget fresh instead of calling sync()
-      // which may upload local changes. In write-enabled modes, use sync().
-      if (this.mode === 'observe') {
-        // Re-download budget data; password may be required for encrypted budgets
-        const creds = await this.credStore.load();
-        await this.client.downloadBudget(groupId, { password: creds?.budgetPassword ?? undefined });
-      } else {
-        await this.client.sync();
+      // In Observe mode, refresh by re-downloading instead of calling sync(),
+      // which may upload local changes. A caller that just selected the budget
+      // can skip the redundant download while still normalizing a snapshot.
+      if (refresh) {
+        if (this.mode === 'observe') {
+          const creds = await this.credStore.load();
+          await this.client.downloadBudget(groupId, {
+            password: creds?.budgetPassword ?? undefined,
+          });
+        } else {
+          await this.client.sync();
+        }
       }
 
       // Update watermark
@@ -343,8 +382,8 @@ export class ActualConnector implements BudgetLedger {
     const accounts = await this.client.getAccounts();
     let filtered = accounts;
     if (query) {
-      if (!query.includeClosed) filtered = filtered.filter(a => !a.closed);
-      if (!query.includeOffBudget) filtered = filtered.filter(a => !a.offbudget);
+      if (!query.includeClosed) filtered = filtered.filter((a) => !a.closed);
+      if (!query.includeOffBudget) filtered = filtered.filter((a) => !a.offbudget);
     }
     return normalizeAccounts(filtered, this.currency);
   }
@@ -353,7 +392,7 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     const accounts = query?.accountId
       ? [query.accountId]
-      : (await this.client.getAccounts()).map(a => a.id);
+      : (await this.client.getAccounts()).map((a) => a.id);
     const payees = normalizePayees(await this.client.getPayees());
     const payeeMap = buildPayeeNameMap(payees);
     const transferAcctMap = buildTransferAcctMap(payees);
@@ -371,9 +410,15 @@ export class ActualConnector implements BudgetLedger {
       const startDate = query?.startDate ?? '1970-01-01';
       const endDate = query?.endDate ?? '2099-12-31';
       const txns = await this.client.getTransactions(accountId, startDate, endDate);
-      const normalized = normalizeTransactions(txns, payeeMap, categoryMap, transferAcctMap, this.currency);
+      const normalized = normalizeTransactions(
+        txns,
+        payeeMap,
+        categoryMap,
+        transferAcctMap,
+        this.currency,
+      );
       if (query?.includePending === false) {
-        allTxns.push(...normalized.filter(t => t.cleared));
+        allTxns.push(...normalized.filter((t) => t.cleared));
       } else {
         allTxns.push(...normalized);
       }
@@ -396,7 +441,7 @@ export class ActualConnector implements BudgetLedger {
   async listRules(): Promise<AutomationRule[]> {
     this.assertInitialized();
     const rules = await this.client.getRules();
-    return normalizeRules(rules).map(r => ({
+    return normalizeRules(rules).map((r) => ({
       id: r.id,
       name: r.name,
       order: r.order,
@@ -423,7 +468,7 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     throw new Error(
       'importTransactions() is not yet implemented in any connection mode. ' +
-      'This method will be available in a future update.',
+        'This method will be available in a future update.',
     );
   }
 
@@ -435,7 +480,7 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     throw new Error(
       'updateTransaction() is not yet implemented in any connection mode. ' +
-      'This method will be available in a future update.',
+        'This method will be available in a future update.',
     );
   }
   async createRule(
@@ -505,14 +550,22 @@ export class ActualConnector implements BudgetLedger {
   ): Promise<MutationResult> {
     this.assertMutationAllowed('updateRule');
     if (!this._budgetInfo) {
-      return { success: false, error: 'No budget selected.', code: 'BUDGET_NOT_SELECTED' } as MutationResult;
+      return {
+        success: false,
+        error: 'No budget selected.',
+        code: 'BUDGET_NOT_SELECTED',
+      } as MutationResult;
     }
     return this.withCacheLock(this._budgetInfo.id, async () => {
       try {
         const allRaw = await this.client.getRules();
         const currentRaw = allRaw.find((r) => r.id === id);
         if (!currentRaw) {
-          return { success: false, error: `Rule not found: ${id}`, code: 'RULE_NOT_FOUND' } as MutationResult;
+          return {
+            success: false,
+            error: `Rule not found: ${id}`,
+            code: 'RULE_NOT_FOUND',
+          } as MutationResult;
         }
         const merged: Record<string, unknown> = {
           id: currentRaw.id,
@@ -520,16 +573,25 @@ export class ActualConnector implements BudgetLedger {
           conditionsOp: currentRaw.conditionsOp,
           conditions: JSON.stringify(currentRaw.conditions),
           actions: JSON.stringify(currentRaw.actions),
-          tombstone: fields.inactive !== undefined ? fields.inactive : (currentRaw.tombstone ?? false),
+          tombstone:
+            fields.inactive !== undefined ? fields.inactive : (currentRaw.tombstone ?? false),
         };
         await this.client.updateRule(id, merged);
       } catch (err) {
-        return { success: false, error: `Failed to update rule: ${err instanceof Error ? err.message : String(err)}`, code: 'RULE_UPDATE_FAILED' } as MutationResult;
+        return {
+          success: false,
+          error: `Failed to update rule: ${err instanceof Error ? err.message : String(err)}`,
+          code: 'RULE_UPDATE_FAILED',
+        } as MutationResult;
       }
       try {
         await this.client.sync();
       } catch {
-        return { success: false, error: 'Sync failed after updating rule', code: 'SYNC_FAILED' } as MutationResult;
+        return {
+          success: false,
+          error: 'Sync failed after updating rule',
+          code: 'SYNC_FAILED',
+        } as MutationResult;
       }
       return { success: true } as MutationResult;
     });
@@ -544,36 +606,48 @@ export class ActualConnector implements BudgetLedger {
     this.assertInitialized();
     throw new Error(
       'setBudgetAmount() is not yet implemented in any connection mode. ' +
-      'This method will be available in a future update.',
+        'This method will be available in a future update.',
     );
   }
 
-  async deleteRule(
-    id: string,
-    precondition?: MutationPrecondition,
-  ): Promise<MutationResult> {
+  async deleteRule(id: string, precondition?: MutationPrecondition): Promise<MutationResult> {
     this.assertMutationAllowed('deleteRule');
     if (!this._budgetInfo) {
-      return { success: false, error: 'No budget selected.', code: 'BUDGET_NOT_SELECTED' } as MutationResult;
+      return {
+        success: false,
+        error: 'No budget selected.',
+        code: 'BUDGET_NOT_SELECTED',
+      } as MutationResult;
     }
     return this.withCacheLock(this._budgetInfo.id, async () => {
       try {
         const result = await this.client.deleteRule(id);
         if (result === false) {
-          return { success: false, error: 'Rule is referenced by a schedule and cannot be deleted.', code: 'RULE_HAS_SCHEDULE' } as MutationResult;
+          return {
+            success: false,
+            error: 'Rule is referenced by a schedule and cannot be deleted.',
+            code: 'RULE_HAS_SCHEDULE',
+          } as MutationResult;
         }
       } catch (err) {
-        return { success: false, error: `Failed to delete rule: ${err instanceof Error ? err.message : String(err)}`, code: 'RULE_DELETE_FAILED' } as MutationResult;
+        return {
+          success: false,
+          error: `Failed to delete rule: ${err instanceof Error ? err.message : String(err)}`,
+          code: 'RULE_DELETE_FAILED',
+        } as MutationResult;
       }
       try {
         await this.client.sync();
       } catch {
-        return { success: false, error: 'Sync failed after deleting rule', code: 'SYNC_FAILED' } as MutationResult;
+        return {
+          success: false,
+          error: 'Sync failed after deleting rule',
+          code: 'SYNC_FAILED',
+        } as MutationResult;
       }
       return { success: true } as MutationResult;
     });
   }
-
 
   /**
    * Set the category of a transaction by ID.
@@ -619,11 +693,11 @@ export class ActualConnector implements BudgetLedger {
     return this.withCacheLock(this._budgetInfo.id, async (): Promise<SetCategoryResult> => {
       // Read current transaction state to check precondition
       const allAccounts = await this.client.getAccounts();
-      const activeAccounts = allAccounts.filter(a => !a.closed);
+      const activeAccounts = allAccounts.filter((a) => !a.closed);
       let tx: TransactionEntity | null = null;
       for (const account of activeAccounts) {
         const txns = await this.client.getTransactions(account.id, '1970-01-01', '2099-12-31');
-        const found = txns.find(t => t.id === transactionId);
+        const found = txns.find((t) => t.id === transactionId);
         if (found) {
           tx = found;
           break;
@@ -645,7 +719,8 @@ export class ActualConnector implements BudgetLedger {
       if (currentCategoryId !== null && actualCategory !== currentCategoryId) {
         return {
           success: false,
-          error: `Category precondition mismatch for transaction ${transactionId}: ` +
+          error:
+            `Category precondition mismatch for transaction ${transactionId}: ` +
             `expected currentCategoryId=${JSON.stringify(currentCategoryId)}, ` +
             `actual=${JSON.stringify(actualCategory)}`,
           code: 'PRECONDITION_MISMATCH',
@@ -656,7 +731,7 @@ export class ActualConnector implements BudgetLedger {
 
       // Validate the proposed category exists in this budget
       const allCats = (await this.client.getCategories()) as APICategoryEntity[];
-      const proposedCat = allCats.find(c => c.id === proposedCategoryId);
+      const proposedCat = allCats.find((c) => c.id === proposedCategoryId);
       if (!proposedCat) {
         return {
           success: false,
@@ -705,14 +780,15 @@ export class ActualConnector implements BudgetLedger {
 
       // Re-read the transaction to verify the postcondition
       const reReads = await this.client.getTransactions(tx.account, '1970-01-01', '2099-12-31');
-      const reReadTx = reReads.find(t => t.id === transactionId);
+      const reReadTx = reReads.find((t) => t.id === transactionId);
       const reReadCategory = reReadTx?.category ?? null;
       const verified = reReadCategory === proposedCategoryId;
 
       if (!verified) {
         return {
           success: false,
-          error: `Post-write verification failed for transaction ${transactionId}: ` +
+          error:
+            `Post-write verification failed for transaction ${transactionId}: ` +
             `expected category=${JSON.stringify(proposedCategoryId)}, ` +
             `actual=${JSON.stringify(reReadCategory)}`,
           code: 'VERIFICATION_FAILED',
@@ -745,7 +821,9 @@ export class ActualConnector implements BudgetLedger {
   async connect(credentials?: ActualCredentials): Promise<BudgetInfo[]> {
     const creds = credentials ?? (await this.credStore.load());
     if (!creds) {
-      throw new Error('No credentials available; provide credentials or configure credential store.');
+      throw new Error(
+        'No credentials available; provide credentials or configure credential store.',
+      );
     }
 
     const dataDir = this.cacheDirFor(creds.serverUrl);
@@ -795,7 +873,7 @@ export class ActualConnector implements BudgetLedger {
   async discoverBudgets(): Promise<BudgetInfo[]> {
     this.assertInitialized();
     const files = await this.client.getBudgets();
-    return files.map(f => ({
+    return files.map((f) => ({
       id: f.id ?? f.cloudFileId ?? f.groupId ?? '',
       groupId: f.groupId ?? f.id ?? f.cloudFileId ?? '',
       name: f.name ?? 'Unnamed Budget',
@@ -809,7 +887,7 @@ export class ActualConnector implements BudgetLedger {
   async selectBudget(budgetId: string, password?: string): Promise<BudgetInfo> {
     this.assertInitialized();
     const budgets = await this.discoverBudgets();
-    const info = budgets.find(b => b.id === budgetId || b.groupId === budgetId);
+    const info = budgets.find((b) => b.id === budgetId || b.groupId === budgetId);
     if (!info) {
       throw new Error(`Budget "${budgetId}" not found on server`);
     }
@@ -827,6 +905,7 @@ export class ActualConnector implements BudgetLedger {
     await this.client.downloadBudget(info.groupId, { password });
     // downloadBudget already loads the budget internally; no need for a separate loadBudget call.
 
+    this._latestSynchronization = null;
     this._budgetInfo = info;
     const cache = this.getOrCreateCache(info.id);
     cache.cacheDir = dataDir;
@@ -836,7 +915,11 @@ export class ActualConnector implements BudgetLedger {
   async disconnect(): Promise<void> {
     // Await any pending cache operations before shutdown
     for (const [, lock] of this.cacheLocks) {
-      try { await lock; } catch { /* ignore rejected ops */ }
+      try {
+        await lock;
+      } catch {
+        /* ignore rejected ops */
+      }
     }
 
     // Persist watermarks before cleaning up
@@ -861,6 +944,7 @@ export class ActualConnector implements BudgetLedger {
 
     this._initialized = false;
     this._budgetInfo = null;
+    this._latestSynchronization = null;
     this._serverVersion = null;
     this._connectedAt = null;
   }
@@ -877,7 +961,7 @@ export class ActualConnector implements BudgetLedger {
 
     const state: HealthState = (() => {
       if (!compatibility.supported) return 'degraded';
-      if (incidents.some(i => i.severity === 'error')) return 'degraded';
+      if (incidents.some((i) => i.severity === 'error')) return 'degraded';
       if (freshness.lastDownloadedAt === null) return 'degraded';
       return 'healthy';
     })();
@@ -919,9 +1003,9 @@ export class ActualConnector implements BudgetLedger {
         const maxParts = maxVersion.split('.').map(Number);
 
         // Validate all version parts are finite non-NaN numbers with at least 2 parts
-        const validServer = parts.length >= 2 && parts.every(p => Number.isFinite(p));
-        const validMin = minParts.length >= 2 && minParts.every(p => Number.isFinite(p));
-        const validMax = maxParts.length >= 2 && maxParts.every(p => Number.isFinite(p));
+        const validServer = parts.length >= 2 && parts.every((p) => Number.isFinite(p));
+        const validMin = minParts.length >= 2 && minParts.every((p) => Number.isFinite(p));
+        const validMax = maxParts.length >= 2 && maxParts.every((p) => Number.isFinite(p));
 
         if (!validServer) {
           blockers.push(`Unable to parse server version: "${serverVersion}" is not a valid semver`);
@@ -969,7 +1053,7 @@ export class ActualConnector implements BudgetLedger {
   getFreshness(): Freshness {
     const cacheList = Array.from(this.caches.values());
     const lastSync = cacheList
-      .map(c => c.watermark.lastSyncCompletedAt)
+      .map((c) => c.watermark.lastSyncCompletedAt)
       .filter(Boolean)
       .sort()
       .pop();
@@ -985,7 +1069,7 @@ export class ActualConnector implements BudgetLedger {
     const allAccounts = await this.client.getAccounts();
     // Only non-closed accounts are expected in the snapshot;
     // closed accounts are intentionally excluded from coverage reporting.
-    const nonClosed = allAccounts.filter(a => !a.closed);
+    const nonClosed = allAccounts.filter((a) => !a.closed);
     return {
       totalAccounts: nonClosed.length,
       includedAccounts: nonClosed.length,
@@ -1014,9 +1098,7 @@ export class ActualConnector implements BudgetLedger {
 
   private assertInitialized(): void {
     if (!this._initialized) {
-      throw new Error(
-        'ActualConnector has not been initialized. Call connect() first.',
-      );
+      throw new Error('ActualConnector has not been initialized. Call connect() first.');
     }
   }
 
@@ -1025,7 +1107,7 @@ export class ActualConnector implements BudgetLedger {
     if (this.mode === 'observe') {
       throw new Error(
         `Mutation rejected: ${method}() is not permitted in observe mode. ` +
-        `Switch to a write-enabled mode to perform mutations.`,
+          `Switch to a write-enabled mode to perform mutations.`,
       );
     }
   }
@@ -1091,7 +1173,10 @@ export class ActualConnector implements BudgetLedger {
   private async withCacheLock<T>(budgetId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.cacheLocks.get(budgetId) ?? Promise.resolve();
     const next = prev.then(fn, fn); // Run even if prev rejected
-    this.cacheLocks.set(budgetId, next.catch(() => undefined));
+    this.cacheLocks.set(
+      budgetId,
+      next.catch(() => undefined),
+    );
     return next;
   }
 
@@ -1118,11 +1203,13 @@ export class ActualConnector implements BudgetLedger {
 
     // Collect all transactions across all non-closed accounts
     const allAccounts = await this.client.getAccounts();
-    const activeAccounts = allAccounts.filter(a => !a.closed);
+    const activeAccounts = allAccounts.filter((a) => !a.closed);
     const allTxns: Transaction[] = [];
     for (const account of activeAccounts) {
       const txns = await this.client.getTransactions(account.id, '1970-01-01', '2099-12-31');
-      allTxns.push(...normalizeTransactions(txns, payeeMap, categoryMap, transferAcctMap, this.currency));
+      allTxns.push(
+        ...normalizeTransactions(txns, payeeMap, categoryMap, transferAcctMap, this.currency),
+      );
     }
 
     const rules = normalizeRules(await this.client.getRules());

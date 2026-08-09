@@ -8,7 +8,13 @@
  */
 
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  sanitizeError,
+} from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -16,7 +22,8 @@ export default defineEventHandler(async (event) => {
   const query = getQuery(event);
 
   const budgetId = typeof query.budgetId === 'string' ? query.budgetId.trim() : undefined;
-  const limit = typeof query.limit === 'string' ? Math.min(parseInt(query.limit, 10) || 50, 200) : 50;
+  const limit =
+    typeof query.limit === 'string' ? Math.min(parseInt(query.limit, 10) || 50, 200) : 50;
   const offset = typeof query.offset === 'string' ? parseInt(query.offset, 10) || 0 : 0;
 
   const wf = getWorkflowStore(event);
@@ -33,7 +40,7 @@ export default defineEventHandler(async (event) => {
     return okEnvelope({ entries, total }, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'HISTORY_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

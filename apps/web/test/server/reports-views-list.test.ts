@@ -23,9 +23,17 @@ vi.mock('h3', () => ({
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: vi.fn(() => ({ store: undefined as unknown as SqliteWorkflowStore })),
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'test-actor',
+    capability: 'observe',
+    allowed: true,
+  })),
   getActorId: vi.fn(() => 'test-actor'),
-  sanitizeError: vi.fn((err, requestId, code, retryable) => ({ code, message: String(err), retryable })),
+  sanitizeError: vi.fn((err, requestId, code, retryable) => ({
+    code,
+    message: String(err),
+    retryable,
+  })),
   okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
@@ -35,7 +43,13 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result,
     error: null,
   }),
-  errorEnvelope: (code: string, message: string, _auth: unknown, retryable?: boolean, requestId?: string) => ({
+  errorEnvelope: (
+    code: string,
+    message: string,
+    _auth: unknown,
+    retryable?: boolean,
+    requestId?: string,
+  ) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
     status: 'error' as const,
@@ -58,9 +72,18 @@ describe('GET /api/reports/views', () => {
   });
 
   it('lists persisted views without restoring the external ledger', async () => {
-    const listSavedViews = vi.fn().mockResolvedValue([
-      { viewId: 'v1', name: 'Monthly', viewType: 'pending_review', scope: {}, sort: null, createdAt: '2026-07-01T00:00:00Z' },
-    ]);
+    const listSavedViews = vi
+      .fn()
+      .mockResolvedValue([
+        {
+          viewId: 'v1',
+          name: 'Monthly',
+          viewType: 'pending_review',
+          scope: {},
+          sort: null,
+          createdAt: '2026-07-01T00:00:00Z',
+        },
+      ]);
     vi.mocked(getWorkflowStore).mockReturnValue({
       store: { listSavedViews } as unknown as SqliteWorkflowStore,
     });
@@ -68,13 +91,15 @@ describe('GET /api/reports/views', () => {
     const r = await handler({ context: { auth: { authenticated: true } } });
 
     expect(r.status).toBe('ok');
-    expect(r.result.views).toEqual([{
-      viewId: 'v1',
-      name: 'Monthly',
-      viewType: 'pending_review',
-      scope: {},
-      createdAt: '2026-07-01T00:00:00Z',
-    }]);
+    expect(r.result.views).toEqual([
+      {
+        viewId: 'v1',
+        name: 'Monthly',
+        viewType: 'pending_review',
+        scope: {},
+        createdAt: '2026-07-01T00:00:00Z',
+      },
+    ]);
     expect(listSavedViews).toHaveBeenCalledWith('test-actor');
   });
 
@@ -90,5 +115,4 @@ describe('GET /api/reports/views', () => {
     expect(r.error.code).toBe('store_failed');
     expect(r.error.retryable).toBe(true);
   });
-
 });

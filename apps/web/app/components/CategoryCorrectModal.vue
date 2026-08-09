@@ -14,7 +14,10 @@
         <div class="space-y-4">
           <!-- Current category display -->
           <div>
-            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold">Current</span>
+            <span
+              class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold"
+              >Current</span
+            >
             <p class="font-medium mt-0.5">{{ displayName(item?.evidence.currentCategory) }}</p>
             <p v-if="showChangePreview" class="text-xs text-gray-400 mt-0.5">
               {{ displayName(item?.evidence.changePreview.fromCategory) }}
@@ -26,7 +29,10 @@
 
           <!-- Searchable category selector -->
           <div>
-            <span class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold">Change to</span>
+            <span
+              class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold"
+              >Change to</span
+            >
             <div class="mt-1">
               <USelectMenu
                 v-model="selected"
@@ -135,18 +141,24 @@ const showChangePreview = computed(() => {
 });
 
 /** Reset selection when the modal opens. */
-watch(() => props.open, (open) => {
-  if (open) {
-    selected.value = props.item?.evidence.suggestedCategory ?? undefined;
-  }
-});
+watch(
+  () => props.open,
+  (open) => {
+    if (open) {
+      selected.value = props.item?.evidence.suggestedCategory ?? undefined;
+    }
+  },
+);
 
-watch(() => props.submitting, async (submitting, wasSubmitting) => {
-  if (wasSubmitting && !submitting && props.open) {
-    await nextTick();
-    focusConfirmButton();
-  }
-});
+watch(
+  () => props.submitting,
+  async (submitting, wasSubmitting) => {
+    if (wasSubmitting && !submitting && props.open) {
+      await nextTick();
+      focusConfirmButton();
+    }
+  },
+);
 
 function onConfirm() {
   if (!props.submitting && selected.value) emit('confirm', selected.value);

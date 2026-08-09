@@ -12,11 +12,7 @@ import {
   shallowRef,
   watch,
 } from 'vue';
-import type {
-  ReviewMetricsSnapshot,
-  ReviewQueueItem,
-  ReviewSurfaceState,
-} from '../../src/review';
+import type { ReviewMetricsSnapshot, ReviewQueueItem, ReviewSurfaceState } from '../../src/review';
 import type {
   ReviewControllerAdapter,
   WebActionResult,
@@ -68,7 +64,8 @@ vi.mock('../../lib/auth-client', () => ({
 }));
 
 const correctSpy = vi.fn<(categoryId: string) => Promise<WebActionResult>>();
-const dollarFetchSpy = vi.fn<(url: string, options?: Record<string, unknown>) => Promise<unknown>>();
+const dollarFetchSpy =
+  vi.fn<(url: string, options?: Record<string, unknown>) => Promise<unknown>>();
 const fetchSpy = vi.fn<typeof fetch>();
 const navigateToSpy = vi.fn<(path: string) => Promise<void>>();
 const toastAddSpy = vi.fn<(message: ToastMessage) => void>();
@@ -191,9 +188,13 @@ function createAdapter(): ReviewControllerAdapter {
     reject: vi.fn<() => Promise<WebActionResult>>().mockResolvedValue(successfulAction()),
     skip: vi.fn<() => Promise<WebActionResult>>().mockResolvedValue(successfulAction()),
     undo: vi.fn<() => Promise<WebActionResult>>().mockResolvedValue(successfulAction()),
-    proposeRule: vi.fn<(reviewId: string, merchant: string, categoryId: string) => Promise<WebActionResult>>().mockResolvedValue(successfulAction()),
+    proposeRule: vi
+      .fn<(reviewId: string, merchant: string, categoryId: string) => Promise<WebActionResult>>()
+      .mockResolvedValue(successfulAction()),
     bulkApprove: vi.fn<() => Promise<WebBulkActionResult>>().mockResolvedValue(emptyBulkResult),
-    bulkCorrect: vi.fn<(categoryId: string) => Promise<WebBulkActionResult>>().mockResolvedValue(emptyBulkResult),
+    bulkCorrect: vi
+      .fn<(categoryId: string) => Promise<WebBulkActionResult>>()
+      .mockResolvedValue(emptyBulkResult),
     bulkReject: vi.fn<() => Promise<WebBulkActionResult>>().mockResolvedValue(emptyBulkResult),
     bulkSkip: vi.fn<() => Promise<WebBulkActionResult>>().mockResolvedValue(emptyBulkResult),
     selectNext: vi.fn<() => void>(),
@@ -226,7 +227,8 @@ const stubs = {
     name: 'UButton',
     props: ['label', 'loading', 'disabled'],
     emits: ['click'],
-    template: '<button type="button" :disabled="disabled" @click="$emit(\'click\')"><slot />{{ label }}</button>',
+    template:
+      '<button type="button" :disabled="disabled" @click="$emit(\'click\')"><slot />{{ label }}</button>',
   },
   UBadge: {
     name: 'UBadge',
@@ -236,7 +238,8 @@ const stubs = {
   UAlert: {
     name: 'UAlert',
     props: ['title', 'description'],
-    template: '<aside><strong>{{ title }}</strong><span>{{ description }}</span><slot name="trailing" /></aside>',
+    template:
+      '<aside><strong>{{ title }}</strong><span>{{ description }}</span><slot name="trailing" /></aside>',
   },
   UCard: {
     name: 'UCard',
@@ -266,8 +269,27 @@ const stubs = {
   },
   ReviewActions: {
     name: 'ReviewActions',
-    props: ['hasCurrent', 'hasSelection', 'loading', 'metrics', 'hasRuleCandidates', 'proposalCount'],
-    emits: ['correct', 'propose-rule', 'approve', 'reject', 'refresh', 'undo', 'bulk-approve', 'bulk-reject', 'bulk-skip', 'show-proposals', 'reset-metrics'],
+    props: [
+      'hasCurrent',
+      'hasSelection',
+      'loading',
+      'metrics',
+      'hasRuleCandidates',
+      'proposalCount',
+    ],
+    emits: [
+      'correct',
+      'propose-rule',
+      'approve',
+      'reject',
+      'refresh',
+      'undo',
+      'bulk-approve',
+      'bulk-reject',
+      'bulk-skip',
+      'show-proposals',
+      'reset-metrics',
+    ],
     template: `
       <div>
         <button type="button" data-testid="open-correction" @click="$emit('correct')">Correct</button>
@@ -281,12 +303,15 @@ const stubs = {
     emits: ['confirm', 'cancel'],
     setup(props: { open: boolean }) {
       const modalButton = ref<HTMLButtonElement | null>(null);
-      watch(() => props.open, async (open) => {
-        if (open) {
-          await nextTick();
-          modalButton.value?.focus();
-        }
-      });
+      watch(
+        () => props.open,
+        async (open) => {
+          if (open) {
+            await nextTick();
+            modalButton.value?.focus();
+          }
+        },
+      );
       return { modalButton };
     },
     template: `
@@ -302,7 +327,6 @@ const stubs = {
     template: '<div v-if="open" role="dialog" aria-label="Proposed rules" />',
   },
 };
-
 
 const mountedWrappers: VueWrapper[] = [];
 let syncError: SyncError;
@@ -335,7 +359,6 @@ async function mountPage(): Promise<VueWrapper> {
   return page;
 }
 
-
 function correctionModal(page: VueWrapper): VueWrapper {
   const modal = page.findComponent({ name: 'CategoryCorrectModal' });
   if (!modal.exists()) throw new Error('Category correction modal stub was not rendered.');
@@ -362,7 +385,6 @@ function dispatchShortcutFromKeyboardInput(page: VueWrapper): KeyboardEvent {
   hiddenKeyboardInput(page).dispatchEvent(event);
   return event;
 }
-
 
 describe('review page recovery behavior', () => {
   beforeEach(() => {
@@ -407,7 +429,6 @@ describe('review page recovery behavior', () => {
         cleanupError ??= error;
       }
     }
-
 
     if (cleanupError) throw cleanupError;
   });
@@ -521,10 +542,10 @@ describe('review page recovery behavior', () => {
     picker.vm.$emit('select', 'review-view-001');
     await flushPromises();
 
-    expect(dollarFetchSpy).toHaveBeenCalledWith(
-      '/api/reports/views/review-view-001/last-used',
-      { method: 'PATCH', body: undefined },
-    );
+    expect(dollarFetchSpy).toHaveBeenCalledWith('/api/reports/views/review-view-001/last-used', {
+      method: 'PATCH',
+      body: undefined,
+    });
 
     picker.vm.$emit('select', '');
     await flushPromises();
@@ -536,7 +557,11 @@ describe('review page recovery behavior', () => {
   });
 
   it('keeps the correction modal open and resets submission when correction fails', async () => {
-    correctSpy.mockResolvedValue({ itemId: CURRENT_ITEM.reviewItem.id, success: false, error: 'Category rejected' });
+    correctSpy.mockResolvedValue({
+      itemId: CURRENT_ITEM.reviewItem.id,
+      success: false,
+      error: 'Category rejected',
+    });
     const page = await mountPage();
 
     await page.get('[data-testid="open-correction"]').trigger('click');
@@ -569,7 +594,8 @@ describe('review page recovery behavior', () => {
     });
     expect(toast.actions).toHaveLength(1);
     const connectionAction = toast.actions?.[0];
-    if (!connectionAction) throw new Error('not_connected Sync toast did not include a connection action.');
+    if (!connectionAction)
+      throw new Error('not_connected Sync toast did not include a connection action.');
     expect(connectionAction.label).toBe('Configure connection');
 
     await connectionAction.onClick();

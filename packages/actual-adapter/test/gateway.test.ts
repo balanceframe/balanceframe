@@ -23,11 +23,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ActualConnector } from '../src/connector';
 import { NullCredentialStore } from '../src/credentials';
-import {
-  DEFAULT_MODE,
-  DEFAULT_OVERLAP_DAYS,
-  BROAD_ACCESS_CAVEAT,
-} from '../src/types';
+import { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from '../src/types';
 import type { ActualClient } from '../src/connector';
 import type {
   APIAccountEntity,
@@ -39,7 +35,18 @@ import type {
   APIFileEntity,
 } from '@actual-app/api';
 import type { TransactionEntity, RuleEntity } from '@actual-app/core/types/models';
-import { normalizeAccounts, normalizeTransactions, normalizeCategories, normalizePayees, normalizeRules, normalizeSchedules, normalizeSchedule, normalizeTransaction, normalizeCategory, buildTransferAcctMap } from '../src/normalizer';
+import {
+  normalizeAccounts,
+  normalizeTransactions,
+  normalizeCategories,
+  normalizePayees,
+  normalizeRules,
+  normalizeSchedules,
+  normalizeSchedule,
+  normalizeTransaction,
+  normalizeCategory,
+  buildTransferAcctMap,
+} from '../src/normalizer';
 import { integerToMoney } from '../src/normalizer';
 
 // ============================================================================
@@ -48,7 +55,15 @@ import { integerToMoney } from '../src/normalizer';
 
 function createMockClient(overrides: Partial<ActualClient> = {}): ActualClient {
   return {
-    init: vi.fn().mockResolvedValue({ send: vi.fn(), getDataDir: vi.fn(), sendMessage: vi.fn(), amountToInteger: vi.fn(), integerToAmount: vi.fn() }),
+    init: vi
+      .fn()
+      .mockResolvedValue({
+        send: vi.fn(),
+        getDataDir: vi.fn(),
+        sendMessage: vi.fn(),
+        amountToInteger: vi.fn(),
+        integerToAmount: vi.fn(),
+      }),
     shutdown: vi.fn().mockResolvedValue(undefined),
     getBudgets: vi.fn().mockResolvedValue([]),
     downloadBudget: vi.fn().mockResolvedValue(undefined),
@@ -196,9 +211,9 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      await expect(
-        connector.importTransactions('a1', [], {}),
-      ).rejects.toThrow(/not yet implemented|not permitted|observe/i);
+      await expect(connector.importTransactions('a1', [], {})).rejects.toThrow(
+        /not yet implemented|not permitted|observe/i,
+      );
     });
 
     it('should reject updateTransaction in Observe mode', async () => {
@@ -206,9 +221,9 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      await expect(
-        connector.updateTransaction('tx1', { notes: 'test' }),
-      ).rejects.toThrow(/not yet implemented|not permitted|observe/i);
+      await expect(connector.updateTransaction('tx1', { notes: 'test' })).rejects.toThrow(
+        /not yet implemented|not permitted|observe/i,
+      );
     });
 
     it('should reject createRule in Observe mode', async () => {
@@ -226,9 +241,9 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      await expect(
-        connector.setBudgetAmount('2026-07', 'c1', 50000),
-      ).rejects.toThrow(/not yet implemented|not permitted|observe/i);
+      await expect(connector.setBudgetAmount('2026-07', 'c1', 50000)).rejects.toThrow(
+        /not yet implemented|not permitted|observe/i,
+      );
     });
 
     it('should reject setTransactionCategory in Observe mode', async () => {
@@ -236,9 +251,9 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      await expect(
-        connector.setTransactionCategory('tx1', 'c1', null),
-      ).rejects.toThrow(/not permitted|observe/i);
+      await expect(connector.setTransactionCategory('tx1', 'c1', null)).rejects.toThrow(
+        /not permitted|observe/i,
+      );
     });
 
     it('should report canWrite=false in capabilities', async () => {
@@ -247,7 +262,6 @@ describe('ActualConnector', () => {
       expect(caps.mode).toBe('observe');
       expect(caps.canRead).toBe(true);
     });
-
   });
 
   // ==========================================================================
@@ -261,9 +275,7 @@ describe('ActualConnector', () => {
         secretKey: 'secret',
       });
       mockClient.addTransactions = vi.fn();
-      await expect(
-        connector.importTransactions('a1', [], {}),
-      ).rejects.toThrow();
+      await expect(connector.importTransactions('a1', [], {})).rejects.toThrow();
       expect(mockClient.addTransactions).not.toHaveBeenCalled();
     });
 
@@ -273,9 +285,7 @@ describe('ActualConnector', () => {
         secretKey: 'secret',
       });
       mockClient.updateTransaction = vi.fn();
-      await expect(
-        connector.updateTransaction('tx1', { notes: 'test' }),
-      ).rejects.toThrow();
+      await expect(connector.updateTransaction('tx1', { notes: 'test' })).rejects.toThrow();
       expect(mockClient.updateTransaction).not.toHaveBeenCalled();
     });
 
@@ -297,9 +307,7 @@ describe('ActualConnector', () => {
         secretKey: 'secret',
       });
       mockClient.setBudgetAmount = vi.fn();
-      await expect(
-        connector.setBudgetAmount('2026-07', 'c1', 50000),
-      ).rejects.toThrow();
+      await expect(connector.setBudgetAmount('2026-07', 'c1', 50000)).rejects.toThrow();
       expect(mockClient.setBudgetAmount).not.toHaveBeenCalled();
     });
 
@@ -311,9 +319,7 @@ describe('ActualConnector', () => {
       mockClient.updateTransaction = vi.fn();
       mockClient.getAccounts = vi.fn().mockReturnValue(mockAccounts);
       mockClient.getTransactions = vi.fn().mockReturnValue(mockTransactions);
-      await expect(
-        connector.setTransactionCategory('tx1', 'c2', 'c1'),
-      ).rejects.toThrow();
+      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1')).rejects.toThrow();
       expect(mockClient.updateTransaction).not.toHaveBeenCalled();
     });
   });
@@ -336,9 +342,9 @@ describe('ActualConnector', () => {
         secretKey: 'test',
       });
       mock.addTransactions = vi.fn();
-      await expect(
-        writeConnector.importTransactions('a1', [], {}),
-      ).rejects.toThrow(/not yet implemented/i);
+      await expect(writeConnector.importTransactions('a1', [], {})).rejects.toThrow(
+        /not yet implemented/i,
+      );
       expect(mock.addTransactions).not.toHaveBeenCalled();
       await writeConnector.disconnect();
     });
@@ -356,9 +362,9 @@ describe('ActualConnector', () => {
         secretKey: 'test',
       });
       mock.updateTransaction = vi.fn();
-      await expect(
-        writeConnector.updateTransaction('tx1', { notes: 'test' }),
-      ).rejects.toThrow(/not yet implemented/i);
+      await expect(writeConnector.updateTransaction('tx1', { notes: 'test' })).rejects.toThrow(
+        /not yet implemented/i,
+      );
       expect(mock.updateTransaction).not.toHaveBeenCalled();
       await writeConnector.disconnect();
     });
@@ -442,9 +448,9 @@ describe('ActualConnector', () => {
         secretKey: 'test',
       });
       mock.setBudgetAmount = vi.fn();
-      await expect(
-        writeConnector.setBudgetAmount('2026-07', 'c1', 50000),
-      ).rejects.toThrow(/not yet implemented/i);
+      await expect(writeConnector.setBudgetAmount('2026-07', 'c1', 50000)).rejects.toThrow(
+        /not yet implemented/i,
+      );
       expect(mock.setBudgetAmount).not.toHaveBeenCalled();
       await writeConnector.disconnect();
     });
@@ -467,7 +473,9 @@ describe('ActualConnector', () => {
 
       await connector.selectBudget('budget_1');
 
-      const state = (connector as unknown as { caches: Map<string, Record<string, unknown>> }).caches.get('budget_1');
+      const state = (
+        connector as unknown as { caches: Map<string, Record<string, unknown>> }
+      ).caches.get('budget_1');
       expect(state).toBeDefined();
       expect(state.budgetId).toBe('budget_1');
       expect(state.initialized).toBe(true);
@@ -564,7 +572,9 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      const watermark = (connector as unknown as { getWatermark: (_id: string) => Record<string, unknown> }).getWatermark('budget_1');
+      const watermark = (
+        connector as unknown as { getWatermark: (_id: string) => Record<string, unknown> }
+      ).getWatermark('budget_1');
       expect(watermark.lastTransactionDate).toBeNull();
       expect(watermark.lastTransactionCount).toBe(0);
       expect(watermark.overlapDays).toBe(DEFAULT_OVERLAP_DAYS);
@@ -711,10 +721,13 @@ describe('ActualConnector', () => {
         } as TransactionEntity,
       ];
       const payeeMap = { p1: 'Groceries', p2: 'Salary', p3: 'Transfer to Savings' };
-      const categoryMap = { c1: { name: 'Food', groupName: 'Essential' }, c2: { name: 'Income', groupName: 'Earnings' } };
+      const categoryMap = {
+        c1: { name: 'Food', groupName: 'Essential' },
+        c2: { name: 'Income', groupName: 'Earnings' },
+      };
       const transferAcctMap = { p1: null, p2: null, p3: 'a2' };
       const txns = normalizeTransactions(withChild, payeeMap, categoryMap, transferAcctMap);
-      expect(txns.find(t => t.id === 'tx_child')).toBeUndefined();
+      expect(txns.find((t) => t.id === 'tx_child')).toBeUndefined();
       expect(txns).toHaveLength(2);
     });
 
@@ -843,7 +856,6 @@ describe('ActualConnector', () => {
       const budgets = await connector.discoverBudgets();
       expect(budgets).toHaveLength(1);
     });
- 
   });
 
   // ==========================================================================
@@ -919,7 +931,7 @@ describe('ActualConnector', () => {
         secretKey: 'my-key',
       });
 
-      const files = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
+      const files = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
       expect(files.length).toBe(1);
       const raw = readFileSync(resolve(tmpDir, files[0]), 'utf-8');
       const parsed = JSON.parse(raw);
@@ -1010,15 +1022,19 @@ describe('ActualConnector', () => {
 
       try {
         const store = new EnvCredentialStore();
-        await expect(store.store({
-          serverUrl: 'http://test:5006',
-          secretKey: 'test',
-        })).resolves.toBeUndefined();
+        await expect(
+          store.store({
+            serverUrl: 'http://test:5006',
+            secretKey: 'test',
+          }),
+        ).resolves.toBeUndefined();
         await expect(store.delete()).resolves.toBeUndefined();
-        await expect(store.rotate({
-          serverUrl: 'http://test2:5006',
-          secretKey: 'test2',
-        })).resolves.toBeUndefined();
+        await expect(
+          store.rotate({
+            serverUrl: 'http://test2:5006',
+            secretKey: 'test2',
+          }),
+        ).resolves.toBeUndefined();
       } finally {
         if (origUrl === undefined) delete process.env.ACTUAL_SERVER_URL;
         else process.env.ACTUAL_SERVER_URL = origUrl;
@@ -1027,9 +1043,11 @@ describe('ActualConnector', () => {
       }
     });
     it('should serialize per-cache operations with promise chain', async () => {
-      const withCacheLock = (connector as unknown as {
-        withCacheLock: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
-      }).withCacheLock.bind(connector);
+      const withCacheLock = (
+        connector as unknown as {
+          withCacheLock: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
+        }
+      ).withCacheLock.bind(connector);
 
       const order: number[] = [];
       // Use a deferred step so op2 proves it ran after op1 completed
@@ -1038,7 +1056,7 @@ describe('ActualConnector', () => {
       const op1 = withCacheLock('test-serial', async () => {
         order.push(1);
         // Simulate async work
-        await new Promise(r => setTimeout(r, 5));
+        await new Promise((r) => setTimeout(r, 5));
         order.push(2);
       });
 
@@ -1083,7 +1101,8 @@ describe('ActualConnector', () => {
       await localConnector.selectBudget('b1');
       await localConnector.selectBudget('b2');
 
-      const caches = (localConnector as unknown as { caches: Map<string, { cacheDir: string }> }).caches;
+      const caches = (localConnector as unknown as { caches: Map<string, { cacheDir: string }> })
+        .caches;
       expect(caches.has('b1')).toBe(true);
       expect(caches.has('b2')).toBe(true);
       expect(caches.get('b1')?.cacheDir).not.toBe(caches.get('b2')?.cacheDir);
@@ -1118,9 +1137,11 @@ describe('ActualConnector', () => {
       await localConnector.selectBudget('b1');
       await localConnector.selectBudget('b2');
 
-      const caches = (localConnector as unknown as {
-        caches: Map<string, { cacheDir: string }>;
-      }).caches;
+      const caches = (
+        localConnector as unknown as {
+          caches: Map<string, { cacheDir: string }>;
+        }
+      ).caches;
 
       for (const [, cache] of caches) {
         expect(cache.cacheDir.startsWith(base)).toBe(true);
@@ -1136,15 +1157,17 @@ describe('ActualConnector', () => {
 
   describe('lock serialization', () => {
     it('should serialize per-cache operations with promise chain', async () => {
-      const withCacheLock = (connector as unknown as {
-        withCacheLock: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
-      }).withCacheLock.bind(connector);
+      const withCacheLock = (
+        connector as unknown as {
+          withCacheLock: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
+        }
+      ).withCacheLock.bind(connector);
 
       const order: number[] = [];
 
       const op1 = withCacheLock('test-serial', async () => {
         order.push(1);
-        await new Promise(r => setTimeout(r, 5));
+        await new Promise((r) => setTimeout(r, 5));
         order.push(2);
       });
 
@@ -1157,13 +1180,19 @@ describe('ActualConnector', () => {
     });
 
     it('should not block subsequent operations when prior rejects', async () => {
-      const withCacheLock = (connector as unknown as {
-        withCacheLock: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
-      }).withCacheLock.bind(connector);
+      const withCacheLock = (
+        connector as unknown as {
+          withCacheLock: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
+        }
+      ).withCacheLock.bind(connector);
 
       const results: string[] = [];
-      const failFn = async () => { throw new Error('expected failure'); };
-      const successFn = async () => { results.push('ok'); };
+      const failFn = async () => {
+        throw new Error('expected failure');
+      };
+      const successFn = async () => {
+        results.push('ok');
+      };
 
       await withCacheLock('fail-test', failFn).catch(() => {});
       await withCacheLock('fail-test', successFn);
@@ -1238,7 +1267,7 @@ describe('ActualConnector', () => {
 
       const compat = await rangeConnector.getCompatibility();
       expect(compat.supported).toBe(false);
-      expect(compat.blockers.some(b => b.includes('below minimum'))).toBe(true);
+      expect(compat.blockers.some((b) => b.includes('below minimum'))).toBe(true);
     });
 
     it('should reject server version above max range', async () => {
@@ -1257,7 +1286,7 @@ describe('ActualConnector', () => {
 
       const compat = await rangeConnector.getCompatibility();
       expect(compat.supported).toBe(false);
-      expect(compat.blockers.some(b => b.includes('exceeds maximum'))).toBe(true);
+      expect(compat.blockers.some((b) => b.includes('exceeds maximum'))).toBe(true);
     });
 
     it('should accept version within range', async () => {
@@ -1303,7 +1332,7 @@ describe('ActualConnector', () => {
       });
 
       // Tamper with the stored serverUrl
-      const files = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
+      const files = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
       expect(files.length).toBe(1);
       const filePath = resolve(tmpDir, files[0]);
       const raw = readFileSync(filePath, 'utf-8');
@@ -1336,7 +1365,7 @@ describe('ActualConnector', () => {
       });
 
       // Corrupt the ciphertext
-      const files = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
+      const files = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
       const filePath = resolve(tmpDir, files[0]);
       const raw = readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(raw);
@@ -1371,7 +1400,7 @@ describe('ActualConnector', () => {
         secretKey: 'secret123',
       });
 
-      const files = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
+      const files = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
       expect(files.length).toBe(1);
       const fileStat = statSync(resolve(tmpDir, files[0]));
 
@@ -1397,7 +1426,7 @@ describe('ActualConnector', () => {
         secretKey: 'test',
       });
 
-      const tmpFiles = readdirSync(tmpDir).filter(f => f.endsWith('.tmp'));
+      const tmpFiles = readdirSync(tmpDir).filter((f) => f.endsWith('.tmp'));
       expect(tmpFiles).toEqual([]);
 
       rmSync(tmpDir, { recursive: true, force: true });
@@ -1484,7 +1513,7 @@ describe('ActualConnector', () => {
       expect(loaded?.secretKey).toBe('new-secret');
 
       // Old file should be removed
-      const files = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
+      const files = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
       expect(files.length).toBe(1);
 
       rmSync(tmpDir, { recursive: true, force: true });
@@ -1507,7 +1536,7 @@ describe('ActualConnector', () => {
       });
 
       // Record original salt
-      const files1 = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
+      const files1 = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
       const raw1 = readFileSync(resolve(tmpDir, files1[0]), 'utf-8');
       const origSalt = JSON.parse(raw1).salt;
 
@@ -1517,8 +1546,8 @@ describe('ActualConnector', () => {
       });
 
       // Salt should be different (new random salt per store)
-      const files2 = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
-      expect(files2.length).toBe(1);  // no duplicate files
+      const files2 = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
+      expect(files2.length).toBe(1); // no duplicate files
       const raw2 = readFileSync(resolve(tmpDir, files2[0]), 'utf-8');
       const newSalt = JSON.parse(raw2).salt;
       expect(newSalt).not.toBe(origSalt);
@@ -1600,7 +1629,7 @@ describe('ActualConnector', () => {
 
         // EnvCredentialStore delete is a no-op, not an error
         await expect(store.delete()).resolves.toBeUndefined();
-        expect(store.has()).toBe(true);  // env still set
+        expect(store.has()).toBe(true); // env still set
       } finally {
         if (origUrl === undefined) delete process.env.ACTUAL_SERVER_URL;
         else process.env.ACTUAL_SERVER_URL = origUrl;
@@ -1633,13 +1662,15 @@ describe('ActualConnector', () => {
       });
 
       // Verify file exists before delete
-      const filesBefore = readdirSync(tmpDir).filter(f => f.endsWith('.enc') || f === 'current.txt');
+      const filesBefore = readdirSync(tmpDir).filter(
+        (f) => f.endsWith('.enc') || f === 'current.txt',
+      );
       expect(filesBefore.length).toBeGreaterThan(0);
 
       await store.delete();
 
       // No .enc files should remain
-      const filesAfter = readdirSync(tmpDir).filter(f => f.endsWith('.enc'));
+      const filesAfter = readdirSync(tmpDir).filter((f) => f.endsWith('.enc'));
       expect(filesAfter).toEqual([]);
 
       // has() should return false
@@ -1725,6 +1756,67 @@ describe('ActualConnector', () => {
       expect(mockClient.downloadBudget).toHaveBeenCalled();
     });
 
+    it('should reuse the budget downloaded by selection when refresh is disabled', async () => {
+      mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
+      mockClient.downloadBudget = vi.fn().mockResolvedValue(undefined);
+      mockClient.getAccounts = vi.fn().mockResolvedValue(mockAccounts);
+      mockClient.getPayees = vi.fn().mockResolvedValue(mockPayees);
+      mockClient.getCategories = vi.fn().mockResolvedValue(mockCategories);
+      mockClient.getCategoryGroups = vi.fn().mockResolvedValue(mockCategoryGroups);
+      mockClient.getTransactions = vi.fn().mockResolvedValue(mockTransactions);
+      mockClient.getRules = vi.fn().mockResolvedValue(mockRules);
+      mockClient.getSchedules = vi.fn().mockResolvedValue(mockSchedules);
+
+      await connector.connect({
+        serverUrl: 'http://localhost:5006',
+        secretKey: 'secret',
+      });
+      await connector.selectBudget('budget_1');
+      mockClient.downloadBudget.mockClear();
+
+      const result = await connector.synchronize({ refresh: false });
+
+      expect(mockClient.downloadBudget).not.toHaveBeenCalled();
+      expect(result.snapshot.accounts).toHaveLength(mockAccounts.length);
+    });
+
+    it('runs a refreshed synchronization after an in-flight no-refresh synchronization', async () => {
+      let releaseFirstSnapshot: (() => void) | undefined;
+      const firstSnapshotGate = new Promise<void>((resolve) => {
+        releaseFirstSnapshot = resolve;
+      });
+      mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
+      mockClient.downloadBudget = vi.fn().mockResolvedValue(undefined);
+      mockClient.getAccounts = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          await firstSnapshotGate;
+          return mockAccounts;
+        })
+        .mockResolvedValue(mockAccounts);
+      mockClient.getPayees = vi.fn().mockResolvedValue(mockPayees);
+      mockClient.getCategories = vi.fn().mockResolvedValue(mockCategories);
+      mockClient.getCategoryGroups = vi.fn().mockResolvedValue(mockCategoryGroups);
+      mockClient.getTransactions = vi.fn().mockResolvedValue(mockTransactions);
+      mockClient.getRules = vi.fn().mockResolvedValue(mockRules);
+      mockClient.getSchedules = vi.fn().mockResolvedValue(mockSchedules);
+
+      await connector.connect({
+        serverUrl: 'http://localhost:5006',
+        secretKey: 'secret',
+      });
+      await connector.selectBudget('budget_1');
+      mockClient.downloadBudget.mockClear();
+
+      const noRefresh = connector.synchronize({ refresh: false });
+      await vi.waitFor(() => expect(mockClient.getAccounts).toHaveBeenCalledTimes(1));
+      const refreshed = connector.synchronize({ refresh: true });
+      releaseFirstSnapshot?.();
+      await Promise.all([noRefresh, refreshed]);
+
+      expect(mockClient.downloadBudget).toHaveBeenCalledTimes(1);
+    });
+
     it('should downloadBudget using groupId, not public BudgetInfo.id, during Observe synchronize', async () => {
       mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
       mockClient.downloadBudget = vi.fn().mockResolvedValue(undefined);
@@ -1755,10 +1847,7 @@ describe('ActualConnector', () => {
         'group_1',
         expect.objectContaining({}),
       );
-      expect(mockClient.downloadBudget).not.toHaveBeenCalledWith(
-        'budget_1',
-        expect.anything(),
-      );
+      expect(mockClient.downloadBudget).not.toHaveBeenCalledWith('budget_1', expect.anything());
     });
 
     it('should not call any client mutation methods during synchronize in Observe mode', async () => {
@@ -1828,7 +1917,8 @@ describe('ActualConnector', () => {
       const caches = connectorAny.caches as Map<string, Record<string, unknown>>;
       const cache = caches.get('budget_1');
       if (cache && cache.watermark) {
-        (cache.watermark as Record<string, unknown>).lastTransactionDate = '2026-07-15T00:00:00.000Z';
+        (cache.watermark as Record<string, unknown>).lastTransactionDate =
+          '2026-07-15T00:00:00.000Z';
       }
 
       // listTransactions without explicit dates should return ALL transactions
@@ -1901,7 +1991,7 @@ describe('ActualConnector', () => {
 
       const compat = await badConnector.getCompatibility();
       expect(compat.supported).toBe(false);
-      expect(compat.blockers.some(b => b.includes('not a valid semver'))).toBe(true);
+      expect(compat.blockers.some((b) => b.includes('not a valid semver'))).toBe(true);
     });
 
     it('should reject server version with only one part', async () => {
@@ -1920,7 +2010,7 @@ describe('ActualConnector', () => {
 
       const compat = await badConnector.getCompatibility();
       expect(compat.supported).toBe(false);
-      expect(compat.blockers.some(b => b.includes('not a valid semver'))).toBe(true);
+      expect(compat.blockers.some((b) => b.includes('not a valid semver'))).toBe(true);
     });
   });
 
@@ -1962,7 +2052,7 @@ describe('ActualConnector', () => {
         secretKey: 'secret',
       });
 
-      const allClosed = mockAccounts.map(a => ({ ...a, closed: true }));
+      const allClosed = mockAccounts.map((a) => ({ ...a, closed: true }));
       mockClient.getAccounts = vi.fn().mockResolvedValue(allClosed);
 
       const coverage = await connector.getCoverage();
@@ -1979,7 +2069,13 @@ describe('ActualConnector', () => {
 
       const mixedAccounts: APIAccountEntity[] = [
         { id: 'a1', name: 'Checking', offbudget: false, closed: false, balance_current: 50000 },
-        { id: 'a2', name: 'Off Budget Savings', offbudget: true, closed: false, balance_current: 100000 },
+        {
+          id: 'a2',
+          name: 'Off Budget Savings',
+          offbudget: true,
+          closed: false,
+          balance_current: 100000,
+        },
         { id: 'a3', name: 'Closed Card', offbudget: false, closed: true, balance_current: 0 },
       ];
       mockClient.getAccounts = vi.fn().mockResolvedValue(mixedAccounts);
@@ -2077,7 +2173,12 @@ describe('ActualConnector', () => {
       const payeeMap = { p1: 'Groceries' };
       const categoryMap = { c1: { name: 'Food', groupName: 'Essential' } };
       const transferAcctMap = { p1: null };
-      const result = normalizeTransactions(txnsWithChildren, payeeMap, categoryMap, transferAcctMap);
+      const result = normalizeTransactions(
+        txnsWithChildren,
+        payeeMap,
+        categoryMap,
+        transferAcctMap,
+      );
 
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe(parentId);
@@ -2087,19 +2188,25 @@ describe('ActualConnector', () => {
 
       // First child
       expect(result[0].subtransactions[0].id).toBe('tx-child-1');
-      expect(result[0].subtransactions[0].amount).toEqual({ minorUnits: '-30000', currency: 'USD' });
+      expect(result[0].subtransactions[0].amount).toEqual({
+        minorUnits: '-30000',
+        currency: 'USD',
+      });
       expect(result[0].subtransactions[0].categoryName).toBe('Food');
       expect(result[0].subtransactions[0].notes).toBe('Split 1');
 
       // Second child
       expect(result[0].subtransactions[1].id).toBe('tx-child-2');
-      expect(result[0].subtransactions[1].amount).toEqual({ minorUnits: '-20000', currency: 'USD' });
+      expect(result[0].subtransactions[1].amount).toEqual({
+        minorUnits: '-20000',
+        currency: 'USD',
+      });
       expect(result[0].subtransactions[1].categoryName).toBe('Food');
       expect(result[0].subtransactions[1].notes).toBe('Split 2');
 
       // Children should not appear as top-level transactions
-      expect(result.find(t => t.id === 'tx-child-1')).toBeUndefined();
-      expect(result.find(t => t.id === 'tx-child-2')).toBeUndefined();
+      expect(result.find((t) => t.id === 'tx-child-1')).toBeUndefined();
+      expect(result.find((t) => t.id === 'tx-child-2')).toBeUndefined();
     });
 
     it('should preserve amounts and categories on subtransactions', () => {
@@ -2148,9 +2255,17 @@ describe('ActualConnector', () => {
       ];
 
       const payeeMap = { p1: 'Groceries', p2: 'Gas Station' };
-      const categoryMap = { c1: { name: 'Food', groupName: 'Essential' }, c2: { name: 'Transport', groupName: 'Essential' } };
+      const categoryMap = {
+        c1: { name: 'Food', groupName: 'Essential' },
+        c2: { name: 'Transport', groupName: 'Essential' },
+      };
       const transferAcctMap = { p1: null, p2: null };
-      const result = normalizeTransactions(txnsWithChildren, payeeMap, categoryMap, transferAcctMap);
+      const result = normalizeTransactions(
+        txnsWithChildren,
+        payeeMap,
+        categoryMap,
+        transferAcctMap,
+      );
 
       expect(result).toHaveLength(1);
       const children = result[0].subtransactions;
@@ -2236,7 +2351,13 @@ describe('ActualConnector', () => {
 
   describe('category hidden/deleted distinction', () => {
     it('should set deleted=false for visible categories (hidden=false, no tombstone)', () => {
-      const cat: APICategoryEntity = { id: 'c1', name: 'Food', group_id: 'g1', is_income: false, hidden: false };
+      const cat: APICategoryEntity = {
+        id: 'c1',
+        name: 'Food',
+        group_id: 'g1',
+        is_income: false,
+        hidden: false,
+      };
       const groupsByName = { g1: 'Essential' };
       const result = normalizeCategory(cat, groupsByName);
       expect(result.deleted).toBe(false);
@@ -2244,7 +2365,13 @@ describe('ActualConnector', () => {
 
     it('should set deleted=false for hidden-but-not-deleted categories', () => {
       // Hidden categories are still valid — they are not deleted, just hidden from the UI
-      const cat: APICategoryEntity = { id: 'c_hidden', name: 'Old Category', group_id: 'g1', is_income: false, hidden: true };
+      const cat: APICategoryEntity = {
+        id: 'c_hidden',
+        name: 'Old Category',
+        group_id: 'g1',
+        is_income: false,
+        hidden: true,
+      };
       const groupsByName = { g1: 'Essential' };
       const result = normalizeCategory(cat, groupsByName);
       // hidden does NOT imply deleted
@@ -2252,7 +2379,14 @@ describe('ActualConnector', () => {
     });
 
     it('should set deleted=true for tombstone categories (actually removed)', () => {
-      const cat: APICategoryEntity & { tombstone?: boolean } = { id: 'c_deleted', name: 'Deleted Cat', group_id: 'g1', is_income: false, hidden: false, tombstone: true };
+      const cat: APICategoryEntity & { tombstone?: boolean } = {
+        id: 'c_deleted',
+        name: 'Deleted Cat',
+        group_id: 'g1',
+        is_income: false,
+        hidden: false,
+        tombstone: true,
+      };
       const groupsByName = { g1: 'Essential' };
       const result = normalizeCategory(cat as APICategoryEntity, groupsByName);
       expect(result.deleted).toBe(true);
@@ -2350,7 +2484,9 @@ describe('ActualConnector', () => {
 
       // actualDownloadedAt should be a non-empty ISO timestamp
       expect(snapshot.actualDownloadedAt).toBeTruthy();
-      expect(new Date(snapshot.actualDownloadedAt!).toISOString()).toBe(snapshot.actualDownloadedAt);
+      expect(new Date(snapshot.actualDownloadedAt!).toISOString()).toBe(
+        snapshot.actualDownloadedAt,
+      );
 
       // bankSyncedAt should be null (bank sync not available in Observe-only mode)
       expect(snapshot.bankSyncedAt).toBeNull();
@@ -2392,7 +2528,7 @@ describe('ActualConnector', () => {
       expect(budgets[0].encrypted).toBe(false); // hasKey not set, so false
 
       // Now test with hasKey=true
-      const budgetsWithKey = encryptedFiles.map(f => ({
+      const budgetsWithKey = encryptedFiles.map((f) => ({
         ...budgets[0],
         encrypted: true,
       }));
@@ -2438,7 +2574,7 @@ describe('ActualConnector', () => {
     it('setTransactionCategory should validate proposed category via getCategories without hidden option', async () => {
       const mock = createMockClient({
         getAccounts: vi.fn().mockResolvedValue(mockAccounts),
-        getTransactions: vi.fn().mockResolvedValue(mockTransactions.map(t => ({ ...t }))),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions.map((t) => ({ ...t }))),
         getCategories: vi.fn().mockImplementation((opts?: { hidden?: boolean }) => {
           // Real API returns nothing when called with { hidden: true }
           if (opts !== undefined) return Promise.resolve([]);
@@ -2566,7 +2702,7 @@ describe('ActualConnector', () => {
 
   describe('setTransactionCategory', () => {
     it('should update category in write-enabled mode and return verified result', async () => {
-      const transactions = mockTransactions.map(t => ({ ...t }));
+      const transactions = mockTransactions.map((t) => ({ ...t }));
       const mock = createMockClient({
         getAccounts: vi.fn().mockResolvedValue(mockAccounts),
         getTransactions: vi.fn().mockResolvedValue(transactions),
@@ -2589,15 +2725,15 @@ describe('ActualConnector', () => {
 
       // Make updateTransaction persist the category change into the transactions array
       // so the re-read returns the updated category.
-      mock.updateTransaction = vi.fn().mockImplementation(
-        (id: string, fields: Record<string, unknown>) => {
-          const tx = transactions.find(t => t.id === id);
+      mock.updateTransaction = vi
+        .fn()
+        .mockImplementation((id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find((t) => t.id === id);
           if (tx && typeof fields.category === 'string') {
             tx.category = fields.category;
           }
           return Promise.resolve(undefined);
-        },
-      );
+        });
 
       const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
       expect(result.success).toBe(true);
@@ -2657,7 +2793,7 @@ describe('ActualConnector', () => {
     });
 
     it('should proceed when currentCategoryId is null and Actual has a non-null category', async () => {
-      const transactions = mockTransactions.map(t => ({ ...t }));
+      const transactions = mockTransactions.map((t) => ({ ...t }));
       const mock = createMockClient({
         getAccounts: vi.fn().mockResolvedValue(mockAccounts),
         getTransactions: vi.fn().mockResolvedValue(transactions),
@@ -2679,15 +2815,15 @@ describe('ActualConnector', () => {
       await writeConnector.selectBudget('budget_1');
 
       // Make updateTransaction persist the category change for verification
-      mock.updateTransaction = vi.fn().mockImplementation(
-        (id: string, fields: Record<string, unknown>) => {
-          const tx = transactions.find(t => t.id === id);
+      mock.updateTransaction = vi
+        .fn()
+        .mockImplementation((id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find((t) => t.id === id);
           if (tx && typeof fields.category === 'string') {
             tx.category = fields.category;
           }
           return Promise.resolve(undefined);
-        },
-      );
+        });
 
       // tx1 has category 'c1' in Actual, but stored review item has null (unknown).
       // Should read Actual's current category and proceed without mismatch.
@@ -2733,15 +2869,15 @@ describe('ActualConnector', () => {
       await writeConnector.selectBudget('budget_1');
 
       // Make updateTransaction persist the category change for verification
-      mock.updateTransaction = vi.fn().mockImplementation(
-        (id: string, fields: Record<string, unknown>) => {
-          const tx = transactions.find(t => t.id === id);
+      mock.updateTransaction = vi
+        .fn()
+        .mockImplementation((id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find((t) => t.id === id);
           if (tx && typeof fields.category === 'string') {
             tx.category = fields.category;
           }
           return Promise.resolve(undefined);
-        },
-      );
+        });
 
       // tx1 has category null in Actual, and stored review item also has null.
       const result = await writeConnector.setTransactionCategory('tx1', 'c2', null);
@@ -2805,9 +2941,7 @@ describe('ActualConnector', () => {
       mockClient.getTransactions = vi.fn().mockResolvedValue(mockTransactions);
       mockClient.updateTransaction = vi.fn();
 
-      await expect(
-        connector.setTransactionCategory('tx1', 'c2', 'c1'),
-      ).rejects.toThrow();
+      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1')).rejects.toThrow();
 
       expect(mockClient.updateTransaction).not.toHaveBeenCalled();
       expect(mockClient.getAccounts).not.toHaveBeenCalled();
@@ -3082,7 +3216,7 @@ describe('ActualConnector', () => {
     });
 
     it('should serialize concurrent setTransactionCategory calls under the budget lock', async () => {
-      const transactions = mockTransactions.map(t => ({ ...t }));
+      const transactions = mockTransactions.map((t) => ({ ...t }));
       const mock = createMockClient({
         getAccounts: vi.fn().mockResolvedValue(mockAccounts),
         getTransactions: vi.fn().mockResolvedValue(transactions),
@@ -3104,25 +3238,25 @@ describe('ActualConnector', () => {
       await writeConnector.selectBudget('budget_1');
 
       // updateTransaction persists category changes so verification passes
-      mock.updateTransaction = vi.fn().mockImplementation(
-        (id: string, fields: Record<string, unknown>) => {
-          const tx = transactions.find(t => t.id === id);
+      mock.updateTransaction = vi
+        .fn()
+        .mockImplementation((id: string, fields: Record<string, unknown>) => {
+          const tx = transactions.find((t) => t.id === id);
           if (tx && typeof fields.category === 'string') {
             tx.category = fields.category;
           }
           return Promise.resolve(undefined);
-        },
-      );
+        });
 
       const order: number[] = [];
 
       // Two concurrent calls on DIFFERENT transactions so precondition doesn't
       // become stale. tx1 starts c1 → c2; tx2 starts c2 → c1.
-      const p1 = writeConnector.setTransactionCategory('tx1', 'c2', 'c1').then(r => {
+      const p1 = writeConnector.setTransactionCategory('tx1', 'c2', 'c1').then((r) => {
         order.push(1);
         return r;
       });
-      const p2 = writeConnector.setTransactionCategory('tx2', 'c1', 'c2').then(r => {
+      const p2 = writeConnector.setTransactionCategory('tx2', 'c1', 'c2').then((r) => {
         order.push(2);
         return r;
       });
@@ -3140,7 +3274,4 @@ describe('ActualConnector', () => {
       await writeConnector.disconnect();
     });
   });
-
-
 });
-

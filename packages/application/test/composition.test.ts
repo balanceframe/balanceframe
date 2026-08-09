@@ -156,8 +156,18 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       return JSON.stringify({
         overallScore: 85,
         dimensions: [
-          { dimension: 'completeness', score: 90, explanation: 'All fields populated', worstSeverity: null },
-          { dimension: 'consistency', score: 80, explanation: 'Minor category mismatches', worstSeverity: 'warning' },
+          {
+            dimension: 'completeness',
+            score: 90,
+            explanation: 'All fields populated',
+            worstSeverity: null,
+          },
+          {
+            dimension: 'consistency',
+            score: 80,
+            explanation: 'Minor category mismatches',
+            worstSeverity: 'warning',
+          },
         ],
         recommendations: ['Review uncategorized transactions.'],
       });
@@ -167,9 +177,15 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       return JSON.stringify({
         totalLiquid: { minorUnits: '500000', currency: 'USD' },
         totalObligations: { minorUnits: '120000', currency: 'USD' },
-        coverage: [{ ratio: 4.17, label: 'strong' }],
+        coverage: [{ ratio: null, label: 'no obligations' }],
         upcomingObligations: [
-          { name: 'Rent', dueDate: '2026-08-01', amount: { minorUnits: '50000', currency: 'USD' }, categoryId: 'cat_1', isRecurring: true },
+          {
+            name: 'Rent',
+            dueDate: '2026-08-01',
+            amount: { minorUnits: '50000', currency: 'USD' },
+            categoryId: 'cat_1',
+            isRecurring: true,
+          },
         ],
       });
     },
@@ -177,7 +193,13 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       calls.push('computeBillCalendar');
       return JSON.stringify({
         entries: [
-          { name: 'Electric Bill', dueDate: '2026-08-15', amount: { minorUnits: '8000', currency: 'USD' }, categoryId: 'cat_2', status: 'unpaid' },
+          {
+            name: 'Electric Bill',
+            dueDate: '2026-08-15',
+            amount: { minorUnits: '8000', currency: 'USD' },
+            categoryId: 'cat_2',
+            status: 'unpaid',
+          },
         ],
         totalUnpaid: { minorUnits: '8000', currency: 'USD' },
         unpaidCount: 1,
@@ -187,10 +209,25 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       calls.push('computeBudgetVariance');
       return JSON.stringify({
         categoryVariances: [
-          { categoryId: 'cat_1', categoryName: 'Shopping', budgeted: { minorUnits: '50000', currency: 'USD' }, actual: { minorUnits: '42000', currency: 'USD' }, variance: { minorUnits: '8000', currency: 'USD' }, variancePercent: 16, label: 'under' },
+          {
+            categoryId: 'cat_1',
+            categoryName: 'Shopping',
+            budgeted: { minorUnits: '50000', currency: 'USD' },
+            actual: { minorUnits: '42000', currency: 'USD' },
+            variance: { minorUnits: '8000', currency: 'USD' },
+            variancePercent: 16,
+            label: 'under',
+          },
         ],
         trends: [
-          { categoryId: 'cat_1', categoryName: 'Shopping', direction: 'stable', avgChange: 0.02, periodsAnalyzed: 3, seasonalityDetected: false },
+          {
+            categoryId: 'cat_1',
+            categoryName: 'Shopping',
+            direction: 'stable',
+            avgChange: { minorUnits: '2', currency: 'EUR' },
+            periodsAnalyzed: 3,
+            seasonalityDetected: false,
+          },
         ],
         totalBudgeted: { minorUnits: '500000', currency: 'USD' },
         totalActual: { minorUnits: '480000', currency: 'USD' },
@@ -202,7 +239,14 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       calls.push('detectIrregularObligations');
       return JSON.stringify({
         obligations: [
-          { name: 'Car Insurance', kind: 'nonMonthly', typicalAmount: { minorUnits: '60000', currency: 'USD' }, frequency: 'semi-annual', categoryId: 'cat_3', nextExpectedDate: '2026-09-01' },
+          {
+            name: 'Car Insurance',
+            kind: 'nonMonthly',
+            typicalAmount: { minorUnits: '60000', currency: 'USD' },
+            frequency: 'semi-annual',
+            categoryId: 'cat_3',
+            nextExpectedDate: '2026-09-01',
+          },
         ],
         totalEstimatedAnnual: { minorUnits: '120000', currency: 'USD' },
       });
@@ -211,7 +255,14 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       calls.push('assessIncomeReliability');
       return JSON.stringify({
         sources: [
-          { name: 'Salary', typicalMonthly: { minorUnits: '450000', currency: 'USD' }, reliabilityScore: 95, variability: 0.02, paymentCount: 12, isRegular: true },
+          {
+            name: 'Salary',
+            typicalMonthly: { minorUnits: '450000', currency: 'USD' },
+            reliabilityScore: 95,
+            variability: 0.02,
+            paymentCount: 12,
+            isRegular: true,
+          },
         ],
         totalMonthly: { minorUnits: '450000', currency: 'USD' },
         overallScore: 95,
@@ -232,7 +283,12 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       calls.push('compareScenarios');
       return JSON.stringify({
         deltas: [
-          { dimension: 'netWorth', baselineValue: 1500000, comparisonValue: 1600000, change: '+100000' },
+          {
+            dimension: 'netWorth',
+            baselineValue: 1500000,
+            comparisonValue: 1600000,
+            change: '+100000',
+          },
         ],
         summary: 'Comparison scenario shows improved net worth.',
       });
@@ -241,8 +297,20 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       calls.push('evaluateMultidimensionalHealth');
       return JSON.stringify({
         dimensions: [
-          { dimension: 'liquidity', score: 85, weight: 0.3, explanation: 'Strong cash position', severity: 'good' },
-          { dimension: 'budget_adherence', score: 70, weight: 0.3, explanation: 'Some categories over budget', severity: 'warning' },
+          {
+            dimension: 'liquidity',
+            score: 85,
+            weight: 0.3,
+            explanation: 'Strong cash position',
+            severity: 'good',
+          },
+          {
+            dimension: 'budget_adherence',
+            score: 70,
+            weight: 0.3,
+            explanation: 'Some categories over budget',
+            severity: 'warning',
+          },
         ],
         compositeScore: 78,
         summary: 'Overall financial health is satisfactory.',
@@ -559,12 +627,8 @@ describe('createObserveComposition — option overrides', () => {
           requiredCapability: 'notification:receive',
         },
       ],
-      recipients: [
-        { actorId: 'usr_test', channels: ['in_app'], quietHours: null },
-      ],
-      channels: [
-        { type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
-      ],
+      recipients: [{ actorId: 'usr_test', channels: ['in_app'], quietHours: null }],
+      channels: [{ type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' }],
       redaction: {
         public: { visibleFields: ['title', 'summary'] },
       },
@@ -580,11 +644,7 @@ describe('createObserveComposition — option overrides', () => {
       getNotificationPolicy: async () => null,
       listOutboxRecords: async () => [],
     };
-    const runtime = new NotificationRuntime(
-      store as never,
-      policy,
-      [new InAppChannelAdapter()],
-    );
+    const runtime = new NotificationRuntime(store as never, policy, [new InAppChannelAdapter()]);
     const comp = await createObserveComposition({
       notificationRuntime: runtime,
     });
@@ -610,9 +670,7 @@ describe('createObserveComposition — option overrides', () => {
         },
       ],
       recipients: [],
-      channels: [
-        { type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
-      ],
+      channels: [{ type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' }],
       redaction: {
         public: { visibleFields: ['title', 'summary'] },
       },
@@ -661,9 +719,7 @@ describe('createObserveComposition — option overrides', () => {
           requiredCapability: 'notification:receive',
         },
       ],
-      recipients: [
-        { actorId: 'usr_tester', channels: ['in_app' as const], quietHours: null },
-      ],
+      recipients: [{ actorId: 'usr_tester', channels: ['in_app' as const], quietHours: null }],
       channels: [
         { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
       ],
@@ -801,19 +857,14 @@ describe('createObserveComposition — analysis protocol', () => {
     expect(comp.analysisProtocol).toBe(protocol);
 
     // The native bindings should never be loaded when override is provided
-    const result = await comp.analysisProtocol.pendingReview(
-      { mock: true },
-      null,
-    );
+    const result = await comp.analysisProtocol.pendingReview({ mock: true }, null);
     expect(calls).toContain('pendingReview');
     expect(result.uncategorizedCount).toBe(3);
   });
 
   it('native protocol adapter can call pendingReview through stub bindings', async () => {
     const { shim } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.pendingReview({ mock: true }, null);
     expect(result).toBeDefined();
@@ -823,179 +874,199 @@ describe('createObserveComposition — analysis protocol', () => {
 });
 
 // ---------------------------------------------------------------------------
-  it('lifecycle callbacks throw ApplicationError when ledger is null', async () => {
-    const callbacks = createLifecycleCallbacks(() => null);
+it('lifecycle callbacks throw ApplicationError when ledger is null', async () => {
+  const callbacks = createLifecycleCallbacks(() => null);
 
-    await expect(callbacks.doExport(null)).rejects.toThrow('No ledger connected');
-    await expect(callbacks.doDisconnect(null)).rejects.toThrow('No ledger connected');
-    await expect(callbacks.doRemoveConnection(null)).rejects.toThrow('No ledger connected');
-    await expect(callbacks.doDeleteData(null, 'test')).rejects.toThrow('No ledger connected');
+  await expect(callbacks.doExport(null)).rejects.toThrow('No ledger connected');
+  await expect(callbacks.doDisconnect(null)).rejects.toThrow('No ledger connected');
+  await expect(callbacks.doRemoveConnection(null)).rejects.toThrow('No ledger connected');
+  await expect(callbacks.doDeleteData(null, 'test')).rejects.toThrow('No ledger connected');
+});
+
+it('lifecycle callbacks return success with a ledger', async () => {
+  const ledger = mockLedger();
+  const callbacks = createLifecycleCallbacks(() => ledger);
+
+  const exportResult = await callbacks.doExport(ledger);
+  expect(exportResult.exportedAt).toBeTruthy();
+  expect(exportResult.byteSize).toBeGreaterThan(50);
+  expect(exportResult.sha256Hash).toMatch(/^[a-f0-9]{64}$/);
+  expect(exportResult.accountCount).toBeGreaterThan(0);
+  expect(exportResult.transactionCount).toBeGreaterThan(0);
+  expect(exportResult.exportPath).toMatch(/\/tmp\/balanceframe-export\/budget-export-.+\.json$/);
+
+  // Without a store, no cleanup was performed
+  const disconnectResult = await callbacks.doDisconnect(ledger);
+  expect(disconnectResult.disconnected).toBe(false);
+  expect(disconnectResult.cacheRemoved).toBe(false);
+  expect(disconnectResult.credentialsRemoved).toBe(false);
+
+  const removeResult = await callbacks.doRemoveConnection(ledger);
+  expect(removeResult.removed).toBe(false);
+  expect(removeResult.cacheRemoved).toBe(false);
+  expect(removeResult.credentialsRemoved).toBe(false);
+
+  // Without a store, delete-data is rejected (both error messages contain "export" and "first")
+  await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(/export.*first/i);
+});
+
+it('doExport throws export_not_implemented when ledger lacks synchronize', async () => {
+  const nonSyncLedger = { mockLedger: true, noSync: true };
+  const callbacks = createLifecycleCallbacks(() => nonSyncLedger);
+  await expect(callbacks.doExport(nonSyncLedger)).rejects.toThrowError(
+    /cannot provide a full budget snapshot/i,
+  );
+});
+
+it('doDeleteData rejects placeholder export with zero accounts and transactions', async () => {
+  const store = {
+    async cancelPendingJobs() {
+      return 0;
+    },
+    async deleteActorMembership() {
+      return true;
+    },
+    async recordExport() {},
+    async getLastExport() {
+      return {
+        exportedAt: new Date().toISOString(),
+        budgetName: 'Placeholder',
+        exportPath: '/tmp/placeholder-export.json',
+        accountCount: 0,
+        transactionCount: 0,
+      };
+    },
+    async deleteScopeData() {
+      return {
+        deleted: { memberships: 0, jobs: 0, corrections: 0 },
+        retained: { count: 0, reasons: [] },
+      };
+    },
+  };
+  const ledger = mockLedger();
+  const callbacks = createLifecycleCallbacks(() => ledger, {
+    workflowStore: store,
+    actorId: 'usr_placeholder',
   });
+  await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(
+    /no budget data/i,
+  );
+});
 
-  it('lifecycle callbacks return success with a ledger', async () => {
-    const ledger = mockLedger();
-    const callbacks = createLifecycleCallbacks(() => ledger);
+it('doDisconnect calls ledger.disconnect and reports cleanup when ledger supports it', async () => {
+  let disconnectCalled = false;
+  const ledger = {
+    ...mockLedger(),
+    async disconnect() {
+      disconnectCalled = true;
+    },
+  };
+  const callbacks = createLifecycleCallbacks(() => ledger);
+  const result = await callbacks.doDisconnect(ledger);
+  expect(disconnectCalled).toBe(true);
+  expect(result.disconnected).toBe(true);
+  expect(result.cacheRemoved).toBe(true);
+  expect(result.credentialsRemoved).toBe(true);
+  expect(result.message).toMatch(/Disconnected successfully/);
+});
 
-    const exportResult = await callbacks.doExport(ledger);
-    expect(exportResult.exportedAt).toBeTruthy();
-    expect(exportResult.byteSize).toBeGreaterThan(50);
-    expect(exportResult.sha256Hash).toMatch(/^[a-f0-9]{64}$/);
-    expect(exportResult.accountCount).toBeGreaterThan(0);
-    expect(exportResult.transactionCount).toBeGreaterThan(0);
-    expect(exportResult.exportPath).toMatch(/\/tmp\/balanceframe-export\/budget-export-.+\.json$/);
+it('doDisconnect reports no cache/credential removal when ledger lacks disconnect', async () => {
+  const ledger = { mockLedger: true, noSync: true };
+  const callbacks = createLifecycleCallbacks(() => ledger);
+  const result = await callbacks.doDisconnect(ledger);
+  expect(result.disconnected).toBe(false);
+  expect(result.cacheRemoved).toBe(false);
+  expect(result.credentialsRemoved).toBe(false);
+  expect(result.message).toMatch(/does not support disconnect cleanup/);
+});
 
-    // Without a store, no cleanup was performed
-    const disconnectResult = await callbacks.doDisconnect(ledger);
-    expect(disconnectResult.disconnected).toBe(false);
-    expect(disconnectResult.cacheRemoved).toBe(false);
-    expect(disconnectResult.credentialsRemoved).toBe(false);
-
-    const removeResult = await callbacks.doRemoveConnection(ledger);
-    expect(removeResult.removed).toBe(false);
-    expect(removeResult.cacheRemoved).toBe(false);
-    expect(removeResult.credentialsRemoved).toBe(false);
-
-    // Without a store, delete-data is rejected (both error messages contain "export" and "first")
-    await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(
-      /export.*first/i,
-    );
+it('doDisconnect reports no cache/credential removal even with store when ledger lacks disconnect', async () => {
+  const store = {
+    async cancelPendingJobs() {
+      return 5;
+    },
+    async deleteActorMembership() {
+      return true;
+    },
+    async recordExport() {},
+    async getLastExport() {
+      return null;
+    },
+    async deleteScopeData() {
+      return { deleted: {}, retained: { count: 0, reasons: [] } };
+    },
+  };
+  const ledger = { mockLedger: true };
+  const callbacks = createLifecycleCallbacks(() => ledger, {
+    workflowStore: store,
+    actorId: 'usr_disc_test',
   });
+  const result = await callbacks.doDisconnect(ledger);
+  // Store operations run (jobs cancelled, membership deleted) but cache/credentials
+  // cannot be removed without a disconnect-capable ledger
+  expect(result.disconnected).toBe(false);
+  expect(result.cacheRemoved).toBe(false);
+  expect(result.credentialsRemoved).toBe(false);
+  expect(result.message).toMatch(/does not support disconnect cleanup/);
+});
 
-  it('doExport throws export_not_implemented when ledger lacks synchronize', async () => {
-    const nonSyncLedger = { mockLedger: true, noSync: true };
-    const callbacks = createLifecycleCallbacks(() => nonSyncLedger);
-    await expect(callbacks.doExport(nonSyncLedger)).rejects.toThrowError(
-      /cannot provide a full budget snapshot/i,
-    );
-  });
+it('doRemoveConnection calls ledger.disconnect and reports cleanup when ledger supports it', async () => {
+  let disconnectCalled = false;
+  const ledger = {
+    ...mockLedger(),
+    async disconnect() {
+      disconnectCalled = true;
+    },
+  };
+  const callbacks = createLifecycleCallbacks(() => ledger);
+  const result = await callbacks.doRemoveConnection(ledger);
+  expect(disconnectCalled).toBe(true);
+  expect(result.removed).toBe(true);
+  expect(result.cacheRemoved).toBe(true);
+  expect(result.credentialsRemoved).toBe(true);
+  expect(result.broadAccessCaveat).toMatch(/broad access/i);
+});
 
-  it('doDeleteData rejects placeholder export with zero accounts and transactions', async () => {
-    const store = {
-      async cancelPendingJobs() { return 0; },
-      async deleteActorMembership() { return true; },
-      async recordExport() {},
-      async getLastExport() {
-        return {
-          exportedAt: new Date().toISOString(),
-          budgetName: 'Placeholder',
-          exportPath: '/tmp/placeholder-export.json',
-          accountCount: 0,
-          transactionCount: 0,
-        };
-      },
-      async deleteScopeData() {
-        return { deleted: { memberships: 0, jobs: 0, corrections: 0 }, retained: { count: 0, reasons: [] } };
-      },
-    };
-    const ledger = mockLedger();
-    const callbacks = createLifecycleCallbacks(
-      () => ledger,
-      { workflowStore: store, actorId: 'usr_placeholder' },
-    );
-    await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(
-      /no budget data/i,
-    );
-  });
+it('doRemoveConnection reports no cache/credential removal when ledger lacks disconnect', async () => {
+  const ledger = { mockLedger: true, noSync: true };
+  const callbacks = createLifecycleCallbacks(() => ledger);
+  const result = await callbacks.doRemoveConnection(ledger);
+  expect(result.removed).toBe(false);
+  expect(result.cacheRemoved).toBe(false);
+  expect(result.credentialsRemoved).toBe(false);
+  expect(result.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
+});
 
-  it('doDisconnect calls ledger.disconnect and reports cleanup when ledger supports it', async () => {
-    let disconnectCalled = false;
-    const ledger = {
-      ...mockLedger(),
-      async disconnect() {
-        disconnectCalled = true;
-      },
-    };
-    const callbacks = createLifecycleCallbacks(() => ledger);
-    const result = await callbacks.doDisconnect(ledger);
-    expect(disconnectCalled).toBe(true);
-    expect(result.disconnected).toBe(true);
-    expect(result.cacheRemoved).toBe(true);
-    expect(result.credentialsRemoved).toBe(true);
-    expect(result.message).toMatch(/Disconnected successfully/);
+it('doRemoveConnection reports no cache/credential removal even with store when ledger lacks disconnect', async () => {
+  const store = {
+    async cancelPendingJobs() {
+      return 3;
+    },
+    async deleteActorMembership() {
+      return true;
+    },
+    async recordExport() {},
+    async getLastExport() {
+      return null;
+    },
+    async deleteScopeData() {
+      return {
+        deleted: { memberships: 1, jobs: 0, corrections: 0 },
+        retained: { count: 0, reasons: [] },
+      };
+    },
+  };
+  const ledger = { mockLedger: true };
+  const callbacks = createLifecycleCallbacks(() => ledger, {
+    workflowStore: store,
+    actorId: 'usr_rem_test',
   });
-
-  it('doDisconnect reports no cache/credential removal when ledger lacks disconnect', async () => {
-    const ledger = { mockLedger: true, noSync: true };
-    const callbacks = createLifecycleCallbacks(() => ledger);
-    const result = await callbacks.doDisconnect(ledger);
-    expect(result.disconnected).toBe(false);
-    expect(result.cacheRemoved).toBe(false);
-    expect(result.credentialsRemoved).toBe(false);
-    expect(result.message).toMatch(/does not support disconnect cleanup/);
-  });
-
-  it('doDisconnect reports no cache/credential removal even with store when ledger lacks disconnect', async () => {
-    const store = {
-      async cancelPendingJobs() { return 5; },
-      async deleteActorMembership() { return true; },
-      async recordExport() {},
-      async getLastExport() { return null; },
-      async deleteScopeData() {
-        return { deleted: {}, retained: { count: 0, reasons: [] } };
-      },
-    };
-    const ledger = { mockLedger: true };
-    const callbacks = createLifecycleCallbacks(
-      () => ledger,
-      { workflowStore: store, actorId: 'usr_disc_test' },
-    );
-    const result = await callbacks.doDisconnect(ledger);
-    // Store operations run (jobs cancelled, membership deleted) but cache/credentials
-    // cannot be removed without a disconnect-capable ledger
-    expect(result.disconnected).toBe(false);
-    expect(result.cacheRemoved).toBe(false);
-    expect(result.credentialsRemoved).toBe(false);
-    expect(result.message).toMatch(/does not support disconnect cleanup/);
-  });
-
-  it('doRemoveConnection calls ledger.disconnect and reports cleanup when ledger supports it', async () => {
-    let disconnectCalled = false;
-    const ledger = {
-      ...mockLedger(),
-      async disconnect() {
-        disconnectCalled = true;
-      },
-    };
-    const callbacks = createLifecycleCallbacks(() => ledger);
-    const result = await callbacks.doRemoveConnection(ledger);
-    expect(disconnectCalled).toBe(true);
-    expect(result.removed).toBe(true);
-    expect(result.cacheRemoved).toBe(true);
-    expect(result.credentialsRemoved).toBe(true);
-    expect(result.broadAccessCaveat).toMatch(/broad access/i);
-  });
-
-  it('doRemoveConnection reports no cache/credential removal when ledger lacks disconnect', async () => {
-    const ledger = { mockLedger: true, noSync: true };
-    const callbacks = createLifecycleCallbacks(() => ledger);
-    const result = await callbacks.doRemoveConnection(ledger);
-    expect(result.removed).toBe(false);
-    expect(result.cacheRemoved).toBe(false);
-    expect(result.credentialsRemoved).toBe(false);
-    expect(result.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
-  });
-
-  it('doRemoveConnection reports no cache/credential removal even with store when ledger lacks disconnect', async () => {
-    const store = {
-      async cancelPendingJobs() { return 3; },
-      async deleteActorMembership() { return true; },
-      async recordExport() {},
-      async getLastExport() { return null; },
-      async deleteScopeData() {
-        return { deleted: { memberships: 1, jobs: 0, corrections: 0 }, retained: { count: 0, reasons: [] } };
-      },
-    };
-    const ledger = { mockLedger: true };
-    const callbacks = createLifecycleCallbacks(
-      () => ledger,
-      { workflowStore: store, actorId: 'usr_rem_test' },
-    );
-    const result = await callbacks.doRemoveConnection(ledger);
-    expect(result.removed).toBe(false);
-    expect(result.cacheRemoved).toBe(false);
-    expect(result.credentialsRemoved).toBe(false);
-    expect(result.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
-  });
+  const result = await callbacks.doRemoveConnection(ledger);
+  expect(result.removed).toBe(false);
+  expect(result.cacheRemoved).toBe(false);
+  expect(result.credentialsRemoved).toBe(false);
+  expect(result.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
+});
 
 // ---------------------------------------------------------------------------
 // createObserveComposition — configuration errors
@@ -1045,11 +1116,7 @@ describe('createObserveComposition — no credential leakage', () => {
     try {
       await createObserveComposition({
         nativeBindings: () =>
-          Promise.reject(
-            new Error(
-              'Failed to load native addon (no credentials in this message)',
-            ),
-          ),
+          Promise.reject(new Error('Failed to load native addon (no credentials in this message)')),
       });
     } catch (err) {
       const msg = (err as Error).message;
@@ -1069,9 +1136,7 @@ describe('createObserveComposition — no credential leakage', () => {
 describe('createNativeAnalysisProtocol', () => {
   it('returns an AnalysisProtocol with all required methods', async () => {
     const { shim } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     expect(typeof protocol.pendingReview).toBe('function');
     expect(typeof protocol.reviewShow).toBe('function');
@@ -1080,9 +1145,7 @@ describe('createNativeAnalysisProtocol', () => {
 
   it('pendingReview returns a PendingReviewResult shape', async () => {
     const { shim } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.pendingReview({ mock: true }, null);
     expect(result).toHaveProperty('uncategorizedCount');
@@ -1153,9 +1216,7 @@ describe('composition + pendingReviewAnalysis (integration)', () => {
 describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
   it('purchaseEvaluation calls evaluatePurchase and returns non-zero fixture data', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
 
     const result = await protocol.purchaseEvaluation!(ledger, {
@@ -1176,9 +1237,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('purchaseEvaluation returns no-snapshot failure when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.purchaseEvaluation!(null, {
       categoryId: 'cat_1',
@@ -1193,9 +1252,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('cashFlowProjection calls projectCashFlow and returns non-zero fixture data', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
 
     const result = await protocol.cashFlowProjection!(ledger, {
@@ -1217,9 +1274,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('cashFlowProjection returns documented failure when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.cashFlowProjection!(null, {
       months: 3,
@@ -1233,9 +1288,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('targetHealth calls evaluateTargetHealth and returns non-zero fixture data', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
 
     const result = await protocol.targetHealth!(ledger);
@@ -1252,9 +1305,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('targetHealth returns documented failure when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.targetHealth!(null);
 
@@ -1267,9 +1318,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('sinkingFundHealth calls evaluateTargetHealth and filters sinking funds', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
 
     const result = await protocol.sinkingFundHealth!(ledger);
@@ -1278,9 +1327,16 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(calls).toContain('evaluateTargetHealth');
     // Only sinking fund categories are returned
     expect(result.sinkingFunds.length).toBeGreaterThan(0);
-    expect(result.sinkingFunds.every((sf: unknown) => {
-      return typeof sf === 'object' && sf !== null && 'isSinkingFund' in sf && (sf as Record<string, unknown>).isSinkingFund === true;
-    })).toBe(true);
+    expect(
+      result.sinkingFunds.every((sf: unknown) => {
+        return (
+          typeof sf === 'object' &&
+          sf !== null &&
+          'isSinkingFund' in sf &&
+          (sf as Record<string, unknown>).isSinkingFund === true
+        );
+      }),
+    ).toBe(true);
     expect(result.fullyFundedCount).toBe(0);
     // progress 0.6667 is > 0 so it's partially funded
     expect(result.partiallyFundedCount).toBeGreaterThanOrEqual(1);
@@ -1288,9 +1344,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('sinkingFundHealth returns documented failure when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.sinkingFundHealth!(null);
 
@@ -1303,9 +1357,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('financialState calls evaluateFinancialState and returns non-zero fixture data', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
 
     const result = await protocol.financialState!(ledger);
@@ -1322,9 +1374,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('financialState returns documented failure when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.financialState!(null);
 
@@ -1335,9 +1385,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('attentionHome calls evaluateTargetHealth and evaluateFinancialState and returns aggregated result', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
 
     const result = await protocol.attentionHome!(ledger, {});
@@ -1355,9 +1403,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('attentionHome returns documented failure when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
     const result = await protocol.attentionHome!(null, {});
 
@@ -1371,9 +1417,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
   it('attentionHome categoryRisks use null daysRemaining when native data unavailable (no fabricated zero)', async () => {
     const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
 
     const result = await protocol.attentionHome!(ledger, {});
@@ -1390,9 +1434,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     // Verifying by successful invocation: if const-as-property syntax
     // existed, the import/parse would throw at module evaluation time.
     const { shim } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(
-      () => Promise.resolve(shim),
-    );
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     expect(protocol).toBeDefined();
     // Verify all Phase 8 methods exist and are functions
     expect(typeof protocol.purchaseEvaluation).toBe('function');
@@ -1431,6 +1473,23 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(result.recommendations.length).toBeGreaterThan(0);
   });
 
+  it('dataQuality reuses a freshly synchronized snapshot without downloading again', async () => {
+    const { shim } = stubNativeBindings();
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const baseLedger = mockLedger() as { synchronize(): Promise<unknown> };
+    const synchronization = await baseLedger.synchronize();
+    const synchronize = vi.fn();
+    const ledger = {
+      getLatestSynchronization: () => synchronization,
+      synchronize,
+    };
+
+    const result = await protocol.dataQuality!(ledger);
+
+    expect(result.dimensions.length).toBeGreaterThan(0);
+    expect(synchronize).not.toHaveBeenCalled();
+  });
+
   it('dataQuality returns empty fallback when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
     const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
@@ -1454,6 +1513,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(result.totalLiquid!.minorUnits).toBe('500000');
     expect(result.upcomingObligations.length).toBeGreaterThan(0);
     expect(result.coverage.length).toBeGreaterThan(0);
+    expect(result.coverage[0].ratio).toBeNull();
   });
 
   it('liquidityCoverage returns empty fallback when ledger is null', async () => {
@@ -1502,6 +1562,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(result.categoryVariances.length).toBeGreaterThan(0);
     expect(result.trends.length).toBeGreaterThan(0);
     expect(result.overallVariancePercent).toBe(4);
+    expect(result.trends[0].avgChange).toEqual({ minorUnits: '2', currency: 'EUR' });
   });
 
   it('budgetVariance returns empty fallback when ledger is null', async () => {
@@ -1628,7 +1689,17 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
     // Only read calls were made
     expect(calls).toContain('compareScenarios');
-    expect(calls.filter(c => c.startsWith('analyze') || c.startsWith('compute') || c.startsWith('assess') || c.startsWith('detect') || c.startsWith('evaluate') || c.startsWith('compare'))).toContain('compareScenarios');
+    expect(
+      calls.filter(
+        (c) =>
+          c.startsWith('analyze') ||
+          c.startsWith('compute') ||
+          c.startsWith('assess') ||
+          c.startsWith('detect') ||
+          c.startsWith('evaluate') ||
+          c.startsWith('compare'),
+      ),
+    ).toContain('compareScenarios');
   });
 
   it('multidimensionalHealth calls evaluateMultidimensionalHealth and returns fixture data', async () => {

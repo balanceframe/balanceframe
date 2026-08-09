@@ -31,8 +31,8 @@
                 </p>
                 <!-- Dates -->
                 <p class="text-xs text-gray-400 mt-0.5">
-                  Created: {{ formatDate(prop.createdAt) }}
-                  &middot; Expires: {{ formatDate(prop.expiresAt) }}
+                  Created: {{ formatDate(prop.createdAt) }} &middot; Expires:
+                  {{ formatDate(prop.expiresAt) }}
                 </p>
               </div>
               <!-- Simulation status badge -->
@@ -51,13 +51,7 @@
                   size="xs"
                   label="Stale"
                 />
-                <UBadge
-                  v-else
-                  color="neutral"
-                  variant="soft"
-                  size="xs"
-                  label="No simulation"
-                />
+                <UBadge v-else color="neutral" variant="soft" size="xs" label="No simulation" />
               </div>
             </div>
             <!-- Action buttons -->
@@ -85,12 +79,7 @@
 
         <template #footer>
           <div class="flex justify-end">
-            <UButton
-              label="Close"
-              color="neutral"
-              variant="ghost"
-              @click="onClose"
-            />
+            <UButton label="Close" color="neutral" variant="ghost" @click="onClose" />
           </div>
         </template>
       </UCard>
@@ -185,7 +174,8 @@ async function onAccept(proposalId: string): Promise<void> {
     });
     if (!approveRes.ok) {
       const body = await approveRes.json().catch(() => ({}));
-      const message = body?.error?.message ?? `Failed to approve proposal (HTTP ${approveRes.status})`;
+      const message =
+        body?.error?.message ?? `Failed to approve proposal (HTTP ${approveRes.status})`;
       console.error(message);
       emit('error', message, body?.error?.retryable === true);
       return;
@@ -198,7 +188,8 @@ async function onAccept(proposalId: string): Promise<void> {
     });
     if (!executeRes.ok) {
       const body = await executeRes.json().catch(() => ({}));
-      const message = body?.error?.message ?? `Failed to execute proposal (HTTP ${executeRes.status})`;
+      const message =
+        body?.error?.message ?? `Failed to execute proposal (HTTP ${executeRes.status})`;
       console.error(message);
       emit('error', message, body?.error?.retryable === true);
       return;

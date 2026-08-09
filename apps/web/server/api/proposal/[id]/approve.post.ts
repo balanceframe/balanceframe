@@ -35,7 +35,13 @@ export default defineEventHandler(async (event) => {
   const proposalId = event.context.params?.id;
   if (!proposalId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_PROPOSAL_ID', 'Proposal ID is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_PROPOSAL_ID',
+      'Proposal ID is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   try {

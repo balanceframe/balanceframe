@@ -12,27 +12,38 @@
         <UCard>
           <template #header><span class="font-semibold">Composite Health Score</span></template>
           <p class="text-3xl font-bold text-gray-900 dark:text-white" data-testid="composite-score">
-            {{ compositeScore }}<span class="text-sm font-normal text-gray-500 dark:text-gray-400 ml-1">/ 100</span>
+            {{ normalizedScorePercent(compositeScore)
+            }}<span class="text-sm font-normal text-gray-500 dark:text-gray-400 ml-1">/ 100</span>
           </p>
         </UCard>
 
         <!-- Dimension cards -->
         <div v-if="dimensions.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Health Dimensions</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Health Dimensions
+          </h3>
           <div class="grid gap-4 sm:grid-cols-2">
             <UCard v-for="d in dimensions" :key="d.dimension">
               <template #header>
                 <div class="flex items-center justify-between">
                   <span class="font-semibold">{{ d.dimension }}</span>
-                  <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium"
-                    :class="severityClass(d.severity)">
+                  <span
+                    class="inline-flex px-2 py-0.5 rounded text-xs font-medium"
+                    :class="severityClass(d.severity)"
+                  >
                     {{ d.severity }}
                   </span>
                 </div>
               </template>
               <div class="space-y-1">
-                <p class="text-lg font-bold text-gray-900 dark:text-white" :data-testid="`dim-score-${d.dimension}`">
-                  {{ d.score }}<span class="text-xs font-normal text-gray-500 dark:text-gray-400 ml-1">/ 100 (weight: {{ d.weight }})</span>
+                <p
+                  class="text-lg font-bold text-gray-900 dark:text-white"
+                  :data-testid="`dim-score-${d.dimension}`"
+                >
+                  {{ normalizedScorePercent(d.score)
+                  }}<span class="text-xs font-normal text-gray-500 dark:text-gray-400 ml-1"
+                    >/ 100 (weight: {{ normalizedScorePercent(d.weight) }}%)</span
+                  >
                 </p>
                 <p class="text-xs text-gray-600 dark:text-gray-400">{{ d.explanation }}</p>
               </div>
@@ -47,10 +58,19 @@
         </UCard>
 
         <!-- Recommendations -->
-        <div v-if="recommendations.length" class="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
-          <h3 class="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">Recommendations</h3>
+        <div
+          v-if="recommendations.length"
+          class="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4"
+        >
+          <h3 class="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">
+            Recommendations
+          </h3>
           <ul class="space-y-1">
-            <li v-for="(rec, i) in recommendations" :key="i" class="text-sm text-blue-700 dark:text-blue-400 flex items-start gap-2">
+            <li
+              v-for="(rec, i) in recommendations"
+              :key="i"
+              class="text-sm text-blue-700 dark:text-blue-400 flex items-start gap-2"
+            >
               <span class="shrink-0 mt-0.5 i-heroicons-arrow-right" />
               <span>{{ rec }}</span>
             </li>
@@ -67,6 +87,8 @@
 </template>
 
 <script setup lang="ts">
+import { normalizedScorePercent } from '../utils/financial-display';
+
 definePageMeta({ layout: 'default' });
 
 interface Envelope<T> {
@@ -103,20 +125,25 @@ const currentMonth = computed(() => {
 });
 
 function severityClass(severity: string): string {
-  if (severity === 'good' || severity === 'healthy') return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400';
-  if (severity === 'warning' || severity === 'caution') return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400';
-  if (severity === 'critical' || severity === 'poor') return 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400';
+  if (severity === 'good' || severity === 'healthy')
+    return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400';
+  if (severity === 'warning' || severity === 'caution')
+    return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400';
+  if (severity === 'critical' || severity === 'poor')
+    return 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400';
   return 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400';
 }
 
 onMounted(async () => {
   try {
-    const res = await $fetch<Envelope<{
-      dimensions: HealthDimension[];
-      compositeScore: number;
-      summary: string;
-      recommendations: string[];
-    }>>('/api/financial-health', { query: { currentMonth: currentMonth.value } });
+    const res = await $fetch<
+      Envelope<{
+        dimensions: HealthDimension[];
+        compositeScore: number;
+        summary: string;
+        recommendations: string[];
+      }>
+    >('/api/financial-health', { query: { currentMonth: currentMonth.value } });
     if (res.status === 'ok' && res.result) {
       dimensions.value = res.result.dimensions;
       compositeScore.value = res.result.compositeScore;
@@ -124,7 +151,10 @@ onMounted(async () => {
       recommendations.value = res.result.recommendations;
       freshness.value = res.dataFreshness;
     } else {
-      error.value = { code: res.error?.code ?? 'UNKNOWN', message: res.error?.message ?? 'Health assessment returned an error.' };
+      error.value = {
+        code: res.error?.code ?? 'UNKNOWN',
+        message: res.error?.message ?? 'Health assessment returned an error.',
+      };
     }
   } catch (e) {
     error.value = { code: 'FETCH_ERROR', message: String(e) };

@@ -8,7 +8,7 @@ import {
 } from '../../utils/workflow-store';
 
 /** List Actual budgets available to the authenticated BalanceFrame user. */
-export default defineEventHandler(async event => {
+export default defineEventHandler(async (event) => {
   const auth = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
 
@@ -19,7 +19,7 @@ export default defineEventHandler(async event => {
     const budgets = await manager.listBudgets();
     return okEnvelope(
       {
-        budgets: budgets.map(budget => ({
+        budgets: budgets.map((budget) => ({
           id: budget.id,
           groupId: budget.groupId,
           name: budget.name,

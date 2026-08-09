@@ -24,13 +24,7 @@
       class="mb-4"
     >
       <template #trailing>
-        <UButton
-          label="Retry"
-          color="error"
-          variant="solid"
-          size="sm"
-          @click="loadRules"
-        />
+        <UButton label="Retry" color="error" variant="solid" size="sm" @click="loadRules" />
       </template>
     </UAlert>
 
@@ -61,9 +55,7 @@
             @delete="handleDeleteRule"
           />
           <UCard v-else class="text-center py-8">
-            <p class="text-gray-500 dark:text-gray-400">
-              Select a rule to view details.
-            </p>
+            <p class="text-gray-500 dark:text-gray-400">Select a rule to view details.</p>
           </UCard>
         </div>
       </div>
@@ -178,15 +170,29 @@ async function handleToggleRule(id: string, inactive: boolean) {
     });
     if (res.status === 'ok') {
       const toast = useToast();
-      toast.add({ title: `Rule ${inactive ? 'deactivated' : 'activated'}`, color: 'success', duration: 5000 });
+      toast.add({
+        title: `Rule ${inactive ? 'deactivated' : 'activated'}`,
+        color: 'success',
+        duration: 5000,
+      });
       await loadRules();
     } else {
       const toast = useToast();
-      toast.add({ title: 'Failed to update rule', description: res.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+      toast.add({
+        title: 'Failed to update rule',
+        description: res.error?.message ?? 'Unknown error',
+        color: 'error',
+        duration: 10000,
+      });
     }
   } catch (e) {
     const toast = useToast();
-    toast.add({ title: 'Failed to update rule', description: e instanceof Error ? e.message : 'Connection error', color: 'error', duration: 10000 });
+    toast.add({
+      title: 'Failed to update rule',
+      description: e instanceof Error ? e.message : 'Connection error',
+      color: 'error',
+      duration: 10000,
+    });
   }
 }
 async function handleDeleteRule(id: string) {
@@ -205,11 +211,21 @@ async function handleDeleteRule(id: string) {
       await loadRules();
     } else {
       const toast = useToast();
-      toast.add({ title: 'Failed to delete rule', description: res.error?.message ?? 'Unknown error', color: 'error', duration: 10000 });
+      toast.add({
+        title: 'Failed to delete rule',
+        description: res.error?.message ?? 'Unknown error',
+        color: 'error',
+        duration: 10000,
+      });
     }
   } catch (e) {
     const toast = useToast();
-    toast.add({ title: 'Failed to delete rule', description: e instanceof Error ? e.message : 'Connection error', color: 'error', duration: 10000 });
+    toast.add({
+      title: 'Failed to delete rule',
+      description: e instanceof Error ? e.message : 'Connection error',
+      color: 'error',
+      duration: 10000,
+    });
   }
 }
 </script>

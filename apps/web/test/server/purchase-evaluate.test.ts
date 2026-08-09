@@ -14,9 +14,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Hoisted mocks — available inside vi.mock factories
 // ---------------------------------------------------------------------------
 
-const { mockRestore, mockCreateDefaultConnectionManager, mockCreateNativeAnalysisProtocol, mockRequireAuthorization } = vi.hoisted(() => ({
+const {
+  mockRestore,
+  mockCreateDefaultConnectionManager,
+  mockCreateNativeAnalysisProtocol,
+  mockRequireAuthorization,
+} = vi.hoisted(() => ({
   mockRestore: vi.fn(),
-  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
+  mockCreateDefaultConnectionManager: vi.fn(() => ({
+    restore: mockRestore,
+    withConnection: async (operation: (connected: unknown) => Promise<unknown>) =>
+      operation(await mockRestore()),
+  })),
   mockCreateNativeAnalysisProtocol: vi.fn(),
   mockRequireAuthorization: vi.fn(),
 }));
@@ -50,7 +59,11 @@ vi.mock('h3', () => ({
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: vi.fn(() => ({ store: {} })),
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'test-actor',
+    capability: 'observe',
+    allowed: true,
+  })),
   requireAuthorization: mockRequireAuthorization,
   getActorId: vi.fn(() => 'test-actor'),
   okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
@@ -62,7 +75,13 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result,
     error: null,
   }),
-  errorEnvelope: (code: string, message: string, _auth: unknown, retryable?: boolean, requestId?: string) => ({
+  errorEnvelope: (
+    code: string,
+    message: string,
+    _auth: unknown,
+    retryable?: boolean,
+    requestId?: string,
+  ) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
     status: 'error' as const,

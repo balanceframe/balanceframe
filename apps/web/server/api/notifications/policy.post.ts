@@ -8,7 +8,13 @@
  */
 
 import { defineEventHandler, readBody, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, requireAuthorization, sanitizeError } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  requireAuthorization,
+  sanitizeError,
+} from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authCheck = await requireAuthorization(event, 'notification:admin');
@@ -21,7 +27,13 @@ export default defineEventHandler(async (event) => {
     body = (await readBody(event)) ?? {};
   } catch {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_BODY', 'Request body must be valid JSON.', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_BODY',
+      'Request body must be valid JSON.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const spaceId = typeof body.spaceId === 'string' ? body.spaceId.trim() : '';
@@ -30,27 +42,37 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('MISSING_SPACE_ID', 'spaceId is required.', authInfo, false, requestId);
   }
 
-  const auth = event.context.auth as {
-    spaceId?: unknown;
-    user?: { spaceId?: unknown; space_id?: unknown };
-  } | undefined;
-  const authorizedSpace = typeof auth?.spaceId === 'string'
-    ? auth.spaceId.trim()
-    : typeof auth?.user?.spaceId === 'string'
-      ? auth.user.spaceId.trim()
-      : typeof auth?.user?.space_id === 'string'
-        ? auth.user.space_id.trim()
-        : '';
+  const auth = event.context.auth as
+    | {
+        spaceId?: unknown;
+        user?: { spaceId?: unknown; space_id?: unknown };
+      }
+    | undefined;
+  const authorizedSpace =
+    typeof auth?.spaceId === 'string'
+      ? auth.spaceId.trim()
+      : typeof auth?.user?.spaceId === 'string'
+        ? auth.user.spaceId.trim()
+        : typeof auth?.user?.space_id === 'string'
+          ? auth.user.space_id.trim()
+          : '';
   if (authorizedSpace && authorizedSpace !== spaceId) {
     setResponseStatus(event, 403);
-    return errorEnvelope('SPACE_SCOPE_MISMATCH', 'The requested space is outside the authorized scope.', authInfo, false, requestId);
+    return errorEnvelope(
+      'SPACE_SCOPE_MISMATCH',
+      'The requested space is outside the authorized scope.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const policyKey = typeof body.policyKey === 'string' ? body.policyKey.trim() : 'delivery';
   const policyVersion = typeof body.policyVersion === 'string' ? body.policyVersion.trim() : 'v1';
-  const policy = typeof body.policy === 'object' && body.policy !== null && !Array.isArray(body.policy)
-    ? (body.policy as Record<string, unknown>)
-    : {};
+  const policy =
+    typeof body.policy === 'object' && body.policy !== null && !Array.isArray(body.policy)
+      ? (body.policy as Record<string, unknown>)
+      : {};
 
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
@@ -68,7 +90,7 @@ export default defineEventHandler(async (event) => {
     return okEnvelope(saved, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'SAVE_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

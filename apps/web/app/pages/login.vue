@@ -3,9 +3,7 @@
     <UCard class="w-full max-w-md">
       <template #header>
         <h1 class="text-2xl font-bold">BalanceFrame</h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Sign in to continue
-        </p>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Sign in to continue</p>
       </template>
 
       <UForm
@@ -41,13 +39,7 @@
           icon="i-heroicons-exclamation-triangle"
         />
 
-        <UButton
-          type="submit"
-          :loading="signInLoading"
-          label="Sign in"
-          size="lg"
-          class="w-full"
-        />
+        <UButton type="submit" :loading="signInLoading" label="Sign in" size="lg" class="w-full" />
       </UForm>
 
       <template #footer>

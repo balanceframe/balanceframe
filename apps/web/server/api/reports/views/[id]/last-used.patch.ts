@@ -10,7 +10,13 @@
  */
 
 import { defineEventHandler, getRouterParam, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError } from '../../../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  sanitizeError,
+} from '../../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -32,14 +38,20 @@ export default defineEventHandler(async (event) => {
     const existing = await wf.store.getSavedView(viewId);
     if (!existing) {
       setResponseStatus(event, 404);
-      return errorEnvelope('VIEW_NOT_FOUND', `Saved view "${viewId}" not found.`, authInfo, false, requestId);
+      return errorEnvelope(
+        'VIEW_NOT_FOUND',
+        `Saved view "${viewId}" not found.`,
+        authInfo,
+        false,
+        requestId,
+      );
     }
 
     const updated = await wf.store.recordSavedViewUsage(viewId);
     return okEnvelope(updated, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'UPDATE_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

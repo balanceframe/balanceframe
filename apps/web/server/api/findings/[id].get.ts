@@ -8,7 +8,13 @@
  */
 
 import { defineEventHandler, getRouterParam, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, sanitizeError } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  sanitizeError,
+} from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -17,7 +23,13 @@ export default defineEventHandler(async (event) => {
 
   if (!findingId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_FINDING_ID', 'Finding ID is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_FINDING_ID',
+      'Finding ID is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const wf = getWorkflowStore(event);
@@ -30,12 +42,18 @@ export default defineEventHandler(async (event) => {
     const finding = await wf.store.getFinding(findingId);
     if (!finding) {
       setResponseStatus(event, 404);
-      return errorEnvelope('FINDING_NOT_FOUND', `Finding "${findingId}" not found.`, authInfo, false, requestId);
+      return errorEnvelope(
+        'FINDING_NOT_FOUND',
+        `Finding "${findingId}" not found.`,
+        authInfo,
+        false,
+        requestId,
+      );
     }
     return okEnvelope(finding, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'FETCH_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

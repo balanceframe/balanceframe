@@ -19,7 +19,11 @@
 import type { RuleListItem, LedgerHandle } from '../../utils/rule-types';
 import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
-  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  classifyConnectionError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -34,30 +38,42 @@ export default defineEventHandler(async (event) => {
 
   try {
     const manager = createMutationConnectionManager();
-    const connected = await manager.restore();
-    const ledger = connected.connector as unknown as LedgerHandle;
+    return await manager.withConnection(
+      async ({ connector }) => {
+        const ledger = connector as unknown as LedgerHandle;
 
-    const rules: RuleListItem[] = await ledger.listRules();
+        const rules: RuleListItem[] = await ledger.listRules();
 
-    // Merge local rule overrides (inactive toggle state) with an explicit
-    // label so the UI can distinguish local annotations from Actual data.
-    const overrides = await wf.store.getRuleOverrides();
-    if (overrides.size > 0) {
-      for (const rule of rules) {
-        const overrideInactive = overrides.get(rule.id);
-        if (overrideInactive !== undefined) {
-          rule.inactive = overrideInactive;
-          rule._localOverride = true;
+        // Merge local rule overrides (inactive toggle state) with an explicit
+        // label so the UI can distinguish local annotations from Actual data.
+        const overrides = await wf.store.getRuleOverrides();
+        if (overrides.size > 0) {
+          for (const rule of rules) {
+            const overrideInactive = overrides.get(rule.id);
+            if (overrideInactive !== undefined) {
+              rule.inactive = overrideInactive;
+              rule._localOverride = true;
+            }
+          }
         }
-      }
-    }
 
-    return okEnvelope(
-      { items: rules, total: rules.length },
-      authInfo,
-      requestId,
+        return okEnvelope({ items: rules, total: rules.length }, authInfo, requestId);
+      },
+      { dispose: true },
     );
   } catch (err) {
+    const connectionError = classifyConnectionError(err);
+    if (connectionError) {
+      setResponseStatus(event, 503);
+      return errorEnvelope(
+        connectionError.code,
+        connectionError.message,
+        authInfo,
+        connectionError.retryable,
+        requestId,
+      );
+    }
+
     setResponseStatus(event, 503);
     return errorEnvelope(
       'LEDGER_UNAVAILABLE',
@@ -67,5 +83,4 @@ export default defineEventHandler(async (event) => {
       requestId,
     );
   }
-
 });

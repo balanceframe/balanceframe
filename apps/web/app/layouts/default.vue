@@ -1,10 +1,21 @@
 <template>
   <div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950" @click="handleLayoutClick">
-    <header class="sticky top-0 z-50 h-14 border-b border-gray-200 bg-white/90 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/90">
+    <header
+      class="sticky top-0 z-50 h-14 border-b border-gray-200 bg-white/90 backdrop-blur-sm dark:border-gray-800 dark:bg-gray-900/90"
+    >
       <UContainer class="flex h-full items-center justify-between px-4">
         <div class="flex items-center gap-3">
-          <NuxtLink to="/" class="rounded-md px-2 py-1 text-base font-semibold text-gray-900 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-white">BalanceFrame</NuxtLink>
-          <span data-testid="current-space" class="hidden text-xs text-gray-500 sm:inline dark:text-gray-400" aria-label="Current space">{{ currentSpace }}</span>
+          <NuxtLink
+            to="/"
+            class="rounded-md px-2 py-1 text-base font-semibold text-gray-900 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-white"
+            >BalanceFrame</NuxtLink
+          >
+          <span
+            data-testid="current-space"
+            class="hidden text-xs text-gray-500 sm:inline dark:text-gray-400"
+            aria-label="Current space"
+            >{{ currentSpace }}</span
+          >
         </div>
 
         <nav class="hidden items-center gap-0.5 xl:flex" aria-label="Main navigation">
@@ -30,11 +41,19 @@
               {{ link.label }}
             </NuxtLink>
           </template>
-          <div v-for="group in navigation.groups" :key="group.id" class="relative" data-navigation-popover>
+          <div
+            v-for="group in navigation.groups"
+            :key="group.id"
+            class="relative"
+            data-navigation-popover
+          >
             <button
               type="button"
               class="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
-              :class="{ 'bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400': isGroupActive(group) }"
+              :class="{
+                'bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400':
+                  isGroupActive(group),
+              }"
               :id="triggerId(group.id)"
               :aria-controls="panelId(group.id)"
               :aria-current="isGroupActive(group) ? 'page' : undefined"
@@ -83,8 +102,14 @@
         </nav>
 
         <div class="flex items-center gap-2">
-          <div v-if="authorization" data-testid="authorization-scope" class="hidden text-xs text-gray-500 lg:block" :aria-label="`Authorization scope: ${authorization.capability}`">
-            Scope: {{ authorization.capability }}<span v-if="authorization.allowed === false"> (restricted)</span>
+          <div
+            v-if="authorization"
+            data-testid="authorization-scope"
+            class="hidden text-xs text-gray-500 lg:block"
+            :aria-label="`Authorization scope: ${authorization.capability}`"
+          >
+            Scope: {{ authorization.capability
+            }}<span v-if="authorization.allowed === false"> (restricted)</span>
           </div>
           <FreshnessBanner :freshness="freshness" :show-refresh="true" @refresh="refreshShell" />
           <div v-if="isAuthenticated" class="relative" data-navigation-popover>
@@ -103,19 +128,57 @@
               <span class="hidden sm:inline">{{ userEmail }}</span>
               <span class="sm:hidden">Account</span>
             </button>
-            <div v-if="userMenuOpen" class="absolute right-0 mt-2 w-56 rounded-md border bg-white p-1 shadow-lg dark:bg-gray-900" role="menu" @keydown.esc.stop.prevent="closeUserMenu(true)">
-              <p class="truncate px-2 py-1 text-xs text-gray-500 dark:text-gray-400">{{ userEmail }}</p>
-              <button id="user-menu-sign-out" type="button" class="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500" aria-label="Sign out" role="menuitem" @click="handleSignOut">Sign out</button>
+            <div
+              v-if="userMenuOpen"
+              class="absolute right-0 mt-2 w-56 rounded-md border bg-white p-1 shadow-lg dark:bg-gray-900"
+              role="menu"
+              @keydown.esc.stop.prevent="closeUserMenu(true)"
+            >
+              <p class="truncate px-2 py-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ userEmail }}
+              </p>
+              <button
+                id="user-menu-sign-out"
+                type="button"
+                class="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500"
+                aria-label="Sign out"
+                role="menuitem"
+                @click="handleSignOut"
+              >
+                Sign out
+              </button>
             </div>
           </div>
-          <button type="button" class="rounded-md p-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 xl:hidden" aria-label="Toggle navigation menu" :aria-expanded="mobileOpen" aria-controls="mobile-navigation" data-navigation-popover @click="toggleMobile">☰</button>
+          <button
+            type="button"
+            class="rounded-md p-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 xl:hidden"
+            aria-label="Toggle navigation menu"
+            :aria-expanded="mobileOpen"
+            aria-controls="mobile-navigation"
+            data-navigation-popover
+            @click="toggleMobile"
+          >
+            ☰
+          </button>
         </div>
       </UContainer>
 
-      <div v-if="mobileOpen" id="mobile-navigation" class="border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 xl:hidden" data-navigation-popover>
-        <nav class="max-h-[calc(100vh-3.5rem)] overflow-y-auto overscroll-contain px-4 py-3" aria-label="Mobile navigation">
+      <div
+        v-if="mobileOpen"
+        id="mobile-navigation"
+        class="border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900 xl:hidden"
+        data-navigation-popover
+      >
+        <nav
+          class="max-h-[calc(100vh-3.5rem)] overflow-y-auto overscroll-contain px-4 py-3"
+          aria-label="Mobile navigation"
+        >
           <section>
-            <p class="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Main</p>
+            <p
+              class="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+            >
+              Main
+            </p>
             <template v-for="link in navigation.direct" :key="link.to">
               <span v-if="link.disabledReason" class="block" :title="link.disabledReason">
                 <button
@@ -141,7 +204,11 @@
             </template>
           </section>
           <section v-for="group in navigation.groups" :key="group.id" class="mt-3">
-            <p class="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ group.label }}</p>
+            <p
+              class="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+            >
+              {{ group.label }}
+            </p>
             <template v-for="link in group.links" :key="link.to">
               <span v-if="link.disabledReason" class="block" :title="link.disabledReason">
                 <button
@@ -169,9 +236,24 @@
         </nav>
       </div>
     </header>
-    <div v-if="routePending" class="h-0.5 bg-primary-500" role="progressbar" aria-label="Loading page" aria-busy="true" />
+    <div
+      v-if="routePending"
+      class="h-0.5 bg-primary-500"
+      role="progressbar"
+      aria-label="Loading page"
+      aria-busy="true"
+    />
     <main class="flex-1" :aria-busy="routePending ? 'true' : undefined"><slot /></main>
-    <footer v-if="route.path !== '/review'" class="mt-8 border-t border-gray-200 py-4 dark:border-gray-800"><UContainer class="px-4"><p class="text-center text-xs text-gray-400 dark:text-gray-500">BalanceFrame &mdash; Budget Intelligence</p></UContainer></footer>
+    <footer
+      v-if="route.path !== '/review'"
+      class="mt-8 border-t border-gray-200 py-4 dark:border-gray-800"
+    >
+      <UContainer class="px-4"
+        ><p class="text-center text-xs text-gray-400 dark:text-gray-500">
+          BalanceFrame &mdash; Budget Intelligence
+        </p></UContainer
+      >
+    </footer>
   </div>
 </template>
 
@@ -220,7 +302,7 @@ const navigation: { direct: readonly NavigationLink[]; groups: readonly Navigati
         { to: '/targets', label: 'Targets' },
         { to: '/obligations', label: 'Obligations' },
         { to: '/forecast-accuracy', label: 'Forecast Accuracy' },
-        { to: '/scenarios', label: 'Scenarios', disabledReason: 'Coming Soon' },
+        { to: '/scenarios', label: 'Scenarios' },
         { to: '/reports', label: 'Reports' },
       ],
     },
@@ -274,7 +356,9 @@ function toggleGroup(groupId: NavigationGroupId) {
 
 function focusGroupLink(groupId: NavigationGroupId, edge: 'first' | 'last') {
   void nextTick(() => {
-    const links = document.getElementById(panelId(groupId))?.querySelectorAll<HTMLAnchorElement>('a');
+    const links = document
+      .getElementById(panelId(groupId))
+      ?.querySelectorAll<HTMLAnchorElement>('a');
     const index = edge === 'first' ? 0 : (links?.length ?? 0) - 1;
     links?.[index]?.focus();
   });
@@ -365,13 +449,23 @@ async function handleSignOut() {
 async function refreshShell() {
   if (!isAuthenticated.value) return;
   try {
-    const response = await $fetch<{ status: string; result?: { budgetName?: string; spaceName?: string; month?: string }; dataFreshness?: typeof freshness.value; authorization?: typeof authorization.value }>('/api/home/budget-summary', { query: { month: currentMonth() } });
+    const response = await $fetch<{
+      status: string;
+      result?: { budgetName?: string; spaceName?: string; month?: string };
+      dataFreshness?: typeof freshness.value;
+      authorization?: typeof authorization.value;
+    }>('/api/home/budget-summary', { query: { month: currentMonth() } });
     if (response.status === 'ok') {
-      currentSpace.value = response.result?.spaceName ?? response.result?.budgetName ?? (response.result?.month ? `Budget · ${response.result.month}` : 'Current space');
+      currentSpace.value =
+        response.result?.spaceName ??
+        response.result?.budgetName ??
+        (response.result?.month ? `Budget · ${response.result.month}` : 'Current space');
       freshness.value = response.dataFreshness ?? null;
       authorization.value = response.authorization ?? null;
     }
-  } catch { /* shell status is supplementary and must not block the page */ }
+  } catch {
+    /* shell status is supplementary and must not block the page */
+  }
 }
 
 function currentMonth() {
@@ -385,8 +479,12 @@ onMounted(() => {
   void refreshShell();
   if (typeof useNuxtApp === 'function') {
     const app = useNuxtApp();
-    app.hook('page:start', () => { routePending.value = true; });
-    app.hook('page:finish', () => { routePending.value = false; });
+    app.hook('page:start', () => {
+      routePending.value = true;
+    });
+    app.hook('page:finish', () => {
+      routePending.value = false;
+    });
   }
 });
 </script>

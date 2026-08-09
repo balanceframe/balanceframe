@@ -37,7 +37,8 @@ vi.mock('../../lib/auth-client', () => ({
 // Stubs shared across pages
 // ---------------------------------------------------------------------------
 const AnalysisPageStub = {
-  template: '<div><span v-if="error" data-testid="error">{{ error.code }}</span><span v-if="insufficientData" data-testid="insufficient-data" /><slot name="content" /></div>',
+  template:
+    '<div><span v-if="error" data-testid="error">{{ error.code }}</span><span v-if="insufficientData" data-testid="insufficient-data" /><slot name="content" /></div>',
   props: ['title', 'loading', 'error', 'freshness', 'insufficientData'],
 };
 
@@ -48,10 +49,14 @@ const stubs = {
     template: `<button :disabled="disabled" @click="$emit('click')"><slot /></button>`,
     props: ['variant', 'size', 'disabled', 'label'],
   },
-  UFormGroup: { template: '<div data-testid="form-group"><span v-if="label">{{ label }}</span><slot /></div>', props: ['label'] },
+  UFormGroup: {
+    template: '<div data-testid="form-group"><span v-if="label">{{ label }}</span><slot /></div>',
+    props: ['label'],
+  },
   UInput: { template: '<input />', props: ['modelValue', 'placeholder', 'type', 'min', 'max'] },
   AnalysisTable: {
-    template: '<table data-testid="analysis-table"><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>',
+    template:
+      '<table data-testid="analysis-table"><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>',
     props: ['columns', 'rows'],
   },
   SemanticAmount: {
@@ -60,11 +65,13 @@ const stubs = {
   },
   UContainer: { template: '<div><slot /></div>' },
   FindingCard: {
-    template: '<div data-testid="finding-card">{{ finding.title }} | {{ finding.severity }} | {{ finding.category }}</div>',
+    template:
+      '<div data-testid="finding-card">{{ finding.title }} | {{ finding.severity }} | {{ finding.category }}</div>',
     props: ['finding'],
   },
   ReasonCodeList: {
-    template: '<div data-testid="reason-codes"><span v-for="c in codes" :key="c" data-testid="reason-code">{{ c }}</span></div>',
+    template:
+      '<div data-testid="reason-codes"><span v-for="c in codes" :key="c" data-testid="reason-code">{{ c }}</span></div>',
     props: ['codes'],
   },
 };
@@ -77,7 +84,11 @@ function okEnvelope(result: unknown, freshness?: Record<string, unknown>) {
     schemaVersion: '1',
     requestId: 'req-test',
     status: 'ok' as const,
-    dataFreshness: freshness ?? { isStale: false, lastSync: '2026-07-15T10:00:00Z', label: 'current' },
+    dataFreshness: freshness ?? {
+      isStale: false,
+      lastSync: '2026-07-15T10:00:00Z',
+      label: 'current',
+    },
     authorization: null,
     result,
     error: null,
@@ -118,7 +129,11 @@ async function mountAndEvaluate(resultMock: unknown) {
   mockFetch.mockResolvedValue(okEnvelope(resultMock));
   const wrapper = shallowMount(PurchaseCheckPage, { global: { stubs: purchaseStubs } });
   await flushPromises();
-  const vm = wrapper.vm as unknown as { categoryId: string; amountStr: string; evaluate: () => Promise<void> };
+  const vm = wrapper.vm as unknown as {
+    categoryId: string;
+    amountStr: string;
+    evaluate: () => Promise<void>;
+  };
   vm.categoryId = 'cg';
   vm.amountStr = '5000';
   await vm.evaluate();
@@ -157,7 +172,11 @@ const notSafeResult = {
   projectedBalance: { minorUnits: '12000', currency: 'USD' },
   hasEnvelope: true,
   proposals: [
-    { targetCategoryId: 'cat_savings', amount: { minorUnits: '5000', currency: 'USD' }, label: 'Move from savings' },
+    {
+      targetCategoryId: 'cat_savings',
+      amount: { minorUnits: '5000', currency: 'USD' },
+      label: 'Move from savings',
+    },
   ],
   donors: [
     { categoryId: 'cat_savings', availableAmount: { minorUnits: '30000', currency: 'USD' } },
@@ -181,7 +200,11 @@ const safeWithReallocationResult = {
   projectedBalance: { minorUnits: '5000', currency: 'USD' },
   hasEnvelope: true,
   proposals: [
-    { targetCategoryId: 'cat_savings', amount: { minorUnits: '3000', currency: 'USD' }, label: 'Reallocate from savings' },
+    {
+      targetCategoryId: 'cat_savings',
+      amount: { minorUnits: '3000', currency: 'USD' },
+      label: 'Reallocate from savings',
+    },
   ],
   donors: [
     { categoryId: 'cat_savings', availableAmount: { minorUnits: '50000', currency: 'USD' } },
@@ -270,10 +293,12 @@ describe('Purchase Check page', () => {
     });
   });
 
-
   it('calls /api/purchase/evaluate with category and amount', async () => {
     const wrapper = await mountAndEvaluate(safeResult);
-    expect(mockFetch).toHaveBeenCalledWith('/api/purchase/evaluate', expect.objectContaining({ query: expect.any(Object) }));
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/purchase/evaluate',
+      expect.objectContaining({ query: expect.any(Object) }),
+    );
   });
 
   it('shows safe verdict with green indicator', async () => {
@@ -351,7 +376,11 @@ describe('Purchase Check page', () => {
     mockFetch.mockRejectedValue(new Error('Network error'));
     const wrapper = shallowMount(PurchaseCheckPage, { global: { stubs: purchaseStubs } });
     await flushPromises();
-    const vm = wrapper.vm as unknown as { categoryId: string; amountStr: string; evaluate: () => Promise<void> };
+    const vm = wrapper.vm as unknown as {
+      categoryId: string;
+      amountStr: string;
+      evaluate: () => Promise<void>;
+    };
     vm.categoryId = 'cg';
     vm.amountStr = '5000';
     await vm.evaluate();
@@ -387,13 +416,43 @@ const cashFlowStubs = { ...stubs };
 const projectionResult = {
   projectionMonths: 3,
   projections: [
-    { month: '2026-08', income: { minorUnits: '500000', currency: 'USD' }, expenses: { minorUnits: '350000', currency: 'USD' }, netFlow: { minorUnits: '150000', currency: 'USD' }, endingBalance: { minorUnits: '150000', currency: 'USD' } },
-    { month: '2026-09', income: { minorUnits: '500000', currency: 'USD' }, expenses: { minorUnits: '400000', currency: 'USD' }, netFlow: { minorUnits: '100000', currency: 'USD' }, endingBalance: { minorUnits: '250000', currency: 'USD' } },
+    {
+      month: '2026-08',
+      income: { minorUnits: '500000', currency: 'USD' },
+      expenses: { minorUnits: '350000', currency: 'USD' },
+      netFlow: { minorUnits: '150000', currency: 'USD' },
+      endingBalance: { minorUnits: '150000', currency: 'USD' },
+    },
+    {
+      month: '2026-09',
+      income: { minorUnits: '500000', currency: 'USD' },
+      expenses: { minorUnits: '400000', currency: 'USD' },
+      netFlow: { minorUnits: '100000', currency: 'USD' },
+      endingBalance: { minorUnits: '250000', currency: 'USD' },
+    },
   ],
-  summary: { netProjection: { minorUnits: '250000', currency: 'USD' }, minBalance: { minorUnits: '150000', currency: 'USD' }, maxBalance: { minorUnits: '250000', currency: 'USD' } },
-  assumptions: { basedOn: 'scheduled_transactions', inflationRate: null, growthRate: null, note: 'Projections use only confirmed scheduled transactions.' },
-  scope: { monthsProjected: 3, accountsIncluded: ['acct_checking'], categoriesIncluded: ['cat_salary', 'cat_rent', 'cat_food'] },
-  envelopeAvailability: { available: true, envelopeCount: 5, totalBudgeted: { minorUnits: '800000', currency: 'USD' }, totalSpent: { minorUnits: '450000', currency: 'USD' } },
+  summary: {
+    netProjection: { minorUnits: '250000', currency: 'USD' },
+    minBalance: { minorUnits: '150000', currency: 'USD' },
+    maxBalance: { minorUnits: '250000', currency: 'USD' },
+  },
+  assumptions: {
+    basedOn: 'scheduled_transactions',
+    inflationRate: null,
+    growthRate: null,
+    note: 'Projections use only confirmed scheduled transactions.',
+  },
+  scope: {
+    monthsProjected: 3,
+    accountsIncluded: ['acct_checking'],
+    categoriesIncluded: ['cat_salary', 'cat_rent', 'cat_food'],
+  },
+  envelopeAvailability: {
+    available: true,
+    envelopeCount: 5,
+    totalBudgeted: { minorUnits: '800000', currency: 'USD' },
+    totalSpent: { minorUnits: '450000', currency: 'USD' },
+  },
   sufficientData: true,
   dataWarning: null,
 };
@@ -401,10 +460,24 @@ const projectionResult = {
 const insufficientProjectionResult = {
   projectionMonths: 0,
   projections: [],
-  summary: { netProjection: { minorUnits: '0', currency: 'USD' }, minBalance: { minorUnits: '0', currency: 'USD' }, maxBalance: { minorUnits: '0', currency: 'USD' } },
-  assumptions: { basedOn: 'scheduled_transactions', inflationRate: null, growthRate: null, note: 'Insufficient data.' },
+  summary: {
+    netProjection: { minorUnits: '0', currency: 'USD' },
+    minBalance: { minorUnits: '0', currency: 'USD' },
+    maxBalance: { minorUnits: '0', currency: 'USD' },
+  },
+  assumptions: {
+    basedOn: 'scheduled_transactions',
+    inflationRate: null,
+    growthRate: null,
+    note: 'Insufficient data.',
+  },
   scope: { monthsProjected: 0, accountsIncluded: [], categoriesIncluded: [] },
-  envelopeAvailability: { available: false, envelopeCount: 0, totalBudgeted: { minorUnits: '0', currency: 'USD' }, totalSpent: { minorUnits: '0', currency: 'USD' } },
+  envelopeAvailability: {
+    available: false,
+    envelopeCount: 0,
+    totalBudgeted: { minorUnits: '0', currency: 'USD' },
+    totalSpent: { minorUnits: '0', currency: 'USD' },
+  },
   sufficientData: false,
   dataWarning: 'Not enough transaction history to produce reliable projections.',
 };
@@ -436,7 +509,10 @@ describe('Cash Flow page', () => {
 
   it('calls /api/cash-flow/project with months query', async () => {
     const wrapper = await mountCashFlowAndProject(projectionResult);
-    expect(mockFetch).toHaveBeenCalledWith('/api/cash-flow/project', expect.objectContaining({ query: expect.any(Object) }));
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/cash-flow/project',
+      expect.objectContaining({ query: expect.any(Object) }),
+    );
   });
 
   it('renders projection table after projecting', async () => {
@@ -493,21 +569,42 @@ const targetStubs = { ...stubs };
 
 const healthyTargetResult = {
   categories: [
-    { categoryId: 'cat_groceries', categoryName: 'Groceries', target: { minorUnits: '400000', currency: 'USD' }, current: { minorUnits: '200000', currency: 'USD' }, progress: 0.5, status: 'healthy' },
+    {
+      categoryId: 'cat_groceries',
+      categoryName: 'Groceries',
+      target: { minorUnits: '400000', currency: 'USD' },
+      current: { minorUnits: '200000', currency: 'USD' },
+      progress: 0.5,
+      status: 'healthy',
+    },
   ],
   overallLabel: 'healthy',
 };
 
 const atRiskTargetResult = {
   categories: [
-    { categoryId: 'cat_groceries', categoryName: 'Groceries', target: { minorUnits: '400000', currency: 'USD' }, current: { minorUnits: '380000', currency: 'USD' }, progress: 0.95, status: 'at_risk' },
+    {
+      categoryId: 'cat_groceries',
+      categoryName: 'Groceries',
+      target: { minorUnits: '400000', currency: 'USD' },
+      current: { minorUnits: '380000', currency: 'USD' },
+      progress: 0.95,
+      status: 'at_risk',
+    },
   ],
   overallLabel: 'at_risk',
 };
 
 const partiallyFundedSinkingResult = {
   sinkingFunds: [
-    { categoryId: 'cat_emergency', categoryName: 'Emergency Fund', target: { minorUnits: '1000000', currency: 'USD' }, current: { minorUnits: '500000', currency: 'USD' }, progress: 0.5, status: 'at_risk' },
+    {
+      categoryId: 'cat_emergency',
+      categoryName: 'Emergency Fund',
+      target: { minorUnits: '1000000', currency: 'USD' },
+      current: { minorUnits: '500000', currency: 'USD' },
+      progress: 0.5,
+      status: 'at_risk',
+    },
   ],
   fullyFunded: 0,
 };
@@ -520,8 +617,25 @@ describe('Targets page', () => {
 
   it('fetches /api/targets/health and /api/sinking-fund/health on mount', async () => {
     mockFetch.mockImplementation((url: string) => {
-      if (url.includes('/targets/health')) return Promise.resolve(okEnvelope({ categories: [], overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundCount: 0 }));
-      if (url.includes('/sinking-fund/health')) return Promise.resolve(okEnvelope({ sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 }));
+      if (url.includes('/targets/health'))
+        return Promise.resolve(
+          okEnvelope({
+            categories: [],
+            overallLabel: 'unknown',
+            healthyCount: 0,
+            atRiskCount: 0,
+            sinkingFundCount: 0,
+          }),
+        );
+      if (url.includes('/sinking-fund/health'))
+        return Promise.resolve(
+          okEnvelope({
+            sinkingFunds: [],
+            fullyFundedCount: 0,
+            partiallyFundedCount: 0,
+            unfundedCount: 0,
+          }),
+        );
       return Promise.resolve(okEnvelope({}));
     });
     shallowMount(TargetsPage, { global: { stubs: targetStubs } });
@@ -532,8 +646,25 @@ describe('Targets page', () => {
 
   it('shows no-config state when no data available', async () => {
     mockFetch.mockImplementation((url: string) => {
-      if (url.includes('/targets/health')) return Promise.resolve(okEnvelope({ categories: [], overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundCount: 0 }));
-      if (url.includes('/sinking-fund/health')) return Promise.resolve(okEnvelope({ sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 }));
+      if (url.includes('/targets/health'))
+        return Promise.resolve(
+          okEnvelope({
+            categories: [],
+            overallLabel: 'unknown',
+            healthyCount: 0,
+            atRiskCount: 0,
+            sinkingFundCount: 0,
+          }),
+        );
+      if (url.includes('/sinking-fund/health'))
+        return Promise.resolve(
+          okEnvelope({
+            sinkingFunds: [],
+            fullyFundedCount: 0,
+            partiallyFundedCount: 0,
+            unfundedCount: 0,
+          }),
+        );
       return Promise.resolve(okEnvelope({}));
     });
     const wrapper = shallowMount(TargetsPage, { global: { stubs: targetStubs } });
@@ -544,7 +675,15 @@ describe('Targets page', () => {
   it('renders healthy target category with badge', async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url.includes('/targets/health')) return Promise.resolve(okEnvelope(healthyTargetResult));
-      if (url.includes('/sinking-fund/health')) return Promise.resolve(okEnvelope({ sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 }));
+      if (url.includes('/sinking-fund/health'))
+        return Promise.resolve(
+          okEnvelope({
+            sinkingFunds: [],
+            fullyFundedCount: 0,
+            partiallyFundedCount: 0,
+            unfundedCount: 0,
+          }),
+        );
       return Promise.resolve(okEnvelope({}));
     });
     const wrapper = shallowMount(TargetsPage, { global: { stubs: targetStubs } });
@@ -556,7 +695,15 @@ describe('Targets page', () => {
   it('renders at-risk target category', async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url.includes('/targets/health')) return Promise.resolve(okEnvelope(atRiskTargetResult));
-      if (url.includes('/sinking-fund/health')) return Promise.resolve(okEnvelope({ sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 }));
+      if (url.includes('/sinking-fund/health'))
+        return Promise.resolve(
+          okEnvelope({
+            sinkingFunds: [],
+            fullyFundedCount: 0,
+            partiallyFundedCount: 0,
+            unfundedCount: 0,
+          }),
+        );
       return Promise.resolve(okEnvelope({}));
     });
     const wrapper = shallowMount(TargetsPage, { global: { stubs: targetStubs } });
@@ -567,7 +714,8 @@ describe('Targets page', () => {
   it('renders sinking fund with progress', async () => {
     mockFetch.mockImplementation((url: string) => {
       if (url.includes('/targets/health')) return Promise.resolve(okEnvelope(healthyTargetResult));
-      if (url.includes('/sinking-fund/health')) return Promise.resolve(okEnvelope(partiallyFundedSinkingResult));
+      if (url.includes('/sinking-fund/health'))
+        return Promise.resolve(okEnvelope(partiallyFundedSinkingResult));
       return Promise.resolve(okEnvelope({}));
     });
     const wrapper = shallowMount(TargetsPage, { global: { stubs: targetStubs } });
@@ -578,8 +726,17 @@ describe('Targets page', () => {
 
   it('shows overall label', async () => {
     mockFetch.mockImplementation((url: string) => {
-      if (url.includes('/targets/health')) return Promise.resolve(okEnvelope({ ...healthyTargetResult, overallLabel: 'healthy' }));
-      if (url.includes('/sinking-fund/health')) return Promise.resolve(okEnvelope({ sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 }));
+      if (url.includes('/targets/health'))
+        return Promise.resolve(okEnvelope({ ...healthyTargetResult, overallLabel: 'healthy' }));
+      if (url.includes('/sinking-fund/health'))
+        return Promise.resolve(
+          okEnvelope({
+            sinkingFunds: [],
+            fullyFundedCount: 0,
+            partiallyFundedCount: 0,
+            unfundedCount: 0,
+          }),
+        );
       return Promise.resolve(okEnvelope({}));
     });
     const wrapper = shallowMount(TargetsPage, { global: { stubs: targetStubs } });
@@ -604,11 +761,28 @@ const indexStubs = { ...stubs };
 
 const attentionResult = {
   blockers: [
-    { code: 'stale_sync', message: 'Ledger sync is stale by 14 days', severity: 'critical', entityType: 'synchronization' },
+    {
+      code: 'stale_sync',
+      message: 'Ledger sync is stale by 14 days',
+      severity: 'critical',
+      entityType: 'synchronization',
+    },
   ],
   alerts: [
-    { code: 'category_overspent', message: 'Groceries category is overspent', severity: 'warning', categoryId: 'cat_groceries', categoryName: 'Groceries' },
-    { code: 'target_at_risk', message: 'Vacation fund behind schedule', severity: 'warning', categoryId: 'cat_vacation', categoryName: 'Vacation' },
+    {
+      code: 'category_overspent',
+      message: 'Groceries category is overspent',
+      severity: 'warning',
+      categoryId: 'cat_groceries',
+      categoryName: 'Groceries',
+    },
+    {
+      code: 'target_at_risk',
+      message: 'Vacation fund behind schedule',
+      severity: 'warning',
+      categoryId: 'cat_vacation',
+      categoryName: 'Vacation',
+    },
   ],
   targetProgress: {
     overallLabel: 'at_risk',
@@ -618,11 +792,32 @@ const attentionResult = {
     totalSinkingFunds: 3,
   },
   categoryRisks: [
-    { categoryId: 'cat_groceries', categoryName: 'Groceries', risk: 'high', reasonCodes: ['over_budget', 'declining_trend'], remainingBudget: { minorUnits: '5000', currency: 'USD' }, daysRemaining: 5 },
-    { categoryId: 'cat_dining', categoryName: 'Dining', risk: 'medium', reasonCodes: ['approaching_limit'], remainingBudget: { minorUnits: '20000', currency: 'USD' }, daysRemaining: 12 },
+    {
+      categoryId: 'cat_groceries',
+      categoryName: 'Groceries',
+      risk: 'high',
+      reasonCodes: ['over_budget', 'declining_trend'],
+      remainingBudget: { minorUnits: '5000', currency: 'USD' },
+      daysRemaining: 5,
+    },
+    {
+      categoryId: 'cat_dining',
+      categoryName: 'Dining',
+      risk: 'medium',
+      reasonCodes: ['approaching_limit'],
+      remainingBudget: { minorUnits: '20000', currency: 'USD' },
+      daysRemaining: 12,
+    },
   ],
   recurrences: [
-    { payeeName: 'Netflix', amount: { minorUnits: '1599', currency: 'USD' }, frequency: 'monthly', occurrences: 12, lastOccurrence: '2026-07-01', isEstimated: false },
+    {
+      payeeName: 'Netflix',
+      amount: { minorUnits: '1599', currency: 'USD' },
+      frequency: 'monthly',
+      occurrences: 12,
+      lastOccurrence: '2026-07-01',
+      isEstimated: false,
+    },
   ],
 };
 
@@ -636,7 +831,10 @@ describe('Index (Overview) page', () => {
     mockFetch.mockResolvedValue(okEnvelope(attentionResult));
     shallowMount(IndexPage, { global: { stubs: indexStubs } });
     await flushPromises();
-    expect(mockFetch).toHaveBeenCalledWith('/api/home/attention', expect.objectContaining({ query: expect.any(Object) }));
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/home/attention',
+      expect.objectContaining({ query: expect.any(Object) }),
+    );
   });
 
   it('renders priority order: blockers before alerts', async () => {
@@ -717,7 +915,13 @@ describe('Index (Overview) page', () => {
   });
 
   it('shows freshness metadata', async () => {
-    mockFetch.mockResolvedValue(okEnvelope(attentionResult, { isStale: false, lastSync: '2026-07-15T10:00:00Z', label: 'current' }));
+    mockFetch.mockResolvedValue(
+      okEnvelope(attentionResult, {
+        isStale: false,
+        lastSync: '2026-07-15T10:00:00Z',
+        label: 'current',
+      }),
+    );
     const wrapper = shallowMount(IndexPage, { global: { stubs: indexStubs } });
     await flushPromises();
     expect(wrapper.text()).toContain('test@example.com');
@@ -748,16 +952,42 @@ const reportsStubs = { ...stubs };
 
 const historyResult = {
   entries: [
-    { id: 'r-1', reportType: 'spending', budgetId: 'b-1', generatedAt: '2026-07-15T10:00:00Z', label: 'July Spending', isExpired: false },
-    { id: 'r-2', reportType: 'income', budgetId: 'b-1', generatedAt: '2026-06-15T10:00:00Z', label: 'June Income', isExpired: true },
+    {
+      id: 'r-1',
+      reportType: 'spending',
+      budgetId: 'b-1',
+      generatedAt: '2026-07-15T10:00:00Z',
+      label: 'July Spending',
+      isExpired: false,
+    },
+    {
+      id: 'r-2',
+      reportType: 'income',
+      budgetId: 'b-1',
+      generatedAt: '2026-06-15T10:00:00Z',
+      label: 'June Income',
+      isExpired: true,
+    },
   ],
   total: 2,
 };
 
 const viewsResult = {
   views: [
-    { viewId: 'v-1', name: 'Monthly Overview', viewType: 'reports', scope: { monthRange: '2026-07' }, createdAt: '2026-07-10T10:00:00Z' },
-    { viewId: 'v-2', name: 'Q2 Spending', viewType: 'reports', scope: { monthRange: '2026-04:2026-06' }, createdAt: '2026-07-01T10:00:00Z' },
+    {
+      viewId: 'v-1',
+      name: 'Monthly Overview',
+      viewType: 'reports',
+      scope: { monthRange: '2026-07' },
+      createdAt: '2026-07-10T10:00:00Z',
+    },
+    {
+      viewId: 'v-2',
+      name: 'Q2 Spending',
+      viewType: 'reports',
+      scope: { monthRange: '2026-04:2026-06' },
+      createdAt: '2026-07-01T10:00:00Z',
+    },
   ],
   total: 2,
 };
@@ -817,8 +1047,10 @@ describe('Reports page — saved-view compatible', () => {
 
   it('shows empty state when no data', async () => {
     mockFetch.mockImplementation((url: string) => {
-      if (url.includes('/reports/history')) return Promise.resolve(okEnvelope({ entries: [], total: 0 }));
-      if (url.includes('/reports/views')) return Promise.resolve(okEnvelope({ views: [], total: 0 }));
+      if (url.includes('/reports/history'))
+        return Promise.resolve(okEnvelope({ entries: [], total: 0 }));
+      if (url.includes('/reports/views'))
+        return Promise.resolve(okEnvelope({ views: [], total: 0 }));
       return Promise.resolve(okEnvelope({}));
     });
     const wrapper = shallowMount(ReportsPage, { global: { stubs: reportsStubs } });

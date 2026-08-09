@@ -83,7 +83,8 @@ const uiStubs = {
   },
   UButton: RouterButton,
   UCard: {
-    template: '<article><header><slot name="header" /></header><slot /><footer><slot name="footer" /></footer></article>',
+    template:
+      '<article><header><slot name="header" /></header><slot /><footer><slot name="footer" /></footer></article>',
   },
   UContainer: { template: '<main><slot /></main>' },
   UIcon: { template: '<span />' },
@@ -269,7 +270,6 @@ describe('Dashboard recovery', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/config');
   });
 
-
   it('waits for pending session hydration before loading authenticated attention', async () => {
     auth.session.value = { data: null, isPending: true };
     fetchMock.mockRejectedValue({
@@ -299,7 +299,9 @@ describe('Dashboard recovery', () => {
       expect.objectContaining({ query: expect.any(Object) }),
     );
     expect(wrapper.get('[role="alert"]').text()).toContain('not_connected');
-    expect(wrapper.get('[role="alert"]').text()).toContain('No ledger connected. Configure an Actual budget first.');
+    expect(wrapper.get('[role="alert"]').text()).toContain(
+      'No ledger connected. Configure an Actual budget first.',
+    );
     expect(wrapper.get('a[href="/connection"]').text()).toContain('Configure Actual connection');
   });
 
@@ -341,7 +343,9 @@ describe('Dashboard recovery', () => {
     );
     expect(fetchMock).not.toHaveBeenCalledWith('/api/auth/config');
     expect(wrapper.get('[role="alert"]').text()).toContain('not_connected');
-    expect(wrapper.get('[role="alert"]').text()).toContain('No ledger connected. Configure an Actual budget first.');
+    expect(wrapper.get('[role="alert"]').text()).toContain(
+      'No ledger connected. Configure an Actual budget first.',
+    );
     expect(wrapper.get('a[href="/connection"]').text()).toContain('Configure Actual connection');
   });
   it('loads attention when an initially unauthenticated session hydrates to the authenticated owner', async () => {
@@ -395,7 +399,9 @@ describe('Dashboard recovery', () => {
       expect.objectContaining({ query: expect.any(Object) }),
     );
     expect(wrapper.get('[role="alert"]').text()).toContain('not_connected');
-    expect(wrapper.get('[role="alert"]').text()).toContain('No ledger connected. Configure an Actual budget first.');
+    expect(wrapper.get('[role="alert"]').text()).toContain(
+      'No ledger connected. Configure an Actual budget first.',
+    );
     expect(wrapper.get('a[href="/connection"]').text()).toContain('Configure Actual connection');
   });
 
@@ -437,7 +443,9 @@ describe('Dashboard recovery', () => {
       expect.objectContaining({ query: expect.any(Object), retry: 0 }),
     );
     expect(wrapper.get('[role="status"][aria-label="Loading"]').exists()).toBe(true);
-    expect(wrapper.get('[data-testid="direct-auth-fallback"]').text()).toContain('owner@example.test');
+    expect(wrapper.get('[data-testid="direct-auth-fallback"]').text()).toContain(
+      'owner@example.test',
+    );
 
     configRequest.resolve({
       result: {
@@ -466,7 +474,9 @@ describe('Dashboard recovery', () => {
     await flushPromises();
 
     expect(wrapper.find('[role="status"][aria-label="Loading"]').exists()).toBe(false);
-    expect(wrapper.get('[role="alert"]').text()).toContain('Owner attention requires a connection.');
+    expect(wrapper.get('[role="alert"]').text()).toContain(
+      'Owner attention requires a connection.',
+    );
     expect(wrapper.get('a[href="/connection"]').text()).toContain('Configure Actual connection');
     expect(wrapper.find('a[href="/setup"]').exists()).toBe(false);
   });
@@ -506,17 +516,21 @@ describe('Dashboard recovery', () => {
       expect.objectContaining({ query: expect.any(Object), retry: 0 }),
     );
     expect(wrapper.get('[role="status"][aria-label="Loading"]').exists()).toBe(true);
-    expect(wrapper.get('[data-testid="direct-auth-fallback"]').text()).toContain('owner-two@example.test');
+    expect(wrapper.get('[data-testid="direct-auth-fallback"]').text()).toContain(
+      'owner-two@example.test',
+    );
 
     firstAttentionRequest.resolve({
       ...attentionResponse(),
       result: {
         ...attentionResult,
-        blockers: [{
-          ...attentionResult.blockers[0],
-          code: 'old_owner_attention',
-          message: 'Old owner attention',
-        }],
+        blockers: [
+          {
+            ...attentionResult.blockers[0],
+            code: 'old_owner_attention',
+            message: 'Old owner attention',
+          },
+        ],
       },
     });
     await flushPromises();
@@ -529,11 +543,13 @@ describe('Dashboard recovery', () => {
       ...attentionResponse(),
       result: {
         ...attentionResult,
-        blockers: [{
-          ...attentionResult.blockers[0],
-          code: 'new_owner_attention',
-          message: 'New owner attention',
-        }],
+        blockers: [
+          {
+            ...attentionResult.blockers[0],
+            code: 'new_owner_attention',
+            message: 'New owner attention',
+          },
+        ],
       },
     });
     await flushPromises();

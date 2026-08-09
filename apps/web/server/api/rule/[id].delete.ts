@@ -14,7 +14,12 @@ import { setResponseStatus } from 'h3';
 import type { LedgerHandle, RuleOperationResult, RuleListItem } from '../../utils/rule-types';
 import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
-  getWorkflowStore, okEnvelope, errorEnvelope, requireAuthorization, buildAuthorizationInfo, sanitizeError,
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  requireAuthorization,
+  buildAuthorizationInfo,
+  sanitizeError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -35,84 +40,87 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('MISSING_RULE_ID', 'Rule ID is required.', authInfo, false, requestId);
   }
 
-  let ledger: LedgerHandle;
+  const manager = createMutationConnectionManager();
   try {
-    const manager = createMutationConnectionManager();
-    const connected = await manager.restore();
-    ledger = connected.connector as unknown as LedgerHandle;
+    return await manager.withConnection(
+      async ({ connector }) => {
+        const ledger = connector as unknown as LedgerHandle;
+
+        // Attempt the deletion on the ledger
+        let mutateResult: RuleOperationResult;
+        try {
+          mutateResult = await ledger.deleteRule(ruleId);
+        } catch (err) {
+          const safe = sanitizeError(err, requestId, 'RULE_DELETE_FAILED', true);
+          setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
+          return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+        }
+
+        if (!mutateResult.success) {
+          setResponseStatus(event, 500);
+          return errorEnvelope(
+            mutateResult.code || 'RULE_DELETE_FAILED',
+            mutateResult.error || 'Ledger reported that the rule was not deleted.',
+            authInfo,
+            mutateResult.code === 'RULE_HAS_SCHEDULE' ? false : true,
+            requestId,
+          );
+        }
+
+        // Synchronise and re-read to verify the rule is actually gone
+        try {
+          await ledger.synchronize();
+        } catch {
+          setResponseStatus(event, 500);
+          return errorEnvelope(
+            'SYNC_FAILED',
+            'Delete succeeded but post-delete synchronisation failed — the rule may still exist.',
+            authInfo,
+            true,
+            requestId,
+          );
+        }
+
+        let remaining: RuleListItem[];
+        try {
+          remaining = await ledger.listRules();
+        } catch {
+          setResponseStatus(event, 500);
+          return errorEnvelope(
+            'VERIFICATION_FAILED',
+            'Delete succeeded but re-read verification could not confirm absence.',
+            authInfo,
+            true,
+            requestId,
+          );
+        }
+
+        const stillPresent = remaining.find((r) => r.id === ruleId);
+        if (stillPresent) {
+          setResponseStatus(event, 500);
+          return errorEnvelope(
+            'VERIFICATION_FAILED',
+            'Rule still present after delete — the ledger may have experienced a conflict.',
+            authInfo,
+            true,
+            requestId,
+          );
+        }
+
+        // Remove local override only after verified deletion
+        try {
+          await wf.store.removeRuleOverride(ruleId);
+        } catch {
+          // Non-fatal: stale override will be cleaned up on next read
+        }
+
+        return okEnvelope({ deleted: true, id: ruleId }, authInfo, requestId);
+      },
+      { dispose: true },
+    );
   } catch (err) {
     const safe = sanitizeError(err, requestId, 'LEDGER_UNAVAILABLE', true);
     setResponseStatus(event, 503);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
-
-  // Attempt the deletion on the ledger
-  let mutateResult: RuleOperationResult;
-  try {
-    mutateResult = await ledger.deleteRule(ruleId);
-  } catch (err) {
-    const safe = sanitizeError(err, requestId, 'RULE_DELETE_FAILED', true);
-    setResponseStatus(event, 500);
-    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
-  }
-
-  if (!mutateResult.success) {
-    setResponseStatus(event, 500);
-    return errorEnvelope(
-      mutateResult.code || 'RULE_DELETE_FAILED',
-      mutateResult.error || 'Ledger reported that the rule was not deleted.',
-      authInfo,
-      mutateResult.code === 'RULE_HAS_SCHEDULE' ? false : true,
-      requestId,
-    );
-  }
-
-  // Synchronise and re-read to verify the rule is actually gone
-  try {
-    await ledger.synchronize();
-  } catch {
-    setResponseStatus(event, 500);
-    return errorEnvelope(
-      'SYNC_FAILED',
-      'Delete succeeded but post-delete synchronisation failed — the rule may still exist.',
-      authInfo,
-      true,
-      requestId,
-    );
-  }
-
-  let remaining: RuleListItem[];
-  try {
-    remaining = await ledger.listRules();
-  } catch {
-    setResponseStatus(event, 500);
-    return errorEnvelope(
-      'VERIFICATION_FAILED',
-      'Delete succeeded but re-read verification could not confirm absence.',
-      authInfo,
-      true,
-      requestId,
-    );
-  }
-
-  const stillPresent = remaining.find((r) => r.id === ruleId);
-  if (stillPresent) {
-    setResponseStatus(event, 500);
-    return errorEnvelope(
-      'VERIFICATION_FAILED',
-      'Rule still present after delete — the ledger may have experienced a conflict.',
-      authInfo,
-      true,
-      requestId,
-    );
-  }
-
-  // Remove local override only after verified deletion
-  try {
-    await wf.store.removeRuleOverride(ruleId);
-  } catch {
-    // Non-fatal: stale override will be cleaned up on next read
-  }
-
-  return okEnvelope({ deleted: true, id: ruleId }, authInfo, requestId);
 });

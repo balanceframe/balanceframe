@@ -62,7 +62,6 @@ function getNavigateToMock(): ReturnType<typeof vi.fn> {
   return n;
 }
 
-
 // ---------------------------------------------------------------------------
 // Shared component stubs
 // ---------------------------------------------------------------------------
@@ -70,8 +69,7 @@ function getNavigateToMock(): ReturnType<typeof vi.fn> {
 const uiStubs: Record<string, Component> = {
   UContainer: { template: '<div class="ui-container"><slot /></div>' },
   UCard: {
-    template:
-      '<div class="ui-card"><slot name="header" /><slot /><slot name="footer" /></div>',
+    template: '<div class="ui-card"><slot name="header" /><slot /><slot name="footer" /></div>',
   },
   UForm: { template: '<form class="ui-form"><slot /></form>' },
   UFormField: {
@@ -151,12 +149,8 @@ describe('login.vue — sign-in only, no sign-up affordance', () => {
 
   it('renders a sign-in form with email and password inputs', () => {
     const inputs = wrapper.findAll('input');
-    const emailInputs = inputs.filter(
-      (i) => i.attributes('type') === 'email',
-    );
-    const passwordInputs = inputs.filter(
-      (i) => i.attributes('type') === 'password',
-    );
+    const emailInputs = inputs.filter((i) => i.attributes('type') === 'email');
+    const passwordInputs = inputs.filter((i) => i.attributes('type') === 'password');
     expect(emailInputs.length).toBeGreaterThanOrEqual(1);
     expect(passwordInputs.length).toBeGreaterThanOrEqual(1);
     expect(wrapper.text()).toContain('Sign in');
@@ -395,8 +389,12 @@ describe('invite.vue — token fragment handling and redemption', () => {
     window.location.hash = '#token=abc123';
 
     // Simulate a terminal error (retryable: false) from the API
-    const serverError = new Error('Invalid invitation') as { data?: { error?: { message?: string; retryable?: boolean } } };
-    serverError.data = { error: { message: 'This invitation is invalid or has expired.', retryable: false } };
+    const serverError = new Error('Invalid invitation') as {
+      data?: { error?: { message?: string; retryable?: boolean } };
+    };
+    serverError.data = {
+      error: { message: 'This invitation is invalid or has expired.', retryable: false },
+    };
     fetchMock.mockRejectedValueOnce(serverError);
 
     wrapper = mount(InvitePage, { global: { stubs: uiStubs } });
@@ -424,8 +422,12 @@ describe('invite.vue — token fragment handling and redemption', () => {
     window.location.hash = '#token=abc123';
 
     // Simulate a validation error (retryable: true) from the API
-    const serverError = new Error('Password must be at least 8 characters') as { data?: { error?: { message?: string; retryable?: boolean } } };
-    serverError.data = { error: { message: 'Password must be at least 8 characters', retryable: true } };
+    const serverError = new Error('Password must be at least 8 characters') as {
+      data?: { error?: { message?: string; retryable?: boolean } };
+    };
+    serverError.data = {
+      error: { message: 'Password must be at least 8 characters', retryable: true },
+    };
     fetchMock.mockRejectedValueOnce(serverError);
 
     wrapper = mount(InvitePage, { global: { stubs: uiStubs } });
@@ -433,7 +435,7 @@ describe('invite.vue — token fragment handling and redemption', () => {
 
     wrapper.vm.name = 'Invited';
     wrapper.vm.email = 'invited@example.com';
-    wrapper.vm.password = '';  // too short or empty — triggers validation
+    wrapper.vm.password = ''; // too short or empty — triggers validation
     await flush();
 
     await wrapper.find('form').trigger('submit');
@@ -480,7 +482,9 @@ describe('invite.vue — token fragment handling and redemption', () => {
     await flush();
 
     // Simulate full lifecycle: form fill, submit (failure clears token)
-    const serverError = new Error('fail') as { data?: { error?: { message?: string; retryable?: boolean } } };
+    const serverError = new Error('fail') as {
+      data?: { error?: { message?: string; retryable?: boolean } };
+    };
     serverError.data = { error: { message: 'fail', retryable: false } };
     fetchMock.mockRejectedValueOnce(serverError);
     wrapper.vm.name = 'Test';

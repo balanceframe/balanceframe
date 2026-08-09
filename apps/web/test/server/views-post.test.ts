@@ -18,6 +18,7 @@ const {
   mockSetResponseStatus,
   mockGetWorkflowStore,
   mockRestore,
+  mockWithConnection,
   mockCreateDefaultConnectionManager,
   mockCreateNativeAnalysisProtocol,
 } = vi.hoisted(() => ({
@@ -25,7 +26,11 @@ const {
   mockSetResponseStatus: vi.fn(),
   mockGetWorkflowStore: vi.fn(),
   mockRestore: vi.fn(),
-  mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore })),
+  mockWithConnection: vi.fn(),
+  mockCreateDefaultConnectionManager: vi.fn(() => ({
+    restore: mockRestore,
+    withConnection: mockWithConnection,
+  })),
   mockCreateNativeAnalysisProtocol: vi.fn(),
 }));
 
@@ -37,7 +42,11 @@ const {
 
 vi.mock('@balanceframe/application', async (i) => {
   const a = await i();
-  return { ...a, createDefaultConnectionManager: mockCreateDefaultConnectionManager, createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol };
+  return {
+    ...a,
+    createDefaultConnectionManager: mockCreateDefaultConnectionManager,
+    createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol,
+  };
 });
 
 // ---------------------------------------------------------------------------
@@ -73,7 +82,13 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result,
     error: null,
   }),
-  errorEnvelope: (code: string, message: string, _auth: unknown, retryable?: boolean, requestId?: string) => ({
+  errorEnvelope: (
+    code: string,
+    message: string,
+    _auth: unknown,
+    retryable?: boolean,
+    requestId?: string,
+  ) => ({
     schemaVersion: '1',
     requestId: requestId ?? 'test-req',
     status: 'error' as const,
@@ -132,18 +147,32 @@ function validBody(): Record<string, unknown> {
 beforeEach(() => {
   mockGetWorkflowStore.mockReturnValue({
     store: {
-      createSavedView: vi.fn(async (input: { name: string; viewType: string; scope: Record<string, unknown>; sort?: string }) => ({
-        viewId: 'view_default',
-        name: input.name,
-        viewType: input.viewType,
-        scope: input.scope,
-        ...(input.sort ? { sort: input.sort } : {}),
-        createdAt: '2026-07-27T12:00:00Z',
-      })),
+      createSavedView: vi.fn(
+        async (input: {
+          name: string;
+          viewType: string;
+          scope: Record<string, unknown>;
+          sort?: string;
+        }) => ({
+          viewId: 'view_default',
+          name: input.name,
+          viewType: input.viewType,
+          scope: input.scope,
+          ...(input.sort ? { sort: input.sort } : {}),
+          createdAt: '2026-07-27T12:00:00Z',
+        }),
+      ),
       listSavedViews: vi.fn(async () => []),
     },
   });
-  mockRestore.mockResolvedValue({ connector: { name: 'm' }, budget: { id: 'b', groupId: 'g', name: 'T', encrypted: false }, synchronization: {} });
+  mockRestore.mockResolvedValue({
+    connector: { name: 'm' },
+    budget: { id: 'b', groupId: 'g', name: 'T', encrypted: false },
+    synchronization: {},
+  });
+  mockWithConnection.mockImplementation(
+    async (operation: (connected: unknown) => Promise<unknown>) => operation(await mockRestore()),
+  );
   mockCreateNativeAnalysisProtocol.mockResolvedValue({ createSavedView: vi.fn() });
 });
 
@@ -155,12 +184,9 @@ describe('POST /api/reports/views', () => {
   it('rejects malformed JSON body with 400', async () => {
     mockReadBody.mockRejectedValue(new Error('JSON parse error'));
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      400,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
     expect(response.status).toBe('error');
     expect(response.error).not.toBeNull();
     expect(response.error!.code).toBe('INVALID_JSON');
@@ -173,12 +199,9 @@ describe('POST /api/reports/views', () => {
       scope: {},
     });
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      422,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 422);
     expect(response.status).toBe('error');
     expect(response.error).not.toBeNull();
     expect(response.error!.code).toBe('MISSING_NAME');
@@ -191,12 +214,9 @@ describe('POST /api/reports/views', () => {
       scope: {},
     });
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      422,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 422);
     expect(response.status).toBe('error');
     expect(response.error).not.toBeNull();
     expect(response.error!.code).toBe('MISSING_VIEW_TYPE');
@@ -205,7 +225,7 @@ describe('POST /api/reports/views', () => {
   it('accepts valid body and returns ok envelope with persisted view', async () => {
     mockReadBody.mockResolvedValue(validBody());
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
     expect(mockSetResponseStatus).not.toHaveBeenCalled();
     expect(response.status).toBe('ok');
@@ -222,11 +242,27 @@ describe('POST /api/reports/views', () => {
     expect((response.result as Record<string, unknown>).view).toHaveProperty('createdAt');
   });
 
+  it('creates a saved view from the workflow store without opening a ledger connection', async () => {
+    mockWithConnection.mockRejectedValue(
+      Object.assign(new Error('No BalanceFrame connection configured.'), {
+        code: 'not_connected',
+      }),
+    );
+    mockReadBody.mockResolvedValue(validBody());
+
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
+
+    expect(response.status).toBe('ok');
+    expect(response.result).toHaveProperty('view');
+    expect(mockWithConnection).not.toHaveBeenCalled();
+    expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
+  });
+
   it('persists exact scope as passed in body', async () => {
     const scope = { month: '2026-07', detailed: true, tags: ['budget', 'quarterly'] };
     mockReadBody.mockResolvedValue({ name: 'Q3 View', viewType: 'budget_summary', scope });
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     expect((response.result as Record<string, unknown>).view).toMatchObject({ scope });
@@ -235,16 +271,20 @@ describe('POST /api/reports/views', () => {
   it('defaults scope to empty object when missing', async () => {
     mockReadBody.mockResolvedValue({ name: 'Minimal', viewType: 'attention' });
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     expect((response.result as Record<string, unknown>).view).toMatchObject({ scope: {} });
   });
 
   it('defaults scope to empty object when scope is not an object', async () => {
-    mockReadBody.mockResolvedValue({ name: 'Bad Scope', viewType: 'attention', scope: 'not-an-object' });
+    mockReadBody.mockResolvedValue({
+      name: 'Bad Scope',
+      viewType: 'attention',
+      scope: 'not-an-object',
+    });
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     expect((response.result as Record<string, unknown>).view).toMatchObject({ scope: {} });
@@ -253,7 +293,7 @@ describe('POST /api/reports/views', () => {
   it('makes sort optional', async () => {
     mockReadBody.mockResolvedValue({ name: 'No Sort', viewType: 'attention', scope: {} });
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
     expect(response.status).toBe('ok');
     const view = (response.result as Record<string, unknown>).view as Record<string, unknown>;
@@ -264,12 +304,9 @@ describe('POST /api/reports/views', () => {
     mockGetWorkflowStore.mockReturnValue({ error: 'Store not configured' });
     mockReadBody.mockResolvedValue(validBody());
 
-    const response = await handler(mockEvent()) as ResponseEnvelope;
+    const response = (await handler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(
-      expect.anything(),
-      503,
-    );
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
     expect(response.status).toBe('error');
     expect(response.error!.code).toBe('STORE_UNAVAILABLE');
   });

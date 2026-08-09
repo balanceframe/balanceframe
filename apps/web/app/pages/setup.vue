@@ -3,19 +3,13 @@
     <UCard class="w-full max-w-md">
       <template #header>
         <h1 class="text-2xl font-bold">BalanceFrame</h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Set up your instance
-        </p>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Set up your instance</p>
       </template>
 
-      <div v-if="loading" class="text-sm text-gray-400 text-center py-4">
-        Loading...
-      </div>
+      <div v-if="loading" class="text-sm text-gray-400 text-center py-4">Loading...</div>
 
       <div v-else-if="!bootstrapAvailable" class="text-center py-4">
-        <p class="text-gray-500 dark:text-gray-400 mb-4">
-          This instance has already been set up.
-        </p>
+        <p class="text-gray-500 dark:text-gray-400 mb-4">This instance has already been set up.</p>
         <UButton to="/login" label="Sign in" size="lg" />
       </div>
 
@@ -162,8 +156,7 @@ async function handleBootstrap() {
 
     await navigateTo('/login');
   } catch (e: unknown) {
-    const msg =
-      e instanceof Error ? e.message : 'Setup failed. Please try again.';
+    const msg = e instanceof Error ? e.message : 'Setup failed. Please try again.';
     error.value = msg;
   } finally {
     loadingSubmit.value = false;

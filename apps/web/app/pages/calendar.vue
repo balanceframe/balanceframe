@@ -17,13 +17,17 @@
           </UCard>
           <UCard>
             <template #header><span class="font-semibold">Unpaid Count</span></template>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white" data-testid="unpaid-count">{{ unpaidCount }}</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white" data-testid="unpaid-count">
+              {{ unpaidCount }}
+            </p>
           </UCard>
         </div>
 
         <!-- Entries table -->
         <div v-if="entries.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Bill Calendar Entries</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Bill Calendar Entries
+          </h3>
           <AnalysisTable :columns="entryColumns" :rows="entryRows" />
         </div>
 
@@ -86,7 +90,7 @@ const entryColumns = [
 ];
 
 const entryRows = computed(() =>
-  entries.value.map(e => ({
+  entries.value.map((e) => ({
     name: e.name,
     amount: e.amount,
     dueDate: e.dueDate,
@@ -96,18 +100,23 @@ const entryRows = computed(() =>
 
 onMounted(async () => {
   try {
-    const res = await $fetch<Envelope<{
-      entries: BillCalendarEntry[];
-      totalUnpaid: Amount | null;
-      unpaidCount: number;
-    }>>('/api/calendar', { query: { referenceDate: referenceDate.value } });
+    const res = await $fetch<
+      Envelope<{
+        entries: BillCalendarEntry[];
+        totalUnpaid: Amount | null;
+        unpaidCount: number;
+      }>
+    >('/api/calendar', { query: { referenceDate: referenceDate.value } });
     if (res.status === 'ok' && res.result) {
       entries.value = res.result.entries;
       totalUnpaid.value = res.result.totalUnpaid;
       unpaidCount.value = res.result.unpaidCount;
       freshness.value = res.dataFreshness;
     } else {
-      error.value = { code: res.error?.code ?? 'UNKNOWN', message: res.error?.message ?? 'Calendar analysis returned an error.' };
+      error.value = {
+        code: res.error?.code ?? 'UNKNOWN',
+        message: res.error?.message ?? 'Calendar analysis returned an error.',
+      };
     }
   } catch (e) {
     error.value = { code: 'FETCH_ERROR', message: String(e) };

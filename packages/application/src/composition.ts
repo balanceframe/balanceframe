@@ -165,9 +165,23 @@ export interface ObserveCompositionOptions {
   workflowStore?: {
     cancelPendingJobs(): Promise<number>;
     deleteActorMembership(actorId: string): Promise<boolean>;
-    recordExport(input: { budgetName: string; exportPath: string; accountCount: number; transactionCount: number }): Promise<void>;
-    getLastExport(): Promise<{ exportedAt: string; budgetName: string; exportPath: string; accountCount: number; transactionCount: number } | null>;
-    deleteScopeData(scope: string, options?: { actorId?: string }): Promise<{ deleted: Record<string, number>; retained: { count: number; reasons: string[] } }>;
+    recordExport(input: {
+      budgetName: string;
+      exportPath: string;
+      accountCount: number;
+      transactionCount: number;
+    }): Promise<void>;
+    getLastExport(): Promise<{
+      exportedAt: string;
+      budgetName: string;
+      exportPath: string;
+      accountCount: number;
+      transactionCount: number;
+    } | null>;
+    deleteScopeData(
+      scope: string,
+      options?: { actorId?: string },
+    ): Promise<{ deleted: Record<string, number>; retained: { count: number; reasons: string[] } }>;
   } & Partial<NotificationStoreMethods>;
 
   /** Actor ID override (default: 'usr_cli'). */
@@ -273,7 +287,8 @@ export interface ObserveComposition {
  * methods are declared as optional in the options type so that callers
  * providing only lifecycle functionality are not broken.
  */
-export type NotificationStoreMethods = Pick<WorkflowStore,
+export type NotificationStoreMethods = Pick<
+  WorkflowStore,
   | 'createNotificationEvent'
   | 'getNotificationEvent'
   | 'enqueueNotification'
@@ -298,9 +313,7 @@ export type NotificationStoreMethods = Pick<WorkflowStore,
  * methods).  Used in {@link createObserveComposition} to decide whether
  * to construct a {@link NotificationRuntime} from a generic store.
  */
-function isNotificationStore(
-  store: Record<string, unknown>,
-): store is NotificationStoreMethods {
+function isNotificationStore(store: Record<string, unknown>): store is NotificationStoreMethods {
   const required: Array<keyof NotificationStoreMethods> = [
     'createNotificationEvent',
     'enqueueNotification',
@@ -395,9 +408,7 @@ async function loadNativeBindings(
 // Native analysis protocol factory
 // ---------------------------------------------------------------------------
 
-function isSynchronizableLedger(
-  value: unknown,
-): value is { synchronize(): Promise<unknown> } {
+function isSynchronizableLedger(value: unknown): value is { synchronize(): Promise<unknown> } {
   return (
     value !== null &&
     typeof value === 'object' &&
@@ -406,13 +417,28 @@ function isSynchronizableLedger(
   );
 }
 
+function isLatestSynchronizationProvider(
+  value: unknown,
+): value is { getLatestSynchronization(): unknown } {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'getLatestSynchronization' in value &&
+    typeof value.getLatestSynchronization === 'function'
+  );
+}
+
+function snapshotFromSynchronization(value: unknown): unknown | null {
+  return value !== null && typeof value === 'object' && 'snapshot' in value
+    ? (value as Record<string, unknown>).snapshot
+    : null;
+}
+
 /**
  * Type guard: true when `value` has a `disconnect(): Promise<void>` method.
  * Used to detect BudgetLedger instances that support disconnect cleanup.
  */
-function isDisconnectableLedger(
-  value: unknown,
-): value is { disconnect(): Promise<void> } {
+function isDisconnectableLedger(value: unknown): value is { disconnect(): Promise<void> } {
   return (
     value !== null &&
     typeof value === 'object' &&
@@ -444,10 +470,12 @@ export async function createNativeAnalysisProtocol(
    * If the ledger is not synchronizable, returns null.
    */
   const obtainSnapshot = async (ledger: unknown): Promise<unknown> => {
+    if (isLatestSynchronizationProvider(ledger)) {
+      const latest = snapshotFromSynchronization(ledger.getLatestSynchronization());
+      if (latest !== null) return latest;
+    }
     if (!isSynchronizableLedger(ledger)) return null;
-    const syncResult = await ledger.synchronize();
-    if (!syncResult || typeof syncResult !== 'object' || !('snapshot' in syncResult)) return null;
-    return (syncResult as Record<string, unknown>).snapshot;
+    return snapshotFromSynchronization(await ledger.synchronize());
   };
 
   // Native response parsing helpers -----------------------------------------
@@ -462,8 +490,11 @@ export async function createNativeAnalysisProtocol(
 
   const parsePurchaseResponse = (raw: string): PurchaseEvaluationResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native evaluatePurchase returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native evaluatePurchase returned invalid JSON.');
+    }
     return {
       allowable: parsed.allowable === true,
       reasonCodes: Array.isArray(parsed.reasonCodes) ? parsed.reasonCodes.map(String) : ['unknown'],
@@ -475,10 +506,16 @@ export async function createNativeAnalysisProtocol(
     };
   };
 
-  const parseCashFlowResponse = (raw: string, requestedMonths: number): CashFlowProjectionResult => {
+  const parseCashFlowResponse = (
+    raw: string,
+    requestedMonths: number,
+  ): CashFlowProjectionResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native projectCashFlow returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native projectCashFlow returned invalid JSON.');
+    }
     const projections = Array.isArray(parsed.monthlyProjections) ? parsed.monthlyProjections : [];
     return {
       projectionMonths: requestedMonths,
@@ -490,8 +527,10 @@ export async function createNativeAnalysisProtocol(
           projectedExpenses: asMoney(m.projectedExpenses) ?? { minorUnits: '0', currency: 'USD' },
           netChange: asMoney(m.netChange) ?? { minorUnits: '0', currency: 'USD' },
           endingBalance: asMoney(m.endingBalance) ?? { minorUnits: '0', currency: 'USD' },
-          scheduledIncomeCount: typeof m.scheduledIncomeCount === 'number' ? m.scheduledIncomeCount : 0,
-          scheduledExpenseCount: typeof m.scheduledExpenseCount === 'number' ? m.scheduledExpenseCount : 0,
+          scheduledIncomeCount:
+            typeof m.scheduledIncomeCount === 'number' ? m.scheduledIncomeCount : 0,
+          scheduledExpenseCount:
+            typeof m.scheduledExpenseCount === 'number' ? m.scheduledExpenseCount : 0,
         };
       }),
       sufficientData: parsed.sufficientData === true,
@@ -501,8 +540,11 @@ export async function createNativeAnalysisProtocol(
 
   const parseTargetHealthResponse = (raw: string): TargetHealthResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native evaluateTargetHealth returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native evaluateTargetHealth returned invalid JSON.');
+    }
     const categories = Array.isArray(parsed.categories) ? parsed.categories : [];
     const mapped = categories.map((c: unknown) => {
       const cat = c as Record<string, unknown>;
@@ -529,15 +571,20 @@ export async function createNativeAnalysisProtocol(
 
   const parseFinancialStateResponse = (raw: string): FinancialStateResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native evaluateFinancialState returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native evaluateFinancialState returned invalid JSON.');
+    }
     return {
       overallLabel: String(parsed.overallLabel ?? 'unknown'),
       netWorth: asMoney(parsed.netWorth) ?? { minorUnits: '0', currency: 'USD' },
       monthlyCashFlow: asMoney(parsed.monthlyCashFlow) ?? { minorUnits: '0', currency: 'USD' },
-      budgetAdherencePercent: typeof parsed.budgetAdherencePercent === 'number' ? parsed.budgetAdherencePercent : 0,
+      budgetAdherencePercent:
+        typeof parsed.budgetAdherencePercent === 'number' ? parsed.budgetAdherencePercent : 0,
       categoriesAtRisk: typeof parsed.categoriesAtRisk === 'number' ? parsed.categoriesAtRisk : 0,
-      sinkingFundsUnderfunded: typeof parsed.sinkingFundsUnderfunded === 'number' ? parsed.sinkingFundsUnderfunded : 0,
+      sinkingFundsUnderfunded:
+        typeof parsed.sinkingFundsUnderfunded === 'number' ? parsed.sinkingFundsUnderfunded : 0,
       advice: Array.isArray(parsed.advice) ? parsed.advice.map(String) : [],
       freshness: null,
     };
@@ -547,8 +594,11 @@ export async function createNativeAnalysisProtocol(
 
   const parseDataQualityResponse = (raw: string): DataQualityResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native computeDataQuality returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native computeDataQuality returned invalid JSON.');
+    }
     const dims = Array.isArray(parsed.dimensions) ? parsed.dimensions : [];
     return {
       overallScore: typeof parsed.overallScore === 'number' ? parsed.overallScore : null,
@@ -557,26 +607,40 @@ export async function createNativeAnalysisProtocol(
         return {
           dimension: String(dim.dimension ?? dim.name ?? ''),
           score: typeof dim.score === 'number' ? dim.score : null,
-          explanation: String(dim.explanation ?? (Array.isArray(dim.details) ? dim.details[0] : undefined) ?? ''),
+          explanation: String(
+            dim.explanation ?? (Array.isArray(dim.details) ? dim.details[0] : undefined) ?? '',
+          ),
           worstSeverity: typeof dim.worstSeverity === 'string' ? dim.worstSeverity : null,
         };
       }),
-      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [],
+      recommendations: Array.isArray(parsed.recommendations)
+        ? parsed.recommendations.map(String)
+        : [],
     };
   };
 
   const parseLiquidityCoverageResponse = (raw: string): LiquidityCoverageResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native computeLiquidityCoverage returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native computeLiquidityCoverage returned invalid JSON.');
+    }
     const obligations = Array.isArray(parsed.upcomingObligations) ? parsed.upcomingObligations : [];
     return {
       totalLiquid: asMoney(parsed.totalLiquid),
       totalObligations: asMoney(parsed.totalObligations),
-      coverage: Array.isArray(parsed.coverage) ? parsed.coverage.map((c: unknown) => {
-        const cr = c as Record<string, unknown>;
-        return { ratio: typeof cr.ratio === 'number' ? cr.ratio : 0, label: String(cr.label ?? '') };
-      }) : [],
+      coverage: Array.isArray(parsed.coverage)
+        ? parsed.coverage.map((c: unknown) => {
+            const cr = c as Record<string, unknown>;
+            if (cr.ratio !== null && typeof cr.ratio !== 'number') {
+              throw new Error(
+                'Native computeLiquidityCoverage returned an invalid coverage ratio.',
+              );
+            }
+            return { ratio: cr.ratio, label: String(cr.label ?? '') };
+          })
+        : [],
       upcomingObligations: obligations.map((o: unknown) => {
         const ob = o as Record<string, unknown>;
         return {
@@ -592,8 +656,11 @@ export async function createNativeAnalysisProtocol(
 
   const parseBillCalendarResponse = (raw: string): BillCalendarResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native computeBillCalendar returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native computeBillCalendar returned invalid JSON.');
+    }
     const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
     return {
       entries: entries.map((e: unknown) => {
@@ -613,137 +680,183 @@ export async function createNativeAnalysisProtocol(
 
   const parseBudgetVarianceResponse = (raw: string): BudgetVarianceResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native computeBudgetVariance returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native computeBudgetVariance returned invalid JSON.');
+    }
     return {
-      categoryVariances: Array.isArray(parsed.categoryVariances) ? parsed.categoryVariances.map((v: unknown) => {
-        const cv = v as Record<string, unknown>;
-        return {
-          categoryId: String(cv.categoryId ?? ''),
-          categoryName: String(cv.categoryName ?? ''),
-          budgeted: asMoney(cv.budgeted) ?? { minorUnits: '0', currency: 'USD' },
-          actual: asMoney(cv.actual) ?? { minorUnits: '0', currency: 'USD' },
-          variance: asMoney(cv.variance) ?? { minorUnits: '0', currency: 'USD' },
-          variancePercent: typeof cv.variancePercent === 'number' ? cv.variancePercent : 0,
-          label: String(cv.label ?? ''),
-        } as CategoryVariance;
-      }) : [],
-      trends: Array.isArray(parsed.trends) ? parsed.trends.map((t: unknown) => {
-        const tr = t as Record<string, unknown>;
-        return {
-          categoryId: String(tr.categoryId ?? ''),
-          categoryName: String(tr.categoryName ?? ''),
-          direction: String(tr.direction ?? 'stable') as TrendDirection,
-          avgChange: typeof tr.avgChange === 'number' ? tr.avgChange : 0,
-          periodsAnalyzed: typeof tr.periodsAnalyzed === 'number' ? tr.periodsAnalyzed : 0,
-          seasonalityDetected: tr.seasonalityDetected === true,
-        } as CategoryTrend;
-      }) : [],
+      categoryVariances: Array.isArray(parsed.categoryVariances)
+        ? parsed.categoryVariances.map((v: unknown) => {
+            const cv = v as Record<string, unknown>;
+            return {
+              categoryId: String(cv.categoryId ?? ''),
+              categoryName: String(cv.categoryName ?? ''),
+              budgeted: asMoney(cv.budgeted) ?? { minorUnits: '0', currency: 'USD' },
+              actual: asMoney(cv.actual) ?? { minorUnits: '0', currency: 'USD' },
+              variance: asMoney(cv.variance) ?? { minorUnits: '0', currency: 'USD' },
+              variancePercent: typeof cv.variancePercent === 'number' ? cv.variancePercent : 0,
+              label: String(cv.label ?? ''),
+            } as CategoryVariance;
+          })
+        : [],
+      trends: Array.isArray(parsed.trends)
+        ? parsed.trends.map((t: unknown) => {
+            const tr = t as Record<string, unknown>;
+            const avgChange = asMoney(tr.avgChange);
+            if (!avgChange) {
+              throw new Error(
+                'Native computeBudgetVariance returned an invalid average-change amount.',
+              );
+            }
+            return {
+              categoryId: String(tr.categoryId ?? ''),
+              categoryName: String(tr.categoryName ?? ''),
+              direction: String(tr.direction ?? 'stable') as TrendDirection,
+              avgChange,
+              periodsAnalyzed: typeof tr.periodsAnalyzed === 'number' ? tr.periodsAnalyzed : 0,
+              seasonalityDetected: tr.seasonalityDetected === true,
+            } as CategoryTrend;
+          })
+        : [],
       totalBudgeted: asMoney(parsed.totalBudgeted),
       totalActual: asMoney(parsed.totalActual),
       totalVariance: asMoney(parsed.totalVariance),
-      overallVariancePercent: typeof parsed.overallVariancePercent === 'number' ? parsed.overallVariancePercent : null,
+      overallVariancePercent:
+        typeof parsed.overallVariancePercent === 'number' ? parsed.overallVariancePercent : null,
     };
   };
 
   const parseIrregularObligationsResponse = (raw: string): IrregularObligationsResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native detectIrregularObligations returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native detectIrregularObligations returned invalid JSON.');
+    }
     return {
-      obligations: Array.isArray(parsed.obligations) ? parsed.obligations.map((o: unknown) => {
-        const ob = o as Record<string, unknown>;
-        return {
-          name: String(ob.name ?? ''),
-          kind: String(ob.kind ?? 'nonMonthly') as IrregularityKind,
-          typicalAmount: asMoney(ob.typicalAmount) ?? { minorUnits: '0', currency: 'USD' },
-          frequency: String(ob.frequency ?? ''),
-          categoryId: typeof ob.categoryId === 'string' ? ob.categoryId : null,
-          nextExpectedDate: typeof ob.nextExpectedDate === 'string' ? ob.nextExpectedDate : null,
-        } as IrregularObligation;
-      }) : [],
+      obligations: Array.isArray(parsed.obligations)
+        ? parsed.obligations.map((o: unknown) => {
+            const ob = o as Record<string, unknown>;
+            return {
+              name: String(ob.name ?? ''),
+              kind: String(ob.kind ?? 'nonMonthly') as IrregularityKind,
+              typicalAmount: asMoney(ob.typicalAmount) ?? { minorUnits: '0', currency: 'USD' },
+              frequency: String(ob.frequency ?? ''),
+              categoryId: typeof ob.categoryId === 'string' ? ob.categoryId : null,
+              nextExpectedDate:
+                typeof ob.nextExpectedDate === 'string' ? ob.nextExpectedDate : null,
+            } as IrregularObligation;
+          })
+        : [],
       totalEstimatedAnnual: asMoney(parsed.totalEstimatedAnnual),
     };
   };
 
   const parseIncomeReliabilityResponse = (raw: string): IncomeReliabilityResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native assessIncomeReliability returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native assessIncomeReliability returned invalid JSON.');
+    }
     return {
-      sources: Array.isArray(parsed.sources) ? parsed.sources.map((s: unknown) => {
-        const src = s as Record<string, unknown>;
-        return {
-          name: String(src.name ?? ''),
-          typicalMonthly: asMoney(src.typicalMonthly) ?? { minorUnits: '0', currency: 'USD' },
-          reliabilityScore: typeof src.reliabilityScore === 'number' ? src.reliabilityScore : 0,
-          variability: typeof src.variability === 'number' ? src.variability : 0,
-          paymentCount: typeof src.paymentCount === 'number' ? src.paymentCount : 0,
-          isRegular: src.isRegular === true,
-        } as IncomeSource;
-      }) : [],
+      sources: Array.isArray(parsed.sources)
+        ? parsed.sources.map((s: unknown) => {
+            const src = s as Record<string, unknown>;
+            return {
+              name: String(src.name ?? ''),
+              typicalMonthly: asMoney(src.typicalMonthly) ?? { minorUnits: '0', currency: 'USD' },
+              reliabilityScore: typeof src.reliabilityScore === 'number' ? src.reliabilityScore : 0,
+              variability: typeof src.variability === 'number' ? src.variability : 0,
+              paymentCount: typeof src.paymentCount === 'number' ? src.paymentCount : 0,
+              isRegular: src.isRegular === true,
+            } as IncomeSource;
+          })
+        : [],
       totalMonthly: asMoney(parsed.totalMonthly),
       overallScore: typeof parsed.overallScore === 'number' ? parsed.overallScore : null,
-      unreliableSourceCount: typeof parsed.unreliableSourceCount === 'number' ? parsed.unreliableSourceCount : 0,
+      unreliableSourceCount:
+        typeof parsed.unreliableSourceCount === 'number' ? parsed.unreliableSourceCount : 0,
     };
   };
 
   const parseForecastCalibrationResponse = (raw: string): ForecastCalibrationResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native evaluateForecastCalibration returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native evaluateForecastCalibration returned invalid JSON.');
+    }
     return {
-      metrics: Array.isArray(parsed.metrics) ? parsed.metrics.map((m: unknown) => {
-        const metric = m as Record<string, unknown>;
-        return {
-          metricName: String(metric.metricName ?? ''),
-          mape: typeof metric.mape === 'number' ? metric.mape : null,
-          bias: typeof metric.bias === 'number' ? metric.bias : null,
-          periodsCompared: typeof metric.periodsCompared === 'number' ? metric.periodsCompared : 0,
-          isCalibrated: metric.isCalibrated === true,
-        } as CalibrationMetric;
-      }) : [],
+      metrics: Array.isArray(parsed.metrics)
+        ? parsed.metrics.map((m: unknown) => {
+            const metric = m as Record<string, unknown>;
+            return {
+              metricName: String(metric.metricName ?? ''),
+              mape: typeof metric.mape === 'number' ? metric.mape : null,
+              bias: typeof metric.bias === 'number' ? metric.bias : null,
+              periodsCompared:
+                typeof metric.periodsCompared === 'number' ? metric.periodsCompared : 0,
+              isCalibrated: metric.isCalibrated === true,
+            } as CalibrationMetric;
+          })
+        : [],
       overallCalibrated: parsed.overallCalibrated === true,
-      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [],
+      recommendations: Array.isArray(parsed.recommendations)
+        ? parsed.recommendations.map(String)
+        : [],
     };
   };
 
   const parseScenarioComparisonResponse = (raw: string): ScenarioComparisonResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native compareScenarios returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native compareScenarios returned invalid JSON.');
+    }
     return {
-      deltas: Array.isArray(parsed.deltas) ? parsed.deltas.map((d: unknown) => {
-        const delta = d as Record<string, unknown>;
-        return {
-          dimension: String(delta.dimension ?? ''),
-          baselineValue: delta.baselineValue,
-          comparisonValue: delta.comparisonValue,
-          change: String(delta.change ?? ''),
-        } as ScenarioComparisonDelta;
-      }) : [],
+      deltas: Array.isArray(parsed.deltas)
+        ? parsed.deltas.map((d: unknown) => {
+            const delta = d as Record<string, unknown>;
+            return {
+              dimension: String(delta.dimension ?? ''),
+              baselineValue: delta.baselineValue,
+              comparisonValue: delta.comparisonValue,
+              change: String(delta.change ?? ''),
+            } as ScenarioComparisonDelta;
+          })
+        : [],
       summary: String(parsed.summary ?? ''),
     };
   };
 
   const parseMultidimensionalHealthResponse = (raw: string): MultidimensionalHealthResult => {
     let parsed: Record<string, unknown>;
-    try { parsed = JSON.parse(raw) as Record<string, unknown>; }
-    catch { throw new Error('Native evaluateMultidimensionalHealth returned invalid JSON.'); }
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw new Error('Native evaluateMultidimensionalHealth returned invalid JSON.');
+    }
     return {
-      dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions.map((d: unknown) => {
-        const dim = d as Record<string, unknown>;
-        return {
-          dimension: String(dim.dimension ?? ''),
-          score: typeof dim.score === 'number' ? dim.score : 0,
-          weight: typeof dim.weight === 'number' ? dim.weight : 0,
-          explanation: String(dim.explanation ?? ''),
-          severity: String(dim.severity ?? 'info'),
-        } as HealthDimension;
-      }) : [],
+      dimensions: Array.isArray(parsed.dimensions)
+        ? parsed.dimensions.map((d: unknown) => {
+            const dim = d as Record<string, unknown>;
+            return {
+              dimension: String(dim.dimension ?? ''),
+              score: typeof dim.score === 'number' ? dim.score : 0,
+              weight: typeof dim.weight === 'number' ? dim.weight : 0,
+              explanation: String(dim.explanation ?? ''),
+              severity: String(dim.severity ?? 'info'),
+            } as HealthDimension;
+          })
+        : [],
       compositeScore: typeof parsed.compositeScore === 'number' ? parsed.compositeScore : 0,
       summary: String(parsed.summary ?? ''),
-      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [],
+      recommendations: Array.isArray(parsed.recommendations)
+        ? parsed.recommendations.map(String)
+        : [],
     };
   };
 
@@ -757,12 +870,12 @@ export async function createNativeAnalysisProtocol(
       _freshness: DataFreshness | null,
     ): Promise<PendingReviewResult> {
       let snapshot: unknown = ledger;
-      if (isSynchronizableLedger(ledger)) {
-        const synchronized = await ledger.synchronize();
-        if (!synchronized || typeof synchronized !== 'object' || !('snapshot' in synchronized)) {
+      if (isSynchronizableLedger(ledger) || isLatestSynchronizationProvider(ledger)) {
+        const synchronized = await obtainSnapshot(ledger);
+        if (synchronized === null) {
           throw new Error('Ledger synchronization returned no snapshot.');
         }
-        snapshot = synchronized.snapshot;
+        snapshot = synchronized;
       }
       const input = JSON.stringify({
         snapshot,
@@ -775,10 +888,7 @@ export async function createNativeAnalysisProtocol(
       return mapDeterministicResponse(raw);
     },
 
-    async reviewShow(
-      _ledger: unknown,
-      _reviewId: string,
-    ): Promise<ReviewDetailResult> {
+    async reviewShow(_ledger: unknown, _reviewId: string): Promise<ReviewDetailResult> {
       return {
         reviewId: '',
         generatedAt: '',
@@ -937,10 +1047,7 @@ export async function createNativeAnalysisProtocol(
       };
     },
 
-    async proposalShow(
-      _ledger: unknown,
-      _proposalId: string,
-    ): Promise<ProposalDetailResult> {
+    async proposalShow(_ledger: unknown, _proposalId: string): Promise<ProposalDetailResult> {
       return {
         proposalId: '',
         status: 'not_found',
@@ -987,10 +1094,7 @@ export async function createNativeAnalysisProtocol(
       return { proposals: [], total: 0 };
     },
 
-    async auditQuery(
-      _ledger: unknown,
-      _query?: AuditQueryOptions,
-    ): Promise<AuditQueryResult> {
+    async auditQuery(_ledger: unknown, _query?: AuditQueryOptions): Promise<AuditQueryResult> {
       return { entries: [], total: 0 };
     },
 
@@ -1002,10 +1106,7 @@ export async function createNativeAnalysisProtocol(
       return { items: [] };
     },
 
-    async ruleShow(
-      _ledger: unknown,
-      _ruleId: string,
-    ): Promise<RuleShowResult> {
+    async ruleShow(_ledger: unknown, _ruleId: string): Promise<RuleShowResult> {
       return {
         id: '',
         name: '',
@@ -1016,10 +1117,7 @@ export async function createNativeAnalysisProtocol(
       };
     },
 
-    async ruleUpdate(
-      _ledger: unknown,
-      _options?: ReviewActionOptions,
-    ): Promise<RuleUpdateResult> {
+    async ruleUpdate(_ledger: unknown, _options?: ReviewActionOptions): Promise<RuleUpdateResult> {
       return {
         ruleId: '',
         name: '',
@@ -1029,10 +1127,7 @@ export async function createNativeAnalysisProtocol(
       };
     },
 
-    async ruleCreate(
-      _ledger: unknown,
-      _options?: ReviewActionOptions,
-    ): Promise<RuleUpdateResult> {
+    async ruleCreate(_ledger: unknown, _options?: ReviewActionOptions): Promise<RuleUpdateResult> {
       return {
         ruleId: '',
         name: '',
@@ -1045,7 +1140,6 @@ export async function createNativeAnalysisProtocol(
     // -----------------------------------------------------------------------
     // Budget Intelligence — native-backed analytics
     // -----------------------------------------------------------------------
-
 
     // purchaseEvaluation
     // ------------------------------------------------------------------
@@ -1122,12 +1216,16 @@ export async function createNativeAnalysisProtocol(
     // targetHealth
     // ------------------------------------------------------------------
 
-    async targetHealth(
-      ledger: unknown,
-    ): Promise<TargetHealthResult> {
+    async targetHealth(ledger: unknown): Promise<TargetHealthResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
-        return { categories: [], overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundCount: 0 };
+        return {
+          categories: [],
+          overallLabel: 'unknown',
+          healthyCount: 0,
+          atRiskCount: 0,
+          sinkingFundCount: 0,
+        };
       }
       const input = JSON.stringify({ snapshot: rawSnapshot });
       const raw = native.evaluateTargetHealth(input);
@@ -1138,9 +1236,7 @@ export async function createNativeAnalysisProtocol(
     // sinkingFundHealth — derived from evaluateTargetHealth response
     // ------------------------------------------------------------------
 
-    async sinkingFundHealth(
-      ledger: unknown,
-    ): Promise<SinkingFundHealthResult> {
+    async sinkingFundHealth(ledger: unknown): Promise<SinkingFundHealthResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
         return { sinkingFunds: [], fullyFundedCount: 0, partiallyFundedCount: 0, unfundedCount: 0 };
@@ -1149,7 +1245,7 @@ export async function createNativeAnalysisProtocol(
       const raw = native.evaluateTargetHealth(input);
       const targetHealth = parseTargetHealthResponse(raw);
 
-      const sinkingFunds = targetHealth.categories.filter(c => c.isSinkingFund);
+      const sinkingFunds = targetHealth.categories.filter((c) => c.isSinkingFund);
       let fullyFundedCount = 0;
       let partiallyFundedCount = 0;
       let unfundedCount = 0;
@@ -1192,9 +1288,9 @@ export async function createNativeAnalysisProtocol(
         ? monthRange.split(':')
         : [monthRange, monthRange];
 
-      const filtered = transactions.filter(tx => {
+      const filtered = transactions.filter((tx) => {
         if (tx.pending && !params.scope.includePending) return false;
-        return String(tx.date ?? '') >= startStr && String(tx.date ?? '') <= (endStr + '-31');
+        return String(tx.date ?? '') >= startStr && String(tx.date ?? '') <= endStr + '-31';
       });
 
       let totalMinor = 0;
@@ -1222,9 +1318,7 @@ export async function createNativeAnalysisProtocol(
     // listSavedViews
     // ------------------------------------------------------------------
 
-    async listSavedViews(
-      _ledger: unknown,
-    ): Promise<SavedViewsListResult> {
+    async listSavedViews(_ledger: unknown): Promise<SavedViewsListResult> {
       return { views: [], total: 0 };
     },
 
@@ -1255,9 +1349,7 @@ export async function createNativeAnalysisProtocol(
     // financialState
     // ------------------------------------------------------------------
 
-    async financialState(
-      ledger: unknown,
-    ): Promise<FinancialStateResult> {
+    async financialState(ledger: unknown): Promise<FinancialStateResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
         return {
@@ -1291,7 +1383,13 @@ export async function createNativeAnalysisProtocol(
           alerts: [],
           recurrences: [],
           categoryRisks: [],
-          targetProgress: { overallLabel: 'unknown', healthyCount: 0, atRiskCount: 0, sinkingFundsOnTrack: 0, totalSinkingFunds: 0 },
+          targetProgress: {
+            overallLabel: 'unknown',
+            healthyCount: 0,
+            atRiskCount: 0,
+            sinkingFundsOnTrack: 0,
+            totalSinkingFunds: 0,
+          },
         };
       }
 
@@ -1316,11 +1414,19 @@ export async function createNativeAnalysisProtocol(
 
       // Blockers: uncategorized transactions (counting/filtering only)
       const uncategorizedTxs = transactions.filter(
-        tx => (!tx.categoryId || tx.categoryId === '') && !tx.pending,
+        (tx) => (!tx.categoryId || tx.categoryId === '') && !tx.pending,
       );
-      const blockers: AttentionBlocker[] = uncategorizedTxs.length > 0
-        ? [{ code: 'uncategorized_transactions', message: `${uncategorizedTxs.length} transaction(s) lack categories`, severity: 'warning', entityType: 'transaction' }]
-        : [];
+      const blockers: AttentionBlocker[] =
+        uncategorizedTxs.length > 0
+          ? [
+              {
+                code: 'uncategorized_transactions',
+                message: `${uncategorizedTxs.length} transaction(s) lack categories`,
+                severity: 'warning',
+                entityType: 'transaction',
+              },
+            ]
+          : [];
 
       // Alerts: derive from native target health overspent labels
       const alerts: AttentionAlert[] = [];
@@ -1348,12 +1454,13 @@ export async function createNativeAnalysisProtocol(
           if (amt && typeof amt.minorUnits === 'string') {
             schedCounts[key].amount = amt.minorUnits;
           }
-          if (String(tx.date ?? '') > schedCounts[key].lastDate) schedCounts[key].lastDate = String(tx.date);
+          if (String(tx.date ?? '') > schedCounts[key].lastDate)
+            schedCounts[key].lastDate = String(tx.date);
         }
       }
       for (const [payeeId, info] of Object.entries(schedCounts)) {
         if (info.count >= 3) {
-          const payee = payees.find(p => p.id === payeeId);
+          const payee = payees.find((p) => p.id === payeeId);
           recurrences.push({
             payeeName: String(payee?.name ?? payeeId),
             amount: { minorUnits: info.amount, currency },
@@ -1399,8 +1506,10 @@ export async function createNativeAnalysisProtocol(
       }
 
       // Target progress: use native counts directly
-      const sinkingFundCategories = targetHealth.categories.filter(c => c.isSinkingFund);
-      const sinkingFundsOnTrack = sinkingFundCategories.filter(sf => (sf.targetProgress ?? 0) >= 0.8).length;
+      const sinkingFundCategories = targetHealth.categories.filter((c) => c.isSinkingFund);
+      const sinkingFundsOnTrack = sinkingFundCategories.filter(
+        (sf) => (sf.targetProgress ?? 0) >= 0.8,
+      ).length;
 
       return {
         blockers,
@@ -1424,14 +1533,21 @@ export async function createNativeAnalysisProtocol(
     async dataQuality(ledger: unknown): Promise<DataQualityResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
-        return { overallScore: null, dimensions: [], recommendations: ['Ledger snapshot unavailable.'] };
+        return {
+          overallScore: null,
+          dimensions: [],
+          recommendations: ['Ledger snapshot unavailable.'],
+        };
       }
       const input = JSON.stringify({ snapshot: rawSnapshot });
       const raw = native.computeDataQuality(input);
       return parseDataQualityResponse(raw);
     },
 
-    async liquidityCoverage(ledger: unknown, currentMonth: string): Promise<LiquidityCoverageResult> {
+    async liquidityCoverage(
+      ledger: unknown,
+      currentMonth: string,
+    ): Promise<LiquidityCoverageResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
         return { totalLiquid: null, totalObligations: null, coverage: [], upcomingObligations: [] };
@@ -1454,7 +1570,14 @@ export async function createNativeAnalysisProtocol(
     async budgetVariance(ledger: unknown, referenceDate: string): Promise<BudgetVarianceResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
-        return { categoryVariances: [], trends: [], totalBudgeted: null, totalActual: null, totalVariance: null, overallVariancePercent: null };
+        return {
+          categoryVariances: [],
+          trends: [],
+          totalBudgeted: null,
+          totalActual: null,
+          totalVariance: null,
+          overallVariancePercent: null,
+        };
       }
       const input = JSON.stringify({ snapshot: rawSnapshot, referenceDate });
       const raw = native.computeBudgetVariance(input);
@@ -1484,27 +1607,46 @@ export async function createNativeAnalysisProtocol(
     async forecastCalibration(ledger: unknown): Promise<ForecastCalibrationResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
-        return { metrics: [], overallCalibrated: false, recommendations: ['Ledger snapshot unavailable.'] };
+        return {
+          metrics: [],
+          overallCalibrated: false,
+          recommendations: ['Ledger snapshot unavailable.'],
+        };
       }
       const input = JSON.stringify({ snapshot: rawSnapshot });
       const raw = native.evaluateForecastCalibration(input);
       return parseForecastCalibrationResponse(raw);
     },
 
-    async scenarioComparison(ledger: unknown, params: ScenarioComparisonParams): Promise<ScenarioComparisonResult> {
+    async scenarioComparison(
+      ledger: unknown,
+      params: ScenarioComparisonParams,
+    ): Promise<ScenarioComparisonResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
         return { deltas: [], summary: 'Ledger snapshot unavailable.' };
       }
-      const input = JSON.stringify({ snapshot: rawSnapshot, baseline: params.baseline, comparison: params.comparison });
+      const input = JSON.stringify({
+        snapshot: rawSnapshot,
+        baseline: params.baseline,
+        comparison: params.comparison,
+      });
       const raw = native.compareScenarios(input);
       return parseScenarioComparisonResponse(raw);
     },
 
-    async multidimensionalHealth(ledger: unknown, currentMonth: string): Promise<MultidimensionalHealthResult> {
+    async multidimensionalHealth(
+      ledger: unknown,
+      currentMonth: string,
+    ): Promise<MultidimensionalHealthResult> {
       const rawSnapshot = await obtainSnapshot(ledger);
       if (!rawSnapshot) {
-        return { dimensions: [], compositeScore: 0, summary: '', recommendations: ['Ledger snapshot unavailable.'] };
+        return {
+          dimensions: [],
+          compositeScore: 0,
+          summary: '',
+          recommendations: ['Ledger snapshot unavailable.'],
+        };
       }
       const input = JSON.stringify({ snapshot: rawSnapshot, currentMonth });
       const raw = native.evaluateMultidimensionalHealth(input);
@@ -1529,7 +1671,7 @@ export async function createNativeAnalysisProtocol(
  * @internal
  */
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : null;
+  return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 }
 
 function mapDeterministicResponse(raw: string): PendingReviewResult {
@@ -1540,28 +1682,30 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
   const classifications = Array.isArray(analysis?.deterministicClassifications)
     ? analysis.deterministicClassifications
     : [];
-  const candidates = classifications.flatMap(value => {
+  const candidates = classifications.flatMap((value) => {
     const item = asRecord(value);
     if (!item || typeof item.transactionId !== 'string' || typeof item.date !== 'string') return [];
     const amount = asRecord(item.amount);
     const reasons = Array.isArray(item.reasons)
-      ? item.reasons.flatMap(reason => {
-        const detail = asRecord(reason);
-        return detail && typeof detail.kind === 'string' && typeof detail.details === 'string'
-          ? [{ kind: detail.kind, details: detail.details }]
-          : [];
-      })
+      ? item.reasons.flatMap((reason) => {
+          const detail = asRecord(reason);
+          return detail && typeof detail.kind === 'string' && typeof detail.details === 'string'
+            ? [{ kind: detail.kind, details: detail.details }]
+            : [];
+        })
       : [];
-    return [{
-      transactionId: item.transactionId,
-      amount: {
-        minorUnits: typeof amount?.minorUnits === 'string' ? amount.minorUnits : '0',
-        currency: typeof amount?.currency === 'string' ? amount.currency : 'USD',
+    return [
+      {
+        transactionId: item.transactionId,
+        amount: {
+          minorUnits: typeof amount?.minorUnits === 'string' ? amount.minorUnits : '0',
+          currency: typeof amount?.currency === 'string' ? amount.currency : 'USD',
+        },
+        payeeName: typeof item.payeeName === 'string' ? item.payeeName : null,
+        date: item.date,
+        reasons,
       },
-      payeeName: typeof item.payeeName === 'string' ? item.payeeName : null,
-      date: item.date,
-      reasons,
-    }];
+    ];
   });
   const total = asRecord(backlog?.totalAmount);
   return {
@@ -1610,7 +1754,10 @@ export interface LifecycleStore {
     accountCount: number;
     transactionCount: number;
   } | null>;
-  deleteScopeData(scope: string, options?: { actorId?: string }): Promise<{
+  deleteScopeData(
+    scope: string,
+    options?: { actorId?: string },
+  ): Promise<{
     deleted: Record<string, number>;
     retained: { count: number; reasons: string[] };
   }>;
@@ -1618,7 +1765,12 @@ export interface LifecycleStore {
 
 /** Valid scopes for delete-data. */
 const LIFECYCLE_SCOPES = [
-  'connection', 'space', 'user', 'provider', 'workflow', 'notification',
+  'connection',
+  'space',
+  'user',
+  'provider',
+  'workflow',
+  'notification',
 ] as const;
 
 /**
@@ -1660,7 +1812,8 @@ export function createLifecycleCallbacks(
       if (!isSynchronizableLedger(l)) {
         throw new ApplicationError({
           code: 'export_not_implemented',
-          message: 'The connected ledger cannot provide a full budget snapshot for export. Run "export" with a compatible ledger.',
+          message:
+            'The connected ledger cannot provide a full budget snapshot for export. Run "export" with a compatible ledger.',
           reasonCodes: ['export_not_implemented'],
           retryable: false,
         });
@@ -1677,7 +1830,6 @@ export function createLifecycleCallbacks(
       }
       const syncContainer = syncResult as Record<string, unknown>;
       const snapshot = syncContainer.snapshot as Record<string, unknown>;
-
 
       const now = new Date().toISOString();
       const budgetName = 'Balanced Budget';
@@ -1717,7 +1869,9 @@ export function createLifecycleCallbacks(
 
       // Record export in store for export-before-delete tracking
       const accountCount = Array.isArray(snapshot.accounts) ? snapshot.accounts.length : 0;
-      const transactionCount = Array.isArray(snapshot.transactions) ? snapshot.transactions.length : 0;
+      const transactionCount = Array.isArray(snapshot.transactions)
+        ? snapshot.transactions.length
+        : 0;
       if (store) {
         await store.recordExport({ budgetName, exportPath, accountCount, transactionCount });
       }
@@ -1830,7 +1984,8 @@ export function createLifecycleCallbacks(
       if (!store) {
         throw new ApplicationError({
           code: 'export_required',
-          message: 'Cannot verify export before delete without a workflow store. Run "export" first.',
+          message:
+            'Cannot verify export before delete without a workflow store. Run "export" first.',
           reasonCodes: ['export_before_delete'],
           retryable: false,
         });
@@ -1850,7 +2005,8 @@ export function createLifecycleCallbacks(
       if ((lastExport.accountCount ?? 0) <= 0 && (lastExport.transactionCount ?? 0) <= 0) {
         throw new ApplicationError({
           code: 'export_not_implemented',
-          message: 'The existing export contains no budget data and cannot satisfy export-before-delete requirements. Run "export" with a compatible ledger.',
+          message:
+            'The existing export contains no budget data and cannot satisfy export-before-delete requirements. Run "export" with a compatible ledger.',
           reasonCodes: ['export_not_implemented', 'export_before_delete'],
           retryable: false,
         });
@@ -1900,7 +2056,8 @@ export function createLifecycleCallbacks(
       } catch {
         throw new ApplicationError({
           code: 'export_verification_missing',
-          message: 'Export verification metadata is missing. The export may be corrupted. Run "export" first.',
+          message:
+            'Export verification metadata is missing. The export may be corrupted. Run "export" first.',
           reasonCodes: ['export_before_delete', 'export_verification_missing'],
           retryable: false,
         });
@@ -1925,7 +2082,8 @@ export function createLifecycleCallbacks(
       } catch {
         throw new ApplicationError({
           code: 'export_not_readable',
-          message: 'Export file exists but could not be read. It may be corrupted. Run "export" first.',
+          message:
+            'Export file exists but could not be read. It may be corrupted. Run "export" first.',
           reasonCodes: ['export_before_delete', 'export_not_readable'],
           retryable: false,
         });
@@ -1935,7 +2093,8 @@ export function createLifecycleCallbacks(
       if (actualHash !== expectedHash) {
         throw new ApplicationError({
           code: 'export_hash_mismatch',
-          message: 'Export file content hash does not match the recorded verification. The export may have been modified. Run "export" first.',
+          message:
+            'Export file content hash does not match the recorded verification. The export may have been modified. Run "export" first.',
           reasonCodes: ['export_before_delete', 'export_hash_mismatch'],
           retryable: false,
         });
@@ -1995,11 +2154,9 @@ export async function createObserveComposition(
 ): Promise<ObserveComposition> {
   const mode = options?.mode ?? 'observe';
   const actorId = options?.actorId ?? 'usr_cli';
-  const requestId =
-    options?.requestId ?? `req_${Date.now().toString(36)}`;
+  const requestId = options?.requestId ?? `req_${Date.now().toString(36)}`;
   const ledger = options?.ledger ?? null;
-  const freshness: DataFreshness | null =
-    options?.freshness ?? null;
+  const freshness: DataFreshness | null = options?.freshness ?? null;
 
   // Build the analysis protocol — use override or create production native
   let analysisProtocol: AnalysisProtocol;
@@ -2007,12 +2164,9 @@ export async function createObserveComposition(
     analysisProtocol = options.analysisProtocol;
   } else {
     try {
-      analysisProtocol = await createNativeAnalysisProtocol(
-        options?.nativeBindings,
-      );
+      analysisProtocol = await createNativeAnalysisProtocol(options?.nativeBindings);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
       throw new CompositionConfigurationError(
         `Failed to load native analysis protocol: ${message}`,
         ReasonCodes.MISSING_ANALYSIS_PROTOCOL,
@@ -2022,7 +2176,8 @@ export async function createObserveComposition(
 
   // Build lifecycle callbacks
   const lifecycleCallbacks: LifecycleCallbacks | undefined =
-    options?.lifecycleCallbacks ?? createLifecycleCallbacks(() => ledger, {
+    options?.lifecycleCallbacks ??
+    createLifecycleCallbacks(() => ledger, {
       workflowStore: options?.workflowStore,
       actorId,
     });

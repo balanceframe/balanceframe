@@ -8,13 +8,7 @@
  * to the server URL to detect tampering.
  */
 
-import {
-  randomBytes,
-  createCipheriv,
-  createDecipheriv,
-  pbkdf2Sync,
-  createHash,
-} from 'node:crypto';
+import { randomBytes, createCipheriv, createDecipheriv, pbkdf2Sync, createHash } from 'node:crypto';
 import {
   mkdirSync,
   readFileSync,
@@ -60,7 +54,10 @@ export interface CredentialStore {
  * Distinguished from "missing" (no credentials stored at all).
  */
 export class CorruptCredentialError extends Error {
-  constructor(message: string, public readonly filePath?: string) {
+  constructor(
+    message: string,
+    public readonly filePath?: string,
+  ) {
     super(message);
     this.name = 'CorruptCredentialError';
   }
@@ -153,7 +150,7 @@ function credentialDir(): string {
   if (!home) {
     throw new Error(
       `Cannot determine credential directory. ` +
-      `Set ${CREDENTIAL_DIR_ENV} or ensure HOME/USERPROFILE is set.`,
+        `Set ${CREDENTIAL_DIR_ENV} or ensure HOME/USERPROFILE is set.`,
     );
   }
   return resolve(home, '.balanceframe', 'credentials');
@@ -195,7 +192,11 @@ function loadOrCreateMasterKey(dir: string): Buffer {
   }
   const key = randomBytes(KEY_LENGTH);
   mkdirSync(dir, { recursive: true });
-  try { chmodSync(dir, 0o700); } catch { /* best-effort */ }
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    /* best-effort */
+  }
   writeFileAtomic(keyPath, key, 0o600);
   return key;
 }
@@ -322,7 +323,11 @@ export class EncryptedCredentialStore implements CredentialStore {
         payload?: EncryptedPayload;
         salt?: unknown;
       };
-      if (typeof stored.serverUrl !== 'string' || !stored.payload || typeof stored.salt !== 'string') {
+      if (
+        typeof stored.serverUrl !== 'string' ||
+        !stored.payload ||
+        typeof stored.salt !== 'string'
+      ) {
         throw new CorruptCredentialError('Credential file has an invalid shape', filePath);
       }
       const derivedKey = this.getOrDeriveKey(Buffer.from(stored.salt, 'hex'));
@@ -334,12 +339,16 @@ export class EncryptedCredentialStore implements CredentialStore {
       return {
         serverUrl: stored.serverUrl,
         secretKey: parsed.secretKey,
-        budgetPassword: typeof parsed.budgetPassword === 'string' ? parsed.budgetPassword : undefined,
+        budgetPassword:
+          typeof parsed.budgetPassword === 'string' ? parsed.budgetPassword : undefined,
       };
     } catch (error) {
       if (error instanceof CorruptCredentialError) throw error;
       if (error instanceof SyntaxError || error instanceof Error) {
-        throw new CorruptCredentialError('Credential file could not be decrypted or parsed', filePath);
+        throw new CorruptCredentialError(
+          'Credential file could not be decrypted or parsed',
+          filePath,
+        );
       }
       throw error;
     }
@@ -364,7 +373,7 @@ export class EncryptedCredentialStore implements CredentialStore {
     // 2. Fallback: scan all .enc files (legacy support when current.txt is absent)
     try {
       const files = readdirSync(this._dir).filter(
-        f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
+        (f) => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
       );
       for (const file of files) {
         try {
@@ -388,7 +397,7 @@ export class EncryptedCredentialStore implements CredentialStore {
   has(): boolean {
     try {
       const files = readdirSync(this._dir).filter(
-        f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
+        (f) => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
       );
       return files.length > 0;
     } catch {
@@ -400,7 +409,7 @@ export class EncryptedCredentialStore implements CredentialStore {
     const urls: string[] = [];
     try {
       const files = readdirSync(this._dir).filter(
-        f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
+        (f) => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
       );
       for (const file of files) {
         try {
@@ -430,7 +439,7 @@ export class EncryptedCredentialStore implements CredentialStore {
     const newFilePath = credentialFilePath(credentials.serverUrl, this._dir);
     try {
       const files = readdirSync(this._dir).filter(
-        f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
+        (f) => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
       );
       for (const file of files) {
         const filePath = resolve(this._dir, file);
@@ -445,7 +454,7 @@ export class EncryptedCredentialStore implements CredentialStore {
 
   async delete(): Promise<void> {
     const files = readdirSync(this._dir).filter(
-      f => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
+      (f) => f.endsWith('.enc') && f !== MASTER_KEY_FILENAME,
     );
     for (const file of files) {
       rmSync(resolve(this._dir, file), { force: true });

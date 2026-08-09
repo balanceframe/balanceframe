@@ -247,8 +247,8 @@ pub struct UpcomingObligation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageRatio {
-    /// The ratio value (e.g. 1.5 means 150% coverage).
-    pub ratio: f64,
+    /// The ratio value (e.g. 1.5 means 150% coverage), or `None` when the window has no obligations.
+    pub ratio: Option<f64>,
     /// Human-readable label for this ratio.
     pub label: String,
 }
@@ -272,7 +272,7 @@ pub struct LiquidityCoverage {
 /// Compute liquidity coverage for upcoming obligations.
 ///
 /// Returns `NoConfiguration` when no liquid accounts are configured.
-/// Returns `InsufficientData` when there are no schedules or budget months.
+/// Returns `Available` with an empty no-obligations ratio when liquid funds exist but no obligations are scheduled or budgeted.
 pub fn compute_liquidity_coverage(
     liquid_balance: Option<&Money>,
     schedules: &[crate::snapshots::Schedule],
@@ -281,19 +281,9 @@ pub fn compute_liquidity_coverage(
 ) -> LiquidityCoverage {
     let total_liquid = liquid_balance.cloned();
 
-    if total_liquid.is_none() && schedules.is_empty() && budget_months.is_empty() {
+    if total_liquid.is_none() {
         return LiquidityCoverage {
             availability: AnalysisAvailability::NoConfiguration,
-            total_liquid: None,
-            total_obligations: None,
-            coverage: vec![],
-            upcoming_obligations: vec![],
-        };
-    }
-
-    if total_liquid.is_none() && schedules.is_empty() {
-        return LiquidityCoverage {
-            availability: AnalysisAvailability::InsufficientData,
             total_liquid: None,
             total_obligations: None,
             coverage: vec![],
@@ -343,39 +333,28 @@ pub fn compute_liquidity_coverage(
         let liquid_minor = liquid.minor_units();
 
         if total_obligation_minor > 0 {
-            let ratio_30 = if total_obligation_minor > 0 {
-                // 30-day: proportion of obligations in current month
-                let current_obligations: i64 = obligations
-                    .iter()
-                    .filter(|o| o.due_date.starts_with(current_month))
-                    .map(|o| o.amount.minor_units())
-                    .sum();
-                if current_obligations > 0 {
-                    liquid_minor as f64 / current_obligations as f64
-                } else {
-                    f64::MAX
-                }
-            } else {
-                f64::MAX
-            };
-
-            let ratio_full = if total_obligation_minor > 0 {
-                liquid_minor as f64 / total_obligation_minor as f64
-            } else {
-                f64::MAX
-            };
-
+            // 30-day: proportion of scheduled obligations in the current month.
+            let current_obligations = obligations
+                .iter()
+                .filter(|obligation| obligation.due_date.starts_with(current_month))
+                .map(|obligation| obligation.amount.minor_units())
+                .fold(0_i64, i64::saturating_add);
             coverage.push(CoverageRatio {
-                ratio: ratio_30,
-                label: "30-day coverage".to_string(),
+                ratio: (current_obligations > 0)
+                    .then(|| liquid_minor as f64 / current_obligations as f64),
+                label: if current_obligations > 0 {
+                    "30-day coverage".to_string()
+                } else {
+                    "no 30-day obligations".to_string()
+                },
             });
             coverage.push(CoverageRatio {
-                ratio: ratio_full,
+                ratio: Some(liquid_minor as f64 / total_obligation_minor as f64),
                 label: "full coverage".to_string(),
             });
         } else {
             coverage.push(CoverageRatio {
-                ratio: f64::MAX,
+                ratio: None,
                 label: "no obligations".to_string(),
             });
         }
@@ -531,8 +510,8 @@ pub struct CategoryTrend {
     pub category_name: String,
     /// Direction of the trend.
     pub direction: TrendDirection,
-    /// Average monthly change (in minor units).
-    pub avg_change: i64,
+    /// Average monthly change, including the currency of the source budget amounts.
+    pub avg_change: Money,
     /// Number of periods analyzed.
     pub periods_analyzed: u32,
     /// Whether this category shows seasonality.
@@ -657,15 +636,15 @@ pub fn compute_budget_variance(
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
 
-        // For each category, compute average change across months
-        let mut cat_spending: std::collections::HashMap<String, Vec<(String, i64)>> =
+        // For each category, compute average change across same-currency months.
+        let mut cat_spending: std::collections::HashMap<String, Vec<(String, Money)>> =
             std::collections::HashMap::new();
         for bm in budget_months {
             for (cat_id, bc) in &bm.categories {
                 cat_spending
                     .entry(cat_id.clone())
                     .or_default()
-                    .push((bm.month.clone(), bc.amount.minor_units()));
+                    .push((bm.month.clone(), bc.amount.clone()));
             }
         }
 
@@ -675,24 +654,47 @@ pub fn compute_budget_variance(
             }
             let mut sorted = amounts.clone();
             sorted.sort_by(|a, b| a.0.cmp(&b.0));
-            let mut changes: Vec<i64> = Vec::new();
-            for window in sorted.windows(2) {
-                changes.push(window[1].1 - window[0].1);
+            let currency = sorted[0].1.currency();
+            if sorted
+                .iter()
+                .any(|(_, amount)| amount.currency() != currency)
+            {
+                continue;
             }
-            let avg_change = if !changes.is_empty() {
-                changes.iter().sum::<i64>() / changes.len() as i64
-            } else {
-                0
+            let Some(changes) = sorted
+                .windows(2)
+                .map(|window| {
+                    window[1]
+                        .1
+                        .minor_units()
+                        .checked_sub(window[0].1.minor_units())
+                })
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
             };
-            let direction = if avg_change.abs() < 50 {
+            let Some(total_change) = changes
+                .iter()
+                .try_fold(0_i64, |total, change| total.checked_add(*change))
+            else {
+                continue;
+            };
+            let Some(avg_change_minor) = total_change.checked_div(changes.len() as i64) else {
+                continue;
+            };
+            let direction = if avg_change_minor.unsigned_abs() < 50 {
                 TrendDirection::Stable
-            } else if avg_change > 0 {
+            } else if avg_change_minor > 0 {
                 TrendDirection::Increasing
             } else {
                 TrendDirection::Decreasing
             };
-            let seasonality =
-                detect_seasonality(&amounts.iter().map(|(_, v)| *v).collect::<Vec<_>>());
+            let seasonality = detect_seasonality(
+                &amounts
+                    .iter()
+                    .map(|(_, amount)| amount.minor_units())
+                    .collect::<Vec<_>>(),
+            );
             trends.push(CategoryTrend {
                 category_id: cat_id.clone(),
                 category_name: cat_names
@@ -700,7 +702,7 @@ pub fn compute_budget_variance(
                     .cloned()
                     .unwrap_or_else(|| cat_id.clone()),
                 direction,
-                avg_change,
+                avg_change: Money::new(avg_change_minor, currency),
                 periods_analyzed: amounts.len() as u32,
                 seasonality_detected: seasonality,
             });
@@ -1466,27 +1468,25 @@ pub fn compute_multidimensional_health(
     // Liquidity dimension
     if let Some(lc) = liquidity_coverage {
         if lc.availability == AnalysisAvailability::Available {
-            let score = lc
-                .coverage
-                .first()
-                .map(|c| {
-                    if c.ratio >= f64::MAX {
-                        1.0
-                    } else if c.ratio >= 3.0 {
+            let coverage_ratio = lc.coverage.iter().find_map(|coverage| coverage.ratio);
+            let no_obligations = lc.total_obligations.as_ref().is_some_and(Money::is_zero);
+            let score = coverage_ratio
+                .map(|ratio| {
+                    if ratio >= 3.0 {
                         0.9
-                    } else if c.ratio >= 2.0 {
+                    } else if ratio >= 2.0 {
                         0.8
-                    } else if c.ratio >= 1.5 {
+                    } else if ratio >= 1.5 {
                         0.7
-                    } else if c.ratio >= 1.0 {
+                    } else if ratio >= 1.0 {
                         0.6
-                    } else if c.ratio >= 0.5 {
+                    } else if ratio >= 0.5 {
                         0.4
                     } else {
                         0.2
                     }
                 })
-                .unwrap_or(0.5);
+                .unwrap_or(if no_obligations { 1.0 } else { 0.5 });
             let severity = if score >= 0.7 {
                 "good".to_string()
             } else if score >= 0.4 {
@@ -1498,13 +1498,13 @@ pub fn compute_multidimensional_health(
                 dimension: "liquidity".to_string(),
                 score,
                 weight: 0.25,
-                explanation: format!(
-                    "Coverage ratio: {}",
-                    lc.coverage
-                        .first()
-                        .map(|c| format!("{:.2}", c.ratio))
-                        .unwrap_or_else(|| "N/A".to_string())
-                ),
+                explanation: if let Some(ratio) = coverage_ratio {
+                    format!("Coverage ratio: {ratio:.2}")
+                } else if no_obligations {
+                    "No upcoming obligations in the analysis period.".to_string()
+                } else {
+                    "Coverage ratio: N/A".to_string()
+                },
                 severity,
             });
             weight_sum += 0.25;
@@ -1568,7 +1568,7 @@ pub fn compute_multidimensional_health(
                 dimension: "income_reliability".to_string(),
                 score,
                 weight: 0.20,
-                explanation: format!("Overall reliability: {:.2}", score),
+                explanation: format!("Overall reliability: {:.0}%", score * 100.0),
                 severity,
             });
             weight_sum += 0.20;
@@ -1626,7 +1626,7 @@ pub fn compute_multidimensional_health(
                 dimension: "data_quality".to_string(),
                 score,
                 weight: 0.15,
-                explanation: format!("Overall quality: {:.2}", score),
+                explanation: format!("Overall quality: {:.0}%", score * 100.0),
                 severity,
             });
             weight_sum += 0.15;
@@ -1765,6 +1765,28 @@ mod tests {
         }
     }
 
+    fn make_budget_month_currency(month: &str, categories: Vec<(&str, i64, &str)>) -> BudgetMonth {
+        BudgetMonth {
+            id: format!("bm_{month}"),
+            month: month.to_string(),
+            categories: categories
+                .into_iter()
+                .map(|(id, amount, currency)| {
+                    (
+                        id.to_string(),
+                        BudgetCategory {
+                            category_id: id.to_string(),
+                            amount: Money::new(amount, currency),
+                            carryover: Money::new(0, currency),
+                            carryover_from_previous: Money::new(0, currency),
+                            carries_over: false,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // DataQualityCenter tests
     // -----------------------------------------------------------------------
@@ -1834,6 +1856,27 @@ mod tests {
     }
 
     #[test]
+    fn test_liquidity_coverage_requires_liquid_account_with_non_obligation_schedules() {
+        let schedules = vec![
+            make_schedule("Income", 5_000, "monthly", "2026-07-01", None),
+            make_schedule("Zero", 0, "monthly", "2026-07-15", None),
+        ];
+
+        let liquidity = compute_liquidity_coverage(None, &schedules, &[], "2026-07");
+        assert_eq!(
+            liquidity.availability,
+            AnalysisAvailability::NoConfiguration
+        );
+        assert!(liquidity.total_liquid.is_none());
+        assert!(liquidity.total_obligations.is_none());
+        assert!(liquidity.coverage.is_empty());
+
+        let health = compute_multidimensional_health(Some(&liquidity), None, None, None, None);
+        assert_eq!(health.availability, AnalysisAvailability::NoConfiguration);
+        assert!(health.dimensions.is_empty());
+    }
+
+    #[test]
     fn test_liquidity_coverage_with_liquid_and_obligations() {
         let schedules = vec![
             make_schedule("Rent", -2000, "monthly", "2026-07-01", Some("c1")),
@@ -1874,6 +1917,37 @@ mod tests {
         );
         assert_eq!(result.availability, AnalysisAvailability::Available);
         assert!(result.total_obligations.unwrap().minor_units() > 0);
+    }
+
+    #[test]
+    fn test_liquidity_coverage_serializes_no_obligations_without_numeric_sentinel() {
+        let liquid = make_money(5_000, "USD");
+        let result = compute_liquidity_coverage(Some(&liquid), &[], &[], "2026-07");
+        let serialized = serde_json::to_value(&result).expect("liquidity should serialize");
+
+        assert!(serialized["coverage"][0]["ratio"].is_null());
+        assert_eq!(serialized["coverage"][0]["label"], "no obligations");
+    }
+
+    #[test]
+    fn test_liquidity_coverage_distinguishes_empty_window_from_total_obligations() {
+        let liquid = make_money(5_000, "USD");
+        let budgets = vec![make_budget_month("2026-08", vec![("c1", 100)])];
+        let result = compute_liquidity_coverage(Some(&liquid), &[], &budgets, "2026-08");
+
+        assert_eq!(
+            result.total_obligations.as_ref().unwrap().minor_units(),
+            100
+        );
+        assert_eq!(result.coverage[0].label, "no 30-day obligations");
+        assert!(serde_json::to_value(&result.coverage[0]).unwrap()["ratio"].is_null());
+        assert_eq!(
+            serde_json::to_value(&result.coverage[1]).unwrap()["ratio"],
+            50.0
+        );
+
+        let health = compute_multidimensional_health(Some(&result), None, None, None, None);
+        assert_eq!(health.dimensions[0].explanation, "Coverage ratio: 50.00");
     }
 
     #[test]
@@ -1998,6 +2072,34 @@ mod tests {
         let result = compute_budget_variance(&budgets, &transactions, &categories, "2026-07-27");
         assert!(!result.trends.is_empty());
         assert_eq!(result.trends[0].direction, TrendDirection::Increasing);
+    }
+
+    #[test]
+    fn test_budget_trend_serializes_average_change_with_its_currency() {
+        let categories = vec![make_category("c1", "Food", false)];
+        let budgets = vec![
+            make_budget_month_currency("2026-05", vec![("c1", 500, "EUR")]),
+            make_budget_month_currency("2026-06", vec![("c1", 550, "EUR")]),
+            make_budget_month_currency("2026-07", vec![]),
+        ];
+        let result = compute_budget_variance(&budgets, &[], &categories, "2026-07-27");
+        let serialized = serde_json::to_value(&result).expect("trend report should serialize");
+
+        assert!(result.total_budgeted.is_none());
+        assert_eq!(serialized["trends"][0]["avgChange"]["minorUnits"], "50");
+        assert_eq!(serialized["trends"][0]["avgChange"]["currency"], "EUR");
+    }
+
+    #[test]
+    fn test_budget_trend_omits_currency_mismatched_history() {
+        let categories = vec![make_category("c1", "Food", false)];
+        let budgets = vec![
+            make_budget_month_currency("2026-05", vec![("c1", 500, "EUR")]),
+            make_budget_month_currency("2026-06", vec![("c1", 550, "USD")]),
+        ];
+        let result = compute_budget_variance(&budgets, &[], &categories, "2026-06-27");
+
+        assert!(result.trends.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -2342,6 +2444,56 @@ mod tests {
     fn test_multidimensional_health_no_configuration() {
         let result = compute_multidimensional_health(None, None, None, None, None);
         assert_eq!(result.availability, AnalysisAvailability::NoConfiguration);
+    }
+
+    #[test]
+    fn test_multidimensional_health_describes_no_obligations_without_numeric_sentinel() {
+        let liquid = make_money(10_000, "USD");
+        let liquidity = compute_liquidity_coverage(Some(&liquid), &[], &[], "2026-07");
+
+        let result = compute_multidimensional_health(Some(&liquidity), None, None, None, None);
+        let dimension = result
+            .dimensions
+            .first()
+            .expect("liquidity dimension should be available");
+
+        assert_eq!(dimension.score, 1.0);
+        assert_eq!(
+            dimension.explanation,
+            "No upcoming obligations in the analysis period."
+        );
+        assert!(!dimension.explanation.contains(&f64::MAX.to_string()));
+    }
+
+    #[test]
+    fn test_multidimensional_health_formats_normalized_explanations_as_percentages() {
+        let income = IncomeReliabilityReport {
+            availability: AnalysisAvailability::Available,
+            sources: vec![],
+            total_monthly: None,
+            overall_score: Some(0.826),
+            unreliable_source_count: 0,
+        };
+        let quality = compute_data_quality_center(51, 100, 0, 0, Some(0), Some(0));
+
+        let result =
+            compute_multidimensional_health(None, None, Some(&income), None, Some(&quality));
+        let income_dimension = result
+            .dimensions
+            .iter()
+            .find(|dimension| dimension.dimension == "income_reliability")
+            .expect("income reliability dimension should be available");
+        let quality_dimension = result
+            .dimensions
+            .iter()
+            .find(|dimension| dimension.dimension == "data_quality")
+            .expect("data quality dimension should be available");
+
+        assert_eq!(income_dimension.explanation, "Overall reliability: 83%");
+        assert_eq!(
+            quality_dimension.explanation,
+            format!("Overall quality: {:.0}%", quality_dimension.score * 100.0)
+        );
     }
 
     #[test]

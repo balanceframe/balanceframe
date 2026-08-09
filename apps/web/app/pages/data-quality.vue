@@ -11,20 +11,34 @@
         <!-- Overall score -->
         <UCard v-if="overallScore !== null">
           <template #header><span class="font-semibold">Overall Quality Score</span></template>
-          <p class="text-3xl font-bold text-gray-900 dark:text-white" data-testid="overall-score">{{ overallScore }}<span class="text-sm font-normal text-gray-500 dark:text-gray-400 ml-1">/ 100</span></p>
+          <p class="text-3xl font-bold text-gray-900 dark:text-white" data-testid="overall-score">
+            {{ overallScore
+            }}<span class="text-sm font-normal text-gray-500 dark:text-gray-400 ml-1">/ 100</span>
+          </p>
         </UCard>
 
         <!-- Dimensions table -->
         <div v-if="dimensions.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Quality Dimensions</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Quality Dimensions
+          </h3>
           <AnalysisTable :columns="dimensionColumns" :rows="dimensionRows" />
         </div>
 
         <!-- Recommendations / remediation -->
-        <div v-if="recommendations.length" class="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
-          <h3 class="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">Recommended Actions</h3>
+        <div
+          v-if="recommendations.length"
+          class="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4"
+        >
+          <h3 class="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">
+            Recommended Actions
+          </h3>
           <ul class="space-y-1">
-            <li v-for="(rec, i) in recommendations" :key="i" class="text-sm text-blue-700 dark:text-blue-400 flex items-start gap-2">
+            <li
+              v-for="(rec, i) in recommendations"
+              :key="i"
+              class="text-sm text-blue-700 dark:text-blue-400 flex items-start gap-2"
+            >
               <span class="shrink-0 mt-0.5 i-heroicons-arrow-right" />
               <span>{{ rec }}</span>
             </li>
@@ -32,7 +46,10 @@
         </div>
 
         <!-- Empty state -->
-        <div v-if="!dimensions.length && !recommendations.length" class="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">
+        <div
+          v-if="!dimensions.length && !recommendations.length"
+          class="text-center py-8 text-gray-400 dark:text-gray-500 text-sm"
+        >
           No data quality metrics available.
         </div>
       </div>
@@ -41,6 +58,7 @@
 </template>
 
 <script setup lang="ts">
+import { nullableNormalizedScorePercent } from '../utils/financial-display';
 
 definePageMeta({ layout: 'default' });
 
@@ -77,8 +95,7 @@ interface Envelope<T> {
   error: { code: string; message: string; retryable: boolean } | null;
 }
 
-const displayScore = (score: number | null): number | null =>
-  score !== null && score >= 0 && score <= 1 ? score * 100 : score;
+const displayScore = nullableNormalizedScorePercent;
 
 const normalizeDimension = (dimension: QualityDimensionApi): QualityDimension => ({
   name: dimension.name ?? dimension.dimension ?? 'Unknown',
@@ -86,7 +103,6 @@ const normalizeDimension = (dimension: QualityDimensionApi): QualityDimension =>
   severity: dimension.severity ?? dimension.worstSeverity ?? 'unknown',
   details: dimension.details ?? (dimension.explanation ? [dimension.explanation] : []),
 });
-
 
 const loading = ref(true);
 const error = ref<{ code: string; message: string } | null>(null);
@@ -105,7 +121,7 @@ const dimensionColumns = [
 ];
 
 const dimensionRows = computed(() =>
-  dimensions.value.map(d => ({
+  dimensions.value.map((d) => ({
     name: d.name,
     scoreLabel: d.score !== null ? `${d.score} / 100` : 'N/A',
     severity: d.severity,
@@ -122,7 +138,10 @@ onMounted(async () => {
       recommendations.value = res.result.recommendations;
       freshness.value = res.dataFreshness;
     } else {
-      error.value = { code: res.error?.code ?? 'UNKNOWN', message: res.error?.message ?? 'Data quality analysis returned an error.' };
+      error.value = {
+        code: res.error?.code ?? 'UNKNOWN',
+        message: res.error?.message ?? 'Data quality analysis returned an error.',
+      };
     }
   } catch (e) {
     error.value = { code: 'FETCH_ERROR', message: String(e) };

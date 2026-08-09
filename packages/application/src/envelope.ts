@@ -78,12 +78,7 @@ export interface ErrorInfo {
 }
 
 export class ErrorInfo {
-  constructor(opts: {
-    code: string;
-    message: string;
-    retryable: boolean;
-    reasonCodes?: string[];
-  }) {
+  constructor(opts: { code: string; message: string; retryable: boolean; reasonCodes?: string[] }) {
     this.code = opts.code;
     this.message = opts.message;
     this.retryable = opts.retryable;
@@ -185,7 +180,9 @@ export function okResponse<T>(
     dataFreshness,
     authorization,
     ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
-    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.semanticClasses !== undefined
+      ? { semanticClasses: metadata.semanticClasses }
+      : {}),
     ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
     ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
     result,
@@ -210,7 +207,9 @@ export function errorResponse(
     dataFreshness: null,
     authorization: authorization ?? null,
     ...(metadata?.scope !== undefined ? { scope: metadata.scope } : {}),
-    ...(metadata?.semanticClasses !== undefined ? { semanticClasses: metadata.semanticClasses } : {}),
+    ...(metadata?.semanticClasses !== undefined
+      ? { semanticClasses: metadata.semanticClasses }
+      : {}),
     ...(metadata?.evidence !== undefined ? { evidence: metadata.evidence } : {}),
     ...(metadata?.policyVersion !== undefined ? { policyVersion: metadata.policyVersion } : {}),
     result: null,

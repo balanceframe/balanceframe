@@ -8,9 +8,7 @@
 
 import { defineEventHandler, setResponseStatus } from 'h3';
 import { getWorkflowStore } from '../../utils/workflow-store';
-import {
-  requireOwner,
-} from '../../utils/registration';
+import { requireOwner } from '../../utils/registration';
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();

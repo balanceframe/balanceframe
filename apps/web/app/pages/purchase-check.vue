@@ -1,7 +1,9 @@
 <template>
   <AnalysisPage title="Purchase Check" :loading="loading" :error="error">
     <template #content>
-      <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">This page is read-only. Evaluations do not mutate ledger state or trigger transactions.</p>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
+        This page is read-only. Evaluations do not mutate ledger state or trigger transactions.
+      </p>
       <div class="mb-4">
         <UFormGroup label="Category" class="mb-3">
           <UInput v-model="categoryId" placeholder="e.g. cg" />
@@ -24,19 +26,33 @@
           <template #header>
             <span class="font-semibold">Result</span>
           </template>
-          <p class="text-sm">Verdict: 
+          <p class="text-sm">
+            Verdict:
             <span :class="verdictClass" class="font-medium">
               {{ verdictLabel }}
             </span>
           </p>
-          <ReasonCodeList v-if="result.reasonCodes && result.reasonCodes.length" :codes="result.reasonCodes" class="mt-2" />
-          <p v-if="result.explanation" class="text-xs text-gray-500 mt-2">{{ result.explanation }}</p>
+          <ReasonCodeList
+            v-if="result.reasonCodes && result.reasonCodes.length"
+            :codes="result.reasonCodes"
+            class="mt-2"
+          />
+          <p v-if="result.explanation" class="text-xs text-gray-500 mt-2">
+            {{ result.explanation }}
+          </p>
 
           <!-- Category budget summary -->
-          <div v-if="result.categoryBudget" class="mt-3 grid grid-cols-3 gap-2 text-xs text-gray-600 dark:text-gray-400">
+          <div
+            v-if="result.categoryBudget"
+            class="mt-3 grid grid-cols-3 gap-2 text-xs text-gray-600 dark:text-gray-400"
+          >
             <div>Budget: <SemanticAmount :amount="result.categoryBudget" /></div>
-            <div v-if="result.categorySpent">Spent: <SemanticAmount :amount="result.categorySpent" /></div>
-            <div v-if="result.categoryRemaining">Remaining: <SemanticAmount :amount="result.categoryRemaining" /></div>
+            <div v-if="result.categorySpent">
+              Spent: <SemanticAmount :amount="result.categorySpent" />
+            </div>
+            <div v-if="result.categoryRemaining">
+              Remaining: <SemanticAmount :amount="result.categoryRemaining" />
+            </div>
           </div>
           <div v-if="result.projectedBalance" class="mt-1 text-xs text-gray-600 dark:text-gray-400">
             Projected balance: <SemanticAmount :amount="result.projectedBalance" />
@@ -51,7 +67,11 @@
           <template #header>
             <span class="font-semibold">Proposals</span>
           </template>
-          <div v-for="(p, i) in result.proposals" :key="i" class="text-xs text-gray-600 dark:text-gray-400 mb-1">
+          <div
+            v-for="(p, i) in result.proposals"
+            :key="i"
+            class="text-xs text-gray-600 dark:text-gray-400 mb-1"
+          >
             <span class="font-medium">{{ p.label }}</span>
             &mdash; Move <SemanticAmount :amount="p.amount" /> to {{ p.targetCategoryId }}
           </div>
@@ -62,7 +82,11 @@
           <template #header>
             <span class="font-semibold">Donor</span>
           </template>
-          <div v-for="(d, i) in result.donors" :key="i" class="text-xs text-gray-600 dark:text-gray-400 mb-1">
+          <div
+            v-for="(d, i) in result.donors"
+            :key="i"
+            class="text-xs text-gray-600 dark:text-gray-400 mb-1"
+          >
             {{ d.categoryId }}: <SemanticAmount :amount="d.availableAmount" /> available
           </div>
         </UCard>
@@ -73,7 +97,11 @@
             <span class="font-semibold">Protected</span>
           </template>
           <div class="flex flex-wrap gap-1">
-            <span v-for="pc in result.protectedCategories" :key="pc" class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400">
+            <span
+              v-for="pc in result.protectedCategories"
+              :key="pc"
+              class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+            >
               {{ pc }}
             </span>
           </div>
@@ -93,7 +121,9 @@
             <span class="font-semibold">Competition</span>
           </template>
           <p class="text-xs text-gray-600 dark:text-gray-400">
-            {{ result.competition.competingPurchases }} competing purchase{{ result.competition.competingPurchases !== 1 ? 's' : '' }}
+            {{ result.competition.competingPurchases }} competing purchase{{
+              result.competition.competingPurchases !== 1 ? 's' : ''
+            }}
             &mdash; Total committed: <SemanticAmount :amount="result.competition.totalCommitted" />
           </p>
         </UCard>
@@ -105,13 +135,21 @@
           </template>
           <div v-if="result.evidence" class="text-xs text-gray-600 dark:text-gray-400">
             Source: {{ result.evidence.source }}
-            <span v-if="result.evidence.snapshotAge"> &middot; Snapshot age: {{ result.evidence.snapshotAge }}</span>
+            <span v-if="result.evidence.snapshotAge">
+              &middot; Snapshot age: {{ result.evidence.snapshotAge }}</span
+            >
           </div>
           <div v-if="result.policy" class="text-xs text-gray-600 dark:text-gray-400 mt-1">
-            Policy: {{ result.policy.allowsReallocations ? 'Reallocation allowed' : 'Reallocation not allowed' }}
+            Policy:
+            {{
+              result.policy.allowsReallocations
+                ? 'Reallocation allowed'
+                : 'Reallocation not allowed'
+            }}
           </div>
           <div class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-            Freshness: <span v-if="result.freshness">{{ result.freshness.label }}</span><span v-else>unknown</span>
+            Freshness: <span v-if="result.freshness">{{ result.freshness.label }}</span
+            ><span v-else>unknown</span>
           </div>
         </UCard>
       </div>
@@ -183,25 +221,37 @@ const currency = ref('USD');
 const accountId = ref('');
 const result = ref<PurchaseResult | null>(null);
 
-const canEvaluate = computed(() => Boolean(String(categoryId.value ?? '').trim() && String(amountStr.value ?? '').trim()));
+const canEvaluate = computed(() =>
+  Boolean(String(categoryId.value ?? '').trim() && String(amountStr.value ?? '').trim()),
+);
 
 const verdictLabel = computed(() => {
   switch (result.value?.verdict) {
-    case 'safe': return 'Safe';
-    case 'safe_with_reallocation': return 'Safe with Reallocation';
-    case 'not_safe': return 'Not Safe';
-    case 'insufficient_data': return 'Insufficient Data';
-    default: return result.value?.allowable ? 'Yes' : 'No';
+    case 'safe':
+      return 'Safe';
+    case 'safe_with_reallocation':
+      return 'Safe with Reallocation';
+    case 'not_safe':
+      return 'Not Safe';
+    case 'insufficient_data':
+      return 'Insufficient Data';
+    default:
+      return result.value?.allowable ? 'Yes' : 'No';
   }
 });
 
 const verdictClass = computed(() => {
   switch (result.value?.verdict) {
-    case 'safe': return 'text-emerald-600';
-    case 'safe_with_reallocation': return 'text-amber-600';
-    case 'not_safe': return 'text-red-600';
-    case 'insufficient_data': return 'text-gray-500';
-    default: return result.value?.allowable ? 'text-emerald-600' : 'text-red-600';
+    case 'safe':
+      return 'text-emerald-600';
+    case 'safe_with_reallocation':
+      return 'text-amber-600';
+    case 'not_safe':
+      return 'text-red-600';
+    case 'insufficient_data':
+      return 'text-gray-500';
+    default:
+      return result.value?.allowable ? 'text-emerald-600' : 'text-red-600';
   }
 });
 
@@ -219,7 +269,9 @@ async function evaluate() {
     if (normalizedCurrency) query.currency = normalizedCurrency;
     if (normalizedAccountId) query.accountId = normalizedAccountId;
 
-    const res = await $fetch<{ status: string; result: PurchaseResult }>('/api/purchase/evaluate', { query });
+    const res = await $fetch<{ status: string; result: PurchaseResult }>('/api/purchase/evaluate', {
+      query,
+    });
     if (res.status === 'ok') result.value = res.result;
     else error.value = { code: 'EVAL_FAILED', message: 'Evaluation returned error.' };
   } catch (e) {

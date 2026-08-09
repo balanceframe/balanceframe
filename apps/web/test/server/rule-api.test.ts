@@ -10,9 +10,158 @@
  * - misleading disable state is flagged via _localOverride
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type { RuleOperationResult, RuleListItem } from '../../server/utils/rule-types';
+
+const {
+  mockSetResponseStatus,
+  mockGetWorkflowStore,
+  mockWithConnection,
+  mockCreateMutationConnectionManager,
+  mockClassifyConnectionError,
+} = vi.hoisted(() => ({
+  mockSetResponseStatus: vi.fn(),
+  mockGetWorkflowStore: vi.fn(),
+  mockWithConnection: vi.fn(),
+  mockCreateMutationConnectionManager: vi.fn(),
+  mockClassifyConnectionError: vi.fn((error: unknown) =>
+    typeof error === 'object' && error !== null && 'code' in error && error.code === 'not_connected'
+      ? {
+          code: 'not_connected',
+          message: 'No ledger connected. Configure an Actual budget first.',
+          retryable: true,
+        }
+      : null,
+  ),
+}));
+
+vi.mock('h3', () => ({
+  defineEventHandler: <T>(handler: T) => handler,
+  setResponseStatus: mockSetResponseStatus,
+}));
+
+vi.mock('../../server/utils/mutation-executor', () => ({
+  createMutationConnectionManager: mockCreateMutationConnectionManager,
+}));
+
+vi.mock('../../server/utils/workflow-store', () => ({
+  getWorkflowStore: mockGetWorkflowStore,
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'test-actor',
+    capability: 'observe',
+    allowed: true,
+  })),
+  classifyConnectionError: mockClassifyConnectionError,
+  okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
+    schemaVersion: '1',
+    requestId: requestId ?? 'test-request',
+    status: 'ok',
+    dataFreshness: null,
+    authorization: null,
+    result,
+    error: null,
+  }),
+  errorEnvelope: (
+    code: string,
+    message: string,
+    _auth: unknown,
+    retryable = false,
+    requestId?: string,
+  ) => ({
+    schemaVersion: '1',
+    requestId: requestId ?? 'test-request',
+    status: 'error',
+    dataFreshness: null,
+    authorization: null,
+    result: null,
+    error: { code, message, retryable },
+  }),
+}));
+
+import listRulesHandler from '../../server/api/rule/index.get';
+import showRuleHandler from '../../server/api/rule/[id].get';
+
+const routeStore = {
+  getRuleOverrides: vi.fn().mockResolvedValue(new Map()),
+};
+
+function routeEvent(id = 'rule-1') {
+  return {
+    context: { params: { id } },
+    node: { res: { headersSent: false } },
+  };
+}
+
+function notConnectedError() {
+  return Object.assign(new Error('No BalanceFrame connection configured.'), {
+    code: 'not_connected',
+  });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // These route modules invoke Nuxt's auto-imported global, rather than an
+  // explicit h3 import, so install the mock on the runtime binding.
+  vi.stubGlobal('setResponseStatus', mockSetResponseStatus);
+  mockGetWorkflowStore.mockReturnValue({ store: routeStore });
+  mockCreateMutationConnectionManager.mockReturnValue({
+    withConnection: mockWithConnection,
+  });
+});
+
+describe('rule GET connection failures', () => {
+  it('returns the canonical recovery envelope for a missing selection in the list route', async () => {
+    mockWithConnection.mockRejectedValueOnce(notConnectedError());
+
+    const response = await listRulesHandler(routeEvent());
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
+    expect(response.error).toEqual({
+      code: 'not_connected',
+      message: 'No ledger connected. Configure an Actual budget first.',
+      retryable: true,
+    });
+  });
+
+  it('preserves the list route operational failure for an unreadable configuration', async () => {
+    mockWithConnection.mockRejectedValueOnce(new Error('Could not read Actual configuration.'));
+
+    const response = await listRulesHandler(routeEvent());
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
+    expect(response.error.code).toBe('LEDGER_UNAVAILABLE');
+    expect(response.error.message).toBe(
+      'Failed to connect to Actual: Could not read Actual configuration.',
+    );
+  });
+
+  it('returns the canonical recovery envelope for a missing selection in the detail route', async () => {
+    mockWithConnection.mockRejectedValueOnce(notConnectedError());
+
+    const response = await showRuleHandler(routeEvent());
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
+    expect(response.error).toEqual({
+      code: 'not_connected',
+      message: 'No ledger connected. Configure an Actual budget first.',
+      retryable: true,
+    });
+  });
+
+  it('preserves the detail route operational failure for an unreadable configuration', async () => {
+    mockWithConnection.mockRejectedValueOnce(new Error('Could not read Actual configuration.'));
+
+    const response = await showRuleHandler(routeEvent());
+
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 500);
+    expect(response.error).toEqual({
+      code: 'RULE_SHOW_FAILED',
+      message: 'Could not read Actual configuration.',
+      retryable: true,
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Pure store tests — no Nitro runtime needed
@@ -189,7 +338,11 @@ describe('rule override merge (_localOverride flag)', () => {
 describe('RuleOperationResult handling', () => {
   it('distinguishes success from failure', () => {
     const success: RuleOperationResult = { success: true };
-    const failure: RuleOperationResult = { success: false, error: 'Not found', code: 'RULE_NOT_FOUND' };
+    const failure: RuleOperationResult = {
+      success: false,
+      error: 'Not found',
+      code: 'RULE_NOT_FOUND',
+    };
 
     expect(success.success).toBe(true);
     expect(failure.success).toBe(false);
@@ -238,10 +391,8 @@ describe('RuleOperationResult handling', () => {
     expect(updateResult.success).toBe(true);
 
     // Simulate post-sync re-read
-    const updatedRules: RuleListItem[] = [
-      { id: 'r1', name: 'Rule One', order: 1, inactive: true },
-    ];
-    const target = updatedRules.find(r => r.id === 'r1');
+    const updatedRules: RuleListItem[] = [{ id: 'r1', name: 'Rule One', order: 1, inactive: true }];
+    const target = updatedRules.find((r) => r.id === 'r1');
     expect(target).toBeDefined();
     expect(target!.inactive).toBe(true);
   });
@@ -265,10 +416,8 @@ describe('RuleOperationResult handling', () => {
     expect(deleteResult.success).toBe(true);
 
     // Simulate post-sync listRules — rule is absent
-    const remaining: RuleListItem[] = [
-      { id: 'r2', name: 'Rule Two', order: 2, inactive: false },
-    ];
-    const stillPresent = remaining.find(r => r.id === 'r1');
+    const remaining: RuleListItem[] = [{ id: 'r2', name: 'Rule Two', order: 2, inactive: false }];
+    const stillPresent = remaining.find((r) => r.id === 'r1');
     expect(stillPresent).toBeUndefined();
   });
 
@@ -279,7 +428,7 @@ describe('RuleOperationResult handling', () => {
     ];
 
     // Rule r1 was supposedly deleted but is still in the list
-    const stillPresent = remaining.find(r => r.id === 'r1');
+    const stillPresent = remaining.find((r) => r.id === 'r1');
     expect(stillPresent).toBeDefined();
     // Route would return VERIFICATION_FAILED
   });
@@ -287,10 +436,8 @@ describe('RuleOperationResult handling', () => {
   it('detects correct post-update state when inactive=true is confirmed', () => {
     // Simulate PATCH with inactive=true where re-read confirms inactive=true
     const bodyInactive = true;
-    const updatedRules: RuleListItem[] = [
-      { id: 'r1', name: 'Rule One', order: 1, inactive: true },
-    ];
-    const verified = updatedRules.find(r => r.id === 'r1');
+    const updatedRules: RuleListItem[] = [{ id: 'r1', name: 'Rule One', order: 1, inactive: true }];
+    const verified = updatedRules.find((r) => r.id === 'r1');
     expect(verified).toBeDefined();
     // Postcondition: the ledger matches the requested value
     expect(verified!.inactive).toBe(bodyInactive);
@@ -302,7 +449,7 @@ describe('RuleOperationResult handling', () => {
     const updatedRules: RuleListItem[] = [
       { id: 'r1', name: 'Rule One', order: 1, inactive: false },
     ];
-    const verified = updatedRules.find(r => r.id === 'r1');
+    const verified = updatedRules.find((r) => r.id === 'r1');
     expect(verified).toBeDefined();
     // Postcondition fails — route would return RULE_UPDATE_FAILED with details
     expect(verified!.inactive).not.toBe(bodyInactive);

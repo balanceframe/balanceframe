@@ -29,7 +29,13 @@ export default defineEventHandler(async (event) => {
     body = (await readBody(event)) ?? {};
   } catch {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_JSON', 'Request body must be valid JSON', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_JSON',
+      'Request body must be valid JSON',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const reviewId = typeof body.reviewId === 'string' ? body.reviewId.trim() : '';

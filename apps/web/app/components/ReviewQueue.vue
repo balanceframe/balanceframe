@@ -1,8 +1,5 @@
 <template>
-  <UCard
-    class="h-full min-h-0 flex flex-col"
-    :ui="{ body: 'flex flex-col flex-1 min-h-0' }"
-  >
+  <UCard class="h-full min-h-0 flex flex-col" :ui="{ body: 'flex flex-col flex-1 min-h-0' }">
     <template #header>
       <h2 class="font-semibold text-sm text-gray-600 dark:text-gray-400 uppercase tracking-wide">
         Queue
@@ -80,35 +77,53 @@ function queueItemClass(idx: number): Record<string, boolean> {
   const isSelected = props.selectedIndices.includes(idx);
   return {
     'w-full text-left px-3 py-2 rounded-md transition-colors text-sm': true,
-    'bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700': isCurrent,
+    'bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700':
+      isCurrent,
     'bg-neutral-100 dark:bg-neutral-800': isSelected && !isCurrent,
     'hover:bg-neutral-50 dark:hover:bg-neutral-800/50': !isCurrent && !isSelected,
   };
 }
 
-function statusColor(status: ReviewStatus): 'primary' | 'success' | 'warning' | 'neutral' | 'error' {
+function statusColor(
+  status: ReviewStatus,
+): 'primary' | 'success' | 'warning' | 'neutral' | 'error' {
   switch (status) {
-    case 'pending_review': return 'primary';
-    case 'approved':       return 'success';
-    case 'correcting':     return 'neutral';
-    case 'superseded':     return 'neutral';
+    case 'pending_review':
+      return 'primary';
+    case 'approved':
+      return 'success';
+    case 'correcting':
+      return 'neutral';
+    case 'superseded':
+      return 'neutral';
     case 'skipped':
-    case 'rejected':       return 'error';
-    default:               return 'neutral';
+    case 'rejected':
+      return 'error';
+    default:
+      return 'neutral';
   }
 }
 
 function statusLabel(status: ReviewStatus): string {
   switch (status) {
-    case 'pending_review':   return 'Pending Review';
-    case 'approved':         return 'Approved';
-    case 'correcting':       return 'Edited';
-    case 'superseded':       return 'Superseded';
-    case 'skipped':          return 'Skipped';
-    case 'rejected':         return 'Rejected';
-    case 'applied':          return 'Applied';
-    case 'apply_failed':     return 'Apply Failed';
-    default:                 return status;
+    case 'pending_review':
+      return 'Pending Review';
+    case 'approved':
+      return 'Approved';
+    case 'correcting':
+      return 'Edited';
+    case 'superseded':
+      return 'Superseded';
+    case 'skipped':
+      return 'Skipped';
+    case 'rejected':
+      return 'Rejected';
+    case 'applied':
+      return 'Applied';
+    case 'apply_failed':
+      return 'Apply Failed';
+    default:
+      return status;
   }
 }
 

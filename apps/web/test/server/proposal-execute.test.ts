@@ -21,6 +21,9 @@ import type { Mock } from 'vitest';
 // ---------------------------------------------------------------------------
 
 const mockRestore = vi.fn();
+const mockWithConnection = vi.fn(async (operation: (connected: unknown) => Promise<unknown>) =>
+  operation(await mockRestore()),
+);
 const mockCreateRule = vi.fn();
 const mockSynchronize = vi.fn();
 const mockSupersedeProposal = vi.fn();
@@ -41,6 +44,7 @@ const mockStore = {
 vi.mock('../../server/utils/mutation-executor', () => ({
   createMutationConnectionManager: vi.fn(() => ({
     restore: mockRestore,
+    withConnection: mockWithConnection,
   })),
 }));
 
@@ -74,7 +78,12 @@ vi.mock('../../server/utils/workflow-store', async (importOriginal) => {
       requestId,
     })),
     buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'rule.execute' })),
-    requireAuthorization: vi.fn(() => Promise.resolve({ ok: true, info: { actorId: 'test-actor', capability: 'rule.execute', allowed: true } })),
+    requireAuthorization: vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        info: { actorId: 'test-actor', capability: 'rule.execute', allowed: true },
+      }),
+    ),
   };
 });
 
@@ -161,7 +170,12 @@ describe('proposal-execute — bypass elimination', () => {
     // Default store stubs
     mockStore.getProposal.mockResolvedValue(validProposal());
     mockStore.findActiveApprovals.mockResolvedValue([
-      { id: TEST_APPROVAL_ID, actorId: 'test-actor', payloadHash: TEST_PAYLOAD_HASH, status: 'active' },
+      {
+        id: TEST_APPROVAL_ID,
+        actorId: 'test-actor',
+        payloadHash: TEST_PAYLOAD_HASH,
+        status: 'active',
+      },
     ]);
     mockStore.evaluateAuthorization.mockResolvedValue({
       allowed: true,
@@ -223,10 +237,13 @@ describe('proposal-execute — bypass elimination', () => {
     const event = mockEvent();
     const response = await handler(event);
     expect(mockCreateRule).toHaveBeenCalledTimes(1);
-    expect(response).toEqual(expect.objectContaining({
-      ok: true,
-      result: expect.objectContaining({ proposalId: TEST_PROPOSAL_ID }),
-    }));
+    expect(mockWithConnection).toHaveBeenCalledWith(expect.any(Function), { dispose: true });
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        result: expect.objectContaining({ proposalId: TEST_PROPOSAL_ID }),
+      }),
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -234,9 +251,7 @@ describe('proposal-execute — bypass elimination', () => {
   // -----------------------------------------------------------------------
 
   it('must return NOT_IMPLEMENTED when native protocol is unavailable (no createRule call)', async () => {
-    mockNativeProtocolFactory.mockRejectedValue(
-      new Error('Native addon not found'),
-    );
+    mockNativeProtocolFactory.mockRejectedValue(new Error('Native addon not found'));
 
     const event = mockEvent();
     const response = await handler(event);

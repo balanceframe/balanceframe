@@ -11,7 +11,12 @@
  */
 
 import type { CategorizationProposal } from '@balanceframe/workflow-store';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo } from '../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+} from '../../utils/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,11 +89,7 @@ export default defineEventHandler(async (event) => {
     // Independent total count for pagination
     const total = await wf.store.countProposals({ superseded: false });
 
-    return okEnvelope(
-      { proposals: items, total },
-      authInfo,
-      requestId,
-    );
+    return okEnvelope({ proposals: items, total }, authInfo, requestId);
   } catch (e) {
     setResponseStatus(event, 500);
     return errorEnvelope(

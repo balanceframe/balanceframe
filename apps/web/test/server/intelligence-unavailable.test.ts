@@ -32,42 +32,71 @@ const {
   mockGetActorId,
   mockSanitizeError,
   mockEnvelopeMetadata,
-} = vi.hoisted(() => ({
-  mockEnvelopeMetadata: vi.fn((envelope) => ({
-    dataFreshness: envelope.dataFreshness ?? null,
-    ...(envelope.scope !== undefined ? { scope: envelope.scope } : {}),
-    ...(envelope.semanticClasses !== undefined ? { semanticClasses: envelope.semanticClasses } : {}),
-    ...(envelope.evidence !== undefined ? { evidence: envelope.evidence } : {}),
-    ...(envelope.policyVersion !== undefined ? { policyVersion: envelope.policyVersion } : {}),
-  })),
-  mockGetWorkflowStore: vi.fn(() => ({ store: {} })),
-  mockSetResponseStatus: vi.fn(),
-  mockGetQuery: vi.fn(() => ({})),
-  mockBuildAuthorizationInfo: vi.fn(() => ({
-    actorId: 'test-actor',
-    capability: 'observe',
-    allowed: true,
-  })),
-  mockOkEnvelope: vi.fn((result, auth, requestId) => ({
-    schemaVersion: '1',
-    status: 'ok',
-    result,
-    error: null,
-    meta: { auth, requestId },
-  })),
-  mockErrorEnvelope: vi.fn((code, message, auth, retryable, requestId) => ({
-    schemaVersion: '1',
-    status: 'error',
-    error: { code, message, retryable },
-    meta: { auth, requestId },
-  })),
-  mockGetActorId: vi.fn(() => 'test-actor'),
-  mockSanitizeError: vi.fn((err, requestId, code, retryable) => ({
-    code,
-    message: err instanceof Error ? err.message : String(err),
-    retryable,
-  })),
-}));
+  mockWithConnection,
+  mockErrorHasCode,
+} = vi.hoisted(() => {
+  const mockWithConnection = vi.fn(
+    async (operation: (connected: { connector: string }) => Promise<unknown>) =>
+      operation({ connector: 'mock-ledger' }),
+  );
+  return {
+    mockWithConnection,
+    mockErrorHasCode: vi.fn(
+      (error: unknown, code: string) =>
+        typeof error === 'object' && error !== null && 'code' in error && error.code === code,
+    ),
+    mockEnvelopeMetadata: vi.fn((envelope) => ({
+      dataFreshness: envelope.dataFreshness ?? null,
+      ...(envelope.scope !== undefined ? { scope: envelope.scope } : {}),
+      ...(envelope.semanticClasses !== undefined
+        ? { semanticClasses: envelope.semanticClasses }
+        : {}),
+      ...(envelope.evidence !== undefined ? { evidence: envelope.evidence } : {}),
+      ...(envelope.policyVersion !== undefined ? { policyVersion: envelope.policyVersion } : {}),
+    })),
+    mockGetWorkflowStore: vi.fn(() => ({ store: {} })),
+    mockSetResponseStatus: vi.fn(),
+    mockGetQuery: vi.fn(() => ({})),
+    mockBuildAuthorizationInfo: vi.fn(() => ({
+      actorId: 'test-actor',
+      capability: 'observe',
+      allowed: true,
+    })),
+    mockOkEnvelope: vi.fn((result, auth, requestId) => ({
+      schemaVersion: '1',
+      status: 'ok',
+      result,
+      error: null,
+      meta: { auth, requestId },
+    })),
+    mockErrorEnvelope: vi.fn((code, message, auth, retryable, requestId) => ({
+      schemaVersion: '1',
+      status: 'error',
+      error: { code, message, retryable },
+      meta: { auth, requestId },
+    })),
+    mockGetActorId: vi.fn(() => 'test-actor'),
+    mockSanitizeError: vi.fn((err, _requestId, code, retryable) => {
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        err.code === 'not_connected'
+      ) {
+        return {
+          code: 'not_connected',
+          message: 'No ledger connected. Configure an Actual budget first.',
+          retryable: true,
+        };
+      }
+      return {
+        code,
+        message: err instanceof Error ? err.message : String(err),
+        retryable,
+      };
+    }),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -81,6 +110,7 @@ vi.mock('../../server/utils/workflow-store', () => ({
   errorEnvelope: mockErrorEnvelope,
   envelopeMetadata: mockEnvelopeMetadata,
   sanitizeError: mockSanitizeError,
+  errorHasCode: mockErrorHasCode,
 }));
 
 vi.mock('h3', () => ({
@@ -98,6 +128,7 @@ vi.mock('@balanceframe/application', () => {
   return {
     createDefaultConnectionManager: vi.fn(() => ({
       restore: vi.fn().mockResolvedValue({ connector: 'mock-ledger' }),
+      withConnection: mockWithConnection,
     })),
     createNativeAnalysisProtocol: vi.fn().mockResolvedValue({}),
     dataQualityAnalysis: vi.fn(unconfigured),
@@ -153,12 +184,37 @@ const handlerEntries: HandlerEntry[] = [
   { name: 'data-quality', handler: dataQuality, analysisFn: dataQualityAnalysis, usesQuery: false },
   { name: 'liquidity', handler: liquidity, analysisFn: liquidityCoverageAnalysis, usesQuery: true },
   { name: 'calendar', handler: calendar, analysisFn: billCalendarAnalysis, usesQuery: true },
-  { name: 'trends-variance', handler: trendsVariance, analysisFn: budgetVarianceAnalysis, usesQuery: true },
-  { name: 'obligations', handler: obligations, analysisFn: irregularObligationsAnalysis, usesQuery: false },
+  {
+    name: 'trends-variance',
+    handler: trendsVariance,
+    analysisFn: budgetVarianceAnalysis,
+    usesQuery: true,
+  },
+  {
+    name: 'obligations',
+    handler: obligations,
+    analysisFn: irregularObligationsAnalysis,
+    usesQuery: false,
+  },
   { name: 'income', handler: income, analysisFn: incomeReliabilityAnalysis, usesQuery: false },
-  { name: 'forecast-accuracy', handler: forecastAccuracy, analysisFn: forecastCalibrationAnalysis, usesQuery: false },
-  { name: 'scenarios', handler: scenarios, analysisFn: scenarioComparisonAnalysis, usesQuery: true },
-  { name: 'financial-health', handler: financialHealth, analysisFn: multidimensionalHealthAnalysis, usesQuery: true },
+  {
+    name: 'forecast-accuracy',
+    handler: forecastAccuracy,
+    analysisFn: forecastCalibrationAnalysis,
+    usesQuery: false,
+  },
+  {
+    name: 'scenarios',
+    handler: scenarios,
+    analysisFn: scenarioComparisonAnalysis,
+    usesQuery: true,
+  },
+  {
+    name: 'financial-health',
+    handler: financialHealth,
+    analysisFn: multidimensionalHealthAnalysis,
+    usesQuery: true,
+  },
 ];
 
 /** Minimal event shape the handlers accept. */
@@ -170,10 +226,7 @@ function mockAnalysisReturn(entry: HandlerEntry, envelope: unknown) {
 }
 
 /** Build a minimal ok envelope from the analysis layer. */
-function okAnalysisEnvelope(
-  result: unknown,
-  overrides: { requestId?: string } = {},
-) {
+function okAnalysisEnvelope(result: unknown, overrides: { requestId?: string } = {}) {
   return {
     status: 'ok',
     result,
@@ -208,8 +261,15 @@ function errorAnalysisEnvelope(
 describe('Intelligence route delegation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetQuery.mockReturnValue({});
+    mockGetQuery.mockReturnValue({
+      baseline: JSON.stringify({ income: 5_000 }),
+      comparison: JSON.stringify({ income: 6_000 }),
+    });
     mockGetWorkflowStore.mockReturnValue({ store: {} });
+    mockWithConnection.mockImplementation(
+      async (operation: (connected: { connector: string }) => Promise<unknown>) =>
+        operation({ connector: 'mock-ledger' }),
+    );
 
     // Reset every analysis mock to a rejecting default so an unconfigured
     // test fails fast rather than leaking state from a prior test.
@@ -217,6 +277,30 @@ describe('Intelligence route delegation', () => {
       vi.mocked(entry.analysisFn).mockRejectedValue(
         new Error(`mock not configured for ${entry.name}`),
       );
+    }
+  });
+
+  describe('missing selected budget classification', () => {
+    for (const entry of handlerEntries) {
+      it(`GET /api/${entry.name} returns not_connected with HTTP 503`, async () => {
+        mockWithConnection.mockRejectedValueOnce(
+          Object.assign(new Error('No BalanceFrame connection configured. Run connect first.'), {
+            code: 'not_connected',
+          }),
+        );
+
+        const response = await entry.handler(mockEvent);
+
+        expect(response).toMatchObject({
+          status: 'error',
+          error: {
+            code: 'not_connected',
+            message: 'No ledger connected. Configure an Actual budget first.',
+            retryable: true,
+          },
+        });
+        expect(mockSetResponseStatus).toHaveBeenCalledWith(mockEvent, 503);
+      });
     }
   });
 
@@ -325,12 +409,77 @@ describe('Intelligence route delegation', () => {
         expect(r.error?.code).toBe('no_analysis_protocol');
         expect(r.error?.retryable).toBe(true);
         // Handler should set HTTP 503 for no_analysis_protocol
-        expect(mockSetResponseStatus).toHaveBeenCalledWith(
-          expect.anything(),
-          503,
-        );
+        expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
       });
     }
+  });
+
+  describe('client input failures', () => {
+    const requiredParameterCases = [
+      {
+        name: 'liquidity',
+        handler: liquidity,
+        analysisFn: liquidityCoverageAnalysis,
+        code: 'current_month_required',
+      },
+      {
+        name: 'calendar',
+        handler: calendar,
+        analysisFn: billCalendarAnalysis,
+        code: 'reference_date_required',
+      },
+      {
+        name: 'trends-variance',
+        handler: trendsVariance,
+        analysisFn: budgetVarianceAnalysis,
+        code: 'reference_date_required',
+      },
+      {
+        name: 'financial-health',
+        handler: financialHealth,
+        analysisFn: multidimensionalHealthAnalysis,
+        code: 'current_month_required',
+      },
+    ];
+
+    for (const entry of requiredParameterCases) {
+      it(`maps lowercase ${entry.name} required-parameter errors to HTTP 400`, async () => {
+        vi.mocked(entry.analysisFn).mockResolvedValue(errorAnalysisEnvelope(entry.code));
+
+        const response = await entry.handler(mockEvent);
+
+        expect(response).toMatchObject({ status: 'error', error: { code: entry.code } });
+        expect(mockSetResponseStatus).toHaveBeenCalledWith(mockEvent, 400);
+      });
+    }
+
+    it('rejects missing scenario payloads before opening a ledger connection', async () => {
+      mockGetQuery.mockReturnValue({});
+
+      const response = await scenarios(mockEvent);
+
+      expect(response).toMatchObject({
+        status: 'error',
+        error: { code: 'scenario_params_required', retryable: false },
+      });
+      expect(mockSetResponseStatus).toHaveBeenCalledWith(mockEvent, 400);
+      expect(mockWithConnection).not.toHaveBeenCalled();
+      expect(vi.mocked(scenarioComparisonAnalysis)).not.toHaveBeenCalled();
+    });
+
+    it('rejects scenario payloads that are not JSON objects before opening a connection', async () => {
+      mockGetQuery.mockReturnValue({ baseline: '[]', comparison: '{}' });
+
+      const response = await scenarios(mockEvent);
+
+      expect(response).toMatchObject({
+        status: 'error',
+        error: { code: 'INVALID_SCENARIO_PARAMS', retryable: false },
+      });
+      expect(mockSetResponseStatus).toHaveBeenCalledWith(mockEvent, 400);
+      expect(mockWithConnection).not.toHaveBeenCalled();
+      expect(vi.mocked(scenarioComparisonAnalysis)).not.toHaveBeenCalled();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -415,10 +564,7 @@ describe('Intelligence route delegation', () => {
     });
 
     it('includes auth info in error response envelopes', async () => {
-      mockAnalysisReturn(
-        handlerEntries[0],
-        errorAnalysisEnvelope('no_analysis_protocol'),
-      );
+      mockAnalysisReturn(handlerEntries[0], errorAnalysisEnvelope('no_analysis_protocol'));
 
       const r = await dataQuality(mockEvent);
 
@@ -461,10 +607,7 @@ describe('Intelligence route delegation', () => {
         baseline: '{"income":5000}',
         comparison: '{"income":6000}',
       });
-      mockAnalysisReturn(
-        handlerEntries[7],
-        okAnalysisEnvelope({ differences: [] }),
-      );
+      mockAnalysisReturn(handlerEntries[7], okAnalysisEnvelope({ differences: [] }));
 
       mockSetResponseStatus.mockClear();
       await scenarios(mockEvent);
@@ -487,10 +630,7 @@ describe('Intelligence route delegation', () => {
 
         expect(r.status).toBe('error');
         expect(r.error?.code).toBe('STORE_UNAVAILABLE');
-        expect(mockSetResponseStatus).toHaveBeenCalledWith(
-          expect.anything(),
-          503,
-        );
+        expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
         // Analysis function must NOT be called when store is unavailable
         expect(vi.mocked(entry.analysisFn)).not.toHaveBeenCalled();
       });

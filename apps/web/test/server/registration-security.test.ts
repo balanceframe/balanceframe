@@ -163,7 +163,6 @@ describe('generateInviteToken — token strength and digest separation', () => {
     expect(token.digest).not.toBe(token.raw);
   });
 
-
   it('generates unique tokens on successive calls (no accidental collisions)', () => {
     const tokens = Array.from({ length: 10 }, () => generateInviteToken());
     const raws = tokens.map((t) => t.raw);
@@ -275,11 +274,7 @@ describe('requireOwner — authorization gating', () => {
 
 describe('error envelope helpers — no reason-code leak', () => {
   it('registrationError does not include reasonCode in serialized response', () => {
-    const envelope = registrationError(
-      'Setup unavailable',
-      'req-abc',
-      'bootstrap.already_exists',
-    );
+    const envelope = registrationError('Setup unavailable', 'req-abc', 'bootstrap.already_exists');
     const serialized = JSON.stringify(envelope);
     // The reason code is accepted as a parameter but must not appear in output
     expect(serialized).not.toContain('bootstrap.already_exists');
@@ -289,11 +284,7 @@ describe('error envelope helpers — no reason-code leak', () => {
   });
 
   it('invitationError does not include reasonCode in serialized response', () => {
-    const envelope = invitationError(
-      'Invalid invitation',
-      'req-xyz',
-      'invite.expired',
-    );
+    const envelope = invitationError('Invalid invitation', 'req-xyz', 'invite.expired');
     const serialized = JSON.stringify(envelope);
     expect(serialized).not.toContain('invite.expired');
     expect(envelope.error?.code).toBe('INVITATION_FAILED');
@@ -319,11 +310,7 @@ describe('error envelope helpers — no reason-code leak', () => {
   });
 
   it('invitationError with store.unavailable is not retryable', () => {
-    const envelope = invitationError(
-      'Store unavailable',
-      'req-store',
-      'store.unavailable',
-    );
+    const envelope = invitationError('Store unavailable', 'req-store', 'store.unavailable');
     expect(envelope.error?.retryable).toBe(false);
     expect(JSON.stringify(envelope)).not.toContain('store.unavailable');
   });
@@ -362,7 +349,6 @@ describe('error envelope helpers — no reason-code leak', () => {
       },
     });
   });
-
 });
 
 // ---------------------------------------------------------------------------
@@ -424,11 +410,7 @@ describe('bootstrap error status codes — 409 (conflict) vs 503 (unavailable)',
       'req-409',
       'bootstrap.already_completed',
     );
-    const err503 = registrationError(
-      'Store unavailable',
-      'req-503',
-      'store.unavailable',
-    );
+    const err503 = registrationError('Store unavailable', 'req-503', 'store.unavailable');
     // Both have the same code regardless of HTTP status
     expect(err409.error?.code).toBe('REGISTRATION_FAILED');
     expect(err503.error?.code).toBe('REGISTRATION_FAILED');

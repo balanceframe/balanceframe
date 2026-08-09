@@ -1,7 +1,10 @@
 <template>
   <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
     <span class="font-medium">{{ scope.label }}</span>
-    <span v-if="scope.count !== undefined" class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-xs">
+    <span
+      v-if="scope.count !== undefined"
+      class="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-xs"
+    >
       {{ scope.count }}
     </span>
     <span v-if="scope.filter && Object.keys(scope.filter).length" class="opacity-60">

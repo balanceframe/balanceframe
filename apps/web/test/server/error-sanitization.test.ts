@@ -14,6 +14,7 @@ import {
   sanitizeErrorMessage,
   sanitizeError,
   errorEnvelope,
+  classifyConnectionError,
 } from '../../server/utils/workflow-store';
 
 // ---------------------------------------------------------------------------
@@ -22,7 +23,7 @@ import {
 
 describe('sanitizeErrorMessage', () => {
   it('strips Unix filesystem paths from error messages', () => {
-    const raw = 'ENOENT: no such file or directory, open \'/home/user/.config/balanceframe/data.db\'';
+    const raw = "ENOENT: no such file or directory, open '/home/user/.config/balanceframe/data.db'";
     expect(sanitizeErrorMessage(raw)).not.toMatch(/\/home\/user/);
     expect(sanitizeErrorMessage(raw)).not.toMatch(/\.config\/balanceframe/);
     expect(sanitizeErrorMessage(raw)).not.toMatch(/data\.db/);
@@ -30,14 +31,16 @@ describe('sanitizeErrorMessage', () => {
   });
 
   it('strips Windows filesystem paths from error messages', () => {
-    const raw = 'Error: Cannot find module \'C:\\Users\\admin\\AppData\\Local\\balanceframe\\config.json\'';
+    const raw =
+      "Error: Cannot find module 'C:\\Users\\admin\\AppData\\Local\\balanceframe\\config.json'";
     expect(sanitizeErrorMessage(raw)).not.toMatch(/C:\\Users/);
     expect(sanitizeErrorMessage(raw)).not.toMatch(/AppData/);
     expect(sanitizeErrorMessage(raw)).not.toMatch(/\\\\/);
   });
 
   it('removes V8 stack-frame trailers', () => {
-    const raw = "Cannot read properties of undefined (reading 'name')\n    at Object.<anonymous> (/app/node_modules/something/index.js:42:10)";
+    const raw =
+      "Cannot read properties of undefined (reading 'name')\n    at Object.<anonymous> (/app/node_modules/something/index.js:42:10)";
     const sanitized = sanitizeErrorMessage(raw);
     expect(sanitized).not.toContain('at Object.<anonymous>');
     expect(sanitized).not.toContain('/app/node_modules');
@@ -45,25 +48,25 @@ describe('sanitizeErrorMessage', () => {
   });
 
   it('removes inline source references like (file.ts:42)', () => {
-    const raw = "BudgetLedger.deleteRule failed (ledger.ts:120)";
+    const raw = 'BudgetLedger.deleteRule failed (ledger.ts:120)';
     const sanitized = sanitizeErrorMessage(raw);
     expect(sanitized).not.toContain('ledger.ts');
     expect(sanitized).not.toContain(':120');
   });
 
   it('strips error-type prefixes', () => {
-    const raw = "TypeError: network connection refused";
+    const raw = 'TypeError: network connection refused';
     expect(sanitizeErrorMessage(raw)).not.toContain('TypeError:');
     expect(sanitizeErrorMessage(raw)).toContain('network connection refused');
   });
 
   it('removes internal adapter/component names in parens', () => {
-    const raw = "Connection failed (ActualLedger)";
+    const raw = 'Connection failed (ActualLedger)';
     expect(sanitizeErrorMessage(raw)).not.toContain('ActualLedger');
   });
 
   it('collapses internal class.method references', () => {
-    const raw = "ActualLedger.deleteRule threw an unexpected error";
+    const raw = 'ActualLedger.deleteRule threw an unexpected error';
     expect(sanitizeErrorMessage(raw)).not.toMatch(/ActualLedger\.deleteRule/);
   });
 
@@ -79,7 +82,36 @@ describe('sanitizeErrorMessage', () => {
 
   it('preserves version conflict messages (safe)', () => {
     const raw = 'Version conflict: expected version 3 but current version is 4';
-    expect(sanitizeErrorMessage(raw)).toBe('Version conflict: expected version 3 but current version is 4');
+    expect(sanitizeErrorMessage(raw)).toBe(
+      'Version conflict: expected version 3 but current version is 4',
+    );
+  });
+});
+
+describe('classifyConnectionError', () => {
+  it('maps only not_connected application failures to the recovery contract', () => {
+    const error = Object.assign(
+      new Error('No BalanceFrame connection configured. Run connect first.'),
+      { code: 'not_connected' },
+    );
+
+    expect(classifyConnectionError(error)).toEqual({
+      code: 'not_connected',
+      message: 'No ledger connected. Configure an Actual budget first.',
+      retryable: true,
+    });
+  });
+
+  it.each([
+    Object.assign(new Error('EISDIR: illegal operation on a directory'), {
+      code: 'EISDIR',
+    }),
+    Object.assign(new Error('Malformed config'), { code: 'invalid_config' }),
+    Object.assign(new Error('Credential rejected'), { code: 'unauthorized' }),
+    new Error('No configuration file'),
+    'not_connected',
+  ])('leaves non-connection failures on the operational error path', (error) => {
+    expect(classifyConnectionError(error)).toBeNull();
   });
 });
 
@@ -121,6 +153,22 @@ describe('sanitizeError', () => {
     expect(logged).toContain(err.stack);
   });
 
+  it('returns the canonical recovery error without omitting correlation-ID logging', () => {
+    const spy = vi.spyOn(console, 'error');
+    const err = Object.assign(new Error('No selected budget'), {
+      code: 'not_connected',
+    });
+
+    expect(sanitizeError(err, 'req-connection-1', 'ACTUAL_OPERATION_FAILED')).toEqual({
+      code: 'not_connected',
+      message: 'No ledger connected. Configure an Actual budget first.',
+      retryable: true,
+    });
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining('[req-connection-1] ACTUAL_OPERATION_FAILED: No selected budget'),
+    );
+  });
+
   it('handles non-Error thrown values gracefully', () => {
     const result = sanitizeError('string error', 'req-3', 'CODE', false);
     expect(result.code).toBe('CODE');
@@ -135,9 +183,7 @@ describe('sanitizeError', () => {
 
 describe('error response contains no internal details', () => {
   it('errorEnvelope with sanitizeError output has no filesystem paths in message', () => {
-    const err = new Error(
-      "ENOENT: open '/var/data/balanceframe/budget.db' failed",
-    );
+    const err = new Error("ENOENT: open '/var/data/balanceframe/budget.db' failed");
     const safe = sanitizeError(err, 'req-int-1', 'LEDGER_UNAVAILABLE', true);
     // Build the envelope the same way handlers do
     const envelope = errorEnvelope(safe.code, safe.message, null, safe.retryable, 'req-int-1');
@@ -151,7 +197,7 @@ describe('error response contains no internal details', () => {
 
   it('errorEnvelope with sanitizeError output has no stack frames in message', () => {
     const err = new Error(
-      "Cannot read properties of undefined\n    at BudgetLedger.deleteRule (/app/src/adapter/ledger.ts:42:10)",
+      'Cannot read properties of undefined\n    at BudgetLedger.deleteRule (/app/src/adapter/ledger.ts:42:10)',
     );
     const safe = sanitizeError(err, 'req-int-2', 'RULE_DELETE_FAILED', true);
     const envelope = errorEnvelope(safe.code, safe.message, null, safe.retryable, 'req-int-2');
@@ -164,7 +210,7 @@ describe('error response contains no internal details', () => {
   });
 
   it('errorEnvelope with sanitizeError output has no adapter-internal references', () => {
-    const err = new Error("ActualLedger.synchronize timed out after 30000ms (ActualLedger)");
+    const err = new Error('ActualLedger.synchronize timed out after 30000ms (ActualLedger)');
     const safe = sanitizeError(err, 'req-int-3', 'SYNC_FAILED', true);
     const envelope = errorEnvelope(safe.code, safe.message, null, safe.retryable, 'req-int-3');
 

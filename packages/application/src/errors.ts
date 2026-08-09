@@ -157,7 +157,8 @@ export class ObserveWriteError extends ApplicationError {
   constructor(capability: string) {
     super({
       code: 'write_rejected',
-      message: `Write operation "${capability}" is not permitted in Observe mode. ` +
+      message:
+        `Write operation "${capability}" is not permitted in Observe mode. ` +
         'Switch to a mode that permits writes, or disconnect.',
       reasonCodes: [ReasonCodes.OBSERVE_MODE_WRITE_BLOCKED],
       retryable: false,

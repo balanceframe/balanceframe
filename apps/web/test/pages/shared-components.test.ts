@@ -66,29 +66,35 @@ const stubs = {
     template: '<div class="container"><slot /></div>',
   },
   UAlert: {
-    template: '<div data-testid="alert" role="alert"><strong>{{ title }}</strong> {{ description }}</div>',
+    template:
+      '<div data-testid="alert" role="alert"><strong>{{ title }}</strong> {{ description }}</div>',
     props: ['title', 'description', 'color', 'variant'],
   },
   USelectMenu: {
-    template: '<select data-testid="select-menu" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="v in items" :key="v.viewId" :value="v.viewId">{{ v.name }}</option></select>',
+    template:
+      '<select data-testid="select-menu" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="v in items" :key="v.viewId" :value="v.viewId">{{ v.name }}</option></select>',
     props: ['items', 'optionAttribute', 'valueAttribute', 'modelValue', 'size'],
     emits: ['update:modelValue'],
   },
   SavedViewPicker: {
-    template: '<div data-testid="saved-view-picker"><span v-for="v in views" :key="v.viewId">{{ v.name }}</span></div>',
+    template:
+      '<div data-testid="saved-view-picker"><span v-for="v in views" :key="v.viewId">{{ v.name }}</span></div>',
     props: ['views', 'showSave'],
     emits: ['select', 'save'],
   },
   SemanticAmount: {
-    template: '<span data-testid="semantic-amount">{{ amount.minorUnits }} {{ amount.currency }}</span>',
+    template:
+      '<span data-testid="semantic-amount">{{ amount.minorUnits }} {{ amount.currency }}</span>',
     props: ['amount', 'negative'],
   },
   InsufficientDataPanel: {
-    template: '<div data-testid="insufficient-data" role="status">{{ reason || "Insufficient data" }}</div>',
+    template:
+      '<div data-testid="insufficient-data" role="status">{{ reason || "Insufficient data" }}</div>',
     props: ['reason'],
   },
   ReasonCodeList: {
-    template: '<div data-testid="reason-codes"><span v-for="c in codes" :key="c">{{ c }}</span></div>',
+    template:
+      '<div data-testid="reason-codes"><span v-for="c in codes" :key="c">{{ c }}</span></div>',
     props: ['codes'],
   },
 };
@@ -131,22 +137,42 @@ import DefaultLayout from '../../app/layouts/default.vue';
 
 describe('DefaultLayout', () => {
   const availableAuthenticatedHrefs = [
-    '/', '/review', '/notifications',
-    '/data-quality', '/liquidity', '/calendar', '/trends', '/income', '/health',
-    '/cash-flow', '/targets', '/obligations', '/forecast-accuracy', '/reports',
-    '/rules', '/purchase-check', '/connection',
+    '/',
+    '/review',
+    '/notifications',
+    '/data-quality',
+    '/liquidity',
+    '/calendar',
+    '/trends',
+    '/income',
+    '/health',
+    '/cash-flow',
+    '/targets',
+    '/obligations',
+    '/forecast-accuracy',
+    '/scenarios',
+    '/reports',
+    '/rules',
+    '/purchase-check',
+    '/connection',
   ];
   const directDesktopHrefs = ['/', '/review', '/notifications'];
   const routePath = ref('/');
-  const routeGlobal = globalThis as typeof globalThis & { useRoute?: () => { readonly path: string; readonly fullPath: string } };
+  const routeGlobal = globalThis as typeof globalThis & {
+    useRoute?: () => { readonly path: string; readonly fullPath: string };
+  };
   let originalUseRoute: typeof routeGlobal.useRoute;
 
   beforeEach(() => {
     routePath.value = '/';
     originalUseRoute = routeGlobal.useRoute;
     routeGlobal.useRoute = () => ({
-      get path() { return routePath.value; },
-      get fullPath() { return routePath.value; },
+      get path() {
+        return routePath.value;
+      },
+      get fullPath() {
+        return routePath.value;
+      },
     });
   });
 
@@ -164,7 +190,10 @@ describe('DefaultLayout', () => {
   }
 
   function renderedHrefs(wrapper: VueWrapper) {
-    return wrapper.findAll('a[href]').map((link) => link.attributes('href')).sort();
+    return wrapper
+      .findAll('a[href]')
+      .map((link) => link.attributes('href'))
+      .sort();
   }
 
   function desktopGroupTriggers(wrapper: VueWrapper) {
@@ -234,18 +263,16 @@ describe('DefaultLayout', () => {
     expect([...exposedHrefs].sort()).toEqual([...availableAuthenticatedHrefs].sort());
   });
 
-  it('disables the non-operable Scenarios route with a Coming Soon hover message on desktop', async () => {
+  it('links to the operable Scenarios route from desktop navigation', async () => {
     const wrapper = mountLayout();
-    const planningTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Planning');
+    const planningTrigger = desktopGroupTriggers(wrapper).find(
+      (trigger) => trigger.text().trim() === 'Planning',
+    );
     if (!planningTrigger) throw new Error('Planning trigger not found');
     await planningTrigger.trigger('click');
 
-    const disabledItem = wrapper.get('[data-navigation-disabled="/scenarios"]');
-    expect(disabledItem.element.tagName).toBe('BUTTON');
-    expect(disabledItem.attributes('disabled')).toBeDefined();
-    expect(disabledItem.attributes('title')).toBe('Coming Soon');
-    expect(disabledItem.attributes('aria-label')).toBe('Scenarios — Coming Soon');
-    expect(wrapper.find('a[href="/scenarios"]').exists()).toBe(false);
+    expect(wrapper.get('a[href="/scenarios"]').text()).toBe('Scenarios');
+    expect(wrapper.find('[data-navigation-disabled="/scenarios"]').exists()).toBe(false);
   });
 
   it('skips disabled items when keyboard navigation opens a desktop group', async () => {
@@ -258,7 +285,9 @@ describe('DefaultLayout', () => {
     });
 
     try {
-      const planningTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Planning');
+      const planningTrigger = desktopGroupTriggers(wrapper).find(
+        (trigger) => trigger.text().trim() === 'Planning',
+      );
       if (!planningTrigger) throw new Error('Planning trigger not found');
       await planningTrigger.trigger('keydown', { key: 'ArrowUp' });
       await wrapper.vm.$nextTick();
@@ -272,8 +301,16 @@ describe('DefaultLayout', () => {
   it('opens named desktop groups and closes them on Escape', async () => {
     const wrapper = mountLayout();
     const triggers = desktopGroupTriggers(wrapper);
-    expect(triggers.map((trigger) => trigger.text().trim())).toEqual(['Analysis', 'Planning', 'System']);
-    expect(triggers.map((trigger) => trigger.attributes('aria-expanded'))).toEqual(['false', 'false', 'false']);
+    expect(triggers.map((trigger) => trigger.text().trim())).toEqual([
+      'Analysis',
+      'Planning',
+      'System',
+    ]);
+    expect(triggers.map((trigger) => trigger.attributes('aria-expanded'))).toEqual([
+      'false',
+      'false',
+      'false',
+    ]);
 
     for (const trigger of triggers) {
       await trigger.trigger('click');
@@ -293,7 +330,9 @@ describe('DefaultLayout', () => {
     });
 
     try {
-      const analysisTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Analysis');
+      const analysisTrigger = desktopGroupTriggers(wrapper).find(
+        (trigger) => trigger.text().trim() === 'Analysis',
+      );
       if (!analysisTrigger) throw new Error('Analysis trigger not found');
       await analysisTrigger.trigger('click');
       const firstLink = wrapper.get('#navigation-analysis-panel a');
@@ -311,7 +350,9 @@ describe('DefaultLayout', () => {
 
   it('closes navigation and user popovers when page content is clicked', async () => {
     const wrapper = mountLayout();
-    const analysisTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Analysis');
+    const analysisTrigger = desktopGroupTriggers(wrapper).find(
+      (trigger) => trigger.text().trim() === 'Analysis',
+    );
     if (!analysisTrigger) throw new Error('Analysis trigger not found');
 
     await analysisTrigger.trigger('click');
@@ -362,7 +403,9 @@ describe('DefaultLayout', () => {
 
   it('indicates the Analysis section when a child analysis route is active', () => {
     const wrapper = mountLayout('/liquidity');
-    const analysisTrigger = desktopGroupTriggers(wrapper).find((trigger) => trigger.text().trim() === 'Analysis');
+    const analysisTrigger = desktopGroupTriggers(wrapper).find(
+      (trigger) => trigger.text().trim() === 'Analysis',
+    );
     expect(analysisTrigger?.attributes('aria-current')).toBe('page');
   });
 
@@ -373,17 +416,15 @@ describe('DefaultLayout', () => {
     expect(renderedHrefs(mobileNavigation)).toEqual([...availableAuthenticatedHrefs].sort());
   });
 
-  it('disables the non-operable Scenarios route with a Coming Soon hover message on mobile', async () => {
+  it('links to the operable Scenarios route from mobile navigation', async () => {
     const wrapper = mountLayout();
     await wrapper.get('button[aria-label="Toggle navigation menu"]').trigger('click');
     const mobileNavigation = wrapper.get('nav[aria-label="Mobile navigation"]');
-    const disabledItem = mobileNavigation.get('[data-navigation-disabled="/scenarios"]');
 
-    expect(disabledItem.element.tagName).toBe('BUTTON');
-    expect(disabledItem.attributes('disabled')).toBeDefined();
-    expect(disabledItem.attributes('title')).toBe('Coming Soon');
-    expect(disabledItem.attributes('aria-label')).toBe('Scenarios — Coming Soon');
-    expect(mobileNavigation.find('a[href="/scenarios"]').exists()).toBe(false);
+    expect(mobileNavigation.get('a[href="/scenarios"]').text()).toBe('Scenarios');
+    expect(
+      mobileNavigation.find('[data-navigation-disabled="/scenarios"]').exists(),
+    ).toBe(false);
   });
 
   it('has visible focus-visible styles via classes on nav links', () => {
@@ -449,7 +490,8 @@ describe('AnalysisPage', () => {
         stubs: {
           ...stubs,
           FreshnessBanner: {
-            template: '<div data-testid="freshness-banner">{{ freshness?.isStale ? "Stale data" : "Data current" }}</div>',
+            template:
+              '<div data-testid="freshness-banner">{{ freshness?.isStale ? "Stale data" : "Data current" }}</div>',
             props: ['freshness'],
           },
         },
@@ -528,7 +570,7 @@ describe('AnalysisPage', () => {
     });
     const errorControls = errorWrapper
       .findAll('[role="alert"], button[aria-label="Retry loading"], a[href="/connection"]')
-      .map(control => control.element.tagName);
+      .map((control) => control.element.tagName);
 
     expect(errorControls).toEqual(['DIV', 'BUTTON', 'A']);
 
@@ -620,7 +662,11 @@ describe('AnalysisPage', () => {
 
   it('unknown error codes render visibly without interpretation', () => {
     const wrapper = mountPage({
-      error: { code: 'FUTURE_UNKNOWN_ERROR_XYZ', message: 'Something new happened', retryable: false },
+      error: {
+        code: 'FUTURE_UNKNOWN_ERROR_XYZ',
+        message: 'Something new happened',
+        retryable: false,
+      },
     });
     expect(wrapper.text()).toContain('FUTURE_UNKNOWN_ERROR_XYZ');
     expect(wrapper.text()).toContain('Something new happened');
@@ -727,7 +773,7 @@ describe('FreshnessBanner', () => {
 
   it('high contrast mode: uses visible border colors', () => {
     const wrapper = mountBanner();
-    expect(wrapper.classes().some(c => c.includes('border'))).toBe(true);
+    expect(wrapper.classes().some((c) => c.includes('border'))).toBe(true);
   });
 });
 
@@ -782,7 +828,7 @@ describe('AnalysisTable', () => {
     const badges = wrapper.findAll('span.inline-flex');
     expect(badges.length).toBeGreaterThan(0);
     // on_track badge should have emerald styling
-    const onTrackBadge = badges.find(b => b.text() === 'on_track');
+    const onTrackBadge = badges.find((b) => b.text() === 'on_track');
     expect(onTrackBadge?.classes()).toContain('bg-emerald-100');
   });
 
@@ -793,7 +839,13 @@ describe('AnalysisTable', () => {
 
   it('unknown badge values render visibly without interpretation', () => {
     const wrapper = mountTable({
-      rows: [{ name: 'Test', amount: { minorUnits: '0', currency: 'USD' }, status: 'future_unknown_status_xyz' }],
+      rows: [
+        {
+          name: 'Test',
+          amount: { minorUnits: '0', currency: 'USD' },
+          status: 'future_unknown_status_xyz',
+        },
+      ],
     });
     expect(wrapper.text()).toContain('future_unknown_status_xyz');
   });
@@ -872,8 +924,18 @@ import EvidenceDrawer from '../../app/components/EvidenceDrawer.vue';
 
 describe('EvidenceDrawer', () => {
   const evidenceItems = [
-    { description: 'Transaction matched rule #42', detail: 'Category: Groceries', source: 'ledger', authorized: true },
-    { description: 'Pattern detected in recurring spend', detail: 'Frequency: monthly', source: 'analysis', authorized: true },
+    {
+      description: 'Transaction matched rule #42',
+      detail: 'Category: Groceries',
+      source: 'ledger',
+      authorized: true,
+    },
+    {
+      description: 'Pattern detected in recurring spend',
+      detail: 'Frequency: monthly',
+      source: 'analysis',
+      authorized: true,
+    },
     { description: 'User override applied', detail: null, source: 'user', authorized: false },
   ];
 
@@ -945,7 +1007,14 @@ describe('EvidenceDrawer', () => {
 
   it('unknown source values render visibly', async () => {
     const wrapper = mountDrawer({
-      evidence: [{ description: 'Future source item', detail: 'Some detail', source: 'future_unknown_source', authorized: true }],
+      evidence: [
+        {
+          description: 'Future source item',
+          detail: 'Some detail',
+          source: 'future_unknown_source',
+          authorized: true,
+        },
+      ],
     });
     await wrapper.find('button').trigger('click');
     expect(wrapper.text()).toContain('Future source item');
@@ -954,7 +1023,14 @@ describe('EvidenceDrawer', () => {
 
   it('unknown detail values render as raw text', async () => {
     const wrapper = mountDrawer({
-      evidence: [{ description: 'Test item', detail: 'Unexpected: {{template}} syntax', source: 'test', authorized: true }],
+      evidence: [
+        {
+          description: 'Test item',
+          detail: 'Unexpected: {{template}} syntax',
+          source: 'test',
+          authorized: true,
+        },
+      ],
     });
     await wrapper.find('button').trigger('click');
     expect(wrapper.text()).toContain('Unexpected: {{template}} syntax');
@@ -996,7 +1072,7 @@ describe('EvidenceDrawer', () => {
     // Drawer content should not have animate- classes
     const drawerContent = wrapper.find('.mt-2');
     if (drawerContent.exists()) {
-      expect(drawerContent.classes().some(c => c.startsWith('animate-'))).toBe(false);
+      expect(drawerContent.classes().some((c) => c.startsWith('animate-'))).toBe(false);
     }
   });
 
@@ -1040,13 +1116,15 @@ const categoryCorrectModalStubs = {
     name: 'USelectMenu',
     props: ['modelValue', 'items'],
     emits: ['update:modelValue'],
-    template: '<select><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }}</option></select>',
+    template:
+      '<select><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }}</option></select>',
   },
   UButton: {
     name: 'UButton',
     props: ['label', 'disabled', 'loading'],
     emits: ['click'],
-    template: '<button :disabled="disabled" :data-loading="loading" @click="!disabled && $emit(\'click\')">{{ label }}</button>',
+    template:
+      '<button :disabled="disabled" :data-loading="loading" @click="!disabled && $emit(\'click\')">{{ label }}</button>',
   },
 };
 

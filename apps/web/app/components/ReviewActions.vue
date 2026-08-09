@@ -151,5 +151,4 @@ function disabledReason(_action: string): string {
   if (!props.hasCurrent) return 'No item selected — click a transaction in the queue.';
   return '';
 }
-
 </script>

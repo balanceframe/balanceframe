@@ -304,8 +304,7 @@ describe('ReviewControllerAdapter (web-shell contract)', () => {
         const desc = Object.getOwnPropertyDescriptor(adapter, key);
         if (desc) {
           const isReadonly =
-            (desc.get !== undefined && desc.set === undefined) ||
-            desc.writable === false;
+            (desc.get !== undefined && desc.set === undefined) || desc.writable === false;
           expect(isReadonly).toBe(true);
         }
       }

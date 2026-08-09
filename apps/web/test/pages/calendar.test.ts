@@ -12,39 +12,90 @@ vi.stubGlobal('$fetch', mockFetch);
 import CalendarPage from '../../app/pages/calendar.vue';
 
 const stubs = {
-  AnalysisPage: { template: '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>', props: ['title', 'loading', 'error', 'freshness', 'insufficientData'] },
-  SemanticAmount: { template: '<span data-testid="semantic-amount">{{ amount.minorUnits }}</span>', props: ['amount'] },
+  AnalysisPage: {
+    template:
+      '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>',
+    props: ['title', 'loading', 'error', 'freshness', 'insufficientData'],
+  },
+  SemanticAmount: {
+    template: '<span data-testid="semantic-amount">{{ amount.minorUnits }}</span>',
+    props: ['amount'],
+  },
   UCard: { template: '<div><slot name="header" /><slot /></div>' },
-  AnalysisTable: { template: '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>', props: ['columns', 'rows'] },
+  AnalysisTable: {
+    template:
+      '<table><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>',
+    props: ['columns', 'rows'],
+  },
   ScopeSummary: { template: '<div>{{ scope.label }}</div>', props: ['scope'] },
 };
 
 function okEnvelope(result: unknown) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'ok' as const, dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' }, authorization: null, result, error: null };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'ok' as const,
+    dataFreshness: { isStale: false, lastSync: '2026-01-15T10:00:00Z', label: 'current' },
+    authorization: null,
+    result,
+    error: null,
+  };
 }
 
 function errorEnvelope(code: string) {
-  return { schemaVersion: '1', requestId: 'req-test', status: 'error' as const, dataFreshness: null, authorization: null, result: null, error: { code, message: `Simulated ${code}`, retryable: true } };
+  return {
+    schemaVersion: '1',
+    requestId: 'req-test',
+    status: 'error' as const,
+    dataFreshness: null,
+    authorization: null,
+    result: null,
+    error: { code, message: `Simulated ${code}`, retryable: true },
+  };
 }
 
 const sampleResult = {
   entries: [
-    { name: 'Electric Bill', dueDate: '2026-02-05', amount: { minorUnits: '12000', currency: 'USD' }, categoryId: 'cat-1', status: 'unpaid' },
-    { name: 'Internet', dueDate: '2026-02-10', amount: { minorUnits: '6500', currency: 'USD' }, categoryId: 'cat-2', status: 'paid' },
-    { name: 'Car Insurance', dueDate: '2026-02-15', amount: { minorUnits: '8500', currency: 'USD' }, categoryId: null, status: 'unpaid' },
+    {
+      name: 'Electric Bill',
+      dueDate: '2026-02-05',
+      amount: { minorUnits: '12000', currency: 'USD' },
+      categoryId: 'cat-1',
+      status: 'unpaid',
+    },
+    {
+      name: 'Internet',
+      dueDate: '2026-02-10',
+      amount: { minorUnits: '6500', currency: 'USD' },
+      categoryId: 'cat-2',
+      status: 'paid',
+    },
+    {
+      name: 'Car Insurance',
+      dueDate: '2026-02-15',
+      amount: { minorUnits: '8500', currency: 'USD' },
+      categoryId: null,
+      status: 'unpaid',
+    },
   ],
   totalUnpaid: { minorUnits: '20500', currency: 'USD' },
   unpaidCount: 2,
 };
 
 describe('Calendar page', () => {
-  beforeEach(() => { vi.clearAllMocks(); mockFetch.mockReset(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+  });
 
   it('calls /api/calendar on mount', async () => {
     mockFetch.mockResolvedValue(okEnvelope(sampleResult));
     shallowMount(CalendarPage, { global: { stubs } });
     await flushPromises();
-    expect(mockFetch).toHaveBeenCalledWith('/api/calendar', expect.objectContaining({ query: expect.any(Object) }));
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/calendar',
+      expect.objectContaining({ query: expect.any(Object) }),
+    );
   });
 
   it('renders bill entry names', async () => {

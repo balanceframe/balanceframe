@@ -1,18 +1,11 @@
 <template>
-  <UCard
-    class="h-full min-h-0 flex flex-col"
-    :ui="{ body: 'flex flex-col flex-1 min-h-0' }"
-  >
+  <UCard class="h-full min-h-0 flex flex-col" :ui="{ body: 'flex flex-col flex-1 min-h-0' }">
     <template #header>
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-bold truncate">
           {{ item.evidence.normalizedMerchant }}
         </h2>
-        <UBadge
-          :color="statusBadgeColor"
-          variant="solid"
-          size="sm"
-        >
+        <UBadge :color="statusBadgeColor" variant="solid" size="sm">
           {{ item.reviewItem.status }}
         </UBadge>
       </div>
@@ -53,11 +46,7 @@
           <div>
             <span class="text-xs text-gray-500 dark:text-gray-400">Recovery state</span>
             <div class="mt-0.5">
-              <UBadge
-                :color="statusBadgeColor"
-                variant="solid"
-                size="sm"
-              >
+              <UBadge :color="statusBadgeColor" variant="solid" size="sm">
                 {{ recoveryStateLabel }}
               </UBadge>
             </div>
@@ -97,10 +86,11 @@
       </div>
 
       <!-- Alternative categories -->
-      <div v-if="item.evidence.alternatives.length > 0" class="border-t pt-3 border-neutral-200 dark:border-neutral-700">
-        <span class="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-          Alternatives
-        </span>
+      <div
+        v-if="item.evidence.alternatives.length > 0"
+        class="border-t pt-3 border-neutral-200 dark:border-neutral-700"
+      >
+        <span class="block text-xs text-gray-500 dark:text-gray-400 mb-1"> Alternatives </span>
         <div class="flex flex-wrap gap-1">
           <UBadge
             v-for="alt in item.evidence.alternatives"
@@ -129,7 +119,9 @@
             class="flex items-center justify-between text-xs"
           >
             <span>{{ displayName(h.categoryId) }}</span>
-            <span class="text-gray-400">{{ h.count }}x &middot; {{ formatDate(h.lastClassified) }}</span>
+            <span class="text-gray-400"
+              >{{ h.count }}x &middot; {{ formatDate(h.lastClassified) }}</span
+            >
           </div>
         </div>
       </div>
@@ -139,9 +131,7 @@
         v-if="item.evidence.ruleCandidates.length > 0"
         class="border-t pt-3 border-neutral-200 dark:border-neutral-700"
       >
-        <span class="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-          Create rule
-        </span>
+        <span class="block text-xs text-gray-500 dark:text-gray-400 mb-1"> Create rule </span>
         <div class="space-y-2">
           <div
             v-for="rc in item.evidence.ruleCandidates"
@@ -175,29 +165,46 @@ const props = defineProps<{
 
 const statusBadgeColor = computed(() => {
   switch (props.item.reviewItem.status) {
-    case 'pending_review': return 'primary';
-    case 'approved':       return 'success';
-    case 'correcting':     return 'neutral';
-    case 'superseded':     return 'neutral';
+    case 'pending_review':
+      return 'primary';
+    case 'approved':
+      return 'success';
+    case 'correcting':
+      return 'neutral';
+    case 'superseded':
+      return 'neutral';
     case 'skipped':
-    case 'rejected':       return 'error';
-    case 'applied':        return 'success';
-    case 'apply_failed':   return 'error';
-    default:               return 'neutral';
+    case 'rejected':
+      return 'error';
+    case 'applied':
+      return 'success';
+    case 'apply_failed':
+      return 'error';
+    default:
+      return 'neutral';
   }
 });
 
 const recoveryStateLabel = computed(() => {
   switch (props.item.reviewItem.status) {
-    case 'pending_review': return 'Awaiting review';
-    case 'approved':       return 'Approved';
-    case 'correcting':     return 'Edited';
-    case 'superseded':     return 'Superseded';
-    case 'skipped':        return 'Skipped';
-    case 'rejected':       return 'Rejected';
-    case 'applied':        return 'Verified applied';
-    case 'apply_failed':   return 'Failed';
-    default:               return props.item.reviewItem.status;
+    case 'pending_review':
+      return 'Awaiting review';
+    case 'approved':
+      return 'Approved';
+    case 'correcting':
+      return 'Edited';
+    case 'superseded':
+      return 'Superseded';
+    case 'skipped':
+      return 'Skipped';
+    case 'rejected':
+      return 'Rejected';
+    case 'applied':
+      return 'Verified applied';
+    case 'apply_failed':
+      return 'Failed';
+    default:
+      return props.item.reviewItem.status;
   }
 });
 

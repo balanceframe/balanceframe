@@ -17,7 +17,11 @@
 import type { RuleShowResult, LedgerHandle } from '../../utils/rule-types';
 import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
-  getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo,
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  classifyConnectionError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -32,34 +36,63 @@ export default defineEventHandler(async (event) => {
 
   try {
     const manager = createMutationConnectionManager();
-    const connected = await manager.restore();
-    const ledger = connected.connector as unknown as LedgerHandle;
+    return await manager.withConnection(
+      async ({ connector }) => {
+        const ledger = connector as unknown as LedgerHandle;
 
-    const allRules = (await ledger.listRules()) as RuleShowResult[];
-    const routeId = event.context.params?.id;
-    if (!routeId) {
-      setResponseStatus(event, 400);
-      return errorEnvelope('MISSING_RULE_ID', 'Rule ID is required.', authInfo, false, requestId);
-    }
+        const allRules = (await ledger.listRules()) as RuleShowResult[];
+        const routeId = event.context.params?.id;
+        if (!routeId) {
+          setResponseStatus(event, 400);
+          return errorEnvelope(
+            'MISSING_RULE_ID',
+            'Rule ID is required.',
+            authInfo,
+            false,
+            requestId,
+          );
+        }
 
-    const rule: RuleShowResult | undefined = allRules.find((r) => r.id === routeId);
+        const rule: RuleShowResult | undefined = allRules.find((r) => r.id === routeId);
 
-    if (!rule) {
-      setResponseStatus(event, 404);
-      return errorEnvelope('RULE_NOT_FOUND', `Rule not found: ${routeId}`, authInfo, false, requestId);
-    }
+        if (!rule) {
+          setResponseStatus(event, 404);
+          return errorEnvelope(
+            'RULE_NOT_FOUND',
+            `Rule not found: ${routeId}`,
+            authInfo,
+            false,
+            requestId,
+          );
+        }
 
-    // Merge local rule override if present, with explicit flag
-    const overrides = await wf.store.getRuleOverrides();
-    const overrideInactive = overrides.get(rule.id);
-    if (overrideInactive !== undefined) {
-      rule.inactive = overrideInactive;
-      rule._localOverride = true;
-    }
+        // Merge local rule override if present, with explicit flag
+        const overrides = await wf.store.getRuleOverrides();
+        const overrideInactive = overrides.get(rule.id);
+        if (overrideInactive !== undefined) {
+          rule.inactive = overrideInactive;
+          rule._localOverride = true;
+        }
 
-    return okEnvelope(rule, authInfo, requestId);
+        return okEnvelope(rule, authInfo, requestId);
+      },
+      { dispose: true },
+    );
   } catch (e) {
     if (event.node.res.headersSent) throw e;
+
+    const connectionError = classifyConnectionError(e);
+    if (connectionError) {
+      setResponseStatus(event, 503);
+      return errorEnvelope(
+        connectionError.code,
+        connectionError.message,
+        authInfo,
+        connectionError.retryable,
+        requestId,
+      );
+    }
+
     setResponseStatus(event, 500);
     return errorEnvelope(
       'RULE_SHOW_FAILED',

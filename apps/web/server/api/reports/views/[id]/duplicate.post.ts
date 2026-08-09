@@ -9,7 +9,14 @@
  */
 
 import { defineEventHandler, readBody, getRouterParam, setResponseStatus } from 'h3';
-import { getWorkflowStore, okEnvelope, errorEnvelope, buildAuthorizationInfo, getActorId, sanitizeError } from '../../../../utils/workflow-store';
+import {
+  getWorkflowStore,
+  okEnvelope,
+  errorEnvelope,
+  buildAuthorizationInfo,
+  getActorId,
+  sanitizeError,
+} from '../../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const authInfo = buildAuthorizationInfo(event, 'observe');
@@ -18,7 +25,13 @@ export default defineEventHandler(async (event) => {
 
   if (!sourceViewId) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_VIEW_ID', 'Source view ID is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_VIEW_ID',
+      'Source view ID is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   let body: Record<string, unknown>;
@@ -26,13 +39,25 @@ export default defineEventHandler(async (event) => {
     body = (await readBody(event)) ?? {};
   } catch {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_BODY', 'Request body must be valid JSON.', authInfo, false, requestId);
+    return errorEnvelope(
+      'INVALID_BODY',
+      'Request body must be valid JSON.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name) {
     setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_NAME', 'Duplicate view name is required.', authInfo, false, requestId);
+    return errorEnvelope(
+      'MISSING_NAME',
+      'Duplicate view name is required.',
+      authInfo,
+      false,
+      requestId,
+    );
   }
 
   const wf = getWorkflowStore(event);
@@ -50,7 +75,7 @@ export default defineEventHandler(async (event) => {
     return okEnvelope(duplicated, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'DUPLICATE_FAILED', false);
-    setResponseStatus(event, 500);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
     return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

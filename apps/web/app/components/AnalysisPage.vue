@@ -18,7 +18,12 @@
     </div>
 
     <!-- Loading state -->
-    <div v-if="loading" role="status" aria-label="Loading" class="flex items-center justify-center py-12">
+    <div
+      v-if="loading"
+      role="status"
+      aria-label="Loading"
+      class="flex items-center justify-center py-12"
+    >
       <UIcon name="i-heroicons-arrow-path" class="animate-spin text-2xl text-gray-400" />
       <span class="ml-2 text-sm text-gray-500 dark:text-gray-400">Loading...</span>
     </div>
@@ -52,9 +57,11 @@
     <slot v-else name="content" />
 
     <!-- Fallback empty state -->
-    <div v-if="!loading && !error && !$slots.content && !insufficientData"
+    <div
+      v-if="!loading && !error && !$slots.content && !insufficientData"
       role="status"
-      class="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">
+      class="text-center py-12 text-gray-400 dark:text-gray-500 text-sm"
+    >
       No data available.
     </div>
   </UContainer>

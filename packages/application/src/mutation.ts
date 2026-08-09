@@ -45,11 +45,7 @@ import type {
   LedgerSnapshotResult,
 } from '@balanceframe/actual-adapter';
 
-import type {
-  Transaction,
-  Category,
-  ProtocolSnapshot,
-} from '@balanceframe/protocol-generated';
+import type { Transaction, Category, ProtocolSnapshot } from '@balanceframe/protocol-generated';
 
 // ---------------------------------------------------------------------------
 // Rust protocol types (match the Rust core-protocol JSON wire format)
@@ -171,7 +167,7 @@ export class CategorizationMutationService {
     this.requireBackupVerification = options?.requireBackupVerification ?? false;
   }
 
-/**
+  /**
    * Execute a categorization proposal end-to-end.
    *
    * Flow summary:
@@ -310,9 +306,12 @@ export class CategorizationMutationService {
       });
     } catch (err) {
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_replay_mismatch');
-      return this.fail(baseResult, 'idempotency_replay_mismatch',
+      return this.fail(
+        baseResult,
+        'idempotency_replay_mismatch',
         err instanceof Error ? err.message : 'Idempotency record creation failed',
-        input);
+        input,
+      );
     }
 
     if (!idemClaim.isOwner) {
@@ -323,10 +322,13 @@ export class CategorizationMutationService {
       // In-flight: another execution is using this key — or previous run crashed
       // and the lease hasn't expired yet. The caller should retry later.
       await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
-      return this.fail(baseResult, 'idempotency_in_progress',
-        'Execution with this idempotency key is already in progress', input);
+      return this.fail(
+        baseResult,
+        'idempotency_in_progress',
+        'Execution with this idempotency key is already in progress',
+        input,
+      );
     }
-
 
     // We own the claim — proceed with execution
 
@@ -344,27 +346,44 @@ export class CategorizationMutationService {
     // Bind approval to the exact proposal ID
     if (approval.proposalId !== input.proposalId) {
       await this.appendFailureAudit(input, proposal, auth, 'approval_proposal_mismatch');
-      return this.fail(baseResult, 'approval_proposal_mismatch',
-        'Approval proposal ID does not match the input proposal', input);
+      return this.fail(
+        baseResult,
+        'approval_proposal_mismatch',
+        'Approval proposal ID does not match the input proposal',
+        input,
+      );
     }
 
     // Bind approval payload hash to proposal payload hash
     if (approval.payloadHash !== proposal.payloadHash) {
       await this.appendFailureAudit(input, proposal, auth, 'payload_hash_mismatch');
-      return this.fail(baseResult, 'payload_hash_mismatch',
-        'Approval payload hash does not match proposal', input);
+      return this.fail(
+        baseResult,
+        'payload_hash_mismatch',
+        'Approval payload hash does not match proposal',
+        input,
+      );
     }
 
     // Verify operation is supported
     if (proposal.operation !== 'set_category') {
       await this.appendFailureAudit(input, proposal, auth, 'unsupported_operation');
-      return this.fail(baseResult, 'unsupported_operation',
-        `Proposal operation "${proposal.operation}" is not supported`, input);
+      return this.fail(
+        baseResult,
+        'unsupported_operation',
+        `Proposal operation "${proposal.operation}" is not supported`,
+        input,
+      );
     }
 
     if (approval.status === 'consumed') {
       await this.appendFailureAudit(input, proposal, auth, 'approval_consumed');
-      return this.fail(baseResult, 'approval_consumed', 'Approval has already been consumed', input);
+      return this.fail(
+        baseResult,
+        'approval_consumed',
+        'Approval has already been consumed',
+        input,
+      );
     }
 
     if (approval.status === 'expired' || new Date(approval.expiresAt).getTime() <= Date.now()) {
@@ -387,8 +406,12 @@ export class CategorizationMutationService {
     } catch (err) {
       await this.recordFailure(input, err);
       await this.appendFailureAudit(input, proposal, auth, 'approval_consumption_failed');
-      return this.fail(baseResult, 'approval_consumption_failed',
-        err instanceof Error ? err.message : 'Failed to consume approval', input);
+      return this.fail(
+        baseResult,
+        'approval_consumption_failed',
+        err instanceof Error ? err.message : 'Failed to consume approval',
+        input,
+      );
     }
     // =====================================================================
 
@@ -422,10 +445,18 @@ export class CategorizationMutationService {
       snapshotResult = await this.ledger.synchronize();
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth,
-        err instanceof Error ? err.message : 'sync_failed');
-      return this.fail(baseResult, 'sync_failed',
-        err instanceof Error ? err.message : 'Synchronization failed', input);
+      await this.appendFailureAudit(
+        input,
+        proposal,
+        auth,
+        err instanceof Error ? err.message : 'sync_failed',
+      );
+      return this.fail(
+        baseResult,
+        'sync_failed',
+        err instanceof Error ? err.message : 'Synchronization failed',
+        input,
+      );
     }
 
     const { snapshot } = snapshotResult;
@@ -438,21 +469,29 @@ export class CategorizationMutationService {
     }
 
     // Find transaction in snapshot
-    const tx = snapshot.transactions.find(t => t.id === proposal.transactionId);
+    const tx = snapshot.transactions.find((t) => t.id === proposal.transactionId);
     if (!tx) {
       await this.recordFailure(input, new Error('Transaction not found in latest snapshot'));
       await this.appendFailureAudit(input, proposal, auth, 'transaction_not_found');
-      return this.fail(baseResult, 'transaction_not_found',
-        'Transaction not found in latest snapshot', input);
+      return this.fail(
+        baseResult,
+        'transaction_not_found',
+        'Transaction not found in latest snapshot',
+        input,
+      );
     }
 
     // Find category in snapshot
-    const cat = snapshot.categories.find(c => c.id === proposal.categoryId);
+    const cat = snapshot.categories.find((c) => c.id === proposal.categoryId);
     if (!cat) {
       await this.recordFailure(input, new Error('Category not found in latest snapshot'));
       await this.appendFailureAudit(input, proposal, auth, 'category_not_found');
-      return this.fail(baseResult, 'category_not_found',
-        'Category not found in latest snapshot', input);
+      return this.fail(
+        baseResult,
+        'category_not_found',
+        'Category not found in latest snapshot',
+        input,
+      );
     }
 
     // =====================================================================
@@ -464,10 +503,18 @@ export class CategorizationMutationService {
       plan = this.rust.planSetCategory(tx, cat);
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth,
-        err instanceof Error ? err.message : 'plan_failed');
-      return this.fail(baseResult, 'plan_failed',
-        err instanceof Error ? err.message : 'Mutation planning failed', input);
+      await this.appendFailureAudit(
+        input,
+        proposal,
+        auth,
+        err instanceof Error ? err.message : 'plan_failed',
+      );
+      return this.fail(
+        baseResult,
+        'plan_failed',
+        err instanceof Error ? err.message : 'Mutation planning failed',
+        input,
+      );
     }
 
     // =====================================================================
@@ -495,15 +542,18 @@ export class CategorizationMutationService {
     } catch (err) {
       await this.recordFailure(input, err);
       await this.auditFailure(input, proposal, auth, err);
-      return this.fail(baseResult, 'write_failed',
-        err instanceof Error ? err.message : 'Write operation failed', input);
+      return this.fail(
+        baseResult,
+        'write_failed',
+        err instanceof Error ? err.message : 'Write operation failed',
+        input,
+      );
     }
     if (!writeResult.success) {
       await this.recordFailure(input, new Error(writeResult.error));
       await this.auditFailure(input, proposal, auth, new Error(writeResult.error));
       return this.fail(baseResult, 'write_failed', writeResult.error, input);
     }
-
 
     // =====================================================================
     // 12. Reread via fresh synchronize + Rust verifyMutation
@@ -517,8 +567,12 @@ export class CategorizationMutationService {
       // Write happened but we can't verify — still need to record outcome
       await this.recordFailure(input, err);
       await this.appendFailureAudit(input, proposal, auth, 'reread_failed');
-      return this.fail(baseResult, 'reread_failed',
-        err instanceof Error ? err.message : 'Post-write reread failed', input);
+      return this.fail(
+        baseResult,
+        'reread_failed',
+        err instanceof Error ? err.message : 'Post-write reread failed',
+        input,
+      );
     }
 
     let verified = false;
@@ -557,7 +611,6 @@ export class CategorizationMutationService {
         // Non-fatal
       }
     }
-
 
     // =====================================================================
     // 14. Append completion or failure audit
@@ -655,7 +708,8 @@ export class CategorizationMutationService {
     if (auth.membershipStatus !== 'active') return 'member_inactive';
     // Membership is active, so denial is due to capability or scope
     if (auth.disposition.kind === 'denied') {
-      if (auth.disposition.reason.startsWith('Missing capability')) return 'insufficient_capability';
+      if (auth.disposition.reason.startsWith('Missing capability'))
+        return 'insufficient_capability';
       if (auth.disposition.reason.startsWith('Scope')) return 'insufficient_scope';
     }
     return 'authorization_denied';
@@ -696,7 +750,8 @@ export class CategorizationMutationService {
       // Must match the budget being mutated
       if (record.budgetId !== budgetId) continue;
       // Must be recent
-      if (Date.now() - new Date(record.timestamp).getTime() > BACKUP_VERIFICATION_FRESHNESS_MS) continue;
+      if (Date.now() - new Date(record.timestamp).getTime() > BACKUP_VERIFICATION_FRESHNESS_MS)
+        continue;
       return true;
     }
     return false;
@@ -711,7 +766,6 @@ export class CategorizationMutationService {
       // Non-fatal
     }
   }
-
 
   /**
    * Append an execution_failed audit record after a write error (best-effort).
@@ -807,7 +861,6 @@ export class CategorizationMutationService {
       message: idem.errorMessage ?? undefined,
     };
   }
-
 }
 
 // ---------------------------------------------------------------------------

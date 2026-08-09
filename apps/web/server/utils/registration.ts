@@ -46,7 +46,6 @@ export interface InvitationRecord {
   redeemedAt: string | null;
 }
 
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -101,9 +100,7 @@ export interface BootstrapSecretResult {
   secret: string;
 }
 
-export type BootstrapSecretLoad =
-  | BootstrapSecretResult
-  | { available: false; reason: string };
+export type BootstrapSecretLoad = BootstrapSecretResult | { available: false; reason: string };
 
 /**
  * Resolve the bootstrap operator secret.
@@ -193,7 +190,10 @@ export function invitationError(
  * Check whether the authenticated actor in the event context is the owner.
  * Returns an error envelope (with status already set) when not owner.
  */
-export function requireOwner(event: EventWithContext, ownerUserId: string): { ok: true } | { ok: false; response: ApiEnvelope<null> } {
+export function requireOwner(
+  event: EventWithContext,
+  ownerUserId: string,
+): { ok: true } | { ok: false; response: ApiEnvelope<null> } {
   const ctx = event.context.auth;
   if (!ctx?.authenticated) {
     setResponseStatus(event as unknown as H3Event, 401);

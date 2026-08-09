@@ -30,7 +30,8 @@ export type { Money } from '@balanceframe/protocol-generated';
  * - **ManagedAutomation** (post-MVP): configured low-risk deterministic actions.
  * - **DisposableSandbox**: isolated budget for safe mutation testing.
  */
-export type ConnectionMode = 'observe' | 'reviewAndApply' | 'managedAutomation' | 'disposableSandbox';
+export type ConnectionMode =
+  'observe' | 'reviewAndApply' | 'managedAutomation' | 'disposableSandbox';
 
 /** Default mode for Phase 1 — no writes permitted. */
 export const DEFAULT_MODE: ConnectionMode = 'observe';
@@ -232,8 +233,7 @@ export interface MutationPrecondition {
 }
 
 export type MutationResult =
-  | { success: true; id: LedgerId }
-  | { success: false; error: string; code: string };
+  { success: true; id: LedgerId } | { success: false; error: string; code: string };
 
 /**
  * Result of a setTransactionCategory call.
@@ -319,6 +319,12 @@ export interface BudgetIdentity {
 // BudgetLedger interface (the capability-aware internal port)
 // ---------------------------------------------------------------------------
 
+/** Controls whether synchronization refreshes the loaded budget from the remote server. */
+export interface SynchronizeOptions {
+  /** False only when the caller has just downloaded and selected the budget. */
+  readonly refresh?: boolean;
+}
+
 /**
  * Capability-aware internal interface for backend budget access.
  *
@@ -330,8 +336,11 @@ export interface BudgetLedger {
   /** Report what this connection can do. */
   capabilities(): Promise<LedgerCapabilities>;
 
-  /** Full synchronize: download + sync + normalize into a snapshot. */
-  synchronize(): Promise<LedgerSnapshotResult>;
+  /** Synchronize and normalize the selected budget, optionally reusing a just-downloaded local copy. */
+  synchronize(options?: SynchronizeOptions): Promise<LedgerSnapshotResult>;
+
+  /** Return the most recently completed normalized synchronization, if any. */
+  getLatestSynchronization?(): LedgerSnapshotResult | null;
 
   // ---- Read operations (available in all modes) ----
 
@@ -356,10 +365,7 @@ export interface BudgetLedger {
     precondition?: MutationPrecondition,
   ): Promise<MutationResult>;
 
-  createRule(
-    proposal: RuleProposal,
-    precondition?: MutationPrecondition,
-  ): Promise<MutationResult>;
+  createRule(proposal: RuleProposal, precondition?: MutationPrecondition): Promise<MutationResult>;
 
   setBudgetAmount(
     month: string,

@@ -15,7 +15,11 @@
 import crypto from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-import type { CreateReviewItemInput, ReviewItem, CategorizationProposal } from '@balanceframe/workflow-store';
+import type {
+  CreateReviewItemInput,
+  ReviewItem,
+  CategorizationProposal,
+} from '@balanceframe/workflow-store';
 import {
   setReviewMutationExecutor,
   reviewAndApplyEnabled,
@@ -45,13 +49,14 @@ import { resolveAuthDbPath } from '../../lib/auth-db-path';
 // Mock h3 for auth middleware tests — must be before importing middleware
 // ---------------------------------------------------------------------------
 
-const { mockGetRequestPath, mockGetHeader, mockGetCookie, mockSetResponseStatus, mockSetHeader } = vi.hoisted(() => ({
-  mockGetRequestPath: vi.fn(),
-  mockGetHeader: vi.fn(),
-  mockGetCookie: vi.fn().mockReturnValue(undefined),
-  mockSetResponseStatus: vi.fn(),
-  mockSetHeader: vi.fn(),
-}));
+const { mockGetRequestPath, mockGetHeader, mockGetCookie, mockSetResponseStatus, mockSetHeader } =
+  vi.hoisted(() => ({
+    mockGetRequestPath: vi.fn(),
+    mockGetHeader: vi.fn(),
+    mockGetCookie: vi.fn().mockReturnValue(undefined),
+    mockSetResponseStatus: vi.fn(),
+    mockSetHeader: vi.fn(),
+  }));
 
 vi.mock('h3', () => ({
   defineEventHandler: <T>(handler: T) => handler,
@@ -85,7 +90,9 @@ const BASE_CREATE: CreateReviewItemInput = {
 
 function tickSync(): void {
   const end = Date.now() + 5;
-  while (Date.now() < end) { /* spin */ }
+  while (Date.now() < end) {
+    /* spin */
+  }
 }
 
 async function seedPendingReview(
@@ -197,7 +204,13 @@ describe('authorization enforcement — unauthorized users', () => {
 
   it('errorEnvelope with retryable=true signals transient failure', () => {
     const authInfo = { actorId: 'user-1', capability: 'observe', allowed: true };
-    const envelope = errorEnvelope('LEDGER_UNAVAILABLE', 'Ledger sync failed', authInfo, true, 'req-retry');
+    const envelope = errorEnvelope(
+      'LEDGER_UNAVAILABLE',
+      'Ledger sync failed',
+      authInfo,
+      true,
+      'req-retry',
+    );
     const error = envelope.error as ApiError;
     expect(error.retryable).toBe(true);
     expect(error.code).toBe('LEDGER_UNAVAILABLE');
@@ -348,9 +361,7 @@ describe('quorum gate — mutation only after quorum met', () => {
     expect(refreshed?.approvedBy).toEqual([ACTOR, OTHER_ACTOR]);
 
     // NOW calling applyReviewMutationWithTransition should invoke the executor
-    await applyReviewMutationWithTransition(
-      store, item.id, OTHER_ACTOR, spy, crypto.randomUUID(),
-    );
+    await applyReviewMutationWithTransition(store, item.id, OTHER_ACTOR, spy, crypto.randomUUID());
     expect(spy).toHaveBeenCalledTimes(1);
   });
 });
@@ -368,7 +379,13 @@ describe('retryable idempotency', () => {
 
   it('errorEnvelope with retryable=true preserves retry signal', () => {
     const authInfo = { actorId: 'user-1', capability: 'observe', allowed: true };
-    const envelope = errorEnvelope('SYNC_REVIEW_FAILED', 'Ledger sync timeout', authInfo, true, 'req-retry-1');
+    const envelope = errorEnvelope(
+      'SYNC_REVIEW_FAILED',
+      'Ledger sync timeout',
+      authInfo,
+      true,
+      'req-retry-1',
+    );
     const error = envelope.error as ApiError;
     expect(error.retryable).toBe(true);
     expect(error.code).toBe('SYNC_REVIEW_FAILED');
@@ -376,7 +393,13 @@ describe('retryable idempotency', () => {
 
   it('non-retryable errors signal permanent failure', () => {
     const authInfo = { actorId: 'user-1', capability: 'observe', allowed: true };
-    const envelope = errorEnvelope('INVALID_JSON', 'Bad request body', authInfo, false, 'req-perm-1');
+    const envelope = errorEnvelope(
+      'INVALID_JSON',
+      'Bad request body',
+      authInfo,
+      false,
+      'req-perm-1',
+    );
     const error = envelope.error as ApiError;
     expect(error.retryable).toBe(false);
   });
@@ -453,7 +476,11 @@ describe('retryable idempotency', () => {
     });
 
     const { finalStatus } = await applyReviewMutationWithTransition(
-      store, item.id, ACTOR, transientExecutor, crypto.randomUUID(),
+      store,
+      item.id,
+      ACTOR,
+      transientExecutor,
+      crypto.randomUUID(),
     );
 
     // Item is in apply_failed — retryable
@@ -477,7 +504,8 @@ describe('rule simulation binding', () => {
       conditions: [{ field: 'payee_name', op: 'is', value: 'Test Merchant' }],
       actions: [{ field: 'category', op: 'set', value: 'cat-test' }],
     };
-    const payloadHash = crypto.createHash('sha256')
+    const payloadHash = crypto
+      .createHash('sha256')
       .update(JSON.stringify(nativeRule))
       .digest('hex');
 
@@ -692,7 +720,11 @@ describe('applyReviewMutationWithTransition — durable transitions', () => {
     });
 
     const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
-      store, item.id, ACTOR, verifyingExecutor, crypto.randomUUID(),
+      store,
+      item.id,
+      ACTOR,
+      verifyingExecutor,
+      crypto.randomUUID(),
     );
 
     expect(mutationResult.verified).toBe(true);
@@ -719,7 +751,11 @@ describe('applyReviewMutationWithTransition — durable transitions', () => {
     });
 
     const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
-      store, item.id, ACTOR, staleExecutor, crypto.randomUUID(),
+      store,
+      item.id,
+      ACTOR,
+      staleExecutor,
+      crypto.randomUUID(),
     );
 
     expect(mutationResult.stale).toBe(true);
@@ -729,7 +765,7 @@ describe('applyReviewMutationWithTransition — durable transitions', () => {
     expect(refreshed?.status).toBe('apply_failed');
     // metadata should carry staleReason
     const actions = await store.getReviewActions(item.id);
-    const mutationAction = actions.find(a => a.toStatus === 'apply_failed');
+    const mutationAction = actions.find((a) => a.toStatus === 'apply_failed');
     expect(mutationAction).toBeDefined();
     expect(mutationAction!.metadata).toHaveProperty('staleReason', 'snapshot_stale');
   });

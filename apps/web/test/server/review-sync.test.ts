@@ -1,6 +1,6 @@
 /**
- * POST /api/review/sync — delegates to ConnectionManager.restore() and
- * persists deterministic review candidates.
+ * POST /api/review/sync — delegates through ConnectionManager.withConnection()
+ * and persists deterministic review candidates.
  *
  * TDD: a missing selected budget must return `not_connected` before touching
  * the Actual connector or native analysis; a configured budget preserves the
@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const {
   mockRestore,
+  mockWithConnection,
   mockLoadConfig,
   mockCreateDefaultConnectionManager,
   mockCreateNativeAnalysisProtocol,
@@ -38,10 +39,18 @@ const {
     listReviewItems: vi.fn(async () => []),
     transitionReviewItem: vi.fn(async () => {}),
   };
+  const mockRestore = vi.fn();
+  const mockWithConnection = vi.fn();
+  const mockLoadConfig = vi.fn();
   return {
-    mockRestore: vi.fn(),
-    mockLoadConfig: vi.fn(),
-    mockCreateDefaultConnectionManager: vi.fn(() => ({ restore: mockRestore, loadConfig: mockLoadConfig })),
+    mockRestore,
+    mockWithConnection,
+    mockLoadConfig,
+    mockCreateDefaultConnectionManager: vi.fn(() => ({
+      restore: mockRestore,
+      withConnection: mockWithConnection,
+      loadConfig: mockLoadConfig,
+    })),
     mockCreateNativeAnalysisProtocol: vi.fn(async () => ({ pendingReview })),
     mockPersistPendingReviewResult: vi.fn(async () => 2),
     mockListReviewItems: workflowStore.listReviewItems,
@@ -71,7 +80,11 @@ vi.mock('../../server/utils/workflow-store', async (i) => {
   return {
     ...a,
     getWorkflowStore: mockGetWorkflowStore,
-    buildAuthorizationInfo: vi.fn(() => ({ actorId: 'test-actor', capability: 'observe', allowed: true })),
+    buildAuthorizationInfo: vi.fn(() => ({
+      actorId: 'test-actor',
+      capability: 'observe',
+      allowed: true,
+    })),
     sanitizeError: (error: unknown, _requestId: string, code: string, retryable = false) => ({
       code,
       message: error instanceof Error ? error.message : String(error),
@@ -87,8 +100,21 @@ describe('POST /api/review/sync', () => {
     vi.clearAllMocks();
     vi.stubGlobal('setResponseStatus', mockSetResponseStatus);
     mockGetWorkflowStore.mockReturnValue({ store: workflowStore });
-    mockLoadConfig.mockResolvedValue({ version: 1, serverUrl: 'x', budgetId: restoredBudget.id, budgetName: restoredBudget.name, groupId: restoredBudget.groupId });
-    mockRestore.mockResolvedValue({ connector: restoredConnector, budget: restoredBudget, synchronization: {} });
+    mockLoadConfig.mockResolvedValue({
+      version: 1,
+      serverUrl: 'x',
+      budgetId: restoredBudget.id,
+      budgetName: restoredBudget.name,
+      groupId: restoredBudget.groupId,
+    });
+    mockRestore.mockResolvedValue({
+      connector: restoredConnector,
+      budget: restoredBudget,
+      synchronization: {},
+    });
+    mockWithConnection.mockImplementation(
+      async (operation: (connected: unknown) => Promise<unknown>) => operation(await mockRestore()),
+    );
   });
 
   it('must return not_connected when no budget is configured without restoring', async () => {
@@ -115,10 +141,29 @@ describe('POST /api/review/sync', () => {
     expect(mockGetWorkflowStore).not.toHaveBeenCalled();
   });
 
+  it('returns not_connected when configuration disappears before restoration', async () => {
+    mockWithConnection.mockRejectedValue(
+      Object.assign(new Error('No BalanceFrame connection configured. Run connect first.'), {
+        code: 'not_connected',
+        retryable: true,
+      }),
+    );
+
+    const r = await handler({ context: { auth: { authenticated: true } } });
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('not_connected');
+    expect(r.error?.message).toBe('No ledger connected. Configure an Actual budget first.');
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
+    expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
+    expect(mockPersistPendingReviewResult).not.toHaveBeenCalled();
+  });
+
   it('must preserve the configured synchronize → analyze → persist path', async () => {
     mockListReviewItems.mockResolvedValue([{ id: 'r1', version: 1 }]);
     const r = await handler({ context: { auth: { authenticated: true } } });
     expect(mockRestore).toHaveBeenCalledTimes(1);
+    expect(mockWithConnection).toHaveBeenCalledTimes(1);
     expect(mockCreateNativeAnalysisProtocol).toHaveBeenCalledTimes(1);
     expect(pendingReview).toHaveBeenCalledTimes(1);
     expect(pendingReview).toHaveBeenCalledWith(restoredConnector, null);
@@ -148,4 +193,3 @@ describe('POST /api/review/sync', () => {
     expect(mockPersistPendingReviewResult).not.toHaveBeenCalled();
   });
 });
-

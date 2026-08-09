@@ -5,8 +5,8 @@
         <div>
           <h1 class="text-xl font-semibold">Connect Actual Budget</h1>
           <p class="mt-1 text-sm text-gray-500">
-            Select the Actual budget BalanceFrame should analyze. Your Actual
-            server credentials remain server-side environment configuration.
+            Select the Actual budget BalanceFrame should analyze. Your Actual server credentials
+            remain server-side environment configuration.
           </p>
         </div>
       </template>
@@ -30,18 +30,34 @@
 
       <div v-if="loading" class="text-sm text-gray-500">Loading Actual budgets…</div>
       <div v-else-if="budgets.length === 0" class="text-sm text-gray-500">
-        No Actual budgets were returned. Check ACTUAL_SERVER_URL and
-        ACTUAL_SECRET_KEY in the container environment.
+        No Actual budgets were returned. Check ACTUAL_SERVER_URL and ACTUAL_SECRET_KEY in the
+        container environment.
       </div>
       <div v-else class="space-y-3">
-        <label v-for="budget in budgets" :key="budget.id || budget.groupId" class="flex cursor-pointer items-center gap-3 rounded-lg border p-3 hover:bg-gray-50 dark:hover:bg-gray-800">
-          <input v-model="selectedBudgetId" type="radio" name="budget" :value="budget.id || budget.groupId" />
+        <label
+          v-for="budget in budgets"
+          :key="budget.id || budget.groupId"
+          class="flex cursor-pointer items-center gap-3 rounded-lg border p-3 hover:bg-gray-50 dark:hover:bg-gray-800"
+        >
+          <input
+            v-model="selectedBudgetId"
+            type="radio"
+            name="budget"
+            :value="budget.id || budget.groupId"
+          />
           <span>
             <span class="block font-medium">{{ budget.name }}</span>
-            <span class="block text-xs text-gray-500">{{ budget.encrypted ? 'Encrypted' : 'Unencrypted' }}</span>
+            <span class="block text-xs text-gray-500">{{
+              budget.encrypted ? 'Encrypted' : 'Unencrypted'
+            }}</span>
           </span>
         </label>
-        <UButton :loading="saving" :disabled="!selectedBudgetId || saving" label="Save connection" @click="saveConnection" />
+        <UButton
+          :loading="saving"
+          :disabled="!selectedBudgetId || saving"
+          label="Save connection"
+          @click="saveConnection"
+        />
       </div>
     </UCard>
   </UContainer>
@@ -105,5 +121,7 @@ async function saveConnection(): Promise<void> {
   }
 }
 
-onMounted(() => { void loadBudgets(); });
+onMounted(() => {
+  void loadBudgets();
+});
 </script>

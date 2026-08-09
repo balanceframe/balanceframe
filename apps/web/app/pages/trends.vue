@@ -12,7 +12,11 @@
         <div class="grid gap-4 sm:grid-cols-4">
           <UCard>
             <template #header><span class="font-semibold">Total Budgeted</span></template>
-            <SemanticAmount v-if="totalBudgeted" :amount="totalBudgeted" data-testid="total-budgeted" />
+            <SemanticAmount
+              v-if="totalBudgeted"
+              :amount="totalBudgeted"
+              data-testid="total-budgeted"
+            />
             <span v-else class="text-gray-400 dark:text-gray-500 text-sm">N/A</span>
           </UCard>
           <UCard>
@@ -22,26 +26,41 @@
           </UCard>
           <UCard>
             <template #header><span class="font-semibold">Total Variance</span></template>
-            <SemanticAmount v-if="totalVariance" :amount="totalVariance" data-testid="total-variance" />
+            <SemanticAmount
+              v-if="totalVariance"
+              :amount="totalVariance"
+              data-testid="total-variance"
+            />
             <span v-else class="text-gray-400 dark:text-gray-500 text-sm">N/A</span>
           </UCard>
           <UCard>
             <template #header><span class="font-semibold">Overall Variance</span></template>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white" data-testid="overall-variance">
-              {{ overallVariancePercent !== null ? `${overallVariancePercent}%` : 'N/A' }}
+            <p
+              class="text-2xl font-bold text-gray-900 dark:text-white"
+              data-testid="overall-variance"
+            >
+              {{
+                overallVariancePercent !== null
+                  ? percentagePointLabel(overallVariancePercent)
+                  : 'N/A'
+              }}
             </p>
           </UCard>
         </div>
 
         <!-- Category variances table -->
         <div v-if="categoryVariances.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Category Variances</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Category Variances
+          </h3>
           <AnalysisTable :columns="varianceColumns" :rows="varianceRows" />
         </div>
 
         <!-- Trends table -->
         <div v-if="trends.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Trend Directions</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Trend Directions
+          </h3>
           <AnalysisTable :columns="trendColumns" :rows="trendRows" />
         </div>
 
@@ -86,7 +105,7 @@ interface CategoryTrend {
   categoryId: string;
   categoryName: string;
   direction: string;
-  avgChange: number;
+  avgChange: Amount;
   periodsAnalyzed: number;
   seasonalityDetected: boolean;
 }
@@ -110,6 +129,12 @@ const referenceDate = computed(() => {
 
 const scopeLabel = computed(() => `Period: ${referenceDate.value}`);
 
+function percentagePointLabel(value: number, signed = false): string {
+  const rounded = Number(value.toFixed(1));
+  const sign = signed && rounded > 0 ? '+' : '';
+  return `${sign}${rounded}%`;
+}
+
 const varianceColumns = [
   { key: 'categoryName', label: 'Category' },
   { key: 'budgeted', label: 'Budgeted', type: 'amount' as const },
@@ -120,12 +145,12 @@ const varianceColumns = [
 ];
 
 const varianceRows = computed(() =>
-  categoryVariances.value.map(v => ({
+  categoryVariances.value.map((v) => ({
     categoryName: v.categoryName,
     budgeted: v.budgeted,
     actual: v.actual,
     variance: v.variance,
-    variancePercentLabel: `${v.variancePercent > 0 ? '+' : ''}${v.variancePercent}%`,
+    variancePercentLabel: percentagePointLabel(v.variancePercent, true),
     label: v.label,
   })),
 );
@@ -133,16 +158,16 @@ const varianceRows = computed(() =>
 const trendColumns = [
   { key: 'categoryName', label: 'Category' },
   { key: 'direction', label: 'Direction', type: 'badge' as const },
-  { key: 'avgChangeLabel', label: 'Avg Change' },
+  { key: 'avgChange', label: 'Avg Change', type: 'amount' as const },
   { key: 'periodsAnalyzed', label: 'Periods' },
   { key: 'seasonalityLabel', label: 'Seasonality' },
 ];
 
 const trendRows = computed(() =>
-  trends.value.map(t => ({
+  trends.value.map((t) => ({
     categoryName: t.categoryName,
     direction: t.direction,
-    avgChangeLabel: `${t.avgChange > 0 ? '+' : ''}${t.avgChange}%`,
+    avgChange: t.avgChange,
     periodsAnalyzed: t.periodsAnalyzed,
     seasonalityLabel: t.seasonalityDetected ? 'Detected' : 'None',
   })),
@@ -150,14 +175,16 @@ const trendRows = computed(() =>
 
 onMounted(async () => {
   try {
-    const res = await $fetch<Envelope<{
-      categoryVariances: CategoryVariance[];
-      trends: CategoryTrend[];
-      totalBudgeted: Amount | null;
-      totalActual: Amount | null;
-      totalVariance: Amount | null;
-      overallVariancePercent: number | null;
-    }>>('/api/trends-variance', { query: { referenceDate: referenceDate.value } });
+    const res = await $fetch<
+      Envelope<{
+        categoryVariances: CategoryVariance[];
+        trends: CategoryTrend[];
+        totalBudgeted: Amount | null;
+        totalActual: Amount | null;
+        totalVariance: Amount | null;
+        overallVariancePercent: number | null;
+      }>
+    >('/api/trends-variance', { query: { referenceDate: referenceDate.value } });
     if (res.status === 'ok' && res.result) {
       categoryVariances.value = res.result.categoryVariances;
       trends.value = res.result.trends;
@@ -167,7 +194,10 @@ onMounted(async () => {
       overallVariancePercent.value = res.result.overallVariancePercent;
       freshness.value = res.dataFreshness;
     } else {
-      error.value = { code: res.error?.code ?? 'UNKNOWN', message: res.error?.message ?? 'Trends analysis returned an error.' };
+      error.value = {
+        code: res.error?.code ?? 'UNKNOWN',
+        message: res.error?.message ?? 'Trends analysis returned an error.',
+      };
     }
   } catch (e) {
     error.value = { code: 'FETCH_ERROR', message: String(e) };

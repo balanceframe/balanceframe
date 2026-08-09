@@ -17,14 +17,22 @@ const props = defineProps<{
 }>();
 
 const currency = computed(() => props.amount.currency || 'USD');
-const isNegative = computed(() => props.negative || Number(props.amount.minorUnits) < 0);
-const absUnits = computed(() => String(Math.abs(Number(props.amount.minorUnits))));
+const rawUnits = computed(() => props.amount.minorUnits);
+const absUnits = computed(() => {
+  const magnitude = rawUnits.value.startsWith('-') ? rawUnits.value.slice(1) : rawUnits.value;
+  return magnitude.replace(/^0+(?=\d)/, '') || '0';
+});
+const isNegative = computed(
+  () => props.negative || (rawUnits.value.startsWith('-') && absUnits.value !== '0'),
+);
 const dollars = computed(() => {
   const u = absUnits.value;
   const padded = u.padStart(3, '0');
   return padded.slice(0, -2) || '0';
 });
 const cents = computed(() => absUnits.value.slice(-2).padStart(2, '0'));
-const sign = computed(() => isNegative.value ? '−' : '');
-const colorClass = computed(() => isNegative.value ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100');
+const sign = computed(() => (isNegative.value ? '−' : ''));
+const colorClass = computed(() =>
+  isNegative.value ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100',
+);
 </script>

@@ -12,26 +12,54 @@
         <div class="grid gap-4 sm:grid-cols-2">
           <UCard>
             <template #header><span class="font-semibold">Overall Calibration</span></template>
-            <p v-if="overallCalibrated" class="text-lg font-bold text-emerald-600 dark:text-emerald-400" data-testid="overall-calibrated">Calibrated</p>
-            <p v-else class="text-lg font-bold text-amber-600 dark:text-amber-400" data-testid="overall-calibrated">Not Calibrated</p>
+            <p
+              v-if="overallCalibrated"
+              class="text-lg font-bold text-emerald-600 dark:text-emerald-400"
+              data-testid="overall-calibrated"
+            >
+              Calibrated
+            </p>
+            <p
+              v-else
+              class="text-lg font-bold text-amber-600 dark:text-amber-400"
+              data-testid="overall-calibrated"
+            >
+              Not Calibrated
+            </p>
           </UCard>
           <UCard>
             <template #header><span class="font-semibold">Dimensions Tracked</span></template>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white" data-testid="dimensions-tracked">{{ metrics.length }}</p>
+            <p
+              class="text-2xl font-bold text-gray-900 dark:text-white"
+              data-testid="dimensions-tracked"
+            >
+              {{ metrics.length }}
+            </p>
           </UCard>
         </div>
 
         <!-- Calibration metrics table -->
         <div v-if="metrics.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Calibration Metrics</h3>
+          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+            Calibration Metrics
+          </h3>
           <AnalysisTable :columns="metricColumns" :rows="metricRows" />
         </div>
 
         <!-- Recommendations -->
-        <div v-if="recommendations.length" class="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
-          <h3 class="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">Recommendations</h3>
+        <div
+          v-if="recommendations.length"
+          class="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4"
+        >
+          <h3 class="text-sm font-semibold text-blue-800 dark:text-blue-300 mb-2">
+            Recommendations
+          </h3>
           <ul class="space-y-1">
-            <li v-for="(rec, i) in recommendations" :key="i" class="text-sm text-blue-700 dark:text-blue-400 flex items-start gap-2">
+            <li
+              v-for="(rec, i) in recommendations"
+              :key="i"
+              class="text-sm text-blue-700 dark:text-blue-400 flex items-start gap-2"
+            >
               <span class="shrink-0 mt-0.5 i-heroicons-arrow-right" />
               <span>{{ rec }}</span>
             </li>
@@ -93,11 +121,17 @@ const metricColumns = [
   { key: 'calibratedLabel', label: 'Status' },
 ];
 
+function normalizedPercentageLabel(value: number, signed = false): string {
+  const percentage = value * 100;
+  const sign = signed && percentage > 0 ? '+' : '';
+  return `${sign}${percentage.toFixed(1)}%`;
+}
+
 const metricRows = computed(() =>
-  metrics.value.map(m => ({
+  metrics.value.map((m) => ({
     metricName: m.metricName,
-    mapeLabel: m.mape !== null ? `${m.mape.toFixed(1)}%` : 'N/A',
-    biasLabel: m.bias !== null ? `${m.bias > 0 ? '+' : ''}${m.bias.toFixed(1)}%` : 'N/A',
+    mapeLabel: m.mape !== null ? normalizedPercentageLabel(m.mape) : 'N/A',
+    biasLabel: m.bias !== null ? normalizedPercentageLabel(m.bias, true) : 'N/A',
     periodsCompared: m.periodsCompared,
     calibratedLabel: m.isCalibrated ? 'Calibrated' : 'Not Calibrated',
   })),
@@ -105,18 +139,23 @@ const metricRows = computed(() =>
 
 onMounted(async () => {
   try {
-    const res = await $fetch<Envelope<{
-      metrics: CalibrationMetric[];
-      overallCalibrated: boolean;
-      recommendations: string[];
-    }>>('/api/forecast-accuracy');
+    const res = await $fetch<
+      Envelope<{
+        metrics: CalibrationMetric[];
+        overallCalibrated: boolean;
+        recommendations: string[];
+      }>
+    >('/api/forecast-accuracy');
     if (res.status === 'ok' && res.result) {
       metrics.value = res.result.metrics;
       overallCalibrated.value = res.result.overallCalibrated;
       recommendations.value = res.result.recommendations;
       freshness.value = res.dataFreshness;
     } else {
-      error.value = { code: res.error?.code ?? 'UNKNOWN', message: res.error?.message ?? 'Forecast accuracy analysis returned an error.' };
+      error.value = {
+        code: res.error?.code ?? 'UNKNOWN',
+        message: res.error?.message ?? 'Forecast accuracy analysis returned an error.',
+      };
     }
   } catch (e) {
     error.value = { code: 'FETCH_ERROR', message: String(e) };

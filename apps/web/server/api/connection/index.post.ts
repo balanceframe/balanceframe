@@ -12,7 +12,7 @@ interface SelectBudgetBody {
 }
 
 /** Select, synchronize, and persist an Actual budget connection. */
-export default defineEventHandler(async event => {
+export default defineEventHandler(async (event) => {
   const auth = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
   const body = await readBody<SelectBudgetBody>(event);

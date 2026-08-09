@@ -14,7 +14,11 @@ import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from 'vitest
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { resolveBootstrapSecret, BootstrapSecretError, validateBootstrapSecretConfig } from '../../lib/resolve-bootstrap-secret';
+import {
+  resolveBootstrapSecret,
+  BootstrapSecretError,
+  validateBootstrapSecretConfig,
+} from '../../lib/resolve-bootstrap-secret';
 
 /** A valid-length secret (32 'a's). */
 const VALID_SECRET = 'a'.repeat(32);
@@ -152,7 +156,9 @@ describe('BALANCEFRAME_BOOTSTRAP_SECRET_FILE (file source)', () => {
     vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', '/nonexistent/bootstrap/secret.txt');
 
     expect(() => resolveBootstrapSecret()).toThrow(BootstrapSecretError);
-    expect(() => resolveBootstrapSecret()).toThrow(/Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/);
+    expect(() => resolveBootstrapSecret()).toThrow(
+      /Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/,
+    );
   });
 
   it('rejects a directory used as a file path', () => {
@@ -161,7 +167,9 @@ describe('BALANCEFRAME_BOOTSTRAP_SECRET_FILE (file source)', () => {
     vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', dirPath);
 
     expect(() => resolveBootstrapSecret()).toThrow(BootstrapSecretError);
-    expect(() => resolveBootstrapSecret()).toThrow(/Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/);
+    expect(() => resolveBootstrapSecret()).toThrow(
+      /Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/,
+    );
   });
 });
 
@@ -272,7 +280,9 @@ describe('validateBootstrapSecretConfig — startup validation', () => {
   it('throws when the configured file is unreadable', () => {
     vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', '/nonexistent/bootstrap/startup-secret.txt');
     expect(() => validateBootstrapSecretConfig()).toThrow(BootstrapSecretError);
-    expect(() => validateBootstrapSecretConfig()).toThrow(/Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/);
+    expect(() => validateBootstrapSecretConfig()).toThrow(
+      /Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/,
+    );
   });
 
   it('throws when the resolved secret is shorter than 32 characters', () => {
@@ -288,6 +298,8 @@ describe('validateBootstrapSecretConfig — startup validation', () => {
     mkdirSync(dirPath, { recursive: true });
     vi.stubEnv('BALANCEFRAME_BOOTSTRAP_SECRET_FILE', dirPath);
     expect(() => validateBootstrapSecretConfig()).toThrow(BootstrapSecretError);
-    expect(() => validateBootstrapSecretConfig()).toThrow(/Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/);
+    expect(() => validateBootstrapSecretConfig()).toThrow(
+      /Cannot read BALANCEFRAME_BOOTSTRAP_SECRET_FILE/,
+    );
   });
 });

@@ -61,7 +61,16 @@ function defaultPolicy(overrides: Partial<NotificationPolicy> = {}): Notificatio
     policyVersion: TEST_POLICY_VER,
     eligibility: [
       {
-        classifications: ['budget_alert', 'review_complete', 'data_quality', 'alert', 'recurrence', 'target_risk', 'proposal_transition', 'workflow_result'],
+        classifications: [
+          'budget_alert',
+          'review_complete',
+          'data_quality',
+          'alert',
+          'recurrence',
+          'target_risk',
+          'proposal_transition',
+          'workflow_result',
+        ],
         minSeverity: 'normal',
         requiredCapability: 'notification:receive',
         requiredScope: '',
@@ -158,39 +167,118 @@ type StoreMock = {
 function createStoreMock(): StoreMock {
   const proto: Record<string, unknown> = {};
   const storeMethods: Array<keyof WorkflowStore> = [
-    'saveSuggestion', 'getActiveSuggestion', 'getSuggestion', 'getTransactionSuggestions',
-    'supersedeSuggestions', 'enqueueJob', 'claimJob', 'completeJob', 'failJob',
-    'getPendingJobs', 'getJobByCandidateId', 'createReviewItem', 'getReviewItem',
-    'findReviewByIssue', 'listReviewItems', 'countReviewItems', 'listReviewItemsByCorrelation',
-    'transitionReviewItem', 'transitionReviewItems', 'updateReviewItemCategory',
-    'undoReviewTransition', 'getReviewActions', 'createProposal', 'getProposal',
-    'findActiveProposal', 'listProposals', 'countProposals', 'supersedeProposal',
-    'createApproval', 'getApproval', 'findActiveApprovals', 'consumeApproval',
-    'verifyApprovalForExecution', 'createIdempotencyRecord', 'getIdempotencyRecord',
-    'completeIdempotencyRecord', 'findStrandedIdempotencyRecords',
-    'reconcileStrandedIdempotencyRecords', 'appendAuditRecord', 'queryAuditRecords',
-    'queryAuditRecordsByProposal', 'queryCorrectionHistory', 'findCorrectionConflicts',
-    'getRegistrationState', 'claimBootstrap', 'finalizeBootstrap', 'createInvitation',
-    'revokeInvitation', 'listInvitations', 'claimInvitation', 'completeInvitationRedemption',
-    'reconcileClaimedInvitations', 'evaluateAuthorization', 'upsertActorMembership',
-    'getActorMembership', 'deleteActorMembership', 'recordExport', 'getLastExport',
-    'deleteScopeData', 'setRuleOverride', 'getRuleOverrides', 'removeRuleOverride',
-    'createNotificationEvent', 'getNotificationEvent', 'enqueueNotification',
-    'claimNotificationDelivery', 'completeNotificationDelivery', 'failNotificationDelivery',
-    'acknowledgeNotification', 'suppressNotification', 'getOutboxRecord',
-    'getPendingNotifications', 'getRetryableNotifications', 'getDeliveryAttempts',
+    'saveSuggestion',
+    'getActiveSuggestion',
+    'getSuggestion',
+    'getTransactionSuggestions',
+    'supersedeSuggestions',
+    'enqueueJob',
+    'claimJob',
+    'completeJob',
+    'failJob',
+    'getPendingJobs',
+    'getJobByCandidateId',
+    'createReviewItem',
+    'getReviewItem',
+    'findReviewByIssue',
+    'listReviewItems',
+    'countReviewItems',
+    'listReviewItemsByCorrelation',
+    'transitionReviewItem',
+    'transitionReviewItems',
+    'updateReviewItemCategory',
+    'undoReviewTransition',
+    'getReviewActions',
+    'createProposal',
+    'getProposal',
+    'findActiveProposal',
+    'listProposals',
+    'countProposals',
+    'supersedeProposal',
+    'createApproval',
+    'getApproval',
+    'findActiveApprovals',
+    'consumeApproval',
+    'verifyApprovalForExecution',
+    'createIdempotencyRecord',
+    'getIdempotencyRecord',
+    'completeIdempotencyRecord',
+    'findStrandedIdempotencyRecords',
+    'reconcileStrandedIdempotencyRecords',
+    'appendAuditRecord',
+    'queryAuditRecords',
+    'queryAuditRecordsByProposal',
+    'queryCorrectionHistory',
+    'findCorrectionConflicts',
+    'getRegistrationState',
+    'claimBootstrap',
+    'finalizeBootstrap',
+    'createInvitation',
+    'revokeInvitation',
+    'listInvitations',
+    'claimInvitation',
+    'completeInvitationRedemption',
+    'reconcileClaimedInvitations',
+    'evaluateAuthorization',
+    'upsertActorMembership',
+    'getActorMembership',
+    'deleteActorMembership',
+    'recordExport',
+    'getLastExport',
+    'deleteScopeData',
+    'setRuleOverride',
+    'getRuleOverrides',
+    'removeRuleOverride',
+    'createNotificationEvent',
+    'getNotificationEvent',
+    'enqueueNotification',
+    'claimNotificationDelivery',
+    'completeNotificationDelivery',
+    'failNotificationDelivery',
+    'acknowledgeNotification',
+    'suppressNotification',
+    'getOutboxRecord',
+    'getPendingNotifications',
+    'getRetryableNotifications',
+    'getDeliveryAttempts',
     'listOutboxRecords',
-    'getNotificationPolicy', 'saveNotificationPolicy',
-    'resolveRecipients', 'listNotificationPolicies', 'deleteNotificationPolicy',
-    'recordPolicyVersion', 'getPolicyVersion', 'getActivePolicyVersion',
-    'listPolicyVersions', 'createSavedFilter', 'updateSavedFilter', 'getSavedFilter',
-    'listSavedFilters', 'deleteSavedFilter', 'createReportRecord', 'getReportRecord',
-    'listReportRecords', 'expireReportRecord', 'cancelPendingJobs',
-    'createFinding', 'getFinding', 'listFindings', 'countFindings',
-    'acknowledgeFinding', 'correctFinding', 'dismissFinding', 'reopenFinding',
-    'supersedeFinding', 'expireFinding',
-    'getReportHistory', 'listSavedViews', 'createSavedView', 'updateSavedView',
-    'duplicateSavedView', 'deleteSavedView', 'recordSavedViewUsage', 'getSavedView',
+    'getNotificationPolicy',
+    'saveNotificationPolicy',
+    'resolveRecipients',
+    'listNotificationPolicies',
+    'deleteNotificationPolicy',
+    'recordPolicyVersion',
+    'getPolicyVersion',
+    'getActivePolicyVersion',
+    'listPolicyVersions',
+    'createSavedFilter',
+    'updateSavedFilter',
+    'getSavedFilter',
+    'listSavedFilters',
+    'deleteSavedFilter',
+    'createReportRecord',
+    'getReportRecord',
+    'listReportRecords',
+    'expireReportRecord',
+    'cancelPendingJobs',
+    'createFinding',
+    'getFinding',
+    'listFindings',
+    'countFindings',
+    'acknowledgeFinding',
+    'correctFinding',
+    'dismissFinding',
+    'reopenFinding',
+    'supersedeFinding',
+    'expireFinding',
+    'getReportHistory',
+    'listSavedViews',
+    'createSavedView',
+    'updateSavedView',
+    'duplicateSavedView',
+    'deleteSavedView',
+    'recordSavedViewUsage',
+    'getSavedView',
   ];
   for (const key of storeMethods) {
     proto[key] = vi.fn();
@@ -208,9 +296,7 @@ interface RuntimeFixture {
   runtime: NotificationRuntime;
 }
 
-function createFixture(
-  policyOverrides: Partial<NotificationPolicy> = {},
-): RuntimeFixture {
+function createFixture(policyOverrides: Partial<NotificationPolicy> = {}): RuntimeFixture {
   const store = createStoreMock();
   store.getActorMembership.mockResolvedValue({
     actorId: TEST_ACTOR_A,
@@ -357,15 +443,15 @@ describe('NotificationRuntime', () => {
     });
 
     it('throws NOT_ELIGIBLE for mismatched classification', async () => {
-      await expect(
-        runtime.create(defaultInput({ classification: 'unknown' })),
-      ).rejects.toThrow(NotificationRuntimeError);
+      await expect(runtime.create(defaultInput({ classification: 'unknown' }))).rejects.toThrow(
+        NotificationRuntimeError,
+      );
     });
 
     it('throws NOT_ELIGIBLE for insufficient severity', async () => {
-      await expect(
-        runtime.create(defaultInput({ severity: 'low' })),
-      ).rejects.toThrow(NotificationRuntimeError);
+      await expect(runtime.create(defaultInput({ severity: 'low' }))).rejects.toThrow(
+        NotificationRuntimeError,
+      );
     });
   });
 
@@ -387,11 +473,7 @@ describe('NotificationRuntime', () => {
       const result = await runtime.create(defaultInput());
 
       expect(result.outboxRecords).toHaveLength(0);
-      expect(capabilityCheck).toHaveBeenCalledWith(
-        TEST_ACTOR_A,
-        'notification:receive',
-        '',
-      );
+      expect(capabilityCheck).toHaveBeenCalledWith(TEST_ACTOR_A, 'notification:receive', '');
     });
 
     it('suppresses only the revoked actor, other recipients still get deliveries', async () => {
@@ -572,9 +654,7 @@ describe('NotificationRuntime', () => {
   describe('rate limits', () => {
     it('suppresses notifications that exceed rate limit', async () => {
       const policy = defaultPolicy({
-        channels: [
-          { type: 'in_app', enabled: true, rateLimitPerMinute: 1, displayName: 'In-App' },
-        ],
+        channels: [{ type: 'in_app', enabled: true, rateLimitPerMinute: 1, displayName: 'In-App' }],
       });
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
@@ -597,9 +677,7 @@ describe('NotificationRuntime', () => {
 
     it('allows burst up to rate limit then blocks', async () => {
       const policy = defaultPolicy({
-        channels: [
-          { type: 'in_app', enabled: true, rateLimitPerMinute: 3, displayName: 'In-App' },
-        ],
+        channels: [{ type: 'in_app', enabled: true, rateLimitPerMinute: 3, displayName: 'In-App' }],
       });
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
@@ -612,9 +690,7 @@ describe('NotificationRuntime', () => {
       });
 
       for (let i = 0; i < 4; i++) {
-        local.store.createNotificationEvent.mockResolvedValue(
-          mockEvent({ id: `evt_${i}` }),
-        );
+        local.store.createNotificationEvent.mockResolvedValue(mockEvent({ id: `evt_${i}` }));
         await local.runtime.create(defaultInput({ correlationId: `batch_${i}` }));
       }
 
@@ -633,7 +709,11 @@ describe('NotificationRuntime', () => {
       );
       store.getNotificationEvent.mockResolvedValue(mockEvent());
       store.failNotificationDelivery.mockResolvedValue(
-        mockOutbox({ status: 'failed', attemptCount: 1, failureReason: 'Channel adapter unhealthy' }),
+        mockOutbox({
+          status: 'failed',
+          attemptCount: 1,
+          failureReason: 'Channel adapter unhealthy',
+        }),
       );
 
       adapter.setHealthy(false);
@@ -654,7 +734,11 @@ describe('NotificationRuntime', () => {
       );
       store.getNotificationEvent.mockResolvedValue(mockEvent());
       store.failNotificationDelivery.mockResolvedValue(
-        mockOutbox({ status: 'failed', attemptCount: 4, failureReason: 'Channel adapter unhealthy' }),
+        mockOutbox({
+          status: 'failed',
+          attemptCount: 4,
+          failureReason: 'Channel adapter unhealthy',
+        }),
       );
 
       adapter.setHealthy(false);
@@ -721,9 +805,7 @@ describe('NotificationRuntime', () => {
     });
 
     it('acknowledgement only changes notification state (no other mutations)', async () => {
-      store.acknowledgeNotification.mockResolvedValue(
-        mockOutbox({ status: 'delivered' }),
-      );
+      store.acknowledgeNotification.mockResolvedValue(mockOutbox({ status: 'delivered' }));
 
       await runtime.acknowledgeFromCallback(TEST_OUTBOX_ID, { action: 'DELETE_ALL' });
 
@@ -851,7 +933,11 @@ describe('NotificationRuntime', () => {
         scope: TEST_BUDGET,
       });
       store.failNotificationDelivery.mockResolvedValue(
-        mockOutbox({ status: 'failed', attemptCount: 2, failureReason: 'Recipient authorization revoked' }),
+        mockOutbox({
+          status: 'failed',
+          attemptCount: 2,
+          failureReason: 'Recipient authorization revoked',
+        }),
       );
       const deliver = vi.spyOn(adapter, 'deliver');
       const audit = vi.fn();
@@ -873,12 +959,15 @@ describe('NotificationRuntime', () => {
         'Recipient authorization revoked',
         false,
       );
-      expect(audit).toHaveBeenCalledWith('notification_suppressed', expect.objectContaining({
-        outboxId: TEST_OUTBOX_ID,
-        eventId: TEST_EVENT_ID,
-        actorId: TEST_ACTOR_A,
-        reason: 're_authorization_failed',
-      }));
+      expect(audit).toHaveBeenCalledWith(
+        'notification_suppressed',
+        expect.objectContaining({
+          outboxId: TEST_OUTBOX_ID,
+          eventId: TEST_EVENT_ID,
+          actorId: TEST_ACTOR_A,
+          reason: 're_authorization_failed',
+        }),
+      );
     });
 
     it('fails deterministically without egress when the event is missing', async () => {
@@ -973,9 +1062,7 @@ describe('NotificationRuntime', () => {
         mockOutbox({ id: 'obx_001' }),
         mockOutbox({ id: 'obx_002' }),
       ]);
-      store.getRetryableNotifications.mockResolvedValue([
-        mockOutbox({ id: 'obx_003' }),
-      ]);
+      store.getRetryableNotifications.mockResolvedValue([mockOutbox({ id: 'obx_003' })]);
 
       const status = await runtime.getStatus();
 
@@ -1119,7 +1206,12 @@ describe('NotificationRuntime', () => {
     it('passes filter options to the store', async () => {
       store.listOutboxRecords.mockResolvedValue([]);
 
-      await runtime.listOutbox(TEST_ACTOR_A, { status: 'delivered', channelType: 'in_app', limit: 10, offset: 5 });
+      await runtime.listOutbox(TEST_ACTOR_A, {
+        status: 'delivered',
+        channelType: 'in_app',
+        limit: 10,
+        offset: 5,
+      });
 
       expect(store.listOutboxRecords).toHaveBeenCalledWith({
         status: 'delivered',
@@ -1614,7 +1706,7 @@ describe('NotificationRuntime', () => {
 
       // Event must be the first store call, outboxes come after
       expect(callOrder[0]).toBe('event');
-      expect(callOrder.slice(1).every(c => c === 'outbox')).toBe(true);
+      expect(callOrder.slice(1).every((c) => c === 'outbox')).toBe(true);
     });
 
     it('producer events do not mutate ledger state', async () => {
@@ -1623,14 +1715,21 @@ describe('NotificationRuntime', () => {
       // any call to create/save/transition on the store mock
       // that isn't a notification method represents a ledger mutation.
       const notificationMethods = new Set([
-        'createNotificationEvent', 'getNotificationEvent',
-        'enqueueNotification', 'claimNotificationDelivery',
-        'completeNotificationDelivery', 'failNotificationDelivery',
-        'acknowledgeNotification', 'suppressNotification',
-        'getOutboxRecord', 'getPendingNotifications',
-        'getRetryableNotifications', 'getDeliveryAttempts',
+        'createNotificationEvent',
+        'getNotificationEvent',
+        'enqueueNotification',
+        'claimNotificationDelivery',
+        'completeNotificationDelivery',
+        'failNotificationDelivery',
+        'acknowledgeNotification',
+        'suppressNotification',
+        'getOutboxRecord',
+        'getPendingNotifications',
+        'getRetryableNotifications',
+        'getDeliveryAttempts',
         'listOutboxRecords',
-        'getNotificationPolicy', 'getActorMembership',
+        'getNotificationPolicy',
+        'getActorMembership',
         'appendAuditRecord',
         'resolveRecipients',
       ]);

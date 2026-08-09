@@ -14,10 +14,18 @@ vi.mock('h3', () => ({
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: vi.fn(() => ({ store: { saveNotificationPolicy: mockSave } })),
-  buildAuthorizationInfo: vi.fn(() => ({ actorId: 'actor-1', capability: 'notification:admin', allowed: true })),
+  buildAuthorizationInfo: vi.fn(() => ({
+    actorId: 'actor-1',
+    capability: 'notification:admin',
+    allowed: true,
+  })),
   getActorId: vi.fn(() => 'actor-1'),
   requireAuthorization: mockRequireAuthorization,
-  sanitizeError: vi.fn((err, _requestId, code, retryable) => ({ code, message: String(err), retryable })),
+  sanitizeError: vi.fn((err, _requestId, code, retryable) => ({
+    code,
+    message: String(err),
+    retryable,
+  })),
   okEnvelope: (result: unknown) => ({ status: 'ok', result }),
   errorEnvelope: (code: string, message: string) => ({ status: 'error', error: { code, message } }),
 }));
@@ -48,14 +56,18 @@ describe('POST /api/notifications/policy authorization', () => {
   });
 
   it('allows an authorized caller to mutate policy in the same space', async () => {
-    const response = await handler({ context: { auth: { authenticated: true, actorId: 'actor-1', spaceId: 'space-a' } } });
+    const response = await handler({
+      context: { auth: { authenticated: true, actorId: 'actor-1', spaceId: 'space-a' } },
+    });
     expect(response.status).toBe('ok');
     expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'space-a' }));
   });
 
   it('rejects a body space outside the authorized space scope', async () => {
     mockReadBody.mockResolvedValueOnce({ spaceId: 'space-b', policy: {} });
-    const response = await handler({ context: { auth: { authenticated: true, actorId: 'actor-1', spaceId: 'space-a' } } });
+    const response = await handler({
+      context: { auth: { authenticated: true, actorId: 'actor-1', spaceId: 'space-a' } },
+    });
     expect(response.status).toBe('error');
     expect(response.error.code).toBe('SPACE_SCOPE_MISMATCH');
     expect(mockSave).not.toHaveBeenCalled();
