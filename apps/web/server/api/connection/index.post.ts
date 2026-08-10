@@ -6,6 +6,7 @@ import {
   okEnvelope,
   sanitizeError,
 } from '../../utils/workflow-store';
+import { updateReviewCategoryCatalog } from '../../utils/review-category-catalog';
 
 interface SelectBudgetBody {
   budgetId?: unknown;
@@ -34,6 +35,7 @@ export default defineEventHandler(async (event) => {
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,
     });
     const connected = await manager.connect({ budgetId });
+    updateReviewCategoryCatalog(connected.config, connected.synchronization);
     return okEnvelope(
       {
         connected: true,

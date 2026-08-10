@@ -49,6 +49,8 @@ export interface ConnectionManagerOptions {
 }
 
 export interface ConnectedBudget {
+  /** Exact selected-budget configuration used while holding the lifecycle lock. */
+  readonly config: ConnectionConfig;
   readonly budget: BudgetInfo;
   readonly connector: Connector;
   readonly synchronization: unknown;
@@ -122,7 +124,7 @@ export class ConnectionManager {
           groupId: selected.groupId,
         };
         await this.saveConfig(config);
-        const connected = { budget: selected, connector, synchronization };
+        const connected = { budget: selected, config, connector, synchronization };
         this.connectedBudget = connected;
         this.connectedConfig = config;
         this.connectedCredentials = credentials;
@@ -278,7 +280,7 @@ export class ConnectionManager {
       await connector.connect(credentials);
       const budget = await connector.selectBudget(config.budgetId, credentials.budgetPassword);
       const synchronization = await connector.synchronize({ refresh: false });
-      const connected = { budget, connector, synchronization };
+      const connected = { budget, config, connector, synchronization };
       this.connectedBudget = connected;
       this.connectedConfig = config;
       this.connectedCredentials = credentials;
