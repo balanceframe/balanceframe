@@ -299,7 +299,7 @@ const stubs = {
   },
   CategoryCorrectModal: {
     name: 'CategoryCorrectModal',
-    props: ['open', 'item', 'submitting'],
+    props: ['open', 'item', 'submitting', 'categories', 'categoriesLoading', 'categoriesError'],
     emits: ['confirm', 'cancel'],
     setup(props: { open: boolean }) {
       const modalButton = ref<HTMLButtonElement | null>(null);
@@ -330,6 +330,14 @@ const stubs = {
 
 const mountedWrappers: VueWrapper[] = [];
 let syncError: SyncError;
+const categoryCatalog = [
+  {
+    id: 'cat-fuel',
+    name: 'Fuel',
+    groupName: 'Transportation',
+    isIncome: false,
+  },
+];
 
 function installGlobals(): void {
   vi.stubGlobal('$fetch', dollarFetchSpy);
@@ -404,6 +412,13 @@ describe('review page recovery behavior', () => {
       if (url === '/api/review/sync') {
         return jsonResponse({ status: 'error', result: null, error: syncError });
       }
+      if (url === '/api/review/categories') {
+        return jsonResponse({
+          status: 'ok',
+          result: { categories: categoryCatalog },
+          error: null,
+        });
+      }
       if (url === '/api/proposal') {
         return jsonResponse({ status: 'ok', result: { proposals: [] }, error: null });
       }
@@ -431,6 +446,64 @@ describe('review page recovery behavior', () => {
     }
 
     if (cleanupError) throw cleanupError;
+  });
+
+  it('loads Actual categories and passes them to the correction modal', async () => {
+    const page = await mountPage();
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/review/categories', {
+      credentials: 'same-origin',
+    });
+    expect(correctionModal(page).props('categories')).toEqual(categoryCatalog);
+  });
+
+  it('refetches categories after Sync when the initial catalog request is still pending', async () => {
+    const initialCatalogResponse = createDeferred<Response>();
+    const refreshedCatalog = [
+      ...categoryCatalog,
+      {
+        id: 'cat-rent',
+        name: 'Rent',
+        groupName: 'Housing',
+        isIncome: false,
+      },
+    ];
+    let categoryRequestCount = 0;
+    fetchSpy.mockImplementation(async (input) => {
+      const url = requestUrl(input);
+      if (url === '/api/review/categories') {
+        categoryRequestCount += 1;
+        if (categoryRequestCount === 1) return initialCatalogResponse.promise;
+        return jsonResponse({
+          status: 'ok',
+          result: { categories: refreshedCatalog },
+          error: null,
+        });
+      }
+      if (url === '/api/review/sync') {
+        return jsonResponse({ status: 'ok', result: {}, error: null });
+      }
+      if (url === '/api/proposal') {
+        return jsonResponse({ status: 'ok', result: { proposals: [] }, error: null });
+      }
+      throw new Error(`Unexpected native fetch request: ${url}`);
+    });
+    const page = await mountPage();
+
+    const syncClick = syncButton(page).trigger('click');
+    await flushPromises();
+    initialCatalogResponse.resolve(
+      jsonResponse({
+        status: 'ok',
+        result: { categories: categoryCatalog },
+        error: null,
+      }),
+    );
+    await syncClick;
+    await flushPromises();
+
+    expect(categoryRequestCount).toBe(2);
+    expect(correctionModal(page).props('categories')).toEqual(refreshedCatalog);
   });
 
   it('routes shortcuts from the focused hidden keyboard input when no modal is open', async () => {

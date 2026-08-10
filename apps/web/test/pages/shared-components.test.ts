@@ -1147,6 +1147,41 @@ describe('CategoryCorrectModal', () => {
     },
   };
 
+  it('lists every available Actual category instead of only classifier suggestions', async () => {
+    const wrapper = mount(CategoryCorrectModal as never, {
+      props: {
+        open: false,
+        item,
+        submitting: false,
+        categories: [
+          {
+            id: 'cat-fuel',
+            name: 'Fuel',
+            groupName: 'Transportation',
+            isIncome: false,
+          },
+          {
+            id: 'cat-rent',
+            name: 'Rent',
+            groupName: 'Housing',
+            isIncome: false,
+          },
+        ],
+      },
+      global: { stubs: categoryCorrectModalStubs },
+    });
+
+    await wrapper.setProps({ open: true });
+
+    const options = wrapper.findAll('option');
+    expect(options.map((option) => option.attributes('value'))).toEqual(
+      expect.arrayContaining(['cat-fuel', 'cat-rent']),
+    );
+    expect(options.map((option) => option.text())).toEqual(
+      expect.arrayContaining(['Fuel — Transportation', 'Rent — Housing']),
+    );
+  });
+
   function confirmButton(wrapper: VueWrapper) {
     const button = wrapper.findAll('button').find((candidate) => candidate.text() === 'Confirm');
     if (!button) throw new Error('Category correction confirm control was not rendered.');

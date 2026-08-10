@@ -137,6 +137,9 @@
       :open="showCorrectModal"
       :item="adapter.state.currentItem"
       :submitting="correcting"
+      :categories="reviewCategories"
+      :categories-loading="categoriesLoading"
+      :categories-error="categoriesError"
       @confirm="onCorrectConfirm"
       @cancel="onCorrectCancel"
     />
@@ -167,6 +170,12 @@ interface SavedViewEnvelope<T> {
   status: 'ok' | 'error';
   result: T | null;
   error: { code: string; message: string; retryable?: boolean } | null;
+}
+interface ReviewCategoryOption {
+  readonly id: string;
+  readonly name: string;
+  readonly groupName: string | null;
+  readonly isIncome: boolean;
 }
 const savedViews = ref<SavedView[]>([]);
 const selectedViewId = ref('');
@@ -276,6 +285,11 @@ const apiBase = config.public.apiBase || (import.meta.client ? window.location.o
 // automatically with same-origin fetch requests — no Bearer token needed.
 const adapter = apiBase ? useApiReviewController(apiBase) : createUnavailableAdapter();
 const actions = useReviewActions(adapter, openCorrectModal);
+const reviewCategories = ref<ReviewCategoryOption[]>([]);
+const categoriesLoading = ref(false);
+const categoriesLoaded = ref(false);
+const categoriesError = ref<string | null>(null);
+let categoryLoadPromise: Promise<void> | null = null;
 
 // Focus the hidden keyboard input so shortcuts work on page load.
 // A document-level keydown listener ensures shortcuts remain active after
@@ -313,6 +327,7 @@ onMounted(() => {
   load();
   loadViews();
   fetchProposals();
+  void loadReviewCategories();
 });
 onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown);
@@ -349,8 +364,39 @@ async function fetchProposals(): Promise<void> {
   }
 }
 
+function loadReviewCategories(): Promise<void> {
+  if (categoryLoadPromise) return categoryLoadPromise;
+  categoriesLoading.value = true;
+  categoriesError.value = null;
+  categoryLoadPromise = (async () => {
+    try {
+      const response = await fetch('/api/review/categories', {
+        credentials: 'same-origin',
+      });
+      const body = (await response.json()) as SavedViewEnvelope<{
+        categories: ReviewCategoryOption[];
+      }>;
+      if (!response.ok || body.status !== 'ok' || !body.result) {
+        throw new Error(body.error?.message ?? 'Unable to load Actual categories.');
+      }
+      reviewCategories.value = body.result.categories;
+      categoriesLoaded.value = true;
+    } catch (error) {
+      categoriesLoaded.value = false;
+      categoriesError.value =
+        error instanceof Error ? error.message : 'Unable to load Actual categories.';
+    } finally {
+      categoriesLoading.value = false;
+      categoryLoadPromise = null;
+    }
+  })();
+  return categoryLoadPromise;
+}
+
 function openCorrectModal(_category?: string) {
-  if (adapter.state.currentItem) showCorrectModal.value = true;
+  if (!adapter.state.currentItem) return;
+  showCorrectModal.value = true;
+  if (!categoriesLoaded.value && !categoriesLoading.value) void loadReviewCategories();
 }
 
 function onCorrectCancel() {
@@ -434,6 +480,9 @@ async function handleSync() {
       const toast = useToast();
       toast.add({ title: 'Sync complete', color: 'success', duration: 5000 });
       await adapter.refresh();
+      const pendingCategoryLoad = categoryLoadPromise;
+      if (pendingCategoryLoad) await pendingCategoryLoad;
+      await loadReviewCategories();
     } else {
       const toast = useToast();
       const error = data.error;
