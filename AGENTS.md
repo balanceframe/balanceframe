@@ -73,6 +73,82 @@ Given this is a financial application, the minimum test coverage target is:
 - **Fixture-based testing.** Use the canonical fixtures in `protocol/fixtures/` for all integration and contract tests. Never construct test data inline when a fixture exists.
 - **Negative testing.** Every public function must have tests for failure paths: invalid JSON, missing fields, overflow, boundary values, and unsupported configurations.
 
+## Live Browser Verification
+
+Browser verification MUST exercise the source application against disposable,
+representative data. A passing component test or direct API request is useful
+supporting evidence, but it does not replace opening and operating the changed
+UI in a real browser.
+
+### Environment Setup
+
+1. Use the Actual fixture in `tests/actual-integration/`; NEVER connect browser
+   verification to a production budget. The package setup command creates and
+   seeds a disposable Actual server from the canonical protocol fixture:
+
+   ```bash
+   pnpm --filter @balanceframe/actual-integration setup
+   ```
+
+   When the execution environment provides a process supervisor, use it for
+   the long-lived Actual server instead of leaving an unmanaged background
+   process.
+2. Give the web app isolated authentication, workflow, connection, and Actual
+   configuration. Set `NUXT_AUTH_DB_PATH`, `BALANCEFRAME_WORKFLOW_DB_PATH`,
+   `BALANCEFRAME_CONFIG_PATH`, `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`,
+   `ACTUAL_SERVER_URL`, and `ACTUAL_SECRET_KEY` to the disposable fixture
+   values. Use test-only secrets and NEVER print process environments or secret
+   values into verification logs.
+3. Disable the local authentication bypass when verifying authenticated or
+   authorized behavior:
+
+   ```bash
+   NUXT_DEV_BYPASS_AUTH=false \
+     pnpm --filter @balanceframe/web exec nuxt dev --host 127.0.0.1 --port 3002
+   ```
+
+   `apps/web/.env` enables `NUXT_DEV_BYPASS_AUTH` for local convenience. Leaving
+   it enabled substitutes the configured development actor for the Better Auth
+   user and therefore does not verify session identity, membership, or
+   capability enforcement. The signed-in fixture user MUST have an active
+   workflow membership with every capability required by the flow.
+4. Use the `exec nuxt dev` command above. Do not run
+   `pnpm --filter @balanceframe/web dev -- --host ...`; the extra `--` can be
+   interpreted as a Nuxt root directory and serve the Nuxt starter page instead
+   of BalanceFrame.
+5. Budget selection remains explicit. If the disposable connection file is
+   absent, sign in, open `/connection`, select the intended fixture budget, and
+   save it. Environment credentials alone MUST NOT be treated as a selected
+   budget.
+
+### Required Browser Checks
+
+- Wait for observable application state instead of fixed sleeps or an assumed
+  post-login URL. Re-read the page accessibility tree after navigation or SPA
+  rerenders before interacting with controls.
+- Exercise the complete user path that owns the change. For Review changes,
+  run Sync, require the success state, require fixture-backed queue items, open
+  the relevant modal, operate the changed control, and verify its resulting
+  enabled, disabled, selected, or closed state.
+- Verify fixture-specific values, not merely that a control exists. For
+  category correction, open the selector, confirm categories outside the
+  classifier suggestions are present, select one, and require Confirm to become
+  enabled.
+- Check browser `pageerror`/console failures and the relevant network response.
+  A successful endpoint response alone is not sufficient when the user-facing
+  control remains broken.
+- Do not submit a financial mutation unless mutation behavior is the subject of
+  the verification. Selecting an option and confirming the pre-submit UI state
+  is preferred for read-path changes.
+
+### Evidence and Cleanup
+
+Record the URL, authenticated actor mode, fixture identity, key observed states,
+and exact values that prove the behavior. Report partial verification as
+partial; do not describe an API-only or component-only check as end-to-end
+browser verification. Stop all temporary web and Actual processes, close
+browser tabs, and confirm that verification created no source-tree changes.
+
 ## Code Style
 
 - **Rust:** Follow `rustfmt` + `clippy --deny(warnings)`. Use `#![forbid(unsafe_code)]` in all crates. Checked arithmetic for all money operations.
