@@ -10,6 +10,7 @@ import {
   buildAuthorizationInfo,
   sanitizeError,
 } from '../../utils/workflow-store';
+import { updateReviewCategoryCatalog } from '../../utils/review-category-catalog';
 
 /** Structured sync result with per-item outcome counts. */
 export interface SyncReviewResult {
@@ -57,6 +58,7 @@ export default defineEventHandler(async (event) => {
       return errorEnvelope('STORE_UNAVAILABLE', workflow.error, auth, false, requestId);
     }
     const { result, created } = await manager.withConnection(async (connected) => {
+      updateReviewCategoryCatalog(connected.config, connected.synchronization);
       const protocol = await createNativeAnalysisProtocol();
       const result = await protocol.pendingReview(connected.connector, null);
       const created = await persistPendingReviewResult(

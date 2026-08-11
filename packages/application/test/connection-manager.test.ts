@@ -70,6 +70,13 @@ function managerWithDisconnect(disconnect: (connectorNumber: number) => Promise<
 
 describe('ConnectionManager', () => {
   it('persists selected budget metadata without persisting secrets', async () => {
+    const expectedConfig = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-1',
+      budgetName: 'Test Budget',
+      groupId: 'group-1',
+    } as const;
     const files = new Map<string, string>();
     const manager = new ConnectionManager({
       configPath: '/tmp/config.json',
@@ -86,8 +93,10 @@ describe('ConnectionManager', () => {
 
     const result = await manager.connect({ budgetId: 'budget-1' });
     expect(result.budget.id).toBe('budget-1');
+    expect(result.config).toStrictEqual(expectedConfig);
     const config = JSON.parse(files.get('/tmp/config.json')!);
     expect(config.budgetId).toBe('budget-1');
+    expect(config).toStrictEqual(expectedConfig);
     expect(config.secretKey).toBeUndefined();
   });
 
@@ -120,6 +129,13 @@ describe('ConnectionManager', () => {
 
     const result = await manager.connect({ budgetId: 'group-1' });
     expect(result.budget.groupId).toBe('group-1');
+    expect(result.config).toStrictEqual({
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'group-1',
+      budgetName: 'Test Budget',
+      groupId: 'group-1',
+    });
   });
 
   it('disconnects a newly created connector when connection selection fails', async () => {
@@ -148,16 +164,17 @@ describe('ConnectionManager', () => {
   });
 
   it('loads configuration and synchronizes the selected budget', async () => {
+    const expectedConfig = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-1',
+      budgetName: 'Test Budget',
+      groupId: 'group-1',
+    } as const;
     const files = new Map([
       [
         '/tmp/config.json',
-        JSON.stringify({
-          version: 1,
-          serverUrl: 'http://actual',
-          budgetId: 'budget-1',
-          budgetName: 'Test Budget',
-          groupId: 'group-1',
-        }),
+        JSON.stringify(expectedConfig),
       ],
     ]);
     const synchronize = vi.fn(async () => ({
@@ -179,7 +196,12 @@ describe('ConnectionManager', () => {
 
     const result = await manager.restore();
     expect(result.budget.name).toBe('Test Budget');
+    expect(result.config).toStrictEqual(expectedConfig);
     expect(synchronize).toHaveBeenCalledWith({ refresh: false });
+
+    const refreshed = await manager.restore();
+    expect(refreshed.config).toStrictEqual(expectedConfig);
+    expect(refreshed.config).toBe(result.config);
   });
 
   it('deduplicates concurrent restores onto one connector lifecycle', async () => {
@@ -268,6 +290,61 @@ describe('ConnectionManager', () => {
 
     expect(factory).toHaveBeenCalledTimes(2);
     expect(factory.mock.calls[1]?.[0]).toEqual(credentials);
+    expect(disconnects[0]).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds with and exposes a changed selected-budget configuration', async () => {
+    const initialConfig = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-1',
+      budgetName: 'Test Budget',
+      groupId: 'group-1',
+    } as const;
+    const changedConfig = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-2',
+      budgetName: 'Changed Budget',
+      groupId: 'group-2',
+    } as const;
+    let serializedConfig = JSON.stringify(initialConfig);
+    const disconnects: Mock[] = [];
+    const selectBudget = vi.fn(async (id: string) => {
+      const selected = id === changedConfig.budgetId ? changedConfig : initialConfig;
+      return {
+        id: selected.budgetId,
+        groupId: selected.groupId,
+        name: selected.budgetName,
+        encrypted: false,
+      };
+    });
+    const factory = vi.fn(async () => {
+      const disconnect = vi.fn(async () => {});
+      disconnects.push(disconnect);
+      return { ...fakeConnector(), selectBudget, disconnect };
+    });
+    const manager = new ConnectionManager({
+      configPath: '/tmp/changed-config.json',
+      readFile: async () => serializedConfig,
+      writeFile: async () => {},
+      credentialStore: {
+        load: async () => ({ serverUrl: 'http://actual', secretKey: 'secret' }),
+        store: async () => {},
+      },
+      connectorFactory: factory,
+    });
+
+    const initial = await manager.restore();
+    serializedConfig = JSON.stringify(changedConfig);
+    const changed = await manager.restore();
+
+    expect(initial.config).toStrictEqual(initialConfig);
+    expect(changed.config).toStrictEqual(changedConfig);
+    expect(changed.config).not.toBe(initial.config);
+    expect(selectBudget).toHaveBeenNthCalledWith(1, initialConfig.budgetId, undefined);
+    expect(selectBudget).toHaveBeenNthCalledWith(2, changedConfig.budgetId, undefined);
+    expect(factory).toHaveBeenCalledTimes(2);
     expect(disconnects[0]).toHaveBeenCalledTimes(1);
   });
 
@@ -543,13 +620,14 @@ describe('ConnectionManager', () => {
   });
 
   it('disposes a scoped mutation connection before the next restore', async () => {
-    const config = JSON.stringify({
+    const expectedConfig = {
       version: 1,
       serverUrl: 'http://actual',
       budgetId: 'budget-1',
       budgetName: 'Test Budget',
       groupId: 'group-1',
-    });
+    } as const;
+    const config = JSON.stringify(expectedConfig);
     const disconnects: Mock[] = [];
     const factory = vi.fn(async () => {
       const disconnect = vi.fn(async () => {});
@@ -567,10 +645,15 @@ describe('ConnectionManager', () => {
       connectorFactory: factory,
     });
 
-    await manager.withConnection(async () => ({ success: false, code: 'SYNC_FAILED' }), {
-      dispose: true,
-    });
-    await manager.restore();
+    await manager.withConnection(
+      async (connected) => {
+        expect(connected.config).toStrictEqual(expectedConfig);
+        return { success: false, code: 'SYNC_FAILED' };
+      },
+      { dispose: true },
+    );
+    const restored = await manager.restore();
+    expect(restored.config).toStrictEqual(expectedConfig);
 
     expect(disconnects[0]).toHaveBeenCalledTimes(1);
     expect(factory).toHaveBeenCalledTimes(2);

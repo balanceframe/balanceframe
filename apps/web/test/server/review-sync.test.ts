@@ -18,6 +18,8 @@ const {
   mockPersistPendingReviewResult,
   mockListReviewItems,
   mockTransitionReviewItem,
+  mockUpdateReviewCategoryCatalog,
+  mockConnectionOperationCompleted,
   mockSetResponseStatus,
   mockGetWorkflowStore,
   pendingReview,
@@ -25,6 +27,9 @@ const {
   restoredBudget,
   pendingReviewResult,
   workflowStore,
+  loadedConnectionConfig,
+  connectedConfig,
+  connectedSynchronization,
 } = vi.hoisted(() => {
   const restoredConnector = { name: 'restored-connector' };
   const restoredBudget = {
@@ -41,11 +46,47 @@ const {
   };
   const mockRestore = vi.fn();
   const mockWithConnection = vi.fn();
+  const loadedConnectionConfig = {
+    version: 1,
+    serverUrl: 'x',
+    budgetId: restoredBudget.id,
+    budgetName: restoredBudget.name,
+    groupId: restoredBudget.groupId,
+  };
+  const connectedConfig = {
+    version: 1,
+    serverUrl: 'https://selected.actual.test',
+    budgetId: restoredBudget.id,
+    budgetName: restoredBudget.name,
+    groupId: restoredBudget.groupId,
+  };
+  const connectedSynchronization = {
+    snapshot: {
+      categories: [
+        {
+          id: 'category-1',
+          name: 'Groceries',
+          groupName: 'Living',
+          isIncome: false,
+          deleted: false,
+        },
+      ],
+    },
+  };
+  const mockUpdateReviewCategoryCatalog = vi.fn<
+    (
+      config: typeof loadedConnectionConfig,
+      synchronization: typeof connectedSynchronization,
+    ) => void
+  >();
+  const mockConnectionOperationCompleted = vi.fn<() => void>();
   const mockLoadConfig = vi.fn();
   return {
     mockRestore,
     mockWithConnection,
     mockLoadConfig,
+    mockUpdateReviewCategoryCatalog,
+    mockConnectionOperationCompleted,
     mockCreateDefaultConnectionManager: vi.fn(() => ({
       restore: mockRestore,
       withConnection: mockWithConnection,
@@ -62,6 +103,9 @@ const {
     restoredBudget,
     pendingReviewResult,
     workflowStore,
+    loadedConnectionConfig,
+    connectedConfig,
+    connectedSynchronization,
   };
 });
 
@@ -93,6 +137,10 @@ vi.mock('../../server/utils/workflow-store', async (i) => {
   };
 });
 
+vi.mock('../../server/utils/review-category-catalog', () => ({
+  updateReviewCategoryCatalog: mockUpdateReviewCategoryCatalog,
+}));
+
 import handler from '../../server/api/review/sync.post';
 
 describe('POST /api/review/sync', () => {
@@ -100,20 +148,19 @@ describe('POST /api/review/sync', () => {
     vi.clearAllMocks();
     vi.stubGlobal('setResponseStatus', mockSetResponseStatus);
     mockGetWorkflowStore.mockReturnValue({ store: workflowStore });
-    mockLoadConfig.mockResolvedValue({
-      version: 1,
-      serverUrl: 'x',
-      budgetId: restoredBudget.id,
-      budgetName: restoredBudget.name,
-      groupId: restoredBudget.groupId,
-    });
+    mockLoadConfig.mockResolvedValue(loadedConnectionConfig);
     mockRestore.mockResolvedValue({
       connector: restoredConnector,
       budget: restoredBudget,
-      synchronization: {},
+      config: connectedConfig,
+      synchronization: connectedSynchronization,
     });
     mockWithConnection.mockImplementation(
-      async (operation: (connected: unknown) => Promise<unknown>) => operation(await mockRestore()),
+      async (operation: (connected: unknown) => Promise<unknown>) => {
+        const result = await operation(await mockRestore());
+        mockConnectionOperationCompleted();
+        return result;
+      },
     );
   });
 
@@ -127,6 +174,7 @@ describe('POST /api/review/sync', () => {
     expect(mockRestore).not.toHaveBeenCalled();
     expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
     expect(mockPersistPendingReviewResult).not.toHaveBeenCalled();
+    expect(mockUpdateReviewCategoryCatalog).not.toHaveBeenCalled();
     expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
   });
 
@@ -174,6 +222,14 @@ describe('POST /api/review/sync', () => {
     );
     expect(mockListReviewItems).toHaveBeenCalled();
     expect(mockTransitionReviewItem).toHaveBeenCalledTimes(1);
+    expect(mockUpdateReviewCategoryCatalog).toHaveBeenCalledTimes(1);
+    expect(mockUpdateReviewCategoryCatalog.mock.calls[0]?.[0]).toBe(connectedConfig);
+    expect(mockUpdateReviewCategoryCatalog.mock.calls[0]?.[0]).not.toBe(loadedConnectionConfig);
+    expect(mockUpdateReviewCategoryCatalog.mock.calls[0]?.[1]).toBe(connectedSynchronization);
+    expect(mockConnectionOperationCompleted).toHaveBeenCalledTimes(1);
+    expect(mockUpdateReviewCategoryCatalog.mock.invocationCallOrder[0]).toBeLessThan(
+      mockConnectionOperationCompleted.mock.invocationCallOrder[0],
+    );
     expect(r.status).toBe('ok');
     expect(mockCreateDefaultConnectionManager).toHaveBeenCalledWith({
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,

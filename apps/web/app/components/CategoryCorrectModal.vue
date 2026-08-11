@@ -33,6 +33,20 @@
               class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold"
               >Change to</span
             >
+            <p
+              v-if="categoriesError"
+              role="alert"
+              class="mt-1 text-sm text-red-600 dark:text-red-400"
+            >
+              {{ categoriesError }}
+            </p>
+            <p
+              v-else-if="categoriesLoading"
+              role="status"
+              class="mt-1 text-sm text-gray-500 dark:text-gray-400"
+            >
+              Loading categories…
+            </p>
             <div class="mt-1">
               <USelectMenu
                 v-model="selected"
@@ -44,7 +58,7 @@
                 searchable-placeholder="Type to filter…"
                 class="w-full"
                 size="lg"
-                :disabled="submitting"
+                :disabled="submitting || categoriesLoading"
               />
             </div>
           </div>
@@ -79,10 +93,20 @@
 import { ref, computed, nextTick, watch } from 'vue';
 import type { ReviewQueueItem } from '../../src/review';
 
+interface CategoryOption {
+  readonly id: string;
+  readonly name: string;
+  readonly groupName: string | null;
+  readonly isIncome: boolean;
+}
+
 const props = defineProps<{
   open: boolean;
   item: ReviewQueueItem | null;
   submitting?: boolean;
+  categories?: readonly CategoryOption[];
+  categoriesLoading?: boolean;
+  categoriesError?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -92,6 +116,9 @@ const emit = defineEmits<{
 
 const selected = ref<string | undefined>(undefined);
 const confirmButton = ref<unknown>(null);
+const categoryById = computed(
+  () => new Map((props.categories ?? []).map((category) => [category.id, category])),
+);
 
 function focusConfirmButton(): void {
   const target = confirmButton.value;
@@ -108,7 +135,7 @@ function focusConfirmButton(): void {
 /** Return a human-friendly name for a category ID, falling back to the raw ID. */
 function displayName(id: string | undefined | null): string {
   if (!id) return '—';
-  return props.item?.evidence.categoryNames?.[id] ?? id;
+  return categoryById.value.get(id)?.name ?? props.item?.evidence.categoryNames?.[id] ?? id;
 }
 
 /** Build a deduplicated, prioritised list of category options for the dropdown. */
@@ -121,8 +148,9 @@ const categoryItems = computed(() => {
   function add(id: string, hint?: string) {
     if (!id || id === '—' || seen.has(id)) return;
     seen.add(id);
-    const name = displayName(id);
-    const label = name !== id ? `${name} (${id})` : id;
+    const category = categoryById.value.get(id);
+    const name = category?.name ?? displayName(id);
+    const label = category?.groupName ? `${name} — ${category.groupName}` : name;
     items.push({ id, label: hint ? `${label} — ${hint}` : label });
   }
 
@@ -130,6 +158,9 @@ const categoryItems = computed(() => {
   add(ev.currentCategory, 'current');
   for (const alt of ev.alternatives) {
     add(alt);
+  }
+  for (const category of props.categories ?? []) {
+    add(category.id);
   }
   return items;
 });
@@ -145,7 +176,10 @@ watch(
   () => props.open,
   (open) => {
     if (open) {
-      selected.value = props.item?.evidence.suggestedCategory ?? undefined;
+      const suggested = props.item?.evidence.suggestedCategory;
+      selected.value = categoryItems.value.some((item) => item.id === suggested)
+        ? suggested
+        : undefined;
     }
   },
 );
