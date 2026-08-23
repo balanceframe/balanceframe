@@ -186,6 +186,8 @@ pub enum ObservationState {
     Stale,
     /// The source observation is unavailable.
     Unavailable,
+    /// The source was read successfully but does not expose this fact.
+    Unknown,
     /// The observed activity is included.
     Included,
     /// The observed coverage is complete.

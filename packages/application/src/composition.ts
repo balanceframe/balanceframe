@@ -486,6 +486,34 @@ function canonicalJsonStringify(value: unknown): string {
   });
 }
 
+function snapshotEntityLabels(snapshot: FinancialSnapshot): Record<string, string> {
+  const labels: Record<string, string> = {};
+  const legacy = snapshot.legacySnapshot;
+
+  for (const account of legacy.accounts) labels[account.id] = account.name;
+  for (const category of legacy.categories) labels[category.id] = category.name;
+  for (const transaction of legacy.transactions) {
+    if (
+      transaction.categoryId &&
+      transaction.categoryName &&
+      labels[transaction.categoryId] === undefined
+    ) {
+      labels[transaction.categoryId] = transaction.categoryName;
+    }
+    const transactionLabel = transaction.payeeName?.trim() || 'Transaction';
+    const transactionDate = transaction.date?.trim();
+    labels[transaction.id] = transactionDate
+      ? `${transactionLabel} · ${transactionDate}`
+      : transactionLabel;
+  }
+  for (const payee of legacy.payees) labels[payee.id] = payee.name;
+  for (const schedule of legacy.schedules) {
+    if (schedule.payeeName) labels[schedule.id] = schedule.payeeName;
+  }
+
+  return labels;
+}
+
 const FINANCIAL_ATTENTION_POLICY_VERSION = 'financial-attention-v1';
 
 const KNOWN_OBSERVATION_KINDS: Record<string, true> = {
@@ -544,11 +572,23 @@ function observationIssueCode(kind: string): string {
 function attentionBlockerFromObservation(
   observation: SourceObservation,
   snapshot: FinancialSnapshot,
+  entityLabels: Record<string, string>,
 ): AttentionBlocker | null {
   const kind = String(observation.kind);
   const state = String(observation.state);
   const knownKind = KNOWN_OBSERVATION_KINDS[kind] === true;
-  if (knownKind && NON_ACTIONABLE_OBSERVATIONS[`${kind}:${state}`] === true) return null;
+  const evidence = Array.isArray(observation.evidence) ? observation.evidence : [];
+  const isUnknownAccountCapability =
+    (kind === 'account_freshness' || kind === 'account_type') &&
+    (state === 'unknown' ||
+      (state === 'unavailable' &&
+        !evidence.some((reference) => reference.kind === 'connector_error')));
+  if (
+    isUnknownAccountCapability ||
+    (knownKind && NON_ACTIONABLE_OBSERVATIONS[`${kind}:${state}`] === true)
+  ) {
+    return null;
+  }
 
   let classification: NonNullable<AttentionBlocker['classification']>;
   let message: string;
@@ -594,7 +634,6 @@ function attentionBlockerFromObservation(
     };
   }
 
-  const evidence = Array.isArray(observation.evidence) ? observation.evidence : [];
   const redaction = evidence.some(
     (reference) => !reference.authorized || reference.redaction === 'redacted',
   )
@@ -624,6 +663,9 @@ function attentionBlockerFromObservation(
     message,
     severity,
     entityType: observation.scope.kind,
+    ...('id' in observation.scope && entityLabels[observation.scope.id]
+      ? { scopeLabel: entityLabels[observation.scope.id] }
+      : {}),
     ...('id' in observation.scope ? { entityId: observation.scope.id } : {}),
     classification,
     issue,
@@ -1530,11 +1572,43 @@ export async function createNativeAnalysisProtocol(
           throw new Error('Native evaluateProspectivePurchase returned invalid JSON.');
         }
         const decision = purchaseProspectiveDecisionEnvelopeSchema.parse(parsed);
+        const hasEnvelope = decision.before.amounts.some(
+          ({ label }) => label === 'envelopeAvailability',
+        );
+        const currencyMismatch = decision.issues.some(({ code }) => code === 'currency_mismatch');
+        const envelopeFundingState: NonNullable<PurchaseEvaluationResult['envelopeFundingState']> =
+          currencyMismatch || !hasEnvelope
+            ? 'unavailable'
+            : BigInt(decision.payload.categoryBudget.minorUnits) <= BigInt(0)
+              ? 'unfunded'
+              : 'funded';
+        const verdict: NonNullable<PurchaseEvaluationResult['verdict']> =
+          decision.readiness === 'blocked'
+            ? 'insufficient_data'
+            : !decision.payload.allowable
+              ? 'not_safe'
+              : decision.readiness === 'qualified'
+                ? 'safe_with_qualifications'
+                : 'safe';
+        const explanation =
+          verdict === 'insufficient_data'
+            ? 'A safe purchase verdict is unavailable because required financial data is insufficient or conflicting.'
+            : verdict === 'not_safe'
+              ? 'The purchase is not allowable under the evaluated budget and account constraints.'
+              : verdict === 'safe_with_qualifications'
+                ? 'The purchase is allowable with qualifications that should be reviewed.'
+                : 'The purchase is within the evaluated budget and account constraints.';
         return {
           ...decision.payload,
-          hasEnvelope: decision.before.amounts.some(
-            ({ label }) => label === 'envelopeAvailability',
-          ),
+          categoryBudget: currencyMismatch ? null : decision.payload.categoryBudget,
+          categorySpent: currencyMismatch ? null : decision.payload.categorySpent,
+          categoryRemaining: currencyMismatch ? null : decision.payload.categoryRemaining,
+          projectedBalance: currencyMismatch ? null : decision.payload.projectedBalance,
+          hasEnvelope,
+          verdict,
+          explanation,
+          envelopeFundingState,
+          entityLabels: snapshotEntityLabels(financialSnapshot),
           decision,
         };
       }
@@ -1774,13 +1848,26 @@ export async function createNativeAnalysisProtocol(
       }
 
       const s = rawSnapshot as Record<string, unknown>;
+      const accounts = (s.accounts as Array<Record<string, unknown>> | undefined) ?? [];
       const transactions = (s.transactions as Array<Record<string, unknown>> | undefined) ?? [];
       const payees = (s.payees as Array<Record<string, unknown>> | undefined) ?? [];
       const currency = 'USD';
 
-      // Blockers: uncategorized transactions (counting/filtering only)
+      // Blockers: uncategorized transactions (counting/filtering only).
+      // Pending activity remains included under the current attention policy.
+      const onBudgetAccountIds = new Set(
+        accounts
+          .filter((account) => typeof account.id === 'string' && account.offBudget === false)
+          .map((account) => account.id as string),
+      );
       const uncategorizedTxs = transactions.filter(
-        (tx) => (!tx.categoryId || tx.categoryId === '') && !tx.pending,
+        (tx) =>
+          typeof tx.accountId === 'string' &&
+          onBudgetAccountIds.has(tx.accountId) &&
+          (tx.categoryId === null || tx.categoryId === undefined || tx.categoryId === '') &&
+          (tx.transferAccountId === null ||
+            tx.transferAccountId === undefined ||
+            tx.transferAccountId === ''),
       );
       const blockers: AttentionBlocker[] =
         uncategorizedTxs.length > 0
@@ -1793,18 +1880,97 @@ export async function createNativeAnalysisProtocol(
               },
             ]
           : [];
+      const entityLabels = financialSnapshot
+        ? snapshotEntityLabels(financialSnapshot)
+        : ({} as Record<string, string>);
+      const alerts: AttentionAlert[] = [];
       if (financialSnapshot) {
         const canonicalDedupKeys = new Set<string>();
+        const transferFindings: AttentionBlocker[] = [];
         for (const observation of financialSnapshot.observations) {
-          const blocker = attentionBlockerFromObservation(observation, financialSnapshot);
+          const blocker = attentionBlockerFromObservation(
+            observation,
+            financialSnapshot,
+            entityLabels,
+          );
           if (!blocker?.dedupKey || canonicalDedupKeys.has(blocker.dedupKey)) continue;
           canonicalDedupKeys.add(blocker.dedupKey);
-          blockers.push(blocker);
+          if (blocker.classification === 'transfer_needs_attention') {
+            transferFindings.push(blocker);
+          } else {
+            blockers.push(blocker);
+          }
+        }
+
+        if (transferFindings.length > 0) {
+          const evidence: DecisionIssue['evidence'] = [];
+          const evidenceIds = new Set<string>();
+          for (const finding of transferFindings) {
+            for (const reference of finding.issue?.evidence ?? []) {
+              if (evidence.length === 10) break;
+              if (
+                !reference.authorized ||
+                reference.redaction !== 'visible' ||
+                evidenceIds.has(reference.evidenceId)
+              ) {
+                continue;
+              }
+              evidenceIds.add(reference.evidenceId);
+              evidence.push(reference);
+            }
+            if (evidence.length === 10) break;
+          }
+          const redaction = transferFindings.some(
+            (finding) => finding.issue?.redaction === 'redacted',
+          )
+            ? 'redacted'
+            : 'visible';
+          const issue: DecisionIssue = {
+            code: 'duplicate_transfer_ambiguity',
+            severity: 'warning',
+            effect: 'qualifies',
+            scope: { kind: 'global' },
+            evidence,
+            remediation: {
+              code: 'review_transfer',
+              action: 'Review the related transactions and resolve the transfer ambiguity.',
+            },
+            redaction,
+          };
+          const identity = {
+            classification: 'transfer_needs_attention' as const,
+            scope: issue.scope,
+            snapshotId: financialSnapshot.snapshotId,
+            policyVersion: FINANCIAL_ATTENTION_POLICY_VERSION,
+            revision: financialSnapshot.contentHash,
+          };
+          const dedupKey = financialDecisionDedupKey(identity);
+          const observedAt = financialSnapshot.capturedAt;
+          alerts.push({
+            code: issue.code,
+            message:
+              transferFindings.length === 1
+                ? 'A possible duplicate or incomplete transfer needs review.'
+                : `${transferFindings.length} possible duplicate or incomplete transfers need review`,
+            severity: 'warning',
+            scopeLabel: 'Transfers',
+            occurrenceCount: transferFindings.length,
+            classification: identity.classification,
+            issue,
+            snapshotId: identity.snapshotId,
+            policyVersion: identity.policyVersion,
+            revision: identity.revision,
+            dedupKey,
+            findingId: dedupKey,
+            findingStatus: 'open',
+            findingVersion: 1,
+            firstObservedAt: observedAt,
+            lastObservedAt: observedAt,
+          });
         }
       }
 
       // Alerts: derive from native target health overspent labels
-      const alerts: AttentionAlert[] = [];
       for (const cat of targetHealth.categories) {
         if (cat.healthLabel === 'overspent') {
           alerts.push({
@@ -1813,31 +1979,66 @@ export async function createNativeAnalysisProtocol(
             severity: 'warning',
             categoryId: cat.categoryId,
             categoryName: cat.categoryName,
+            scopeLabel: entityLabels[cat.categoryId] ?? cat.categoryName,
           });
         }
       }
 
-      // Recurrences: pattern detection from snapshot (counting/aggregation, not money arithmetic)
+      // Recurrences: pattern detection from ordinary same-account purchases.
       const recurrences: RecurrencePattern[] = [];
-      const schedCounts: Record<string, { count: number; lastDate: string; amount: string }> = {};
+      const payeesById = new Map(
+        payees
+          .filter((payee) => typeof payee.id === 'string')
+          .map((payee) => [payee.id as string, payee] as const),
+      );
+      const schedCounts: Record<
+        string,
+        {
+          count: number;
+          lastDate: string;
+          amount: string;
+          payeeId: string;
+          payeeName: string;
+        }
+      > = {};
       for (const tx of transactions) {
-        if (tx.payeeId) {
-          const key = String(tx.payeeId);
-          if (!schedCounts[key]) schedCounts[key] = { count: 0, lastDate: '', amount: '0' };
-          schedCounts[key].count++;
-          const amt = tx.amount as Record<string, unknown> | undefined;
-          if (amt && typeof amt.minorUnits === 'string') {
-            schedCounts[key].amount = amt.minorUnits;
-          }
-          if (String(tx.date ?? '') > schedCounts[key].lastDate)
-            schedCounts[key].lastDate = String(tx.date);
+        if (
+          typeof tx.accountId !== 'string' ||
+          typeof tx.payeeId !== 'string' ||
+          (tx.transferAccountId !== null &&
+            tx.transferAccountId !== undefined &&
+            tx.transferAccountId !== '')
+        ) {
+          continue;
+        }
+        const payeeId = tx.payeeId;
+        const payee = payeesById.get(payeeId);
+        const payeeName = String(payee?.name ?? tx.payeeName ?? payeeId);
+        if (payeeName.trim().toLowerCase() === 'starting balance') continue;
+
+        const key = `${tx.accountId}\u0000${payeeId}`;
+        if (!schedCounts[key]) {
+          schedCounts[key] = {
+            count: 0,
+            lastDate: '',
+            amount: '0',
+            payeeId,
+            payeeName,
+          };
+        }
+        schedCounts[key].count++;
+        const amt = tx.amount as Record<string, unknown> | undefined;
+        if (amt && typeof amt.minorUnits === 'string') {
+          schedCounts[key].amount = amt.minorUnits;
+        }
+        if (String(tx.date ?? '') > schedCounts[key].lastDate) {
+          schedCounts[key].lastDate = String(tx.date);
         }
       }
-      for (const [payeeId, info] of Object.entries(schedCounts)) {
+      for (const info of Object.values(schedCounts)) {
         if (info.count >= 3) {
-          const payee = payees.find((p) => p.id === payeeId);
           recurrences.push({
-            payeeName: String(payee?.name ?? payeeId),
+            payeeName: info.payeeName,
             amount: { minorUnits: info.amount, currency },
             frequency: info.count >= 6 ? 'monthly' : 'irregular',
             occurrences: info.count,

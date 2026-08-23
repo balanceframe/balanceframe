@@ -32,7 +32,12 @@
               {{ verdictLabel }}
             </span>
           </p>
-          <ReasonCodeList v-if="legacyReasonCodes.length" :codes="legacyReasonCodes" class="mt-2" />
+          <ReasonCodeList
+            v-if="legacyReasonCodes.length"
+            :codes="legacyReasonCodes"
+            :scope-labels="result.entityLabels"
+            class="mt-2"
+          />
           <p v-if="result.explanation" class="text-xs text-gray-500 mt-2">
             {{ result.explanation }}
           </p>
@@ -44,26 +49,36 @@
             <div>
               Budget:
               <SemanticAmount v-if="result.categoryBudget" :amount="result.categoryBudget" />
-              <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unknown</span>
+              <span v-else class="font-medium text-gray-500 dark:text-gray-400">
+                {{ categoryMoneyFallbackLabel }}
+              </span>
             </div>
             <div>
               Spent:
               <SemanticAmount v-if="result.categorySpent" :amount="result.categorySpent" />
-              <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unknown</span>
+              <span v-else class="font-medium text-gray-500 dark:text-gray-400">
+                {{ categoryMoneyFallbackLabel }}
+              </span>
             </div>
             <div>
               Remaining:
               <SemanticAmount v-if="result.categoryRemaining" :amount="result.categoryRemaining" />
-              <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unknown</span>
+              <span v-else class="font-medium text-gray-500 dark:text-gray-400">
+                {{ categoryMoneyFallbackLabel }}
+              </span>
             </div>
           </div>
           <div class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-            Projected balance:
+            {{
+              result.decision
+                ? 'Effective balance after pending and uncleared activity:'
+                : 'Projected balance:'
+            }}
             <SemanticAmount v-if="result.projectedBalance" :amount="result.projectedBalance" />
             <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unavailable</span>
           </div>
           <div class="mt-1 text-xs text-gray-500">
-            {{ result.hasEnvelope ? 'Envelope budget active' : 'No envelope (cash-flow only)' }}
+            {{ envelopeFundingLabel }}
           </div>
         </UCard>
 
@@ -206,7 +221,11 @@
               >
                 Issues and remediation
               </h3>
-              <ReasonCodeList :issues="result.decision.issues" class="mt-2" />
+              <ReasonCodeList
+                :issues="result.decision.issues"
+                :scope-labels="result.entityLabels"
+                class="mt-2"
+              />
             </section>
 
             <section aria-labelledby="decision-evidence-heading" class="mt-4">
@@ -240,7 +259,10 @@
         </UCard>
 
         <!-- Proposals (reallocation suggestions) -->
-        <UCard v-if="result.proposals && result.proposals.length" class="mt-3">
+        <UCard
+          v-if="showAlternativesAndConsequences && result.proposals && result.proposals.length"
+          class="mt-3"
+        >
           <template #header>
             <span class="font-semibold">Proposals</span>
           </template>
@@ -255,7 +277,10 @@
         </UCard>
 
         <!-- Donors (available reallocation sources) -->
-        <UCard v-if="result.donors && result.donors.length" class="mt-3">
+        <UCard
+          v-if="showAlternativesAndConsequences && result.donors && result.donors.length"
+          class="mt-3"
+        >
           <template #header>
             <span class="font-semibold">Donor</span>
           </template>
@@ -269,7 +294,14 @@
         </UCard>
 
         <!-- Protected categories -->
-        <UCard v-if="result.protectedCategories && result.protectedCategories.length" class="mt-3">
+        <UCard
+          v-if="
+            showAlternativesAndConsequences &&
+            result.protectedCategories &&
+            result.protectedCategories.length
+          "
+          class="mt-3"
+        >
           <template #header>
             <span class="font-semibold">Protected</span>
           </template>
@@ -293,7 +325,7 @@
         </UCard>
 
         <!-- Competition -->
-        <UCard v-if="result.competition" class="mt-3">
+        <UCard v-if="showAlternativesAndConsequences && result.competition" class="mt-3">
           <template #header>
             <span class="font-semibold">Competition</span>
           </template>
@@ -379,14 +411,21 @@ interface Freshness {
 
 interface PurchaseResult {
   allowable: boolean;
-  verdict: 'safe' | 'not_safe' | 'safe_with_reallocation' | 'insufficient_data';
+  verdict?:
+    | 'safe'
+    | 'safe_with_qualifications'
+    | 'safe_with_reallocation'
+    | 'not_safe'
+    | 'insufficient_data';
   reasonCodes: string[];
-  explanation: string;
+  explanation?: string;
   categoryBudget: Amount | null;
   categorySpent: Amount | null;
   categoryRemaining: Amount | null;
   projectedBalance: Amount | null;
   hasEnvelope: boolean;
+  envelopeFundingState?: 'funded' | 'unfunded' | 'unavailable';
+  entityLabels?: Record<string, string>;
   proposals: Proposal[];
   donors: Donor[];
   protectedCategories: string[];
@@ -410,6 +449,15 @@ const canEvaluate = computed(() =>
   Boolean(String(categoryId.value ?? '').trim() && String(amountStr.value ?? '').trim()),
 );
 
+const showAlternativesAndConsequences = computed(() => {
+  const currentResult = result.value;
+  if (!currentResult) return false;
+  const isCanonical = Boolean(
+    currentResult.decision || currentResult.envelopeFundingState || currentResult.entityLabels,
+  );
+  return !isCanonical || currentResult.verdict !== 'insufficient_data';
+});
+
 const legacyReasonCodes = computed(() => {
   const currentResult = result.value;
   if (!currentResult?.decision?.issues.length) return currentResult?.reasonCodes ?? [];
@@ -422,6 +470,8 @@ const verdictLabel = computed(() => {
   switch (result.value?.verdict) {
     case 'safe':
       return 'Safe';
+    case 'safe_with_qualifications':
+      return 'Safe with Qualifications';
     case 'safe_with_reallocation':
       return 'Safe with Reallocation';
     case 'not_safe':
@@ -437,6 +487,7 @@ const verdictClass = computed(() => {
   switch (result.value?.verdict) {
     case 'safe':
       return 'text-emerald-600';
+    case 'safe_with_qualifications':
     case 'safe_with_reallocation':
       return 'text-amber-600';
     case 'not_safe':
@@ -459,7 +510,7 @@ const decisionReadinessLabel = computed(() => {
     case 'qualified':
       return 'Qualified';
     case 'blocked':
-      return 'Blocked';
+      return 'Insufficient data';
     default:
       return showInsufficientDecision.value ? 'Insufficient data' : '';
   }
@@ -472,7 +523,7 @@ const decisionReadinessClass = computed(() => {
     case 'qualified':
       return 'text-amber-600 dark:text-amber-400';
     case 'blocked':
-      return 'text-red-600 dark:text-red-400';
+      return 'text-gray-600 dark:text-gray-300';
     default:
       return 'text-gray-600 dark:text-gray-300';
   }
@@ -503,8 +554,26 @@ function formatSemanticLabel(label: string): string {
 
 function formatDecisionScope(scope: DecisionScope): string {
   const kind = formatSemanticLabel(scope.kind);
-  return 'id' in scope && scope.id ? `${kind}: ${scope.id}` : kind;
+  if (!('id' in scope) || !scope.id) return kind;
+  return `${kind}: ${result.value?.entityLabels?.[scope.id] ?? scope.id}`;
 }
+
+const categoryMoneyFallbackLabel = computed(() =>
+  result.value?.envelopeFundingState === 'unavailable' ? 'Unavailable' : 'Unknown',
+);
+
+const envelopeFundingLabel = computed(() => {
+  switch (result.value?.envelopeFundingState) {
+    case 'funded':
+      return 'Envelope budget active';
+    case 'unfunded':
+      return 'Envelope has no assigned funds';
+    case 'unavailable':
+      return 'Envelope funding unavailable';
+    default:
+      return result.value?.hasEnvelope ? 'Envelope budget active' : 'No envelope (cash-flow only)';
+  }
+});
 
 function decisionAmountKey(amount: DecisionAmount): string {
   const scopeId = 'id' in amount.scope && amount.scope.id ? amount.scope.id : '';

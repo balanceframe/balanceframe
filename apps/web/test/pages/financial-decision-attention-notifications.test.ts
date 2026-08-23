@@ -32,6 +32,10 @@ const SNAPSHOT_ID = 'snapshot-attention-2026-08-23';
 const POLICY_VERSION = 'financial-attention-v1';
 const REVISION = 'sha256:attention-revision-1';
 const CAPTURED_AT = '2026-08-23T12:00:00Z';
+const ACCOUNT_CARD_UUID = '7728bc62-67cc-42e1-957d-1c263f677f81';
+const CATEGORY_GROCERIES_UUID = '6711370f-52c5-43dc-b59a-72f1ec42d1b7';
+const CATEGORY_RENT_UUID = '369d73f3-951f-40dc-9dcb-3d268e0d6c12';
+const BANK_SYNC_EVIDENCE_UUID = '550132bd-9ded-45f1-9401-39c40330a5bd';
 
 const AnalysisPageStub = {
   template: `
@@ -146,6 +150,7 @@ type IssueInput = {
   severity: 'critical' | 'warning' | 'info';
   effect: 'blocks' | 'qualifies';
   scope: { kind: 'account' | 'category' | 'transaction' | 'claim'; id: string };
+  categoryName: string;
   remediationCode: string;
   remediationAction: string;
   redaction: 'visible' | 'redacted';
@@ -163,6 +168,7 @@ function financialAttentionItem(input: IssueInput) {
     severity: input.severity,
     entityId: input.scope.id,
     entityType: input.scope.kind,
+    categoryName: input.categoryName,
     classification: input.classification,
     issue: {
       code: input.code,
@@ -202,11 +208,12 @@ const accountReadiness = financialAttentionItem({
   message: 'Card account evidence must be refreshed.',
   severity: 'critical',
   effect: 'blocks',
-  scope: { kind: 'account', id: 'account-card' },
+  scope: { kind: 'account', id: ACCOUNT_CARD_UUID },
+  categoryName: 'Everyday card',
   remediationCode: 'refresh_account_evidence',
   remediationAction: 'Refresh the affected account before evaluating again.',
   redaction: 'visible',
-  evidenceId: 'bank-sync-card-119',
+  evidenceId: BANK_SYNC_EVIDENCE_UUID,
   evidenceKind: 'bank_sync',
   authorized: true,
   findingVersion: 4,
@@ -219,6 +226,7 @@ const connectorDegradation = financialAttentionItem({
   severity: 'critical',
   effect: 'blocks',
   scope: { kind: 'account', id: 'account-restricted' },
+  categoryName: 'Restricted account',
   remediationCode: 'reconnect_source',
   remediationAction: 'Reconnect the account source before evaluating again.',
   redaction: 'redacted',
@@ -235,6 +243,7 @@ const unresolvedEvidence = financialAttentionItem({
   severity: 'warning',
   effect: 'blocks',
   scope: { kind: 'claim', id: 'claim-material-7' },
+  categoryName: 'Material evidence review',
   remediationCode: 'review_material_evidence',
   remediationAction: 'Review the supporting evidence before evaluating again.',
   redaction: 'visible',
@@ -243,7 +252,6 @@ const unresolvedEvidence = financialAttentionItem({
   authorized: true,
   findingVersion: 1,
 });
-
 const transferAttention = financialAttentionItem({
   classification: 'transfer_needs_attention',
   code: 'duplicate_transfer_ambiguity',
@@ -251,6 +259,7 @@ const transferAttention = financialAttentionItem({
   severity: 'warning',
   effect: 'qualifies',
   scope: { kind: 'transaction', id: 'transfer-one-sided' },
+  categoryName: 'Card transfer',
   remediationCode: 'review_transfer',
   remediationAction: 'Review the related transactions and resolve the transfer ambiguity.',
   redaction: 'visible',
@@ -266,7 +275,8 @@ const reservationConflict = financialAttentionItem({
   message: 'A category reservation conflicts with available funding.',
   severity: 'warning',
   effect: 'qualifies',
-  scope: { kind: 'category', id: 'category-groceries' },
+  scope: { kind: 'category', id: CATEGORY_GROCERIES_UUID },
+  categoryName: 'Groceries',
   remediationCode: 'review_reservation',
   remediationAction: 'Review or release the conflicting reservation.',
   redaction: 'visible',
@@ -282,7 +292,8 @@ const commitmentConflict = financialAttentionItem({
   message: 'A scheduled commitment conflicts with this financial state.',
   severity: 'info',
   effect: 'qualifies',
-  scope: { kind: 'category', id: 'category-rent' },
+  scope: { kind: 'category', id: CATEGORY_RENT_UUID },
+  categoryName: 'Rent',
   remediationCode: 'review_commitment',
   remediationAction: 'Review the scheduled commitment before proceeding.',
   redaction: 'visible',
@@ -482,20 +493,49 @@ describe('existing / financial-decision attention surface', () => {
     expect(alertPosition).toBeGreaterThan(blockerPosition);
   });
 
-  it('shows canonical issue scope, lifecycle, remediation, identity, and safe evidence metadata', async () => {
+  it('uses human names and concise issue metadata while keeping technical identity secondary', async () => {
     const wrapper = await mountAttentionPage();
     const surface = wrapper.get('section[aria-label="Financial decision attention"]');
     const text = surface.text().replace(/\s+/g, ' ').trim();
 
-    expect(text).toContain('Classification: Account Readiness Blocker');
-    expect(text).toContain('Scope: Account · account-card');
-    expect(text).toContain('Finding status: Open');
-    expect(text).toContain('Finding version: 4');
-    expect(text).toContain('Remediation: Refresh the affected account before evaluating again.');
-    expect(text).toContain(`Snapshot: ${SNAPSHOT_ID}`);
-    expect(text).toContain(`Policy: ${POLICY_VERSION}`);
-    expect(text).toContain(`Revision: ${REVISION}`);
-    expect(text).toContain('Redaction: Redacted');
+    const accountCard = surface.get(
+      '[aria-label="Finding: Card account evidence must be refreshed."]',
+    );
+    expect(accountCard.get('[aria-label="Account: Everyday card"]').text()).toBe('Everyday card');
+    const accountMetadata = accountCard.get(
+      '[aria-label="Issue metadata: Critical, blocks, open"]',
+    );
+    expect(accountMetadata.text()).toContain('Critical');
+    expect(accountMetadata.text()).toContain('Blocks');
+    expect(accountMetadata.text()).toContain('Open');
+
+    const groceriesCard = surface.get(
+      '[aria-label="Finding: A category reservation conflicts with available funding."]',
+    );
+    expect(groceriesCard.get('[aria-label="Category: Groceries"]').text()).toBe('Groceries');
+
+    expect(text).toContain('Refresh the affected account before evaluating again.');
+    expect(text).not.toContain('Classification:');
+    expect(text).not.toContain('Scope:');
+    expect(text).not.toContain('Finding status:');
+    expect(text).not.toContain('Finding version:');
+    expect(text).not.toContain('Snapshot:');
+    expect(text).not.toContain('Policy:');
+    expect(text).not.toContain('Revision:');
+    expect(text).not.toContain(ACCOUNT_CARD_UUID);
+    expect(text).not.toContain(CATEGORY_GROCERIES_UUID);
+    expect(text).not.toContain(BANK_SYNC_EVIDENCE_UUID);
+    expect(text).not.toContain(CATEGORY_RENT_UUID);
+    expect(text).not.toContain(SNAPSHOT_ID);
+    expect(text).not.toContain(REVISION);
+
+    const provenanceToggle = accountCard.get('button[aria-label="Show technical provenance"]');
+    expect(provenanceToggle.attributes('aria-expanded')).toBe('false');
+    await provenanceToggle.trigger('click');
+    const provenance = accountCard.get('[role="region"][aria-label="Technical provenance"]');
+    expect(provenance.text()).toContain(SNAPSHOT_ID);
+    expect(provenance.text()).toContain(POLICY_VERSION);
+    expect(provenance.text()).toContain(REVISION);
 
     const restrictedItem = surface
       .findAll('[role="listitem"]')
@@ -503,9 +543,11 @@ describe('existing / financial-decision attention surface', () => {
     expect(restrictedItem).toBeDefined();
     const drawer = restrictedItem!.findComponent(EvidenceDrawer);
     expect(drawer.exists()).toBe(true);
-    await drawer.get('button[aria-controls]').trigger('click');
-    const restrictedReference = drawer.get('[role="region"] li');
-    expect(restrictedReference.text()).toBe('Restricted evidence');
+    await drawer.get('button[aria-label="Show evidence summary"]').trigger('click');
+    const restrictedReference = drawer.get(
+      '[role="region"][aria-label="Evidence summary"] [aria-label="Restricted evidence: 1 reference"]',
+    );
+    expect(restrictedReference.exists()).toBe(true);
     expect(drawer.text()).not.toContain('restricted-reference-1');
     expect(drawer.text()).not.toContain('connector_error');
     expect(drawer.text()).not.toContain('Connector Error');
@@ -559,7 +601,7 @@ describe('existing /notifications financial-decision delivery surface', () => {
       body: { outboxId: 'outbox-material-evidence' },
     });
     expect(notificationWrapper.text()).toContain('does not affect any associated findings');
-    expect(attentionWrapper.text().replace(/\s+/g, ' ').trim()).toContain('Finding status: Open');
+    expect(attentionWrapper.find('[data-finding-status="open"]').exists()).toBe(true);
 
     const requestedUrls = mockFetch.mock.calls.map(([url]) => String(url));
     expect(requestedUrls.some((url) => url.includes('/findings/'))).toBe(false);

@@ -292,7 +292,7 @@ fn omitted_collection_coverage_is_unknown_not_explicitly_empty() {
 }
 
 #[test]
-fn account_observations_retain_fresh_stale_and_unavailable_states_per_account() {
+fn account_observations_retain_fresh_stale_unknown_and_unavailable_states_per_account() {
     let mut snapshot = financial_snapshot();
     snapshot.observations = vec![
         observation(
@@ -310,6 +310,13 @@ fn account_observations_retain_fresh_stale_and_unavailable_states_per_account() 
             &[("bank-sync:card:119", "bank_sync")],
         ),
         observation(
+            ObservationKind::AccountType,
+            DecisionScope::Account("account-checking".into()),
+            ObservationState::Unknown,
+            None,
+            &[("account:account-checking", "account")],
+        ),
+        observation(
             ObservationKind::AccountFreshness,
             DecisionScope::Account("account-cash".into()),
             ObservationState::Unavailable,
@@ -318,8 +325,9 @@ fn account_observations_retain_fresh_stale_and_unavailable_states_per_account() 
         ),
     ];
 
-    let decoded: FinancialSnapshot =
-        serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+    let wire = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(wire["observations"][2]["state"], "unknown");
+    let decoded: FinancialSnapshot = serde_json::from_value(wire).unwrap();
     assert_eq!(decoded.observations, snapshot.observations);
     assert_eq!(decoded.observations[0].state, ObservationState::Fresh);
     assert_eq!(
@@ -331,8 +339,10 @@ fn account_observations_retain_fresh_stale_and_unavailable_states_per_account() 
         decoded.observations[1].observed_at.as_deref(),
         Some(STALE_OBSERVED_AT)
     );
-    assert_eq!(decoded.observations[2].state, ObservationState::Unavailable);
+    assert_eq!(decoded.observations[2].state, ObservationState::Unknown);
     assert_eq!(decoded.observations[2].observed_at, None);
+    assert_eq!(decoded.observations[3].state, ObservationState::Unavailable);
+    assert_eq!(decoded.observations[3].observed_at, None);
 }
 
 #[test]

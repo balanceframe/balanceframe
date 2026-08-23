@@ -101,6 +101,33 @@ const OBSERVATIONS: SourceObservation[] = [
   },
 ];
 
+const PRODUCTION_ACCOUNTS = [
+  { id: 'account-checking', name: 'Household Checking', accountType: 'checking' },
+  { id: 'account-card', name: 'Household Card', accountType: 'creditCard' },
+  { id: 'account-cash', name: 'Travel Cash', accountType: 'cash' },
+  { id: 'account-joint', name: 'Joint Checking', accountType: 'checking' },
+  { id: 'account-wallet', name: 'Spending Wallet', accountType: 'other' },
+  { id: 'account-brokerage', name: 'Brokerage', accountType: 'other' },
+  { id: 'account-loan', name: 'Car Loan', accountType: 'other' },
+] as const;
+
+const UNKNOWN_SOURCE_CAPABILITY_OBSERVATIONS: SourceObservation[] = PRODUCTION_ACCOUNTS.map(
+  (account, index) => ({
+    kind: index < 4 ? 'account_freshness' : 'account_type',
+    scope: { kind: 'account', id: account.id },
+    state: 'unavailable',
+    observedAt: null,
+    evidence: [
+      {
+        evidenceId: account.id,
+        kind: 'account',
+        authorized: true,
+        redaction: 'visible',
+      },
+    ],
+  }),
+);
+
 function financialSnapshot(contentHash = REVISION_ONE): FinancialSnapshot {
   return {
     contractVersion: '1.0',
@@ -133,7 +160,150 @@ function financialSnapshot(contentHash = REVISION_ONE): FinancialSnapshot {
   };
 }
 
-function nativeShim(): NativeBindingShim {
+function productionShapeSnapshot(): FinancialSnapshot {
+  const transactions = Array.from({ length: 101 }, (_, index) => {
+    const ordinal = index + 1;
+    const isUncategorized = ordinal <= 51;
+    return {
+      id: `transaction-${ordinal}`,
+      accountId: 'account-checking',
+      date: '2026-08-23',
+      payeeId: null,
+      payeeName: ordinal === 99 || ordinal === 101 ? 'Duplicate Merchant' : `Merchant ${ordinal}`,
+      categoryId: isUncategorized ? null : 'category-groceries',
+      categoryName: isUncategorized ? null : 'Groceries',
+      amount: { minorUnits: '-1000', currency: 'USD' },
+      cleared: true,
+      reconciled: ordinal !== 51,
+      importedId: ordinal === 99 || ordinal === 101 ? `import-${ordinal}` : null,
+      importedPayee: null,
+      notes: null,
+      tags: [],
+      transferAccountId: ordinal === 100 ? 'account-card' : null,
+      subtransactions: [],
+    };
+  });
+  const outageObservation: SourceObservation = {
+    kind: 'account_balance',
+    scope: { kind: 'account', id: 'account-savings' },
+    state: 'unavailable',
+    observedAt: null,
+    evidence: [
+      {
+        evidenceId: 'connector-error-savings',
+        kind: 'connector_error',
+        authorized: true,
+        redaction: 'visible',
+      },
+    ],
+  };
+  const ordinaryUnclearedActivity: SourceObservation = {
+    kind: 'uncleared_activity',
+    scope: { kind: 'account', id: 'account-checking' },
+    state: 'included',
+    observedAt: CAPTURED_AT,
+    evidence: [
+      {
+        evidenceId: 'transaction-51',
+        kind: 'transaction',
+        authorized: true,
+        redaction: 'visible',
+      },
+    ],
+  };
+  const trueTransferAndDuplicateAlerts: SourceObservation[] = [
+    {
+      kind: 'transfer_ambiguity',
+      scope: { kind: 'transaction', id: 'transaction-100' },
+      state: 'ambiguous',
+      observedAt: CAPTURED_AT,
+      evidence: [
+        {
+          evidenceId: 'transaction-100',
+          kind: 'transaction',
+          authorized: true,
+          redaction: 'visible',
+        },
+      ],
+    },
+    {
+      kind: 'duplicate_candidate',
+      scope: { kind: 'transaction', id: 'transaction-101' },
+      state: 'present',
+      observedAt: CAPTURED_AT,
+      evidence: [
+        {
+          evidenceId: 'transaction-101',
+          kind: 'transaction',
+          authorized: true,
+          redaction: 'visible',
+        },
+        {
+          evidenceId: 'transaction-99',
+          kind: 'transaction',
+          authorized: true,
+          redaction: 'visible',
+        },
+      ],
+    },
+  ];
+
+  return {
+    ...financialSnapshot(),
+    legacySnapshot: {
+      ...LEGACY_SNAPSHOT,
+      accounts: [
+        ...PRODUCTION_ACCOUNTS.map((account) => ({
+          ...account,
+          offBudget: false,
+          isClosed: false,
+          clearedBalance: { minorUnits: '100000', currency: 'USD' },
+          importedBalance: { minorUnits: '100000', currency: 'USD' },
+          mtid: null,
+        })),
+        {
+          id: 'account-savings',
+          name: 'Emergency Savings',
+          accountType: 'savings',
+          offBudget: false,
+          isClosed: false,
+          clearedBalance: { minorUnits: '250000', currency: 'USD' },
+          importedBalance: { minorUnits: '250000', currency: 'USD' },
+          mtid: null,
+        },
+      ],
+      transactions,
+      categories: [
+        {
+          id: 'category-groceries',
+          name: 'Groceries',
+          groupName: 'Everyday Spending',
+          isIncome: false,
+          mtid: null,
+          deleted: false,
+        },
+      ],
+    },
+    coverage: {
+      accounts: 'complete',
+      transactions: 'complete',
+      categories: 'complete',
+      payees: 'empty',
+      rules: 'empty',
+      schedules: 'empty',
+      budgets: 'empty',
+      tags: 'empty',
+    },
+    observations: [
+      ...UNKNOWN_SOURCE_CAPABILITY_OBSERVATIONS,
+      ordinaryUnclearedActivity,
+      outageObservation,
+      ...trueTransferAndDuplicateAlerts,
+    ],
+  };
+}
+
+function nativeShim(overrides: Partial<NativeBindingShim> = {}): NativeBindingShim {
   return {
     evaluateTargetHealth: vi.fn(() =>
       JSON.stringify({
@@ -156,11 +326,12 @@ function nativeShim(): NativeBindingShim {
         freshness: null,
       }),
     ),
+    ...overrides,
   } as unknown as NativeBindingShim;
 }
 
 function ledgerWithFinancialSnapshot(snapshot = financialSnapshot()) {
-  const synchronization = { snapshot: LEGACY_SNAPSHOT, financialSnapshot: snapshot };
+  const synchronization = { snapshot: snapshot.legacySnapshot, financialSnapshot: snapshot };
   return {
     getLatestSynchronization: vi.fn(() => synchronization),
     synchronize: vi.fn(async () => synchronization),
@@ -252,11 +423,11 @@ describe('canonical financial observations on the existing attention home result
     expect([...byClassification.keys()]).toEqual(
       expect.arrayContaining([
         'account_readiness_blocker',
-        'transfer_needs_attention',
         'evidence_connector_degradation',
         'unresolved_material_evidence',
       ]),
     );
+    expect([...byClassification.keys()]).not.toContain('transfer_needs_attention');
 
     expect(byClassification.get('account_readiness_blocker')).toEqual(
       expect.objectContaining({
@@ -277,17 +448,26 @@ describe('canonical financial observations on the existing attention home result
         },
       }),
     );
-    expect(byClassification.get('transfer_needs_attention')).toEqual(
+    expect(
+      result.alerts.filter(({ classification }) => classification === 'transfer_needs_attention'),
+    ).toEqual([
       expect.objectContaining({
+        code: 'duplicate_transfer_ambiguity',
+        message: 'A possible duplicate or incomplete transfer needs review.',
+        severity: 'warning',
+        scopeLabel: 'Transfers',
+        occurrenceCount: 1,
         snapshotId: SNAPSHOT_ID,
         revision: REVISION_ONE,
         issue: expect.objectContaining({
           code: 'duplicate_transfer_ambiguity',
-          scope: { kind: 'transaction', id: 'transfer-one-sided' },
-          evidence: OBSERVATIONS[2].evidence,
+          effect: 'qualifies',
+          scope: { kind: 'global' },
+          evidence: [],
+          redaction: 'redacted',
         }),
       }),
-    );
+    ]);
     expect(byClassification.get('evidence_connector_degradation')).toEqual(
       expect.objectContaining({
         issue: expect.objectContaining({
@@ -297,6 +477,491 @@ describe('canonical financial observations on the existing attention home result
         }),
       }),
     );
+  });
+
+  it('keeps production-shaped source capability gaps quiet while preserving material attention', async () => {
+    const protocol = await createNativeAnalysisProtocol(async () =>
+      nativeShim({
+        evaluateTargetHealth: vi.fn(() =>
+          JSON.stringify({
+            categories: [
+              {
+                categoryId: 'category-groceries',
+                categoryName: 'category-groceries',
+                budgeted: { minorUnits: '50000', currency: 'USD' },
+                spent: { minorUnits: '55000', currency: 'USD' },
+                remaining: { minorUnits: '-5000', currency: 'USD' },
+                healthLabel: 'overspent',
+                isSinkingFund: false,
+                targetAmount: null,
+                targetProgress: null,
+              },
+            ],
+            overallLabel: 'at_risk',
+            healthyCount: 0,
+            atRiskCount: 1,
+            sinkingFundCount: 0,
+          }),
+        ),
+      }),
+    );
+    const snapshot = productionShapeSnapshot();
+    expect(snapshot.legacySnapshot.transactions).toHaveLength(101);
+    expect(UNKNOWN_SOURCE_CAPABILITY_OBSERVATIONS).toHaveLength(7);
+    const result = await protocol.attentionHome!(ledgerWithFinancialSnapshot(snapshot), {});
+    const unknownCapabilityScopes = new Set(
+      UNKNOWN_SOURCE_CAPABILITY_OBSERVATIONS.map(({ scope }) => ('id' in scope ? scope.id : '')),
+    );
+    const noisyUnknownCapabilityBlockers = result.blockers.filter(
+      ({ classification, entityId }) =>
+        entityId !== undefined &&
+        unknownCapabilityScopes.has(entityId) &&
+        (classification === 'evidence_connector_degradation' ||
+          classification === 'unresolved_material_evidence'),
+    );
+
+    expect(noisyUnknownCapabilityBlockers).toHaveLength(0);
+    expect(result.blockers).toHaveLength(2);
+    expect(result.blockers.filter(({ code }) => code === 'uncategorized_transactions')).toEqual([
+      expect.objectContaining({
+        message: '51 transaction(s) lack categories',
+      }),
+    ]);
+    expect(
+      result.blockers.filter(({ classification }) => classification === 'transfer_needs_attention'),
+    ).toHaveLength(0);
+    const trueTransferAlerts = result.alerts.filter(
+      ({ classification }) => classification === 'transfer_needs_attention',
+    );
+    expect(trueTransferAlerts).toEqual([
+      expect.objectContaining({
+        code: 'duplicate_transfer_ambiguity',
+        message: '2 possible duplicate or incomplete transfers need review',
+        severity: 'warning',
+        scopeLabel: 'Transfers',
+        occurrenceCount: 2,
+        issue: expect.objectContaining({
+          effect: 'qualifies',
+          scope: { kind: 'global' },
+          evidence: snapshot.observations
+            .filter(({ kind }) => kind === 'transfer_ambiguity' || kind === 'duplicate_candidate')
+            .flatMap(({ evidence }) => evidence),
+        }),
+      }),
+    ]);
+
+    const scopedOutage = result.blockers.find(({ entityId }) => entityId === 'account-savings');
+    expect(scopedOutage).toEqual(
+      expect.objectContaining({
+        classification: 'evidence_connector_degradation',
+        scopeLabel: 'Emergency Savings',
+        entityId: 'account-savings',
+        issue: expect.objectContaining({
+          scope: { kind: 'account', id: 'account-savings' },
+        }),
+      }),
+    );
+    expect(result.alerts).toContainEqual(
+      expect.objectContaining({
+        code: 'category_overspent',
+        scopeLabel: 'Groceries',
+        categoryId: 'category-groceries',
+      }),
+    );
+  });
+
+  it('counts only actionable on-budget purchases while preserving transfer attention', async () => {
+    const base = productionShapeSnapshot();
+    const checkingAccount = base.legacySnapshot.accounts[0];
+    const transaction = base.legacySnapshot.transactions[0];
+    const focusedSnapshot: FinancialSnapshot = {
+      ...base,
+      legacySnapshot: {
+        ...base.legacySnapshot,
+        accounts: [
+          checkingAccount,
+          {
+            ...checkingAccount,
+            id: 'account-off-budget',
+            name: 'Off-budget Account',
+            offBudget: true,
+          },
+        ],
+        transactions: [
+          {
+            ...transaction,
+            id: 'purchase-on-budget',
+            payeeName: 'Actionable Purchase',
+            categoryId: null,
+            categoryName: null,
+            cleared: true,
+            reconciled: true,
+            transferAccountId: null,
+          },
+          {
+            ...transaction,
+            id: 'purchase-off-budget',
+            accountId: 'account-off-budget',
+            payeeName: 'Off-budget Purchase',
+            categoryId: null,
+            categoryName: null,
+            cleared: true,
+            reconciled: true,
+            transferAccountId: null,
+          },
+          {
+            ...transaction,
+            id: 'transfer-between-accounts',
+            payeeName: 'Transfer to Card',
+            categoryId: null,
+            categoryName: null,
+            cleared: true,
+            reconciled: true,
+            transferAccountId: 'account-card',
+          },
+          {
+            ...transaction,
+            id: 'categorized-purchase',
+            payeeName: 'Categorized Purchase',
+            categoryId: 'category-groceries',
+            categoryName: 'Groceries',
+            cleared: true,
+            reconciled: true,
+            transferAccountId: null,
+          },
+          {
+            ...transaction,
+            id: 'pending-on-budget',
+            payeeName: 'Pending Actionable Purchase',
+            categoryId: null,
+            categoryName: null,
+            cleared: false,
+            reconciled: false,
+            transferAccountId: null,
+          },
+        ],
+      },
+      observations: [
+        {
+          kind: 'transfer_ambiguity',
+          scope: { kind: 'transaction', id: 'transfer-between-accounts' },
+          state: 'ambiguous',
+          observedAt: CAPTURED_AT,
+          evidence: [
+            {
+              evidenceId: 'transfer-between-accounts',
+              kind: 'transaction',
+              authorized: true,
+              redaction: 'visible',
+            },
+          ],
+        },
+      ],
+    };
+    const protocol = await createNativeAnalysisProtocol(async () => nativeShim());
+    const result = await protocol.attentionHome!(ledgerWithFinancialSnapshot(focusedSnapshot), {});
+
+    expect(result.blockers.filter(({ code }) => code === 'uncategorized_transactions')).toEqual([
+      {
+        code: 'uncategorized_transactions',
+        message: '2 transaction(s) lack categories',
+        severity: 'warning',
+        entityType: 'transaction',
+      },
+    ]);
+    expect(
+      result.blockers.filter(({ classification }) => classification === 'transfer_needs_attention'),
+    ).toHaveLength(0);
+    expect(
+      result.alerts.filter(({ classification }) => classification === 'transfer_needs_attention'),
+    ).toEqual([
+      expect.objectContaining({
+        message: 'A possible duplicate or incomplete transfer needs review.',
+        severity: 'warning',
+        scopeLabel: 'Transfers',
+        occurrenceCount: 1,
+        issue: expect.objectContaining({
+          effect: 'qualifies',
+          scope: { kind: 'global' },
+          evidence: focusedSnapshot.observations[0].evidence,
+          redaction: 'visible',
+        }),
+      }),
+    ]);
+  });
+
+  it('groups transfer and duplicate observations into one bounded qualifying alert', async () => {
+    const observations = Array.from(
+      { length: 5 },
+      (_, observationIndex) =>
+        ({
+          kind: observationIndex === 4 ? 'duplicate_candidate' : 'transfer_ambiguity',
+          scope: { kind: 'transaction', id: `transfer-${observationIndex + 1}` },
+          state: observationIndex === 4 ? 'present' : 'ambiguous',
+          observedAt: CAPTURED_AT,
+          evidence: Array.from({ length: 3 }, (_, evidenceIndex) => ({
+            evidenceId: `transfer-${observationIndex + 1}-evidence-${evidenceIndex + 1}`,
+            kind: 'transaction',
+            authorized: observationIndex !== 0 || evidenceIndex !== 0,
+            redaction: observationIndex === 0 && evidenceIndex === 0 ? 'redacted' : 'visible',
+          })),
+        }) satisfies SourceObservation,
+    );
+    const snapshot: FinancialSnapshot = {
+      ...productionShapeSnapshot(),
+      observations,
+    };
+    const combinedEvidence = observations
+      .flatMap(({ evidence }) => evidence)
+      .filter(({ authorized, redaction }) => authorized && redaction === 'visible')
+      .slice(0, 10);
+    const protocol = await createNativeAnalysisProtocol(async () => nativeShim());
+    const result = await protocol.attentionHome!(ledgerWithFinancialSnapshot(snapshot), {});
+
+    expect(
+      result.blockers.filter(({ classification }) => classification === 'transfer_needs_attention'),
+    ).toHaveLength(0);
+    expect(
+      result.blockers.filter(({ code }) => code === 'uncategorized_transactions'),
+    ).toHaveLength(1);
+    expect(
+      result.alerts.filter(({ classification }) => classification === 'transfer_needs_attention'),
+    ).toEqual([
+      expect.objectContaining({
+        code: 'duplicate_transfer_ambiguity',
+        message: '5 possible duplicate or incomplete transfers need review',
+        severity: 'warning',
+        scopeLabel: 'Transfers',
+        occurrenceCount: 5,
+        issue: expect.objectContaining({
+          code: 'duplicate_transfer_ambiguity',
+          severity: 'warning',
+          effect: 'qualifies',
+          scope: { kind: 'global' },
+          evidence: combinedEvidence,
+          redaction: 'redacted',
+        }),
+      }),
+    ]);
+    expect(combinedEvidence).toHaveLength(10);
+  });
+
+  it('reports the representative actionable backlog as 31 instead of raw null-category totals', async () => {
+    const base = productionShapeSnapshot();
+    const checkingAccount = base.legacySnapshot.accounts[0];
+    const transactions = base.legacySnapshot.transactions.map((transaction, index) => {
+      const ordinal = index + 1;
+      if (ordinal >= 32 && ordinal <= 51) {
+        return { ...transaction, accountId: 'account-off-budget' };
+      }
+      if (ordinal >= 52 && ordinal <= 54) {
+        return {
+          ...transaction,
+          categoryId: null,
+          categoryName: null,
+          transferAccountId: 'account-card',
+        };
+      }
+      return transaction;
+    });
+    const representativeSnapshot: FinancialSnapshot = {
+      ...base,
+      legacySnapshot: {
+        ...base.legacySnapshot,
+        accounts: [
+          ...base.legacySnapshot.accounts,
+          {
+            ...checkingAccount,
+            id: 'account-off-budget',
+            name: 'Off-budget Account',
+            offBudget: true,
+          },
+        ],
+        transactions,
+      },
+    };
+    const nullCategoryTransactions = transactions.filter(({ categoryId }) => categoryId === null);
+    const nonTransferNullCategoryTransactions = nullCategoryTransactions.filter(
+      ({ transferAccountId }) => transferAccountId === null,
+    );
+    const protocol = await createNativeAnalysisProtocol(async () => nativeShim());
+    const result = await protocol.attentionHome!(
+      ledgerWithFinancialSnapshot(representativeSnapshot),
+      {},
+    );
+
+    expect(transactions).toHaveLength(101);
+    expect(nullCategoryTransactions).toHaveLength(54);
+    expect(nonTransferNullCategoryTransactions).toHaveLength(51);
+    expect(result.blockers.filter(({ code }) => code === 'uncategorized_transactions')).toEqual([
+      expect.objectContaining({
+        message: '31 transaction(s) lack categories',
+      }),
+    ]);
+  });
+
+  it('derives recurrences only from ordinary same-account purchases', async () => {
+    const base = productionShapeSnapshot();
+    const template = base.legacySnapshot.transactions[0];
+    const recurrenceTransaction = (
+      id: string,
+      accountId: string,
+      payeeId: string,
+      payeeName: string,
+      date: string,
+      minorUnits: string,
+      transferAccountId: string | null = null,
+    ) => ({
+      ...template,
+      id,
+      accountId,
+      payeeId,
+      payeeName,
+      date,
+      amount: { minorUnits, currency: 'USD' },
+      categoryId: 'category-groceries',
+      categoryName: 'Groceries',
+      transferAccountId,
+    });
+    const snapshot: FinancialSnapshot = {
+      ...base,
+      legacySnapshot: {
+        ...base.legacySnapshot,
+        transactions: [
+          recurrenceTransaction(
+            'starting-balance-1',
+            'account-checking',
+            'payee-starting-balance',
+            '  Starting Balance  ',
+            '2026-08-01',
+            '100000',
+          ),
+          recurrenceTransaction(
+            'starting-balance-2',
+            'account-checking',
+            'payee-starting-balance',
+            'starting balance',
+            '2026-08-02',
+            '200000',
+          ),
+          recurrenceTransaction(
+            'starting-balance-3',
+            'account-checking',
+            'payee-starting-balance',
+            ' STARTING   BALANCE ',
+            '2026-08-03',
+            '300000',
+          ),
+          ...Array.from({ length: 3 }, (_, index) =>
+            recurrenceTransaction(
+              `transfer-${index + 1}`,
+              'account-checking',
+              'payee-transfer',
+              'Transfer to Card',
+              `2026-08-${String(index + 4).padStart(2, '0')}`,
+              '-2500',
+              'account-card',
+            ),
+          ),
+          recurrenceTransaction(
+            'coffee-1',
+            'account-checking',
+            'payee-coffee',
+            'Coffee Club',
+            '2026-08-08',
+            '-1100',
+          ),
+          recurrenceTransaction(
+            'coffee-2',
+            'account-checking',
+            'payee-coffee',
+            'Coffee Club',
+            '2026-08-14',
+            '-1200',
+          ),
+          recurrenceTransaction(
+            'coffee-3',
+            'account-checking',
+            'payee-coffee',
+            'Coffee Club',
+            '2026-08-20',
+            '-1300',
+          ),
+          recurrenceTransaction(
+            'shared-payee-checking-1',
+            'account-checking',
+            'payee-shared',
+            'Shared Merchant',
+            '2026-08-09',
+            '-1000',
+          ),
+          recurrenceTransaction(
+            'shared-payee-checking-2',
+            'account-checking',
+            'payee-shared',
+            'Shared Merchant',
+            '2026-08-16',
+            '-1000',
+          ),
+          recurrenceTransaction(
+            'shared-payee-card-1',
+            'account-card',
+            'payee-shared',
+            'Shared Merchant',
+            '2026-08-10',
+            '-1000',
+          ),
+          recurrenceTransaction(
+            'shared-payee-card-2',
+            'account-card',
+            'payee-shared',
+            'Shared Merchant',
+            '2026-08-17',
+            '-1000',
+          ),
+        ],
+        payees: [
+          {
+            id: 'payee-starting-balance',
+            name: 'Starting Balance',
+            transferAccountId: null,
+            mtid: null,
+          },
+          {
+            id: 'payee-transfer',
+            name: 'Transfer to Card',
+            transferAccountId: 'account-card',
+            mtid: null,
+          },
+          {
+            id: 'payee-coffee',
+            name: 'Coffee Club',
+            transferAccountId: null,
+            mtid: null,
+          },
+          {
+            id: 'payee-shared',
+            name: 'Shared Merchant',
+            transferAccountId: null,
+            mtid: null,
+          },
+        ],
+      },
+      observations: [],
+    };
+    const protocol = await createNativeAnalysisProtocol(async () => nativeShim());
+    const result = await protocol.attentionHome!(ledgerWithFinancialSnapshot(snapshot), {});
+
+    expect(result.recurrences).toEqual([
+      {
+        payeeName: 'Coffee Club',
+        amount: { minorUnits: '-1300', currency: 'USD' },
+        frequency: 'irregular',
+        occurrences: 3,
+        lastOccurrence: '2026-08-20',
+        isEstimated: false,
+      },
+    ]);
   });
 
   it('deduplicates repeat observations but emits a new identity for a changed revision', async () => {

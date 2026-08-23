@@ -189,7 +189,7 @@ describe('createNativeAnalysisProtocol — canonical prospective purchase decisi
       validUntil: '2026-09-22T12:00:00Z',
       redaction: 'visible',
     });
-    expect(result).toEqual(decisionResult(fixture.decisions.blocked));
+    expect(result).toMatchObject(decisionResult(fixture.decisions.blocked));
     expect(result.decision).toEqual(fixture.decisions.blocked);
   });
 
@@ -338,7 +338,7 @@ describe('createNativeAnalysisProtocol — canonical prospective purchase decisi
       },
     });
 
-    expect(result).toEqual(decisionResult(fixture.decisions.blocked));
+    expect(result).toMatchObject(decisionResult(fixture.decisions.blocked));
     expect(result.decision).toEqual(fixture.decisions.blocked);
     expect(result.decision?.issues.map(({ code }) => code)).toContain('fd_future_safety_code');
     expect(result.reasonCodes).toContain('fd_future_reason_code');
@@ -360,7 +360,7 @@ describe('createNativeAnalysisProtocol — canonical prospective purchase decisi
 
     const result = await protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS);
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ...withoutEnvelope.payload,
       hasEnvelope: false,
       decision: withoutEnvelope,
@@ -384,6 +384,103 @@ describe('createNativeAnalysisProtocol — canonical prospective purchase decisi
       redaction: withoutEnvelope.redaction,
       payload: withoutEnvelope.payload,
     });
+  });
+
+  it('adds an explicit verdict, explanation, funding state, and snapshot entity labels to canonical results', async () => {
+    const financialSnapshot = structuredClone(fixture.full);
+    const fixtureTransaction = financialSnapshot.legacySnapshot.transactions.find(
+      ({ id }) => id === 'fd-transaction-existing',
+    );
+    if (!fixtureTransaction) throw new Error('fixture transaction must exist');
+    financialSnapshot.legacySnapshot.transactions.push({
+      ...structuredClone(fixtureTransaction),
+      id: 'fd-transaction-without-payee',
+      payeeName: null,
+    });
+    const shim = nativeShim({
+      evaluateProspectivePurchase: () => JSON.stringify(fixture.decisions.blocked),
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = {
+      synchronize: vi.fn(async () => ({
+        snapshot: financialSnapshot.legacySnapshot,
+        financialSnapshot,
+      })),
+    };
+
+    const result = await protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS);
+
+    expect(result).toMatchObject({
+      verdict: 'insufficient_data',
+      explanation: expect.stringMatching(/\S/),
+      envelopeFundingState: 'funded',
+      entityLabels: {
+        'fd-category-groceries': 'Groceries',
+        'fd-account-checking': 'Household Checking',
+        'fd-transaction-pending': 'Fixture Grocer · 2026-08-23',
+        'fd-transaction-existing': 'Fixture Grocer · 2026-08-23',
+        'fd-transfer-one-sided': 'Card Transfer · 2026-08-23',
+        'fd-transaction-without-payee': 'Transaction · 2026-08-23',
+      },
+    });
+  });
+
+  it('distinguishes funded, unfunded, and unavailable envelopes without exposing incompatible money', async () => {
+    const unfunded = structuredClone(fixture.decisions.ready);
+    unfunded.before.amounts = unfunded.before.amounts.map((amount) => ({
+      ...amount,
+      amount: { ...amount.amount, minorUnits: '0' },
+    }));
+    unfunded.after.amounts = unfunded.after.amounts.map((amount) => ({
+      ...amount,
+      amount: { ...amount.amount, minorUnits: '0' },
+    }));
+    unfunded.payload.categoryBudget = { minorUnits: '0', currency: 'USD' };
+    unfunded.payload.categorySpent = { minorUnits: '0', currency: 'USD' };
+    unfunded.payload.categoryRemaining = { minorUnits: '0', currency: 'USD' };
+
+    const unavailable = structuredClone(fixture.decisions.blocked);
+    unavailable.before.amounts = [];
+    unavailable.after.amounts = [];
+    unavailable.issues = [
+      {
+        code: 'currency_mismatch',
+        severity: 'critical',
+        effect: 'blocks',
+        scope: { kind: 'category', id: 'fd-category-groceries' },
+        evidence: [],
+        remediation: {
+          code: 'use_compatible_currency',
+          action: 'Use an account and category with the purchase currency.',
+        },
+        redaction: 'visible',
+      },
+    ];
+
+    for (const [decision, envelopeFundingState] of [
+      [fixture.decisions.ready, 'funded'],
+      [unfunded, 'unfunded'],
+      [unavailable, 'unavailable'],
+    ] as const) {
+      const shim = nativeShim({
+        evaluateProspectivePurchase: () => JSON.stringify(decision),
+      });
+      const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+      const { ledger } = canonicalLedger();
+
+      const result = await protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS);
+
+      expect(result).toMatchObject({ envelopeFundingState });
+      if (envelopeFundingState === 'unavailable') {
+        expect(result).toMatchObject({
+          verdict: 'insufficient_data',
+          categoryBudget: null,
+          categorySpent: null,
+          categoryRemaining: null,
+          projectedBalance: null,
+        });
+      }
+    }
   });
 
   it.each(['categoryBudget', 'categorySpent', 'categoryRemaining'] as const)(

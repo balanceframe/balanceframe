@@ -72,6 +72,9 @@ type CanonicalFinancialSnapshot = {
 };
 
 type Synchronization = LedgerSnapshotResult;
+type BalanceAwareActualClient = ActualClient & {
+  getAccountBalance(accountId: string): Promise<number>;
+};
 
 function account(
   id: string,
@@ -115,7 +118,9 @@ function schedule(
   } as APIScheduleEntity;
 }
 
-function createActualClient(overrides: Partial<ActualClient> = {}): ActualClient {
+function createActualClient(
+  overrides: Partial<BalanceAwareActualClient> = {},
+): BalanceAwareActualClient {
   return {
     init: vi.fn().mockResolvedValue({
       send: vi.fn(),
@@ -131,6 +136,7 @@ function createActualClient(overrides: Partial<ActualClient> = {}): ActualClient
     sync: vi.fn().mockResolvedValue(undefined),
     getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
     getAccounts: vi.fn().mockResolvedValue([]),
+    getAccountBalance: vi.fn().mockResolvedValue(0),
     getTransactions: vi.fn().mockResolvedValue([]),
     getPayees: vi.fn().mockResolvedValue([]),
     getCategories: vi.fn().mockResolvedValue([]),
@@ -399,9 +405,102 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
     expect(canonical.legacySnapshot).toEqual(result.snapshot);
   });
 
+  it('uses the computed ledger balance when the account list omits its current balance', async () => {
+    const getAccountBalance = vi.fn().mockResolvedValue(125_000);
+    const client = createActualClient({
+      getAccounts: vi.fn().mockResolvedValue([
+        {
+          ...account('account-checking', 'Checking', null),
+          type: 'checking',
+        } as APIAccountEntity,
+      ]),
+      getAccountBalance,
+    });
+
+    const result = await synchronize(client);
+    const canonical = financialSnapshot(result);
+
+    expect(getAccountBalance).toHaveBeenCalledOnce();
+    expect(getAccountBalance).toHaveBeenCalledWith('account-checking');
+    expect(result.snapshot.accounts).toEqual([
+      expect.objectContaining({
+        id: 'account-checking',
+        clearedBalance: { minorUnits: '125000', currency: 'USD' },
+        importedBalance: { minorUnits: '125000', currency: 'USD' },
+      }),
+    ]);
+    expect(canonical.coverage.accounts).toBe('complete');
+    for (const kind of ['account_coverage', 'account_balance']) {
+      expect(observations(canonical, kind)).toEqual([
+        expect.objectContaining({
+          scope: { kind: 'account', id: 'account-checking' },
+          state: 'complete',
+          observedAt: CAPTURED_AT,
+        }),
+      ]);
+    }
+  });
+
+  it('isolates computed balance failures to the affected account', async () => {
+    const getAccountBalance = vi.fn(async (accountId: string) => {
+      if (accountId === 'account-readable') return 80_000;
+      throw new Error('computed balance unavailable');
+    });
+    const client = createActualClient({
+      getAccounts: vi.fn().mockResolvedValue([
+        {
+          ...account('account-readable', 'Readable', null),
+          type: 'checking',
+        } as APIAccountEntity,
+        {
+          ...account('account-unavailable', 'Unavailable', null),
+          type: 'checking',
+        } as APIAccountEntity,
+      ]),
+      getAccountBalance,
+    });
+
+    const result = await synchronize(client);
+    const canonical = financialSnapshot(result);
+
+    expect(getAccountBalance).toHaveBeenCalledTimes(2);
+    expect(getAccountBalance).toHaveBeenCalledWith('account-readable');
+    expect(getAccountBalance).toHaveBeenCalledWith('account-unavailable');
+    expect(result.snapshot.accounts).toEqual([
+      expect.objectContaining({
+        id: 'account-readable',
+        clearedBalance: { minorUnits: '80000', currency: 'USD' },
+        importedBalance: { minorUnits: '80000', currency: 'USD' },
+      }),
+      expect.objectContaining({ id: 'account-unavailable' }),
+    ]);
+    expect(canonical.coverage.accounts).toBe('partial');
+    for (const kind of ['account_coverage', 'account_balance']) {
+      expect(
+        observations(canonical, kind).map(({ scope, state, observedAt }) => ({
+          scope,
+          state,
+          observedAt,
+        })),
+      ).toEqual([
+        {
+          scope: { kind: 'account', id: 'account-readable' },
+          state: 'complete',
+          observedAt: CAPTURED_AT,
+        },
+        {
+          scope: { kind: 'account', id: 'account-unavailable' },
+          state: 'unavailable',
+          observedAt: null,
+        },
+      ]);
+    }
+  });
+
   it('returns an unknown snapshot and health when account reads keep failing', async () => {
     const getAccounts = vi.fn().mockRejectedValue(new Error('accounts unavailable'));
-    const client = createActualClient({ getAccounts });
+    const getAccountBalance = vi.fn().mockResolvedValue(125_000);
+    const client = createActualClient({ getAccounts, getAccountBalance });
 
     const result = await synchronize(client);
     const canonical = financialSnapshot(result);
@@ -417,9 +516,10 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
       allExpectedAccountsPresent: false,
     });
     expect(getAccounts).toHaveBeenCalledTimes(1);
+    expect(getAccountBalance).not.toHaveBeenCalled();
   });
 
-  it('qualifies every account with explicit freshness, collection coverage, and visible source evidence', async () => {
+  it('marks freshness and type unknown when successful account reads lack source metadata', async () => {
     const client = createActualClient({
       getAccounts: vi
         .fn()
@@ -431,6 +531,7 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
 
     const canonical = financialSnapshot(await synchronize(client));
     const freshness = observations(canonical, 'account_freshness');
+    const accountTypes = observations(canonical, 'account_type');
     const accountCoverage = observations(canonical, 'account_coverage');
 
     expect(canonical.coverage.accounts).toBe('partial');
@@ -440,14 +541,18 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
       { kind: 'account', id: 'account-savings' },
     ]);
     expect(freshness.map(({ state, observedAt }) => ({ state, observedAt }))).toEqual([
-      { state: 'unavailable', observedAt: null },
-      { state: 'unavailable', observedAt: null },
+      { state: 'unknown', observedAt: null },
+      { state: 'unknown', observedAt: null },
+    ]);
+    expect(accountTypes.map(({ state, observedAt }) => ({ state, observedAt }))).toEqual([
+      { state: 'unknown', observedAt: null },
+      { state: 'unknown', observedAt: null },
     ]);
     expect(accountCoverage.map(({ scope, state }) => ({ scope, state }))).toEqual([
       { scope: { kind: 'account', id: 'account-checking' }, state: 'complete' },
       { scope: { kind: 'account', id: 'account-savings' }, state: 'complete' },
     ]);
-    for (const observation of [...freshness, ...accountCoverage]) {
+    for (const observation of [...freshness, ...accountTypes, ...accountCoverage]) {
       expect(observation.evidence).toEqual([
         {
           evidenceId: observation.scope.id,
@@ -459,7 +564,7 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
     }
   });
 
-  it('records the inclusion policy for pending and uncleared activity without conflating reconciliation', async () => {
+  it('records pending and uncleared activity without treating unreconciled transactions as ambiguous', async () => {
     const client = createActualClient({
       getAccounts: vi.fn().mockResolvedValue([account('account-checking', 'Checking', 125_000)]),
       getTransactions: vi.fn().mockResolvedValue([
@@ -525,15 +630,10 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
         ],
       }),
     ]);
-    expect(observations(canonical, 'reconciliation')).toEqual([
-      expect.objectContaining({
-        scope: { kind: 'account', id: 'account-checking' },
-        state: 'unreconciled',
-      }),
-    ]);
+    expect(observations(canonical, 'reconciliation')).toEqual([]);
   });
 
-  it('records complete schedule coverage while keeping unknown card-obligation coverage unavailable', async () => {
+  it('records complete schedule coverage without inferring card obligations from unknown account types', async () => {
     const client = createActualClient({
       getAccounts: vi
         .fn()
@@ -571,25 +671,10 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
         ],
       },
     ]);
-    expect(
-      observations(canonical, 'credit_card_obligation_coverage').map(
-        ({ scope, state, observedAt }) => ({ scope, state, observedAt }),
-      ),
-    ).toEqual([
-      {
-        scope: { kind: 'account', id: 'account-checking' },
-        state: 'unavailable',
-        observedAt: null,
-      },
-      {
-        scope: { kind: 'account', id: 'account-card' },
-        state: 'unavailable',
-        observedAt: null,
-      },
-    ]);
+    expect(observations(canonical, 'credit_card_obligation_coverage')).toEqual([]);
   });
 
-  it('emits duplicate, one-sided transfer, reconciliation, and currency observations', async () => {
+  it('emits duplicate, one-sided transfer, and currency observations without reconciliation noise', async () => {
     const payees: APIPayeeEntity[] = [
       { id: 'payee-shop', name: 'Fixture Shop', transfer_acct: undefined },
       { id: 'payee-transfer', name: 'Transfer to Card', transfer_acct: 'account-card' },
@@ -656,12 +741,7 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
         state: 'ambiguous',
       }),
     ]);
-    expect(observations(canonical, 'reconciliation')).toEqual([
-      expect.objectContaining({
-        scope: { kind: 'account', id: 'account-checking' },
-        state: 'unreconciled',
-      }),
-    ]);
+    expect(observations(canonical, 'reconciliation')).toEqual([]);
     expect(observations(canonical, 'currency_compatibility')).toEqual([
       expect.objectContaining({
         scope: { kind: 'global' },
@@ -671,11 +751,12 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
     ]);
   });
 
-  it('marks missing account type, balance, and schedule facts unavailable instead of trusting legacy defaults', async () => {
+  it('marks missing account type unknown while keeping missing balance and schedule facts unavailable', async () => {
     const client = createActualClient({
       getAccounts: vi
         .fn()
         .mockResolvedValue([account('account-incomplete', 'Incomplete Account', null)]),
+      getAccountBalance: vi.fn().mockRejectedValue(new Error('computed balance unavailable')),
       getSchedules: vi
         .fn()
         .mockResolvedValue([schedule({ id: 'schedule-incomplete', name: 'Incomplete Schedule' })]),
@@ -689,10 +770,11 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
     expect(observations(canonical, 'account_type')).toEqual([
       expect.objectContaining({
         scope: { kind: 'account', id: 'account-incomplete' },
-        state: 'unavailable',
+        state: 'unknown',
         observedAt: null,
       }),
     ]);
+    expect(observations(canonical, 'credit_card_obligation_coverage')).toEqual([]);
     expect(observations(canonical, 'account_balance')).toEqual([
       expect.objectContaining({
         scope: { kind: 'account', id: 'account-incomplete' },

@@ -1,4 +1,4 @@
-import type { CoverageState } from '../src/index.js';
+import type { CoverageState, ObservationState } from '../src/index.js';
 import { describe, expect, it } from 'vitest';
 import {
   decisionContextSchema,
@@ -18,6 +18,7 @@ import {
 
 const UTC_NOW = '2026-08-23T12:34:56Z';
 const UTC_LATER = '2026-09-22T12:34:56Z';
+const UNKNOWN_OBSERVATION_STATE = 'unknown' satisfies ObservationState;
 
 const POLICY = {
   pendingMode: 'includeConservatively',
@@ -166,6 +167,13 @@ const OBSERVATIONS = [
     scope: { kind: 'account', id: 'account-checking' },
     state: 'fresh',
     observedAt: UTC_NOW,
+    evidence: [VISIBLE_EVIDENCE],
+  },
+  {
+    kind: 'account_type',
+    scope: { kind: 'account', id: 'account-checking' },
+    state: UNKNOWN_OBSERVATION_STATE,
+    observedAt: null,
     evidence: [VISIBLE_EVIDENCE],
   },
   {
@@ -417,7 +425,8 @@ describe('financialSnapshotSchema', () => {
     expect(parsed.observations.map(({ state }) => state)).toEqual(
       OBSERVATIONS.map(({ state }) => state),
     );
-    expect(parsed.observations[5]?.evidence[0]?.redaction).toBe('redacted');
+    expect(parsed.observations[1]?.state).toBe('unknown');
+    expect(parsed.observations[6]?.evidence[0]?.redaction).toBe('redacted');
   });
 
   it('accepts the legacy v1 snapshot shape without new optional source metadata', () => {

@@ -463,6 +463,7 @@ export type ObservationState =
   | 'fresh'
   | 'stale'
   | 'unavailable'
+  | 'unknown'
   | 'included'
   | 'complete'
   | 'present'

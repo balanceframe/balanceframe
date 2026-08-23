@@ -208,6 +208,7 @@ export interface ActualClient {
   sync(): Promise<void>;
   getServerVersion(): Promise<{ version: string } | { error: string }>;
   getAccounts(): Promise<APIAccountEntity[]>;
+  getAccountBalance(accountId: string): Promise<number>;
   getTransactions(
     accountId: string,
     startDate: string,
@@ -277,6 +278,7 @@ export async function createDefaultActualClient(): Promise<ActualClient> {
     sync: () => actual.sync(),
     getServerVersion: () => actual.getServerVersion(),
     getAccounts: () => actual.getAccounts(),
+    getAccountBalance: (accountId) => actual.getAccountBalance(accountId),
     getTransactions: (accountId, startDate, endDate) =>
       actual.getTransactions(accountId, startDate, endDate),
     getPayees: () => actual.getPayees(),
@@ -1295,7 +1297,26 @@ export class ActualConnector implements BudgetLedger {
   private async buildSnapshot(capturedAt: string): Promise<SnapshotBuildResult> {
     this.assertInitialized();
 
-    const accountRead = await readCollection(() => this.client.getAccounts());
+    const rawAccountRead = await readCollection(() => this.client.getAccounts());
+    const accountRead: CollectionRead<APIAccountEntity> = rawAccountRead.available
+      ? {
+          available: true,
+          items: await Promise.all(
+            rawAccountRead.items.map(async (account) => {
+              if (hasReliableAccountBalance(account)) return account;
+
+              try {
+                const computedBalance = await this.client.getAccountBalance(account.id);
+                return Number.isFinite(computedBalance)
+                  ? { ...account, balance_current: computedBalance }
+                  : account;
+              } catch {
+                return account;
+              }
+            }),
+          ),
+        }
+      : rawAccountRead;
     const payeeRead = await readCollection(() => this.client.getPayees());
     const categoryRead = await readCollection<APICategoryEntity | APICategoryGroupEntity>(() =>
       this.client.getCategories(),
@@ -1451,7 +1472,7 @@ export class ActualConnector implements BudgetLedger {
       observations.push({
         kind: 'account_freshness',
         scope,
-        state: 'unavailable',
+        state: 'unknown',
         observedAt: null,
         evidence,
       });
@@ -1467,7 +1488,7 @@ export class ActualConnector implements BudgetLedger {
       observations.push({
         kind: 'account_type',
         scope,
-        state: hasReliableType ? 'complete' : 'unavailable',
+        state: hasReliableType ? 'complete' : 'unknown',
         observedAt: hasReliableType ? capturedAt : null,
         evidence,
       });
@@ -1479,13 +1500,15 @@ export class ActualConnector implements BudgetLedger {
         observedAt: hasReliableBalance ? capturedAt : null,
         evidence,
       });
-      observations.push({
-        kind: 'credit_card_obligation_coverage',
-        scope,
-        state: 'unavailable',
-        observedAt: null,
-        evidence,
-      });
+      if (hasReliableType) {
+        observations.push({
+          kind: 'credit_card_obligation_coverage',
+          scope,
+          state: 'unavailable',
+          observedAt: null,
+          evidence,
+        });
+      }
     }
 
     const observableTransactions = allRawTransactions.filter(
@@ -1555,23 +1578,6 @@ export class ActualConnector implements BudgetLedger {
             evidence: transactionEvidence,
           });
         }
-      }
-    }
-
-    for (const account of activeAccounts) {
-      const unreconciled = observableTransactions.filter(
-        (transaction) => transaction.account === account.id && transaction.reconciled === false,
-      );
-      if (unreconciled.length > 0) {
-        observations.push({
-          kind: 'reconciliation',
-          scope: { kind: 'account', id: account.id },
-          state: 'unreconciled',
-          observedAt: capturedAt,
-          evidence: unreconciled.map((transaction) =>
-            visibleEvidence(transaction.id, 'transaction'),
-          ),
-        });
       }
     }
 

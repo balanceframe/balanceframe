@@ -92,6 +92,109 @@ function loadFixture(fixturePath) {
   return fixture;
 }
 
+const I64_MIN = -(2n ** 63n);
+const I64_MAX = 2n ** 63n - 1n;
+
+function checkedI64(value, fixturePath, label) {
+  if (value < I64_MIN || value > I64_MAX) {
+    throw new Error(`Fixture "${fixturePath}" ${label} overflows the signed 64-bit integer range`);
+  }
+  return value;
+}
+
+function prepareCanonicalBalances(fixture, fixturePath) {
+  let fixtureCurrency;
+  const canonicalAmounts = new Map();
+  const initialBalances = new Map();
+  const transactionSums = new Map();
+  const accountByFixtureId = new Map();
+  const accountByName = new Map();
+
+  function parseMoney(money, label) {
+    if (
+      money === null ||
+      typeof money !== 'object' ||
+      Array.isArray(money) ||
+      typeof money.minorUnits !== 'string' ||
+      !/^-?\d+$/.test(money.minorUnits) ||
+      typeof money.currency !== 'string' ||
+      !/^[A-Z]{3}$/.test(money.currency)
+    ) {
+      throw new Error(
+        `Fixture "${fixturePath}" ${label} has malformed money; ` +
+          'minorUnits must be a signed integer decimal string and currency must be an uppercase ISO code',
+      );
+    }
+
+    const amount = checkedI64(BigInt(money.minorUnits), fixturePath, `${label} minorUnits`);
+    if (fixtureCurrency === undefined) {
+      fixtureCurrency = money.currency;
+    } else if (money.currency !== fixtureCurrency) {
+      throw new Error(
+        `Fixture "${fixturePath}" ${label} uses currency ${money.currency}; ` +
+          `expected the fixture currency ${fixtureCurrency}`,
+      );
+    }
+    return amount;
+  }
+
+  for (const [accountIndex, account] of (fixture.accounts || []).entries()) {
+    if (typeof account.id === 'string') accountByFixtureId.set(account.id, account);
+    if (typeof account.name === 'string') accountByName.set(account.name, account);
+
+    if (account.clearedBalance !== undefined) {
+      const label = `account "${account.id ?? account.name ?? accountIndex}" clearedBalance`;
+      initialBalances.set(account, parseMoney(account.clearedBalance, label));
+    }
+    if (account.importedBalance !== undefined) {
+      const label = `account "${account.id ?? account.name ?? accountIndex}" importedBalance`;
+      parseMoney(account.importedBalance, label);
+    }
+  }
+
+  for (const [transactionIndex, transaction] of (fixture.transactions || []).entries()) {
+    const account =
+      (typeof transaction.accountId === 'string'
+        ? accountByFixtureId.get(transaction.accountId)
+        : undefined) ??
+      (typeof transaction.account === 'string'
+        ? accountByName.get(transaction.account)
+        : undefined);
+    const isCanonicalTransaction =
+      transaction.accountId !== undefined ||
+      (account !== undefined && account.clearedBalance !== undefined);
+
+    if (!isCanonicalTransaction) continue;
+
+    const label = `transaction "${transaction.id ?? transactionIndex}" amount`;
+    const amount = parseMoney(transaction.amount, label);
+    canonicalAmounts.set(transaction, Number(amount));
+    if (account !== undefined) {
+      const sum = (transactionSums.get(account) ?? 0n) + amount;
+      transactionSums.set(
+        account,
+        checkedI64(sum, fixturePath, `account "${account.id ?? account.name}" transaction sum`),
+      );
+    }
+  }
+
+  for (const [account, clearedBalance] of initialBalances) {
+    const initialBalance = clearedBalance - (transactionSums.get(account) ?? 0n);
+    initialBalances.set(
+      account,
+      Number(
+        checkedI64(
+          initialBalance,
+          fixturePath,
+          `account "${account.id ?? account.name}" initial balance`,
+        ),
+      ),
+    );
+  }
+
+  return { canonicalAmounts, initialBalances };
+}
+
 function parseTransactionAmount(amount, fixturePath, transactionLabel) {
   if (typeof amount === 'number' && Number.isSafeInteger(amount)) {
     return amount;
@@ -141,6 +244,7 @@ async function main() {
   const budgetName = process.env.ACTUAL_BUDGET_NAME;
   const fixturePath = process.env.FIXTURE_DATA_PATH;
   const fixture = loadFixture(fixturePath);
+  const { canonicalAmounts, initialBalances } = prepareCanonicalBalances(fixture, fixturePath);
 
   // Initialize connection
   const client = await actualApi.init({
@@ -253,7 +357,10 @@ async function main() {
       const type = acct.accountType ? mapAccountType(acct.accountType) : acct.type || 'other';
       const offbudget = acct.offBudget !== undefined ? acct.offBudget : acct.offbudget || false;
       const closed = acct.isClosed !== undefined ? acct.isClosed : acct.closed || false;
-      await actualApi.createAccount({ name: acct.name, type, offbudget, closed });
+      await actualApi.createAccount(
+        { name: acct.name, type, offbudget, closed },
+        initialBalances.get(acct) ?? 0,
+      );
     }
   }
 
@@ -271,29 +378,30 @@ async function main() {
     }
   }
 
-  // ---- Payees (canonical with transferAccountId or legacy with transferAcct) ----
+  // Actual creates transfer payees with their target accounts. Only create ordinary
+  // fixture payees; transfer fixture IDs are resolved to those automatic payees below.
   if (fixture.payees) {
     for (const payee of fixture.payees) {
-      let transferAcct = null;
-      if (payee.transferAccountId) {
-        // Canonical: fixture-id reference → resolve to actual account ID
-        transferAcct = acctIdByFixId[payee.transferAccountId] || null;
-      } else if (payee.transferAcct) {
-        // Legacy: direct value
-        transferAcct = payee.transferAcct;
+      const isTransferPayee =
+        (payee.transferAccountId !== undefined && payee.transferAccountId !== null) ||
+        (payee.transferAcct !== undefined && payee.transferAcct !== null);
+      if (!isTransferPayee) {
+        await actualApi.createPayee({ name: payee.name });
       }
-      await actualApi.createPayee({ name: payee.name, transferAcct });
     }
   }
 
-  // Build name-based payee and category maps
+  // Build name-based payee and category maps.
   const payeeByName = {};
-  for (const p of await actualApi.getPayees()) payeeByName[p.name] = p.id;
+  const transferPayeeByAccount = {};
+  for (const payee of await actualApi.getPayees()) {
+    payeeByName[payee.name] = payee.id;
+    if (typeof payee.transfer_acct === 'string') {
+      transferPayeeByAccount[payee.transfer_acct] = payee.id;
+    }
+  }
   const catByName = {};
   for (const c of await actualApi.getCategories()) catByName[c.name] = c.id;
-  // Also build fixture-id → name maps for canonical transaction resolution
-  const payeeNameByFixId = {};
-  for (const fp of fixture.payees || []) payeeNameByFixId[fp.id] = fp.name;
   const catNameByFixId = {};
   for (const fc of fixture.categories || []) catNameByFixId[fc.id] = fc.name;
   const accountIds = { ...acctIdByFixId };
@@ -304,9 +412,49 @@ async function main() {
     }
   }
   const payeeIds = {};
-  for (const fp of fixture.payees || []) {
-    if (typeof fp.id === 'string' && fp.name && payeeByName[fp.name]) {
-      payeeIds[fp.id] = payeeByName[fp.name];
+  const actualAccountIds = new Set(accounts.map((account) => account.id));
+  for (const [payeeIndex, fixturePayee] of (fixture.payees || []).entries()) {
+    let targetAccountId;
+    let transferReference;
+    if (fixturePayee.transferAccountId !== undefined && fixturePayee.transferAccountId !== null) {
+      transferReference = fixturePayee.transferAccountId;
+      targetAccountId = acctIdByFixId[transferReference];
+    } else if (fixturePayee.transferAcct !== undefined && fixturePayee.transferAcct !== null) {
+      transferReference = fixturePayee.transferAcct;
+      targetAccountId =
+        acctIdByFixId[transferReference] ||
+        accountByName[transferReference] ||
+        (actualAccountIds.has(transferReference) ? transferReference : undefined);
+    }
+
+    if (transferReference !== undefined) {
+      if (!targetAccountId) {
+        throw new Error(
+          `Fixture "${fixturePath}" transfer payee ` +
+            `"${fixturePayee.id ?? fixturePayee.name ?? payeeIndex}" references an unresolved ` +
+            `account ${JSON.stringify(transferReference)}`,
+        );
+      }
+      const actualTransferPayeeId = transferPayeeByAccount[targetAccountId];
+      if (!actualTransferPayeeId) {
+        throw new Error(
+          `Fixture "${fixturePath}" transfer payee ` +
+            `"${fixturePayee.id ?? fixturePayee.name ?? payeeIndex}" has no Actual transfer payee ` +
+            `for account ${JSON.stringify(targetAccountId)}`,
+        );
+      }
+      if (typeof fixturePayee.id === 'string') {
+        payeeIds[fixturePayee.id] = actualTransferPayeeId;
+      }
+      if (fixturePayee.name) {
+        payeeByName[fixturePayee.name] = actualTransferPayeeId;
+      }
+    } else if (
+      typeof fixturePayee.id === 'string' &&
+      fixturePayee.name &&
+      payeeByName[fixturePayee.name]
+    ) {
+      payeeIds[fixturePayee.id] = payeeByName[fixturePayee.name];
     }
   }
 
@@ -335,8 +483,7 @@ async function main() {
       } else if (txn.payee) {
         payee = payeeByName[txn.payee] || txn.payee;
       } else if (txn.payeeId) {
-        const name = payeeNameByFixId[txn.payeeId];
-        if (name) payee = payeeByName[name] || null;
+        payee = payeeIds[txn.payeeId] || null;
       }
 
       // Resolve category: canonical categoryName, or legacy category name string
@@ -350,7 +497,9 @@ async function main() {
         if (name) category = catByName[name] || null;
       }
 
-      const amount = parseTransactionAmount(txn.amount, fixturePath, txn.id ?? transactionIndex);
+      const amount = canonicalAmounts.has(txn)
+        ? canonicalAmounts.get(txn)
+        : parseTransactionAmount(txn.amount, fixturePath, txn.id ?? transactionIndex);
 
       await actualApi.addTransactions(acctId, [
         {

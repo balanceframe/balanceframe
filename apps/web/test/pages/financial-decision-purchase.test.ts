@@ -156,11 +156,23 @@ function decision(readiness: 'ready' | 'qualified' | 'blocked') {
               code: 'fd_future_safety_code',
               severity: 'critical',
               effect: 'qualifies',
-              scope: { kind: 'global' },
+              scope: { kind: 'account', id: 'fd-account-checking' },
               evidence: [],
               remediation: {
                 code: 'review_future_safety',
                 action: 'Review the qualified future-safety finding before purchase.',
+              },
+              redaction: 'visible',
+            },
+            {
+              code: 'duplicate_transfer_ambiguity',
+              severity: 'warning',
+              effect: 'blocks',
+              scope: { kind: 'transaction', id: 'fd-transfer-one-sided' },
+              evidence: [],
+              remediation: {
+                code: 'review_transfer',
+                action: 'Review the related transactions and resolve the transfer ambiguity.',
               },
               redaction: 'visible',
             },
@@ -235,6 +247,29 @@ function legacyResult(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function currentResult(
+  readiness: 'ready' | 'qualified' | 'blocked',
+  overrides: Record<string, unknown> = {},
+) {
+  return legacyResult({
+    verdict: readiness === 'blocked' ? 'insufficient_data' : 'safe',
+    explanation:
+      readiness === 'blocked'
+        ? 'Insufficient data prevents a reliable purchase decision.'
+        : 'Budget allows this purchase.',
+    envelopeFundingState: 'funded',
+    entityLabels: {
+      'fd-category-groceries': 'Groceries',
+      'fd-account-checking': 'Household Checking',
+      'fd-transaction-pending': 'Fixture Grocer · 2026-08-23',
+      'fd-transaction-existing': 'Fixture Grocer · 2026-08-23',
+      'fd-transfer-one-sided': 'Card Transfer · 2026-08-23',
+    },
+    decision: decision(readiness),
+    ...overrides,
+  });
+}
+
 function mountPage(): VueWrapper {
   return mount(PurchaseCheckPage, { global: globalMountOptions });
 }
@@ -260,7 +295,7 @@ describe('Purchase Check canonical financial decision presentation', () => {
   });
 
   it('states that evaluation is read-only and evaluates the entered purchase', async () => {
-    const wrapper = await evaluate({ ...legacyResult(), decision: decision('ready') });
+    const wrapper = await evaluate(currentResult('ready'));
 
     expect(wrapper.text()).toContain(
       'This page is read-only. Evaluations do not mutate ledger state or trigger transactions.',
@@ -278,30 +313,32 @@ describe('Purchase Check canonical financial decision presentation', () => {
   it.each([
     ['ready', 'Ready'],
     ['qualified', 'Qualified'],
-    ['blocked', 'Blocked'],
+    ['blocked', 'Insufficient data'],
   ] as const)('renders the typed %s readiness as exactly %s', async (readiness, label) => {
-    const wrapper = await evaluate({ ...legacyResult(), decision: decision(readiness) });
+    const wrapper = await evaluate(currentResult(readiness));
 
     expect(wrapper.get('[data-testid="decision-readiness"]').text().trim()).toBe(label);
   });
 
-  it('renders the typed blocked decision without dropping the legacy purchase result', async () => {
-    const wrapper = await evaluate({ ...legacyResult(), decision: decision('blocked') });
+  it('renders the typed blocked decision while suppressing legacy action suggestions', async () => {
+    const wrapper = await evaluate(currentResult('blocked'));
     const text = wrapper.text();
 
-    expect(wrapper.get('[data-testid="decision-readiness"]').text().trim()).toBe('Blocked');
+    expect(wrapper.get('[data-testid="decision-readiness"]').text().trim()).toBe(
+      'Insufficient data',
+    );
 
     const before = wrapper.get('[data-testid="decision-before"]');
     expect(before.text()).toContain('Before');
     expect(before.text()).toContain('Envelope availability');
-    expect(before.text()).toContain('Category: fd-category-groceries');
+    expect(before.text()).toContain('Category: Groceries');
     expect(before.text()).toContain('50.00');
     expect(before.text()).toContain('USD');
 
     const after = wrapper.get('[data-testid="decision-after"]');
     expect(after.text()).toContain('After');
     expect(after.text()).toContain('Envelope availability');
-    expect(after.text()).toContain('Category: fd-category-groceries');
+    expect(after.text()).toContain('Category: Groceries');
     expect(after.text()).toContain('−5.00');
     expect(after.text()).toContain('USD');
 
@@ -319,7 +356,7 @@ describe('Purchase Check canonical financial decision presentation', () => {
     expect(blockingIssue.text()).toContain('Reservation Conflict');
     expect(blockingIssue.text()).toContain('Critical');
     expect(blockingIssue.text()).toContain('Blocks');
-    expect(blockingIssue.text()).toContain('Category: fd-category-groceries');
+    expect(blockingIssue.text()).toContain('Groceries');
     expect(blockingIssue.text()).toContain(
       'Release the conflicting reservation before purchasing.',
     );
@@ -328,41 +365,64 @@ describe('Purchase Check canonical financial decision presentation', () => {
     expect(futureIssue.text()).toContain('Fd Future Safety Code');
     expect(futureIssue.text()).toContain('Critical');
     expect(futureIssue.text()).toContain('Qualifies');
-    expect(futureIssue.text()).toContain('Global');
+    expect(futureIssue.text()).toContain('Household Checking');
     expect(futureIssue.text()).toContain(
       'Review the qualified future-safety finding before purchase.',
     );
+    expect(before.text()).not.toContain('fd-category-groceries');
+    expect(after.text()).not.toContain('fd-category-groceries');
+    expect(blockingIssue.text()).not.toContain('fd-category-groceries');
+    expect(futureIssue.text()).not.toContain('fd-account-checking');
+
+    const transferIssue = wrapper.get('[data-issue-code="duplicate_transfer_ambiguity"]');
+    expect(transferIssue.text()).toContain('Card Transfer · 2026-08-23');
+    expect(transferIssue.text()).not.toContain('fd-transfer-one-sided');
 
     expect(text).toContain('Decision evidence');
-    const evidenceButtons = wrapper
-      .findAll('button')
-      .filter((button) => button.text().trim() === 'Show evidence');
+    const evidenceButtons = wrapper.findAll('button[aria-label="Show evidence summary"]');
     expect(evidenceButtons.length).toBeGreaterThan(0);
-    for (const button of evidenceButtons) await button.trigger('click');
-    expect(wrapper.find('[role="region"][aria-label="Evidence"]').exists()).toBe(true);
+    for (const button of evidenceButtons) {
+      expect(button.text()).toContain('(4)');
+      await button.trigger('click');
+    }
+    const evidenceSummaries = wrapper.findAll('[role="region"][aria-label="Evidence summary"]');
+    expect(evidenceSummaries).toHaveLength(evidenceButtons.length);
+    for (const summary of evidenceSummaries) {
+      expect(summary.text()).toContain('4 references');
+      expect(summary.text()).toContain('Prospective Claim evidence');
+      expect(summary.text()).toContain('Restricted evidence');
+      expect(summary.text()).not.toContain('fd-issue-reservation-proof');
+      expect(summary.text()).not.toContain('fd-source-active-reservation');
+    }
+
+    const technicalEvidenceButtons = wrapper.findAll(
+      'button[aria-label="Show technical evidence details"]',
+    );
+    expect(technicalEvidenceButtons).toHaveLength(evidenceButtons.length);
+    for (const button of technicalEvidenceButtons) await button.trigger('click');
     expect(wrapper.text()).toContain('fd-issue-reservation-proof');
     expect(wrapper.text()).toContain('fd-source-active-reservation');
     expect(wrapper.text()).toContain('prospective_claim');
-    expect(wrapper.text()).toContain('Restricted evidence');
     expect(wrapper.text()).not.toContain('fd-secret-issue-proof');
     expect(wrapper.text()).not.toContain('fd-secret-reservation');
 
     expect(text).toContain('Verdict:');
-    expect(text).toContain('Not Safe');
+    expect(text).toContain('Insufficient Data');
     expect(text).toContain('Reservation Conflict');
     expect(text).toContain('Fd Future Reason Code');
-    expect(text).toContain('An active reservation conflicts with this purchase.');
+    expect(text).toContain('Insufficient data prevents a reliable purchase decision.');
     expect(text).toContain('Budget:');
     expect(text).toContain('Spent:');
     expect(text).toContain('Remaining:');
-    expect(text).toContain('Projected balance:');
+    expect(text).toContain('Effective balance after pending and uncleared activity:');
+    expect(text).not.toContain('Projected balance:');
     expect(text).toContain('Unavailable');
     expect(text).toContain('Envelope budget active');
-    expect(text).toContain('Release reservation first');
-    expect(text).toContain('fd-category-flexible');
-    expect(text).toContain('fd-category-rent');
+    expect(text).not.toContain('Release reservation first');
+    expect(text).not.toContain('fd-category-flexible');
+    expect(text).not.toContain('fd-category-rent');
     expect(text).toContain('Legacy evaluation expires in five minutes');
-    expect(text).toContain('2 competing purchases');
+    expect(text).not.toContain('2 competing purchases');
     expect(text).toContain('native_protocol');
     expect(text).toContain('Snapshot age: 1m');
     expect(text).toContain('Reallocation allowed');
@@ -413,6 +473,76 @@ describe('Purchase Check canonical financial decision presentation', () => {
     expect(wrapper.findAllComponents(SemanticAmount)).toHaveLength(0);
   });
 
+  it('renders currency-incompatible semantic amounts as unavailable rather than zero money', async () => {
+    const currencyMismatch = decision('blocked');
+    currencyMismatch.before.amounts = [];
+    currencyMismatch.after.amounts = [];
+    currencyMismatch.issues = [
+      {
+        code: 'currency_mismatch',
+        severity: 'critical',
+        effect: 'blocks',
+        scope: { kind: 'category', id: 'fd-category-groceries' },
+        evidence: [],
+        remediation: {
+          code: 'use_compatible_currency',
+          action: 'Use an account and category with the purchase currency.',
+        },
+        redaction: 'visible',
+      },
+    ];
+
+    const wrapper = await evaluate(
+      currentResult('blocked', {
+        decision: currencyMismatch,
+        envelopeFundingState: 'unavailable',
+        categoryBudget: null,
+        categorySpent: null,
+        categoryRemaining: null,
+        projectedBalance: null,
+        reasonCodes: ['currency_mismatch'],
+      }),
+    );
+
+    expect(wrapper.get('[data-testid="decision-readiness"]').text().trim()).toBe(
+      'Insufficient data',
+    );
+    expect(wrapper.text()).toContain('Unavailable');
+    expect(wrapper.text()).not.toContain('Unknown');
+    expect(wrapper.text()).not.toContain('0.00');
+    expect(wrapper.text()).not.toContain('USD');
+    expect(wrapper.findAllComponents(SemanticAmount)).toHaveLength(0);
+  });
+
+  it('states when a zero-value envelope has no assigned funds', async () => {
+    const unfundedDecision = decision('ready');
+    unfundedDecision.before.amounts = unfundedDecision.before.amounts.map((amount) => ({
+      ...amount,
+      amount: { ...amount.amount, minorUnits: '0' },
+    }));
+    unfundedDecision.after.amounts = unfundedDecision.after.amounts.map((amount) => ({
+      ...amount,
+      amount: { ...amount.amount, minorUnits: '0' },
+    }));
+    unfundedDecision.payload.categoryBudget = { minorUnits: '0', currency: 'USD' };
+    unfundedDecision.payload.categorySpent = { minorUnits: '0', currency: 'USD' };
+    unfundedDecision.payload.categoryRemaining = { minorUnits: '0', currency: 'USD' };
+
+    const wrapper = await evaluate(
+      currentResult('ready', {
+        decision: unfundedDecision,
+        envelopeFundingState: 'unfunded',
+        categoryBudget: { minorUnits: '0', currency: 'USD' },
+        categorySpent: { minorUnits: '0', currency: 'USD' },
+        categoryRemaining: { minorUnits: '0', currency: 'USD' },
+      }),
+    );
+
+    expect(wrapper.text()).toContain('Envelope has no assigned funds');
+    expect(wrapper.text()).not.toContain('Envelope budget active');
+    expect(wrapper.text()).not.toContain('No envelope (cash-flow only)');
+  });
+
   it('continues to render a legacy-only purchase response', async () => {
     const wrapper = await evaluate(
       legacyResult({
@@ -421,11 +551,7 @@ describe('Purchase Check canonical financial decision presentation', () => {
         reasonCodes: ['sufficient_budget'],
         explanation: 'Budget allows this purchase.',
         projectedBalance: { minorUnits: '125000', currency: 'USD' },
-        proposals: [],
-        donors: [],
-        protectedCategories: [],
         expiry: null,
-        competition: null,
       }),
     );
 
@@ -438,5 +564,9 @@ describe('Purchase Check canonical financial decision presentation', () => {
     expect(wrapper.text()).toContain('Projected balance:');
     expect(wrapper.text()).toContain('1250.00');
     expect(wrapper.text()).toContain('Envelope budget active');
+    expect(wrapper.text()).toContain('Release reservation first');
+    expect(wrapper.text()).toContain('fd-category-flexible');
+    expect(wrapper.text()).toContain('fd-category-rent');
+    expect(wrapper.text()).toContain('2 competing purchases');
   });
 });

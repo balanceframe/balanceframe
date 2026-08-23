@@ -27,8 +27,7 @@
 
       <template v-if="item.issue">
         <p class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-          <span aria-hidden="true">{{ visibleScope(item.issue.scope) }}</span>
-          <span class="sr-only">{{ accessibleScope(item.issue.scope) }}</span>
+          {{ scopeLabel(item.issue.scope) }}
         </p>
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
           Redaction: {{ formatIdentifier(item.issue.redaction) }}
@@ -51,15 +50,18 @@ import type {
   DecisionIssueSeverity,
   DecisionScope,
 } from '@balanceframe/protocol-generated';
+import type { DecisionScopeLabelMap } from './types';
 
 const props = withDefaults(
   defineProps<{
     codes?: string[];
     issues?: DecisionIssue[];
+    scopeLabels?: DecisionScopeLabelMap;
   }>(),
   {
     codes: () => [],
     issues: () => [],
+    scopeLabels: () => ({}),
   },
 );
 
@@ -77,14 +79,10 @@ function formatIdentifier(value: string): string {
   return words.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-function visibleScope(scope: DecisionScope): string {
-  if (scope.kind === 'global') return 'Scope: Global';
-  return `Scope: ${formatIdentifier(scope.kind)} · ${scope.id}`;
-}
-
-function accessibleScope(scope: DecisionScope): string {
+function scopeLabel(scope: DecisionScope): string {
   if (scope.kind === 'global') return 'Global scope';
-  return `${formatIdentifier(scope.kind)}: ${scope.id}`;
+  const label = props.scopeLabels[scope.id] ?? scope.id;
+  return `${formatIdentifier(scope.kind)}: ${label}`;
 }
 
 function severityClass(severity: DecisionIssueSeverity): string {

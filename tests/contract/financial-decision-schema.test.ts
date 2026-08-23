@@ -160,6 +160,18 @@ describe('forward-compatible issue and coverage vocabulary', () => {
     expectValid(validateFinancialSnapshot, snapshot);
     expect(snapshot.coverage).toEqual(unavailableCoverage);
   });
+
+  it('accepts unknown as the exact shared observation-state wire value', () => {
+    const snapshot = financialSnapshot();
+    const observation = (snapshot.observations as JsonObject[])[0];
+    if (!observation) {
+      throw new Error('Foundation fixture must contain a source observation');
+    }
+    observation.state = 'unknown';
+
+    expectValid(validateFinancialSnapshot, snapshot);
+    expect(observation.state).toBe('unknown');
+  });
 });
 
 describe('money, time, redaction, and evidence boundaries', () => {

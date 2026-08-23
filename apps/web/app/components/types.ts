@@ -10,6 +10,9 @@ export type SemanticAmountState = 'known' | 'unknown' | 'unavailable' | 'redacte
 /** Semantic classifications exposed by financial decision contracts. */
 export type { FinancialSemanticClass } from '@balanceframe/protocol-generated';
 
+/** Human labels keyed by opaque decision-scope identifiers. */
+export type DecisionScopeLabelMap = Readonly<Record<string, string>>;
+
 /** Freshness metadata. */
 export interface Freshness {
   isStale: boolean;

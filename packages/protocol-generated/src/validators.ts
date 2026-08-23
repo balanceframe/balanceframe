@@ -435,6 +435,7 @@ export const observationStateSchema = z.enum([
   'fresh',
   'stale',
   'unavailable',
+  'unknown',
   'included',
   'complete',
   'present',

@@ -26,8 +26,12 @@ const presentationGlobal = {
   },
 };
 
+const VISIBLE_EVIDENCE_UUID = '4b6c8f4e-9a11-4cbd-86fc-0af96d2d3581';
+const SNAPSHOT_HASH = 'sha256:40f04c938d5c88c1';
+const REVISION_HASH = 'sha256:184d9b02be37a1a6';
+
 const visibleEvidence: EvidenceReference = {
-  evidenceId: 'transaction-visible-42',
+  evidenceId: VISIBLE_EVIDENCE_UUID,
   kind: 'transaction',
   authorized: true,
   redaction: 'visible',
@@ -169,25 +173,39 @@ describe('financial decision shared presentation', () => {
   });
 
   describe('EvidenceDrawer', () => {
-    it('shows an authorized reference and a safe placeholder for redacted evidence', async () => {
+    it('summarizes evidence by kind and count while keeping technical identifiers secondary', async () => {
       const wrapper = mount(EvidenceDrawer, {
         props: {
           references: [visibleEvidence, redactedEvidence],
-          snapshotId: 'snapshot-2026-08-23',
+          snapshotId: SNAPSHOT_HASH,
           policyVersion: 'decision-policy-v3',
         },
         global: presentationGlobal,
       });
 
-      const toggle = wrapper.get('button');
-      expect(toggle.attributes('aria-expanded')).toBe('false');
-      await toggle.trigger('click');
+      const evidenceToggle = wrapper.get('button[aria-label="Show evidence summary"]');
+      expect(evidenceToggle.attributes('aria-expanded')).toBe('false');
+      expect(wrapper.text()).not.toContain(VISIBLE_EVIDENCE_UUID);
+      expect(wrapper.text()).not.toContain(SNAPSHOT_HASH);
 
-      const region = wrapper.get('[role="region"][aria-label="Evidence"]');
-      expect(region.text()).toContain('Transaction');
-      expect(region.text()).toContain('transaction-visible-42');
-      expect(region.text()).toContain('Restricted evidence');
-      expect(region.html()).not.toContain(REDACTED_SECRET);
+      await evidenceToggle.trigger('click');
+
+      const region = wrapper.get('[role="region"][aria-label="Evidence summary"]');
+      expect(region.get('[aria-label="Transaction evidence: 1 reference"]').exists()).toBe(true);
+      expect(region.get('[aria-label="Restricted evidence: 1 reference"]').exists()).toBe(true);
+      expect(region.text()).not.toContain(VISIBLE_EVIDENCE_UUID);
+      expect(region.text()).not.toContain(REDACTED_SECRET);
+      expect(region.text()).not.toContain(SNAPSHOT_HASH);
+
+      const technicalToggle = region.get('button[aria-label="Show technical evidence details"]');
+      expect(technicalToggle.attributes('aria-expanded')).toBe('false');
+      await technicalToggle.trigger('click');
+
+      const technicalRegion = region.get(
+        '[role="region"][aria-label="Technical evidence details"]',
+      );
+      expect(technicalRegion.text()).toContain(VISIBLE_EVIDENCE_UUID);
+      expect(technicalRegion.text()).toContain(SNAPSHOT_HASH);
       expect(wrapper.html()).not.toContain(REDACTED_SECRET);
     });
   });
@@ -225,7 +243,7 @@ describe('financial decision shared presentation', () => {
   });
 
   describe('FindingCard', () => {
-    it('presents classification and lifecycle from one shared issue without inventing facts', async () => {
+    it('keeps snapshot and revision hashes under accessible technical provenance', async () => {
       const wrapper = mount(FindingCard, {
         props: {
           finding: {
@@ -234,33 +252,45 @@ describe('financial decision shared presentation', () => {
             classification: 'transfer_needs_attention',
             status: 'open',
             issue: blockingIssue,
-            snapshotId: 'snapshot-transfer-8',
+            snapshotId: SNAPSHOT_HASH,
             policyVersion: 'attention-policy-v2',
+            revision: REVISION_HASH,
           },
         },
         global: presentationGlobal,
       });
 
       const card = wrapper.get('article[aria-label="Finding: Transfer needs attention"]');
-      const cardText = card.text().replace(/\s+/g, ' ').trim();
-      expect(cardText).toContain('Transfer Needs Attention');
-      expect(cardText).toContain('Open');
-      expect(cardText).toContain('Duplicate Transfer Ambiguity');
-      expect(cardText).toContain('Warning');
-      expect(cardText).toContain('Blocks');
-      expect(cardText).toContain('Account: account-checking');
-      expect(cardText).toContain('Review the linked transfer entries.');
-      expect(cardText).toContain('Snapshot: snapshot-transfer-8');
-      expect(cardText).toContain('Policy: attention-policy-v2');
-      expect(cardText.split('Review the linked transfer entries.')).toHaveLength(2);
-      expect(cardText).not.toContain('0.00');
-      expect(cardText).not.toContain('USD');
-      expect(cardText).not.toContain('Data current');
+      const primaryText = card.text().replace(/\s+/g, ' ').trim();
+      expect(primaryText).toContain('Transfer Needs Attention');
+      expect(primaryText).toContain('Open');
+      expect(primaryText).toContain('Duplicate Transfer Ambiguity');
+      expect(primaryText).toContain('Warning');
+      expect(primaryText).toContain('Blocks');
+      expect(primaryText).toContain('Account: account-checking');
+      expect(primaryText).toContain('Review the linked transfer entries.');
+      expect(primaryText.split('Review the linked transfer entries.')).toHaveLength(2);
+      expect(primaryText).not.toContain(SNAPSHOT_HASH);
+      expect(primaryText).not.toContain(REVISION_HASH);
+      expect(primaryText).not.toContain(VISIBLE_EVIDENCE_UUID);
+      expect(primaryText).not.toContain('0.00');
+      expect(primaryText).not.toContain('USD');
+      expect(primaryText).not.toContain('Data current');
 
-      await wrapper.get('button').trigger('click');
-      const expandedCardText = card.text().replace(/\s+/g, ' ').trim();
-      expect(expandedCardText).toContain('transaction-visible-42');
-      expect(expandedCardText.split('transaction-visible-42')).toHaveLength(2);
+      const provenanceToggle = card.get('button[aria-label="Show technical provenance"]');
+      expect(provenanceToggle.text()).toContain('Technical provenance');
+      expect(provenanceToggle.attributes('aria-expanded')).toBe('false');
+      await provenanceToggle.trigger('click');
+
+      const provenance = card.get('[role="region"][aria-label="Technical provenance"]');
+      expect(provenance.text()).toContain(SNAPSHOT_HASH);
+      expect(provenance.text()).toContain('attention-policy-v2');
+      expect(provenance.text()).toContain(REVISION_HASH);
+
+      const evidenceToggle = card.get('button[aria-label="Show evidence summary"]');
+      await evidenceToggle.trigger('click');
+      const evidence = card.get('[role="region"][aria-label="Evidence summary"]');
+      expect(evidence.text()).not.toContain(VISIBLE_EVIDENCE_UUID);
       expect(wrapper.html()).not.toContain(REDACTED_SECRET);
     });
   });

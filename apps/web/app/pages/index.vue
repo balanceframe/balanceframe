@@ -249,6 +249,7 @@ interface DecisionIssue {
 interface AttentionDecisionMetadata {
   classification?: FinancialAttentionClassification;
   issue?: DecisionIssue;
+  scopeLabel?: string;
   snapshotId?: string;
   policyVersion?: string;
   revision?: string;
@@ -433,11 +434,13 @@ function attentionItemKey(item: AttentionItem, index: number): string {
 
 function attentionFinding(item: AttentionItem) {
   const entityType = 'entityType' in item ? item.entityType : undefined;
+  const categoryName = 'categoryName' in item ? item.categoryName : undefined;
 
   return {
     title: item.message,
     severity: item.severity,
-    category: ('categoryName' in item ? item.categoryName : undefined) ?? entityType,
+    scopeLabel: item.scopeLabel,
+    category: item.scopeLabel ?? categoryName ?? entityType,
     entityType,
     reasonCodes: item.issue ? undefined : [item.code],
     classification: item.classification,

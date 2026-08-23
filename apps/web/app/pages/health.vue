@@ -9,11 +9,21 @@
     <template #content>
       <div class="space-y-6">
         <!-- Composite score -->
-        <UCard>
-          <template #header><span class="font-semibold">Composite Health Score</span></template>
+        <UCard role="region" aria-label="Global health score — not purchase readiness">
+          <template #header>
+            <span class="font-semibold">Global health score — not purchase readiness</span>
+          </template>
           <p class="text-3xl font-bold text-gray-900 dark:text-white" data-testid="composite-score">
             {{ normalizedScorePercent(compositeScore)
-            }}<span class="text-sm font-normal text-gray-500 dark:text-gray-400 ml-1">/ 100</span>
+            }}<span class="ml-1 text-sm font-normal text-gray-500 dark:text-gray-400">/ 100</span>
+          </p>
+          <p
+            v-if="hasLimitedDataQuality"
+            role="status"
+            aria-label="Qualified by limited data quality"
+            class="mt-2 text-sm font-medium text-amber-700 dark:text-amber-300"
+          >
+            Qualified by limited data quality
           </p>
         </UCard>
 
@@ -118,6 +128,11 @@ const summary = ref('');
 const recommendations = ref<string[]>([]);
 
 const hasData = computed(() => dimensions.value.length > 0);
+const hasLimitedDataQuality = computed(() =>
+  dimensions.value.some(
+    (dimension) => dimension.dimension === 'data_quality' && dimension.score < 0.7,
+  ),
+);
 
 const currentMonth = computed(() => {
   const now = new Date();

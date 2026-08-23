@@ -223,6 +223,14 @@ fn incompatible_purchase_currency_blocks_without_fabricating_zero_money() {
         decision.payload.category_remaining,
         Money::new(10_000, "USD")
     );
+    assert!(
+        decision.before.amounts.is_empty(),
+        "a currency mismatch must not expose a before amount in the category currency"
+    );
+    assert!(
+        decision.after.amounts.is_empty(),
+        "a currency mismatch must not expose an after amount in the purchase currency"
+    );
 }
 
 #[test]
@@ -567,6 +575,142 @@ fn authorized_but_redacted_references_never_enter_top_level_evidence() {
     assert!(decision.evidence.is_empty());
     let serialized = serde_json::to_string(&decision.evidence).expect("evidence serializes");
     assert!(!serialized.contains("private-bank-sync-record-884"));
+}
+
+#[test]
+fn top_level_evidence_keeps_selected_balance_and_issue_proof_without_copying_activity_rows() {
+    let mut snapshot = financial_snapshot();
+    let mut unrelated_transaction = proposed_purchase("USD");
+    unrelated_transaction.id = "fd-unrelated-transaction".into();
+    unrelated_transaction.category_id = Some("fd-category-travel".into());
+    unrelated_transaction.category_name = Some("Travel".into());
+    unrelated_transaction.account_id = "fd-account-card".into();
+    snapshot
+        .legacy_snapshot
+        .transactions
+        .push(unrelated_transaction);
+    snapshot.observations = serde_json::from_value(json!([
+        {
+            "kind": "account_freshness",
+            "scope": { "kind": "account", "id": ACCOUNT_ID },
+            "state": "fresh",
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [{
+                "evidenceId": "fd-selected-account-proof",
+                "kind": "bank_sync",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "account_balance",
+            "scope": { "kind": "account", "id": ACCOUNT_ID },
+            "state": "complete",
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [{
+                "evidenceId": "fd-selected-balance-proof",
+                "kind": "balance_record",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "pending_activity",
+            "scope": { "kind": "account", "id": ACCOUNT_ID },
+            "state": "included",
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [{
+                "evidenceId": "fd-ordinary-pending-row",
+                "kind": "transaction_record",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "uncleared_activity",
+            "scope": { "kind": "account", "id": ACCOUNT_ID },
+            "state": "included",
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [{
+                "evidenceId": "fd-ordinary-uncleared-row",
+                "kind": "transaction_record",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "pending_activity",
+            "scope": { "kind": "account", "id": ACCOUNT_ID },
+            "state": "unavailable",
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [{
+                "evidenceId": "fd-pending-availability-issue-proof",
+                "kind": "source_observation",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "account_freshness",
+            "scope": { "kind": "account", "id": "fd-account-card" },
+            "state": "fresh",
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [{
+                "evidenceId": "fd-unrelated-account-proof",
+                "kind": "bank_sync",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "pending_activity",
+            "scope": { "kind": "transaction", "id": "fd-unrelated-transaction" },
+            "state": "included",
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [{
+                "evidenceId": "fd-unrelated-transaction-proof",
+                "kind": "transaction_record",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        }
+    ]))
+    .expect("test observations must satisfy the canonical contract");
+
+    let decision = evaluate_prospective_purchase(request(
+        snapshot,
+        context(),
+        vec![],
+        proposed_purchase("USD"),
+    ));
+
+    let evidence_ids: Vec<&str> = decision
+        .evidence
+        .iter()
+        .map(|reference| reference.evidence_id.as_str())
+        .collect();
+    assert_eq!(
+        evidence_ids.len(),
+        3,
+        "primary evidence must remain compact"
+    );
+    assert!(evidence_ids.contains(&"fd-selected-account-proof"));
+    assert!(evidence_ids.contains(&"fd-selected-balance-proof"));
+    assert!(evidence_ids.contains(&"fd-pending-availability-issue-proof"));
+    assert!(!evidence_ids.contains(&"fd-ordinary-pending-row"));
+    assert!(!evidence_ids.contains(&"fd-ordinary-uncleared-row"));
+    assert!(!evidence_ids.contains(&"fd-unrelated-account-proof"));
+    assert!(!evidence_ids.contains(&"fd-unrelated-transaction-proof"));
+
+    let pending_issue = decision
+        .issues
+        .iter()
+        .find(|issue| issue.code == DecisionIssueCode::PendingAvailability)
+        .expect("unavailable selected-account pending activity must remain a decision issue");
+    assert!(pending_issue
+        .evidence
+        .iter()
+        .any(|reference| reference.evidence_id == "fd-pending-availability-issue-proof"));
 }
 
 #[test]

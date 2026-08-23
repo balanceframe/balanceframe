@@ -550,6 +550,9 @@ pub fn evaluate_prospective_purchase(
     for evidence_reference in financial_snapshot
         .observations
         .iter()
+        .filter(|observation| {
+            observation_supports_selected_evidence(observation, &proposed_transaction, &category_id)
+        })
         .flat_map(|observation| observation.evidence.iter())
         .filter(|evidence_reference| {
             evidence_reference.authorized && evidence_reference.redaction == RedactionState::Visible
@@ -708,7 +711,12 @@ pub fn evaluate_prospective_purchase(
         );
     }
 
-    let mut before_amount = payload_currency_compatible.then(|| payload.category_remaining.clone());
+    let semantic_currency_compatible = payload_currency_compatible
+        && !issues
+            .iter()
+            .any(|issue| issue.code == DecisionIssueCode::CurrencyMismatch);
+    let mut before_amount =
+        semantic_currency_compatible.then(|| payload.category_remaining.clone());
     for claim in claims.iter().filter(|claim| {
         claim_evaluation
             .eligible_claim_ids
@@ -989,6 +997,32 @@ fn observation_is_relevant(
             .iter()
             .any(|schedule| schedule.id == *id),
         DecisionScope::Claim(_) => false,
+    }
+}
+
+fn observation_supports_selected_evidence(
+    observation: &SourceObservation,
+    proposed_transaction: &Transaction,
+    category_id: &str,
+) -> bool {
+    if observation.state == ObservationState::Unknown {
+        return false;
+    }
+
+    match &observation.scope {
+        DecisionScope::Account(id) => {
+            id == &proposed_transaction.account_id
+                && matches!(
+                    observation.kind,
+                    ObservationKind::AccountFreshness
+                        | ObservationKind::AccountCoverage
+                        | ObservationKind::AccountType
+                        | ObservationKind::AccountBalance
+                )
+        }
+        DecisionScope::Category(id) => id == category_id,
+        DecisionScope::Transaction(id) => id == &proposed_transaction.id,
+        DecisionScope::Global | DecisionScope::Schedule(_) | DecisionScope::Claim(_) => false,
     }
 }
 
