@@ -113,6 +113,28 @@ function coverageFor<T>(read: CollectionRead<T>, incomplete = false): CoverageSt
   return incomplete ? 'partial' : 'complete';
 }
 
+function healthCoverageFor(accountRead: CollectionRead<APIAccountEntity>): Coverage {
+  if (!accountRead.available) {
+    return {
+      totalAccounts: 0,
+      includedAccounts: 0,
+      allExpectedAccountsPresent: false,
+    };
+  }
+
+  // Closed accounts are intentionally excluded from snapshots and coverage reporting.
+  const includedAccounts = accountRead.items.filter((account) => !account.closed).length;
+  return {
+    totalAccounts: includedAccounts,
+    includedAccounts,
+    allExpectedAccountsPresent: true,
+  };
+}
+
+type SnapshotBuildResult = Pick<LedgerSnapshotResult, 'snapshot' | 'financialSnapshot'> & {
+  accountRead: CollectionRead<APIAccountEntity>;
+};
+
 type SourceAccountFacts = APIAccountEntity & {
   type?: unknown;
   account_type?: unknown;
@@ -439,8 +461,8 @@ export class ActualConnector implements BudgetLedger {
     });
 
     const capturedAt = new Date().toISOString();
-    const { snapshot, financialSnapshot } = await this.buildSnapshot(capturedAt);
-    const health = await this.getHealthReport();
+    const { snapshot, financialSnapshot, accountRead } = await this.buildSnapshot(capturedAt);
+    const health = await this.buildHealthReport(accountRead);
     const watermark = this.getWatermark(budgetId);
 
     return { snapshot, financialSnapshot, health, watermark };
@@ -1027,17 +1049,18 @@ export class ActualConnector implements BudgetLedger {
   // -------------------------------------------------------------------------
 
   async getHealthReport(): Promise<HealthReport> {
+    this.assertInitialized();
+    const accountRead = await readCollection(() => this.client.getAccounts());
+    return this.buildHealthReport(accountRead);
+  }
+
+  private async buildHealthReport(
+    accountRead: CollectionRead<APIAccountEntity>,
+  ): Promise<HealthReport> {
     const compatibility = await this.getCompatibility();
     const freshness = this.getFreshness();
-    const coverage = await this.getCoverage();
+    const coverage = healthCoverageFor(accountRead);
     const incidents: Incident[] = [];
-
-    const state: HealthState = (() => {
-      if (!compatibility.supported) return 'degraded';
-      if (incidents.some((i) => i.severity === 'error')) return 'degraded';
-      if (freshness.lastDownloadedAt === null) return 'degraded';
-      return 'healthy';
-    })();
 
     if (!compatibility.supported) {
       incidents.push({
@@ -1047,13 +1070,28 @@ export class ActualConnector implements BudgetLedger {
       });
     }
 
-    if (!coverage.allExpectedAccountsPresent) {
+    if (!accountRead.available) {
+      incidents.push({
+        severity: 'warning',
+        code: 'ACCOUNT_COVERAGE_UNAVAILABLE',
+        message:
+          'Account coverage could not be determined because the account collection was unavailable.',
+      });
+    } else if (!coverage.allExpectedAccountsPresent) {
       incidents.push({
         severity: 'warning',
         code: 'MISSING_ACCOUNTS',
         message: `Only ${coverage.includedAccounts}/${coverage.totalAccounts} accounts are included in the snapshot.`,
       });
     }
+
+    const state: HealthState = (() => {
+      if (!compatibility.supported) return 'degraded';
+      if (incidents.some((incident) => incident.severity === 'error')) return 'degraded';
+      if (freshness.lastDownloadedAt === null) return 'degraded';
+      if (!accountRead.available) return 'unknown';
+      return 'healthy';
+    })();
 
     return { state, compatibility, freshness, coverage, incidents };
   }
@@ -1139,15 +1177,8 @@ export class ActualConnector implements BudgetLedger {
 
   async getCoverage(): Promise<Coverage> {
     this.assertInitialized();
-    const allAccounts = await this.client.getAccounts();
-    // Only non-closed accounts are expected in the snapshot;
-    // closed accounts are intentionally excluded from coverage reporting.
-    const nonClosed = allAccounts.filter((a) => !a.closed);
-    return {
-      totalAccounts: nonClosed.length,
-      includedAccounts: nonClosed.length,
-      allExpectedAccountsPresent: true,
-    };
+    const accountRead = await readCollection(() => this.client.getAccounts());
+    return healthCoverageFor(accountRead);
   }
 
   /** Convenience: one-shot health check without full report construction. */
@@ -1261,9 +1292,7 @@ export class ActualConnector implements BudgetLedger {
     }
   }
 
-  private async buildSnapshot(
-    capturedAt: string,
-  ): Promise<Pick<LedgerSnapshotResult, 'snapshot' | 'financialSnapshot'>> {
+  private async buildSnapshot(capturedAt: string): Promise<SnapshotBuildResult> {
     this.assertInitialized();
 
     const accountRead = await readCollection(() => this.client.getAccounts());
@@ -1591,6 +1620,6 @@ export class ActualConnector implements BudgetLedger {
       contentHash: `sha256:${digest}`,
     };
 
-    return { snapshot, financialSnapshot };
+    return { snapshot, financialSnapshot, accountRead };
   }
 }

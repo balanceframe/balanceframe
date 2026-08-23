@@ -1,11 +1,13 @@
 //! Immutable inputs and typed results for prospective financial decisions.
 
-use crate::financial_snapshot::FinancialSnapshot;
-use crate::{evaluate_purchase, PurchaseEvaluation, PurchaseEvaluationRequest};
+use crate::financial_snapshot::{
+    FinancialSnapshot, ObservationKind, ObservationState, SourceObservation,
+};
+use crate::{evaluate_purchase_with_policy, PurchaseEvaluation, PurchaseEvaluationRequest};
 use balanceframe_financial_core::{
     DecisionDataPolicy, DecisionIssue, DecisionIssueCode, DecisionIssueEffect,
     DecisionIssueSeverity, DecisionScope, EvidenceReference, FinancialStateLabel, Money,
-    RedactionState, Transaction,
+    RedactionState, Remediation, Transaction,
 };
 use serde::{Deserialize, Serialize};
 
@@ -240,11 +242,13 @@ pub fn evaluate_prospective_claims(
         };
     };
 
-    let duplicate_ids = duplicate_claim_ids(claims);
+    let duplicate_ids = duplicate_claim_ids(context, claims);
     for claim_id in &duplicate_ids {
         let duplicate_claims: Vec<_> = claims
             .iter()
-            .filter(|claim| &claim.claim_id == claim_id)
+            .filter(|claim| {
+                claim_scope_allowed_by_policy(context, claim) && &claim.claim_id == claim_id
+            })
             .collect();
         let redaction = combined_redaction(duplicate_claims.iter().copied());
         let scope = if redaction == RedactionState::Redacted {
@@ -262,6 +266,9 @@ pub fn evaluate_prospective_claims(
 
     let mut eligible = Vec::new();
     for claim in claims {
+        if !claim_scope_allowed_by_policy(context, claim) {
+            continue;
+        }
         if duplicate_ids.contains(&claim.claim_id) {
             continue;
         }
@@ -297,7 +304,7 @@ pub fn evaluate_prospective_claims(
         };
 
         if effective_from <= evaluated_at
-            && expires_at.map_or(true, |expires_at| evaluated_at < expires_at)
+            && expires_at.is_none_or(|expires_at| evaluated_at < expires_at)
         {
             eligible.push(claim);
         }
@@ -321,10 +328,10 @@ pub fn evaluate_prospective_claims(
 
 /// Evaluates a proposed purchase against an immutable canonical snapshot.
 ///
-/// The legacy purchase evaluator remains the sole producer of the typed
-/// payload. This wrapper validates the canonical decision inputs, combines
-/// claim issues, and derives semantic before/after states without mutating the
-/// supplied snapshot or consulting a clock.
+/// The payload uses the same internal calculation path as the legacy
+/// evaluator, with the complete policy supplied by the decision context.
+/// Canonical inputs, claims, and observations are then translated into the
+/// immutable before/after state and scoped decision issues.
 pub fn evaluate_prospective_purchase(
     request: ProspectivePurchaseEvaluationRequest,
 ) -> ProspectiveDecisionEnvelope<PurchaseEvaluation> {
@@ -470,7 +477,13 @@ pub fn evaluate_prospective_purchase(
     let budget_category = legacy_snapshot
         .budgets
         .iter()
-        .filter(|budget| format!("{}-01", budget.month) <= legacy_snapshot.snapshot_date)
+        .filter(|budget| {
+            budget.month.as_str()
+                <= legacy_snapshot
+                    .snapshot_date
+                    .get(..7)
+                    .unwrap_or(legacy_snapshot.snapshot_date.as_str())
+        })
         .max_by(|left, right| left.month.cmp(&right.month))
         .and_then(|budget| budget.categories.get(&category_id));
     let has_budget_category = budget_category.is_some();
@@ -487,16 +500,26 @@ pub fn evaluate_prospective_purchase(
     }
 
     let expected_currency = budget_category.map(|budget| budget.amount.currency().to_owned());
+    let account_allowed_by_policy = |account_id: &str| {
+        context
+            .policy
+            .account_overrides
+            .include_only
+            .as_ref()
+            .is_none_or(|included| included.iter().any(|id| id == account_id))
+            && !context
+                .policy
+                .account_overrides
+                .exclude
+                .iter()
+                .any(|id| id == account_id)
+    };
     let incompatible_currency = expected_currency.as_deref().is_some_and(|currency| {
         proposed_transaction.amount.currency() != currency
-            || account.is_some_and(|account| account.cleared_balance.currency() != currency)
-            || legacy_snapshot
-                .transactions
-                .iter()
-                .filter(|transaction| {
-                    transaction.category_id.as_deref() == Some(category_id.as_str())
-                })
-                .any(|transaction| transaction.amount.currency() != currency)
+            || account.is_some_and(|account| {
+                account_allowed_by_policy(&account.id)
+                    && account.cleared_balance.currency() != currency
+            })
             || claims.iter().any(|claim| {
                 claim_evaluation
                     .eligible_claim_ids
@@ -516,13 +539,21 @@ pub fn evaluate_prospective_purchase(
             ),
         );
     }
+    append_relevant_observation_issues(
+        &financial_snapshot,
+        &proposed_transaction,
+        &category_id,
+        &mut issues,
+    );
 
     let mut evidence = Vec::new();
     for evidence_reference in financial_snapshot
         .observations
         .iter()
         .flat_map(|observation| observation.evidence.iter())
-        .filter(|evidence_reference| evidence_reference.authorized)
+        .filter(|evidence_reference| {
+            evidence_reference.authorized && evidence_reference.redaction == RedactionState::Visible
+        })
     {
         if !evidence.iter().any(|existing: &EvidenceReference| {
             existing.evidence_id == evidence_reference.evidence_id
@@ -532,8 +563,11 @@ pub fn evaluate_prospective_purchase(
     }
     for evidence_reference in issues
         .iter()
+        .filter(|issue| issue.redaction == RedactionState::Visible)
         .flat_map(|issue| issue.evidence.iter())
-        .filter(|evidence_reference| evidence_reference.authorized)
+        .filter(|evidence_reference| {
+            evidence_reference.authorized && evidence_reference.redaction == RedactionState::Visible
+        })
     {
         if !evidence
             .iter()
@@ -543,11 +577,37 @@ pub fn evaluate_prospective_purchase(
         }
     }
 
-    let payload = evaluate_purchase(PurchaseEvaluationRequest {
-        snapshot: financial_snapshot.legacy_snapshot,
-        proposed_transaction: proposed_transaction.clone(),
-        category_id: category_id.clone(),
-    });
+    let has_stale_snapshot = exceeds_max_age(
+        &context.evaluated_at,
+        Some(&financial_snapshot.captured_at),
+        context.policy.max_budget_snapshot_age_minutes,
+    );
+    let has_stale_bank_sync = if context.policy.max_bank_sync_age_minutes.is_some() {
+        exceeds_max_age(
+            &context.evaluated_at,
+            legacy_snapshot.bank_synced_at.as_deref(),
+            context.policy.max_bank_sync_age_minutes,
+        )
+    } else {
+        legacy_snapshot
+            .bank_synced_at
+            .as_deref()
+            .is_some_and(|synced| {
+                synced
+                    .get(..10)
+                    .is_none_or(|date| date < legacy_snapshot.snapshot_date.get(..10).unwrap_or(""))
+            })
+    };
+    let payload = evaluate_purchase_with_policy(
+        PurchaseEvaluationRequest {
+            snapshot: financial_snapshot.legacy_snapshot,
+            proposed_transaction: proposed_transaction.clone(),
+            category_id: category_id.clone(),
+        },
+        &context.policy,
+        has_stale_snapshot,
+        has_stale_bank_sync,
+    );
     let payload_currency_compatible = expected_currency.as_deref().is_some_and(|currency| {
         payload.category_budget.currency() == currency
             && payload.category_spent.currency() == currency
@@ -567,6 +627,70 @@ pub fn evaluate_prospective_purchase(
                 Vec::new(),
             ),
         );
+    }
+    if payload
+        .reason_codes
+        .iter()
+        .any(|code| code == "currency_mismatch")
+    {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::CurrencyMismatch,
+                DecisionScope::Category(category_id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+    if payload
+        .reason_codes
+        .iter()
+        .any(|code| code == "stale_snapshot")
+    {
+        let mut issue = blocking_issue(
+            DecisionIssueCode::AccountFreshnessCoverage,
+            DecisionScope::Global,
+            RedactionState::Visible,
+            Vec::new(),
+        );
+        issue.remediation = Some(Remediation {
+            code: "refresh_snapshot".into(),
+            action: "Refresh the financial snapshot before evaluating again.".into(),
+        });
+        push_issue_once(&mut issues, issue);
+    }
+    if payload
+        .reason_codes
+        .iter()
+        .any(|code| code == "account_unavailable")
+    {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("account_unavailable".into()),
+                DecisionScope::Account(proposed_transaction.account_id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+    if payload
+        .reason_codes
+        .iter()
+        .any(|code| code == "stale_bank_sync")
+    {
+        let mut issue = blocking_issue(
+            DecisionIssueCode::AccountFreshnessCoverage,
+            DecisionScope::Account(proposed_transaction.account_id.clone()),
+            RedactionState::Visible,
+            Vec::new(),
+        );
+        issue.remediation = Some(Remediation {
+            code: "refresh_account_evidence".into(),
+            action: "Refresh the affected account before evaluating again.".into(),
+        });
+        push_issue_once(&mut issues, issue);
     }
     if payload
         .reason_codes
@@ -639,6 +763,15 @@ pub fn evaluate_prospective_purchase(
         }
     });
 
+    for issue in &mut issues {
+        if issue.code == DecisionIssueCode::CurrencyMismatch {
+            issue.remediation = Some(Remediation {
+                code: "use_compatible_currency".into(),
+                action: "Use an account and category with the purchase currency.".into(),
+            });
+        }
+    }
+
     let readiness = if issues
         .iter()
         .any(|issue| issue.effect == DecisionIssueEffect::Blocks)
@@ -672,6 +805,213 @@ pub fn evaluate_prospective_purchase(
         redaction,
         payload,
     }
+}
+
+fn append_relevant_observation_issues(
+    snapshot: &FinancialSnapshot,
+    proposed_transaction: &Transaction,
+    category_id: &str,
+    issues: &mut Vec<DecisionIssue>,
+) {
+    for observation in snapshot.observations.iter().filter(|observation| {
+        observation_is_relevant(observation, snapshot, proposed_transaction, category_id)
+    }) {
+        let (code, severity, effect, remediation) = match (observation.kind, observation.state) {
+            (ObservationKind::AccountFreshness, ObservationState::Stale) => (
+                DecisionIssueCode::AccountFreshnessCoverage,
+                DecisionIssueSeverity::Warning,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "refresh_account_evidence".into(),
+                    action: "Refresh the affected account before evaluating again.".into(),
+                },
+            ),
+            (
+                ObservationKind::AccountFreshness | ObservationKind::AccountCoverage,
+                ObservationState::Unavailable,
+            ) => (
+                DecisionIssueCode::AccountFreshnessCoverage,
+                DecisionIssueSeverity::Critical,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "reconnect_source".into(),
+                    action: "Reconnect or refresh the affected source before evaluating again."
+                        .into(),
+                },
+            ),
+            (ObservationKind::AccountType, ObservationState::Unavailable) => (
+                DecisionIssueCode::AccountFreshnessCoverage,
+                DecisionIssueSeverity::Warning,
+                DecisionIssueEffect::Qualifies,
+                Remediation {
+                    code: "reconnect_source".into(),
+                    action: "Reconnect or refresh the affected source before evaluating again."
+                        .into(),
+                },
+            ),
+            (ObservationKind::AccountBalance, ObservationState::Unavailable) => (
+                DecisionIssueCode::AccountFreshnessCoverage,
+                DecisionIssueSeverity::Critical,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "reconnect_source".into(),
+                    action: "Reconnect or refresh the affected source before evaluating again."
+                        .into(),
+                },
+            ),
+            (ObservationKind::ScheduleCoverage, ObservationState::Unavailable) => (
+                DecisionIssueCode::ScheduleCoverage,
+                DecisionIssueSeverity::Critical,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "reconnect_source".into(),
+                    action: "Reconnect or refresh the affected source before evaluating again."
+                        .into(),
+                },
+            ),
+            (ObservationKind::CreditCardObligationCoverage, ObservationState::Unavailable) => (
+                DecisionIssueCode::CreditPaymentUncertainty,
+                DecisionIssueSeverity::Critical,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "reconnect_source".into(),
+                    action: "Reconnect or refresh the affected source before evaluating again."
+                        .into(),
+                },
+            ),
+            (ObservationKind::TransferAmbiguity, ObservationState::Ambiguous) => (
+                DecisionIssueCode::DuplicateTransferAmbiguity,
+                DecisionIssueSeverity::Warning,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "review_transfer".into(),
+                    action: "Review the related transactions and resolve the transfer ambiguity."
+                        .into(),
+                },
+            ),
+            (ObservationKind::DuplicateCandidate, ObservationState::Present) => (
+                DecisionIssueCode::DuplicateTransferAmbiguity,
+                DecisionIssueSeverity::Warning,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "review_transfer".into(),
+                    action: "Review the related transactions and resolve the transfer ambiguity."
+                        .into(),
+                },
+            ),
+            (ObservationKind::DuplicateCandidate, ObservationState::Ambiguous) => (
+                DecisionIssueCode::EconomicEventAmbiguity,
+                DecisionIssueSeverity::Warning,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "review_duplicate".into(),
+                    action: "Review the related transactions and resolve the duplicate candidate."
+                        .into(),
+                },
+            ),
+            (ObservationKind::PendingActivity, ObservationState::Unavailable) => (
+                DecisionIssueCode::PendingAvailability,
+                DecisionIssueSeverity::Warning,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "refresh_account_evidence".into(),
+                    action: "Refresh the affected account before evaluating again.".into(),
+                },
+            ),
+            (ObservationKind::CurrencyCompatibility, ObservationState::Incompatible) => (
+                DecisionIssueCode::CurrencyMismatch,
+                DecisionIssueSeverity::Critical,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "use_compatible_currency".into(),
+                    action: "Use an account and category with the purchase currency.".into(),
+                },
+            ),
+            (ObservationKind::Reconciliation, ObservationState::Unreconciled) => (
+                DecisionIssueCode::EconomicEventAmbiguity,
+                DecisionIssueSeverity::Warning,
+                DecisionIssueEffect::Blocks,
+                Remediation {
+                    code: "review_material_evidence".into(),
+                    action: "Review the supporting evidence before evaluating again.".into(),
+                },
+            ),
+            _ => continue,
+        };
+        let evidence = observation
+            .evidence
+            .iter()
+            .filter(|reference| {
+                reference.authorized && reference.redaction == RedactionState::Visible
+            })
+            .cloned()
+            .collect();
+        push_issue_once(
+            issues,
+            DecisionIssue {
+                code,
+                severity,
+                effect,
+                scope: observation.scope.clone(),
+                evidence,
+                remediation: Some(remediation),
+                redaction: RedactionState::Visible,
+            },
+        );
+    }
+}
+
+fn observation_is_relevant(
+    observation: &SourceObservation,
+    snapshot: &FinancialSnapshot,
+    proposed_transaction: &Transaction,
+    category_id: &str,
+) -> bool {
+    match &observation.scope {
+        DecisionScope::Global => true,
+        DecisionScope::Account(id) => id == &proposed_transaction.account_id,
+        DecisionScope::Category(id) => id == category_id,
+        DecisionScope::Transaction(id) => {
+            id == &proposed_transaction.id
+                || snapshot
+                    .legacy_snapshot
+                    .transactions
+                    .iter()
+                    .any(|transaction| {
+                        transaction.id == *id
+                            && (transaction.account_id == proposed_transaction.account_id
+                                || transaction.category_id.as_deref() == Some(category_id))
+                    })
+        }
+        DecisionScope::Schedule(id) => snapshot
+            .legacy_snapshot
+            .schedules
+            .iter()
+            .any(|schedule| schedule.id == *id),
+        DecisionScope::Claim(_) => false,
+    }
+}
+
+fn exceeds_max_age(
+    evaluated_at: &str,
+    observed_at: Option<&str>,
+    max_age_minutes: Option<u64>,
+) -> bool {
+    let Some(max_age_minutes) = max_age_minutes else {
+        return false;
+    };
+    let Some(evaluated_at) = parse_rfc3339(evaluated_at) else {
+        return true;
+    };
+    let Some(observed_at) = observed_at.and_then(parse_rfc3339) else {
+        return true;
+    };
+    let evaluated_nanoseconds =
+        i128::from(evaluated_at.seconds) * 1_000_000_000 + i128::from(evaluated_at.nanoseconds);
+    let observed_nanoseconds =
+        i128::from(observed_at.seconds) * 1_000_000_000 + i128::from(observed_at.nanoseconds);
+    let max_age_nanoseconds = i128::from(max_age_minutes) * 60 * 1_000_000_000;
+    evaluated_nanoseconds - observed_nanoseconds > max_age_nanoseconds
 }
 
 fn semantic_category_state(category_id: &str, amount: Option<Money>) -> DecisionSemanticState {
@@ -715,13 +1055,33 @@ fn valid_claim_identity(claim: &ProspectiveClaim) -> bool {
     }
 }
 
-fn duplicate_claim_ids(claims: &[ProspectiveClaim]) -> Vec<String> {
+fn claim_scope_allowed_by_policy(context: &DecisionContext, claim: &ProspectiveClaim) -> bool {
+    let DecisionScope::Account(account_id) = &claim.scope else {
+        return true;
+    };
+    context
+        .policy
+        .account_overrides
+        .include_only
+        .as_ref()
+        .is_none_or(|included| included.iter().any(|id| id == account_id))
+        && !context
+            .policy
+            .account_overrides
+            .exclude
+            .iter()
+            .any(|id| id == account_id)
+}
+
+fn duplicate_claim_ids(context: &DecisionContext, claims: &[ProspectiveClaim]) -> Vec<String> {
     let mut duplicates = Vec::new();
     for (index, claim) in claims.iter().enumerate() {
-        if claims[index + 1..]
-            .iter()
-            .any(|other| other.claim_id == claim.claim_id)
-            && !duplicates.contains(&claim.claim_id)
+        if !claim_scope_allowed_by_policy(context, claim) {
+            continue;
+        }
+        if claims[index + 1..].iter().any(|other| {
+            claim_scope_allowed_by_policy(context, other) && other.claim_id == claim.claim_id
+        }) && !duplicates.contains(&claim.claim_id)
         {
             duplicates.push(claim.claim_id.clone());
         }
@@ -730,7 +1090,7 @@ fn duplicate_claim_ids(claims: &[ProspectiveClaim]) -> Vec<String> {
 }
 
 fn claim_input_issue(code: &str, claim: &ProspectiveClaim) -> DecisionIssue {
-    let redaction = claim.visibility.clone();
+    let redaction = claim.visibility;
     let scope = if redaction == RedactionState::Redacted {
         DecisionScope::Global
     } else {
@@ -739,7 +1099,7 @@ fn claim_input_issue(code: &str, claim: &ProspectiveClaim) -> DecisionIssue {
     blocking_issue(
         DecisionIssueCode::Unknown(code.into()),
         scope,
-        redaction.clone(),
+        redaction,
         evidence_for_claims(std::iter::once(claim), redaction),
     )
 }
@@ -765,7 +1125,7 @@ fn report_scope_conflicts(eligible: &[&ProspectiveClaim], issues: &mut Vec<Decis
             blocking_issue(
                 DecisionIssueCode::ReservationConflict,
                 claim.scope.clone(),
-                redaction.clone(),
+                redaction,
                 evidence_for_claims(scoped_claims.iter().copied(), redaction),
             ),
         );
@@ -782,7 +1142,7 @@ fn report_scope_conflicts(eligible: &[&ProspectiveClaim], issues: &mut Vec<Decis
                 blocking_issue(
                     DecisionIssueCode::CurrencyMismatch,
                     claim.scope.clone(),
-                    redaction.clone(),
+                    redaction,
                     evidence_for_claims(scoped_claims.iter().copied(), redaction),
                 ),
             );
@@ -801,14 +1161,14 @@ fn aggregate_kind(
 
     for claim in matching {
         if claim.amount.currency() != total.currency() {
-            let redaction = combined_redaction([first, claim].into_iter());
+            let redaction = combined_redaction([first, claim]);
             push_issue_once(
                 issues,
                 blocking_issue(
                     DecisionIssueCode::CurrencyMismatch,
                     claim.scope.clone(),
-                    redaction.clone(),
-                    evidence_for_claims([first, claim].into_iter(), redaction),
+                    redaction,
+                    evidence_for_claims([first, claim], redaction),
                 ),
             );
             return None;
@@ -816,14 +1176,14 @@ fn aggregate_kind(
         match total.add(&claim.amount) {
             Ok(sum) => total = sum,
             Err(_) => {
-                let redaction = combined_redaction([first, claim].into_iter());
+                let redaction = combined_redaction([first, claim]);
                 push_issue_once(
                     issues,
                     blocking_issue(
                         DecisionIssueCode::Unknown("money_arithmetic_overflow".into()),
                         claim.scope.clone(),
-                        redaction.clone(),
-                        evidence_for_claims([first, claim].into_iter(), redaction),
+                        redaction,
+                        evidence_for_claims([first, claim], redaction),
                     ),
                 );
                 return None;

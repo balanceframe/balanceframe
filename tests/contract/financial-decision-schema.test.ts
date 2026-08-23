@@ -142,6 +142,24 @@ describe('forward-compatible issue and coverage vocabulary', () => {
     expect('transactions' in (unknownCoverage.coverage as JsonObject)).toBe(false);
     expect((explicitEmptyCoverage.coverage as JsonObject).transactions).toBe('empty');
   });
+
+  it('accepts explicit unavailable coverage from the Rust snapshot contract', () => {
+    const snapshot = financialSnapshot();
+    const unavailableCoverage = {
+      accounts: 'unavailable',
+      transactions: 'unavailable',
+      categories: 'unavailable',
+      payees: 'unavailable',
+      rules: 'unavailable',
+      schedules: 'unavailable',
+      budgets: 'unavailable',
+      tags: 'unavailable',
+    };
+    snapshot.coverage = unavailableCoverage;
+
+    expectValid(validateFinancialSnapshot, snapshot);
+    expect(snapshot.coverage).toEqual(unavailableCoverage);
+  });
 });
 
 describe('money, time, redaction, and evidence boundaries', () => {
@@ -151,6 +169,24 @@ describe('money, time, redaction, and evidence boundaries', () => {
 
     expect(validateProspectiveClaim(prospectiveClaim('9223372036854775808'))).toBe(false);
     expect(validateProspectiveClaim(prospectiveClaim('-9223372036854775809'))).toBe(false);
+  });
+
+  it('accepts canonical three-digit fractional UTC timestamps at every root', () => {
+    const snapshot = financialSnapshot();
+    snapshot.capturedAt = '2026-08-23T12:00:00.412Z';
+    expectValid(validateFinancialSnapshot, snapshot);
+
+    const claim = prospectiveClaim();
+    claim.effectiveFrom = '2026-08-23T12:00:00.412Z';
+    claim.expiresAt = '2026-09-01T00:00:00.412Z';
+    expectValid(validateProspectiveClaim, claim);
+
+    const decision = prospectivePurchaseDecision();
+    const metadata = decision.metadata as JsonObject;
+    const context = metadata.context as JsonObject;
+    context.evaluatedAt = '2026-08-23T12:00:00.412Z';
+    decision.expiresAt = '2026-08-23T12:05:00.412Z';
+    expectValid(validateProspectiveDecision, decision);
   });
 
   it('rejects malformed or non-canonical fixed-UTC timestamps at every root', () => {

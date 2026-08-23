@@ -86,7 +86,9 @@ describe('GET /api/notifications/policy', () => {
   it('must return notification policy', async () => {
     mockGetQuery.mockReturnValue({ spaceId: 'space_1', policyKey: 'delivery' });
     mockStore.getNotificationPolicy.mockResolvedValue(SAMPLE_POLICY);
-    const r = await policyGet({ context: { auth: { authenticated: true } } });
+    const r = await policyGet({
+      context: { auth: { authenticated: true, spaceId: 'space_1' } },
+    });
     expect(r.status).toBe('ok');
     expect(r.result.spaceId).toBe('space_1');
   });
@@ -95,13 +97,15 @@ describe('GET /api/notifications/policy', () => {
     mockGetQuery.mockReturnValue({});
     const r = await policyGet({ context: { auth: { authenticated: true } } });
     expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_SPACE_ID');
+    expect(r.error?.code).toBe('SPACE_SCOPE_REQUIRED');
   });
 
   it('must return 404 when policy not found', async () => {
     mockGetQuery.mockReturnValue({ spaceId: 'space_x' });
     mockStore.getNotificationPolicy.mockResolvedValue(null);
-    const r = await policyGet({ context: { auth: { authenticated: true } } });
+    const r = await policyGet({
+      context: { auth: { authenticated: true, spaceId: 'space_x' } },
+    });
     expect(r.status).toBe('error');
     expect(r.error?.code).toBe('POLICY_NOT_FOUND');
   });

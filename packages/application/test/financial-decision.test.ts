@@ -106,6 +106,199 @@ function decisionResult(
 }
 
 describe('createNativeAnalysisProtocol — canonical prospective purchase decisions', () => {
+  it('builds deterministic canonical input for legacy UI params and preserves the typed decision', async () => {
+    const prospectiveCalls: string[] = [];
+    const legacyEvaluate = vi.fn(() => JSON.stringify(legacyPurchaseResult()));
+    const shim = nativeShim({
+      evaluatePurchase: legacyEvaluate,
+      evaluateProspectivePurchase(input) {
+        prospectiveCalls.push(input);
+        return JSON.stringify(fixture.decisions.blocked);
+      },
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const { ledger, synchronize } = canonicalLedger();
+    const legacyUiParams: PurchaseEvaluationParams = {
+      categoryId: PURCHASE_PARAMS.categoryId,
+      accountId: PURCHASE_PARAMS.accountId,
+      amount: PURCHASE_PARAMS.amount,
+    };
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2040-01-02T03:04:05Z'));
+    let result: PurchaseEvaluationResult;
+    try {
+      result = await protocol.purchaseEvaluation!(ledger, legacyUiParams);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(synchronize).toHaveBeenCalledOnce();
+    expect(legacyEvaluate).not.toHaveBeenCalled();
+    expect(prospectiveCalls).toHaveLength(1);
+
+    const input = JSON.parse(prospectiveCalls[0]) as Record<string, unknown>;
+    expect(input).not.toHaveProperty('snapshot');
+    expect(input).toEqual({
+      financialSnapshot: fixture.full,
+      context: {
+        evaluatedAt: '2026-08-23T12:00:00Z',
+        horizon: {
+          startsAt: '2026-08-23T12:00:00Z',
+          endsAt: '2026-09-22T12:00:00Z',
+        },
+        policy: {
+          pendingMode: 'includeConservatively',
+          uncategorizedMode: 'reserveFullAmount',
+          unclearedMode: 'include',
+          maxBankSyncAgeMinutes: null,
+          maxBudgetSnapshotAgeMinutes: null,
+          accountOverrides: {
+            includeOnly: null,
+            exclude: [],
+          },
+        },
+        policyVersion: 'purchase-default-v1',
+        policyHash: 'sha256:a56047cac6547260314e8294670b41ec5770e7c6301dfbcd12526b19b3d87909',
+        snapshotId: 'fd-snapshot-2026-08-23',
+        contentHash: 'sha256:fd-snapshot-2026-08-23',
+      },
+      claims: [],
+      proposedTransaction: {
+        id: '',
+        accountId: 'fd-account-checking',
+        date: '2026-08-23',
+        amount: { minorUnits: '-5500', currency: 'USD' },
+        payeeId: null,
+        payeeName: null,
+        categoryId: 'fd-category-groceries',
+        categoryName: null,
+        cleared: false,
+        reconciled: false,
+        importedId: null,
+        importedPayee: null,
+        notes: null,
+        tags: [],
+        transferAccountId: null,
+        subtransactions: [],
+      },
+      categoryId: 'fd-category-groceries',
+      requestId: 'request:45430b41be44c3ea678e2fae76f0bda5549d5167ac7e4da927512bc7d3717ccf',
+      correlationId: 'correlation:45430b41be44c3ea678e2fae76f0bda5549d5167ac7e4da927512bc7d3717ccf',
+      decisionId: 'decision:45430b41be44c3ea678e2fae76f0bda5549d5167ac7e4da927512bc7d3717ccf',
+      validUntil: '2026-09-22T12:00:00Z',
+      redaction: 'visible',
+    });
+    expect(result).toEqual(decisionResult(fixture.decisions.blocked));
+    expect(result.decision).toEqual(fixture.decisions.blocked);
+  });
+
+  it('derives generated identities from every effective normalized purchase input', async () => {
+    type CanonicalPurchaseInput = {
+      context: DecisionContext;
+      claims: ProspectiveClaim[];
+      proposedTransaction: {
+        amount: {
+          minorUnits: string;
+          currency: string;
+        };
+      };
+      requestId: string;
+      correlationId: string;
+      decisionId: string;
+      validUntil: string;
+      redaction: NonNullable<PurchaseEvaluationParams['redaction']>;
+    };
+
+    const prospectiveCalls: CanonicalPurchaseInput[] = [];
+    const shim = nativeShim({
+      evaluateProspectivePurchase(input) {
+        prospectiveCalls.push(JSON.parse(input) as CanonicalPurchaseInput);
+        return JSON.stringify(fixture.decisions.ready);
+      },
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const sparseParams: PurchaseEvaluationParams = {
+      categoryId: PURCHASE_PARAMS.categoryId,
+      accountId: PURCHASE_PARAMS.accountId,
+      amount: { minorUnits: '5500', currency: 'USD' },
+    };
+    const captureInput = async (
+      overrides: Partial<PurchaseEvaluationParams> = {},
+    ): Promise<CanonicalPurchaseInput> => {
+      const callCount = prospectiveCalls.length;
+      const { ledger } = canonicalLedger();
+      await protocol.purchaseEvaluation!(ledger, {
+        ...sparseParams,
+        ...overrides,
+      });
+      expect(prospectiveCalls).toHaveLength(callCount + 1);
+      return prospectiveCalls[callCount];
+    };
+    const identity = ({ requestId, correlationId, decisionId }: CanonicalPurchaseInput) => ({
+      requestId,
+      correlationId,
+      decisionId,
+    });
+
+    const sparse = await captureInput();
+    const byteEquivalentReplay = await captureInput({
+      amount: { minorUnits: '-5500', currency: 'USD' },
+      context: structuredClone(sparse.context),
+      claims: structuredClone(sparse.claims),
+      validUntil: sparse.validUntil,
+      redaction: sparse.redaction,
+    });
+    const policyContext = structuredClone(sparse.context);
+    policyContext.policy.maxBankSyncAgeMinutes = 60;
+    policyContext.policyVersion = 'purchase-default-bank-sync-60-v1';
+    policyContext.policyHash = 'sha256:purchase-default-bank-sync-60-v1';
+    const claim = structuredClone(fixture.claims.items[0]);
+    claim.policyVersion = sparse.context.policyVersion;
+    claim.snapshotId = sparse.context.snapshotId;
+
+    const changedInputs = {
+      policy: await captureInput({ context: policyContext }),
+      claims: await captureInput({ claims: [claim] }),
+      validity: await captureInput({ validUntil: '2026-09-21T12:00:00Z' }),
+      redaction: await captureInput({ redaction: 'redacted' }),
+      outflow: await captureInput({
+        amount: { minorUnits: '5600', currency: 'USD' },
+      }),
+    };
+
+    expect(sparse.proposedTransaction.amount).toEqual({
+      minorUnits: '-5500',
+      currency: 'USD',
+    });
+    expect(changedInputs.outflow.proposedTransaction.amount.minorUnits).toBe('-5600');
+    expect({
+      ...byteEquivalentReplay,
+      requestId: '',
+      correlationId: '',
+      decisionId: '',
+    }).toEqual({
+      ...sparse,
+      requestId: '',
+      correlationId: '',
+      decisionId: '',
+    });
+    expect(identity(byteEquivalentReplay)).toEqual(identity(sparse));
+
+    for (const [resultAffectingInput, changed] of Object.entries(changedInputs)) {
+      expect(changed.requestId, `${resultAffectingInput} must affect request identity`).not.toBe(
+        sparse.requestId,
+      );
+      expect(
+        changed.correlationId,
+        `${resultAffectingInput} must affect correlation identity`,
+      ).not.toBe(sparse.correlationId);
+      expect(changed.decisionId, `${resultAffectingInput} must affect decision identity`).not.toBe(
+        sparse.decisionId,
+      );
+    }
+  });
+
   it('delegates the canonical snapshot, fixed context, claims, and proposed purchase without invoking the legacy binding', async () => {
     const prospectiveCalls: string[] = [];
     const legacyEvaluate = vi.fn(() => JSON.stringify(legacyPurchaseResult()));
@@ -140,7 +333,7 @@ describe('createNativeAnalysisProtocol — canonical prospective purchase decisi
       proposedTransaction: {
         accountId: PURCHASE_PARAMS.accountId,
         date: '2026-08-23',
-        amount: PURCHASE_PARAMS.amount,
+        amount: { minorUnits: '-5500', currency: 'USD' },
         categoryId: PURCHASE_PARAMS.categoryId,
       },
     });

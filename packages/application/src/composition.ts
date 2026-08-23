@@ -471,6 +471,21 @@ function snapshotFromSynchronization(value: unknown): unknown | null {
   return financialSnapshotFromSynchronization(value)?.legacySnapshot ?? null;
 }
 
+function canonicalJsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, currentValue: unknown) => {
+    if (currentValue === null || typeof currentValue !== 'object' || Array.isArray(currentValue)) {
+      return currentValue;
+    }
+
+    const record = currentValue as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, record[key]]),
+    );
+  });
+}
+
 const FINANCIAL_ATTENTION_POLICY_VERSION = 'financial-attention-v1';
 
 const KNOWN_OBSERVATION_KINDS: Record<string, true> = {
@@ -1414,45 +1429,99 @@ export async function createNativeAnalysisProtocol(
         subtransactions: [],
       };
 
-      const canonicalInputSupplied =
-        params.context !== undefined ||
-        params.claims !== undefined ||
-        params.requestId !== undefined ||
-        params.correlationId !== undefined ||
-        params.decisionId !== undefined ||
-        params.validUntil !== undefined ||
-        params.redaction !== undefined;
-      if (
-        canonicalInputSupplied &&
-        typeof native.evaluateProspectivePurchase === 'function' &&
-        financialSnapshot !== null
-      ) {
-        if (
-          !params.context ||
-          !Array.isArray(params.claims) ||
-          !params.accountId ||
-          !params.categoryId ||
-          !params.requestId ||
-          !params.correlationId ||
-          !params.decisionId ||
-          !params.validUntil ||
-          !params.redaction
-        ) {
+      if (typeof native.evaluateProspectivePurchase === 'function' && financialSnapshot !== null) {
+        if (!params.accountId || !params.categoryId) {
           throw new Error(
-            'Prospective purchase evaluation requires context, claims, account, request, correlation, decision, expiry, and redaction identity.',
+            'Prospective purchase evaluation requires account and category identity.',
           );
         }
+        if (!financialSnapshot.snapshotId.trim() || !financialSnapshot.contentHash.trim()) {
+          throw new Error('Canonical financial snapshot is missing required identity.');
+        }
+
+        if (!/^(?:0|-[1-9]\d*|[1-9]\d*)$/.test(params.amount.minorUnits)) {
+          throw new Error('Prospective purchase amount must be a signed decimal string.');
+        }
+        const suppliedMinorUnits = BigInt(params.amount.minorUnits);
+        const zeroMinorUnits = BigInt('0');
+        const signedI64Min = BigInt('-9223372036854775808');
+        const signedI64Max = BigInt('9223372036854775807');
+        if (suppliedMinorUnits < signedI64Min || suppliedMinorUnits > signedI64Max) {
+          throw new Error('Prospective purchase amount exceeds signed 64-bit range.');
+        }
+        const outflowMinorUnits =
+          suppliedMinorUnits === zeroMinorUnits
+            ? '0'
+            : (suppliedMinorUnits < zeroMinorUnits
+                ? suppliedMinorUnits
+                : -suppliedMinorUnits
+              ).toString();
+        const canonicalAmount = {
+          minorUnits: outflowMinorUnits,
+          currency: params.amount.currency,
+        };
+        const canonicalProposedTransaction = {
+          ...proposedTransaction,
+          amount: canonicalAmount,
+        };
+
+        const policy = {
+          pendingMode: 'includeConservatively',
+          uncategorizedMode: 'reserveFullAmount',
+          unclearedMode: 'include',
+          maxBankSyncAgeMinutes: null,
+          maxBudgetSnapshotAgeMinutes: null,
+          accountOverrides: {
+            includeOnly: null,
+            exclude: [],
+          },
+        };
+        const policyVersion = 'purchase-default-v1';
+        const policyHash = `sha256:${createHash('sha256')
+          .update(JSON.stringify(policy))
+          .digest('hex')}`;
+        const validUntil =
+          params.validUntil ??
+          new Date(Date.parse(capturedAt) + 30 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .replace('.000Z', 'Z');
+        const context = params.context ?? {
+          evaluatedAt: capturedAt,
+          horizon: {
+            startsAt: capturedAt,
+            endsAt: validUntil,
+          },
+          policy,
+          policyVersion,
+          policyHash,
+          snapshotId: financialSnapshot.snapshotId,
+          contentHash: financialSnapshot.contentHash,
+        };
+        const claims = params.claims ?? [];
+        const redaction = params.redaction ?? 'visible';
+        const identitySeed = canonicalJsonStringify({
+          snapshotId: financialSnapshot.snapshotId,
+          contentHash: financialSnapshot.contentHash,
+          categoryId: params.categoryId,
+          accountId: params.accountId,
+          amount: canonicalAmount,
+          context,
+          claims,
+          validUntil,
+          redaction,
+        });
+        const identityHash = createHash('sha256').update(identitySeed).digest('hex');
         const input = JSON.stringify({
           financialSnapshot,
-          context: params.context,
-          claims: params.claims,
-          proposedTransaction,
+          context,
+          claims,
+          proposedTransaction: canonicalProposedTransaction,
           categoryId: params.categoryId,
-          requestId: params.requestId,
-          correlationId: params.correlationId,
-          decisionId: params.decisionId,
-          validUntil: params.validUntil,
-          redaction: params.redaction,
+          requestId: params.requestId ?? `request:${identityHash}`,
+          correlationId: params.correlationId ?? `correlation:${identityHash}`,
+          decisionId: params.decisionId ?? `decision:${identityHash}`,
+          validUntil,
+          redaction,
         });
         let parsed: unknown;
         try {

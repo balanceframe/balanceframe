@@ -1,3 +1,4 @@
+import type { CoverageState } from '../src/index.js';
 import { describe, expect, it } from 'vitest';
 import {
   decisionContextSchema,
@@ -450,6 +451,25 @@ describe('financialSnapshotSchema', () => {
       unclearedActivity: 'unknown',
     });
   });
+
+  it('accepts explicit unavailable coverage in the generated type and Zod contract', () => {
+    const unavailableCoverage = {
+      accounts: 'unavailable',
+      transactions: 'unavailable',
+      categories: 'unavailable',
+      payees: 'unavailable',
+      rules: 'unavailable',
+      schedules: 'unavailable',
+      budgets: 'unavailable',
+      tags: 'unavailable',
+    } satisfies Record<keyof typeof FINANCIAL_SNAPSHOT.coverage, CoverageState>;
+    const snapshot = {
+      ...FINANCIAL_SNAPSHOT,
+      coverage: unavailableCoverage,
+    };
+
+    expect(financialSnapshotSchema.parse(snapshot).coverage).toEqual(unavailableCoverage);
+  });
 });
 
 describe('prospective claims and decision context', () => {
@@ -490,6 +510,30 @@ describe('prospective claims and decision context', () => {
     expect(decisionContextSchema.parse(DECISION_CONTEXT)).toEqual(DECISION_CONTEXT);
     const { policy: _policy, ...withoutPolicy } = DECISION_CONTEXT;
     expect(decisionContextSchema.safeParse(withoutPolicy).success).toBe(false);
+  });
+
+  it.each([
+    {
+      evaluatedAt: '2026-08-23T12:34:56.412Z',
+      startsAt: '2026-08-23T12:34:56.412Z',
+      endsAt: '2026-09-22T12:34:56.412Z',
+    },
+    {
+      evaluatedAt: '2026-08-23T12:34:56.123456789Z',
+      startsAt: '2026-08-23T12:34:56.123456789Z',
+      endsAt: '2026-09-22T12:34:56.123456789Z',
+    },
+  ])('accepts fractional UTC seconds throughout the decision context', (timestamps) => {
+    const context = {
+      ...DECISION_CONTEXT,
+      evaluatedAt: timestamps.evaluatedAt,
+      horizon: {
+        startsAt: timestamps.startsAt,
+        endsAt: timestamps.endsAt,
+      },
+    };
+
+    expect(decisionContextSchema.parse(context)).toEqual(context);
   });
 
   it('rejects an invalid or non-UTC decision horizon', () => {
@@ -581,6 +625,12 @@ describe('purchaseProspectiveDecisionEnvelopeSchema', () => {
     expect(parsed.payload).toEqual(purchaseEvaluation);
     expect(parsed.redaction).toBe('redacted');
     expect(parsed.issues[0]?.evidence[1]?.redaction).toBe('redacted');
+
+    for (const expiresAt of ['2026-08-23T12:49:56.412Z', '2026-08-23T12:49:56.123456789Z']) {
+      expect(
+        purchaseProspectiveDecisionEnvelopeSchema.parse({ ...envelope, expiresAt }).expiresAt,
+      ).toBe(expiresAt);
+    }
   });
 
   it('rejects an untyped transport-style or malformed purchase payload', () => {

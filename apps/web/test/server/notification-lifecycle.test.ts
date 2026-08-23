@@ -7,19 +7,36 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const { mockReadBody, mockGetWorkflowStore, mockNotificationRuntime } = vi.hoisted(() => ({
-  mockReadBody: vi.fn(),
-  mockGetWorkflowStore: vi.fn(() => ({ store: {} })),
-  mockNotificationRuntime: {
-    acknowledgeFromCallback: vi.fn(),
-    suppress: vi.fn(),
-    getStatus: vi.fn(),
-    setReAuthorizationHook: vi.fn(),
-    loadPersistedPolicy: vi.fn(),
-    listOutbox: vi.fn(),
-    getOutboxDetail: vi.fn(),
-  },
-}));
+const {
+  mockReadBody,
+  mockGetWorkflowStore,
+  mockGetActorId,
+  mockRequireAuthorization,
+  mockGetNotificationPolicy,
+  mockNotificationRuntime,
+} = vi.hoisted(() => {
+  const mockGetNotificationPolicy = vi.fn();
+  return {
+    mockReadBody: vi.fn(),
+    mockGetWorkflowStore: vi.fn(() => ({
+      store: {
+        getNotificationPolicy: mockGetNotificationPolicy,
+      },
+    })),
+    mockGetActorId: vi.fn(() => 'test-actor'),
+    mockRequireAuthorization: vi.fn(),
+    mockGetNotificationPolicy,
+    mockNotificationRuntime: {
+      acknowledgeFromCallback: vi.fn(),
+      suppress: vi.fn(),
+      getStatus: vi.fn(),
+      setReAuthorizationHook: vi.fn(),
+      loadPersistedPolicy: vi.fn(),
+      listOutbox: vi.fn(),
+      getOutboxDetail: vi.fn(),
+    },
+  };
+});
 
 const { mockGetRouterParam, mockGetQuery } = vi.hoisted(() => ({
   mockGetRouterParam: vi.fn(),
@@ -41,13 +58,9 @@ vi.mock('../../server/utils/workflow-store', () => ({
     capability: 'observe',
     allowed: true,
   })),
-  getActorId: vi.fn(() => 'test-actor'),
+  getActorId: mockGetActorId,
   sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
-  requireAuthorization: vi.fn(async () => ({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'notification:receive', allowed: true },
-    response: null,
-  })),
+  requireAuthorization: mockRequireAuthorization,
   okEnvelope: (r, _a, _rid) => ({
     schemaVersion: '1',
     requestId: 'tr',
@@ -78,10 +91,66 @@ import suppressHandler from '../../server/api/notifications/suppress.post';
 import statusHandler from '../../server/api/notifications/status.get';
 import inboxHandler from '../../server/api/notifications/inbox.get';
 import detailHandler from '../../server/api/notifications/[id].get';
+import policyHandler from '../../server/api/notifications/policy.get';
+
+function request(actorId = 'test-actor', spaceId = 'space-a') {
+  return {
+    context: {
+      auth: { authenticated: true, actorId, spaceId },
+    },
+  };
+}
+
+function authorized(actorId = 'test-actor', capability = 'notification:receive') {
+  return {
+    ok: true as const,
+    info: { actorId, capability, allowed: true },
+  };
+}
+
+function forbidden() {
+  return {
+    ok: false as const,
+    response: {
+      status: 'error',
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Capability required',
+        retryable: false,
+      },
+    },
+  };
+}
+
+beforeEach(() => {
+  mockRequireAuthorization.mockResolvedValue(authorized());
+  mockGetActorId.mockReturnValue('test-actor');
+  mockGetWorkflowStore.mockReturnValue({
+    store: {
+      getNotificationPolicy: mockGetNotificationPolicy,
+    },
+  });
+});
 
 describe('POST /api/notifications/acknowledge', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('rejects an anonymous request before reading its body or touching the store', async () => {
+    mockRequireAuthorization.mockResolvedValueOnce(forbidden());
+
+    const r = await ackHandler({ context: { auth: { authenticated: false } } });
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('FORBIDDEN');
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      expect.anything(),
+      'notification:receive',
+    );
+    expect(mockReadBody).not.toHaveBeenCalled();
+    expect(mockGetWorkflowStore).not.toHaveBeenCalled();
+    expect(mockNotificationRuntime.acknowledgeFromCallback).not.toHaveBeenCalled();
   });
 
   it('must acknowledge a delivered notification', async () => {
@@ -100,10 +169,89 @@ describe('POST /api/notifications/acknowledge', () => {
       createdAt: '2026-07-27T10:00:00Z',
       updatedAt: '2026-07-27T10:00:05Z',
     });
+    mockNotificationRuntime.getOutboxDetail.mockResolvedValueOnce({
+      outbox: { id: 'ob_delivered_001', eventId: 'evt_001', status: 'delivered' },
+      event: {
+        id: 'evt_001',
+        recipientId: 'test-actor',
+        scope: 'budget:budget-owner',
+      },
+      redactedPayload: { title: 'Alert' },
+      deliveryAttempts: [],
+    });
 
     const r = await ackHandler({ context: { auth: { authenticated: true } } });
     expect(r.status).toBe('ok');
     expect(r.result.status).toBe('acknowledged');
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      expect.anything(),
+      'notification:receive',
+    );
+    expect(mockNotificationRuntime.getOutboxDetail).toHaveBeenCalledWith(
+      'ob_delivered_001',
+      'test-actor',
+    );
+    expect(mockNotificationRuntime.acknowledgeFromCallback).toHaveBeenCalledWith(
+      'ob_delivered_001',
+      { outboxId: 'ob_delivered_001' },
+    );
+  });
+
+  it('denies an authenticated actor from acknowledging another recipient notification', async () => {
+    mockReadBody.mockResolvedValue({ outboxId: 'ob_other_recipient' });
+    mockRequireAuthorization.mockResolvedValueOnce(authorized('test-actor'));
+    mockNotificationRuntime.getOutboxDetail.mockResolvedValueOnce(null);
+    mockNotificationRuntime.acknowledgeFromCallback.mockResolvedValue({
+      id: 'ob_other_recipient',
+      status: 'acknowledged',
+    });
+
+    const r = await ackHandler(request());
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('NOT_FOUND');
+    expect(mockNotificationRuntime.acknowledgeFromCallback).not.toHaveBeenCalled();
+  });
+
+  it('allows a scoped administrator to acknowledge another recipient notification', async () => {
+    mockReadBody.mockResolvedValue({ outboxId: 'ob_admin_scoped' });
+    mockGetActorId.mockReturnValue('notification-admin');
+    mockRequireAuthorization.mockImplementation(
+      async (_event: unknown, capability: string, scope?: string) => {
+        if (capability === 'notification:receive') {
+          return authorized('notification-admin', capability);
+        }
+        if (capability === 'notification:admin' && scope === 'budget:budget-owner') {
+          return authorized('notification-admin', capability);
+        }
+        return forbidden();
+      },
+    );
+    mockNotificationRuntime.getOutboxDetail.mockResolvedValueOnce({
+      outbox: { id: 'ob_admin_scoped', eventId: 'evt_admin_scoped', status: 'delivered' },
+      event: {
+        id: 'evt_admin_scoped',
+        recipientId: 'other-actor',
+        scope: 'budget:budget-owner',
+      },
+      redactedPayload: { title: 'Scoped alert' },
+      deliveryAttempts: [],
+    });
+    mockNotificationRuntime.acknowledgeFromCallback.mockResolvedValue({
+      id: 'ob_admin_scoped',
+      status: 'acknowledged',
+    });
+
+    const r = await ackHandler(request('notification-admin'));
+
+    expect(r.status).toBe('ok');
+    expect(mockRequireAuthorization).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      'notification:admin',
+      'budget:budget-owner',
+    );
+    expect(mockNotificationRuntime.acknowledgeFromCallback).toHaveBeenCalledTimes(1);
   });
 
   it('must reject missing outboxId', async () => {
@@ -114,6 +262,16 @@ describe('POST /api/notifications/acknowledge', () => {
 
   it('must fail when runtime throws', async () => {
     mockReadBody.mockResolvedValue({ outboxId: 'ob_001' });
+    mockNotificationRuntime.getOutboxDetail.mockResolvedValueOnce({
+      outbox: { id: 'ob_001', eventId: 'evt_001', status: 'delivered' },
+      event: {
+        id: 'evt_001',
+        recipientId: 'test-actor',
+        scope: 'budget:budget-owner',
+      },
+      redactedPayload: { title: 'Alert' },
+      deliveryAttempts: [],
+    });
     mockNotificationRuntime.acknowledgeFromCallback.mockRejectedValue(new Error('Not found'));
     const r = await ackHandler({ context: { auth: { authenticated: true } } });
     expect(r.status).toBe('error');
@@ -123,6 +281,22 @@ describe('POST /api/notifications/acknowledge', () => {
 describe('POST /api/notifications/suppress', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('rejects an anonymous request before reading its body or touching the store', async () => {
+    mockRequireAuthorization.mockResolvedValueOnce(forbidden());
+
+    const r = await suppressHandler({ context: { auth: { authenticated: false } } });
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('FORBIDDEN');
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      expect.anything(),
+      'notification:receive',
+    );
+    expect(mockReadBody).not.toHaveBeenCalled();
+    expect(mockGetWorkflowStore).not.toHaveBeenCalled();
+    expect(mockNotificationRuntime.suppress).not.toHaveBeenCalled();
   });
 
   it('must suppress a notification with reason', async () => {
@@ -141,10 +315,98 @@ describe('POST /api/notifications/suppress', () => {
       createdAt: '2026-07-27T10:00:00Z',
       updatedAt: '2026-07-27T10:00:05Z',
     });
+    mockNotificationRuntime.getOutboxDetail.mockResolvedValueOnce({
+      outbox: { id: 'ob_pending_001', eventId: 'evt_001', status: 'pending' },
+      event: {
+        id: 'evt_001',
+        recipientId: 'test-actor',
+        scope: 'budget:budget-owner',
+      },
+      redactedPayload: { title: 'Alert' },
+      deliveryAttempts: [],
+    });
 
-    const r = await suppressHandler({ context: { auth: { authenticated: true } } });
+    const r = await suppressHandler(request());
     expect(r.status).toBe('ok');
     expect(r.result.status).toBe('suppressed');
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      expect.anything(),
+      'notification:receive',
+    );
+    expect(mockNotificationRuntime.getOutboxDetail).toHaveBeenCalledWith(
+      'ob_pending_001',
+      'test-actor',
+    );
+    expect(mockNotificationRuntime.suppress).toHaveBeenCalledWith(
+      'ob_pending_001',
+      'User dismissed',
+    );
+  });
+
+  it('denies an authenticated actor from suppressing another recipient notification', async () => {
+    mockReadBody.mockResolvedValue({
+      outboxId: 'ob_other_recipient',
+      reason: 'Dismiss another actor alert',
+    });
+    mockRequireAuthorization.mockResolvedValueOnce(authorized('test-actor'));
+    mockNotificationRuntime.getOutboxDetail.mockResolvedValueOnce(null);
+    mockNotificationRuntime.suppress.mockResolvedValue({
+      id: 'ob_other_recipient',
+      status: 'suppressed',
+    });
+
+    const r = await suppressHandler(request());
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('NOT_FOUND');
+    expect(mockNotificationRuntime.suppress).not.toHaveBeenCalled();
+  });
+
+  it('allows a scoped administrator to suppress another recipient notification', async () => {
+    mockReadBody.mockResolvedValue({
+      outboxId: 'ob_admin_scoped',
+      reason: 'Administrative suppression',
+    });
+    mockGetActorId.mockReturnValue('notification-admin');
+    mockRequireAuthorization.mockImplementation(
+      async (_event: unknown, capability: string, scope?: string) => {
+        if (capability === 'notification:receive') {
+          return authorized('notification-admin', capability);
+        }
+        if (capability === 'notification:admin' && scope === 'budget:budget-owner') {
+          return authorized('notification-admin', capability);
+        }
+        return forbidden();
+      },
+    );
+    mockNotificationRuntime.getOutboxDetail.mockResolvedValueOnce({
+      outbox: { id: 'ob_admin_scoped', eventId: 'evt_admin_scoped', status: 'pending' },
+      event: {
+        id: 'evt_admin_scoped',
+        recipientId: 'other-actor',
+        scope: 'budget:budget-owner',
+      },
+      redactedPayload: { title: 'Scoped alert' },
+      deliveryAttempts: [],
+    });
+    mockNotificationRuntime.suppress.mockResolvedValue({
+      id: 'ob_admin_scoped',
+      status: 'suppressed',
+    });
+
+    const r = await suppressHandler(request('notification-admin'));
+
+    expect(r.status).toBe('ok');
+    expect(mockRequireAuthorization).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      'notification:admin',
+      'budget:budget-owner',
+    );
+    expect(mockNotificationRuntime.suppress).toHaveBeenCalledWith(
+      'ob_admin_scoped',
+      'Administrative suppression',
+    );
   });
 
   it('must reject missing outboxId', async () => {
@@ -159,6 +421,69 @@ describe('POST /api/notifications/suppress', () => {
     const r = await suppressHandler({ context: { auth: { authenticated: true } } });
     expect(r.status).toBe('error');
     expect(r.error?.code).toBe('MISSING_REASON');
+  });
+});
+
+describe('GET /api/notifications/policy', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetQuery.mockReturnValue({ spaceId: 'space-a', policyKey: 'delivery' });
+  });
+
+  it('rejects an unauthorized policy read before query or store access', async () => {
+    mockRequireAuthorization.mockResolvedValueOnce(forbidden());
+
+    const event = request('anonymous', 'space-a');
+    event.context.auth.authenticated = false;
+    const r = await policyHandler(event);
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('FORBIDDEN');
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      expect.anything(),
+      'notification:admin',
+      'space-a',
+    );
+    expect(mockGetQuery).not.toHaveBeenCalled();
+    expect(mockGetWorkflowStore).not.toHaveBeenCalled();
+    expect(mockGetNotificationPolicy).not.toHaveBeenCalled();
+  });
+
+  it('returns policy only from the caller authorized space', async () => {
+    const policy = {
+      id: 'policy-space-a',
+      spaceId: 'space-a',
+      policyKey: 'delivery',
+      policyVersion: 'v2',
+      policy: JSON.stringify(defaultPersistedPolicy),
+    };
+    mockGetActorId.mockReturnValue('policy-admin');
+    mockRequireAuthorization.mockResolvedValueOnce(
+      authorized('policy-admin', 'notification:admin'),
+    );
+    mockGetNotificationPolicy.mockResolvedValueOnce(policy);
+    const event = request('policy-admin', 'space-a');
+
+    const r = await policyHandler(event);
+
+    expect(r.status).toBe('ok');
+    expect(r.result).toEqual(policy);
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(event, 'notification:admin', 'space-a');
+    expect(mockGetNotificationPolicy).toHaveBeenCalledWith('space-a', 'delivery');
+  });
+
+  it('denies a policy ID from outside the caller authorized space before store lookup', async () => {
+    mockGetQuery.mockReturnValueOnce({ spaceId: 'space-b', policyKey: 'delivery' });
+    mockGetActorId.mockReturnValue('policy-admin');
+    mockRequireAuthorization.mockResolvedValueOnce(
+      authorized('policy-admin', 'notification:admin'),
+    );
+
+    const r = await policyHandler(request('policy-admin', 'space-a'));
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('SPACE_SCOPE_MISMATCH');
+    expect(mockGetNotificationPolicy).not.toHaveBeenCalled();
   });
 });
 

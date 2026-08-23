@@ -15,7 +15,8 @@ const signedI64StringSchema = z
   });
 
 const canonicalDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/;
-const canonicalUtcTimestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/;
+const canonicalUtcTimestampPattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
 
 function isValidCalendarDate(year: number, month: number, day: number): boolean {
   const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -384,7 +385,13 @@ export const snapshotSourceSchema = z
   })
   .strict();
 
-export const coverageStateSchema = z.enum(['complete', 'empty', 'partial', 'unknown']);
+export const coverageStateSchema = z.enum([
+  'complete',
+  'empty',
+  'partial',
+  'unknown',
+  'unavailable',
+]);
 
 export const snapshotCoverageSchema = z
   .object({

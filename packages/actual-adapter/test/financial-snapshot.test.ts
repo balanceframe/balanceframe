@@ -25,7 +25,7 @@ const BUDGET: APIFileEntity = {
   state: 'remote',
 };
 
-type CoverageState = 'unknown' | 'empty' | 'partial' | 'complete';
+type CoverageState = 'unknown' | 'unavailable' | 'empty' | 'partial' | 'complete';
 
 type Observation = {
   kind: string;
@@ -265,16 +265,14 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
   it('distinguishes confirmed empty collections from complete populated collections', async () => {
     const populated = createActualClient({
       getAccounts: vi.fn().mockResolvedValue([account('account-1', 'Checking', 10_000)]),
-      getTransactions: vi
-        .fn()
-        .mockResolvedValue([
-          transaction({
-            id: 'transaction-1',
-            account: 'account-1',
-            date: '2026-08-23',
-            amount: -100,
-          }),
-        ]),
+      getTransactions: vi.fn().mockResolvedValue([
+        transaction({
+          id: 'transaction-1',
+          account: 'account-1',
+          date: '2026-08-23',
+          amount: -100,
+        }),
+      ]),
       getPayees: vi.fn().mockResolvedValue([{ id: 'payee-1', name: 'Shop' } as APIPayeeEntity]),
       getCategories: vi.fn().mockResolvedValue([
         {
@@ -285,16 +283,14 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
           hidden: false,
         } as APICategoryEntity,
       ]),
-      getCategoryGroups: vi
-        .fn()
-        .mockResolvedValue([
-          {
-            id: 'group-1',
-            name: 'Needs',
-            is_income: false,
-            hidden: false,
-          } as APICategoryGroupEntity,
-        ]),
+      getCategoryGroups: vi.fn().mockResolvedValue([
+        {
+          id: 'group-1',
+          name: 'Needs',
+          is_income: false,
+          hidden: false,
+        } as APICategoryGroupEntity,
+      ]),
       getRules: vi.fn().mockResolvedValue([
         {
           id: 'rule-1',
@@ -401,6 +397,26 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
     ]);
     expect(result.snapshot.transactions.map(({ id }) => id)).toEqual(['transaction-readable']);
     expect(canonical.legacySnapshot).toEqual(result.snapshot);
+  });
+
+  it('returns an unknown snapshot and health when account reads keep failing', async () => {
+    const getAccounts = vi.fn().mockRejectedValue(new Error('accounts unavailable'));
+    const client = createActualClient({ getAccounts });
+
+    const result = await synchronize(client);
+    const canonical = financialSnapshot(result);
+
+    expect(canonical.coverage.accounts).toBe('unknown');
+    expect(canonical.coverage.transactions).toBe('unknown');
+    expect(result.snapshot.accounts).toEqual([]);
+    expect(result.snapshot.transactions).toEqual([]);
+    expect(result.health.state).toBe('unknown');
+    expect(result.health.coverage).toEqual({
+      totalAccounts: 0,
+      includedAccounts: 0,
+      allExpectedAccountsPresent: false,
+    });
+    expect(getAccounts).toHaveBeenCalledTimes(1);
   });
 
   it('qualifies every account with explicit freshness, collection coverage, and visible source evidence', async () => {

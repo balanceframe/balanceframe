@@ -360,4 +360,71 @@ describe('financial notification browser DTO', () => {
     expect(item.event).not.toHaveProperty('payload');
     expect(serialized).not.toContain(RAW_NOTIFICATION_SECRET);
   });
+
+  it('strips structural secret containers from an administrator browser DTO too', async () => {
+    mockGetActorId.mockReturnValueOnce('security-admin');
+    mockRequireAuthorization.mockResolvedValueOnce({
+      ok: true,
+      info: {
+        actorId: 'security-admin',
+        capability: 'notification:receive',
+        allowed: true,
+      },
+    });
+    mockNotificationRuntime.listOutbox.mockResolvedValueOnce([
+      {
+        outbox: {
+          id: 'outbox-admin-security',
+          eventId: 'event-admin-security',
+          deliveryKey: 'delivery-admin-security',
+          channelType: 'in_app',
+          status: 'delivered',
+        },
+        event: {
+          id: 'event-admin-security',
+          eventVersion: 1,
+          budgetId: 'budget-security',
+          classification: 'unresolved_material_evidence',
+          recipientId: 'another-security-actor',
+          scope: 'budget:budget-security',
+          redactionClass: 'restricted',
+          channelConfigVersion: null,
+          policyVersion: 'financial-attention-v1',
+          correlationId: 'financial-decision:admin-security',
+          payload: JSON.stringify({
+            title: 'Restricted finding',
+            rawEvidence: { providerToken: RAW_NOTIFICATION_SECRET },
+          }),
+          createdAt: CAPTURED_AT,
+        },
+        redactedPayload: {
+          title: 'Restricted finding',
+          summary: 'Material evidence needs review.',
+          rawEvidence: { providerToken: RAW_NOTIFICATION_SECRET },
+          rawPayload: { providerResponse: RAW_NOTIFICATION_SECRET },
+          secrets: { accessToken: RAW_NOTIFICATION_SECRET },
+        },
+        deliveryAttempts: [],
+      },
+    ]);
+
+    const response = await inboxHandler(event());
+    const serialized = JSON.stringify(response);
+    const item = response.result.items[0];
+
+    expect(response.status).toBe('ok');
+    expect(mockNotificationRuntime.listOutbox).toHaveBeenCalledWith(
+      'security-admin',
+      expect.any(Object),
+    );
+    expect(item.redactedPayload).toEqual({
+      title: 'Restricted finding',
+      summary: 'Material evidence needs review.',
+    });
+    expect(item.redactedPayload).not.toHaveProperty('rawEvidence');
+    expect(item.redactedPayload).not.toHaveProperty('rawPayload');
+    expect(item.redactedPayload).not.toHaveProperty('secrets');
+    expect(item.event).not.toHaveProperty('payload');
+    expect(serialized).not.toContain(RAW_NOTIFICATION_SECRET);
+  });
 });

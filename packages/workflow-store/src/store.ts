@@ -62,6 +62,7 @@ import type {
   ClaimInvitationInput,
   ClaimInvitationResult,
   CreateNotificationEventInput,
+  CreateOrGetNotificationEventInput,
   CreateReportRecordInput,
   CreateSavedFilterInput,
   CreateSavedViewInput,
@@ -249,7 +250,6 @@ function rowToIdempotency(row: IdempotencyRow): IdempotencyRecord {
   };
 }
 
-
 /** Map a raw DB row to a typed AuditRecord. */
 function rowToAudit(row: AuditRow): AuditRecord {
   return {
@@ -276,7 +276,6 @@ function rowToAudit(row: AuditRow): AuditRecord {
     isError: row.is_error !== 0,
   };
 }
-
 
 /** Map a raw DB row to a typed CorrectionRecord. */
 function rowToCorrection(row: CorrectionRow): CorrectionRecord {
@@ -425,7 +424,7 @@ function parseSavedViewScope(scope: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(scope);
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
+      ? (parsed as Record<string, unknown>)
       : {};
   } catch {
     return {};
@@ -509,7 +508,13 @@ const REVIEW_TRANSITIONS: Record<ReviewStatus, ReviewStatus[]> = {
 };
 
 /** Terminal statuses that cannot transition forward. */
-const TERMINAL_STATUSES: ReviewStatus[] = ['applied', 'apply_failed', 'rejected', 'skipped', 'superseded'];
+const TERMINAL_STATUSES: ReviewStatus[] = [
+  'applied',
+  'apply_failed',
+  'rejected',
+  'skipped',
+  'superseded',
+];
 
 /** Statuses for which `pending_review` is an undo, not a forward transition. */
 const UNDO_SOURCES: ReviewStatus[] = ['approved', 'correcting', 'rejected', 'skipped'];
@@ -527,7 +532,6 @@ const FINDING_TRANSITIONS: Record<string, string[]> = {
 
 /** Terminal finding statuses that cannot transition forward (except supersede). */
 const FINDING_TERMINAL_STATUSES: string[] = ['expired', 'superseded'];
-
 
 // ---------------------------------------------------------------------------
 // Row shapes (internal, matching DB schema)
@@ -645,7 +649,6 @@ interface IdempotencyRow {
   updated_at: string;
 }
 
-
 interface AuditRow {
   id: string;
   classification: string;
@@ -689,12 +692,12 @@ interface InvitationRow {
   redeemed_at: string | null;
 }
 
-
 interface NotificationEventRow {
   id: string;
   event_version: number;
   budget_id: string;
   classification: string;
+  dedup_key: string | null;
   recipient_id: string | null;
   scope: string | null;
   redaction_class: string | null;
@@ -967,7 +970,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectStrandedClaims: null as unknown as ReturnType<DatabaseType['prepare']>,
     // ── Notification events ──
     insertNotificationEvent: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertOrIgnoreNotificationEvent: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectNotificationEvent: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectNotificationEventByDedupIdentity: null as unknown as ReturnType<DatabaseType['prepare']>,
     // ── Notification outbox ──
     insertOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectOutbox: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1073,7 +1078,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
   close(): void {
     this.db.close();
   }
-
 
   // ── Schema migrations ─────────────────────────────────────────
   //
@@ -1593,12 +1597,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
           ON notification_policies(is_active);
       `);
     },
+    // Version 7: Durable, recipient- and scope-bound notification deduplication
+    (db) => {
+      db.exec(`
+        ALTER TABLE notification_events ADD COLUMN dedup_key TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_notif_events_dedup_identity
+          ON notification_events(
+            dedup_key,
+            recipient_id IS NULL,
+            COALESCE(recipient_id, ''),
+            scope IS NULL,
+            COALESCE(scope, '')
+          )
+          WHERE dedup_key IS NOT NULL;
+      `);
+    },
   ];
 
   private getCurrentSchemaVersion(): number {
-    const row = this.db.prepare(
-      'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
-    ).get() as { version: number } | undefined;
+    const row = this.db
+      .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
+      .get() as { version: number } | undefined;
     return row?.version ?? 0;
   }
   private runMigrations(): void {
@@ -1612,14 +1631,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
       if (!migration) continue;
       const runMigration = this.db.transaction(() => {
         migration(this.db);
-        this.db.prepare(
-          'INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)'
-        ).run({ version: v, appliedAt: new Date().toISOString() });
+        this.db
+          .prepare(
+            'INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (@version, @appliedAt)',
+          )
+          .run({ version: v, appliedAt: new Date().toISOString() });
       });
       runMigration();
     }
   }
-
 
   private prepareStatements(): void {
     // ── Suggestions ────────────────────────────────────────────────────
@@ -2106,7 +2126,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
          AND lease_expires_at <= @now
     `);
 
-
     // ── Audit ─────────────────────────────────────────────────────────
 
     this.stmt.insertAudit = this.db.prepare(`
@@ -2143,7 +2162,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.stmt.selectAuditCount = this.db.prepare(`
       SELECT COUNT(*) as count FROM audit_records
     `);
-
 
     // ── Corrections ──────────────────────────────────────────────────────
 
@@ -2421,15 +2439,35 @@ export class SqliteWorkflowStore implements WorkflowStore {
       INSERT INTO notification_events (id, event_version, budget_id, classification,
                                        recipient_id, scope, redaction_class,
                                        channel_config_version, policy_version,
-                                       correlation_id, payload, created_at)
+                                       correlation_id, payload, created_at, dedup_key)
       VALUES (@id, @eventVersion, @budgetId, @classification,
               @recipientId, @scope, @redactionClass,
               @channelConfigVersion, @policyVersion,
-              @correlationId, @payload, @createdAt)
+              @correlationId, @payload, @createdAt, @dedupKey)
+    `);
+
+    this.stmt.insertOrIgnoreNotificationEvent = this.db.prepare(`
+      INSERT OR IGNORE INTO notification_events (
+        id, event_version, budget_id, classification, recipient_id, scope,
+        redaction_class, channel_config_version, policy_version, correlation_id,
+        payload, created_at, dedup_key
+      )
+      VALUES (
+        @id, @eventVersion, @budgetId, @classification, @recipientId, @scope,
+        @redactionClass, @channelConfigVersion, @policyVersion, @correlationId,
+        @payload, @createdAt, @dedupKey
+      )
     `);
 
     this.stmt.selectNotificationEvent = this.db.prepare(`
       SELECT * FROM notification_events WHERE id = ?
+    `);
+
+    this.stmt.selectNotificationEventByDedupIdentity = this.db.prepare(`
+      SELECT * FROM notification_events
+       WHERE dedup_key = @dedupKey
+         AND recipient_id IS @recipientId
+         AND scope IS @scope
     `);
 
     // ── Notification outbox ────────────────────────────────────────────
@@ -3025,7 +3063,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
   }
 
-
   // ── Suggestion lifecycle ───────────────────────────────────────────
 
   async saveSuggestion(input: SaveSuggestionInput): Promise<Suggestion> {
@@ -3105,7 +3142,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     promptVersion: string,
   ): Promise<Suggestion | null> {
     const row = this.stmt.selectActiveSuggestion.get({
-      budgetId, transactionId, classifier, promptVersion,
+      budgetId,
+      transactionId,
+      classifier,
+      promptVersion,
     }) as SuggestionRow | undefined;
     return row ? rowToSuggestion(row) : null;
   }
@@ -3153,7 +3193,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
       // Row already existed — fetch the existing record unchanged
       // (no updated_at modification, true no-op).
       const existing = this.stmt.selectJobByCandidate.get({
-        jobType: input.jobType, candidateId: input.candidateId,
+        jobType: input.jobType,
+        candidateId: input.candidateId,
       }) as JobRow | undefined;
       if (!existing) throw new Error('Failed to enqueue or retrieve job');
       return rowToJob(existing);
@@ -3277,10 +3318,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToJob);
   }
 
-  async getJobByCandidateId(
-    jobType: string,
-    candidateId: string,
-  ): Promise<CandidateJob | null> {
+  async getJobByCandidateId(jobType: string, candidateId: string): Promise<CandidateJob | null> {
     const row = this.stmt.selectJobByCandidate.get({ jobType, candidateId }) as JobRow | undefined;
     return row ? rowToJob(row) : null;
   }
@@ -3419,7 +3457,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     classifier: string,
   ): Promise<ReviewItem | null> {
     const row = this.stmt.selectReviewByIssue.get({
-      budgetId, transactionId, categoryId, classifier,
+      budgetId,
+      transactionId,
+      categoryId,
+      classifier,
     }) as ReviewItemRow | undefined;
     return row ? rowToReviewItem(row) : null;
   }
@@ -3443,7 +3484,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   async countReviewItems(options?: ReviewListOptions): Promise<number> {
     if (options?.status) {
-      const row = this.stmt.countReviewItemsByStatus.get({ status: options.status }) as { count: number };
+      const row = this.stmt.countReviewItemsByStatus.get({ status: options.status }) as {
+        count: number;
+      };
       return row.count;
     }
     const row = this.stmt.countReviewItems.get({}) as { count: number };
@@ -3455,12 +3498,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToReviewItem);
   }
 
-  async transitionReviewItem(
-    id: string,
-    input: TransitionReviewInput,
-  ): Promise<ReviewItem> {
+  async transitionReviewItem(id: string, input: TransitionReviewInput): Promise<ReviewItem> {
     const now = nowISO();
-    const current = this.stmt.selectReviewItemStatus.get(id) as { id: string; status: string; version: number; approved_by: string } | undefined;
+    const current = this.stmt.selectReviewItemStatus.get(id) as
+      { id: string; status: string; version: number; approved_by: string } | undefined;
     if (!current) throw new Error(`Review item ${id} not found`);
 
     const fromStatus = current.status as ReviewStatus;
@@ -3478,9 +3519,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }
     const allowed = REVIEW_TRANSITIONS[fromStatus];
     if (!allowed.includes(toStatus)) {
-      throw new Error(
-        `Cannot transition review item ${id} from '${fromStatus}' to '${toStatus}'`,
-      );
+      throw new Error(`Cannot transition review item ${id} from '${fromStatus}' to '${toStatus}'`);
     }
 
     // Track approvedBy for final approval persistence
@@ -3515,7 +3554,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
           });
 
           if (result.changes === 0) {
-            throw new Error(`Version conflict on review item ${id}: expected ${input.expectedVersion}`);
+            throw new Error(
+              `Version conflict on review item ${id}: expected ${input.expectedVersion}`,
+            );
           }
 
           // Record action for the approval step (even though status didn't change)
@@ -3525,7 +3566,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
             fromStatus: fromStatus,
             toStatus: fromStatus, // stayed same
             actor: input.actor,
-            reason: input.reason ?? `Approved by ${input.actor} (${approvedByArr!.length}/${needed} reviewers)`,
+            reason:
+              input.reason ??
+              `Approved by ${input.actor} (${approvedByArr!.length}/${needed} reviewers)`,
             metadata: JSON.stringify(input.metadata ?? {}),
             createdAt: now,
           });
@@ -3559,7 +3602,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         // Version conflict or state changed
         throw new Error(
           `Version conflict on review item ${id}: expected ${input.expectedVersion}, ` +
-          `current version may have changed`,
+            `current version may have changed`,
         );
       }
 
@@ -3639,17 +3682,22 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (ids.length === 0) return [];
 
     // Read current statuses for all items, tracking found/missing per index
-    const items: ({ id: string; status: ReviewStatus; version: number } | null)[] = ids.map(id => {
-      const row = this.stmt.selectReviewItemsByIds.get(id) as { id: string; status: string; version: number } | undefined;
-      return row ? { id: row.id, status: row.status as ReviewStatus, version: row.version } : null;
-    });
+    const items: ({ id: string; status: ReviewStatus; version: number } | null)[] = ids.map(
+      (id) => {
+        const row = this.stmt.selectReviewItemsByIds.get(id) as
+          { id: string; status: string; version: number } | undefined;
+        return row
+          ? { id: row.id, status: row.status as ReviewStatus, version: row.version }
+          : null;
+      },
+    );
 
     // Collect only found items for validation
     const foundItems = items.filter((x): x is NonNullable<typeof x> => x !== null);
 
     if (foundItems.length === 0) {
       // All IDs are missing
-      return ids.map(id => ({
+      return ids.map((id) => ({
         itemId: id,
         success: false,
         item: null,
@@ -3659,19 +3707,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     // Heterogeneous group check: all found items must share the same current status
     const firstStatus = foundItems[0].status;
-    if (!foundItems.every(i => i.status === firstStatus)) {
+    if (!foundItems.every((i) => i.status === firstStatus)) {
       throw new Error(
         `Heterogeneous group: all items must have the same current status ` +
-        `(found items with statuses: ${[...new Set(foundItems.map(i => i.status))].join(', ')})`,
+          `(found items with statuses: ${[...new Set(foundItems.map((i) => i.status))].join(', ')})`,
       );
     }
 
     // Validate the transition for this status group
     const allowed = REVIEW_TRANSITIONS[firstStatus];
     if (!allowed.includes(toStatus)) {
-      throw new Error(
-        `Cannot transition from '${firstStatus}' to '${toStatus}'`,
-      );
+      throw new Error(`Cannot transition from '${firstStatus}' to '${toStatus}'`);
     }
 
     // Transition each item atomically, collecting per-item results
@@ -3722,7 +3768,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     reason?: string,
     expectedVersion?: number,
   ): Promise<ReviewItem> {
-    const current = this.stmt.selectReviewItemStatus.get(id) as { id: string; status: string; version: number } | undefined;
+    const current = this.stmt.selectReviewItemStatus.get(id) as
+      { id: string; status: string; version: number } | undefined;
     if (!current) throw new Error(`Review item ${id} not found`);
 
     const fromStatus = current.status as ReviewStatus;
@@ -3750,7 +3797,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToReviewAction);
   }
 
-
   // ── Correction history ──────────────────────────────────────────────
 
   async queryCorrectionHistory(options?: CorrectionHistoryOptions): Promise<CorrectionRecord[]> {
@@ -3760,13 +3806,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
     let rows: CorrectionRow[];
 
     if (options?.reviewItemId) {
-      rows = this.stmt.selectCorrectionsByReview.all({ reviewItemId: options.reviewItemId }) as CorrectionRow[];
+      rows = this.stmt.selectCorrectionsByReview.all({
+        reviewItemId: options.reviewItemId,
+      }) as CorrectionRow[];
     } else if (options?.merchant) {
-      rows = this.stmt.selectCorrectionsByMerchant.all({ merchant: options.merchant, limit, offset }) as CorrectionRow[];
+      rows = this.stmt.selectCorrectionsByMerchant.all({
+        merchant: options.merchant,
+        limit,
+        offset,
+      }) as CorrectionRow[];
     } else if (options?.transactionId) {
-      rows = this.stmt.selectCorrectionsByTransaction.all({ transactionId: options.transactionId, limit, offset }) as CorrectionRow[];
+      rows = this.stmt.selectCorrectionsByTransaction.all({
+        transactionId: options.transactionId,
+        limit,
+        offset,
+      }) as CorrectionRow[];
     } else if (options?.actor) {
-      rows = this.stmt.selectCorrectionsByActor.all({ actor: options.actor, limit, offset }) as CorrectionRow[];
+      rows = this.stmt.selectCorrectionsByActor.all({
+        actor: options.actor,
+        limit,
+        offset,
+      }) as CorrectionRow[];
     } else {
       rows = this.stmt.selectAllCorrections.all({ limit, offset }) as CorrectionRow[];
     }
@@ -3782,7 +3842,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       correction_ids: string;
     }[];
 
-    return rows.map(r => ({
+    return rows.map((r) => ({
       field: r.field as 'account' | 'direction' | 'category',
       merchant: r.merchant,
       values: r.values_json.split(',').filter((v, i, a) => a.indexOf(v) === i), // dedupe
@@ -3790,7 +3850,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }));
   }
   // ── Categorization proposal lifecycle ─────────────────────────────
-
 
   async createProposal(input: CreateProposalInput): Promise<CategorizationProposal> {
     const id = randomUUID();
@@ -3849,7 +3908,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     operation: ProposalOperation,
   ): Promise<CategorizationProposal | null> {
     const row = this.stmt.selectActiveProposal.get({
-      budgetId, transactionId, operation,
+      budgetId,
+      transactionId,
+      operation,
     }) as ProposalRow | undefined;
     return row ? rowToProposal(row) : null;
   }
@@ -3918,11 +3979,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     if (hasBudget) {
       if (options?.superseded === false) {
-        row = this.stmt.countProposalsByBudgetActive.get({ budgetId: options.budgetId }) as { count: number };
+        row = this.stmt.countProposalsByBudgetActive.get({ budgetId: options.budgetId }) as {
+          count: number;
+        };
       } else if (options?.superseded === true) {
-        row = this.stmt.countProposalsSupersededByBudget.get({ budgetId: options.budgetId }) as { count: number };
+        row = this.stmt.countProposalsSupersededByBudget.get({ budgetId: options.budgetId }) as {
+          count: number;
+        };
       } else {
-        row = this.stmt.countProposalsByBudget.get({ budgetId: options.budgetId }) as { count: number };
+        row = this.stmt.countProposalsByBudget.get({ budgetId: options.budgetId }) as {
+          count: number;
+        };
       }
     } else {
       if (options?.superseded === false) {
@@ -3939,7 +4006,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Proposal approval lifecycle ───────────────────────────────────
 
-
   async createApproval(input: CreateApprovalInput): Promise<ProposalApproval> {
     // Validate proposal exists and is not superseded
     const proposalRow = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
@@ -3953,7 +4019,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     // Validate payload hash matches proposal
     if (input.payloadHash !== proposalRow.payload_hash) {
-      throw new Error(`Payload hash mismatch: approval hash ${input.payloadHash} does not match proposal hash ${proposalRow.payload_hash}`);
+      throw new Error(
+        `Payload hash mismatch: approval hash ${input.payloadHash} does not match proposal hash ${proposalRow.payload_hash}`,
+      );
     }
 
     // Validate approval expiry is in the future
@@ -3986,7 +4054,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
           if (isExpired(existingAny.expires_at)) {
             throw new Error(
               `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
-              `already exists with status 'active' (expired at ${existingAny.expires_at}) and cannot be re-issued`,
+                `already exists with status 'active' (expired at ${existingAny.expires_at}) and cannot be re-issued`,
             );
           }
           // Active and not expired — idempotent return
@@ -3995,7 +4063,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         // Reject re-issuance — a consumed/expired/superseded approval already exists
         throw new Error(
           `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
-          `already exists with status '${existingAny.status}' and cannot be re-issued`,
+            `already exists with status '${existingAny.status}' and cannot be re-issued`,
         );
       }
 
@@ -4023,17 +4091,24 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const existing = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
     if (!existing) throw new Error(`Approval ${id} not found`);
 
-    if (existing.consumed_at) throw new Error(`Approval ${id} already consumed at ${existing.consumed_at}`);
+    if (existing.consumed_at)
+      throw new Error(`Approval ${id} already consumed at ${existing.consumed_at}`);
     if (existing.superseded_at) throw new Error(`Approval ${id} is superseded`);
 
     // Check proposal is not superseded
-    const proposalRow = this.stmt.selectProposal.get(existing.proposal_id) as ProposalRow | undefined;
+    const proposalRow = this.stmt.selectProposal.get(existing.proposal_id) as
+      ProposalRow | undefined;
     if (!proposalRow) throw new Error(`Proposal ${existing.proposal_id} not found`);
-    if (proposalRow.superseded_at) throw new Error(`Proposal ${existing.proposal_id} is superseded — cannot consume its approval`);
+    if (proposalRow.superseded_at)
+      throw new Error(
+        `Proposal ${existing.proposal_id} is superseded — cannot consume its approval`,
+      );
 
     // Check proposal has not expired
     if (isExpired(proposalRow.expires_at)) {
-      throw new Error(`Proposal ${existing.proposal_id} expired at ${proposalRow.expires_at} — cannot consume its approval`);
+      throw new Error(
+        `Proposal ${existing.proposal_id} expired at ${proposalRow.expires_at} — cannot consume its approval`,
+      );
     }
 
     // Check expiry
@@ -4060,7 +4135,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (!proposalRow) return `Proposal ${proposalId} not found`;
 
     // Check proposal is not superseded
-    if (proposalRow.superseded_at) return `Proposal ${proposalId} was superseded at ${proposalRow.superseded_at}`;
+    if (proposalRow.superseded_at)
+      return `Proposal ${proposalId} was superseded at ${proposalRow.superseded_at}`;
 
     // Check proposal has not expired
     if (isExpired(proposalRow.expires_at)) {
@@ -4075,7 +4151,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // Find active approvals
     const now = nowISO();
     this.stmt.markExpiredApprovals.run({ now });
-    const activeApprovals = this.stmt.selectActiveApprovals.all({ proposalId, now }) as ApprovalRow[];
+    const activeApprovals = this.stmt.selectActiveApprovals.all({
+      proposalId,
+      now,
+    }) as ApprovalRow[];
 
     if (activeApprovals.length === 0) {
       return `No active approvals found for proposal ${proposalId}`;
@@ -4113,20 +4192,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (existing.proposal_id !== input.proposalId || existing.operation !== input.operation) {
       throw new Error(
         `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
-        `already recorded for proposal ${existing.proposal_id} (op: ${existing.operation}), ` +
-        `cannot reuse with proposal ${input.proposalId} (op: ${input.operation})`,
+          `already recorded for proposal ${existing.proposal_id} (op: ${existing.operation}), ` +
+          `cannot reuse with proposal ${input.proposalId} (op: ${input.operation})`,
       );
     }
     if (existing.serialised_effect !== input.serialisedEffect) {
       throw new Error(
         `Idempotency key ${input.idempotencyKey} replay mismatch: ` +
-        `serialised effect differs from original`,
+          `serialised effect differs from original`,
       );
     }
 
     return { record: rowToIdempotency(existing), isOwner: false };
   }
-
 
   async getIdempotencyRecord(key: string): Promise<IdempotencyRecord | null> {
     const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow | undefined;
@@ -4139,10 +4217,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     isRetryable?: boolean,
   ): Promise<IdempotencyRecord> {
     const now = nowISO();
-    const status: IdempotencyStatus =
-      errorMessage
-        ? (isRetryable ? 'retryable_failed' : 'terminal_failed')
-        : 'succeeded';
+    const status: IdempotencyStatus = errorMessage
+      ? isRetryable
+        ? 'retryable_failed'
+        : 'terminal_failed'
+      : 'succeeded';
     this.stmt.completeIdempotencyStmt.run({ key, status, errorMessage: errorMessage ?? null, now });
     const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow;
     return rowToIdempotency(row);
@@ -4162,7 +4241,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
     return result.changes;
   }
-
 
   // ── Audit records (append-only) ───────────────────────────────────
 
@@ -4234,10 +4312,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToAudit);
   }
 
-  async queryAuditRecordsByProposal(
-    proposalId: string,
-    limit?: number,
-  ): Promise<AuditRecord[]> {
+  async queryAuditRecordsByProposal(proposalId: string, limit?: number): Promise<AuditRecord[]> {
     const rows = this.stmt.selectAuditByProposal.all({
       proposalId,
       limit: limit ?? 50,
@@ -4298,7 +4373,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     if (row.scope !== '*' && row.scope !== scope) {
       return {
         allowed: false,
-        disposition: { kind: 'denied', reason: `Scope '${row.scope}' does not cover required scope '${scope}'` },
+        disposition: {
+          kind: 'denied',
+          reason: `Scope '${row.scope}' does not cover required scope '${scope}'`,
+        },
         actorId,
         membershipStatus: 'active',
         capability,
@@ -4389,14 +4467,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
     accountCount: number;
     transactionCount: number;
   } | null> {
-    const row = this.stmt.selectLastExportStmt.get({}) as {
-      id: string;
-      budget_name: string;
-      export_path: string;
-      account_count: number;
-      transaction_count: number;
-      exported_at: string;
-    } | undefined;
+    const row = this.stmt.selectLastExportStmt.get({}) as
+      | {
+          id: string;
+          budget_name: string;
+          export_path: string;
+          account_count: number;
+          transaction_count: number;
+          exported_at: string;
+        }
+      | undefined;
     if (!row) return null;
     return {
       exportedAt: row.exported_at,
@@ -4444,7 +4524,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
       case 'user':
         if (options?.actorId) {
           const a = options.actorId;
-          deleted.memberships = db.prepare('DELETE FROM actor_memberships WHERE actor_id = ?').run(a).changes;
+          deleted.memberships = db
+            .prepare('DELETE FROM actor_memberships WHERE actor_id = ?')
+            .run(a).changes;
         } else {
           reasons.push('No actorId provided for user-scope deletion');
         }
@@ -4486,13 +4568,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // Count retained records still present
     let retainedCount = 0;
     try {
-      const row = db.prepare('SELECT COUNT(*) as c FROM suggestions').get() as { c: number } | undefined;
+      const row = db.prepare('SELECT COUNT(*) as c FROM suggestions').get() as
+        { c: number } | undefined;
       if (row) retainedCount += row.c;
-    } catch { /* table may not exist */ }
+    } catch {
+      /* table may not exist */
+    }
     try {
-      const row = db.prepare('SELECT COUNT(*) as c FROM candidate_jobs').get() as { c: number } | undefined;
+      const row = db.prepare('SELECT COUNT(*) as c FROM candidate_jobs').get() as
+        { c: number } | undefined;
       if (row) retainedCount += row.c;
-    } catch { /* table may not exist */ }
+    } catch {
+      /* table may not exist */
+    }
 
     return {
       deleted,
@@ -4508,7 +4596,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async getRuleOverrides(): Promise<Map<string, boolean>> {
-    const rows = this.stmt.getAllRuleOverrides.all({}) as Array<{ rule_id: string; inactive: number }>;
+    const rows = this.stmt.getAllRuleOverrides.all({}) as Array<{
+      rule_id: string;
+      inactive: number;
+    }>;
     const map = new Map<string, boolean>();
     for (const row of rows) {
       map.set(row.rule_id, row.inactive === 1);
@@ -4540,7 +4631,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const txn = this.db.transaction(() => {
       const row = this.stmt.selectRegistrationState.get({}) as
-        { owner_user_id: string | null; claim_id: string | null; claimed_email: string | null } | undefined;
+        | { owner_user_id: string | null; claim_id: string | null; claimed_email: string | null }
+        | undefined;
 
       if (row?.owner_user_id) {
         throw new Error('Bootstrap already completed');
@@ -4592,7 +4684,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const txn = this.db.transaction(() => {
       const row = this.stmt.selectRegistrationState.get({}) as
-        { owner_user_id: string | null; claim_id: string | null; bootstrapped_at: string | null } | undefined;
+        | { owner_user_id: string | null; claim_id: string | null; bootstrapped_at: string | null }
+        | undefined;
 
       if (!row?.claim_id) {
         throw new Error('No bootstrap claim found');
@@ -4656,7 +4749,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return txn() as FinalizeBootstrapResult;
   }
 
-  async createInvitation(creatorUserId: string, auditContext?: { requestId?: string; correlationId?: string }): Promise<CreateInvitationResult> {
+  async createInvitation(
+    creatorUserId: string,
+    auditContext?: { requestId?: string; correlationId?: string },
+  ): Promise<CreateInvitationResult> {
     const id = randomUUID();
     const rawToken = randomBytes(32).toString('hex');
     const tokenDigest = createHash('sha256').update(rawToken).digest('hex');
@@ -4700,7 +4796,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     };
   }
 
-  async revokeInvitation(invitationId: string, actorId?: string, requestId?: string): Promise<void> {
+  async revokeInvitation(
+    invitationId: string,
+    actorId?: string,
+    requestId?: string,
+  ): Promise<void> {
     const now = nowISO();
     const result = this.stmt.updateInvitationRevoke.run({ id: invitationId });
     if (result.changes === 0) {
@@ -4828,7 +4928,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return txn() as ClaimInvitationResult;
   }
 
-  async completeInvitationRedemption(claimId: string, userId: string, requestId?: string): Promise<void> {
+  async completeInvitationRedemption(
+    claimId: string,
+    userId: string,
+    requestId?: string,
+  ): Promise<void> {
     const now = nowISO();
     const result = this.stmt.updateInvitationRedeemed.run({
       claimId,
@@ -4886,10 +4990,41 @@ export class SqliteWorkflowStore implements WorkflowStore {
       correlationId: input.correlationId ?? null,
       payload: payloadJson,
       createdAt: now,
+      dedupKey: null,
     });
 
     const row = this.stmt.selectNotificationEvent.get(id) as NotificationEventRow | undefined;
     if (!row) throw new Error('Failed to read back notification event');
+    return rowToNotificationEvent(row);
+  }
+
+  async createOrGetNotificationEvent(
+    input: CreateOrGetNotificationEventInput,
+  ): Promise<NotificationEvent> {
+    const recipientId = input.recipientId ?? null;
+    const scope = input.scope ?? null;
+    const identity = { dedupKey: input.dedupKey, recipientId, scope };
+    const id = randomUUID();
+
+    this.stmt.insertOrIgnoreNotificationEvent.run({
+      id,
+      eventVersion: 1,
+      budgetId: input.budgetId,
+      classification: input.classification,
+      recipientId,
+      scope,
+      redactionClass: input.redactionClass ?? null,
+      channelConfigVersion: input.channelConfigVersion ?? null,
+      policyVersion: input.policyVersion,
+      correlationId: input.correlationId ?? null,
+      payload: JSON.stringify(input.payload),
+      createdAt: nowISO(),
+      dedupKey: input.dedupKey,
+    });
+
+    const row = this.stmt.selectNotificationEventByDedupIdentity.get(identity) as
+      NotificationEventRow | undefined;
+    if (!row) throw new Error('Failed to read back deduplicated notification event');
     return rowToNotificationEvent(row);
   }
 
@@ -4902,7 +5037,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   async enqueueNotification(input: EnqueueNotificationInput): Promise<NotificationOutboxRecord> {
     // Verify the referenced event exists (persist-before-dispatch)
-    const event = this.stmt.selectNotificationEvent.get(input.eventId) as NotificationEventRow | undefined;
+    const event = this.stmt.selectNotificationEvent.get(input.eventId) as
+      NotificationEventRow | undefined;
     if (!event) throw new Error(`event does not exist: ${input.eventId}`);
 
     // Check for duplicate delivery key for this (eventId, channelType)
@@ -4912,23 +5048,42 @@ export class SqliteWorkflowStore implements WorkflowStore {
       deliveryKey: input.deliveryKey,
     }) as NotificationOutboxRow | undefined;
     if (existing) {
-      throw new Error(`deliveryKey already exists for this eventId+channelType: ${input.deliveryKey}`);
+      if (event.dedup_key !== null) {
+        return rowToOutbox(existing);
+      }
+      throw new Error(
+        `deliveryKey already exists for this eventId+channelType: ${input.deliveryKey}`,
+      );
     }
 
     const id = randomUUID();
     const now = nowISO();
     const maxAttempts = input.maxAttempts ?? 3;
 
-    this.stmt.insertOutbox.run({
-      id,
-      eventId: input.eventId,
-      deliveryKey: input.deliveryKey,
-      channelType: input.channelType,
-      channelConfigVersion: input.channelConfigVersion ?? null,
-      maxAttempts,
-      correlationId: input.correlationId ?? null,
-      now,
-    });
+    try {
+      this.stmt.insertOutbox.run({
+        id,
+        eventId: input.eventId,
+        deliveryKey: input.deliveryKey,
+        channelType: input.channelType,
+        channelConfigVersion: input.channelConfigVersion ?? null,
+        maxAttempts,
+        correlationId: input.correlationId ?? null,
+        now,
+      });
+    } catch (error) {
+      if (event.dedup_key !== null) {
+        const concurrentlyCreated = this.stmt.selectOutboxByEventChannel.get({
+          eventId: input.eventId,
+          channelType: input.channelType,
+          deliveryKey: input.deliveryKey,
+        }) as NotificationOutboxRow | undefined;
+        if (concurrentlyCreated) {
+          return rowToOutbox(concurrentlyCreated);
+        }
+      }
+      throw error;
+    }
 
     const row = this.stmt.selectOutbox.get(id) as NotificationOutboxRow | undefined;
     if (!row) throw new Error('Failed to read back outbox record');
@@ -4983,7 +5138,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }
 
     // 4. Idempotent retry: if already claimed with this token, return it
-    const claimedRow = this.stmt.selectClaimedOutbox.get({ outboxId, claimToken }) as NotificationOutboxRow | undefined;
+    const claimedRow = this.stmt.selectClaimedOutbox.get({ outboxId, claimToken }) as
+      NotificationOutboxRow | undefined;
     if (claimedRow) {
       return rowToOutbox(claimedRow);
     }
@@ -5000,7 +5156,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const result = this.stmt.completeOutbox.run({ outboxId, claimToken, now });
     if (result.changes === 0) {
-      throw new Error(`Cannot complete delivery: claim token mismatch or invalid state for outbox ${outboxId}`);
+      throw new Error(
+        `Cannot complete delivery: claim token mismatch or invalid state for outbox ${outboxId}`,
+      );
     }
 
     // Read the outbox to get the current attempt count
@@ -5033,7 +5191,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // Atomically fail the outbox record
     const result = this.stmt.failOutbox.run({ outboxId, claimToken, errorMessage, now });
     if (result.changes === 0) {
-      throw new Error(`Cannot fail delivery: claim token mismatch or invalid state for outbox ${outboxId}`);
+      throw new Error(
+        `Cannot fail delivery: claim token mismatch or invalid state for outbox ${outboxId}`,
+      );
     }
 
     // Read current attempt count
@@ -5096,7 +5256,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
   ): Promise<NotificationOutboxRecord[]> {
     let rows: NotificationOutboxRow[];
     if (channelType) {
-      rows = this.stmt.selectPendingOutboxByChannel.all({ limit, channelType }) as NotificationOutboxRow[];
+      rows = this.stmt.selectPendingOutboxByChannel.all({
+        limit,
+        channelType,
+      }) as NotificationOutboxRow[];
     } else {
       rows = this.stmt.selectPendingOutbox.all({ limit }) as NotificationOutboxRow[];
     }
@@ -5110,7 +5273,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const now = nowISO();
     let rows: NotificationOutboxRow[];
     if (channelType) {
-      rows = this.stmt.selectRetryableOutboxByChannel.all({ limit, channelType, now }) as NotificationOutboxRow[];
+      rows = this.stmt.selectRetryableOutboxByChannel.all({
+        limit,
+        channelType,
+        now,
+      }) as NotificationOutboxRow[];
     } else {
       rows = this.stmt.selectRetryableOutbox.all({ limit, now }) as NotificationOutboxRow[];
     }
@@ -5122,9 +5289,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToDeliveryAttempt);
   }
 
-  async listOutboxRecords(
-    options?: ListOutboxRecordsOptions,
-  ): Promise<NotificationOutboxRecord[]> {
+  async listOutboxRecords(options?: ListOutboxRecordsOptions): Promise<NotificationOutboxRecord[]> {
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
     const status = options?.status;
@@ -5132,11 +5297,24 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     let rows: NotificationOutboxRow[];
     if (status && channelType) {
-      rows = this.stmt.selectListOutboxByStatusChannel.all({ limit, offset, status, channelType }) as NotificationOutboxRow[];
+      rows = this.stmt.selectListOutboxByStatusChannel.all({
+        limit,
+        offset,
+        status,
+        channelType,
+      }) as NotificationOutboxRow[];
     } else if (status) {
-      rows = this.stmt.selectListOutboxByStatus.all({ limit, offset, status }) as NotificationOutboxRow[];
+      rows = this.stmt.selectListOutboxByStatus.all({
+        limit,
+        offset,
+        status,
+      }) as NotificationOutboxRow[];
     } else if (channelType) {
-      rows = this.stmt.selectListOutboxByChannel.all({ limit, offset, channelType }) as NotificationOutboxRow[];
+      rows = this.stmt.selectListOutboxByChannel.all({
+        limit,
+        offset,
+        channelType,
+      }) as NotificationOutboxRow[];
     } else {
       rows = this.stmt.selectListOutbox.all({ limit, offset }) as NotificationOutboxRow[];
     }
@@ -5150,9 +5328,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const now = nowISO();
 
     // Determine next version number for this policy key
-    const maxRow = this.db.prepare(
-      'SELECT MAX(version) AS mv FROM policy_versions WHERE policy_key = ?'
-    ).get(input.policyKey) as { mv: number | null } | undefined;
+    const maxRow = this.db
+      .prepare('SELECT MAX(version) AS mv FROM policy_versions WHERE policy_key = ?')
+      .get(input.policyKey) as { mv: number | null } | undefined;
     const nextVersion = (maxRow?.mv ?? 0) + 1;
 
     const txn = this.db.transaction(() => {
@@ -5183,7 +5361,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async getActivePolicyVersion(policyKey: string): Promise<PolicyVersion | null> {
-    const row = this.stmt.selectActivePolicyVersion.get({ policyKey }) as PolicyVersionRow | undefined;
+    const row = this.stmt.selectActivePolicyVersion.get({ policyKey }) as
+      PolicyVersionRow | undefined;
     return row ? rowToPolicyVersion(row) : null;
   }
 
@@ -5192,7 +5371,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     limit: number = 50,
     offset: number = 0,
   ): Promise<PolicyVersion[]> {
-    const rows = this.stmt.listPolicyVersions.all({ policyKey, limit, offset }) as PolicyVersionRow[];
+    const rows = this.stmt.listPolicyVersions.all({
+      policyKey,
+      limit,
+      offset,
+    }) as PolicyVersionRow[];
     return rows.map(rowToPolicyVersion);
   }
 
@@ -5236,10 +5419,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rowToSavedFilter(row);
   }
 
-  async updateSavedFilter(
-    id: string,
-    input: UpdateSavedFilterInput,
-  ): Promise<SavedFilter> {
+  async updateSavedFilter(id: string, input: UpdateSavedFilterInput): Promise<SavedFilter> {
     const existing = this.stmt.selectSavedFilter.get(id) as SavedFilterRow | undefined;
     if (!existing) throw new Error(`Saved filter ${id} not found`);
 
@@ -5259,7 +5439,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
         id,
         name: input.name ?? null,
         filterConfig: input.filterConfig ? JSON.stringify(input.filterConfig) : null,
-        viewConfig: input.viewConfig !== undefined ? (input.viewConfig ? JSON.stringify(input.viewConfig) : null) : null,
+        viewConfig:
+          input.viewConfig !== undefined
+            ? input.viewConfig
+              ? JSON.stringify(input.viewConfig)
+              : null
+            : null,
         scope: input.scope ?? null,
         policyVersion: input.policyVersion ?? null,
         isDefault: input.isDefault !== undefined ? (input.isDefault ? 1 : 0) : null,
@@ -5284,11 +5469,23 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     let rows: SavedFilterRow[];
     if (options?.budgetId) {
-      rows = this.stmt.listSavedFiltersByBudget.all({ budgetId: options.budgetId, limit, offset }) as SavedFilterRow[];
+      rows = this.stmt.listSavedFiltersByBudget.all({
+        budgetId: options.budgetId,
+        limit,
+        offset,
+      }) as SavedFilterRow[];
     } else if (options?.scope) {
-      rows = this.stmt.listSavedFiltersByScope.all({ scope: options.scope, limit, offset }) as SavedFilterRow[];
+      rows = this.stmt.listSavedFiltersByScope.all({
+        scope: options.scope,
+        limit,
+        offset,
+      }) as SavedFilterRow[];
     } else if (options?.actorId) {
-      rows = this.stmt.listSavedFiltersByActor.all({ actorId: options.actorId, limit, offset }) as SavedFilterRow[];
+      rows = this.stmt.listSavedFiltersByActor.all({
+        actorId: options.actorId,
+        limit,
+        offset,
+      }) as SavedFilterRow[];
     } else {
       rows = this.stmt.listSavedFilters.all({ limit, offset }) as SavedFilterRow[];
     }
@@ -5334,9 +5531,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     let rows: ReportRecordRow[];
     if (options?.budgetId) {
-      rows = this.stmt.listReportRecordsByBudget.all({ budgetId: options.budgetId, limit, offset }) as ReportRecordRow[];
+      rows = this.stmt.listReportRecordsByBudget.all({
+        budgetId: options.budgetId,
+        limit,
+        offset,
+      }) as ReportRecordRow[];
     } else if (options?.reportType) {
-      rows = this.stmt.listReportRecordsByType.all({ reportType: options.reportType, limit, offset }) as ReportRecordRow[];
+      rows = this.stmt.listReportRecordsByType.all({
+        reportType: options.reportType,
+        limit,
+        offset,
+      }) as ReportRecordRow[];
     } else {
       rows = this.stmt.listReportRecords.all({ limit, offset }) as ReportRecordRow[];
     }
@@ -5408,7 +5613,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async duplicateSavedView(input: DuplicateSavedViewInput): Promise<SavedViewResult> {
-    const source = this.stmt.selectSavedView.get({ viewId: input.sourceViewId }) as SavedViewRow | undefined;
+    const source = this.stmt.selectSavedView.get({ viewId: input.sourceViewId }) as
+      SavedViewRow | undefined;
     if (!source) throw new Error(`Source saved view ${input.sourceViewId} not found`);
 
     const newViewId = randomUUID();
@@ -5498,15 +5704,36 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     let rows: FindingRow[];
     if (options?.status && options?.budgetId) {
-      rows = this.stmt.listFindingsByBudgetStatus.all({ budgetId: options.budgetId, status: options.status, limit, offset }) as FindingRow[];
+      rows = this.stmt.listFindingsByBudgetStatus.all({
+        budgetId: options.budgetId,
+        status: options.status,
+        limit,
+        offset,
+      }) as FindingRow[];
     } else if (options?.status) {
-      rows = this.stmt.listFindingsByStatus.all({ status: options.status, limit, offset }) as FindingRow[];
+      rows = this.stmt.listFindingsByStatus.all({
+        status: options.status,
+        limit,
+        offset,
+      }) as FindingRow[];
     } else if (options?.budgetId) {
-      rows = this.stmt.listFindingsByBudget.all({ budgetId: options.budgetId, limit, offset }) as FindingRow[];
+      rows = this.stmt.listFindingsByBudget.all({
+        budgetId: options.budgetId,
+        limit,
+        offset,
+      }) as FindingRow[];
     } else if (options?.classification) {
-      rows = this.stmt.listFindingsByClassification.all({ classification: options.classification, limit, offset }) as FindingRow[];
+      rows = this.stmt.listFindingsByClassification.all({
+        classification: options.classification,
+        limit,
+        offset,
+      }) as FindingRow[];
     } else if (options?.severity) {
-      rows = this.stmt.listFindingsBySeverity.all({ severity: options.severity, limit, offset }) as FindingRow[];
+      rows = this.stmt.listFindingsBySeverity.all({
+        severity: options.severity,
+        limit,
+        offset,
+      }) as FindingRow[];
     } else {
       rows = this.stmt.listFindings.all({ limit, offset }) as FindingRow[];
     }
@@ -5562,7 +5789,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
 
     if (result.changes === 0) {
-      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to acknowledged`);
+      throw new Error(
+        `Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to acknowledged`,
+      );
     }
 
     const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
@@ -5604,7 +5833,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
 
     if (result.changes === 0) {
-      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to corrected`);
+      throw new Error(
+        `Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to corrected`,
+      );
     }
 
     const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
@@ -5646,7 +5877,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
 
     if (result.changes === 0) {
-      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to dismissed`);
+      throw new Error(
+        `Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to dismissed`,
+      );
     }
 
     const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
@@ -5688,7 +5921,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
 
     if (result.changes === 0) {
-      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to reopened`);
+      throw new Error(
+        `Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to reopened`,
+      );
     }
 
     const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
@@ -5730,7 +5965,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
     });
 
     if (result.changes === 0) {
-      throw new Error(`Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to superseded`);
+      throw new Error(
+        `Finding ${input.findingId} version conflict or invalid transition from ${existing.status} to superseded`,
+      );
     }
 
     const row = this.stmt.selectFinding.get(input.findingId) as FindingRow;
@@ -5757,8 +5994,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Notification policy lifecycle ────────────────────────────────
 
-  async saveNotificationPolicy(input: SaveNotificationPolicyInput): Promise<NotificationPolicyRecord> {
-    const existing = this.stmt.selectNotificationPolicy.get({ spaceId: input.spaceId, policyKey: input.policyKey }) as NotificationPolicyRow | undefined;
+  async saveNotificationPolicy(
+    input: SaveNotificationPolicyInput,
+  ): Promise<NotificationPolicyRecord> {
+    const existing = this.stmt.selectNotificationPolicy.get({
+      spaceId: input.spaceId,
+      policyKey: input.policyKey,
+    }) as NotificationPolicyRow | undefined;
 
     const now = nowISO();
     const policyJson = JSON.stringify(input.policy);
@@ -5784,32 +6026,53 @@ export class SqliteWorkflowStore implements WorkflowStore {
       });
     }
 
-    const row = this.stmt.selectNotificationPolicy.get({ spaceId: input.spaceId, policyKey: input.policyKey }) as NotificationPolicyRow;
+    const row = this.stmt.selectNotificationPolicy.get({
+      spaceId: input.spaceId,
+      policyKey: input.policyKey,
+    }) as NotificationPolicyRow;
     if (!row) throw new Error('Failed to read back notification policy');
     return rowToNotificationPolicy(row);
   }
 
-  async getNotificationPolicy(spaceId: string, policyKey: string): Promise<NotificationPolicyRecord | null> {
-    const row = this.stmt.selectNotificationPolicy.get({ spaceId, policyKey }) as NotificationPolicyRow | undefined;
+  async getNotificationPolicy(
+    spaceId: string,
+    policyKey: string,
+  ): Promise<NotificationPolicyRecord | null> {
+    const row = this.stmt.selectNotificationPolicy.get({ spaceId, policyKey }) as
+      NotificationPolicyRow | undefined;
     return row ? rowToNotificationPolicy(row) : null;
   }
 
-  async listNotificationPolicies(options?: ListNotificationPoliciesOptions): Promise<NotificationPolicyRecord[]> {
+  async listNotificationPolicies(
+    options?: ListNotificationPoliciesOptions,
+  ): Promise<NotificationPolicyRecord[]> {
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
 
     let rows: NotificationPolicyRow[];
     if (options?.spaceId) {
-      rows = this.stmt.listNotificationPoliciesBySpace.all({ spaceId: options.spaceId, limit, offset }) as NotificationPolicyRow[];
+      rows = this.stmt.listNotificationPoliciesBySpace.all({
+        spaceId: options.spaceId,
+        limit,
+        offset,
+      }) as NotificationPolicyRow[];
     } else {
       rows = this.stmt.listNotificationPolicies.all({ limit, offset }) as NotificationPolicyRow[];
     }
     return rows.map(rowToNotificationPolicy);
   }
 
-  async resolveRecipients(spaceId: string, classification: string, severity: string): Promise<RecipientResolution> {
+  async resolveRecipients(
+    spaceId: string,
+    classification: string,
+    severity: string,
+  ): Promise<RecipientResolution> {
     // Look up active delivery/notification policies for the space to extract recipient configuration
-    const rows = this.stmt.listNotificationPoliciesBySpace.all({ spaceId, limit: 100, offset: 0 }) as NotificationPolicyRow[];
+    const rows = this.stmt.listNotificationPoliciesBySpace.all({
+      spaceId,
+      limit: 100,
+      offset: 0,
+    }) as NotificationPolicyRow[];
 
     // Collect actor IDs and channels from active policy configurations
     const actorIds = new Set<string>();
@@ -5836,7 +6099,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }
 
         // Extract classification/severity-specific recipients
-        if (parsed.classifications && typeof parsed.classifications === 'object' && !Array.isArray(parsed.classifications)) {
+        if (
+          parsed.classifications &&
+          typeof parsed.classifications === 'object' &&
+          !Array.isArray(parsed.classifications)
+        ) {
           const classMap = parsed.classifications as Record<string, unknown>;
           const match = classMap[classification];
           if (match && typeof match === 'object' && !Array.isArray(match)) {
@@ -5855,7 +6122,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }
 
         // Extract severity-specific recipients
-        if (parsed.severities && typeof parsed.severities === 'object' && !Array.isArray(parsed.severities)) {
+        if (
+          parsed.severities &&
+          typeof parsed.severities === 'object' &&
+          !Array.isArray(parsed.severities)
+        ) {
           const sevMap = parsed.severities as Record<string, unknown>;
           const match = sevMap[severity];
           if (match && typeof match === 'object' && !Array.isArray(match)) {
@@ -5892,16 +6163,24 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Report history (Phase 8.5) ───────────────────────────────────
 
-  async getReportHistory(budgetId?: string, limit?: number, offset?: number): Promise<ReportHistoryEntry[]> {
+  async getReportHistory(
+    budgetId?: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ReportHistoryEntry[]> {
     const lim = limit ?? 50;
     const off = offset ?? 0;
 
     const rows = budgetId
-      ? this.stmt.listReportHistoryByBudget.all({ budgetId, limit: lim, offset: off }) as ReportRecordRow[]
-      : this.stmt.listReportHistory.all({ limit: lim, offset: off }) as ReportRecordRow[];
+      ? (this.stmt.listReportHistoryByBudget.all({
+          budgetId,
+          limit: lim,
+          offset: off,
+        }) as ReportRecordRow[])
+      : (this.stmt.listReportHistory.all({ limit: lim, offset: off }) as ReportRecordRow[]);
 
     const now = nowISO();
-    return rows.map(r => ({
+    return rows.map((r) => ({
       id: r.id,
       reportType: r.report_type,
       budgetId: r.budget_id,

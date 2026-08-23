@@ -92,6 +92,57 @@ const DELIVERY_ATTEMPT_FIELDS = [
   'failureReason',
 ] as const;
 
+function isSensitivePayloadKey(key: string): boolean {
+  if (key === '__proto__' || key === 'prototype' || key === 'constructor') return true;
+
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (
+    normalized.includes('payload') ||
+    normalized.includes('rawevidence') ||
+    normalized.includes('secret') ||
+    normalized.includes('token') ||
+    normalized.includes('credential') ||
+    normalized.includes('password') ||
+    normalized.includes('apikey') ||
+    normalized.includes('privatekey') ||
+    normalized.includes('accesskey') ||
+    normalized === 'authorization' ||
+    normalized.endsWith('authorization') ||
+    (normalized.includes('provider') &&
+      (normalized.includes('auth') ||
+        normalized.includes('cookie') ||
+        normalized.includes('session') ||
+        normalized.endsWith('key')))
+  );
+}
+
+function sanitizePayloadValue(value: unknown, ancestors: Set<object>): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (ancestors.has(value)) return null;
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((entry) => sanitizePayloadValue(entry, ancestors));
+    }
+
+    const safe: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (!isSensitivePayloadKey(key)) {
+        safe[key] = sanitizePayloadValue(entry, ancestors);
+      }
+    }
+    return safe;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function sanitizeRedactedPayload(source: unknown): Record<string, unknown> {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return {};
+  return sanitizePayloadValue(source, new Set()) as Record<string, unknown>;
+}
+
 interface NotificationDetail {
   readonly outbox: unknown;
   readonly event: unknown;
@@ -116,7 +167,7 @@ function sanitizeNotificationDetail(detail: NotificationDetail) {
   return {
     outbox: pickSafeFields(detail.outbox, DELIVERY_STATE_FIELDS),
     event: pickSafeFields(detail.event, EVENT_METADATA_FIELDS),
-    redactedPayload: detail.redactedPayload,
+    redactedPayload: sanitizeRedactedPayload(detail.redactedPayload),
     deliveryAttempts: detail.deliveryAttempts.map((attempt) =>
       pickSafeFields(attempt, DELIVERY_ATTEMPT_FIELDS),
     ),
@@ -167,6 +218,32 @@ export default defineEventHandler(async (event) => {
         false,
         requestId,
       );
+    }
+
+    if (detail.event.recipientId !== undefined && detail.event.recipientId !== actorId) {
+      const scope = typeof detail.event.scope === 'string' ? detail.event.scope.trim() : '';
+      if (!scope) {
+        setResponseStatus(event, 404);
+        return errorEnvelope(
+          'NOT_FOUND',
+          'Notification not found or access denied.',
+          authInfo,
+          false,
+          requestId,
+        );
+      }
+
+      const adminAuth = await requireAuthorization(event, 'notification:admin', scope);
+      if (!adminAuth.ok) {
+        setResponseStatus(event, 404);
+        return errorEnvelope(
+          'NOT_FOUND',
+          'Notification not found or access denied.',
+          authInfo,
+          false,
+          requestId,
+        );
+      }
     }
 
     return okEnvelope(sanitizeNotificationDetail(detail), auth.info, requestId);

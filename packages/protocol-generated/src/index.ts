@@ -425,8 +425,8 @@ export interface SnapshotCoverage {
   tags: CoverageState;
 }
 
-/** Partial means some source entries were unavailable; empty means confirmed complete with no entries. */
-export type CoverageState = 'complete' | 'empty' | 'partial' | 'unknown';
+/** Unavailable means the source collection could not be read; partial means some entries were unavailable; empty means a confirmed complete collection has no entries. */
+export type CoverageState = 'complete' | 'empty' | 'partial' | 'unknown' | 'unavailable';
 
 export interface InclusionScope {
   pendingActivity: PendingActivityTreatment;

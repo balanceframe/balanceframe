@@ -5,10 +5,10 @@
   "type": "module",
   "description": "Actual Budget API integration tests for BalanceFrame",
   "scripts": {
-    "coverage": "vitest run --coverage",
+    "coverage": "BALANCEFRAME_ACTUAL_FIXTURE=1 vitest run --coverage",
     "pretest": "./setup-fixture-server.sh",
     "setup": "./setup-fixture-server.sh",
-    "test": "NODE_ENV=production vitest run",
+    "test": "BALANCEFRAME_ACTUAL_FIXTURE=1 NODE_ENV=production vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui"
   },

@@ -13,7 +13,8 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
+  requireAuthorization,
+  getActorId,
   sanitizeError,
 } from '../../utils/workflow-store';
 import { NotificationRuntime, InAppChannelAdapter } from '@balanceframe/application';
@@ -54,8 +55,10 @@ function getRuntime(event: { context: Record<string, unknown> }): NotificationRu
 }
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
+  const auth = await requireAuthorization(event, 'notification:receive');
+  if (!auth.ok) return auth.response;
+  const authInfo = auth.info;
 
   let body: Record<string, unknown>;
   try {
@@ -79,6 +82,46 @@ export default defineEventHandler(async (event) => {
 
   try {
     const rt = getRuntime(event as { context: Record<string, unknown> });
+    const actorId = getActorId(event);
+    const detail = await rt.getOutboxDetail(outboxId, actorId);
+
+    if (!detail) {
+      setResponseStatus(event, 404);
+      return errorEnvelope(
+        'NOT_FOUND',
+        'Notification not found or access denied.',
+        authInfo,
+        false,
+        requestId,
+      );
+    }
+
+    if (detail.event.recipientId !== actorId) {
+      const scope = typeof detail.event.scope === 'string' ? detail.event.scope.trim() : '';
+      if (!scope) {
+        setResponseStatus(event, 404);
+        return errorEnvelope(
+          'NOT_FOUND',
+          'Notification not found or access denied.',
+          authInfo,
+          false,
+          requestId,
+        );
+      }
+
+      const adminAuth = await requireAuthorization(event, 'notification:admin', scope);
+      if (!adminAuth.ok) {
+        setResponseStatus(event, 404);
+        return errorEnvelope(
+          'NOT_FOUND',
+          'Notification not found or access denied.',
+          authInfo,
+          false,
+          requestId,
+        );
+      }
+    }
+
     const record = await rt.acknowledgeFromCallback(outboxId, body);
     return okEnvelope({ outboxId: record.id, status: record.status }, authInfo, requestId);
   } catch (error) {
