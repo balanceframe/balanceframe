@@ -57,7 +57,7 @@ const uiStubs = {
     props: ['freshness'],
   },
   FindingCard: {
-    template: '<article />',
+    template: '<article>{{ finding.title }}</article>',
     props: ['finding'],
   },
   SemanticAmount: {

@@ -32,34 +32,211 @@
               {{ verdictLabel }}
             </span>
           </p>
-          <ReasonCodeList
-            v-if="result.reasonCodes && result.reasonCodes.length"
-            :codes="result.reasonCodes"
-            class="mt-2"
-          />
+          <ReasonCodeList v-if="legacyReasonCodes.length" :codes="legacyReasonCodes" class="mt-2" />
           <p v-if="result.explanation" class="text-xs text-gray-500 mt-2">
             {{ result.explanation }}
           </p>
 
           <!-- Category budget summary -->
           <div
-            v-if="result.categoryBudget"
-            class="mt-3 grid grid-cols-3 gap-2 text-xs text-gray-600 dark:text-gray-400"
+            class="mt-3 grid grid-cols-1 gap-2 text-xs text-gray-600 dark:text-gray-400 sm:grid-cols-3"
           >
-            <div>Budget: <SemanticAmount :amount="result.categoryBudget" /></div>
-            <div v-if="result.categorySpent">
-              Spent: <SemanticAmount :amount="result.categorySpent" />
+            <div>
+              Budget:
+              <SemanticAmount v-if="result.categoryBudget" :amount="result.categoryBudget" />
+              <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unknown</span>
             </div>
-            <div v-if="result.categoryRemaining">
-              Remaining: <SemanticAmount :amount="result.categoryRemaining" />
+            <div>
+              Spent:
+              <SemanticAmount v-if="result.categorySpent" :amount="result.categorySpent" />
+              <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unknown</span>
+            </div>
+            <div>
+              Remaining:
+              <SemanticAmount v-if="result.categoryRemaining" :amount="result.categoryRemaining" />
+              <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unknown</span>
             </div>
           </div>
-          <div v-if="result.projectedBalance" class="mt-1 text-xs text-gray-600 dark:text-gray-400">
-            Projected balance: <SemanticAmount :amount="result.projectedBalance" />
+          <div class="mt-1 text-xs text-gray-600 dark:text-gray-400">
+            Projected balance:
+            <SemanticAmount v-if="result.projectedBalance" :amount="result.projectedBalance" />
+            <span v-else class="font-medium text-gray-500 dark:text-gray-400">Unavailable</span>
           </div>
           <div class="mt-1 text-xs text-gray-500">
             {{ result.hasEnvelope ? 'Envelope budget active' : 'No envelope (cash-flow only)' }}
           </div>
+        </UCard>
+
+        <!-- Canonical decision evidence -->
+        <UCard v-if="result.decision || showInsufficientDecision" class="mt-3">
+          <template #header>
+            <h2 class="font-semibold">Decision evidence</h2>
+          </template>
+
+          <dl class="text-sm">
+            <div class="flex items-baseline justify-between gap-3">
+              <dt class="text-gray-500 dark:text-gray-400">Readiness</dt>
+              <dd
+                data-testid="decision-readiness"
+                class="font-semibold"
+                :class="decisionReadinessClass"
+              >
+                {{ decisionReadinessLabel }}
+              </dd>
+            </div>
+          </dl>
+
+          <InsufficientDataPanel
+            v-if="showInsufficientDecision"
+            :reason="result.explanation || undefined"
+            class="mt-3"
+          />
+
+          <template v-if="result.decision">
+            <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <section
+                data-testid="decision-before"
+                aria-labelledby="decision-before-heading"
+                class="min-w-0"
+              >
+                <h3
+                  id="decision-before-heading"
+                  class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                >
+                  Before
+                </h3>
+                <ul v-if="result.decision.before.amounts.length" class="mt-2 space-y-2">
+                  <li
+                    v-for="amount in result.decision.before.amounts"
+                    :key="decisionAmountKey(amount)"
+                    class="text-sm"
+                  >
+                    <p class="font-medium text-gray-900 dark:text-gray-100">
+                      {{ formatSemanticLabel(amount.label) }}
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ formatDecisionScope(amount.scope) }}
+                    </p>
+                    <SemanticAmount
+                      :amount="amount.amount"
+                      :semantic-class="amount.label"
+                      state="known"
+                    />
+                  </li>
+                </ul>
+                <p v-else class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                  No semantic amounts available.
+                </p>
+              </section>
+
+              <section
+                data-testid="decision-after"
+                aria-labelledby="decision-after-heading"
+                class="min-w-0"
+              >
+                <h3
+                  id="decision-after-heading"
+                  class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                >
+                  After
+                </h3>
+                <ul v-if="result.decision.after.amounts.length" class="mt-2 space-y-2">
+                  <li
+                    v-for="amount in result.decision.after.amounts"
+                    :key="decisionAmountKey(amount)"
+                    class="text-sm"
+                  >
+                    <p class="font-medium text-gray-900 dark:text-gray-100">
+                      {{ formatSemanticLabel(amount.label) }}
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ formatDecisionScope(amount.scope) }}
+                    </p>
+                    <SemanticAmount
+                      :amount="amount.amount"
+                      :semantic-class="amount.label"
+                      state="known"
+                    />
+                  </li>
+                </ul>
+                <p v-else class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                  No semantic amounts available.
+                </p>
+              </section>
+            </div>
+
+            <dl
+              data-testid="decision-identity"
+              class="mt-4 grid grid-cols-1 gap-2 border-t border-gray-200 pt-3 text-xs dark:border-gray-700 sm:grid-cols-2"
+            >
+              <div>
+                <dt class="text-gray-500 dark:text-gray-400">Snapshot</dt>
+                <dd class="break-all font-medium text-gray-900 dark:text-gray-100">
+                  {{ result.decision.metadata.context.snapshotId }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-gray-500 dark:text-gray-400">Policy</dt>
+                <dd class="break-all font-medium text-gray-900 dark:text-gray-100">
+                  {{ result.decision.metadata.context.policyVersion }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-gray-500 dark:text-gray-400">Request</dt>
+                <dd class="break-all font-medium text-gray-900 dark:text-gray-100">
+                  {{ result.decision.metadata.requestId }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-gray-500 dark:text-gray-400">Valid until</dt>
+                <dd class="break-all font-medium text-gray-900 dark:text-gray-100">
+                  {{ result.decision.expiresAt }}
+                </dd>
+              </div>
+            </dl>
+
+            <section
+              v-if="result.decision.issues.length"
+              aria-labelledby="decision-issues-heading"
+              class="mt-4"
+            >
+              <h3
+                id="decision-issues-heading"
+                class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+              >
+                Issues and remediation
+              </h3>
+              <ReasonCodeList :issues="result.decision.issues" class="mt-2" />
+            </section>
+
+            <section aria-labelledby="decision-evidence-heading" class="mt-4">
+              <h3
+                id="decision-evidence-heading"
+                class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+              >
+                Evidence references
+              </h3>
+              <p
+                v-if="decisionEvidenceKinds.length"
+                class="mt-1 text-xs text-gray-500 dark:text-gray-400"
+              >
+                Kinds:
+                <code
+                  v-for="kind in decisionEvidenceKinds"
+                  :key="kind"
+                  class="ml-1 font-mono text-gray-700 dark:text-gray-300"
+                >
+                  {{ kind }}
+                </code>
+              </p>
+              <EvidenceDrawer
+                :references="decisionEvidenceReferences"
+                :snapshot-id="result.decision.metadata.context.snapshotId"
+                :policy-version="result.decision.metadata.context.policyVersion"
+                class="mt-2"
+              />
+            </section>
+          </template>
         </UCard>
 
         <!-- Proposals (reallocation suggestions) -->
@@ -158,6 +335,13 @@
 </template>
 
 <script setup lang="ts">
+import type {
+  DecisionAmount,
+  DecisionScope,
+  EvidenceReference,
+  ProspectiveDecisionEnvelope,
+  PurchaseEvaluation,
+} from '@balanceframe/protocol-generated';
 import type { Amount } from '../components/types';
 
 definePageMeta({ layout: 'default' });
@@ -211,6 +395,7 @@ interface PurchaseResult {
   evidence: Evidence | null;
   policy: Policy | null;
   freshness: Freshness | null;
+  decision?: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
 }
 
 const loading = ref(false);
@@ -224,6 +409,14 @@ const result = ref<PurchaseResult | null>(null);
 const canEvaluate = computed(() =>
   Boolean(String(categoryId.value ?? '').trim() && String(amountStr.value ?? '').trim()),
 );
+
+const legacyReasonCodes = computed(() => {
+  const currentResult = result.value;
+  if (!currentResult?.decision?.issues.length) return currentResult?.reasonCodes ?? [];
+
+  const decisionIssueCodes = new Set(currentResult.decision.issues.map((issue) => issue.code));
+  return currentResult.reasonCodes.filter((code) => !decisionIssueCodes.has(code));
+});
 
 const verdictLabel = computed(() => {
   switch (result.value?.verdict) {
@@ -254,6 +447,69 @@ const verdictClass = computed(() => {
       return result.value?.allowable ? 'text-emerald-600' : 'text-red-600';
   }
 });
+
+const showInsufficientDecision = computed(
+  () => !result.value?.decision && result.value?.verdict === 'insufficient_data',
+);
+
+const decisionReadinessLabel = computed(() => {
+  switch (result.value?.decision?.readiness) {
+    case 'ready':
+      return 'Ready';
+    case 'qualified':
+      return 'Qualified';
+    case 'blocked':
+      return 'Blocked';
+    default:
+      return showInsufficientDecision.value ? 'Insufficient data' : '';
+  }
+});
+
+const decisionReadinessClass = computed(() => {
+  switch (result.value?.decision?.readiness) {
+    case 'ready':
+      return 'text-emerald-600 dark:text-emerald-400';
+    case 'qualified':
+      return 'text-amber-600 dark:text-amber-400';
+    case 'blocked':
+      return 'text-red-600 dark:text-red-400';
+    default:
+      return 'text-gray-600 dark:text-gray-300';
+  }
+});
+
+const decisionEvidenceReferences = computed<EvidenceReference[]>(() => {
+  const decision = result.value?.decision;
+  if (!decision) return [];
+  return [...decision.evidence, ...decision.issues.flatMap((issue) => issue.evidence)];
+});
+
+const decisionEvidenceKinds = computed(() => [
+  ...new Set(
+    decisionEvidenceReferences.value
+      .filter((reference) => reference.authorized && reference.redaction !== 'redacted')
+      .map((reference) => reference.kind),
+  ),
+]);
+
+function formatSemanticLabel(label: string): string {
+  const words = label
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Unknown';
+}
+
+function formatDecisionScope(scope: DecisionScope): string {
+  const kind = formatSemanticLabel(scope.kind);
+  return 'id' in scope && scope.id ? `${kind}: ${scope.id}` : kind;
+}
+
+function decisionAmountKey(amount: DecisionAmount): string {
+  const scopeId = 'id' in amount.scope && amount.scope.id ? amount.scope.id : '';
+  return `${amount.label}:${amount.scope.kind}:${scopeId}`;
+}
 
 async function evaluate() {
   loading.value = true;

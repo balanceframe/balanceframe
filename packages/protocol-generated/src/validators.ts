@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-const SIGNED_I64_MIN = -9223372036854775808n;
-const SIGNED_I64_MAX = 9223372036854775807n;
+const SIGNED_I64_MIN = BigInt('-9223372036854775808');
+const SIGNED_I64_MAX = BigInt('9223372036854775807');
 const signedI64Pattern = /^(?:0|-[1-9]\d*|[1-9]\d*)$/;
 const signedI64StringSchema = z
   .string()
