@@ -6,6 +6,7 @@ pub mod cash_flow;
 pub mod categorization;
 pub mod coverage;
 pub mod data_quality;
+pub mod decision;
 pub mod duplicates;
 pub mod envelope;
 pub mod financial_state;
@@ -45,6 +46,10 @@ pub use coverage::{
 pub use data_quality::{
     analyze_accounts, analyze_categories, analyze_readiness, analyze_transactions,
     DataQualityReport, QualityIssue, QualitySummary, Severity,
+};
+pub use decision::{
+    DecisionIssue, DecisionIssueCode, DecisionIssueEffect, DecisionIssueSeverity, DecisionScope,
+    EvidenceReference, RedactionState, Remediation,
 };
 pub use duplicates::{find_duplicates, DuplicateEvidence};
 pub use envelope::{AuthorizationContext, ErrorInfo, RequestEnvelope, ResponseEnvelope};

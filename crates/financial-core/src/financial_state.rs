@@ -34,6 +34,20 @@ pub enum FinancialStateLabel {
     ExecutionResult,
     /// A purchase evaluation result (advisory, never authorization).
     PurchaseOutcome,
+    /// Liquidity available within a financial account.
+    AccountLiquidity,
+    /// Funds held aside for an intended use.
+    Reservation,
+    /// A financial obligation that has been committed.
+    Commitment,
+    /// An observation captured directly from a source.
+    SourceObservation,
+    /// Evidence normalized into a canonical financial representation.
+    NormalizedEvidence,
+    /// The resolved economic event represented by one or more records.
+    EconomicEventResolution,
+    /// A decision conclusion whose sensitive details have been redacted.
+    RedactedConclusion,
 }
 
 // ---------------------------------------------------------------------------

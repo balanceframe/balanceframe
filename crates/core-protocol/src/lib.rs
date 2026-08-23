@@ -1,5 +1,24 @@
 #![forbid(unsafe_code)]
 
+mod financial_snapshot;
+mod prospective_decision;
+
+pub use balanceframe_financial_core::{
+    DecisionIssue, DecisionIssueCode, DecisionIssueEffect, DecisionIssueSeverity, DecisionScope,
+    EvidenceReference, RedactionState, Remediation,
+};
+pub use financial_snapshot::{
+    CoverageState, FinancialSnapshot, InclusionScope, ObservationKind, ObservationState,
+    PendingActivityTreatment, SnapshotCoverage, SnapshotSource, SourceObservation,
+    UnclearedActivityTreatment,
+};
+pub use prospective_decision::{
+    evaluate_prospective_claims, DecisionAlternative, DecisionAmount, DecisionContext,
+    DecisionHorizon, DecisionReadiness, DecisionSemanticState, ProspectiveClaim,
+    ProspectiveClaimEvaluation, ProspectiveClaimKind, ProspectiveClaimStatus,
+    ProspectiveDecisionEnvelope, ProspectiveDecisionMetadata,
+};
+
 use balanceframe_financial_core as fc;
 use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{

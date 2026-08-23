@@ -7,14 +7,7 @@ export interface Money {
 }
 
 export type AccountType =
-  | "checking"
-  | "savings"
-  | "creditCard"
-  | "cash"
-  | "investment"
-  | "mortgage"
-  | "loan"
-  | "other";
+  'checking' | 'savings' | 'creditCard' | 'cash' | 'investment' | 'mortgage' | 'loan' | 'other';
 
 export interface Account {
   id: string;
@@ -111,6 +104,9 @@ export interface ProtocolSnapshot {
   schedules: Schedule[];
   budgets: BudgetMonth[];
   tags: Tag[];
+  actualDownloadedAt?: string | null;
+  encrypted?: boolean | null;
+  bankSyncedAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,4 +320,248 @@ export interface FinancialStateLabel {
   score: number;
   /** Machine-readable reason codes supporting this label. */
   reasonCodes: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8.8 — Prospective financial decision contracts
+// ---------------------------------------------------------------------------
+
+/** Semantic classification of a financial value or conclusion. */
+export type FinancialSemanticClass =
+  | 'ledgerFact'
+  | 'envelopeAvailability'
+  | 'cashFlowProjection'
+  | 'advice'
+  | 'proposal'
+  | 'executionResult'
+  | 'purchaseOutcome'
+  | 'accountLiquidity'
+  | 'reservation'
+  | 'commitment'
+  | 'sourceObservation'
+  | 'normalizedEvidence'
+  | 'economicEventResolution'
+  | 'redactedConclusion';
+
+/** Known issue vocabulary plus forward-compatible issue codes. */
+export type DecisionIssueCode =
+  | 'account_freshness_coverage'
+  | 'pending_availability'
+  | 'schedule_coverage'
+  | 'duplicate_transfer_ambiguity'
+  | 'credit_payment_uncertainty'
+  | 'reservation_conflict'
+  | 'wallet_balance_uncertainty'
+  | 'receipt_total_mismatch'
+  | 'economic_event_ambiguity'
+  | 'currency_mismatch'
+  | (string & {});
+
+export type DecisionIssueSeverity = 'info' | 'warning' | 'critical';
+
+export type DecisionIssueEffect = 'qualifies' | 'blocks';
+
+export type DecisionScope =
+  | { kind: 'global' }
+  | { kind: 'account'; id: string }
+  | { kind: 'category'; id: string }
+  | { kind: 'transaction'; id: string }
+  | { kind: 'schedule'; id: string }
+  | { kind: 'claim'; id: string };
+
+export type RedactionState = 'visible' | 'redacted';
+
+export interface EvidenceReference {
+  evidenceId: string;
+  kind: string;
+  authorized: boolean;
+  redaction: RedactionState;
+}
+
+export interface Remediation {
+  code: string;
+  action: string;
+}
+
+export interface DecisionIssue {
+  code: DecisionIssueCode;
+  severity: DecisionIssueSeverity;
+  effect: DecisionIssueEffect;
+  scope: DecisionScope;
+  evidence: EvidenceReference[];
+  remediation?: Remediation | null;
+  redaction: RedactionState;
+}
+
+export interface FinancialSnapshot {
+  contractVersion: string;
+  snapshotId: string;
+  contentHash: string;
+  source: SnapshotSource;
+  capturedAt: string;
+  sourceNormalizationVersion: string;
+  legacySnapshot: ProtocolSnapshot;
+  coverage: SnapshotCoverage;
+  inclusionScope: InclusionScope;
+  observations: SourceObservation[];
+}
+
+export interface SnapshotSource {
+  ledgerBackend: string;
+  ledgerId: string;
+  budgetId: string;
+  spaceId: string | null;
+}
+
+export interface SnapshotCoverage {
+  accounts: CoverageState;
+  transactions: CoverageState;
+  categories: CoverageState;
+  payees: CoverageState;
+  rules: CoverageState;
+  schedules: CoverageState;
+  budgets: CoverageState;
+  tags: CoverageState;
+}
+
+/** Unknown means unreported coverage; empty means confirmed complete with no entries. */
+export type CoverageState = 'complete' | 'empty' | 'unknown';
+
+export interface InclusionScope {
+  pendingActivity: PendingActivityTreatment;
+  unclearedActivity: UnclearedActivityTreatment;
+}
+
+export type PendingActivityTreatment = 'included' | 'excluded' | 'unknown';
+
+export type UnclearedActivityTreatment = 'included' | 'excluded' | 'unknown';
+
+export interface SourceObservation {
+  kind: ObservationKind;
+  scope: DecisionScope;
+  state: ObservationState;
+  observedAt: string | null;
+  evidence: EvidenceReference[];
+}
+
+export type ObservationKind =
+  | 'account_freshness'
+  | 'pending_activity'
+  | 'uncleared_activity'
+  | 'schedule_coverage'
+  | 'credit_card_obligation_coverage'
+  | 'duplicate_candidate'
+  | 'transfer_ambiguity'
+  | 'reconciliation'
+  | 'currency_compatibility';
+
+export type ObservationState =
+  | 'fresh'
+  | 'stale'
+  | 'unavailable'
+  | 'included'
+  | 'complete'
+  | 'present'
+  | 'ambiguous'
+  | 'unreconciled'
+  | 'incompatible';
+
+export type PendingMode = 'include' | 'exclude' | 'includeConservatively';
+
+export type UncategorizedMode = 'block' | 'reserveFullAmount' | 'ignore';
+
+export type UnclearedMode = 'include' | 'exclude';
+
+export interface AccountOverrides {
+  includeOnly: string[] | null;
+  exclude: string[];
+}
+
+export interface DecisionDataPolicy {
+  pendingMode: PendingMode;
+  uncategorizedMode: UncategorizedMode;
+  unclearedMode: UnclearedMode;
+  maxBankSyncAgeMinutes: number | null;
+  maxBudgetSnapshotAgeMinutes: number | null;
+  accountOverrides: AccountOverrides;
+}
+
+export interface DecisionHorizon {
+  startsAt: string;
+  endsAt: string;
+}
+
+export interface DecisionContext {
+  evaluatedAt: string;
+  horizon: DecisionHorizon;
+  policy: DecisionDataPolicy;
+  policyVersion: string;
+  policyHash: string;
+  snapshotId: string;
+  contentHash: string;
+}
+
+export type ProspectiveClaimKind = 'reservation' | 'commitment';
+
+export type ProspectiveClaimStatus = 'active' | 'released';
+
+export interface ProspectiveClaim {
+  claimId: string;
+  kind: ProspectiveClaimKind;
+  sourceId: string;
+  scope: DecisionScope;
+  amount: Money;
+  status: ProspectiveClaimStatus;
+  effectiveFrom: string;
+  expiresAt: string | null;
+  visibility: RedactionState;
+  policyVersion: string;
+  snapshotId: string;
+}
+
+export interface ProspectiveClaimEvaluation {
+  eligibleClaimIds: string[];
+  reservationTotal: Money | null;
+  commitmentTotal: Money | null;
+  issues: DecisionIssue[];
+}
+
+export type DecisionReadiness = 'ready' | 'qualified' | 'blocked';
+
+export interface DecisionAmount {
+  label: FinancialSemanticClass;
+  scope: DecisionScope;
+  amount: Money;
+}
+
+export interface DecisionSemanticState {
+  amounts: DecisionAmount[];
+}
+
+export interface DecisionAlternative {
+  alternativeId: string;
+  summary: string;
+  resultingState: DecisionSemanticState;
+}
+
+export interface ProspectiveDecisionMetadata {
+  contractVersion: string;
+  decisionId: string;
+  decisionKind: string;
+  requestId: string;
+  correlationId: string;
+  context: DecisionContext;
+}
+
+export interface ProspectiveDecisionEnvelope<T> {
+  metadata: ProspectiveDecisionMetadata;
+  readiness: DecisionReadiness;
+  before: DecisionSemanticState;
+  after: DecisionSemanticState;
+  issues: DecisionIssue[];
+  evidence: EvidenceReference[];
+  alternatives: DecisionAlternative[];
+  expiresAt: string;
+  redaction: RedactionState;
+  payload: T;
 }

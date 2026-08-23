@@ -1,0 +1,347 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/financial-snapshot-v1.json",
+  "title": "BalanceFrame Financial Snapshot v1",
+  "description": "Immutable normalized financial snapshot with source identity, explicit coverage, inclusion treatment, and typed evidence references.",
+  "$ref": "#/$defs/FinancialSnapshot",
+  "$defs": {
+    "CanonicalDate": {
+      "type": "string",
+      "pattern": "^(?:(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29|[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8])))$"
+    },
+    "CanonicalUtcTimestamp": {
+      "type": "string",
+      "pattern": "^(?:(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29|[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8])))T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+    },
+    "Money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minorUnits", "currency"],
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]{0,17}|(?:[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)|-(?:[1-9][0-9]{0,17}|(?:[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-7]|9223372036854775808)))$"
+        },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "DecisionScope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "global" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {
+            "kind": { "enum": ["account", "category", "transaction", "schedule", "claim"] },
+            "id": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "EvidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidenceId", "kind", "authorized", "redaction"],
+      "properties": {
+        "evidenceId": { "type": "string" },
+        "kind": { "type": "string" },
+        "authorized": { "type": "boolean" },
+        "redaction": { "enum": ["visible", "redacted"] }
+      }
+    },
+    "Account": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "name",
+        "accountType",
+        "offBudget",
+        "isClosed",
+        "clearedBalance",
+        "importedBalance",
+        "mtid"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "accountType": {
+          "enum": [
+            "checking",
+            "savings",
+            "creditCard",
+            "cash",
+            "investment",
+            "mortgage",
+            "loan",
+            "other"
+          ]
+        },
+        "offBudget": { "type": "boolean" },
+        "isClosed": { "type": "boolean" },
+        "clearedBalance": { "$ref": "#/$defs/Money" },
+        "importedBalance": { "$ref": "#/$defs/Money" },
+        "mtid": { "type": ["string", "null"] }
+      }
+    },
+    "Transaction": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "accountId",
+        "date",
+        "payeeId",
+        "payeeName",
+        "categoryId",
+        "categoryName",
+        "amount",
+        "cleared",
+        "reconciled",
+        "importedId",
+        "importedPayee",
+        "notes",
+        "tags",
+        "transferAccountId",
+        "subtransactions"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "accountId": { "type": "string" },
+        "date": { "$ref": "#/$defs/CanonicalDate" },
+        "payeeId": { "type": ["string", "null"] },
+        "payeeName": { "type": ["string", "null"] },
+        "categoryId": { "type": ["string", "null"] },
+        "categoryName": { "type": ["string", "null"] },
+        "amount": { "$ref": "#/$defs/Money" },
+        "cleared": { "type": "boolean" },
+        "reconciled": { "type": "boolean" },
+        "importedId": { "type": ["string", "null"] },
+        "importedPayee": { "type": ["string", "null"] },
+        "notes": { "type": ["string", "null"] },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "transferAccountId": { "type": ["string", "null"] },
+        "subtransactions": { "type": "array", "items": { "$ref": "#/$defs/Transaction" } }
+      }
+    },
+    "Category": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "groupName", "isIncome", "mtid", "deleted"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "groupName": { "type": ["string", "null"] },
+        "isIncome": { "type": "boolean" },
+        "mtid": { "type": ["string", "null"] },
+        "deleted": { "type": "boolean" }
+      }
+    },
+    "Payee": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "transferAccountId", "mtid"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "transferAccountId": { "type": ["string", "null"] },
+        "mtid": { "type": ["string", "null"] }
+      }
+    },
+    "Rule": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "order", "trigger", "actions", "inactive"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "order": { "type": "integer", "minimum": 0 },
+        "trigger": {},
+        "actions": {},
+        "inactive": { "type": "boolean" }
+      }
+    },
+    "Schedule": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "frequency", "amount", "payeeName", "accountId", "nextExpected"],
+      "properties": {
+        "id": { "type": "string" },
+        "frequency": { "type": "string" },
+        "amount": { "$ref": "#/$defs/Money" },
+        "payeeName": { "type": ["string", "null"] },
+        "accountId": { "type": "string" },
+        "nextExpected": { "$ref": "#/$defs/CanonicalDate" }
+      }
+    },
+    "BudgetCategory": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["categoryId", "amount", "carryover", "carryoverFromPrevious", "carriesOver"],
+      "properties": {
+        "categoryId": { "type": "string" },
+        "amount": { "$ref": "#/$defs/Money" },
+        "carryover": { "$ref": "#/$defs/Money" },
+        "carryoverFromPrevious": { "$ref": "#/$defs/Money" },
+        "carriesOver": { "type": "boolean" }
+      }
+    },
+    "BudgetMonth": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "month", "categories"],
+      "properties": {
+        "id": { "type": "string" },
+        "month": { "type": "string", "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$" },
+        "categories": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/BudgetCategory" }
+        }
+      }
+    },
+    "Tag": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    },
+    "ProtocolSnapshot": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schemaVersion",
+        "actualVersion",
+        "snapshotDate",
+        "accounts",
+        "transactions",
+        "categories",
+        "payees",
+        "rules",
+        "schedules",
+        "budgets",
+        "tags"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1" },
+        "actualVersion": { "type": "string" },
+        "snapshotDate": { "$ref": "#/$defs/CanonicalUtcTimestamp" },
+        "accounts": { "type": "array", "items": { "$ref": "#/$defs/Account" } },
+        "transactions": { "type": "array", "items": { "$ref": "#/$defs/Transaction" } },
+        "categories": { "type": "array", "items": { "$ref": "#/$defs/Category" } },
+        "payees": { "type": "array", "items": { "$ref": "#/$defs/Payee" } },
+        "rules": { "type": "array", "items": { "$ref": "#/$defs/Rule" } },
+        "schedules": { "type": "array", "items": { "$ref": "#/$defs/Schedule" } },
+        "budgets": { "type": "array", "items": { "$ref": "#/$defs/BudgetMonth" } },
+        "tags": { "type": "array", "items": { "$ref": "#/$defs/Tag" } }
+      }
+    },
+    "SnapshotSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ledgerBackend", "ledgerId", "budgetId"],
+      "properties": {
+        "ledgerBackend": { "type": "string" },
+        "ledgerId": { "type": "string" },
+        "budgetId": { "type": "string" },
+        "spaceId": { "type": ["string", "null"] }
+      }
+    },
+    "SnapshotCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accounts": { "enum": ["complete", "empty", "unknown"] },
+        "transactions": { "enum": ["complete", "empty", "unknown"] },
+        "categories": { "enum": ["complete", "empty", "unknown"] },
+        "payees": { "enum": ["complete", "empty", "unknown"] },
+        "rules": { "enum": ["complete", "empty", "unknown"] },
+        "schedules": { "enum": ["complete", "empty", "unknown"] },
+        "budgets": { "enum": ["complete", "empty", "unknown"] },
+        "tags": { "enum": ["complete", "empty", "unknown"] }
+      }
+    },
+    "InclusionScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pendingActivity": { "enum": ["included", "excluded", "unknown"] },
+        "unclearedActivity": { "enum": ["included", "excluded", "unknown"] }
+      }
+    },
+    "SourceObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "scope", "state", "evidence"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "account_freshness",
+            "pending_activity",
+            "uncleared_activity",
+            "schedule_coverage",
+            "credit_card_obligation_coverage",
+            "duplicate_candidate",
+            "transfer_ambiguity",
+            "reconciliation",
+            "currency_compatibility"
+          ]
+        },
+        "scope": { "$ref": "#/$defs/DecisionScope" },
+        "state": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unavailable",
+            "included",
+            "complete",
+            "present",
+            "ambiguous",
+            "unreconciled",
+            "incompatible"
+          ]
+        },
+        "observedAt": {
+          "anyOf": [{ "$ref": "#/$defs/CanonicalUtcTimestamp" }, { "type": "null" }]
+        },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/EvidenceReference" } }
+      }
+    },
+    "FinancialSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "snapshotId",
+        "contentHash",
+        "source",
+        "capturedAt",
+        "sourceNormalizationVersion",
+        "legacySnapshot",
+        "coverage",
+        "inclusionScope",
+        "observations"
+      ],
+      "properties": {
+        "contractVersion": { "type": "string" },
+        "snapshotId": { "type": "string" },
+        "contentHash": { "type": "string" },
+        "source": { "$ref": "#/$defs/SnapshotSource" },
+        "capturedAt": { "$ref": "#/$defs/CanonicalUtcTimestamp" },
+        "sourceNormalizationVersion": { "type": "string" },
+        "legacySnapshot": { "$ref": "#/$defs/ProtocolSnapshot" },
+        "coverage": { "$ref": "#/$defs/SnapshotCoverage" },
+        "inclusionScope": { "$ref": "#/$defs/InclusionScope" },
+        "observations": { "type": "array", "items": { "$ref": "#/$defs/SourceObservation" } }
+      }
+    }
+  }
+}
