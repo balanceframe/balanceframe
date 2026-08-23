@@ -9,8 +9,16 @@
 
 import type { ResponseEnvelope, DataFreshness } from './envelope.js';
 import { ApplicationError, ObserveWriteError, ReasonCodes } from './errors.js';
-import type { Money } from '@balanceframe/protocol-generated';
-import type { WorkflowStore } from '@balanceframe/workflow-store';
+import type {
+  DecisionContext,
+  DecisionIssue,
+  Money,
+  ProspectiveClaim,
+  ProspectiveDecisionEnvelope,
+  PurchaseEvaluation,
+  RedactionState,
+} from '@balanceframe/protocol-generated';
+import type { FindingStatus, WorkflowStore } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Analysis protocol — Rust-backed analysis interface
@@ -886,6 +894,20 @@ export interface PurchaseEvaluationParams {
   amount: Money;
   /** Optional account identifier for balance projection. */
   accountId?: string;
+  /** Canonical decision context. Required when using prospective evaluation. */
+  context?: DecisionContext;
+  /** Existing reservations and commitments considered by the decision. */
+  claims?: ProspectiveClaim[];
+  /** Caller-supplied request identity for deterministic provenance. */
+  requestId?: string;
+  /** Caller-supplied correlation identity for deterministic provenance. */
+  correlationId?: string;
+  /** Caller-supplied decision identity. */
+  decisionId?: string;
+  /** Caller-supplied expiry for the decision. */
+  validUntil?: string;
+  /** Visibility of the resulting decision. */
+  redaction?: RedactionState;
 }
 
 /**
@@ -907,6 +929,8 @@ export interface PurchaseEvaluationResult {
   projectedBalance: Money | null;
   /** Whether an envelope budget exists for the category (vs cash-flow-only). */
   hasEnvelope: boolean;
+  /** Full canonical decision, when evaluated by the prospective-decision path. */
+  decision?: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
 }
 
 export interface PurchaseEvaluationOutput {
@@ -1476,10 +1500,39 @@ export interface MultidimensionalHealthOutput {
 // Budget Intelligence — Attention / Home Dashboard
 // ---------------------------------------------------------------------------
 
+/** Fixed routing classifications for canonical financial attention findings. */
+export type FinancialAttentionClassification =
+  | 'account_readiness_blocker'
+  | 'transfer_needs_attention'
+  | 'reservation_conflict'
+  | 'commitment_conflict'
+  | 'evidence_connector_degradation'
+  | 'unresolved_material_evidence';
+
+/**
+ * Canonical decision metadata carried by attention items when the source is a
+ * financial snapshot. Fields remain optional so existing attention producers
+ * and consumers retain their legacy contract.
+ */
+export interface AttentionDecisionMetadata {
+  classification?: FinancialAttentionClassification;
+  issue?: DecisionIssue;
+  snapshotId?: string;
+  policyVersion?: string;
+  revision?: string;
+  dedupKey?: string;
+  findingId?: string;
+  findingStatus?: FindingStatus;
+  findingVersion?: number;
+  firstObservedAt?: string;
+  lastObservedAt?: string;
+  expiresAt?: string | null;
+}
+
 /**
  * A single blocker item for the attention dashboard.
  */
-export interface AttentionBlocker {
+export interface AttentionBlocker extends AttentionDecisionMetadata {
   code: string;
   message: string;
   severity: 'critical' | 'warning' | 'info';
@@ -1490,7 +1543,7 @@ export interface AttentionBlocker {
 /**
  * A single alert item.
  */
-export interface AttentionAlert {
+export interface AttentionAlert extends AttentionDecisionMetadata {
   code: string;
   message: string;
   severity: 'critical' | 'warning' | 'info';

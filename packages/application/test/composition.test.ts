@@ -1235,19 +1235,18 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(result.hasEnvelope).toBe(true);
   });
 
-  it('purchaseEvaluation returns no-snapshot failure when ledger is null', async () => {
+  it('purchaseEvaluation rejects when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
     const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
 
-    const result = await protocol.purchaseEvaluation!(null, {
-      categoryId: 'cat_1',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
+    await expect(
+      protocol.purchaseEvaluation!(null, {
+        categoryId: 'cat_1',
+        amount: { minorUnits: '5000', currency: 'USD' },
+      }),
+    ).rejects.toThrow('Ledger synchronization returned no snapshot.');
 
     expect(calls).not.toContain('evaluatePurchase');
-    expect(result.allowable).toBe(false);
-    expect(result.reasonCodes).toContain('no_snapshot');
-    expect(result.projectedBalance).toBeNull();
   });
 
   it('cashFlowProjection calls projectCashFlow and returns non-zero fixture data', async () => {

@@ -271,9 +271,7 @@ export async function budgetSummaryAnalysis(
  * Returns a tagged result — `{ ok: false, envelope }` on guard failure,
  * or `{ ok: true, ... }` to proceed.
  */
-async function guardReviewAction(
-  input: CommandInput,
-): Promise<
+async function guardReviewAction(input: CommandInput): Promise<
   | {
       ok: true;
       requestId: string;
@@ -619,9 +617,7 @@ export async function reviewGroupAnalysis(
  * - No analysis protocol → missing_analysis_protocol
  * - Observe mode → observe_mode_write_blocked
  */
-async function guardProposalAction(
-  input: CommandInput,
-): Promise<
+async function guardProposalAction(input: CommandInput): Promise<
   | {
       ok: true;
       requestId: string;
@@ -1433,7 +1429,10 @@ export async function purchaseEvaluationAnalysis(
   }
 
   try {
-    const result = await analysisProtocol.purchaseEvaluation(ledger, params);
+    const result: PurchaseEvaluationResult = await analysisProtocol.purchaseEvaluation(
+      ledger,
+      params,
+    );
     return okResponse(requestId, freshness, auth, result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -13,10 +13,10 @@ pub use financial_snapshot::{
     UnclearedActivityTreatment,
 };
 pub use prospective_decision::{
-    evaluate_prospective_claims, DecisionAlternative, DecisionAmount, DecisionContext,
-    DecisionHorizon, DecisionReadiness, DecisionSemanticState, ProspectiveClaim,
-    ProspectiveClaimEvaluation, ProspectiveClaimKind, ProspectiveClaimStatus,
-    ProspectiveDecisionEnvelope, ProspectiveDecisionMetadata,
+    evaluate_prospective_claims, evaluate_prospective_purchase, DecisionAlternative,
+    DecisionAmount, DecisionContext, DecisionHorizon, DecisionReadiness, DecisionSemanticState,
+    ProspectiveClaim, ProspectiveClaimEvaluation, ProspectiveClaimKind, ProspectiveClaimStatus,
+    ProspectiveDecisionEnvelope, ProspectiveDecisionMetadata, ProspectivePurchaseEvaluationRequest,
 };
 
 use balanceframe_financial_core as fc;

@@ -49,6 +49,14 @@ vi.mock('h3', () => ({
 
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: mockGetWorkflowStore,
+  requireAuthorization: vi.fn(async () => ({
+    ok: true,
+    info: {
+      actorId: 'test-actor',
+      capability: 'observe',
+      allowed: true,
+    },
+  })),
   buildAuthorizationInfo: vi.fn(() => ({
     actorId: 'test-actor',
     capability: 'observe',

@@ -13,7 +13,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   requireAuthorization,
   getActorId,
 } from '../../utils/workflow-store';
@@ -52,8 +51,86 @@ interface InboxQuery {
   offset?: string;
 }
 
+const EVENT_METADATA_FIELDS = [
+  'id',
+  'eventVersion',
+  'budgetId',
+  'classification',
+  'recipientId',
+  'scope',
+  'redactionClass',
+  'channelConfigVersion',
+  'policyVersion',
+  'correlationId',
+  'createdAt',
+] as const;
+
+const DELIVERY_STATE_FIELDS = [
+  'id',
+  'eventId',
+  'deliveryKey',
+  'channelType',
+  'channelConfigVersion',
+  'status',
+  'attemptCount',
+  'maxAttempts',
+  'claimExpiresAt',
+  'lastAttemptedAt',
+  'nextAttemptAt',
+  'acknowledgedAt',
+  'failedAt',
+  'failureReason',
+  'suppressedAt',
+  'suppressedReason',
+  'correlationId',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+const DELIVERY_ATTEMPT_FIELDS = [
+  'id',
+  'outboxId',
+  'attemptNumber',
+  'status',
+  'responseCode',
+  'attemptedAt',
+  'success',
+  'deliveredAt',
+  'failureReason',
+] as const;
+
+interface NotificationItem {
+  readonly outbox: unknown;
+  readonly event: unknown;
+  readonly redactedPayload: Record<string, unknown>;
+  readonly deliveryAttempts: readonly unknown[];
+}
+
+function pickSafeFields(source: unknown, fields: readonly string[]): Record<string, unknown> {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return {};
+
+  const safe: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(source, field)) {
+      safe[field] = (source as Record<string, unknown>)[field];
+    }
+  }
+  return safe;
+}
+
+/** Convert persisted notification records into the browser-safe DTO. */
+function sanitizeNotificationItem(item: NotificationItem) {
+  return {
+    outbox: pickSafeFields(item.outbox, DELIVERY_STATE_FIELDS),
+    event: pickSafeFields(item.event, EVENT_METADATA_FIELDS),
+    redactedPayload: item.redactedPayload,
+    deliveryAttempts: item.deliveryAttempts.map((attempt) =>
+      pickSafeFields(attempt, DELIVERY_ATTEMPT_FIELDS),
+    ),
+  };
+}
+
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
 
   // Authorization gate
@@ -62,6 +139,7 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 403);
     return auth.response;
   }
+  const authInfo = auth.info;
 
   try {
     const wf = getWorkflowStore(event);
@@ -86,12 +164,13 @@ export default defineEventHandler(async (event) => {
         ? (query.status as OutboxStatus)
         : undefined;
 
-    const items = await rt.listOutbox(actorId, {
+    const storedItems = await rt.listOutbox(actorId, {
       status: statusFilter,
       channelType: query.channel || undefined,
       limit: query.limit ? parseInt(query.limit, 10) : undefined,
       offset: query.offset ? parseInt(query.offset, 10) : undefined,
     });
+    const items = storedItems.map((item) => sanitizeNotificationItem(item));
 
     return okEnvelope({ items, count: items.length }, auth.info, requestId);
   } catch (err) {

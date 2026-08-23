@@ -1,9 +1,11 @@
 //! Immutable inputs and typed results for prospective financial decisions.
 
+use crate::financial_snapshot::FinancialSnapshot;
+use crate::{evaluate_purchase, PurchaseEvaluation, PurchaseEvaluationRequest};
 use balanceframe_financial_core::{
     DecisionDataPolicy, DecisionIssue, DecisionIssueCode, DecisionIssueEffect,
     DecisionIssueSeverity, DecisionScope, EvidenceReference, FinancialStateLabel, Money,
-    RedactionState,
+    RedactionState, Transaction,
 };
 use serde::{Deserialize, Serialize};
 
@@ -187,6 +189,32 @@ pub struct ProspectiveDecisionEnvelope<T> {
     pub payload: T,
 }
 
+/// Immutable inputs for a prospective purchase decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProspectivePurchaseEvaluationRequest {
+    /// Canonical snapshot whose identity is named by the decision context.
+    pub financial_snapshot: FinancialSnapshot,
+    /// Fixed policy, snapshot identity, and evaluation time.
+    pub context: DecisionContext,
+    /// Immutable reservations and commitments relevant to the decision.
+    pub claims: Vec<ProspectiveClaim>,
+    /// Purchase being evaluated without applying it to the snapshot.
+    pub proposed_transaction: Transaction,
+    /// Budget category against which to evaluate the purchase.
+    pub category_id: String,
+    /// Stable identifier of this evaluation request.
+    pub request_id: String,
+    /// Stable identifier spanning related work.
+    pub correlation_id: String,
+    /// Stable identifier to place on the resulting decision.
+    pub decision_id: String,
+    /// Caller-supplied RFC 3339 instant after which the result expires.
+    pub valid_until: String,
+    /// Redaction applied to the resulting decision.
+    pub redaction: RedactionState,
+}
+
 /// Evaluates supplied prospective claims against a fixed decision context.
 ///
 /// The function is pure: it consults no clock or external service and does not
@@ -288,6 +316,374 @@ pub fn evaluate_prospective_claims(
         reservation_total,
         commitment_total,
         issues,
+    }
+}
+
+/// Evaluates a proposed purchase against an immutable canonical snapshot.
+///
+/// The legacy purchase evaluator remains the sole producer of the typed
+/// payload. This wrapper validates the canonical decision inputs, combines
+/// claim issues, and derives semantic before/after states without mutating the
+/// supplied snapshot or consulting a clock.
+pub fn evaluate_prospective_purchase(
+    request: ProspectivePurchaseEvaluationRequest,
+) -> ProspectiveDecisionEnvelope<PurchaseEvaluation> {
+    let ProspectivePurchaseEvaluationRequest {
+        financial_snapshot,
+        context,
+        claims,
+        proposed_transaction,
+        category_id,
+        request_id,
+        correlation_id,
+        decision_id,
+        valid_until,
+        redaction,
+    } = request;
+
+    let claim_evaluation = evaluate_prospective_claims(&context, &claims);
+    let mut issues = claim_evaluation.issues;
+
+    if request_id.trim().is_empty()
+        || correlation_id.trim().is_empty()
+        || decision_id.trim().is_empty()
+    {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("invalid_request_identity".into()),
+                DecisionScope::Global,
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    if financial_snapshot.snapshot_id.trim().is_empty()
+        || financial_snapshot.content_hash.trim().is_empty()
+    {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("invalid_snapshot_identity".into()),
+                DecisionScope::Global,
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+    if context.snapshot_id != financial_snapshot.snapshot_id {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("snapshot_mismatch".into()),
+                DecisionScope::Global,
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+    if context.content_hash != financial_snapshot.content_hash {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("content_hash_mismatch".into()),
+                DecisionScope::Global,
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    let valid_decision_window = valid_context_time(&context)
+        .zip(parse_rfc3339(&valid_until))
+        .zip(parse_rfc3339(&context.horizon.ends_at))
+        .is_some_and(|((evaluated_at, valid_until), horizon_end)| {
+            evaluated_at < valid_until && valid_until <= horizon_end
+        });
+    if !valid_decision_window {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("invalid_decision_validity".into()),
+                DecisionScope::Global,
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    if proposed_transaction.account_id.trim().is_empty()
+        || category_id.trim().is_empty()
+        || proposed_transaction.category_id.as_deref() != Some(category_id.as_str())
+        || proposed_transaction.amount.minor_units() >= 0
+    {
+        let scope = if proposed_transaction.id.trim().is_empty() {
+            DecisionScope::Global
+        } else {
+            DecisionScope::Transaction(proposed_transaction.id.clone())
+        };
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("invalid_purchase_input".into()),
+                scope,
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    let legacy_snapshot = &financial_snapshot.legacy_snapshot;
+    let category_exists = legacy_snapshot
+        .categories
+        .iter()
+        .any(|category| category.id == category_id && !category.deleted);
+    if !category_exists {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("missing_required_identity".into()),
+                DecisionScope::Category(category_id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    let account = legacy_snapshot
+        .accounts
+        .iter()
+        .find(|account| account.id == proposed_transaction.account_id);
+    if account.is_none() {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("missing_required_identity".into()),
+                DecisionScope::Account(proposed_transaction.account_id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    let budget_category = legacy_snapshot
+        .budgets
+        .iter()
+        .filter(|budget| format!("{}-01", budget.month) <= legacy_snapshot.snapshot_date)
+        .max_by(|left, right| left.month.cmp(&right.month))
+        .and_then(|budget| budget.categories.get(&category_id));
+    let has_budget_category = budget_category.is_some();
+    if !has_budget_category {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("missing_required_money".into()),
+                DecisionScope::Category(category_id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    let expected_currency = budget_category.map(|budget| budget.amount.currency().to_owned());
+    let incompatible_currency = expected_currency.as_deref().is_some_and(|currency| {
+        proposed_transaction.amount.currency() != currency
+            || account.is_some_and(|account| account.cleared_balance.currency() != currency)
+            || legacy_snapshot
+                .transactions
+                .iter()
+                .filter(|transaction| {
+                    transaction.category_id.as_deref() == Some(category_id.as_str())
+                })
+                .any(|transaction| transaction.amount.currency() != currency)
+            || claims.iter().any(|claim| {
+                claim_evaluation
+                    .eligible_claim_ids
+                    .contains(&claim.claim_id)
+                    && matches!(&claim.scope, DecisionScope::Category(id) if id == &category_id)
+                    && claim.amount.currency() != currency
+            })
+    });
+    if incompatible_currency {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::CurrencyMismatch,
+                DecisionScope::Category(category_id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    let mut evidence = Vec::new();
+    for evidence_reference in financial_snapshot
+        .observations
+        .iter()
+        .flat_map(|observation| observation.evidence.iter())
+        .filter(|evidence_reference| evidence_reference.authorized)
+    {
+        if !evidence.iter().any(|existing: &EvidenceReference| {
+            existing.evidence_id == evidence_reference.evidence_id
+        }) {
+            evidence.push(evidence_reference.clone());
+        }
+    }
+    for evidence_reference in issues
+        .iter()
+        .flat_map(|issue| issue.evidence.iter())
+        .filter(|evidence_reference| evidence_reference.authorized)
+    {
+        if !evidence
+            .iter()
+            .any(|existing| existing.evidence_id == evidence_reference.evidence_id)
+        {
+            evidence.push(evidence_reference.clone());
+        }
+    }
+
+    let payload = evaluate_purchase(PurchaseEvaluationRequest {
+        snapshot: financial_snapshot.legacy_snapshot,
+        proposed_transaction: proposed_transaction.clone(),
+        category_id: category_id.clone(),
+    });
+    let payload_currency_compatible = expected_currency.as_deref().is_some_and(|currency| {
+        payload.category_budget.currency() == currency
+            && payload.category_spent.currency() == currency
+            && payload.category_remaining.currency() == currency
+            && payload
+                .projected_balance
+                .as_ref()
+                .is_none_or(|balance| balance.currency() == currency)
+    });
+    if has_budget_category && !payload_currency_compatible {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::CurrencyMismatch,
+                DecisionScope::Category(category_id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+    if payload
+        .reason_codes
+        .iter()
+        .any(|code| code == "evaluation_error")
+    {
+        push_issue_once(
+            &mut issues,
+            blocking_issue(
+                DecisionIssueCode::Unknown("purchase_evaluation_error".into()),
+                DecisionScope::Transaction(proposed_transaction.id.clone()),
+                RedactionState::Visible,
+                Vec::new(),
+            ),
+        );
+    }
+
+    let mut before_amount = payload_currency_compatible.then(|| payload.category_remaining.clone());
+    for claim in claims.iter().filter(|claim| {
+        claim_evaluation
+            .eligible_claim_ids
+            .contains(&claim.claim_id)
+            && matches!(&claim.scope, DecisionScope::Category(id) if id == &category_id)
+    }) {
+        before_amount = before_amount.and_then(|amount| match amount.sub(&claim.amount) {
+            Ok(remaining) => Some(remaining),
+            Err(_) => {
+                push_issue_once(
+                    &mut issues,
+                    blocking_issue(
+                        if amount.currency() == claim.amount.currency() {
+                            DecisionIssueCode::Unknown("money_arithmetic_overflow".into())
+                        } else {
+                            DecisionIssueCode::CurrencyMismatch
+                        },
+                        DecisionScope::Category(category_id.clone()),
+                        RedactionState::Visible,
+                        Vec::new(),
+                    ),
+                );
+                None
+            }
+        });
+    }
+
+    let after_amount = before_amount.as_ref().and_then(|before| {
+        let purchase_minor_units = proposed_transaction.amount.minor_units().checked_abs()?;
+        let purchase = Money::new(
+            purchase_minor_units,
+            proposed_transaction.amount.currency().to_owned(),
+        );
+        match before.sub(&purchase) {
+            Ok(after) => Some(after),
+            Err(_) => {
+                push_issue_once(
+                    &mut issues,
+                    blocking_issue(
+                        if before.currency() == purchase.currency() {
+                            DecisionIssueCode::Unknown("money_arithmetic_overflow".into())
+                        } else {
+                            DecisionIssueCode::CurrencyMismatch
+                        },
+                        DecisionScope::Category(category_id.clone()),
+                        RedactionState::Visible,
+                        Vec::new(),
+                    ),
+                );
+                None
+            }
+        }
+    });
+
+    let readiness = if issues
+        .iter()
+        .any(|issue| issue.effect == DecisionIssueEffect::Blocks)
+    {
+        DecisionReadiness::Blocked
+    } else if issues
+        .iter()
+        .any(|issue| issue.effect == DecisionIssueEffect::Qualifies)
+    {
+        DecisionReadiness::Qualified
+    } else {
+        DecisionReadiness::Ready
+    };
+
+    ProspectiveDecisionEnvelope {
+        metadata: ProspectiveDecisionMetadata {
+            contract_version: "1.0".into(),
+            decision_id,
+            decision_kind: "purchase".into(),
+            request_id,
+            correlation_id,
+            context,
+        },
+        readiness,
+        before: semantic_category_state(&category_id, before_amount),
+        after: semantic_category_state(&category_id, after_amount),
+        issues,
+        evidence,
+        alternatives: Vec::new(),
+        expires_at: valid_until,
+        redaction,
+        payload,
+    }
+}
+
+fn semantic_category_state(category_id: &str, amount: Option<Money>) -> DecisionSemanticState {
+    DecisionSemanticState {
+        amounts: amount
+            .map(|amount| DecisionAmount {
+                label: FinancialStateLabel::EnvelopeAvailability,
+                scope: DecisionScope::Category(category_id.to_owned()),
+                amount,
+            })
+            .into_iter()
+            .collect(),
     }
 }
 

@@ -107,6 +107,7 @@ export interface ProtocolSnapshot {
   actualDownloadedAt?: string | null;
   encrypted?: boolean | null;
   bankSyncedAt?: string | null;
+  unlocked?: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -424,8 +425,8 @@ export interface SnapshotCoverage {
   tags: CoverageState;
 }
 
-/** Unknown means unreported coverage; empty means confirmed complete with no entries. */
-export type CoverageState = 'complete' | 'empty' | 'unknown';
+/** Partial means some source entries were unavailable; empty means confirmed complete with no entries. */
+export type CoverageState = 'complete' | 'empty' | 'partial' | 'unknown';
 
 export interface InclusionScope {
   pendingActivity: PendingActivityTreatment;
@@ -446,6 +447,9 @@ export interface SourceObservation {
 
 export type ObservationKind =
   | 'account_freshness'
+  | 'account_coverage'
+  | 'account_type'
+  | 'account_balance'
   | 'pending_activity'
   | 'uncleared_activity'
   | 'schedule_coverage'

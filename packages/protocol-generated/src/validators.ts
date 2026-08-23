@@ -384,7 +384,7 @@ export const snapshotSourceSchema = z
   })
   .strict();
 
-export const coverageStateSchema = z.enum(['complete', 'empty', 'unknown']);
+export const coverageStateSchema = z.enum(['complete', 'empty', 'partial', 'unknown']);
 
 export const snapshotCoverageSchema = z
   .object({
@@ -411,6 +411,9 @@ export const inclusionScopeSchema = z
 
 export const observationKindSchema = z.enum([
   'account_freshness',
+  'account_coverage',
+  'account_type',
+  'account_balance',
   'pending_activity',
   'uncleared_activity',
   'schedule_coverage',
@@ -490,6 +493,7 @@ const financialSnapshotLegacyProtocolSchema = z
     actualDownloadedAt: canonicalUtcTimestampSchema.nullable().optional(),
     encrypted: z.boolean().nullable().optional(),
     bankSyncedAt: canonicalUtcTimestampSchema.nullable().optional(),
+    unlocked: z.boolean().nullable().optional(),
   })
   .strict();
 

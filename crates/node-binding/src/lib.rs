@@ -314,6 +314,17 @@ pub fn evaluate_purchase(input: String) -> napi::Result<String> {
     })
 }
 
+/// Evaluate a prospective purchase against the canonical financial snapshot.
+/// Input: ProspectivePurchaseEvaluationRequest. Returns
+/// ProspectiveDecisionEnvelope<PurchaseEvaluation> JSON.
+#[napi]
+pub fn evaluate_prospective_purchase(input: String) -> napi::Result<String> {
+    run::<
+        cp::ProspectivePurchaseEvaluationRequest,
+        cp::ProspectiveDecisionEnvelope<PurchaseEvaluation>,
+    >(input, |req| Ok(cp::evaluate_prospective_purchase(req)))
+}
+
 // ===========================================================================
 // 11. project_cash_flow
 // ===========================================================================

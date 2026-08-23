@@ -81,8 +81,12 @@ pub struct SnapshotCoverage {
 pub enum CoverageState {
     /// The source reported complete coverage.
     Complete,
+    /// The source reported incomplete but usable coverage.
+    Partial,
     /// The source reported that the collection is explicitly empty.
     Empty,
+    /// The source explicitly reported that coverage is unavailable.
+    Unavailable,
     /// The source did not report whether the collection is covered.
     #[default]
     Unknown,
@@ -148,6 +152,12 @@ pub struct SourceObservation {
 pub enum ObservationKind {
     /// Freshness of an account's source data.
     AccountFreshness,
+    /// Coverage reported for an account.
+    AccountCoverage,
+    /// Type reported for an account.
+    AccountType,
+    /// Balance reported for an account.
+    AccountBalance,
     /// Presence and treatment of pending activity.
     PendingActivity,
     /// Presence and treatment of uncleared activity.

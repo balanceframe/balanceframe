@@ -104,6 +104,21 @@ export interface NotificationPolicy {
   readonly defaultRedactionClass: string;
 }
 
+/** Canonical scope used to identify a financial decision issue. */
+export interface FinancialDecisionScope {
+  readonly kind: string;
+  readonly id?: string;
+}
+
+/** Complete stable identity of a revision of a financial decision issue. */
+export interface FinancialDecisionIdentity {
+  readonly classification: string;
+  readonly scope: FinancialDecisionScope;
+  readonly snapshotId: string;
+  readonly policyVersion: string;
+  readonly revision: string;
+}
+
 /** Input to create and process a notification. */
 export interface CreateNotificationInput {
   readonly budgetId: string;
@@ -114,6 +129,11 @@ export interface CreateNotificationInput {
   readonly scope?: string;
   readonly recipientId?: string;
   readonly redactionClass?: string;
+  /**
+   * Stable producer identity used to deduplicate one revision of a decision
+   * issue. Callers should derive this with {@link financialDecisionDedupKey}.
+   */
+  readonly dedupKey?: string;
 }
 
 /** Result of creating a notification (event + outbox records). */
@@ -156,6 +176,7 @@ interface ProducerBase {
   readonly recipientId?: string;
   readonly redactionClass?: string;
   readonly correlationId?: string;
+  readonly dedupKey?: string;
 }
 
 /** Input for a data-quality finding notification. */
@@ -414,11 +435,35 @@ function redactPayload(
 // ---------------------------------------------------------------------------
 
 /**
- * Generate a deterministic delivery key scoped to (eventId, channelType).
- * This ensures idempotent outbox enqueue.
+ * Generate the stable identity for one revision of a financial decision.
+ *
+ * The tuple encoding keeps each component structurally distinct, including
+ * the canonical scope kind and id, before hashing it into an opaque key.
  */
-function generateDeliveryKey(eventId: string, channelType: string): string {
-  return createHash('sha256').update(`${eventId}:${channelType}`).digest('hex');
+export function financialDecisionDedupKey(identity: FinancialDecisionIdentity): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        identity.classification,
+        identity.scope.kind,
+        identity.scope.id ?? null,
+        identity.snapshotId,
+        identity.policyVersion,
+        identity.revision,
+      ]),
+    )
+    .digest('hex');
+}
+
+/**
+ * Generate a deterministic delivery key scoped to the producer identity (when
+ * present) or event, plus the channel type. This keeps legacy event-scoped
+ * delivery while making financial decision revisions stably idempotent.
+ */
+function generateDeliveryKey(eventId: string, channelType: string, dedupKey?: string): string {
+  return createHash('sha256')
+    .update(`${dedupKey ?? eventId}:${channelType}`)
+    .digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +482,7 @@ export class NotificationRuntime {
   private readonly adapters: Map<ChannelType, ChannelAdapter>;
   private readonly policy: NotificationPolicy;
   private readonly rateLimiter: InProcessRateLimiter;
+  private readonly creationsByDedupKey = new Map<string, Promise<NotificationResult>>();
   private reAuthHook: ReAuthorizationHook | null = null;
   private auditHook: AuditHook | null = null;
 
@@ -533,6 +579,28 @@ export class NotificationRuntime {
    * 6. Append audit records.
    */
   async create(input: CreateNotificationInput): Promise<NotificationResult> {
+    if (!input.dedupKey) {
+      return this.createNotification(input);
+    }
+
+    const existing = this.creationsByDedupKey.get(input.dedupKey);
+    if (existing) {
+      return existing;
+    }
+
+    const creation = this.createNotification(input);
+    this.creationsByDedupKey.set(input.dedupKey, creation);
+    try {
+      return await creation;
+    } catch (error) {
+      if (this.creationsByDedupKey.get(input.dedupKey) === creation) {
+        this.creationsByDedupKey.delete(input.dedupKey);
+      }
+      throw error;
+    }
+  }
+
+  private async createNotification(input: CreateNotificationInput): Promise<NotificationResult> {
     // 1. Evaluate eligibility
     const eligible = this.evaluateEligibility(input.classification, input.severity);
     if (!eligible) {
@@ -554,7 +622,7 @@ export class NotificationRuntime {
       scope: input.scope ?? null,
       redactionClass: redactionClass,
       channelConfigVersion: null,
-      correlationId: input.correlationId ?? null,
+      correlationId: input.correlationId ?? input.dedupKey ?? null,
     };
     const event = await this.store.createNotificationEvent(eventInput);
 
@@ -609,14 +677,14 @@ export class NotificationRuntime {
         }
 
         // 5. Enqueue outbox record
-        const deliveryKey = generateDeliveryKey(event.id, channelType);
+        const deliveryKey = generateDeliveryKey(event.id, channelType, input.dedupKey);
         const enqueued = await this.store.enqueueNotification({
           eventId: event.id,
           deliveryKey,
           channelType,
           channelConfigVersion: null,
           maxAttempts: this.policy.maxRetries,
-          correlationId: input.correlationId ?? null,
+          correlationId: input.correlationId ?? input.dedupKey ?? null,
         });
         outboxRecords.push(enqueued);
       }
@@ -1141,6 +1209,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         findingId: input.findingId,
         title: input.title,
@@ -1163,6 +1232,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         alertId: input.alertId,
         title: input.title,
@@ -1184,6 +1254,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         findingId: input.findingId,
         title: input.title,
@@ -1206,6 +1277,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         findingId: input.findingId,
         title: input.title,
@@ -1230,6 +1302,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         proposalId: input.proposalId,
         title: input.title,
@@ -1254,6 +1327,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         workflowId: input.workflowId,
         title: input.title,

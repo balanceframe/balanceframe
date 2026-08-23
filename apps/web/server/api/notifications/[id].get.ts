@@ -14,7 +14,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   requireAuthorization,
   getActorId,
 } from '../../utils/workflow-store';
@@ -45,8 +44,86 @@ function getRuntime(store: ReturnType<typeof getWorkflowStore>): NotificationRun
   return runtime;
 }
 
+const EVENT_METADATA_FIELDS = [
+  'id',
+  'eventVersion',
+  'budgetId',
+  'classification',
+  'recipientId',
+  'scope',
+  'redactionClass',
+  'channelConfigVersion',
+  'policyVersion',
+  'correlationId',
+  'createdAt',
+] as const;
+
+const DELIVERY_STATE_FIELDS = [
+  'id',
+  'eventId',
+  'deliveryKey',
+  'channelType',
+  'channelConfigVersion',
+  'status',
+  'attemptCount',
+  'maxAttempts',
+  'claimExpiresAt',
+  'lastAttemptedAt',
+  'nextAttemptAt',
+  'acknowledgedAt',
+  'failedAt',
+  'failureReason',
+  'suppressedAt',
+  'suppressedReason',
+  'correlationId',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+const DELIVERY_ATTEMPT_FIELDS = [
+  'id',
+  'outboxId',
+  'attemptNumber',
+  'status',
+  'responseCode',
+  'attemptedAt',
+  'success',
+  'deliveredAt',
+  'failureReason',
+] as const;
+
+interface NotificationDetail {
+  readonly outbox: unknown;
+  readonly event: unknown;
+  readonly redactedPayload: Record<string, unknown>;
+  readonly deliveryAttempts: readonly unknown[];
+}
+
+function pickSafeFields(source: unknown, fields: readonly string[]): Record<string, unknown> {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return {};
+
+  const safe: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(source, field)) {
+      safe[field] = (source as Record<string, unknown>)[field];
+    }
+  }
+  return safe;
+}
+
+/** Convert persisted notification records into the browser-safe DTO. */
+function sanitizeNotificationDetail(detail: NotificationDetail) {
+  return {
+    outbox: pickSafeFields(detail.outbox, DELIVERY_STATE_FIELDS),
+    event: pickSafeFields(detail.event, EVENT_METADATA_FIELDS),
+    redactedPayload: detail.redactedPayload,
+    deliveryAttempts: detail.deliveryAttempts.map((attempt) =>
+      pickSafeFields(attempt, DELIVERY_ATTEMPT_FIELDS),
+    ),
+  };
+}
+
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
 
   // Authorization gate
@@ -55,6 +132,7 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 403);
     return auth.response;
   }
+  const authInfo = auth.info;
 
   try {
     const wf = getWorkflowStore(event);
@@ -91,7 +169,7 @@ export default defineEventHandler(async (event) => {
       );
     }
 
-    return okEnvelope(detail, auth.info, requestId);
+    return okEnvelope(sanitizeNotificationDetail(detail), auth.info, requestId);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     setResponseStatus(event, 503);

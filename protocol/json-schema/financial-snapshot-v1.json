@@ -259,14 +259,14 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "accounts": { "enum": ["complete", "empty", "unknown"] },
-        "transactions": { "enum": ["complete", "empty", "unknown"] },
-        "categories": { "enum": ["complete", "empty", "unknown"] },
-        "payees": { "enum": ["complete", "empty", "unknown"] },
-        "rules": { "enum": ["complete", "empty", "unknown"] },
-        "schedules": { "enum": ["complete", "empty", "unknown"] },
-        "budgets": { "enum": ["complete", "empty", "unknown"] },
-        "tags": { "enum": ["complete", "empty", "unknown"] }
+        "accounts": { "enum": ["complete", "empty", "partial", "unknown"] },
+        "transactions": { "enum": ["complete", "empty", "partial", "unknown"] },
+        "categories": { "enum": ["complete", "empty", "partial", "unknown"] },
+        "payees": { "enum": ["complete", "empty", "partial", "unknown"] },
+        "rules": { "enum": ["complete", "empty", "partial", "unknown"] },
+        "schedules": { "enum": ["complete", "empty", "partial", "unknown"] },
+        "budgets": { "enum": ["complete", "empty", "partial", "unknown"] },
+        "tags": { "enum": ["complete", "empty", "partial", "unknown"] }
       }
     },
     "InclusionScope": {
@@ -285,6 +285,9 @@
         "kind": {
           "enum": [
             "account_freshness",
+            "account_coverage",
+            "account_type",
+            "account_balance",
             "pending_activity",
             "uncleared_activity",
             "schedule_coverage",

@@ -96,9 +96,19 @@ import type {
 import type { DataFreshness } from './envelope.js';
 import { ReasonCodes } from './errors.js';
 import { ApplicationError } from './errors.js';
-import { NotificationRuntime, InAppChannelAdapter } from './notifications.js';
+import {
+  NotificationRuntime,
+  InAppChannelAdapter,
+  financialDecisionDedupKey,
+} from './notifications.js';
 import type { NotificationPolicy } from './notifications.js';
 import type { WorkflowStore } from '@balanceframe/workflow-store';
+import type {
+  DecisionIssue,
+  FinancialSnapshot,
+  SourceObservation,
+} from '@balanceframe/protocol-generated';
+import { purchaseProspectiveDecisionEnvelopeSchema } from '@balanceframe/protocol-generated/validators';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile, rename, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -344,6 +354,8 @@ export interface NativeBindingShim {
   // Phase 8 — Budget Intelligence N-API methods
   /** Evaluate a proposed purchase against budget limits. */
   evaluatePurchase(input: string): string;
+  /** Evaluate a purchase through the canonical prospective-decision contract. */
+  evaluateProspectivePurchase?(input: string): string;
   /** Project future cash flow based on schedules and budgets. */
   projectCashFlow(input: string): string;
   /** Evaluate target/sinking-fund health. */
@@ -428,10 +440,188 @@ function isLatestSynchronizationProvider(
   );
 }
 
-function snapshotFromSynchronization(value: unknown): unknown | null {
-  return value !== null && typeof value === 'object' && 'snapshot' in value
-    ? (value as Record<string, unknown>).snapshot
+function asFinancialSnapshot(value: unknown): FinancialSnapshot | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  return typeof record.snapshotId === 'string' &&
+    typeof record.contentHash === 'string' &&
+    record.legacySnapshot !== null &&
+    typeof record.legacySnapshot === 'object' &&
+    Array.isArray(record.observations)
+    ? (value as FinancialSnapshot)
     : null;
+}
+
+function financialSnapshotFromSynchronization(value: unknown): FinancialSnapshot | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  return (
+    asFinancialSnapshot(record.financialSnapshot) ??
+    asFinancialSnapshot(record.snapshot) ??
+    asFinancialSnapshot(value)
+  );
+}
+
+function snapshotFromSynchronization(value: unknown): unknown | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if ('snapshot' in record && record.snapshot !== null && record.snapshot !== undefined) {
+    return asFinancialSnapshot(record.snapshot)?.legacySnapshot ?? record.snapshot;
+  }
+  return financialSnapshotFromSynchronization(value)?.legacySnapshot ?? null;
+}
+
+const FINANCIAL_ATTENTION_POLICY_VERSION = 'financial-attention-v1';
+
+const KNOWN_OBSERVATION_KINDS: Record<string, true> = {
+  account_freshness: true,
+  account_coverage: true,
+  account_type: true,
+  account_balance: true,
+  pending_activity: true,
+  uncleared_activity: true,
+  schedule_coverage: true,
+  credit_card_obligation_coverage: true,
+  duplicate_candidate: true,
+  transfer_ambiguity: true,
+  reconciliation: true,
+  currency_compatibility: true,
+};
+
+const NON_ACTIONABLE_OBSERVATIONS: Record<string, true> = {
+  'account_freshness:fresh': true,
+  'account_coverage:complete': true,
+  'account_type:complete': true,
+  'account_balance:complete': true,
+  'pending_activity:included': true,
+  'uncleared_activity:included': true,
+  'schedule_coverage:complete': true,
+  'credit_card_obligation_coverage:complete': true,
+  'currency_compatibility:complete': true,
+};
+
+function observationIssueCode(kind: string): string {
+  switch (kind) {
+    case 'account_freshness':
+    case 'account_coverage':
+    case 'account_type':
+    case 'account_balance':
+      return 'account_freshness_coverage';
+    case 'pending_activity':
+      return 'pending_availability';
+    case 'schedule_coverage':
+      return 'schedule_coverage';
+    case 'credit_card_obligation_coverage':
+      return 'credit_payment_uncertainty';
+    case 'duplicate_candidate':
+    case 'transfer_ambiguity':
+      return 'duplicate_transfer_ambiguity';
+    case 'reconciliation':
+    case 'uncleared_activity':
+      return 'economic_event_ambiguity';
+    case 'currency_compatibility':
+      return 'currency_mismatch';
+    default:
+      return kind;
+  }
+}
+
+function attentionBlockerFromObservation(
+  observation: SourceObservation,
+  snapshot: FinancialSnapshot,
+): AttentionBlocker | null {
+  const kind = String(observation.kind);
+  const state = String(observation.state);
+  const knownKind = KNOWN_OBSERVATION_KINDS[kind] === true;
+  if (knownKind && NON_ACTIONABLE_OBSERVATIONS[`${kind}:${state}`] === true) return null;
+
+  let classification: NonNullable<AttentionBlocker['classification']>;
+  let message: string;
+  let severity: AttentionBlocker['severity'];
+  let remediation: NonNullable<DecisionIssue['remediation']>;
+
+  if (state === 'unavailable') {
+    classification = 'evidence_connector_degradation';
+    message = 'Authorized source evidence is unavailable.';
+    severity = 'critical';
+    remediation = {
+      code: 'reconnect_source',
+      action: 'Reconnect or refresh the affected source before evaluating again.',
+    };
+  } else if (kind === 'account_freshness' && state === 'stale') {
+    classification = 'account_readiness_blocker';
+    message = 'Account evidence is stale.';
+    severity = 'warning';
+    remediation = {
+      code: 'refresh_account_evidence',
+      action: 'Refresh the affected account before evaluating again.',
+    };
+  } else if (
+    (kind === 'transfer_ambiguity' && state === 'ambiguous') ||
+    kind === 'duplicate_candidate'
+  ) {
+    classification = 'transfer_needs_attention';
+    message = 'A possible duplicate or incomplete transfer needs review.';
+    severity = 'warning';
+    remediation = {
+      code: 'review_transfer',
+      action: 'Review the related transactions and resolve the transfer ambiguity.',
+    };
+  } else {
+    classification = 'unresolved_material_evidence';
+    message = knownKind
+      ? 'Material financial evidence remains unresolved.'
+      : `Unsupported financial observation "${kind}" requires review.`;
+    severity = knownKind ? 'warning' : 'critical';
+    remediation = {
+      code: 'review_material_evidence',
+      action: 'Review the supporting evidence before evaluating again.',
+    };
+  }
+
+  const evidence = Array.isArray(observation.evidence) ? observation.evidence : [];
+  const redaction = evidence.some(
+    (reference) => !reference.authorized || reference.redaction === 'redacted',
+  )
+    ? 'redacted'
+    : 'visible';
+  const issue: DecisionIssue = {
+    code: observationIssueCode(kind),
+    severity,
+    effect: 'blocks',
+    scope: observation.scope,
+    evidence,
+    remediation,
+    redaction,
+  };
+  const identity = {
+    classification,
+    scope: observation.scope,
+    snapshotId: snapshot.snapshotId,
+    policyVersion: FINANCIAL_ATTENTION_POLICY_VERSION,
+    revision: snapshot.contentHash,
+  };
+  const dedupKey = financialDecisionDedupKey(identity);
+  const observedAt = observation.observedAt ?? snapshot.capturedAt;
+
+  return {
+    code: issue.code,
+    message,
+    severity,
+    entityType: observation.scope.kind,
+    ...('id' in observation.scope ? { entityId: observation.scope.id } : {}),
+    classification,
+    issue,
+    snapshotId: snapshot.snapshotId,
+    policyVersion: FINANCIAL_ATTENTION_POLICY_VERSION,
+    revision: snapshot.contentHash,
+    dedupKey,
+    findingId: dedupKey,
+    findingStatus: 'open',
+    findingVersion: 1,
+    firstObservedAt: observedAt,
+    lastObservedAt: observedAt,
+  };
 }
 
 /**
@@ -466,7 +656,25 @@ export async function createNativeAnalysisProtocol(
   // -----------------------------------------------------------------------
 
   /**
-   * Synchronize the ledger and extract the snapshot for analysis.
+   * Obtain one complete synchronization result so canonical and legacy
+   * snapshots remain from the same capture.
+   */
+  const obtainSynchronization = async (ledger: unknown): Promise<unknown | null> => {
+    if (isLatestSynchronizationProvider(ledger)) {
+      const latest = ledger.getLatestSynchronization();
+      if (
+        snapshotFromSynchronization(latest) !== null ||
+        financialSnapshotFromSynchronization(latest) !== null
+      ) {
+        return latest;
+      }
+    }
+    if (!isSynchronizableLedger(ledger)) return null;
+    return ledger.synchronize();
+  };
+
+  /**
+   * Synchronize the ledger and extract its legacy snapshot for analysis.
    * If the ledger is not synchronizable, returns null.
    */
   const obtainSnapshot = async (ledger: unknown): Promise<unknown> => {
@@ -495,13 +703,33 @@ export async function createNativeAnalysisProtocol(
     } catch {
       throw new Error('Native evaluatePurchase returned invalid JSON.');
     }
+    const categoryBudget = asMoney(parsed.categoryBudget);
+    const categorySpent = asMoney(parsed.categorySpent);
+    const categoryRemaining = asMoney(parsed.categoryRemaining);
+    if (!categoryBudget || !categorySpent || !categoryRemaining) {
+      throw new Error('Native evaluatePurchase returned missing or invalid required money.');
+    }
+    if (typeof parsed.allowable !== 'boolean') {
+      throw new Error('Native evaluatePurchase returned an invalid allowable value.');
+    }
+    if (
+      !Array.isArray(parsed.reasonCodes) ||
+      !parsed.reasonCodes.every((value) => typeof value === 'string')
+    ) {
+      throw new Error('Native evaluatePurchase returned invalid reason codes.');
+    }
+    const projectedBalance =
+      parsed.projectedBalance === null ? null : asMoney(parsed.projectedBalance);
+    if (parsed.projectedBalance !== null && !projectedBalance) {
+      throw new Error('Native evaluatePurchase returned invalid projected balance money.');
+    }
     return {
-      allowable: parsed.allowable === true,
-      reasonCodes: Array.isArray(parsed.reasonCodes) ? parsed.reasonCodes.map(String) : ['unknown'],
-      categoryBudget: asMoney(parsed.categoryBudget) ?? { minorUnits: '0', currency: 'USD' },
-      categorySpent: asMoney(parsed.categorySpent) ?? { minorUnits: '0', currency: 'USD' },
-      categoryRemaining: asMoney(parsed.categoryRemaining) ?? { minorUnits: '0', currency: 'USD' },
-      projectedBalance: asMoney(parsed.projectedBalance),
+      allowable: parsed.allowable,
+      reasonCodes: parsed.reasonCodes,
+      categoryBudget,
+      categorySpent,
+      categoryRemaining,
+      projectedBalance,
       hasEnvelope: parsed.hasEnvelope === true,
     };
   };
@@ -1148,22 +1376,29 @@ export async function createNativeAnalysisProtocol(
       ledger: unknown,
       params: PurchaseEvaluationParams,
     ): Promise<PurchaseEvaluationResult> {
-      const rawSnapshot = await obtainSnapshot(ledger);
-      if (!rawSnapshot) {
-        return {
-          allowable: false,
-          reasonCodes: ['no_snapshot'],
-          categoryBudget: { minorUnits: '0', currency: 'USD' },
-          categorySpent: { minorUnits: '0', currency: 'USD' },
-          categoryRemaining: { minorUnits: '0', currency: 'USD' },
-          projectedBalance: null,
-          hasEnvelope: false,
-        };
+      const synchronization = await obtainSynchronization(ledger);
+      if (!synchronization) {
+        throw new Error('Ledger synchronization returned no snapshot.');
       }
+
+      const rawSnapshot = snapshotFromSynchronization(synchronization);
+      const financialSnapshot = financialSnapshotFromSynchronization(synchronization);
+      const snapshotRecord =
+        rawSnapshot !== null && typeof rawSnapshot === 'object'
+          ? (rawSnapshot as Record<string, unknown>)
+          : null;
+      const capturedAt = financialSnapshot?.capturedAt ?? snapshotRecord?.snapshotDate;
+      if (typeof capturedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(capturedAt)) {
+        throw new Error('Ledger snapshot is missing a valid capture date.');
+      }
+      if (!asMoney(params.amount)) {
+        throw new Error('Purchase evaluation requires valid amount money.');
+      }
+
       const proposedTransaction = {
         id: '',
         accountId: params.accountId ?? '',
-        date: new Date().toISOString().slice(0, 10),
+        date: capturedAt.slice(0, 10),
         amount: params.amount,
         payeeId: null,
         payeeName: null,
@@ -1178,6 +1413,66 @@ export async function createNativeAnalysisProtocol(
         transferAccountId: null,
         subtransactions: [],
       };
+
+      const canonicalInputSupplied =
+        params.context !== undefined ||
+        params.claims !== undefined ||
+        params.requestId !== undefined ||
+        params.correlationId !== undefined ||
+        params.decisionId !== undefined ||
+        params.validUntil !== undefined ||
+        params.redaction !== undefined;
+      if (
+        canonicalInputSupplied &&
+        typeof native.evaluateProspectivePurchase === 'function' &&
+        financialSnapshot !== null
+      ) {
+        if (
+          !params.context ||
+          !Array.isArray(params.claims) ||
+          !params.accountId ||
+          !params.categoryId ||
+          !params.requestId ||
+          !params.correlationId ||
+          !params.decisionId ||
+          !params.validUntil ||
+          !params.redaction
+        ) {
+          throw new Error(
+            'Prospective purchase evaluation requires context, claims, account, request, correlation, decision, expiry, and redaction identity.',
+          );
+        }
+        const input = JSON.stringify({
+          financialSnapshot,
+          context: params.context,
+          claims: params.claims,
+          proposedTransaction,
+          categoryId: params.categoryId,
+          requestId: params.requestId,
+          correlationId: params.correlationId,
+          decisionId: params.decisionId,
+          validUntil: params.validUntil,
+          redaction: params.redaction,
+        });
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(native.evaluateProspectivePurchase(input));
+        } catch {
+          throw new Error('Native evaluateProspectivePurchase returned invalid JSON.');
+        }
+        const decision = purchaseProspectiveDecisionEnvelopeSchema.parse(parsed);
+        return {
+          ...decision.payload,
+          hasEnvelope: decision.before.amounts.some(
+            ({ label }) => label === 'envelopeAvailability',
+          ),
+          decision,
+        };
+      }
+
+      if (rawSnapshot === null) {
+        throw new Error('Ledger synchronization returned no legacy snapshot.');
+      }
       const input = JSON.stringify({
         snapshot: rawSnapshot,
         proposedTransaction,
@@ -1376,7 +1671,9 @@ export async function createNativeAnalysisProtocol(
       ledger: unknown,
       params: AttentionHomeParams,
     ): Promise<AttentionHomeResult> {
-      const rawSnapshot = await obtainSnapshot(ledger);
+      const synchronization = await obtainSynchronization(ledger);
+      const rawSnapshot = snapshotFromSynchronization(synchronization);
+      const financialSnapshot = financialSnapshotFromSynchronization(synchronization);
       if (!rawSnapshot) {
         return {
           blockers: [],
@@ -1427,6 +1724,15 @@ export async function createNativeAnalysisProtocol(
               },
             ]
           : [];
+      if (financialSnapshot) {
+        const canonicalDedupKeys = new Set<string>();
+        for (const observation of financialSnapshot.observations) {
+          const blocker = attentionBlockerFromObservation(observation, financialSnapshot);
+          if (!blocker?.dedupKey || canonicalDedupKeys.has(blocker.dedupKey)) continue;
+          canonicalDedupKeys.add(blocker.dedupKey);
+          blockers.push(blocker);
+        }
+      }
 
       // Alerts: derive from native target health overspent labels
       const alerts: AttentionAlert[] = [];
@@ -2191,7 +2497,17 @@ export async function createObserveComposition(
       policyVersion: 'v1',
       eligibility: [
         {
-          classifications: ['budget_alert', 'review_complete', 'security_alert'],
+          classifications: [
+            'budget_alert',
+            'review_complete',
+            'security_alert',
+            'account_readiness_blocker',
+            'transfer_needs_attention',
+            'reservation_conflict',
+            'commitment_conflict',
+            'evidence_connector_degradation',
+            'unresolved_material_evidence',
+          ],
           minSeverity: 'normal',
           requiredCapability: 'notification:receive',
         },
