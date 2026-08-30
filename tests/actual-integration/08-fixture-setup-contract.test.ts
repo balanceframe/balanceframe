@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parse as parseEnv } from 'dotenv';
 import { buildClientConfig } from './helpers';
 
 const integrationDir = dirname(fileURLToPath(import.meta.url));
@@ -139,7 +140,10 @@ function createLiveSetupSandbox(): SetupSandbox {
   };
 }
 
-async function runLiveSetup(secretKey?: string): Promise<{
+async function runLiveSetup(
+  secretKey?: string,
+  budgetName = `Fixture-${randomUUID()}`,
+): Promise<{
   readonly result: SpawnResult;
   readonly sandbox: SetupSandbox;
   readonly serverUrl: string;
@@ -148,7 +152,6 @@ async function runLiveSetup(secretKey?: string): Promise<{
   const sandbox = createLiveSetupSandbox();
   const port = await unusedLocalPort();
   const serverUrl = `http://127.0.0.1:${port}`;
-  const budgetName = `Fixture-${randomUUID()}`;
   const result = await run('bash', [sandbox.scriptPath], {
     cwd: sandbox.cwd,
     env: {
@@ -167,12 +170,9 @@ async function runLiveSetup(secretKey?: string): Promise<{
 }
 
 function readEnvValue(path: string, key: string): string {
-  const prefix = `${key}=`;
-  const line = readFileSync(path, 'utf8')
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(prefix));
-  if (!line) throw new Error(`Missing ${key} in ${path}`);
-  return line.slice(prefix.length);
+  const value = parseEnv(readFileSync(path))[key];
+  if (value === undefined) throw new Error(`Missing ${key} in ${path}`);
+  return value;
 }
 
 async function readSourcedEnvValue(path: string, key: string): Promise<string> {
@@ -492,6 +492,15 @@ describe('fixture setup contract', () => {
     expect(readEnvValue(sandbox.envPath, 'ACTUAL_SEED_DATA_DIR')).toBe(
       join(sandbox.dataDir, 'seed-data'),
     );
+  });
+
+  it('writes values that dotenv and shell sourcing decode identically', async () => {
+    const budgetName = 'Fixture Budget With Spaces';
+    const { result, sandbox } = await runLiveSetup(undefined, budgetName);
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(parseEnv(readFileSync(sandbox.envPath)).ACTUAL_BUDGET_NAME).toBe(budgetName);
+    expect(await readSourcedEnvValue(sandbox.envPath, 'ACTUAL_BUDGET_NAME')).toBe(budgetName);
   });
 
   it('writes the generated environment with owner-only permissions', async () => {

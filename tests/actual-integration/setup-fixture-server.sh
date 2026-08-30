@@ -432,15 +432,23 @@ output_env() {
     return 1
   fi
 
-  # Shell-quote all values with printf %q (handles spaces, quotes, etc.)
+  quote_env_value() {
+    local value="$1"
+    if [[ "$value" == *"'"* || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+      error "Fixture environment values cannot contain single quotes or line breaks"
+      return 1
+    fi
+    printf "'%s'" "$value"
+  }
+
   local qm qs qk qb qg qn qsd
-  printf -v qm "%q" "1"
-  printf -v qs "%q" "$ACTUAL_SERVER_URL"
-  printf -v qk "%q" "$ACTUAL_SECRET_KEY"
-  printf -v qb "%q" "$budget_id"
-  printf -v qg "%q" "$group_id"
-  printf -v qn "%q" "$ACTUAL_BUDGET_NAME"
-  printf -v qsd "%q" "$SEED_DATA_DIR"
+  qm="$(quote_env_value "1")"
+  qs="$(quote_env_value "$ACTUAL_SERVER_URL")"
+  qk="$(quote_env_value "$ACTUAL_SECRET_KEY")"
+  qb="$(quote_env_value "$budget_id")"
+  qg="$(quote_env_value "$group_id")"
+  qn="$(quote_env_value "$ACTUAL_BUDGET_NAME")"
+  qsd="$(quote_env_value "$SEED_DATA_DIR")"
 
   umask 077
   cat > "$env_file" << ENV
