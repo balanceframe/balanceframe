@@ -109,31 +109,18 @@ export default defineEventHandler(async (event) => {
         );
         if (existing?.id) {
           redeemedUserId = existing.id;
-          // Continue to complete redemption with recovered user ID
+          // Existing-user recovery preserves the current authorization record.
           try {
-            await wf.store.completeInvitationRedemption(
-              claimResult.claimId,
-              redeemedUserId,
+            await wf.store.completeInvitationRedemption(claimResult.claimId, redeemedUserId, {
               requestId,
-            );
+              provisionReadOnlyMembership: false,
+            });
           } catch {
             setResponseStatus(event, 500);
             return invitationError(
               'Could not complete registration',
               requestId,
               'invitation.finalization_failed',
-            );
-          }
-          // Assign empty membership
-          try {
-            await wf.store.upsertActorMembership(redeemedUserId, 'active', [], '*');
-          } catch {
-            // Membership missing but invitation is redeemed — reconcile can fix
-            setResponseStatus(event, 500);
-            return invitationError(
-              'Could not complete registration',
-              requestId,
-              'invitation.membership_failed',
             );
           }
           return {
@@ -162,31 +149,19 @@ export default defineEventHandler(async (event) => {
     );
   }
 
-  // 6. Complete redemption — updates invitation state with the user ID.
-  //    The store appends the authoritative invitation_redeemed audit record.
-  //    On failure the invitation stays claimed (recoverable by reconcile).
+  // 6. Atomically complete redemption and provision the read-only membership.
+  //    On failure the invitation stays claimed (recoverable by same-email retry).
   try {
-    await wf.store.completeInvitationRedemption(claimResult.claimId, redeemedUserId, requestId);
+    await wf.store.completeInvitationRedemption(claimResult.claimId, redeemedUserId, {
+      requestId,
+      provisionReadOnlyMembership: true,
+    });
   } catch {
     setResponseStatus(event, 500);
     return invitationError(
       'Could not complete registration',
       requestId,
       'invitation.finalization_failed',
-    );
-  }
-
-  // 7. Assign empty membership (active, no capabilities).
-  //    If this fails the invitation is already redeemed; return an error so
-  //    the caller knows the account was partially created.
-  try {
-    await wf.store.upsertActorMembership(redeemedUserId, 'active', [], '*');
-  } catch {
-    setResponseStatus(event, 500);
-    return invitationError(
-      'Could not complete registration',
-      requestId,
-      'invitation.membership_failed',
     );
   }
 

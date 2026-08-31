@@ -593,7 +593,7 @@ describe('POST /api/invitations/redeem', () => {
     expect(JSON.stringify(response)).not.toContain('invalid');
   });
 
-  it('succeeds and calls completeInvitationRedemption with empty membership', async () => {
+  it('grants redeemed members read-only observe access', async () => {
     const claimId = 'claim-for-redeem-01';
     const redeemedUserId = 'redeemed-user-abc-456';
     const validToken = 'valid-token-sixty-four-chars-for-test-purposes-0123456789abcdef';
@@ -612,13 +612,16 @@ describe('POST /api/invitations/redeem', () => {
 
     const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    // Verify empty membership was assigned
-    expect(mockStore.upsertActorMembership).toHaveBeenCalledWith(redeemedUserId, 'active', [], '*');
+    // Membership provisioning is atomic with redemption inside the workflow store.
+    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
     // Verify redemption was completed with the correct IDs and requestId
     expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
       claimId,
       redeemedUserId,
-      expect.any(String),
+      expect.objectContaining({
+        requestId: expect.any(String),
+        provisionReadOnlyMembership: true,
+      }),
     );
     // Route must NOT produce its own audit — store handles it
     expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
@@ -715,41 +718,14 @@ describe('POST /api/invitations/redeem', () => {
     expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
       claimId,
       existingUserId,
-      expect.any(String),
+      expect.objectContaining({
+        requestId: expect.any(String),
+        provisionReadOnlyMembership: false,
+      }),
     );
-    expect(mockStore.upsertActorMembership).toHaveBeenCalledWith(existingUserId, 'active', [], '*');
+    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
     expect(response.status).toBe('ok');
     // No route-level audit — store handles it
-    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
-  });
-
-  it('returns 500 when membership assignment fails after successful createUser', async () => {
-    const claimId = 'claim-membership-fail-003';
-    const redeemedUserId = 'membership-fail-user';
-    mockReadBody.mockResolvedValue({
-      token: 'membership-fail-token',
-      name: 'Member Fail',
-      email: 'member-fail@example.com',
-      password: 'password12345678',
-    });
-    mockStore.claimInvitation.mockResolvedValue({ claimId });
-    mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
-    mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
-    // membership assignment fails
-    mockStore.upsertActorMembership.mockRejectedValue(new Error('Store write conflict'));
-
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
-
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 500);
-    expect(response.error!.code).toBe('INVITATION_FAILED');
-    expect(response.status).toBe('error');
-    // Redemption was completed — invitation is redeemed even though membership failed
-    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
-      claimId,
-      redeemedUserId,
-      expect.any(String),
-    );
-    // No route-level audit
     expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
   });
 
@@ -799,7 +775,10 @@ describe('POST /api/invitations/redeem', () => {
     expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
       claimId,
       redeemedUserId,
-      expect.any(String),
+      expect.objectContaining({
+        requestId: expect.any(String),
+        provisionReadOnlyMembership: true,
+      }),
     );
     // Route must NOT produce its own audit record
     expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();

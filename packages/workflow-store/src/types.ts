@@ -1343,13 +1343,21 @@ export interface WorkflowStore {
 
   /**
    * Complete invitation redemption after identity creation.
-   * Transitions the invitation from 'claimed' to 'redeemed' and records
-   * the created user ID.
+   * Atomically transitions the invitation from 'claimed' to 'redeemed' and
+   * records the created user ID. Membership provisioning is explicit so
+   * existing-user recovery cannot widen current authorization.
    *
-   * @throws If the claim ID is not found or the invitation is not in
-   *         the 'claimed' state.
+   * @throws If the claim ID is not found, the invitation is not in the
+   *         'claimed' state, or provisioning targets a non-active membership.
    */
-  completeInvitationRedemption(claimId: string, userId: string, requestId?: string): Promise<void>;
+  completeInvitationRedemption(
+    claimId: string,
+    userId: string,
+    options: {
+      readonly requestId?: string;
+      readonly provisionReadOnlyMembership: boolean;
+    },
+  ): Promise<void>;
 
   /**
    * Find stranded 'claimed' invitations whose redemption was interrupted.

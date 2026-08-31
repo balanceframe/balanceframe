@@ -27,11 +27,11 @@ all stable releases. Before `1.0.0`, `0.y.z` semantics apply:
 
 ## Release channels
 
-| Channel | Tag pattern | Image tag semantics |
-|---|---|---|
-| **Stable** | `vX.Y.Z` | Immutable `vX.Y.Z`, mutable `vX.Y` and `vX` advance, `latest` advances |
-| **Release candidate** | `vX.Y.Z-rc.N` | Immutable `vX.Y.Z-rc.N` only; no convenience aliases |
-| **Beta** | `vX.Y.Z-beta.N` | Immutable `vX.Y.Z-beta.N` only; no convenience aliases |
+| Channel               | Tag pattern     | Image tag semantics                                                    |
+| --------------------- | --------------- | ---------------------------------------------------------------------- |
+| **Stable**            | `vX.Y.Z`        | Immutable `vX.Y.Z`, mutable `vX.Y` and `vX` advance, `latest` advances |
+| **Release candidate** | `vX.Y.Z-rc.N`   | Immutable `vX.Y.Z-rc.N` only; no convenience aliases                   |
+| **Beta**              | `vX.Y.Z-beta.N` | Immutable `vX.Y.Z-beta.N` only; no convenience aliases                 |
 
 ## Release process
 
@@ -119,6 +119,7 @@ After bootstrap completes, registration transitions to invite-only:
   The fragment is never sent to the server in HTTP requests or written to
   standard proxy access logs. The invite page reads and clears it with
   `history.replaceState` before posting the token in its JSON body over TLS.
+
 - Only the SHA-256 digest of the token is persisted in `workflow.db`. The
   raw token is returned exactly once — in the response that creates the
   invitation. The owner copies this URL out-of-band (Clipboard API) and
@@ -156,6 +157,13 @@ After bootstrap completes, registration transitions to invite-only:
   events after.
 
 ## Release history
+
+### v0.3.1 (2026-08-23)
+
+- **Invited-member read access** — invited accounts receive the read-only
+  `observe` capability during atomic invitation redemption. The workflow-store
+  migration repairs existing redeemed invitees without reactivating inactive
+  memberships or changing mutation capabilities.
 
 ### v0.2.0 (2026-07-26)
 
