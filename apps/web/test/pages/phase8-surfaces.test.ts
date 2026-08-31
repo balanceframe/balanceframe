@@ -862,7 +862,11 @@ describe('Index (Overview) page', () => {
     await flushPromises();
     const cards = wrapper.findAll('[data-testid="finding-card"]');
     expect(cards.length).toBeGreaterThanOrEqual(1);
-    expect(cards[0].text()).toContain('warning');
+    const alertCard = cards.find((card) =>
+      card.text().includes('Groceries category is overspent | warning | Groceries'),
+    );
+    expect(alertCard).toBeDefined();
+    expect(alertCard!.text()).toContain('warning');
   });
 
   it('shows target progress section with healthy/at-risk counts', async () => {

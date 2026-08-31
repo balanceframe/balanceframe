@@ -23,7 +23,7 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type {
   Account,
@@ -33,6 +33,10 @@ import type {
   Rule,
   Schedule,
   BudgetMonth,
+  CoverageState,
+  EvidenceReference,
+  FinancialSnapshot,
+  SourceObservation,
 } from '@balanceframe/protocol-generated';
 import type {
   APIAccountEntity,
@@ -91,8 +95,98 @@ import {
   buildPayeeNameMap,
   buildCategoryInfoMap,
   buildTransferAcctMap,
-  normalizeTag,
 } from './normalizer.js';
+
+type CollectionRead<T> = { available: true; items: T[] } | { available: false; items: [] };
+
+async function readCollection<T>(read: () => Promise<T[]>): Promise<CollectionRead<T>> {
+  try {
+    return { available: true, items: await read() };
+  } catch {
+    return { available: false, items: [] };
+  }
+}
+
+function coverageFor<T>(read: CollectionRead<T>, incomplete = false): CoverageState {
+  if (!read.available) return 'unknown';
+  if (read.items.length === 0) return 'empty';
+  return incomplete ? 'partial' : 'complete';
+}
+
+function healthCoverageFor(accountRead: CollectionRead<APIAccountEntity>): Coverage {
+  if (!accountRead.available) {
+    return {
+      totalAccounts: 0,
+      includedAccounts: 0,
+      allExpectedAccountsPresent: false,
+    };
+  }
+
+  // Closed accounts are intentionally excluded from snapshots and coverage reporting.
+  const includedAccounts = accountRead.items.filter((account) => !account.closed).length;
+  return {
+    totalAccounts: includedAccounts,
+    includedAccounts,
+    allExpectedAccountsPresent: true,
+  };
+}
+
+type SnapshotBuildResult = Pick<LedgerSnapshotResult, 'snapshot' | 'financialSnapshot'> & {
+  accountRead: CollectionRead<APIAccountEntity>;
+};
+
+type SourceAccountFacts = APIAccountEntity & {
+  type?: unknown;
+  account_type?: unknown;
+};
+
+function hasNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasReliableAccountType(account: APIAccountEntity): boolean {
+  const sourceAccount = account as SourceAccountFacts;
+  return hasNonBlankString(sourceAccount.type ?? sourceAccount.account_type);
+}
+
+function hasReliableAccountBalance(account: APIAccountEntity): boolean {
+  return typeof account.balance_current === 'number' && Number.isFinite(account.balance_current);
+}
+
+function hasReliableScheduleFacts(schedule: APIScheduleEntity): boolean {
+  return (
+    hasNonBlankString(schedule.account) &&
+    typeof schedule.amount === 'number' &&
+    Number.isFinite(schedule.amount) &&
+    hasNonBlankString(schedule.next_date)
+  );
+}
+
+function visibleEvidence(evidenceId: string, kind: string): EvidenceReference {
+  return { evidenceId, kind, authorized: true, redaction: 'visible' };
+}
+
+function canonicalJson(value: unknown): string {
+  const normalize = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(normalize);
+    if (candidate === null || typeof candidate !== 'object') return candidate;
+
+    const normalized: Record<string, unknown> = {};
+    for (const key of Object.keys(candidate).sort()) {
+      const child = (candidate as Record<string, unknown>)[key];
+      if (child !== undefined) normalized[key] = normalize(child);
+    }
+    return normalized;
+  };
+
+  const serialized = JSON.stringify(normalize(value));
+  if (serialized === undefined) throw new Error('Cannot hash an undefined snapshot payload');
+  return serialized;
+}
+
+function sha256(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
 
 // ---------------------------------------------------------------------------
 // ActualClient interface (DI seam)
@@ -114,6 +208,7 @@ export interface ActualClient {
   sync(): Promise<void>;
   getServerVersion(): Promise<{ version: string } | { error: string }>;
   getAccounts(): Promise<APIAccountEntity[]>;
+  getAccountBalance(accountId: string): Promise<number>;
   getTransactions(
     accountId: string,
     startDate: string,
@@ -183,6 +278,7 @@ export async function createDefaultActualClient(): Promise<ActualClient> {
     sync: () => actual.sync(),
     getServerVersion: () => actual.getServerVersion(),
     getAccounts: () => actual.getAccounts(),
+    getAccountBalance: (accountId) => actual.getAccountBalance(accountId),
     getTransactions: (accountId, startDate, endDate) =>
       actual.getTransactions(accountId, startDate, endDate),
     getPayees: () => actual.getPayees(),
@@ -366,11 +462,12 @@ export class ActualConnector implements BudgetLedger {
       }
     });
 
-    const snapshot = await this.buildSnapshot();
-    const health = await this.getHealthReport();
+    const capturedAt = new Date().toISOString();
+    const { snapshot, financialSnapshot, accountRead } = await this.buildSnapshot(capturedAt);
+    const health = await this.buildHealthReport(accountRead);
     const watermark = this.getWatermark(budgetId);
 
-    return { snapshot, health, watermark };
+    return { snapshot, financialSnapshot, health, watermark };
   }
 
   // -------------------------------------------------------------------------
@@ -954,17 +1051,18 @@ export class ActualConnector implements BudgetLedger {
   // -------------------------------------------------------------------------
 
   async getHealthReport(): Promise<HealthReport> {
+    this.assertInitialized();
+    const accountRead = await readCollection(() => this.client.getAccounts());
+    return this.buildHealthReport(accountRead);
+  }
+
+  private async buildHealthReport(
+    accountRead: CollectionRead<APIAccountEntity>,
+  ): Promise<HealthReport> {
     const compatibility = await this.getCompatibility();
     const freshness = this.getFreshness();
-    const coverage = await this.getCoverage();
+    const coverage = healthCoverageFor(accountRead);
     const incidents: Incident[] = [];
-
-    const state: HealthState = (() => {
-      if (!compatibility.supported) return 'degraded';
-      if (incidents.some((i) => i.severity === 'error')) return 'degraded';
-      if (freshness.lastDownloadedAt === null) return 'degraded';
-      return 'healthy';
-    })();
 
     if (!compatibility.supported) {
       incidents.push({
@@ -974,13 +1072,28 @@ export class ActualConnector implements BudgetLedger {
       });
     }
 
-    if (!coverage.allExpectedAccountsPresent) {
+    if (!accountRead.available) {
+      incidents.push({
+        severity: 'warning',
+        code: 'ACCOUNT_COVERAGE_UNAVAILABLE',
+        message:
+          'Account coverage could not be determined because the account collection was unavailable.',
+      });
+    } else if (!coverage.allExpectedAccountsPresent) {
       incidents.push({
         severity: 'warning',
         code: 'MISSING_ACCOUNTS',
         message: `Only ${coverage.includedAccounts}/${coverage.totalAccounts} accounts are included in the snapshot.`,
       });
     }
+
+    const state: HealthState = (() => {
+      if (!compatibility.supported) return 'degraded';
+      if (incidents.some((incident) => incident.severity === 'error')) return 'degraded';
+      if (freshness.lastDownloadedAt === null) return 'degraded';
+      if (!accountRead.available) return 'unknown';
+      return 'healthy';
+    })();
 
     return { state, compatibility, freshness, coverage, incidents };
   }
@@ -1066,15 +1179,8 @@ export class ActualConnector implements BudgetLedger {
 
   async getCoverage(): Promise<Coverage> {
     this.assertInitialized();
-    const allAccounts = await this.client.getAccounts();
-    // Only non-closed accounts are expected in the snapshot;
-    // closed accounts are intentionally excluded from coverage reporting.
-    const nonClosed = allAccounts.filter((a) => !a.closed);
-    return {
-      totalAccounts: nonClosed.length,
-      includedAccounts: nonClosed.length,
-      allExpectedAccountsPresent: true,
-    };
+    const accountRead = await readCollection(() => this.client.getAccounts());
+    return healthCoverageFor(accountRead);
   }
 
   /** Convenience: one-shot health check without full report construction. */
@@ -1188,65 +1294,112 @@ export class ActualConnector implements BudgetLedger {
     }
   }
 
-  private async buildSnapshot(): Promise<LedgerSnapshotResult['snapshot']> {
+  private async buildSnapshot(capturedAt: string): Promise<SnapshotBuildResult> {
     this.assertInitialized();
-    const payees = normalizePayees(await this.client.getPayees());
-    const categories = normalizeCategories(
-      (await this.client.getCategories()) as APICategoryEntity[],
-      await this.client.getCategoryGroups(),
+
+    const rawAccountRead = await readCollection(() => this.client.getAccounts());
+    const accountRead: CollectionRead<APIAccountEntity> = rawAccountRead.available
+      ? {
+          available: true,
+          items: await Promise.all(
+            rawAccountRead.items.map(async (account) => {
+              if (hasReliableAccountBalance(account)) return account;
+
+              try {
+                const computedBalance = await this.client.getAccountBalance(account.id);
+                return Number.isFinite(computedBalance)
+                  ? { ...account, balance_current: computedBalance }
+                  : account;
+              } catch {
+                return account;
+              }
+            }),
+          ),
+        }
+      : rawAccountRead;
+    const payeeRead = await readCollection(() => this.client.getPayees());
+    const categoryRead = await readCollection<APICategoryEntity | APICategoryGroupEntity>(() =>
+      this.client.getCategories(),
     );
+    const categoryGroupRead = await readCollection(() => this.client.getCategoryGroups());
+    const ruleRead = await readCollection(() => this.client.getRules());
+    const scheduleRead = await readCollection(() => this.client.getSchedules());
+    const budgetMonthRead = await readCollection(() => this.client.getBudgetMonths());
+    const tagRead = await readCollection(() => this.client.getTags());
+
+    const rawCategories = categoryRead.available
+      ? (categoryRead.items as unknown as APICategoryEntity[])
+      : [];
+    const payees = normalizePayees(payeeRead.items);
+    const categories = normalizeCategories(rawCategories, categoryGroupRead.items);
+    const accounts = normalizeAccounts(accountRead.items, this.currency);
+    const rules = normalizeRules(ruleRead.items);
+    const schedules = normalizeSchedules(scheduleRead.items, this.currency);
     const payeeMap = buildPayeeNameMap(payees);
     const categoryMap = buildCategoryInfoMap(categories);
     const transferAcctMap = buildTransferAcctMap(payees);
 
-    const accounts = normalizeAccounts(await this.client.getAccounts(), this.currency);
-
-    // Collect all transactions across all non-closed accounts
-    const allAccounts = await this.client.getAccounts();
-    const activeAccounts = allAccounts.filter((a) => !a.closed);
-    const allTxns: Transaction[] = [];
+    const activeAccounts = accountRead.items.filter((account) => !account.closed);
+    const transactionReads: Array<{
+      accountId: string;
+      read: CollectionRead<TransactionEntity>;
+    }> = [];
     for (const account of activeAccounts) {
-      const txns = await this.client.getTransactions(account.id, '1970-01-01', '2099-12-31');
-      allTxns.push(
-        ...normalizeTransactions(txns, payeeMap, categoryMap, transferAcctMap, this.currency),
+      transactionReads.push({
+        accountId: account.id,
+        read: await readCollection(() =>
+          this.client.getTransactions(account.id, '1970-01-01', '2099-12-31'),
+        ),
+      });
+    }
+    const allRawTransactions: TransactionEntity[] = [];
+    const transactions: Transaction[] = [];
+    for (const transactionRead of transactionReads) {
+      if (!transactionRead.read.available) continue;
+      allRawTransactions.push(...transactionRead.read.items);
+      transactions.push(
+        ...normalizeTransactions(
+          transactionRead.read.items,
+          payeeMap,
+          categoryMap,
+          transferAcctMap,
+          this.currency,
+        ),
       );
     }
 
-    const rules = normalizeRules(await this.client.getRules());
-    const schedules = normalizeSchedules(await this.client.getSchedules(), this.currency);
-
-    // Budget months
-    const budgetMonths = await this.client.getBudgetMonths();
     const budgets: BudgetMonth[] = [];
-    for (const month of budgetMonths) {
-      try {
-        const monthData = await this.client.getBudgetMonth(month);
-        const categoryBudgets: Record<string, number> = {};
-        for (const group of monthData.categoryGroups ?? []) {
-          for (const cat of (group.categories ?? []) as Array<Record<string, unknown>>) {
-            if (cat.id && typeof cat.budgeted === 'number') {
-              categoryBudgets[String(cat.id)] = cat.budgeted as number;
+    let loadedBudgetMonths = 0;
+    if (budgetMonthRead.available) {
+      for (const month of budgetMonthRead.items) {
+        try {
+          const monthData = await this.client.getBudgetMonth(month);
+          const categoryBudgets: Record<string, number> = {};
+          for (const group of monthData.categoryGroups ?? []) {
+            for (const category of (group.categories ?? []) as Array<Record<string, unknown>>) {
+              if (category.id && typeof category.budgeted === 'number') {
+                categoryBudgets[String(category.id)] = category.budgeted;
+              }
             }
           }
+          budgets.push(normalizeBudgetMonth(month, categoryBudgets, this.currency));
+          loadedBudgetMonths += 1;
+        } catch {
+          // Coverage below records the unreadable month; successfully loaded months are retained.
         }
-        budgets.push(normalizeBudgetMonth(month, categoryBudgets, this.currency));
-      } catch {
-        // Skip months that fail to load
       }
     }
 
-    const now = new Date().toISOString();
-
-    return {
+    const snapshot: LedgerSnapshotResult['snapshot'] = {
       schemaVersion: '1',
       actualVersion: this._serverVersion ?? 'unknown',
-      snapshotDate: now,
-      actualDownloadedAt: now,
-      bankSyncedAt: null, // bank sync not available in Observe-only mode
+      snapshotDate: capturedAt,
+      actualDownloadedAt: capturedAt,
+      bankSyncedAt: null,
       encrypted: this._budgetInfo?.encrypted ?? false,
       unlocked: this._budgetInfo !== null,
       accounts,
-      transactions: allTxns,
+      transactions,
       categories,
       payees,
       rules,
@@ -1254,5 +1407,225 @@ export class ActualConnector implements BudgetLedger {
       budgets,
       tags: [],
     };
+
+    const accountFactsIncomplete = accountRead.items.some(
+      (account) => !hasReliableAccountType(account) || !hasReliableAccountBalance(account),
+    );
+    const scheduleFactsIncomplete = scheduleRead.items.some(
+      (schedule) => !hasReliableScheduleFacts(schedule),
+    );
+
+    let transactionCoverage: CoverageState;
+    if (!accountRead.available) {
+      transactionCoverage = 'unknown';
+    } else if (activeAccounts.length === 0) {
+      transactionCoverage = 'empty';
+    } else {
+      const readableAccounts = transactionReads.filter(({ read }) => read.available).length;
+      if (readableAccounts === 0) {
+        transactionCoverage = 'unknown';
+      } else if (readableAccounts < activeAccounts.length) {
+        transactionCoverage = 'partial';
+      } else {
+        transactionCoverage = allRawTransactions.length === 0 ? 'empty' : 'complete';
+      }
+    }
+
+    let categoryCoverage: CoverageState;
+    if (!categoryRead.available) {
+      categoryCoverage = 'unknown';
+    } else if (!categoryGroupRead.available) {
+      categoryCoverage = categoryRead.items.length === 0 ? 'unknown' : 'partial';
+    } else {
+      categoryCoverage = coverageFor(categoryRead);
+    }
+
+    let budgetCoverage: CoverageState;
+    if (!budgetMonthRead.available) {
+      budgetCoverage = 'unknown';
+    } else if (budgetMonthRead.items.length === 0) {
+      budgetCoverage = 'empty';
+    } else if (loadedBudgetMonths === 0) {
+      budgetCoverage = 'unknown';
+    } else if (loadedBudgetMonths < budgetMonthRead.items.length) {
+      budgetCoverage = 'partial';
+    } else {
+      budgetCoverage = 'complete';
+    }
+
+    const coverage: FinancialSnapshot['coverage'] = {
+      accounts: coverageFor(accountRead, accountFactsIncomplete),
+      transactions: transactionCoverage,
+      categories: categoryCoverage,
+      payees: coverageFor(payeeRead),
+      rules: coverageFor(ruleRead),
+      schedules: coverageFor(scheduleRead, scheduleFactsIncomplete),
+      budgets: budgetCoverage,
+      tags: coverageFor(tagRead),
+    };
+
+    const observations: SourceObservation[] = [];
+    for (const account of accountRead.items) {
+      const evidence = [visibleEvidence(account.id, 'account')];
+      const scope = { kind: 'account' as const, id: account.id };
+      const hasReliableBalance = hasReliableAccountBalance(account);
+      observations.push({
+        kind: 'account_freshness',
+        scope,
+        state: 'unknown',
+        observedAt: null,
+        evidence,
+      });
+      observations.push({
+        kind: 'account_coverage',
+        scope,
+        state: hasReliableBalance ? 'complete' : 'unavailable',
+        observedAt: hasReliableBalance ? capturedAt : null,
+        evidence,
+      });
+
+      const hasReliableType = hasReliableAccountType(account);
+      observations.push({
+        kind: 'account_type',
+        scope,
+        state: hasReliableType ? 'complete' : 'unknown',
+        observedAt: hasReliableType ? capturedAt : null,
+        evidence,
+      });
+
+      observations.push({
+        kind: 'account_balance',
+        scope,
+        state: hasReliableBalance ? 'complete' : 'unavailable',
+        observedAt: hasReliableBalance ? capturedAt : null,
+        evidence,
+      });
+      if (hasReliableType) {
+        observations.push({
+          kind: 'credit_card_obligation_coverage',
+          scope,
+          state: 'unavailable',
+          observedAt: null,
+          evidence,
+        });
+      }
+    }
+
+    const observableTransactions = allRawTransactions.filter(
+      (transaction) => !transaction.tombstone,
+    );
+    for (const transaction of observableTransactions) {
+      const transactionEvidence = [visibleEvidence(transaction.id, 'transaction')];
+      const accountScope = { kind: 'account' as const, id: transaction.account };
+      if (transaction.cleared === false) {
+        observations.push({
+          kind: 'pending_activity',
+          scope: accountScope,
+          state: 'included',
+          observedAt: capturedAt,
+          evidence: transactionEvidence,
+        });
+      } else if (transaction.reconciled === false) {
+        observations.push({
+          kind: 'uncleared_activity',
+          scope: accountScope,
+          state: 'included',
+          observedAt: capturedAt,
+          evidence: transactionEvidence,
+        });
+      }
+
+      if (transaction.imported_id) {
+        const duplicate = observableTransactions.find(
+          (candidate) =>
+            candidate.id !== transaction.id &&
+            candidate.account === transaction.account &&
+            candidate.date === transaction.date &&
+            candidate.amount === transaction.amount &&
+            candidate.payee === transaction.payee,
+        );
+        if (duplicate) {
+          observations.push({
+            kind: 'duplicate_candidate',
+            scope: { kind: 'transaction', id: transaction.id },
+            state: 'present',
+            observedAt: capturedAt,
+            evidence: [
+              visibleEvidence(transaction.id, 'transaction'),
+              visibleEvidence(duplicate.id, 'transaction'),
+            ],
+          });
+        }
+      }
+
+      const transferAccountId = transaction.payee
+        ? (transferAcctMap[transaction.payee] ?? null)
+        : null;
+      if (transferAccountId) {
+        const counterpart = observableTransactions.find(
+          (candidate) =>
+            candidate.id !== transaction.id &&
+            candidate.account === transferAccountId &&
+            candidate.date === transaction.date &&
+            candidate.amount === -transaction.amount,
+        );
+        if (!counterpart) {
+          observations.push({
+            kind: 'transfer_ambiguity',
+            scope: { kind: 'transaction', id: transaction.id },
+            state: 'ambiguous',
+            observedAt: capturedAt,
+            evidence: transactionEvidence,
+          });
+        }
+      }
+    }
+
+    for (const schedule of scheduleRead.items.filter((candidate) => !candidate.completed)) {
+      const hasReliableFacts = hasReliableScheduleFacts(schedule);
+      observations.push({
+        kind: 'schedule_coverage',
+        scope: { kind: 'schedule', id: schedule.id },
+        state: hasReliableFacts ? 'complete' : 'unavailable',
+        observedAt: hasReliableFacts ? capturedAt : null,
+        evidence: [visibleEvidence(schedule.id, 'schedule')],
+      });
+    }
+
+    observations.push({
+      kind: 'currency_compatibility',
+      scope: { kind: 'global' },
+      state: 'complete',
+      observedAt: capturedAt,
+      evidence: [],
+    });
+
+    const source = {
+      ledgerBackend: 'actual',
+      ledgerId: this._budgetInfo!.groupId,
+      budgetId: this._budgetInfo!.id,
+      spaceId: null,
+    };
+    const hashInput = {
+      contractVersion: '1.0',
+      source,
+      capturedAt,
+      sourceNormalizationVersion: 'actual-normalizer/1',
+      legacySnapshot: snapshot,
+      coverage,
+      inclusionScope: {
+        pendingActivity: 'included' as const,
+        unclearedActivity: 'included' as const,
+      },
+      observations,
+    };
+    const digest = sha256(hashInput);
+    const financialSnapshot: FinancialSnapshot = {
+      ...hashInput,
+      snapshotId: `actual:${source.ledgerId}:${source.budgetId}:sha256:${digest}`,
+      contentHash: `sha256:${digest}`,
+    };
+
+    return { snapshot, financialSnapshot, accountRead };
   }
 }

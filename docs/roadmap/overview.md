@@ -107,7 +107,7 @@ never permission or execution.
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Scenario tests show conservative analysis under stale or incomplete data; notifications are authorized, redacted, deduplicated, and independently degradable. |
 
-### v0.3.0 — Financial decision and evidence foundation
+### Completed: v0.3.0 — Financial decision and evidence foundation
 
 [Phase 8.8](post-mvp/08-8-financial-decision-and-evidence-foundation.md):
 evolve the implemented budget-intelligence baseline with one normalized

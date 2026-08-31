@@ -27,7 +27,7 @@
               {{ runtimeStatus.pendingCount }}
             </p>
           </UCard>
-          <UCard>
+          <UCard v-if="typeof runtimeStatus.deliveredCount === 'number'">
             <template #header><span class="font-semibold">Delivered</span></template>
             <p
               class="text-2xl font-bold text-emerald-600 dark:text-emerald-400"
@@ -54,87 +54,150 @@
           class="mb-4"
         />
 
-        <!-- Notification inbox -->
-        <div v-if="inboxItems.length">
-          <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+        <section v-if="inboxItems.length" aria-labelledby="notification-inbox-heading">
+          <h2
+            id="notification-inbox-heading"
+            class="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300"
+          >
             Notification Inbox
-          </h3>
-          <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">
-            Delivery state is tracked separately from finding state. Acknowledging or suppressing a
-            notification does not affect the underlying finding.
-          </p>
-          <UCard v-for="item in inboxItems" :key="item.outbox.id" class="mb-3">
-            <template #header>
-              <div class="flex items-center justify-between">
-                <span class="font-semibold" data-testid="notification-title">{{
-                  item.redactedPayload.title || 'Notification'
-                }}</span>
-                <span
-                  class="inline-flex px-2 py-0.5 rounded text-xs font-medium"
-                  :class="deliveryStatusClass(item.outbox.status)"
-                >
-                  {{ item.outbox.status }}
-                </span>
-              </div>
-            </template>
-            <p class="text-sm text-gray-600 dark:text-gray-400" data-testid="notification-summary">
-              {{ item.redactedPayload.summary || '' }}
+          </h2>
+          <aside
+            aria-label="Delivery currency notice"
+            class="mb-4 border-l-2 border-amber-400 pl-3 text-xs text-gray-600 dark:border-amber-500 dark:text-gray-300"
+          >
+            <p class="font-medium text-amber-800 dark:text-amber-300">
+              Delivery is not current proof
             </p>
-            <div class="mt-2 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
-              <span>Channel: {{ item.outbox.channelType }}</span>
-              <span>Attempts: {{ item.outbox.attemptCount }}</span>
-              <span v-if="item.outbox.acknowledgedAt"
-                >Acknowledged: {{ item.outbox.acknowledgedAt }}</span
-              >
-              <span v-if="item.outbox.suppressedAt"
-                >Suppressed: {{ item.outbox.suppressedAt }}</span
-              >
-            </div>
+            <p class="mt-1">Delivery is not proof that the underlying conclusion is current.</p>
+            <p class="mt-1 text-gray-500 dark:text-gray-400">
+              Delivery state is tracked separately from finding state. Acknowledging or suppressing
+              a notification does not affect the underlying finding.
+            </p>
+          </aside>
 
-            <!-- Delivery attempts -->
-            <div
-              v-if="item.deliveryAttempts.length"
-              class="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3"
-            >
-              <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">
-                Delivery History
-              </h4>
-              <div
-                v-for="attempt in item.deliveryAttempts"
-                :key="attempt.id"
-                class="text-xs text-gray-500 dark:text-gray-400 flex gap-2"
-              >
-                <span
-                  :class="
-                    attempt.success
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-red-600 dark:text-red-400'
-                  "
+          <ul class="space-y-3" role="list">
+            <li v-for="item in inboxItems" :key="item.outbox.id">
+              <UCard>
+                <template #header>
+                  <div class="flex flex-wrap items-start justify-between gap-2">
+                    <h3 class="font-semibold" data-testid="notification-title">
+                      {{ redactedPayloadText(item, 'title') ?? 'Notification' }}
+                    </h3>
+                    <NotificationStatusBadge :status="item.outbox.status" />
+                  </div>
+                </template>
+
+                <p
+                  v-if="redactedPayloadText(item, 'summary')"
+                  class="text-sm text-gray-600 dark:text-gray-300"
+                  data-testid="notification-summary"
                 >
-                  {{ attempt.success ? 'Success' : 'Failed' }}
-                </span>
-                <span>{{ attempt.deliveredAt }}</span>
-                <span v-if="attempt.failureReason" class="text-red-500 dark:text-red-400">{{
-                  attempt.failureReason
-                }}</span>
-              </div>
-            </div>
+                  {{ redactedPayloadText(item, 'summary') }}
+                </p>
 
-            <!-- Acknowledge / Suppress actions (separate from findings) -->
-            <div class="mt-3 flex gap-2" v-if="item.outbox.status === 'delivered'">
-              <UButton size="xs" variant="outline" @click="showAcknowledge(item.outbox.id)"
-                >Acknowledge</UButton
-              >
-              <UButton
-                size="xs"
-                variant="outline"
-                color="warning"
-                @click="openSuppressDialog(item.outbox.id)"
-                >Suppress</UButton
-              >
-            </div>
-          </UCard>
-        </div>
+                <div
+                  class="mt-3 grid gap-x-6 gap-y-1 text-xs text-gray-500 sm:grid-cols-2 dark:text-gray-400"
+                  aria-label="Sanitized notification metadata"
+                >
+                  <p
+                    v-if="notificationClassificationCode(item)"
+                    :data-classification="notificationClassificationCode(item)"
+                  >
+                    Classification:
+                    <span class="font-medium text-gray-700 dark:text-gray-200">
+                      {{ notificationClassification(item) }}
+                    </span>
+                  </p>
+                  <p>
+                    Delivery state:
+                    <span class="font-medium text-gray-700 dark:text-gray-200">
+                      {{ deliveryStateLabel(item) }}
+                    </span>
+                  </p>
+                  <p>
+                    Notification state:
+                    <span class="font-medium text-gray-700 dark:text-gray-200">
+                      {{ notificationState(item) }}
+                    </span>
+                  </p>
+                  <p>Channel: {{ formatIdentifier(item.outbox.channelType) }}</p>
+                  <p>Attempts: {{ item.outbox.attemptCount }} / {{ item.outbox.maxAttempts }}</p>
+                  <p v-if="redactedPayloadText(item, 'scope')">
+                    Scope: {{ redactedPayloadText(item, 'scope') }}
+                  </p>
+                  <p v-if="notificationSnapshot(item)">
+                    Snapshot: {{ notificationSnapshot(item) }}
+                  </p>
+                  <p v-if="notificationPolicyVersion(item)">
+                    Policy: {{ notificationPolicyVersion(item) }}
+                  </p>
+                  <p v-if="item.event?.redactionClass">
+                    Redaction: {{ formatIdentifier(item.event?.redactionClass ?? '') }}
+                  </p>
+                  <p v-if="item.outbox.acknowledgedAt">
+                    Acknowledged: {{ item.outbox.acknowledgedAt }}
+                  </p>
+                  <p v-if="item.outbox.suppressedAt">Suppressed: {{ item.outbox.suppressedAt }}</p>
+                </div>
+
+                <section
+                  v-if="item.deliveryAttempts.length"
+                  aria-label="Delivery History"
+                  class="mt-3 border-t border-gray-100 pt-3 dark:border-gray-800"
+                >
+                  <h4 class="mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                    Delivery History
+                  </h4>
+                  <ol class="space-y-1">
+                    <li
+                      v-for="attempt in item.deliveryAttempts"
+                      :key="attempt.id"
+                      class="flex flex-wrap gap-x-2 text-xs text-gray-500 dark:text-gray-400"
+                    >
+                      <span
+                        class="font-medium"
+                        :class="
+                          attempt.success
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-red-600 dark:text-red-400'
+                        "
+                      >
+                        {{ attempt.success ? 'Success' : 'Failed' }}
+                      </span>
+                      <span>{{ attempt.deliveredAt ?? attempt.attemptedAt }}</span>
+                      <span v-if="attempt.failureReason" class="text-red-600 dark:text-red-400">
+                        {{ attempt.failureReason }}
+                      </span>
+                    </li>
+                  </ol>
+                </section>
+
+                <div
+                  v-if="
+                    item.outbox.status === 'delivered' &&
+                    !item.outbox.acknowledgedAt &&
+                    !acknowledgedIds.has(item.outbox.id) &&
+                    !suppressedIds.has(item.outbox.id)
+                  "
+                  class="mt-3 flex flex-wrap gap-2"
+                  aria-label="Notification actions"
+                >
+                  <UButton size="xs" variant="outline" @click="showAcknowledge(item.outbox.id)">
+                    Acknowledge
+                  </UButton>
+                  <UButton
+                    size="xs"
+                    variant="outline"
+                    color="warning"
+                    @click="openSuppressDialog(item.outbox.id)"
+                  >
+                    Suppress
+                  </UButton>
+                </div>
+              </UCard>
+            </li>
+          </ul>
+        </section>
 
         <!-- Acknowledge dialog -->
         <UCard v-if="showAck">
@@ -172,11 +235,11 @@
           <p class="text-sm text-gray-600 dark:text-gray-400">
             Policy version: {{ policy.policyVersion }}
           </p>
-          <p class="text-sm text-gray-600 dark:text-gray-400">
-            Max retries: {{ policy.maxRetries }}
+          <p v-if="policyMaxRetries !== null" class="text-sm text-gray-600 dark:text-gray-400">
+            Max retries: {{ policyMaxRetries }}
           </p>
-          <p class="text-sm text-gray-600 dark:text-gray-400">
-            Default redaction class: {{ policy.defaultRedactionClass }}
+          <p v-if="policyDefaultRedactionClass" class="text-sm text-gray-600 dark:text-gray-400">
+            Default redaction class: {{ policyDefaultRedactionClass }}
           </p>
         </UCard>
 
@@ -215,12 +278,18 @@ interface InboxItem {
     acknowledgedAt: string | null;
     suppressedAt: string | null;
   };
-  event: { classification: string; createdAt: string };
+  event?: {
+    classification?: string;
+    createdAt?: string;
+    policyVersion?: string;
+    redactionClass?: string;
+  } | null;
   redactedPayload: Record<string, unknown>;
   deliveryAttempts: Array<{
     id: string;
     success: boolean;
-    deliveredAt: string;
+    attemptedAt?: string | null;
+    deliveredAt: string | null;
     failureReason: string | null;
   }>;
 }
@@ -229,15 +298,16 @@ interface RuntimeStatus {
   healthy: boolean;
   storeConnected: boolean;
   pendingCount: number;
-  deliveredCount: number;
+  deliveredCount?: number;
   failedCount: number;
   channelStatuses: Array<{ channel: string; healthy: boolean }>;
 }
 
 interface NotificationPolicy {
   policyVersion: string;
-  maxRetries: number;
-  defaultRedactionClass: string;
+  maxRetries?: number;
+  defaultRedactionClass?: string;
+  policy?: string;
 }
 
 const loading = ref(true);
@@ -251,16 +321,78 @@ const ackOutboxId = ref('');
 const supOutboxId = ref('');
 const supReason = ref('');
 const actionResult = ref<{ ok: boolean; status: string; message: string } | null>(null);
+const acknowledgedIds = ref(new Set<string>());
+const suppressedIds = ref(new Set<string>());
 
-function deliveryStatusClass(status: string): string {
-  if (status === 'delivered')
-    return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400';
-  if (status === 'pending')
-    return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400';
-  if (status === 'failed') return 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400';
-  if (status === 'suppressed')
-    return 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400';
-  return 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400';
+const parsedPolicy = computed<Record<string, unknown> | null>(() => {
+  if (!policy.value?.policy) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(policy.value.policy);
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+});
+
+const policyMaxRetries = computed<number | null>(() => {
+  const value = policy.value?.maxRetries ?? parsedPolicy.value?.maxRetries;
+  return typeof value === 'number' ? value : null;
+});
+
+const policyDefaultRedactionClass = computed<string | null>(() => {
+  const value = policy.value?.defaultRedactionClass ?? parsedPolicy.value?.defaultRedactionClass;
+  return typeof value === 'string' && value.length ? value : null;
+});
+
+function redactedPayloadText(item: InboxItem, field: string): string | null {
+  const value = item.redactedPayload[field];
+  return typeof value === 'string' && value.length ? value : null;
+}
+
+function notificationClassificationCode(item: InboxItem): string | null {
+  const eventClassification = item.event?.classification;
+  return (
+    redactedPayloadText(item, 'classification') ??
+    (typeof eventClassification === 'string' && eventClassification.length
+      ? eventClassification
+      : null)
+  );
+}
+
+function notificationClassification(item: InboxItem): string | null {
+  const classification = notificationClassificationCode(item);
+  return classification ? formatIdentifier(classification) : null;
+}
+
+function notificationSnapshot(item: InboxItem): string | null {
+  return redactedPayloadText(item, 'snapshotId');
+}
+
+function notificationPolicyVersion(item: InboxItem): string | null {
+  return redactedPayloadText(item, 'policyVersion') ?? item.event?.policyVersion ?? null;
+}
+
+function deliveryStateLabel(item: InboxItem): string {
+  return item.event ? formatIdentifier(item.outbox.status) : item.outbox.status;
+}
+
+function notificationState(item: InboxItem): string {
+  if (item.outbox.suppressedAt || suppressedIds.value.has(item.outbox.id)) {
+    return 'Suppressed';
+  }
+  if (item.outbox.acknowledgedAt || acknowledgedIds.value.has(item.outbox.id)) {
+    return 'Acknowledged';
+  }
+  return 'Unacknowledged';
+}
+
+function formatIdentifier(value: string): string {
+  const words = value.trim().replace(/[_-]+/g, ' ');
+  if (!words) return 'Unclassified Notification';
+  return words.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function showAcknowledge(outboxId: string) {
@@ -276,11 +408,13 @@ function openSuppressDialog(outboxId: string) {
 
 async function acknowledge() {
   if (!ackOutboxId.value) return;
+  const outboxId = ackOutboxId.value;
   try {
     await $fetch('/api/notifications/acknowledge', {
       method: 'POST',
-      body: { outboxId: ackOutboxId.value },
+      body: { outboxId },
     });
+    acknowledgedIds.value = new Set([...acknowledgedIds.value, outboxId]);
     actionResult.value = {
       ok: true,
       status: 'Acknowledged',
@@ -295,11 +429,13 @@ async function acknowledge() {
 
 async function suppressNotification() {
   if (!supOutboxId.value || !supReason.value) return;
+  const outboxId = supOutboxId.value;
   try {
     await $fetch('/api/notifications/suppress', {
       method: 'POST',
-      body: { outboxId: supOutboxId.value, reason: supReason.value },
+      body: { outboxId, reason: supReason.value },
     });
+    suppressedIds.value = new Set([...suppressedIds.value, outboxId]);
     actionResult.value = {
       ok: true,
       status: 'Suppressed',

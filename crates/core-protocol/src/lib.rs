@@ -1,5 +1,24 @@
 #![forbid(unsafe_code)]
 
+mod financial_snapshot;
+mod prospective_decision;
+
+pub use balanceframe_financial_core::{
+    DecisionIssue, DecisionIssueCode, DecisionIssueEffect, DecisionIssueSeverity, DecisionScope,
+    EvidenceReference, RedactionState, Remediation,
+};
+pub use financial_snapshot::{
+    CoverageState, FinancialSnapshot, InclusionScope, ObservationKind, ObservationState,
+    PendingActivityTreatment, SnapshotCoverage, SnapshotSource, SourceObservation,
+    UnclearedActivityTreatment,
+};
+pub use prospective_decision::{
+    evaluate_prospective_claims, evaluate_prospective_purchase, DecisionAlternative,
+    DecisionAmount, DecisionContext, DecisionHorizon, DecisionReadiness, DecisionSemanticState,
+    ProspectiveClaim, ProspectiveClaimEvaluation, ProspectiveClaimKind, ProspectiveClaimStatus,
+    ProspectiveDecisionEnvelope, ProspectiveDecisionMetadata, ProspectivePurchaseEvaluationRequest,
+};
+
 use balanceframe_financial_core as fc;
 use balanceframe_financial_core::data_quality::{analyze_readiness, Severity as DqSeverity};
 use balanceframe_financial_core::{
@@ -1536,37 +1555,108 @@ fn extract_action_value(actions: &serde_json::Value) -> Option<String> {
 /// [`PurchaseEvaluation`] that maps the financial-core outcome to the
 /// protocol response format. This is a non-authoritative advisory —
 /// it informs but does not authorize the transaction.
+fn checked_outflow_total<'a>(
+    mut transactions: impl Iterator<Item = &'a Transaction>,
+) -> Option<i64> {
+    transactions.try_fold(0_i64, |total, transaction| {
+        let amount = transaction.amount.minor_units();
+        if amount < 0 {
+            total.checked_add(amount.checked_abs()?)
+        } else {
+            Some(total)
+        }
+    })
+}
+
 pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluation {
-    use fc::financial_state::DecisionDataPolicy;
+    let has_stale_bank_sync = request
+        .snapshot
+        .bank_synced_at
+        .as_deref()
+        .is_some_and(|synced| {
+            synced
+                .get(..10)
+                .is_none_or(|date| date < request.snapshot.snapshot_date.get(..10).unwrap_or(""))
+        });
+    evaluate_purchase_with_policy(
+        request,
+        &fc::financial_state::DecisionDataPolicy::default(),
+        false,
+        has_stale_bank_sync,
+    )
+}
+
+pub(crate) fn evaluate_purchase_with_policy(
+    request: PurchaseEvaluationRequest,
+    data_policy: &fc::financial_state::DecisionDataPolicy,
+    has_stale_snapshot: bool,
+    has_stale_bank_sync: bool,
+) -> PurchaseEvaluation {
     use fc::purchase::{evaluate_purchase as fc_evaluate, PurchasePolicy, TransactionSemantic};
 
     let snapshot = &request.snapshot;
     let category_id = &request.category_id;
+    let proposed_currency = request.proposed_transaction.amount.currency();
 
-    // Find the category definition.
     if !snapshot
         .categories
         .iter()
         .any(|category| category.id == *category_id)
     {
+        let zero = fc::Money::zero(proposed_currency);
         return PurchaseEvaluation {
             allowable: false,
             reason_codes: vec!["category_not_found".into()],
-            category_budget: fc::Money::new(0, "USD"),
-            category_spent: fc::Money::new(0, "USD"),
-            category_remaining: fc::Money::new(0, "USD"),
+            category_budget: zero.clone(),
+            category_spent: zero.clone(),
+            category_remaining: zero,
             projected_balance: None,
         };
     }
 
-    // The proposed transaction identifies the account to evaluate.  Never
-    // silently substitute an unrelated account when it is absent.
+    // Input ordering is not a semantic signal: select the latest budget month
+    // which was effective when the snapshot was captured.
+    let budget_category = snapshot
+        .budgets
+        .iter()
+        .filter(|budget| {
+            budget.month.as_str()
+                <= snapshot
+                    .snapshot_date
+                    .get(..7)
+                    .unwrap_or(snapshot.snapshot_date.as_str())
+        })
+        .max_by(|left, right| left.month.cmp(&right.month))
+        .and_then(|budget| budget.categories.get(category_id));
+    let category_is_budgeted = budget_category.is_some();
+    let calculation_currency = budget_category
+        .map(|category| category.amount.currency())
+        .unwrap_or(proposed_currency);
+    let budget_amount = budget_category
+        .map(|category| category.amount.clone())
+        .unwrap_or_else(|| fc::Money::zero(calculation_currency));
+
+    let account_is_included = |account_id: &str| {
+        data_policy
+            .account_overrides
+            .include_only
+            .as_ref()
+            .is_none_or(|included| included.iter().any(|id| id == account_id))
+            && !data_policy
+                .account_overrides
+                .exclude
+                .iter()
+                .any(|id| id == account_id)
+    };
     let account = snapshot
         .accounts
         .iter()
-        .find(|account| account.id == request.proposed_transaction.account_id);
-    if !snapshot.accounts.is_empty() && account.is_none() {
-        let zero = fc::Money::zero("USD");
+        .find(|account| account.id == request.proposed_transaction.account_id)
+        .filter(|account| account_is_included(&account.id));
+    if (!snapshot.accounts.is_empty() && account.is_none())
+        || !account_is_included(&request.proposed_transaction.account_id)
+    {
+        let zero = fc::Money::zero(calculation_currency);
         return PurchaseEvaluation {
             allowable: false,
             reason_codes: vec!["account_unavailable".into()],
@@ -1578,107 +1668,106 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
     }
     let account_balance = account.map(|account| &account.cleared_balance);
 
-    // Select the latest month that is not after the snapshot date.  Input
-    // ordering is not a semantic signal.
-    let budget_month = snapshot
-        .budgets
-        .iter()
-        .filter(|bm| format!("{}-01", bm.month) <= snapshot.snapshot_date)
-        .max_by(|left, right| left.month.cmp(&right.month));
-
-    let category_is_budgeted =
-        budget_month.is_some_and(|bm| bm.categories.contains_key(category_id));
-    let budget_amount = budget_month
-        .and_then(|bm| bm.categories.get(category_id))
-        .map(|bc| bc.amount.clone())
-        .unwrap_or_else(|| fc::Money::new(0, "USD"));
-
-    // Checked totals keep malformed/extreme snapshots conservative.
-    let checked_outflow_total = |transactions: &[Transaction]| -> Option<i64> {
-        transactions.iter().try_fold(0_i64, |total, tx| {
-            let amount = tx.amount.minor_units();
-            if amount < 0 {
-                total.checked_add(amount.checked_abs()?)
-            } else {
-                Some(total)
-            }
-        })
-    };
-    let category_spent = match checked_outflow_total(
-        &snapshot
-            .transactions
-            .iter()
-            .filter(|tx| tx.category_id.as_deref() == Some(category_id))
-            .cloned()
-            .collect::<Vec<_>>(),
-    ) {
-        Some(total) => fc::Money::new(total, "USD"),
-        None => {
-            return PurchaseEvaluation {
-                allowable: false,
-                reason_codes: vec!["evaluation_error".into()],
-                category_budget: budget_amount.clone(),
-                category_spent: fc::Money::zero("USD"),
-                category_remaining: budget_amount.clone(),
-                projected_balance: None,
-            };
+    let settlement_is_included = |transaction: &Transaction| {
+        if !transaction.cleared {
+            data_policy.pending_mode != fc::PendingMode::Exclude
+        } else if !transaction.reconciled {
+            data_policy.uncleared_mode != fc::UnclearedMode::Exclude
+        } else {
+            true
         }
     };
+    let contributes_to_category = |transaction: &Transaction| {
+        account_is_included(&transaction.account_id)
+            && settlement_is_included(transaction)
+            && transaction.category_id.as_deref() == Some(category_id)
+    };
+    let contributes_pending = |transaction: &Transaction| {
+        account_is_included(&transaction.account_id)
+            && !transaction.cleared
+            && data_policy.pending_mode != fc::PendingMode::Exclude
+    };
+    let contributes_uncategorized = |transaction: &Transaction| {
+        account_is_included(&transaction.account_id)
+            && settlement_is_included(transaction)
+            && data_policy.uncategorized_mode != fc::UncategorizedMode::Ignore
+            && transaction.category_id.as_deref().is_none_or(str::is_empty)
+    };
+    let contributes_uncleared = |transaction: &Transaction| {
+        account_is_included(&transaction.account_id)
+            && transaction.cleared
+            && !transaction.reconciled
+            && data_policy.uncleared_mode != fc::UnclearedMode::Exclude
+    };
 
-    let pending_total = checked_outflow_total(
-        &snapshot
+    let has_incompatible_money = proposed_currency != calculation_currency
+        || account_balance.is_some_and(|balance| balance.currency() != calculation_currency)
+        || snapshot.transactions.iter().any(|transaction| {
+            (contributes_to_category(transaction)
+                || contributes_pending(transaction)
+                || contributes_uncategorized(transaction)
+                || contributes_uncleared(transaction))
+                && transaction.amount.currency() != calculation_currency
+        });
+    if has_incompatible_money {
+        return PurchaseEvaluation {
+            allowable: false,
+            reason_codes: vec!["currency_mismatch".into()],
+            category_budget: budget_amount.clone(),
+            category_spent: fc::Money::zero(calculation_currency),
+            category_remaining: budget_amount,
+            projected_balance: None,
+        };
+    }
+
+    let category_spent_total = checked_outflow_total(
+        snapshot
             .transactions
             .iter()
-            .filter(|tx| !tx.cleared)
-            .cloned()
-            .collect::<Vec<_>>(),
+            .filter(|transaction| contributes_to_category(transaction)),
+    );
+    let pending_total = checked_outflow_total(
+        snapshot
+            .transactions
+            .iter()
+            .filter(|transaction| contributes_pending(transaction)),
+    );
+    let uncategorized_total = checked_outflow_total(
+        snapshot
+            .transactions
+            .iter()
+            .filter(|transaction| contributes_uncategorized(transaction)),
     );
     let uncleared_total = checked_outflow_total(
-        &snapshot
+        snapshot
             .transactions
             .iter()
-            .filter(|tx| tx.cleared && !tx.reconciled)
-            .cloned()
-            .collect::<Vec<_>>(),
+            .filter(|transaction| contributes_uncleared(transaction)),
     );
-    let (pending_total, uncleared_total) = match (pending_total, uncleared_total) {
-        (Some(pending), Some(uncleared)) => (pending, uncleared),
+    let (category_spent_total, pending_total, uncategorized_total, uncleared_total) = match (
+        category_spent_total,
+        pending_total,
+        uncategorized_total,
+        uncleared_total,
+    ) {
+        (Some(spent), Some(pending), Some(uncategorized), Some(uncleared)) => {
+            (spent, pending, uncategorized, uncleared)
+        }
         _ => {
             return PurchaseEvaluation {
                 allowable: false,
                 reason_codes: vec!["evaluation_error".into()],
                 category_budget: budget_amount.clone(),
-                category_spent,
-                category_remaining: budget_amount.clone(),
+                category_spent: fc::Money::zero(calculation_currency),
+                category_remaining: budget_amount,
                 projected_balance: None,
             };
         }
     };
-
-    let uncategorized_total = match checked_outflow_total(
-        &snapshot
-            .transactions
-            .iter()
-            .filter(|tx| tx.category_id.is_none() || tx.category_id.as_deref() == Some(""))
-            .cloned()
-            .collect::<Vec<_>>(),
-    ) {
-        Some(total) => total,
-        None => {
-            return PurchaseEvaluation {
-                allowable: false,
-                reason_codes: vec!["evaluation_error".into()],
-                category_budget: budget_amount.clone(),
-                category_spent,
-                category_remaining: budget_amount.clone(),
-                projected_balance: None,
-            };
-        }
-    };
-
-    let pending = fc::Money::new(pending_total, "USD");
-    let uncategorized = fc::Money::new(uncategorized_total, "USD");
-    let uncleared = fc::Money::new(uncleared_total, "USD");
+    let category_spent = fc::Money::new(category_spent_total, calculation_currency);
+    let pending = fc::Money::new(pending_total, calculation_currency);
+    let uncategorized = fc::Money::new(uncategorized_total, calculation_currency);
+    let uncleared = fc::Money::new(uncleared_total, calculation_currency);
 
     let proposed_minor = match request
         .proposed_transaction
@@ -1693,20 +1782,17 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
                 reason_codes: vec!["evaluation_error".into()],
                 category_budget: budget_amount.clone(),
                 category_spent,
-                category_remaining: budget_amount.clone(),
+                category_remaining: budget_amount,
                 projected_balance: None,
             };
         }
     };
-    let proposed_amount = fc::Money::new(proposed_minor, "USD");
+    let proposed_amount = fc::Money::new(proposed_minor, calculation_currency);
 
-    let has_stale_bank_sync = snapshot.bank_synced_at.as_deref().is_some_and(|synced| {
-        synced
-            .get(..10)
-            .is_none_or(|date| date < snapshot.snapshot_date.get(..10).unwrap_or(""))
-    });
-
-    // Delegate to financial-core engine
+    let purchase_policy = PurchasePolicy::new(
+        fc::Money::zero(calculation_currency),
+        fc::Money::zero(calculation_currency),
+    );
     let outcome = fc_evaluate(
         &proposed_amount,
         &budget_amount,
@@ -1715,33 +1801,34 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
         &pending,
         &uncategorized,
         &uncleared,
-        &PurchasePolicy::default(),
-        &DecisionDataPolicy::default(),
+        &purchase_policy,
+        data_policy,
         TransactionSemantic::Card,
         None,
         None,
         false,
-        false,
+        has_stale_snapshot,
         has_stale_bank_sync,
     );
-
     match outcome {
         Ok(purchase_result) => {
             let allowable = matches!(
                 purchase_result.outcome,
                 fc::purchase::PurchaseOutcomeKind::Approved
-            );
-
-            // Augment with legacy protocol reason codes while
-            // retaining all future-compatible detailed codes from
-            // the financial-core engine.
+            ) && !has_stale_snapshot;
             let mut reason_codes = purchase_result.reason_codes;
-            if allowable {
-                reason_codes.push("budget_sufficient".to_string());
-            } else if !category_is_budgeted {
-                reason_codes.push("category_not_budgeted".to_string());
-            } else {
-                reason_codes.push("budget_insufficient".to_string());
+            // The core engine records snapshot staleness as evidence but may
+            // still produce an advisory outcome when an account balance is
+            // present. A policy age limit is fail-closed here, so stale
+            // evaluations retain their reason without a legacy budget suffix.
+            if !has_stale_snapshot {
+                if allowable {
+                    reason_codes.push("budget_sufficient".to_string());
+                } else if !category_is_budgeted {
+                    reason_codes.push("category_not_budgeted".to_string());
+                } else {
+                    reason_codes.push("budget_insufficient".to_string());
+                }
             }
 
             PurchaseEvaluation {
@@ -1758,7 +1845,7 @@ pub fn evaluate_purchase(request: PurchaseEvaluationRequest) -> PurchaseEvaluati
             reason_codes: vec!["evaluation_error".into()],
             category_budget: budget_amount.clone(),
             category_spent,
-            category_remaining: budget_amount.clone(),
+            category_remaining: budget_amount,
             projected_balance: None,
         },
     }

@@ -524,11 +524,13 @@ export type AuthGuardResult =
 
 /**
  * Require that the request is authenticated and has the given capability.
+ * Pass an exact scope for scope-bound operations; legacy callers default to
+ * the wildcard scope.
  *
  * Checks:
  *   1. Auth context exists on the event (set by middleware)
  *   2. Workflow store is available
- *   3. Actor's membership is active and includes the capability
+ *   3. Actor's membership is active and covers the capability and requested scope
  *
  * On success returns `{ ok: true, info: AuthorizationInfo }`.
  * On failure sets the response status (403, 503, or 500) and returns
@@ -537,6 +539,7 @@ export type AuthGuardResult =
 export async function requireAuthorization(
   event: EventWithContext,
   capability: string,
+  exactScope: string = '*',
 ): Promise<AuthGuardResult> {
   const auth = event.context.auth as { authenticated: boolean; actorId?: string } | undefined;
   if (!auth?.authenticated) {
@@ -564,7 +567,7 @@ export async function requireAuthorization(
 
   let result: { allowed: boolean; reason: string };
   try {
-    result = await wf.store.evaluateAuthorization(actorId, capability, '*', '1.0');
+    result = await wf.store.evaluateAuthorization(actorId, capability, exactScope, '1.0');
   } catch {
     setResponseStatus(event as unknown as H3Event, 500);
     return {

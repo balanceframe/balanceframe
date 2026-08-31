@@ -1,0 +1,964 @@
+{
+  "full": {
+    "contractVersion": "1.0",
+    "snapshotId": "fd-snapshot-2026-08-23",
+    "contentHash": "sha256:fd-snapshot-2026-08-23",
+    "source": {
+      "ledgerBackend": "actual",
+      "ledgerId": "fd-ledger-household",
+      "budgetId": "fd-budget-household",
+      "spaceId": "fd-space-family"
+    },
+    "capturedAt": "2026-08-23T12:00:00Z",
+    "sourceNormalizationVersion": "fd-fixture/1",
+    "legacySnapshot": {
+      "schemaVersion": "1",
+      "actualVersion": "26.8.0",
+      "snapshotDate": "2026-08-23T12:00:00Z",
+      "accounts": [
+        {
+          "id": "fd-account-checking",
+          "name": "Household Checking",
+          "accountType": "checking",
+          "offBudget": false,
+          "isClosed": false,
+          "clearedBalance": {
+            "minorUnits": "125000",
+            "currency": "USD"
+          },
+          "importedBalance": {
+            "minorUnits": "123750",
+            "currency": "USD"
+          },
+          "mtid": "fd-mtid-checking"
+        },
+        {
+          "id": "fd-account-card",
+          "name": "Household Card",
+          "accountType": "creditCard",
+          "offBudget": false,
+          "isClosed": false,
+          "clearedBalance": {
+            "minorUnits": "-25000",
+            "currency": "USD"
+          },
+          "importedBalance": {
+            "minorUnits": "-25000",
+            "currency": "USD"
+          },
+          "mtid": "fd-mtid-card"
+        },
+        {
+          "id": "fd-account-cash",
+          "name": "Travel Cash",
+          "accountType": "cash",
+          "offBudget": true,
+          "isClosed": false,
+          "clearedBalance": {
+            "minorUnits": "5000",
+            "currency": "EUR"
+          },
+          "importedBalance": {
+            "minorUnits": "5000",
+            "currency": "EUR"
+          },
+          "mtid": null
+        }
+      ],
+      "transactions": [
+        {
+          "id": "fd-transaction-pending",
+          "accountId": "fd-account-checking",
+          "date": "2026-08-23",
+          "payeeId": null,
+          "payeeName": "Fixture Grocer",
+          "categoryId": "fd-category-groceries",
+          "categoryName": "Groceries",
+          "amount": {
+            "minorUnits": "-1250",
+            "currency": "USD"
+          },
+          "cleared": false,
+          "reconciled": false,
+          "importedId": "fd-import-pending",
+          "importedPayee": "FIXTURE GROCER",
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
+        },
+        {
+          "id": "fd-transaction-existing",
+          "accountId": "fd-account-checking",
+          "date": "2026-08-23",
+          "payeeId": null,
+          "payeeName": "Fixture Grocer",
+          "categoryId": "fd-category-groceries",
+          "categoryName": "Groceries",
+          "amount": {
+            "minorUnits": "-1250",
+            "currency": "USD"
+          },
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": null,
+          "subtransactions": []
+        },
+        {
+          "id": "fd-transfer-one-sided",
+          "accountId": "fd-account-checking",
+          "date": "2026-08-23",
+          "payeeId": null,
+          "payeeName": "Card Transfer",
+          "categoryId": null,
+          "categoryName": null,
+          "amount": {
+            "minorUnits": "-10000",
+            "currency": "USD"
+          },
+          "cleared": true,
+          "reconciled": false,
+          "importedId": null,
+          "importedPayee": null,
+          "notes": null,
+          "tags": [],
+          "transferAccountId": "fd-account-card",
+          "subtransactions": []
+        }
+      ],
+      "categories": [],
+      "payees": [],
+      "rules": [],
+      "schedules": [
+        {
+          "id": "fd-schedule-card-payment",
+          "frequency": "monthly",
+          "amount": {
+            "minorUnits": "25000",
+            "currency": "USD"
+          },
+          "payeeName": "Household Card Payment",
+          "accountId": "fd-account-checking",
+          "nextExpected": "2026-08-31"
+        }
+      ],
+      "budgets": [],
+      "tags": []
+    },
+    "coverage": {
+      "accounts": "complete",
+      "transactions": "complete",
+      "categories": "empty",
+      "payees": "empty",
+      "rules": "empty",
+      "schedules": "complete",
+      "budgets": "empty",
+      "tags": "empty"
+    },
+    "inclusionScope": {
+      "pendingActivity": "included",
+      "unclearedActivity": "included"
+    },
+    "observations": [
+      {
+        "kind": "account_freshness",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-checking"
+        },
+        "state": "fresh",
+        "observedAt": "2026-08-23T11:58:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-bank-sync-checking-884",
+            "kind": "bank_sync",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      },
+      {
+        "kind": "account_freshness",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-card"
+        },
+        "state": "stale",
+        "observedAt": "2026-08-20T09:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-bank-sync-card-119",
+            "kind": "bank_sync",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      },
+      {
+        "kind": "account_freshness",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-cash"
+        },
+        "state": "unavailable",
+        "observedAt": null,
+        "evidence": [
+          {
+            "evidenceId": "fd-connector-error-cash-7",
+            "kind": "connector_error",
+            "authorized": false,
+            "redaction": "redacted"
+          }
+        ]
+      },
+      {
+        "kind": "pending_activity",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-checking"
+        },
+        "state": "included",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-transaction-pending",
+            "kind": "transaction",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      },
+      {
+        "kind": "uncleared_activity",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-checking"
+        },
+        "state": "included",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-transaction-pending",
+            "kind": "transaction",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      },
+      {
+        "kind": "schedule_coverage",
+        "scope": {
+          "kind": "schedule",
+          "id": "fd-schedule-card-payment"
+        },
+        "state": "complete",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-schedule-card-payment",
+            "kind": "schedule",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      },
+      {
+        "kind": "credit_card_obligation_coverage",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-card"
+        },
+        "state": "complete",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-schedule-card-payment",
+            "kind": "schedule",
+            "authorized": true,
+            "redaction": "visible"
+          },
+          {
+            "evidenceId": "fd-account-card",
+            "kind": "account",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      }
+    ]
+  },
+  "unknownVsEmpty": {
+    "unknownCoverage": {
+      "accounts": "complete"
+    },
+    "explicitEmptyCoverage": {
+      "accounts": "complete",
+      "transactions": "empty",
+      "categories": "empty",
+      "payees": "empty",
+      "rules": "empty",
+      "schedules": "empty",
+      "budgets": "empty",
+      "tags": "empty"
+    }
+  },
+  "ambiguities": {
+    "observations": [
+      {
+        "kind": "duplicate_candidate",
+        "scope": {
+          "kind": "transaction",
+          "id": "fd-transaction-pending"
+        },
+        "state": "present",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-import-pending",
+            "kind": "imported_transaction",
+            "authorized": true,
+            "redaction": "visible"
+          },
+          {
+            "evidenceId": "fd-transaction-existing",
+            "kind": "duplicate_candidate",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      },
+      {
+        "kind": "transfer_ambiguity",
+        "scope": {
+          "kind": "transaction",
+          "id": "fd-transfer-one-sided"
+        },
+        "state": "ambiguous",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-transfer-counterpart-card",
+            "kind": "transfer_candidate",
+            "authorized": false,
+            "redaction": "redacted"
+          }
+        ]
+      },
+      {
+        "kind": "reconciliation",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-checking"
+        },
+        "state": "unreconciled",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-transaction-pending",
+            "kind": "transaction",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      },
+      {
+        "kind": "currency_compatibility",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-card"
+        },
+        "state": "incompatible",
+        "observedAt": "2026-08-23T12:00:00Z",
+        "evidence": [
+          {
+            "evidenceId": "fd-account-currency-USD",
+            "kind": "account_currency",
+            "authorized": true,
+            "redaction": "visible"
+          },
+          {
+            "evidenceId": "fd-claim-currency-EUR",
+            "kind": "claim_currency",
+            "authorized": true,
+            "redaction": "visible"
+          }
+        ]
+      }
+    ]
+  },
+  "claims": {
+    "context": {
+      "evaluatedAt": "2026-08-23T12:00:00Z",
+      "horizon": {
+        "startsAt": "2026-08-23T12:00:00Z",
+        "endsAt": "2026-09-22T12:00:00Z"
+      },
+      "policy": {
+        "pendingMode": "includeConservatively",
+        "uncategorizedMode": "reserveFullAmount",
+        "unclearedMode": "include",
+        "maxBankSyncAgeMinutes": null,
+        "maxBudgetSnapshotAgeMinutes": null,
+        "accountOverrides": {
+          "includeOnly": null,
+          "exclude": []
+        }
+      },
+      "policyVersion": "fd-policy-v1",
+      "policyHash": "sha256:fd-policy-v1",
+      "snapshotId": "fd-snapshot-2026-08-23",
+      "contentHash": "sha256:fd-snapshot-2026-08-23"
+    },
+    "items": [
+      {
+        "claimId": "fd-claim-active-reservation",
+        "kind": "reservation",
+        "sourceId": "fd-source-active-reservation",
+        "scope": {
+          "kind": "category",
+          "id": "fd-category-groceries"
+        },
+        "amount": {
+          "minorUnits": "1000",
+          "currency": "USD"
+        },
+        "status": "active",
+        "effectiveFrom": "2026-08-23T12:00:00Z",
+        "expiresAt": "2026-09-01T00:00:00Z",
+        "visibility": "visible",
+        "policyVersion": "fd-policy-v1",
+        "snapshotId": "fd-snapshot-2026-08-23"
+      },
+      {
+        "claimId": "fd-claim-active-commitment",
+        "kind": "commitment",
+        "sourceId": "fd-source-active-commitment",
+        "scope": {
+          "kind": "schedule",
+          "id": "fd-schedule-card-payment"
+        },
+        "amount": {
+          "minorUnits": "2500",
+          "currency": "USD"
+        },
+        "status": "active",
+        "effectiveFrom": "2026-08-01T00:00:00Z",
+        "expiresAt": null,
+        "visibility": "visible",
+        "policyVersion": "fd-policy-v1",
+        "snapshotId": "fd-snapshot-2026-08-23"
+      },
+      {
+        "claimId": "fd-claim-released-reservation",
+        "kind": "reservation",
+        "sourceId": "fd-source-released-reservation",
+        "scope": {
+          "kind": "category",
+          "id": "fd-category-household"
+        },
+        "amount": {
+          "minorUnits": "200",
+          "currency": "USD"
+        },
+        "status": "released",
+        "effectiveFrom": "2026-08-01T00:00:00Z",
+        "expiresAt": "2026-09-01T00:00:00Z",
+        "visibility": "visible",
+        "policyVersion": "fd-policy-v1",
+        "snapshotId": "fd-snapshot-2026-08-23"
+      },
+      {
+        "claimId": "fd-claim-expired-commitment",
+        "kind": "commitment",
+        "sourceId": "fd-source-expired-commitment",
+        "scope": {
+          "kind": "schedule",
+          "id": "fd-schedule-expired"
+        },
+        "amount": {
+          "minorUnits": "300",
+          "currency": "USD"
+        },
+        "status": "active",
+        "effectiveFrom": "2026-08-01T00:00:00Z",
+        "expiresAt": "2026-08-23T12:00:00Z",
+        "visibility": "visible",
+        "policyVersion": "fd-policy-v1",
+        "snapshotId": "fd-snapshot-2026-08-23"
+      },
+      {
+        "claimId": "fd-claim-future-reservation",
+        "kind": "reservation",
+        "sourceId": "fd-source-future-reservation",
+        "scope": {
+          "kind": "category",
+          "id": "fd-category-future"
+        },
+        "amount": {
+          "minorUnits": "400",
+          "currency": "USD"
+        },
+        "status": "active",
+        "effectiveFrom": "2026-08-23T12:00:01Z",
+        "expiresAt": "2026-09-01T00:00:00Z",
+        "visibility": "visible",
+        "policyVersion": "fd-policy-v1",
+        "snapshotId": "fd-snapshot-2026-08-23"
+      },
+      {
+        "claimId": "fd-claim-redacted-reservation",
+        "kind": "reservation",
+        "sourceId": "fd-source-redacted-reservation",
+        "scope": {
+          "kind": "category",
+          "id": "fd-category-groceries"
+        },
+        "amount": {
+          "minorUnits": "500",
+          "currency": "USD"
+        },
+        "status": "active",
+        "effectiveFrom": "2026-08-23T12:00:00Z",
+        "expiresAt": "2026-09-01T00:00:00Z",
+        "visibility": "redacted",
+        "policyVersion": "fd-policy-v1",
+        "snapshotId": "fd-snapshot-2026-08-23"
+      },
+      {
+        "claimId": "fd-claim-policy-mismatch",
+        "kind": "reservation",
+        "sourceId": "fd-source-policy-mismatch",
+        "scope": {
+          "kind": "category",
+          "id": "fd-category-travel"
+        },
+        "amount": {
+          "minorUnits": "700",
+          "currency": "EUR"
+        },
+        "status": "active",
+        "effectiveFrom": "2026-08-23T12:00:00Z",
+        "expiresAt": "2026-09-01T00:00:00Z",
+        "visibility": "visible",
+        "policyVersion": "fd-policy-v0",
+        "snapshotId": "fd-snapshot-2026-08-23"
+      },
+      {
+        "claimId": "fd-claim-snapshot-mismatch",
+        "kind": "commitment",
+        "sourceId": "fd-source-snapshot-mismatch",
+        "scope": {
+          "kind": "account",
+          "id": "fd-account-card"
+        },
+        "amount": {
+          "minorUnits": "800",
+          "currency": "USD"
+        },
+        "status": "active",
+        "effectiveFrom": "2026-08-23T12:00:00Z",
+        "expiresAt": null,
+        "visibility": "visible",
+        "policyVersion": "fd-policy-v1",
+        "snapshotId": "fd-snapshot-stale"
+      }
+    ],
+    "evaluation": {
+      "eligibleClaimIds": [
+        "fd-claim-active-reservation",
+        "fd-claim-active-commitment",
+        "fd-claim-redacted-reservation"
+      ],
+      "reservationTotal": {
+        "minorUnits": "1500",
+        "currency": "USD"
+      },
+      "commitmentTotal": {
+        "minorUnits": "2500",
+        "currency": "USD"
+      },
+      "issues": [
+        {
+          "code": "policy_version_mismatch",
+          "severity": "critical",
+          "effect": "blocks",
+          "scope": {
+            "kind": "claim",
+            "id": "fd-claim-policy-mismatch"
+          },
+          "evidence": [
+            {
+              "evidenceId": "fd-source-policy-mismatch",
+              "kind": "prospective_claim",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ],
+          "redaction": "visible"
+        },
+        {
+          "code": "snapshot_mismatch",
+          "severity": "critical",
+          "effect": "blocks",
+          "scope": {
+            "kind": "claim",
+            "id": "fd-claim-snapshot-mismatch"
+          },
+          "evidence": [
+            {
+              "evidenceId": "fd-source-snapshot-mismatch",
+              "kind": "prospective_claim",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ],
+          "redaction": "visible"
+        },
+        {
+          "code": "reservation_conflict",
+          "severity": "critical",
+          "effect": "blocks",
+          "scope": {
+            "kind": "category",
+            "id": "fd-category-groceries"
+          },
+          "evidence": [],
+          "redaction": "redacted"
+        }
+      ]
+    }
+  },
+  "decisions": {
+    "ready": {
+      "metadata": {
+        "contractVersion": "1.0",
+        "decisionId": "fd-decision-ready",
+        "decisionKind": "purchase",
+        "requestId": "fd-request-ready",
+        "correlationId": "fd-correlation-2026-08-23",
+        "context": {
+          "evaluatedAt": "2026-08-23T12:00:00Z",
+          "horizon": {
+            "startsAt": "2026-08-23T12:00:00Z",
+            "endsAt": "2026-09-22T12:00:00Z"
+          },
+          "policy": {
+            "pendingMode": "includeConservatively",
+            "uncategorizedMode": "reserveFullAmount",
+            "unclearedMode": "include",
+            "maxBankSyncAgeMinutes": null,
+            "maxBudgetSnapshotAgeMinutes": null,
+            "accountOverrides": {
+              "includeOnly": null,
+              "exclude": []
+            }
+          },
+          "policyVersion": "fd-policy-v1",
+          "policyHash": "sha256:fd-policy-v1",
+          "snapshotId": "fd-snapshot-2026-08-23",
+          "contentHash": "sha256:fd-snapshot-2026-08-23"
+        }
+      },
+      "readiness": "ready",
+      "before": {
+        "amounts": [
+          {
+            "label": "envelopeAvailability",
+            "scope": {
+              "kind": "category",
+              "id": "fd-category-groceries"
+            },
+            "amount": {
+              "minorUnits": "10000",
+              "currency": "USD"
+            }
+          }
+        ]
+      },
+      "after": {
+        "amounts": [
+          {
+            "label": "envelopeAvailability",
+            "scope": {
+              "kind": "category",
+              "id": "fd-category-groceries"
+            },
+            "amount": {
+              "minorUnits": "7500",
+              "currency": "USD"
+            }
+          }
+        ]
+      },
+      "issues": [],
+      "evidence": [
+        {
+          "evidenceId": "fd-budget-groceries",
+          "kind": "budget_category",
+          "authorized": true,
+          "redaction": "visible"
+        }
+      ],
+      "alternatives": [],
+      "expiresAt": "2026-08-23T12:15:00Z",
+      "redaction": "visible",
+      "payload": {
+        "allowable": true,
+        "reasonCodes": ["within_budget"],
+        "categoryBudget": {
+          "minorUnits": "20000",
+          "currency": "USD"
+        },
+        "categorySpent": {
+          "minorUnits": "10000",
+          "currency": "USD"
+        },
+        "categoryRemaining": {
+          "minorUnits": "7500",
+          "currency": "USD"
+        },
+        "projectedBalance": {
+          "minorUnits": "122500",
+          "currency": "USD"
+        }
+      }
+    },
+    "qualified": {
+      "metadata": {
+        "contractVersion": "1.0",
+        "decisionId": "fd-decision-qualified",
+        "decisionKind": "purchase",
+        "requestId": "fd-request-qualified",
+        "correlationId": "fd-correlation-2026-08-23",
+        "context": {
+          "evaluatedAt": "2026-08-23T12:00:00Z",
+          "horizon": {
+            "startsAt": "2026-08-23T12:00:00Z",
+            "endsAt": "2026-09-22T12:00:00Z"
+          },
+          "policy": {
+            "pendingMode": "includeConservatively",
+            "uncategorizedMode": "reserveFullAmount",
+            "unclearedMode": "include",
+            "maxBankSyncAgeMinutes": null,
+            "maxBudgetSnapshotAgeMinutes": null,
+            "accountOverrides": {
+              "includeOnly": null,
+              "exclude": []
+            }
+          },
+          "policyVersion": "fd-policy-v1",
+          "policyHash": "sha256:fd-policy-v1",
+          "snapshotId": "fd-snapshot-2026-08-23",
+          "contentHash": "sha256:fd-snapshot-2026-08-23"
+        }
+      },
+      "readiness": "qualified",
+      "before": {
+        "amounts": [
+          {
+            "label": "envelopeAvailability",
+            "scope": {
+              "kind": "category",
+              "id": "fd-category-groceries"
+            },
+            "amount": {
+              "minorUnits": "7500",
+              "currency": "USD"
+            }
+          }
+        ]
+      },
+      "after": {
+        "amounts": [
+          {
+            "label": "envelopeAvailability",
+            "scope": {
+              "kind": "category",
+              "id": "fd-category-groceries"
+            },
+            "amount": {
+              "minorUnits": "5000",
+              "currency": "USD"
+            }
+          }
+        ]
+      },
+      "issues": [
+        {
+          "code": "pending_availability",
+          "severity": "warning",
+          "effect": "qualifies",
+          "scope": {
+            "kind": "transaction",
+            "id": "fd-transaction-pending"
+          },
+          "evidence": [
+            {
+              "evidenceId": "fd-transaction-pending",
+              "kind": "transaction",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ],
+          "redaction": "visible"
+        }
+      ],
+      "evidence": [
+        {
+          "evidenceId": "fd-transaction-pending",
+          "kind": "transaction",
+          "authorized": true,
+          "redaction": "visible"
+        }
+      ],
+      "alternatives": [],
+      "expiresAt": "2026-08-23T12:10:00Z",
+      "redaction": "visible",
+      "payload": {
+        "allowable": true,
+        "reasonCodes": ["within_budget", "pending_availability"],
+        "categoryBudget": {
+          "minorUnits": "20000",
+          "currency": "USD"
+        },
+        "categorySpent": {
+          "minorUnits": "12500",
+          "currency": "USD"
+        },
+        "categoryRemaining": {
+          "minorUnits": "5000",
+          "currency": "USD"
+        },
+        "projectedBalance": {
+          "minorUnits": "120000",
+          "currency": "USD"
+        }
+      }
+    },
+    "blocked": {
+      "metadata": {
+        "contractVersion": "1.0",
+        "decisionId": "fd-decision-blocked",
+        "decisionKind": "purchase",
+        "requestId": "fd-request-blocked",
+        "correlationId": "fd-correlation-2026-08-23",
+        "context": {
+          "evaluatedAt": "2026-08-23T12:00:00Z",
+          "horizon": {
+            "startsAt": "2026-08-23T12:00:00Z",
+            "endsAt": "2026-09-22T12:00:00Z"
+          },
+          "policy": {
+            "pendingMode": "includeConservatively",
+            "uncategorizedMode": "reserveFullAmount",
+            "unclearedMode": "include",
+            "maxBankSyncAgeMinutes": null,
+            "maxBudgetSnapshotAgeMinutes": null,
+            "accountOverrides": {
+              "includeOnly": null,
+              "exclude": []
+            }
+          },
+          "policyVersion": "fd-policy-v1",
+          "policyHash": "sha256:fd-policy-v1",
+          "snapshotId": "fd-snapshot-2026-08-23",
+          "contentHash": "sha256:fd-snapshot-2026-08-23"
+        }
+      },
+      "readiness": "blocked",
+      "before": {
+        "amounts": [
+          {
+            "label": "envelopeAvailability",
+            "scope": {
+              "kind": "category",
+              "id": "fd-category-groceries"
+            },
+            "amount": {
+              "minorUnits": "5000",
+              "currency": "USD"
+            }
+          }
+        ]
+      },
+      "after": {
+        "amounts": [
+          {
+            "label": "envelopeAvailability",
+            "scope": {
+              "kind": "category",
+              "id": "fd-category-groceries"
+            },
+            "amount": {
+              "minorUnits": "-500",
+              "currency": "USD"
+            }
+          }
+        ]
+      },
+      "issues": [
+        {
+          "code": "reservation_conflict",
+          "severity": "critical",
+          "effect": "blocks",
+          "scope": {
+            "kind": "category",
+            "id": "fd-category-groceries"
+          },
+          "evidence": [
+            {
+              "evidenceId": "fd-source-active-reservation",
+              "kind": "prospective_claim",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ],
+          "redaction": "visible"
+        },
+        {
+          "code": "fd_future_safety_code",
+          "severity": "critical",
+          "effect": "qualifies",
+          "scope": {
+            "kind": "global"
+          },
+          "evidence": [],
+          "redaction": "visible"
+        }
+      ],
+      "evidence": [
+        {
+          "evidenceId": "fd-source-active-reservation",
+          "kind": "prospective_claim",
+          "authorized": true,
+          "redaction": "visible"
+        }
+      ],
+      "alternatives": [],
+      "expiresAt": "2026-08-23T12:05:00Z",
+      "redaction": "visible",
+      "payload": {
+        "allowable": false,
+        "reasonCodes": ["reservation_conflict", "fd_future_reason_code"],
+        "categoryBudget": {
+          "minorUnits": "20000",
+          "currency": "USD"
+        },
+        "categorySpent": {
+          "minorUnits": "15000",
+          "currency": "USD"
+        },
+        "categoryRemaining": {
+          "minorUnits": "-500",
+          "currency": "USD"
+        },
+        "projectedBalance": null
+      }
+    }
+  }
+}

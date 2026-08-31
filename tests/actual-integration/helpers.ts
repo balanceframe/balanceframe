@@ -8,10 +8,24 @@
  * environment variables (or process.env by vitest config).
  */
 
-import { init, shutdown, createBudget, deleteBudget, downloadBudget,
-         getAccounts, getPayees, getCategories, addTransactions,
-         createAccount, createPayee, createCategory, createCategoryGroup,
-         createRule, createSchedule, sync as actualSync } from './actual-client.js';
+import {
+  init,
+  shutdown,
+  createBudget,
+  deleteBudget,
+  downloadBudget,
+  getAccounts,
+  getPayees,
+  getCategories,
+  addTransactions,
+  createAccount,
+  createPayee,
+  createCategory,
+  createCategoryGroup,
+  createRule,
+  createSchedule,
+  sync as actualSync,
+} from './actual-client.js';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -30,6 +44,14 @@ export interface SeededBudget {
   groupId: string;
   budgetName: string;
 }
+export interface FixtureProvenance {
+  serverURL: string;
+  secretKey: string;
+  budgetId: string;
+  groupId: string;
+  budgetName: string;
+  seedDataDir: string;
+}
 
 // ---- Environment -----------------------------------------------------------
 
@@ -39,19 +61,70 @@ export interface SeededBudget {
 export function requireEnv(key: string): string {
   const val = process.env[key];
   if (!val) {
-    throw new Error(`Missing required environment variable: ${key}. `
-      + `Set it directly or run setup-fixture-server.sh first.`);
+    throw new Error(
+      `Missing required environment variable: ${key}. ` +
+        `Set it directly or run setup-fixture-server.sh first.`,
+    );
   }
   return val;
 }
+function assertLoopbackServerURL(serverURL: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(serverURL);
+  } catch {
+    throw new Error('ACTUAL_SERVER_URL must be a valid HTTP(S) loopback URL.');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('ACTUAL_SERVER_URL must use HTTP(S) on a loopback host.');
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '[::1]') {
+    throw new Error('ACTUAL_SERVER_URL must use a loopback host: localhost, 127.0.0.1, or ::1.');
+  }
+}
 
 /**
- * Build a client configuration from environment variables.
+ * Fail closed unless the environment identifies one exact disposable fixture.
+ */
+export function assertFixtureProvenance(): FixtureProvenance {
+  if (process.env.BALANCEFRAME_ACTUAL_FIXTURE !== '1') {
+    throw new Error(
+      'BALANCEFRAME_ACTUAL_FIXTURE must be exactly "1" before using the Actual fixture.',
+    );
+  }
+
+  const serverURL = requireEnv('ACTUAL_SERVER_URL');
+  assertLoopbackServerURL(serverURL);
+
+  const required = (key: string): string => {
+    const value = requireEnv(key);
+    if (value.trim().length === 0) {
+      throw new Error(`Missing required fixture provenance: ${key}.`);
+    }
+    return value;
+  };
+
+  return {
+    serverURL,
+    secretKey: required('ACTUAL_SECRET_KEY'),
+    budgetId: required('ACTUAL_BUDGET_ID'),
+    groupId: required('ACTUAL_GROUP_ID'),
+    budgetName: required('ACTUAL_BUDGET_NAME'),
+    seedDataDir: required('ACTUAL_SEED_DATA_DIR'),
+  };
+}
+
+/**
+ * Build a guarded client configuration from exact fixture provenance.
  */
 export function buildClientConfig(dataDir?: string): ClientConfig {
+  const fixture = assertFixtureProvenance();
   return {
-    serverURL: requireEnv('ACTUAL_SERVER_URL'),
-    password: requireEnv('ACTUAL_SECRET_KEY'),
+    serverURL: fixture.serverURL,
+    password: fixture.secretKey,
     dataDir: dataDir ?? mkdtempSync(join(tmpdir(), 'bf-actual-test-')),
   };
 }
@@ -62,15 +135,14 @@ export function buildClientConfig(dataDir?: string): ClientConfig {
  * Initialize the Actual API client and return the config used.
  * Caller MUST call `shutdown()` (or use `withActualClient`).
  */
-export async function getActualClient(
-  config?: Partial<ClientConfig>,
-): Promise<ClientConfig> {
+export async function getActualClient(config?: Partial<ClientConfig>): Promise<ClientConfig> {
   const base = buildClientConfig();
   const merged: ClientConfig = {
     serverURL: config?.serverURL ?? base.serverURL,
     password: config?.password ?? base.password,
     dataDir: config?.dataDir ?? base.dataDir,
   };
+  assertLoopbackServerURL(merged.serverURL);
 
   await init({
     serverURL: merged.serverURL,
@@ -101,9 +173,7 @@ export async function withActualClient<T>(
 /**
  * Create a disposable test budget, returning its id and group id.
  */
-export async function createTestBudget(
-  name?: string,
-): Promise<SeededBudget> {
+export async function createTestBudget(name?: string): Promise<SeededBudget> {
   const budgetName = name ?? `BalanceFrame-Test-${Date.now()}`;
   const result = await createBudget({
     name: budgetName,
@@ -180,8 +250,8 @@ function findFixtureFile(): string {
   }
 
   throw new Error(
-    'Fixture data file not found. Run setup-fixture-server.sh first, '
-    + 'or set FIXTURE_DATA_PATH environment variable.',
+    'Fixture data file not found. Run setup-fixture-server.sh first, ' +
+      'or set FIXTURE_DATA_PATH environment variable.',
   );
 }
 
@@ -204,24 +274,29 @@ export function loadFixtureData(): Record<string, unknown> {
  *
  * @param fixture — Optional fixture data; loaded from disk if omitted.
  */
-export async function seedFixtureData(
-  fixture?: Record<string, unknown>,
-): Promise<void> {
+export async function seedFixtureData(fixture?: Record<string, unknown>): Promise<void> {
   const data = fixture ?? loadFixtureData();
 
   // ---- Extract canonical fixture entities ----
   const fixtureAccounts = (data.accounts ?? []) as Array<{
-    id: string; name: string; accountType: string;
-    offBudget?: boolean; isClosed?: boolean;
+    id: string;
+    name: string;
+    accountType: string;
+    offBudget?: boolean;
+    isClosed?: boolean;
     mtid?: string | null;
   }>;
   const fixtureCategories = (data.categories ?? []) as Array<{
-    id: string; name: string; groupName: string;
-    isIncome?: boolean; deleted?: boolean;
+    id: string;
+    name: string;
+    groupName: string;
+    isIncome?: boolean;
+    deleted?: boolean;
     mtid?: string | null;
   }>;
   const fixturePayees = (data.payees ?? []) as Array<{
-    id: string; name: string;
+    id: string;
+    name: string;
     transferAccountId?: string | null;
     mtid?: string | null;
   }>;
@@ -258,10 +333,14 @@ export async function seedFixtureData(
   // ---- Accounts (adapt accountType/offBudget/isClosed) ----
   function mapAccountType(t: string): 'checking' | 'savings' | 'credit' | 'other' {
     switch (t) {
-      case 'checking': return 'checking';
-      case 'savings': return 'savings';
-      case 'creditCard': return 'credit';
-      default: return 'other';
+      case 'checking':
+        return 'checking';
+      case 'savings':
+        return 'savings';
+      case 'creditCard':
+        return 'credit';
+      default:
+        return 'other';
     }
   }
   for (const acct of fixtureAccounts) {
@@ -351,14 +430,16 @@ export async function seedFixtureData(
       if (Number.isNaN(amount)) amount = 0;
     }
 
-    await addTransactions(acctId, [{
-      date: txn.date,
-      amount,
-      payee,
-      category: cat,
-      notes: txn.notes ?? '',
-      cleared: txn.cleared ?? true,
-    }]);
+    await addTransactions(acctId, [
+      {
+        date: txn.date,
+        amount,
+        payee,
+        category: cat,
+        notes: txn.notes ?? '',
+        cleared: txn.cleared ?? true,
+      },
+    ]);
   }
 
   // ---- Rules ----
@@ -442,9 +523,7 @@ export async function expectRejection(
       const result = predicate(errObj);
       // If predicate returns false explicitly, fail.
       if (result === false) {
-        throw new Error(
-          `Expected rejection matching predicate, but got: ${errObj.message}`,
-        );
+        throw new Error(`Expected rejection matching predicate, but got: ${errObj.message}`);
       }
     }
   }

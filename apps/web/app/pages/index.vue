@@ -60,53 +60,55 @@
         />
       </template>
       <template #content>
-        <!-- Blocker alerts -->
-        <section v-if="data?.blockers?.length" aria-label="Blockers" class="mb-6">
-          <h2
-            class="text-sm font-semibold text-red-700 dark:text-red-400 mb-3 flex items-center gap-2"
-          >
-            <span class="i-heroicons-exclamation-circle" /> Blockers ({{ data.blockers.length }})
-          </h2>
-          <div class="space-y-2">
-            <UCard
-              v-for="b in data.blockers"
-              :key="b.code"
-              :ui="{ root: 'border-red-200 dark:border-red-900' }"
-            >
-              <div class="flex items-start gap-2">
-                <span class="i-heroicons-x-circle text-red-500 shrink-0 mt-0.5" />
-                <div>
-                  <p class="text-sm font-medium text-gray-900 dark:text-gray-100">
-                    {{ b.message }}
-                  </p>
-                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                    {{ b.entityType }} &middot; {{ b.severity }}
-                  </p>
-                </div>
-              </div>
-            </UCard>
+        <section
+          v-if="data?.blockers?.length || data?.alerts?.length"
+          aria-label="Financial decision attention"
+          class="mb-6"
+        >
+          <div class="mb-4">
+            <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">
+              Financial decision attention
+            </h2>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Resolve blocking issues before reviewing qualified alerts.
+            </p>
           </div>
-        </section>
 
-        <!-- Alerts -->
-        <section v-if="data?.alerts?.length" aria-label="Alerts" class="mb-6">
-          <h2
-            class="text-sm font-semibold text-amber-700 dark:text-amber-400 mb-3 flex items-center gap-2"
-          >
-            <span class="i-heroicons-bell-alert" /> Alerts ({{ data.alerts.length }})
-          </h2>
-          <div class="space-y-2">
-            <FindingCard
-              v-for="a in data.alerts"
-              :key="a.code"
-              :finding="{
-                title: a.message,
-                severity: 'warning',
-                category: a.categoryName,
-                reasonCodes: [a.code],
-              }"
-            />
-          </div>
+          <section v-if="data?.blockers?.length" aria-label="Blockers" class="mb-6">
+            <h3
+              class="mb-3 flex items-center gap-2 text-sm font-semibold text-red-700 dark:text-red-400"
+            >
+              <span class="i-heroicons-exclamation-circle" aria-hidden="true" />
+              Blockers ({{ data.blockers.length }})
+            </h3>
+            <ul class="space-y-3" role="list">
+              <li
+                v-for="(blocker, index) in data.blockers"
+                :key="attentionItemKey(blocker, index)"
+                role="listitem"
+              >
+                <FindingCard :finding="attentionFinding(blocker)" />
+              </li>
+            </ul>
+          </section>
+
+          <section v-if="data?.alerts?.length" aria-label="Alerts">
+            <h3
+              class="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-400"
+            >
+              <span class="i-heroicons-bell-alert" aria-hidden="true" />
+              Alerts ({{ data.alerts.length }})
+            </h3>
+            <ul class="space-y-3" role="list">
+              <li
+                v-for="(alert, index) in data.alerts"
+                :key="attentionItemKey(alert, index)"
+                role="listitem"
+              >
+                <FindingCard :finding="attentionFinding(alert)" />
+              </li>
+            </ul>
+          </section>
         </section>
 
         <!-- Target progress -->
@@ -212,17 +214,66 @@ interface Amount {
   currency: string;
 }
 
-interface Blocker {
-  code: string;
-  message: string;
-  severity: string;
-  entityType: string;
+type FinancialAttentionClassification =
+  | 'account_readiness_blocker'
+  | 'transfer_needs_attention'
+  | 'reservation_conflict'
+  | 'commitment_conflict'
+  | 'evidence_connector_degradation'
+  | 'unresolved_material_evidence';
+
+type DecisionScope =
+  | { kind: 'global' }
+  | {
+      kind: 'account' | 'category' | 'transaction' | 'schedule' | 'claim';
+      id: string;
+    };
+
+interface EvidenceReference {
+  evidenceId: string;
+  kind: string;
+  authorized: boolean;
+  redaction: 'visible' | 'redacted';
 }
 
-interface Alert {
+interface DecisionIssue {
+  code: string;
+  severity: 'critical' | 'warning' | 'info';
+  effect: 'blocks' | 'qualifies';
+  scope: DecisionScope;
+  evidence: EvidenceReference[];
+  remediation?: { code: string; action: string } | null;
+  redaction: 'visible' | 'redacted';
+}
+
+interface AttentionDecisionMetadata {
+  classification?: FinancialAttentionClassification;
+  issue?: DecisionIssue;
+  scopeLabel?: string;
+  snapshotId?: string;
+  policyVersion?: string;
+  revision?: string;
+  dedupKey?: string;
+  findingId?: string;
+  findingStatus?: string;
+  findingVersion?: number;
+  firstObservedAt?: string;
+  lastObservedAt?: string;
+  expiresAt?: string | null;
+}
+
+interface Blocker extends AttentionDecisionMetadata {
   code: string;
   message: string;
-  severity: string;
+  severity: 'critical' | 'warning' | 'info';
+  entityType?: string;
+  entityId?: string;
+}
+
+interface Alert extends AttentionDecisionMetadata {
+  code: string;
+  message: string;
+  severity: 'critical' | 'warning' | 'info';
   categoryId?: string;
   categoryName?: string;
 }
@@ -371,6 +422,38 @@ watch(
 async function handleDirectSignOut(): Promise<void> {
   await authClient.signOut();
   await navigateTo('/');
+}
+
+type AttentionItem = Blocker | Alert;
+
+function attentionItemKey(item: AttentionItem, index: number): string {
+  return (
+    item.findingId ?? item.dedupKey ?? `${item.classification ?? 'legacy'}:${item.code}:${index}`
+  );
+}
+
+function attentionFinding(item: AttentionItem) {
+  const entityType = 'entityType' in item ? item.entityType : undefined;
+  const categoryName = 'categoryName' in item ? item.categoryName : undefined;
+
+  return {
+    title: item.message,
+    severity: item.severity,
+    scopeLabel: item.scopeLabel,
+    category: item.scopeLabel ?? categoryName ?? entityType,
+    entityType,
+    reasonCodes: item.issue ? undefined : [item.code],
+    classification: item.classification,
+    status: item.findingStatus,
+    issue: item.issue,
+    snapshotId: item.snapshotId,
+    policyVersion: item.policyVersion,
+    revision: item.revision,
+    findingVersion: item.findingVersion,
+    firstObservedAt: item.firstObservedAt,
+    lastObservedAt: item.lastObservedAt,
+    expiresAt: item.expiresAt ?? undefined,
+  };
 }
 
 function currentMonth(): string {

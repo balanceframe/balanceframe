@@ -32,7 +32,6 @@ docker-compose.override.yml
 !.env.example
 .bootstrap_secret
 
-tests/actual-integration/.seed-budget.mjs
 tests/actual-integration/.env.test
 crates/node-binding/balanceframe.node
 crates/node-binding/index.d.ts

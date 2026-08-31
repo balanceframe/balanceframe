@@ -96,9 +96,19 @@ import type {
 import type { DataFreshness } from './envelope.js';
 import { ReasonCodes } from './errors.js';
 import { ApplicationError } from './errors.js';
-import { NotificationRuntime, InAppChannelAdapter } from './notifications.js';
+import {
+  NotificationRuntime,
+  InAppChannelAdapter,
+  financialDecisionDedupKey,
+} from './notifications.js';
 import type { NotificationPolicy } from './notifications.js';
 import type { WorkflowStore } from '@balanceframe/workflow-store';
+import type {
+  DecisionIssue,
+  FinancialSnapshot,
+  SourceObservation,
+} from '@balanceframe/protocol-generated';
+import { purchaseProspectiveDecisionEnvelopeSchema } from '@balanceframe/protocol-generated/validators';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile, rename, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -344,6 +354,8 @@ export interface NativeBindingShim {
   // Phase 8 — Budget Intelligence N-API methods
   /** Evaluate a proposed purchase against budget limits. */
   evaluatePurchase(input: string): string;
+  /** Evaluate a purchase through the canonical prospective-decision contract. */
+  evaluateProspectivePurchase?(input: string): string;
   /** Project future cash flow based on schedules and budgets. */
   projectCashFlow(input: string): string;
   /** Evaluate target/sinking-fund health. */
@@ -428,10 +440,245 @@ function isLatestSynchronizationProvider(
   );
 }
 
-function snapshotFromSynchronization(value: unknown): unknown | null {
-  return value !== null && typeof value === 'object' && 'snapshot' in value
-    ? (value as Record<string, unknown>).snapshot
+function asFinancialSnapshot(value: unknown): FinancialSnapshot | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  return typeof record.snapshotId === 'string' &&
+    typeof record.contentHash === 'string' &&
+    record.legacySnapshot !== null &&
+    typeof record.legacySnapshot === 'object' &&
+    Array.isArray(record.observations)
+    ? (value as FinancialSnapshot)
     : null;
+}
+
+function financialSnapshotFromSynchronization(value: unknown): FinancialSnapshot | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  return (
+    asFinancialSnapshot(record.financialSnapshot) ??
+    asFinancialSnapshot(record.snapshot) ??
+    asFinancialSnapshot(value)
+  );
+}
+
+function snapshotFromSynchronization(value: unknown): unknown | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  if ('snapshot' in record && record.snapshot !== null && record.snapshot !== undefined) {
+    return asFinancialSnapshot(record.snapshot)?.legacySnapshot ?? record.snapshot;
+  }
+  return financialSnapshotFromSynchronization(value)?.legacySnapshot ?? null;
+}
+
+function canonicalJsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, currentValue: unknown) => {
+    if (currentValue === null || typeof currentValue !== 'object' || Array.isArray(currentValue)) {
+      return currentValue;
+    }
+
+    const record = currentValue as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, record[key]]),
+    );
+  });
+}
+
+function snapshotEntityLabels(snapshot: FinancialSnapshot): Record<string, string> {
+  const labels: Record<string, string> = {};
+  const legacy = snapshot.legacySnapshot;
+
+  for (const account of legacy.accounts) labels[account.id] = account.name;
+  for (const category of legacy.categories) labels[category.id] = category.name;
+  for (const transaction of legacy.transactions) {
+    if (
+      transaction.categoryId &&
+      transaction.categoryName &&
+      labels[transaction.categoryId] === undefined
+    ) {
+      labels[transaction.categoryId] = transaction.categoryName;
+    }
+    const transactionLabel = transaction.payeeName?.trim() || 'Transaction';
+    const transactionDate = transaction.date?.trim();
+    labels[transaction.id] = transactionDate
+      ? `${transactionLabel} · ${transactionDate}`
+      : transactionLabel;
+  }
+  for (const payee of legacy.payees) labels[payee.id] = payee.name;
+  for (const schedule of legacy.schedules) {
+    if (schedule.payeeName) labels[schedule.id] = schedule.payeeName;
+  }
+
+  return labels;
+}
+
+const FINANCIAL_ATTENTION_POLICY_VERSION = 'financial-attention-v1';
+
+const KNOWN_OBSERVATION_KINDS: Record<string, true> = {
+  account_freshness: true,
+  account_coverage: true,
+  account_type: true,
+  account_balance: true,
+  pending_activity: true,
+  uncleared_activity: true,
+  schedule_coverage: true,
+  credit_card_obligation_coverage: true,
+  duplicate_candidate: true,
+  transfer_ambiguity: true,
+  reconciliation: true,
+  currency_compatibility: true,
+};
+
+const NON_ACTIONABLE_OBSERVATIONS: Record<string, true> = {
+  'account_freshness:fresh': true,
+  'account_coverage:complete': true,
+  'account_type:complete': true,
+  'account_balance:complete': true,
+  'pending_activity:included': true,
+  'uncleared_activity:included': true,
+  'schedule_coverage:complete': true,
+  'credit_card_obligation_coverage:complete': true,
+  'currency_compatibility:complete': true,
+};
+
+function observationIssueCode(kind: string): string {
+  switch (kind) {
+    case 'account_freshness':
+    case 'account_coverage':
+    case 'account_type':
+    case 'account_balance':
+      return 'account_freshness_coverage';
+    case 'pending_activity':
+      return 'pending_availability';
+    case 'schedule_coverage':
+      return 'schedule_coverage';
+    case 'credit_card_obligation_coverage':
+      return 'credit_payment_uncertainty';
+    case 'duplicate_candidate':
+    case 'transfer_ambiguity':
+      return 'duplicate_transfer_ambiguity';
+    case 'reconciliation':
+    case 'uncleared_activity':
+      return 'economic_event_ambiguity';
+    case 'currency_compatibility':
+      return 'currency_mismatch';
+    default:
+      return kind;
+  }
+}
+
+function attentionBlockerFromObservation(
+  observation: SourceObservation,
+  snapshot: FinancialSnapshot,
+  entityLabels: Record<string, string>,
+): AttentionBlocker | null {
+  const kind = String(observation.kind);
+  const state = String(observation.state);
+  const knownKind = KNOWN_OBSERVATION_KINDS[kind] === true;
+  const evidence = Array.isArray(observation.evidence) ? observation.evidence : [];
+  const isUnknownAccountCapability =
+    (kind === 'account_freshness' || kind === 'account_type') &&
+    (state === 'unknown' ||
+      (state === 'unavailable' &&
+        !evidence.some((reference) => reference.kind === 'connector_error')));
+  if (
+    isUnknownAccountCapability ||
+    (knownKind && NON_ACTIONABLE_OBSERVATIONS[`${kind}:${state}`] === true)
+  ) {
+    return null;
+  }
+
+  let classification: NonNullable<AttentionBlocker['classification']>;
+  let message: string;
+  let severity: AttentionBlocker['severity'];
+  let remediation: NonNullable<DecisionIssue['remediation']>;
+
+  if (state === 'unavailable') {
+    classification = 'evidence_connector_degradation';
+    message = 'Authorized source evidence is unavailable.';
+    severity = 'critical';
+    remediation = {
+      code: 'reconnect_source',
+      action: 'Reconnect or refresh the affected source before evaluating again.',
+    };
+  } else if (kind === 'account_freshness' && state === 'stale') {
+    classification = 'account_readiness_blocker';
+    message = 'Account evidence is stale.';
+    severity = 'warning';
+    remediation = {
+      code: 'refresh_account_evidence',
+      action: 'Refresh the affected account before evaluating again.',
+    };
+  } else if (
+    (kind === 'transfer_ambiguity' && state === 'ambiguous') ||
+    kind === 'duplicate_candidate'
+  ) {
+    classification = 'transfer_needs_attention';
+    message = 'A possible duplicate or incomplete transfer needs review.';
+    severity = 'warning';
+    remediation = {
+      code: 'review_transfer',
+      action: 'Review the related transactions and resolve the transfer ambiguity.',
+    };
+  } else {
+    classification = 'unresolved_material_evidence';
+    message = knownKind
+      ? 'Material financial evidence remains unresolved.'
+      : `Unsupported financial observation "${kind}" requires review.`;
+    severity = knownKind ? 'warning' : 'critical';
+    remediation = {
+      code: 'review_material_evidence',
+      action: 'Review the supporting evidence before evaluating again.',
+    };
+  }
+
+  const redaction = evidence.some(
+    (reference) => !reference.authorized || reference.redaction === 'redacted',
+  )
+    ? 'redacted'
+    : 'visible';
+  const issue: DecisionIssue = {
+    code: observationIssueCode(kind),
+    severity,
+    effect: 'blocks',
+    scope: observation.scope,
+    evidence,
+    remediation,
+    redaction,
+  };
+  const identity = {
+    classification,
+    scope: observation.scope,
+    snapshotId: snapshot.snapshotId,
+    policyVersion: FINANCIAL_ATTENTION_POLICY_VERSION,
+    revision: snapshot.contentHash,
+  };
+  const dedupKey = financialDecisionDedupKey(identity);
+  const observedAt = observation.observedAt ?? snapshot.capturedAt;
+
+  return {
+    code: issue.code,
+    message,
+    severity,
+    entityType: observation.scope.kind,
+    ...('id' in observation.scope && entityLabels[observation.scope.id]
+      ? { scopeLabel: entityLabels[observation.scope.id] }
+      : {}),
+    ...('id' in observation.scope ? { entityId: observation.scope.id } : {}),
+    classification,
+    issue,
+    snapshotId: snapshot.snapshotId,
+    policyVersion: FINANCIAL_ATTENTION_POLICY_VERSION,
+    revision: snapshot.contentHash,
+    dedupKey,
+    findingId: dedupKey,
+    findingStatus: 'open',
+    findingVersion: 1,
+    firstObservedAt: observedAt,
+    lastObservedAt: observedAt,
+  };
 }
 
 /**
@@ -466,7 +713,25 @@ export async function createNativeAnalysisProtocol(
   // -----------------------------------------------------------------------
 
   /**
-   * Synchronize the ledger and extract the snapshot for analysis.
+   * Obtain one complete synchronization result so canonical and legacy
+   * snapshots remain from the same capture.
+   */
+  const obtainSynchronization = async (ledger: unknown): Promise<unknown | null> => {
+    if (isLatestSynchronizationProvider(ledger)) {
+      const latest = ledger.getLatestSynchronization();
+      if (
+        snapshotFromSynchronization(latest) !== null ||
+        financialSnapshotFromSynchronization(latest) !== null
+      ) {
+        return latest;
+      }
+    }
+    if (!isSynchronizableLedger(ledger)) return null;
+    return ledger.synchronize();
+  };
+
+  /**
+   * Synchronize the ledger and extract its legacy snapshot for analysis.
    * If the ledger is not synchronizable, returns null.
    */
   const obtainSnapshot = async (ledger: unknown): Promise<unknown> => {
@@ -495,13 +760,33 @@ export async function createNativeAnalysisProtocol(
     } catch {
       throw new Error('Native evaluatePurchase returned invalid JSON.');
     }
+    const categoryBudget = asMoney(parsed.categoryBudget);
+    const categorySpent = asMoney(parsed.categorySpent);
+    const categoryRemaining = asMoney(parsed.categoryRemaining);
+    if (!categoryBudget || !categorySpent || !categoryRemaining) {
+      throw new Error('Native evaluatePurchase returned missing or invalid required money.');
+    }
+    if (typeof parsed.allowable !== 'boolean') {
+      throw new Error('Native evaluatePurchase returned an invalid allowable value.');
+    }
+    if (
+      !Array.isArray(parsed.reasonCodes) ||
+      !parsed.reasonCodes.every((value) => typeof value === 'string')
+    ) {
+      throw new Error('Native evaluatePurchase returned invalid reason codes.');
+    }
+    const projectedBalance =
+      parsed.projectedBalance === null ? null : asMoney(parsed.projectedBalance);
+    if (parsed.projectedBalance !== null && !projectedBalance) {
+      throw new Error('Native evaluatePurchase returned invalid projected balance money.');
+    }
     return {
-      allowable: parsed.allowable === true,
-      reasonCodes: Array.isArray(parsed.reasonCodes) ? parsed.reasonCodes.map(String) : ['unknown'],
-      categoryBudget: asMoney(parsed.categoryBudget) ?? { minorUnits: '0', currency: 'USD' },
-      categorySpent: asMoney(parsed.categorySpent) ?? { minorUnits: '0', currency: 'USD' },
-      categoryRemaining: asMoney(parsed.categoryRemaining) ?? { minorUnits: '0', currency: 'USD' },
-      projectedBalance: asMoney(parsed.projectedBalance),
+      allowable: parsed.allowable,
+      reasonCodes: parsed.reasonCodes,
+      categoryBudget,
+      categorySpent,
+      categoryRemaining,
+      projectedBalance,
       hasEnvelope: parsed.hasEnvelope === true,
     };
   };
@@ -1148,22 +1433,29 @@ export async function createNativeAnalysisProtocol(
       ledger: unknown,
       params: PurchaseEvaluationParams,
     ): Promise<PurchaseEvaluationResult> {
-      const rawSnapshot = await obtainSnapshot(ledger);
-      if (!rawSnapshot) {
-        return {
-          allowable: false,
-          reasonCodes: ['no_snapshot'],
-          categoryBudget: { minorUnits: '0', currency: 'USD' },
-          categorySpent: { minorUnits: '0', currency: 'USD' },
-          categoryRemaining: { minorUnits: '0', currency: 'USD' },
-          projectedBalance: null,
-          hasEnvelope: false,
-        };
+      const synchronization = await obtainSynchronization(ledger);
+      if (!synchronization) {
+        throw new Error('Ledger synchronization returned no snapshot.');
       }
+
+      const rawSnapshot = snapshotFromSynchronization(synchronization);
+      const financialSnapshot = financialSnapshotFromSynchronization(synchronization);
+      const snapshotRecord =
+        rawSnapshot !== null && typeof rawSnapshot === 'object'
+          ? (rawSnapshot as Record<string, unknown>)
+          : null;
+      const capturedAt = financialSnapshot?.capturedAt ?? snapshotRecord?.snapshotDate;
+      if (typeof capturedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(capturedAt)) {
+        throw new Error('Ledger snapshot is missing a valid capture date.');
+      }
+      if (!asMoney(params.amount)) {
+        throw new Error('Purchase evaluation requires valid amount money.');
+      }
+
       const proposedTransaction = {
         id: '',
         accountId: params.accountId ?? '',
-        date: new Date().toISOString().slice(0, 10),
+        date: capturedAt.slice(0, 10),
         amount: params.amount,
         payeeId: null,
         payeeName: null,
@@ -1178,6 +1470,152 @@ export async function createNativeAnalysisProtocol(
         transferAccountId: null,
         subtransactions: [],
       };
+
+      if (typeof native.evaluateProspectivePurchase === 'function' && financialSnapshot !== null) {
+        if (!params.accountId || !params.categoryId) {
+          throw new Error(
+            'Prospective purchase evaluation requires account and category identity.',
+          );
+        }
+        if (!financialSnapshot.snapshotId.trim() || !financialSnapshot.contentHash.trim()) {
+          throw new Error('Canonical financial snapshot is missing required identity.');
+        }
+
+        if (!/^(?:0|-[1-9]\d*|[1-9]\d*)$/.test(params.amount.minorUnits)) {
+          throw new Error('Prospective purchase amount must be a signed decimal string.');
+        }
+        const suppliedMinorUnits = BigInt(params.amount.minorUnits);
+        const zeroMinorUnits = BigInt('0');
+        const signedI64Min = BigInt('-9223372036854775808');
+        const signedI64Max = BigInt('9223372036854775807');
+        if (suppliedMinorUnits < signedI64Min || suppliedMinorUnits > signedI64Max) {
+          throw new Error('Prospective purchase amount exceeds signed 64-bit range.');
+        }
+        const outflowMinorUnits =
+          suppliedMinorUnits === zeroMinorUnits
+            ? '0'
+            : (suppliedMinorUnits < zeroMinorUnits
+                ? suppliedMinorUnits
+                : -suppliedMinorUnits
+              ).toString();
+        const canonicalAmount = {
+          minorUnits: outflowMinorUnits,
+          currency: params.amount.currency,
+        };
+        const canonicalProposedTransaction = {
+          ...proposedTransaction,
+          amount: canonicalAmount,
+        };
+
+        const policy = {
+          pendingMode: 'includeConservatively',
+          uncategorizedMode: 'reserveFullAmount',
+          unclearedMode: 'include',
+          maxBankSyncAgeMinutes: null,
+          maxBudgetSnapshotAgeMinutes: null,
+          accountOverrides: {
+            includeOnly: null,
+            exclude: [],
+          },
+        };
+        const policyVersion = 'purchase-default-v1';
+        const policyHash = `sha256:${createHash('sha256')
+          .update(JSON.stringify(policy))
+          .digest('hex')}`;
+        const validUntil =
+          params.validUntil ??
+          new Date(Date.parse(capturedAt) + 30 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .replace('.000Z', 'Z');
+        const context = params.context ?? {
+          evaluatedAt: capturedAt,
+          horizon: {
+            startsAt: capturedAt,
+            endsAt: validUntil,
+          },
+          policy,
+          policyVersion,
+          policyHash,
+          snapshotId: financialSnapshot.snapshotId,
+          contentHash: financialSnapshot.contentHash,
+        };
+        const claims = params.claims ?? [];
+        const redaction = params.redaction ?? 'visible';
+        const identitySeed = canonicalJsonStringify({
+          snapshotId: financialSnapshot.snapshotId,
+          contentHash: financialSnapshot.contentHash,
+          categoryId: params.categoryId,
+          accountId: params.accountId,
+          amount: canonicalAmount,
+          context,
+          claims,
+          validUntil,
+          redaction,
+        });
+        const identityHash = createHash('sha256').update(identitySeed).digest('hex');
+        const input = JSON.stringify({
+          financialSnapshot,
+          context,
+          claims,
+          proposedTransaction: canonicalProposedTransaction,
+          categoryId: params.categoryId,
+          requestId: params.requestId ?? `request:${identityHash}`,
+          correlationId: params.correlationId ?? `correlation:${identityHash}`,
+          decisionId: params.decisionId ?? `decision:${identityHash}`,
+          validUntil,
+          redaction,
+        });
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(native.evaluateProspectivePurchase(input));
+        } catch {
+          throw new Error('Native evaluateProspectivePurchase returned invalid JSON.');
+        }
+        const decision = purchaseProspectiveDecisionEnvelopeSchema.parse(parsed);
+        const hasEnvelope = decision.before.amounts.some(
+          ({ label }) => label === 'envelopeAvailability',
+        );
+        const currencyMismatch = decision.issues.some(({ code }) => code === 'currency_mismatch');
+        const envelopeFundingState: NonNullable<PurchaseEvaluationResult['envelopeFundingState']> =
+          currencyMismatch || !hasEnvelope
+            ? 'unavailable'
+            : BigInt(decision.payload.categoryBudget.minorUnits) <= BigInt(0)
+              ? 'unfunded'
+              : 'funded';
+        const verdict: NonNullable<PurchaseEvaluationResult['verdict']> =
+          decision.readiness === 'blocked'
+            ? 'insufficient_data'
+            : !decision.payload.allowable
+              ? 'not_safe'
+              : decision.readiness === 'qualified'
+                ? 'safe_with_qualifications'
+                : 'safe';
+        const explanation =
+          verdict === 'insufficient_data'
+            ? 'A safe purchase verdict is unavailable because required financial data is insufficient or conflicting.'
+            : verdict === 'not_safe'
+              ? 'The purchase is not allowable under the evaluated budget and account constraints.'
+              : verdict === 'safe_with_qualifications'
+                ? 'The purchase is allowable with qualifications that should be reviewed.'
+                : 'The purchase is within the evaluated budget and account constraints.';
+        return {
+          ...decision.payload,
+          categoryBudget: currencyMismatch ? null : decision.payload.categoryBudget,
+          categorySpent: currencyMismatch ? null : decision.payload.categorySpent,
+          categoryRemaining: currencyMismatch ? null : decision.payload.categoryRemaining,
+          projectedBalance: currencyMismatch ? null : decision.payload.projectedBalance,
+          hasEnvelope,
+          verdict,
+          explanation,
+          envelopeFundingState,
+          entityLabels: snapshotEntityLabels(financialSnapshot),
+          decision,
+        };
+      }
+
+      if (rawSnapshot === null) {
+        throw new Error('Ledger synchronization returned no legacy snapshot.');
+      }
       const input = JSON.stringify({
         snapshot: rawSnapshot,
         proposedTransaction,
@@ -1376,7 +1814,9 @@ export async function createNativeAnalysisProtocol(
       ledger: unknown,
       params: AttentionHomeParams,
     ): Promise<AttentionHomeResult> {
-      const rawSnapshot = await obtainSnapshot(ledger);
+      const synchronization = await obtainSynchronization(ledger);
+      const rawSnapshot = snapshotFromSynchronization(synchronization);
+      const financialSnapshot = financialSnapshotFromSynchronization(synchronization);
       if (!rawSnapshot) {
         return {
           blockers: [],
@@ -1408,13 +1848,26 @@ export async function createNativeAnalysisProtocol(
       }
 
       const s = rawSnapshot as Record<string, unknown>;
+      const accounts = (s.accounts as Array<Record<string, unknown>> | undefined) ?? [];
       const transactions = (s.transactions as Array<Record<string, unknown>> | undefined) ?? [];
       const payees = (s.payees as Array<Record<string, unknown>> | undefined) ?? [];
       const currency = 'USD';
 
-      // Blockers: uncategorized transactions (counting/filtering only)
+      // Blockers: uncategorized transactions (counting/filtering only).
+      // Pending activity remains included under the current attention policy.
+      const onBudgetAccountIds = new Set(
+        accounts
+          .filter((account) => typeof account.id === 'string' && account.offBudget === false)
+          .map((account) => account.id as string),
+      );
       const uncategorizedTxs = transactions.filter(
-        (tx) => (!tx.categoryId || tx.categoryId === '') && !tx.pending,
+        (tx) =>
+          typeof tx.accountId === 'string' &&
+          onBudgetAccountIds.has(tx.accountId) &&
+          (tx.categoryId === null || tx.categoryId === undefined || tx.categoryId === '') &&
+          (tx.transferAccountId === null ||
+            tx.transferAccountId === undefined ||
+            tx.transferAccountId === ''),
       );
       const blockers: AttentionBlocker[] =
         uncategorizedTxs.length > 0
@@ -1427,9 +1880,97 @@ export async function createNativeAnalysisProtocol(
               },
             ]
           : [];
+      const entityLabels = financialSnapshot
+        ? snapshotEntityLabels(financialSnapshot)
+        : ({} as Record<string, string>);
+      const alerts: AttentionAlert[] = [];
+      if (financialSnapshot) {
+        const canonicalDedupKeys = new Set<string>();
+        const transferFindings: AttentionBlocker[] = [];
+        for (const observation of financialSnapshot.observations) {
+          const blocker = attentionBlockerFromObservation(
+            observation,
+            financialSnapshot,
+            entityLabels,
+          );
+          if (!blocker?.dedupKey || canonicalDedupKeys.has(blocker.dedupKey)) continue;
+          canonicalDedupKeys.add(blocker.dedupKey);
+          if (blocker.classification === 'transfer_needs_attention') {
+            transferFindings.push(blocker);
+          } else {
+            blockers.push(blocker);
+          }
+        }
+
+        if (transferFindings.length > 0) {
+          const evidence: DecisionIssue['evidence'] = [];
+          const evidenceIds = new Set<string>();
+          for (const finding of transferFindings) {
+            for (const reference of finding.issue?.evidence ?? []) {
+              if (evidence.length === 10) break;
+              if (
+                !reference.authorized ||
+                reference.redaction !== 'visible' ||
+                evidenceIds.has(reference.evidenceId)
+              ) {
+                continue;
+              }
+              evidenceIds.add(reference.evidenceId);
+              evidence.push(reference);
+            }
+            if (evidence.length === 10) break;
+          }
+          const redaction = transferFindings.some(
+            (finding) => finding.issue?.redaction === 'redacted',
+          )
+            ? 'redacted'
+            : 'visible';
+          const issue: DecisionIssue = {
+            code: 'duplicate_transfer_ambiguity',
+            severity: 'warning',
+            effect: 'qualifies',
+            scope: { kind: 'global' },
+            evidence,
+            remediation: {
+              code: 'review_transfer',
+              action: 'Review the related transactions and resolve the transfer ambiguity.',
+            },
+            redaction,
+          };
+          const identity = {
+            classification: 'transfer_needs_attention' as const,
+            scope: issue.scope,
+            snapshotId: financialSnapshot.snapshotId,
+            policyVersion: FINANCIAL_ATTENTION_POLICY_VERSION,
+            revision: financialSnapshot.contentHash,
+          };
+          const dedupKey = financialDecisionDedupKey(identity);
+          const observedAt = financialSnapshot.capturedAt;
+          alerts.push({
+            code: issue.code,
+            message:
+              transferFindings.length === 1
+                ? 'A possible duplicate or incomplete transfer needs review.'
+                : `${transferFindings.length} possible duplicate or incomplete transfers need review`,
+            severity: 'warning',
+            scopeLabel: 'Transfers',
+            occurrenceCount: transferFindings.length,
+            classification: identity.classification,
+            issue,
+            snapshotId: identity.snapshotId,
+            policyVersion: identity.policyVersion,
+            revision: identity.revision,
+            dedupKey,
+            findingId: dedupKey,
+            findingStatus: 'open',
+            findingVersion: 1,
+            firstObservedAt: observedAt,
+            lastObservedAt: observedAt,
+          });
+        }
+      }
 
       // Alerts: derive from native target health overspent labels
-      const alerts: AttentionAlert[] = [];
       for (const cat of targetHealth.categories) {
         if (cat.healthLabel === 'overspent') {
           alerts.push({
@@ -1438,31 +1979,66 @@ export async function createNativeAnalysisProtocol(
             severity: 'warning',
             categoryId: cat.categoryId,
             categoryName: cat.categoryName,
+            scopeLabel: entityLabels[cat.categoryId] ?? cat.categoryName,
           });
         }
       }
 
-      // Recurrences: pattern detection from snapshot (counting/aggregation, not money arithmetic)
+      // Recurrences: pattern detection from ordinary same-account purchases.
       const recurrences: RecurrencePattern[] = [];
-      const schedCounts: Record<string, { count: number; lastDate: string; amount: string }> = {};
+      const payeesById = new Map(
+        payees
+          .filter((payee) => typeof payee.id === 'string')
+          .map((payee) => [payee.id as string, payee] as const),
+      );
+      const schedCounts: Record<
+        string,
+        {
+          count: number;
+          lastDate: string;
+          amount: string;
+          payeeId: string;
+          payeeName: string;
+        }
+      > = {};
       for (const tx of transactions) {
-        if (tx.payeeId) {
-          const key = String(tx.payeeId);
-          if (!schedCounts[key]) schedCounts[key] = { count: 0, lastDate: '', amount: '0' };
-          schedCounts[key].count++;
-          const amt = tx.amount as Record<string, unknown> | undefined;
-          if (amt && typeof amt.minorUnits === 'string') {
-            schedCounts[key].amount = amt.minorUnits;
-          }
-          if (String(tx.date ?? '') > schedCounts[key].lastDate)
-            schedCounts[key].lastDate = String(tx.date);
+        if (
+          typeof tx.accountId !== 'string' ||
+          typeof tx.payeeId !== 'string' ||
+          (tx.transferAccountId !== null &&
+            tx.transferAccountId !== undefined &&
+            tx.transferAccountId !== '')
+        ) {
+          continue;
+        }
+        const payeeId = tx.payeeId;
+        const payee = payeesById.get(payeeId);
+        const payeeName = String(payee?.name ?? tx.payeeName ?? payeeId);
+        if (payeeName.trim().toLowerCase() === 'starting balance') continue;
+
+        const key = `${tx.accountId}\u0000${payeeId}`;
+        if (!schedCounts[key]) {
+          schedCounts[key] = {
+            count: 0,
+            lastDate: '',
+            amount: '0',
+            payeeId,
+            payeeName,
+          };
+        }
+        schedCounts[key].count++;
+        const amt = tx.amount as Record<string, unknown> | undefined;
+        if (amt && typeof amt.minorUnits === 'string') {
+          schedCounts[key].amount = amt.minorUnits;
+        }
+        if (String(tx.date ?? '') > schedCounts[key].lastDate) {
+          schedCounts[key].lastDate = String(tx.date);
         }
       }
-      for (const [payeeId, info] of Object.entries(schedCounts)) {
+      for (const info of Object.values(schedCounts)) {
         if (info.count >= 3) {
-          const payee = payees.find((p) => p.id === payeeId);
           recurrences.push({
-            payeeName: String(payee?.name ?? payeeId),
+            payeeName: info.payeeName,
             amount: { minorUnits: info.amount, currency },
             frequency: info.count >= 6 ? 'monthly' : 'irregular',
             occurrences: info.count,
@@ -2191,7 +2767,17 @@ export async function createObserveComposition(
       policyVersion: 'v1',
       eligibility: [
         {
-          classifications: ['budget_alert', 'review_complete', 'security_alert'],
+          classifications: [
+            'budget_alert',
+            'review_complete',
+            'security_alert',
+            'account_readiness_blocker',
+            'transfer_needs_attention',
+            'reservation_conflict',
+            'commitment_conflict',
+            'evidence_connector_degradation',
+            'unresolved_material_evidence',
+          ],
           minSeverity: 'normal',
           requiredCapability: 'notification:receive',
         },

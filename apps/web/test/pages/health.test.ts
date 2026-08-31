@@ -94,6 +94,53 @@ describe('Health page', () => {
     expect(wrapper.text()).toContain('75');
   });
 
+  it('labels the score as global health rather than purchase readiness', async () => {
+    mockFetch.mockResolvedValue(okEnvelope(sampleResult));
+    const wrapper = shallowMount(HealthPage, { global: { stubs } });
+    await flushPromises();
+
+    const scoreRegion = wrapper.get(
+      '[role="region"][aria-label="Global health score — not purchase readiness"]',
+    );
+    expect(scoreRegion.text()).toContain('Global health score — not purchase readiness');
+    expect(scoreRegion.get('[data-testid="composite-score"]').text()).toBe('75/ 100');
+  });
+
+  it('qualifies global health below 70 data quality without changing numeric dimensions', async () => {
+    mockFetch.mockResolvedValue(
+      okEnvelope({
+        ...sampleResult,
+        dimensions: [
+          ...sampleResult.dimensions,
+          {
+            dimension: 'data_quality',
+            score: 0.69,
+            weight: 0.2,
+            explanation: 'Only part of the global data set is currently available.',
+            severity: 'warning',
+          },
+        ],
+      }),
+    );
+    const wrapper = shallowMount(HealthPage, { global: { stubs } });
+    await flushPromises();
+
+    const qualification = wrapper.get(
+      '[role="status"][aria-label="Qualified by limited data quality"]',
+    );
+    expect(qualification.text()).toBe('Qualified by limited data quality');
+    expect(wrapper.get('[data-testid="composite-score"]').text()).toBe('75/ 100');
+    expect(wrapper.get('[data-testid="dim-score-Budget Adherence"]').text()).toBe(
+      '85/ 100 (weight: 30%)',
+    );
+    expect(wrapper.get('[data-testid="dim-score-Cash Position"]').text()).toBe(
+      '62/ 100 (weight: 25%)',
+    );
+    expect(wrapper.get('[data-testid="dim-score-data_quality"]').text()).toBe(
+      '69/ 100 (weight: 20%)',
+    );
+  });
+
   it('converts normalized health scores and weights to whole percentages', async () => {
     mockFetch.mockResolvedValue(
       okEnvelope({

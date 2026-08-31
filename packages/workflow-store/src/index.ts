@@ -70,6 +70,7 @@ export type {
   // Phase 8 — Budget Intelligence foundations
   NotificationEvent,
   CreateNotificationEventInput,
+  CreateOrGetNotificationEventInput,
   OutboxStatus,
   NotificationOutboxRecord,
   EnqueueNotificationInput,

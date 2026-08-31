@@ -16,3 +16,11 @@ export * from './composition.js';
 export * from './connection-manager.js';
 export * from './notifications.js';
 export * from './review-persistence.js';
+
+export type {
+  DecisionContext,
+  ProspectiveClaim,
+  ProspectiveDecisionEnvelope,
+  PurchaseEvaluation,
+  RedactionState,
+} from '@balanceframe/protocol-generated';

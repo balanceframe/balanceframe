@@ -9,8 +9,16 @@
 
 import type { ResponseEnvelope, DataFreshness } from './envelope.js';
 import { ApplicationError, ObserveWriteError, ReasonCodes } from './errors.js';
-import type { Money } from '@balanceframe/protocol-generated';
-import type { WorkflowStore } from '@balanceframe/workflow-store';
+import type {
+  DecisionContext,
+  DecisionIssue,
+  Money,
+  ProspectiveClaim,
+  ProspectiveDecisionEnvelope,
+  PurchaseEvaluation,
+  RedactionState,
+} from '@balanceframe/protocol-generated';
+import type { FindingStatus, WorkflowStore } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Analysis protocol — Rust-backed analysis interface
@@ -886,7 +894,30 @@ export interface PurchaseEvaluationParams {
   amount: Money;
   /** Optional account identifier for balance projection. */
   accountId?: string;
+  /** Canonical decision context. Required when using prospective evaluation. */
+  context?: DecisionContext;
+  /** Existing reservations and commitments considered by the decision. */
+  claims?: ProspectiveClaim[];
+  /** Caller-supplied request identity for deterministic provenance. */
+  requestId?: string;
+  /** Caller-supplied correlation identity for deterministic provenance. */
+  correlationId?: string;
+  /** Caller-supplied decision identity. */
+  decisionId?: string;
+  /** Caller-supplied expiry for the decision. */
+  validUntil?: string;
+  /** Visibility of the resulting decision. */
+  redaction?: RedactionState;
 }
+
+/**
+ * User-facing verdict for a canonical purchase decision.
+ */
+export type PurchaseVerdict =
+  'safe' | 'safe_with_qualifications' | 'not_safe' | 'insufficient_data';
+
+/** Whether the selected category has usable envelope funding. */
+export type EnvelopeFundingState = 'funded' | 'unfunded' | 'unavailable';
 
 /**
  * Result of evaluating a proposed purchase against budget constraints.
@@ -897,16 +928,26 @@ export interface PurchaseEvaluationResult {
   allowable: boolean;
   /** Machine-readable reason codes supporting the evaluation. */
   reasonCodes: string[];
-  /** How much is budgeted for this category in the current month. */
-  categoryBudget: Money;
-  /** How much has been spent in this category so far. */
-  categorySpent: Money;
-  /** Remaining budget after accounting for this purchase. */
-  categoryRemaining: Money;
-  /** Projected account balance after purchase (null if account not tracked). */
+  /** How much is budgeted for this category, or null when money is incompatible. */
+  categoryBudget: Money | null;
+  /** How much has been spent, or null when money is incompatible. */
+  categorySpent: Money | null;
+  /** Remaining budget, or null when money is incompatible. */
+  categoryRemaining: Money | null;
+  /** Projected account balance after purchase (null if unavailable or incompatible). */
   projectedBalance: Money | null;
   /** Whether an envelope budget exists for the category (vs cash-flow-only). */
   hasEnvelope: boolean;
+  /** Explicit canonical decision verdict. Present on prospective results. */
+  verdict?: PurchaseVerdict;
+  /** Human-readable summary of the verdict. Present on prospective results. */
+  explanation?: string;
+  /** Funding availability for the selected envelope. Present on prospective results. */
+  envelopeFundingState?: EnvelopeFundingState;
+  /** Canonical snapshot names keyed by their stable technical IDs. */
+  entityLabels?: Record<string, string>;
+  /** Full canonical decision, when evaluated by the prospective-decision path. */
+  decision?: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
 }
 
 export interface PurchaseEvaluationOutput {
@@ -1476,10 +1517,43 @@ export interface MultidimensionalHealthOutput {
 // Budget Intelligence — Attention / Home Dashboard
 // ---------------------------------------------------------------------------
 
+/** Fixed routing classifications for canonical financial attention findings. */
+export type FinancialAttentionClassification =
+  | 'account_readiness_blocker'
+  | 'transfer_needs_attention'
+  | 'reservation_conflict'
+  | 'commitment_conflict'
+  | 'evidence_connector_degradation'
+  | 'unresolved_material_evidence';
+
+/**
+ * Canonical decision metadata carried by attention items when the source is a
+ * financial snapshot. Fields remain optional so existing attention producers
+ * and consumers retain their legacy contract.
+ */
+export interface AttentionDecisionMetadata {
+  classification?: FinancialAttentionClassification;
+  issue?: DecisionIssue;
+  /** Canonical human-readable label for the affected scope. */
+  scopeLabel?: string;
+  snapshotId?: string;
+  policyVersion?: string;
+  revision?: string;
+  dedupKey?: string;
+  findingId?: string;
+  findingStatus?: FindingStatus;
+  findingVersion?: number;
+  firstObservedAt?: string;
+  lastObservedAt?: string;
+  expiresAt?: string | null;
+  /** Number of homogeneous observations represented by this attention item. */
+  occurrenceCount?: number;
+}
+
 /**
  * A single blocker item for the attention dashboard.
  */
-export interface AttentionBlocker {
+export interface AttentionBlocker extends AttentionDecisionMetadata {
   code: string;
   message: string;
   severity: 'critical' | 'warning' | 'info';
@@ -1490,7 +1564,7 @@ export interface AttentionBlocker {
 /**
  * A single alert item.
  */
-export interface AttentionAlert {
+export interface AttentionAlert extends AttentionDecisionMetadata {
   code: string;
   message: string;
   severity: 'critical' | 'warning' | 'info';

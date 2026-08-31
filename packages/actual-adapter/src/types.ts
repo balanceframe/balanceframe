@@ -16,6 +16,7 @@ import type {
   Schedule,
   BudgetMonth,
   Money,
+  FinancialSnapshot,
 } from '@balanceframe/protocol-generated';
 export type { Money } from '@balanceframe/protocol-generated';
 
@@ -412,6 +413,8 @@ export interface LedgerSnapshotResult {
     budgets: BudgetMonth[];
     tags: { id: string; name: string }[];
   };
+  /** Canonical, source-qualified snapshot produced from the same synchronization. */
+  financialSnapshot: FinancialSnapshot;
   health: HealthReport;
   watermark: SyncWatermark;
 }

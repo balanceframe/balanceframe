@@ -121,7 +121,6 @@ export type ReviewStatus =
   | 'skipped'
   | 'superseded';
 
-
 /** A review item tracking one candidate through the review-apply lifecycle. */
 export interface ReviewItem {
   /** Stable unique identifier (UUID v4). */
@@ -332,17 +331,21 @@ export interface CreateNotificationEventInput {
   readonly correlationId?: string | null;
 }
 
+/** Input to atomically create or retrieve a deduplicated notification event. */
+export interface CreateOrGetNotificationEventInput extends CreateNotificationEventInput {
+  /**
+   * Stable producer identity.  Persistence scopes it to the exact recipient
+   * and authorization scope so one recipient can never reuse another's event.
+   */
+  readonly dedupKey: string;
+}
+
 // ---------------------------------------------------------------------------
 // Notification Outbox — delivery-tracked outbound record
 // ---------------------------------------------------------------------------
 
 /** Lifecycle status of a notification outbox record. */
-export type OutboxStatus =
-  | 'pending'
-  | 'delivering'
-  | 'delivered'
-  | 'failed'
-  | 'suppressed';
+export type OutboxStatus = 'pending' | 'delivering' | 'delivered' | 'failed' | 'suppressed';
 
 /**
  * An outbox record tracking delivery of a single notification to a single
@@ -625,13 +628,7 @@ export interface SavedFilterListOptions {
  *   superseded → (terminal)
  */
 export type FindingStatus =
-  | 'open'
-  | 'acknowledged'
-  | 'corrected'
-  | 'dismissed'
-  | 'reopened'
-  | 'expired'
-  | 'superseded';
+  'open' | 'acknowledged' | 'corrected' | 'dismissed' | 'reopened' | 'expired' | 'superseded';
 
 /**
  * A versioned finding — an observation about categorization, budget health,
@@ -1011,10 +1008,7 @@ export interface WorkflowStore {
   getPendingJobs(): Promise<CandidateJob[]>;
 
   /** Look up a job by job type + candidateId, or null. */
-  getJobByCandidateId(
-    jobType: string,
-    candidateId: string,
-  ): Promise<CandidateJob | null>;
+  getJobByCandidateId(jobType: string, candidateId: string): Promise<CandidateJob | null>;
 
   // ── Review lifecycle ──────────────────────────────────────────────
 
@@ -1065,10 +1059,7 @@ export interface WorkflowStore {
    * @throws If the transition is not allowed or the expectedVersion
    *         optimistic lock fails.
    */
-  transitionReviewItem(
-    id: string,
-    input: TransitionReviewInput,
-  ): Promise<ReviewItem>;
+  transitionReviewItem(id: string, input: TransitionReviewInput): Promise<ReviewItem>;
 
   /**
    * Bulk-transition multiple review items to the same target status.
@@ -1191,10 +1182,7 @@ export interface WorkflowStore {
    * @returns null if the proposal can be executed, or an error string
    *          describing the reason it cannot.
    */
-  verifyApprovalForExecution(
-    proposalId: string,
-    payloadHash: string,
-  ): Promise<string | null>;
+  verifyApprovalForExecution(proposalId: string, payloadHash: string): Promise<string | null>;
 
   // ── Idempotency records ───────────────────────────────────────────
 
@@ -1245,7 +1233,6 @@ export interface WorkflowStore {
    */
   reconcileStrandedIdempotencyRecords(): Promise<number>;
 
-
   // ── Audit records (append-only) ───────────────────────────────────
 
   /** Append a new audit record. */
@@ -1265,10 +1252,7 @@ export interface WorkflowStore {
    * Query audit records for a specific proposal.
    * Ordered by timestamp descending.
    */
-  queryAuditRecordsByProposal(
-    proposalId: string,
-    limit?: number,
-  ): Promise<AuditRecord[]>;
+  queryAuditRecordsByProposal(proposalId: string, limit?: number): Promise<AuditRecord[]>;
 
   // ── Authorization ─────────────────────────────────────────────────
 
@@ -1280,9 +1264,7 @@ export interface WorkflowStore {
    *
    * Corrections are append-only; the original suggestion is never mutated.
    */
-  queryCorrectionHistory(
-    options?: CorrectionHistoryOptions,
-  ): Promise<CorrectionRecord[]>;
+  queryCorrectionHistory(options?: CorrectionHistoryOptions): Promise<CorrectionRecord[]>;
 
   /**
    * Find conflicting account / direction / category values across
@@ -1292,7 +1274,6 @@ export interface WorkflowStore {
    * @param limit  Maximum number of conflicts to return (default 50).
    */
   findCorrectionConflicts(limit?: number): Promise<CorrectionConflict[]>;
-
 
   // ── Registration and invitations ────────────────────────────────
 
@@ -1496,6 +1477,17 @@ export interface WorkflowStore {
    */
   createNotificationEvent(input: CreateNotificationEventInput): Promise<NotificationEvent>;
 
+  /**
+   * Atomically create an immutable event or return the event already persisted
+   * for the same `(dedupKey, recipientId, scope)` identity.
+   *
+   * The database is the authority for this identity across processes and
+   * connections. Existing event contents are returned unchanged.
+   */
+  createOrGetNotificationEvent(
+    input: CreateOrGetNotificationEventInput,
+  ): Promise<NotificationEvent>;
+
   /** Retrieve a notification event by ID, or null. */
   getNotificationEvent(id: string): Promise<NotificationEvent | null>;
 
@@ -1588,9 +1580,7 @@ export interface WorkflowStore {
    * List outbox records with optional status/channel filter and pagination.
    * Ordered by created_at descending (newest first).
    */
-  listOutboxRecords(
-    options?: ListOutboxRecordsOptions,
-  ): Promise<NotificationOutboxRecord[]>;
+  listOutboxRecords(options?: ListOutboxRecordsOptions): Promise<NotificationOutboxRecord[]>;
 
   // ── Policy version lifecycle ────────────────────────────────────
 
@@ -1616,11 +1606,7 @@ export interface WorkflowStore {
    * List policy versions for a given policy key, ordered by version
    * descending.
    */
-  listPolicyVersions(
-    policyKey: string,
-    limit?: number,
-    offset?: number,
-  ): Promise<PolicyVersion[]>;
+  listPolicyVersions(policyKey: string, limit?: number, offset?: number): Promise<PolicyVersion[]>;
 
   // ── Saved filter / view lifecycle ───────────────────────────────
 
@@ -1638,10 +1624,7 @@ export interface WorkflowStore {
    * Only the provided fields are changed.  If isDefault is set to true,
    * any existing default for the same (budgetId, scope) is demoted.
    */
-  updateSavedFilter(
-    id: string,
-    input: UpdateSavedFilterInput,
-  ): Promise<SavedFilter>;
+  updateSavedFilter(id: string, input: UpdateSavedFilterInput): Promise<SavedFilter>;
 
   /** Retrieve a saved filter by ID, or null. */
   getSavedFilter(id: string): Promise<SavedFilter | null>;
@@ -1694,10 +1677,7 @@ export interface WorkflowStore {
    *
    * @throws If the view is not found.
    */
-  updateSavedView(
-    viewId: string,
-    input: UpdateSavedViewInput,
-  ): Promise<SavedViewResult>;
+  updateSavedView(viewId: string, input: UpdateSavedViewInput): Promise<SavedViewResult>;
 
   /**
    * Duplicate an existing saved view under a new name for the given actor.
@@ -1981,7 +1961,8 @@ export interface CreateApprovalInput {
 // ---------------------------------------------------------------------------
 // IdempotencyRecord — at-most-once execution tracking
 // ---------------------------------------------------------------------------
-export type IdempotencyStatus = 'in_progress' | 'succeeded' | 'retryable_failed' | 'terminal_failed';
+export type IdempotencyStatus =
+  'in_progress' | 'succeeded' | 'retryable_failed' | 'terminal_failed';
 
 /** Record of an idempotent workflow operation. */
 export interface IdempotencyRecord {
@@ -2018,7 +1999,6 @@ export interface IdempotencyClaim {
   readonly record: IdempotencyRecord;
   readonly isOwner: boolean;
 }
-
 
 // ---------------------------------------------------------------------------
 // AuditRecord — append-only workflow audit trail

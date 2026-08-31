@@ -109,7 +109,7 @@ function mockEvent(overrides: Partial<NotificationEvent> = {}): NotificationEven
     budgetId: TEST_BUDGET,
     classification: 'budget_alert',
     recipientId: TEST_ACTOR_A,
-    scope: TEST_BUDGET,
+    scope: '',
     redactionClass: 'sensitive',
     channelConfigVersion: null,
     policyVersion: TEST_POLICY_VER,
@@ -302,7 +302,7 @@ function createFixture(policyOverrides: Partial<NotificationPolicy> = {}): Runti
     actorId: TEST_ACTOR_A,
     status: 'active',
     capabilities: ['notification:receive'],
-    scope: TEST_BUDGET,
+    scope: '*',
   });
   const adapter = new InAppChannelAdapter();
   const policy = defaultPolicy(policyOverrides);
@@ -433,7 +433,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const result = await runtime.create(defaultInput());
@@ -508,7 +508,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const event = mockEvent({ redactionClass: 'sensitive' });
@@ -526,7 +526,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:admin', 'notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const event = mockEvent({ redactionClass: 'sensitive' });
@@ -543,7 +543,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const event = mockEvent({ redactionClass: 'nonexistent' });
@@ -557,7 +557,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const event = mockEvent({ redactionClass: null });
@@ -592,7 +592,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const result = await local.runtime.create(defaultInput());
@@ -620,7 +620,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const result = await local.runtime.create(defaultInput());
@@ -638,7 +638,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const result = await runtime.create(defaultInput());
@@ -663,7 +663,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       await local.runtime.create(defaultInput({ correlationId: 'first' }));
@@ -686,7 +686,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       for (let i = 0; i < 4; i++) {
@@ -1169,7 +1169,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
       store.getDeliveryAttempts.mockResolvedValue([]);
 
@@ -1236,7 +1236,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
       store.getDeliveryAttempts.mockResolvedValue([]);
 
@@ -1264,7 +1264,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const detail = await runtime.getOutboxDetail(TEST_OUTBOX_ID, TEST_ACTOR_A);
@@ -1486,7 +1486,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       const result = await runtime.create(defaultInput());
@@ -1548,7 +1548,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
     });
 
@@ -1693,7 +1693,7 @@ describe('NotificationRuntime', () => {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
-        scope: TEST_BUDGET,
+        scope: '*',
       });
 
       await runtime.produceAlertEvent({

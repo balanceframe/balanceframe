@@ -1,0 +1,591 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import type {
+  DecisionContext,
+  FinancialSnapshot,
+  ProspectiveClaim,
+  ProspectiveDecisionEnvelope,
+  PurchaseEvaluation,
+} from '@balanceframe/protocol-generated';
+import { describe, expect, it, vi } from 'vitest';
+
+import { purchaseEvaluationAnalysis } from '../src/analysis';
+import type {
+  AnalysisProtocol,
+  PurchaseEvaluationParams,
+  PurchaseEvaluationResult,
+} from '../src/commands';
+import { createNativeAnalysisProtocol, type NativeBindingShim } from '../src/composition';
+
+type FoundationFixture = {
+  full: FinancialSnapshot;
+  claims: {
+    context: DecisionContext;
+    items: ProspectiveClaim[];
+  };
+  decisions: {
+    ready: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
+    qualified: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
+    blocked: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
+  };
+};
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = path.resolve(
+  __dirname,
+  '../../../protocol/fixtures/financial-decision-foundation.json',
+);
+const fixture = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8')) as FoundationFixture;
+
+const PURCHASE_PARAMS: PurchaseEvaluationParams = {
+  categoryId: 'fd-category-groceries',
+  accountId: 'fd-account-checking',
+  amount: { minorUnits: '5500', currency: 'USD' },
+  context: fixture.claims.context,
+  claims: fixture.claims.items,
+  requestId: fixture.decisions.blocked.metadata.requestId,
+  correlationId: fixture.decisions.blocked.metadata.correlationId,
+  decisionId: fixture.decisions.blocked.metadata.decisionId,
+  validUntil: fixture.decisions.blocked.expiresAt,
+  redaction: fixture.decisions.blocked.redaction,
+};
+function legacyPurchaseResult(): PurchaseEvaluationResult {
+  return {
+    allowable: true,
+    reasonCodes: ['sufficient_budget'],
+    categoryBudget: { minorUnits: '20000', currency: 'USD' },
+    categorySpent: { minorUnits: '10000', currency: 'USD' },
+    categoryRemaining: { minorUnits: '4500', currency: 'USD' },
+    projectedBalance: { minorUnits: '119500', currency: 'USD' },
+    hasEnvelope: true,
+  };
+}
+
+function nativeShim(overrides: Partial<NativeBindingShim> = {}): NativeBindingShim {
+  const legacy = legacyPurchaseResult();
+  return {
+    analyzeDeterministic: () => JSON.stringify({}),
+    analyzeSnapshot: () => JSON.stringify({}),
+    findCategorizationCandidates: () => JSON.stringify([]),
+    evaluatePurchase: () => JSON.stringify(legacy),
+    evaluateProspectivePurchase: () => JSON.stringify(fixture.decisions.ready),
+    projectCashFlow: () => JSON.stringify({}),
+    evaluateTargetHealth: () => JSON.stringify({}),
+    evaluateFinancialState: () => JSON.stringify({}),
+    computeDataQuality: () => JSON.stringify({}),
+    computeLiquidityCoverage: () => JSON.stringify({}),
+    computeBillCalendar: () => JSON.stringify({}),
+    computeBudgetVariance: () => JSON.stringify({}),
+    detectIrregularObligations: () => JSON.stringify({}),
+    assessIncomeReliability: () => JSON.stringify({}),
+    evaluateForecastCalibration: () => JSON.stringify({}),
+    compareScenarios: () => JSON.stringify({}),
+    evaluateMultidimensionalHealth: () => JSON.stringify({}),
+    ...overrides,
+  };
+}
+
+function canonicalLedger() {
+  const synchronize = vi.fn(async () => ({
+    snapshot: fixture.full.legacySnapshot,
+    financialSnapshot: fixture.full,
+  }));
+  return { ledger: { synchronize }, synchronize };
+}
+
+function decisionResult(
+  decision: ProspectiveDecisionEnvelope<PurchaseEvaluation>,
+): PurchaseEvaluationResult {
+  return {
+    ...decision.payload,
+    hasEnvelope: decision.before.amounts.some(({ label }) => label === 'envelopeAvailability'),
+    decision,
+  };
+}
+
+describe('createNativeAnalysisProtocol — canonical prospective purchase decisions', () => {
+  it('builds deterministic canonical input for legacy UI params and preserves the typed decision', async () => {
+    const prospectiveCalls: string[] = [];
+    const legacyEvaluate = vi.fn(() => JSON.stringify(legacyPurchaseResult()));
+    const shim = nativeShim({
+      evaluatePurchase: legacyEvaluate,
+      evaluateProspectivePurchase(input) {
+        prospectiveCalls.push(input);
+        return JSON.stringify(fixture.decisions.blocked);
+      },
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const { ledger, synchronize } = canonicalLedger();
+    const legacyUiParams: PurchaseEvaluationParams = {
+      categoryId: PURCHASE_PARAMS.categoryId,
+      accountId: PURCHASE_PARAMS.accountId,
+      amount: PURCHASE_PARAMS.amount,
+    };
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2040-01-02T03:04:05Z'));
+    let result: PurchaseEvaluationResult;
+    try {
+      result = await protocol.purchaseEvaluation!(ledger, legacyUiParams);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(synchronize).toHaveBeenCalledOnce();
+    expect(legacyEvaluate).not.toHaveBeenCalled();
+    expect(prospectiveCalls).toHaveLength(1);
+
+    const input = JSON.parse(prospectiveCalls[0]) as Record<string, unknown>;
+    expect(input).not.toHaveProperty('snapshot');
+    expect(input).toEqual({
+      financialSnapshot: fixture.full,
+      context: {
+        evaluatedAt: '2026-08-23T12:00:00Z',
+        horizon: {
+          startsAt: '2026-08-23T12:00:00Z',
+          endsAt: '2026-09-22T12:00:00Z',
+        },
+        policy: {
+          pendingMode: 'includeConservatively',
+          uncategorizedMode: 'reserveFullAmount',
+          unclearedMode: 'include',
+          maxBankSyncAgeMinutes: null,
+          maxBudgetSnapshotAgeMinutes: null,
+          accountOverrides: {
+            includeOnly: null,
+            exclude: [],
+          },
+        },
+        policyVersion: 'purchase-default-v1',
+        policyHash: 'sha256:a56047cac6547260314e8294670b41ec5770e7c6301dfbcd12526b19b3d87909',
+        snapshotId: 'fd-snapshot-2026-08-23',
+        contentHash: 'sha256:fd-snapshot-2026-08-23',
+      },
+      claims: [],
+      proposedTransaction: {
+        id: '',
+        accountId: 'fd-account-checking',
+        date: '2026-08-23',
+        amount: { minorUnits: '-5500', currency: 'USD' },
+        payeeId: null,
+        payeeName: null,
+        categoryId: 'fd-category-groceries',
+        categoryName: null,
+        cleared: false,
+        reconciled: false,
+        importedId: null,
+        importedPayee: null,
+        notes: null,
+        tags: [],
+        transferAccountId: null,
+        subtransactions: [],
+      },
+      categoryId: 'fd-category-groceries',
+      requestId: 'request:45430b41be44c3ea678e2fae76f0bda5549d5167ac7e4da927512bc7d3717ccf',
+      correlationId: 'correlation:45430b41be44c3ea678e2fae76f0bda5549d5167ac7e4da927512bc7d3717ccf',
+      decisionId: 'decision:45430b41be44c3ea678e2fae76f0bda5549d5167ac7e4da927512bc7d3717ccf',
+      validUntil: '2026-09-22T12:00:00Z',
+      redaction: 'visible',
+    });
+    expect(result).toMatchObject(decisionResult(fixture.decisions.blocked));
+    expect(result.decision).toEqual(fixture.decisions.blocked);
+  });
+
+  it('derives generated identities from every effective normalized purchase input', async () => {
+    type CanonicalPurchaseInput = {
+      context: DecisionContext;
+      claims: ProspectiveClaim[];
+      proposedTransaction: {
+        amount: {
+          minorUnits: string;
+          currency: string;
+        };
+      };
+      requestId: string;
+      correlationId: string;
+      decisionId: string;
+      validUntil: string;
+      redaction: NonNullable<PurchaseEvaluationParams['redaction']>;
+    };
+
+    const prospectiveCalls: CanonicalPurchaseInput[] = [];
+    const shim = nativeShim({
+      evaluateProspectivePurchase(input) {
+        prospectiveCalls.push(JSON.parse(input) as CanonicalPurchaseInput);
+        return JSON.stringify(fixture.decisions.ready);
+      },
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const sparseParams: PurchaseEvaluationParams = {
+      categoryId: PURCHASE_PARAMS.categoryId,
+      accountId: PURCHASE_PARAMS.accountId,
+      amount: { minorUnits: '5500', currency: 'USD' },
+    };
+    const captureInput = async (
+      overrides: Partial<PurchaseEvaluationParams> = {},
+    ): Promise<CanonicalPurchaseInput> => {
+      const callCount = prospectiveCalls.length;
+      const { ledger } = canonicalLedger();
+      await protocol.purchaseEvaluation!(ledger, {
+        ...sparseParams,
+        ...overrides,
+      });
+      expect(prospectiveCalls).toHaveLength(callCount + 1);
+      return prospectiveCalls[callCount];
+    };
+    const identity = ({ requestId, correlationId, decisionId }: CanonicalPurchaseInput) => ({
+      requestId,
+      correlationId,
+      decisionId,
+    });
+
+    const sparse = await captureInput();
+    const byteEquivalentReplay = await captureInput({
+      amount: { minorUnits: '-5500', currency: 'USD' },
+      context: structuredClone(sparse.context),
+      claims: structuredClone(sparse.claims),
+      validUntil: sparse.validUntil,
+      redaction: sparse.redaction,
+    });
+    const policyContext = structuredClone(sparse.context);
+    policyContext.policy.maxBankSyncAgeMinutes = 60;
+    policyContext.policyVersion = 'purchase-default-bank-sync-60-v1';
+    policyContext.policyHash = 'sha256:purchase-default-bank-sync-60-v1';
+    const claim = structuredClone(fixture.claims.items[0]);
+    claim.policyVersion = sparse.context.policyVersion;
+    claim.snapshotId = sparse.context.snapshotId;
+
+    const changedInputs = {
+      policy: await captureInput({ context: policyContext }),
+      claims: await captureInput({ claims: [claim] }),
+      validity: await captureInput({ validUntil: '2026-09-21T12:00:00Z' }),
+      redaction: await captureInput({ redaction: 'redacted' }),
+      outflow: await captureInput({
+        amount: { minorUnits: '5600', currency: 'USD' },
+      }),
+    };
+
+    expect(sparse.proposedTransaction.amount).toEqual({
+      minorUnits: '-5500',
+      currency: 'USD',
+    });
+    expect(changedInputs.outflow.proposedTransaction.amount.minorUnits).toBe('-5600');
+    expect({
+      ...byteEquivalentReplay,
+      requestId: '',
+      correlationId: '',
+      decisionId: '',
+    }).toEqual({
+      ...sparse,
+      requestId: '',
+      correlationId: '',
+      decisionId: '',
+    });
+    expect(identity(byteEquivalentReplay)).toEqual(identity(sparse));
+
+    for (const [resultAffectingInput, changed] of Object.entries(changedInputs)) {
+      expect(changed.requestId, `${resultAffectingInput} must affect request identity`).not.toBe(
+        sparse.requestId,
+      );
+      expect(
+        changed.correlationId,
+        `${resultAffectingInput} must affect correlation identity`,
+      ).not.toBe(sparse.correlationId);
+      expect(changed.decisionId, `${resultAffectingInput} must affect decision identity`).not.toBe(
+        sparse.decisionId,
+      );
+    }
+  });
+
+  it('delegates the canonical snapshot, fixed context, claims, and proposed purchase without invoking the legacy binding', async () => {
+    const prospectiveCalls: string[] = [];
+    const legacyEvaluate = vi.fn(() => JSON.stringify(legacyPurchaseResult()));
+    const shim = nativeShim({
+      evaluatePurchase: legacyEvaluate,
+      evaluateProspectivePurchase(input) {
+        prospectiveCalls.push(input);
+        return JSON.stringify(fixture.decisions.blocked);
+      },
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const { ledger, synchronize } = canonicalLedger();
+
+    const result = await protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS);
+
+    expect(synchronize).toHaveBeenCalledOnce();
+    expect(legacyEvaluate).not.toHaveBeenCalled();
+    expect(prospectiveCalls).toHaveLength(1);
+
+    const input = JSON.parse(prospectiveCalls[0]) as Record<string, unknown>;
+    expect(input).not.toHaveProperty('snapshot');
+    expect(input).toMatchObject({
+      financialSnapshot: fixture.full,
+      requestId: PURCHASE_PARAMS.requestId,
+      correlationId: PURCHASE_PARAMS.correlationId,
+      decisionId: PURCHASE_PARAMS.decisionId,
+      validUntil: PURCHASE_PARAMS.validUntil,
+      redaction: PURCHASE_PARAMS.redaction,
+      context: fixture.claims.context,
+      claims: fixture.claims.items,
+      categoryId: PURCHASE_PARAMS.categoryId,
+      proposedTransaction: {
+        accountId: PURCHASE_PARAMS.accountId,
+        date: '2026-08-23',
+        amount: { minorUnits: '-5500', currency: 'USD' },
+        categoryId: PURCHASE_PARAMS.categoryId,
+      },
+    });
+
+    expect(result).toMatchObject(decisionResult(fixture.decisions.blocked));
+    expect(result.decision).toEqual(fixture.decisions.blocked);
+    expect(result.decision?.issues.map(({ code }) => code)).toContain('fd_future_safety_code');
+    expect(result.reasonCodes).toContain('fd_future_reason_code');
+  });
+
+  it('preserves every typed decision field and derives hasEnvelope only from semantic envelope availability', async () => {
+    const withoutEnvelope = structuredClone(fixture.decisions.qualified);
+    withoutEnvelope.before.amounts = withoutEnvelope.before.amounts.filter(
+      ({ label }) => label !== 'envelopeAvailability',
+    );
+    withoutEnvelope.after.amounts = withoutEnvelope.after.amounts.filter(
+      ({ label }) => label !== 'envelopeAvailability',
+    );
+    const shim = nativeShim({
+      evaluateProspectivePurchase: () => JSON.stringify(withoutEnvelope),
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const { ledger } = canonicalLedger();
+
+    const result = await protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS);
+
+    expect(result).toMatchObject({
+      ...withoutEnvelope.payload,
+      hasEnvelope: false,
+      decision: withoutEnvelope,
+    });
+    expect(result.decision).toEqual(withoutEnvelope);
+    expect(result.decision).toMatchObject({
+      metadata: {
+        contractVersion: withoutEnvelope.metadata.contractVersion,
+        decisionId: withoutEnvelope.metadata.decisionId,
+        requestId: withoutEnvelope.metadata.requestId,
+        correlationId: withoutEnvelope.metadata.correlationId,
+        context: fixture.claims.context,
+      },
+      readiness: 'qualified',
+      before: withoutEnvelope.before,
+      after: withoutEnvelope.after,
+      issues: withoutEnvelope.issues,
+      evidence: withoutEnvelope.evidence,
+      alternatives: withoutEnvelope.alternatives,
+      expiresAt: withoutEnvelope.expiresAt,
+      redaction: withoutEnvelope.redaction,
+      payload: withoutEnvelope.payload,
+    });
+  });
+
+  it('adds an explicit verdict, explanation, funding state, and snapshot entity labels to canonical results', async () => {
+    const financialSnapshot = structuredClone(fixture.full);
+    const fixtureTransaction = financialSnapshot.legacySnapshot.transactions.find(
+      ({ id }) => id === 'fd-transaction-existing',
+    );
+    if (!fixtureTransaction) throw new Error('fixture transaction must exist');
+    financialSnapshot.legacySnapshot.transactions.push({
+      ...structuredClone(fixtureTransaction),
+      id: 'fd-transaction-without-payee',
+      payeeName: null,
+    });
+    const shim = nativeShim({
+      evaluateProspectivePurchase: () => JSON.stringify(fixture.decisions.blocked),
+    });
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const ledger = {
+      synchronize: vi.fn(async () => ({
+        snapshot: financialSnapshot.legacySnapshot,
+        financialSnapshot,
+      })),
+    };
+
+    const result = await protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS);
+
+    expect(result).toMatchObject({
+      verdict: 'insufficient_data',
+      explanation: expect.stringMatching(/\S/),
+      envelopeFundingState: 'funded',
+      entityLabels: {
+        'fd-category-groceries': 'Groceries',
+        'fd-account-checking': 'Household Checking',
+        'fd-transaction-pending': 'Fixture Grocer · 2026-08-23',
+        'fd-transaction-existing': 'Fixture Grocer · 2026-08-23',
+        'fd-transfer-one-sided': 'Card Transfer · 2026-08-23',
+        'fd-transaction-without-payee': 'Transaction · 2026-08-23',
+      },
+    });
+  });
+
+  it('distinguishes funded, unfunded, and unavailable envelopes without exposing incompatible money', async () => {
+    const unfunded = structuredClone(fixture.decisions.ready);
+    unfunded.before.amounts = unfunded.before.amounts.map((amount) => ({
+      ...amount,
+      amount: { ...amount.amount, minorUnits: '0' },
+    }));
+    unfunded.after.amounts = unfunded.after.amounts.map((amount) => ({
+      ...amount,
+      amount: { ...amount.amount, minorUnits: '0' },
+    }));
+    unfunded.payload.categoryBudget = { minorUnits: '0', currency: 'USD' };
+    unfunded.payload.categorySpent = { minorUnits: '0', currency: 'USD' };
+    unfunded.payload.categoryRemaining = { minorUnits: '0', currency: 'USD' };
+
+    const unavailable = structuredClone(fixture.decisions.blocked);
+    unavailable.before.amounts = [];
+    unavailable.after.amounts = [];
+    unavailable.issues = [
+      {
+        code: 'currency_mismatch',
+        severity: 'critical',
+        effect: 'blocks',
+        scope: { kind: 'category', id: 'fd-category-groceries' },
+        evidence: [],
+        remediation: {
+          code: 'use_compatible_currency',
+          action: 'Use an account and category with the purchase currency.',
+        },
+        redaction: 'visible',
+      },
+    ];
+
+    for (const [decision, envelopeFundingState] of [
+      [fixture.decisions.ready, 'funded'],
+      [unfunded, 'unfunded'],
+      [unavailable, 'unavailable'],
+    ] as const) {
+      const shim = nativeShim({
+        evaluateProspectivePurchase: () => JSON.stringify(decision),
+      });
+      const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+      const { ledger } = canonicalLedger();
+
+      const result = await protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS);
+
+      expect(result).toMatchObject({ envelopeFundingState });
+      if (envelopeFundingState === 'unavailable') {
+        expect(result).toMatchObject({
+          verdict: 'insufficient_data',
+          categoryBudget: null,
+          categorySpent: null,
+          categoryRemaining: null,
+          projectedBalance: null,
+        });
+      }
+    }
+  });
+
+  it.each(['categoryBudget', 'categorySpent', 'categoryRemaining'] as const)(
+    'rejects a prospective decision with missing %s instead of fabricating zero money',
+    async (field) => {
+      const malformed = structuredClone(fixture.decisions.ready) as unknown as Record<
+        string,
+        unknown
+      >;
+      const payload = malformed.payload as Record<string, unknown>;
+      delete payload[field];
+      const shim = nativeShim({
+        evaluateProspectivePurchase: () => JSON.stringify(malformed),
+      });
+      const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+      const { ledger } = canonicalLedger();
+
+      await expect(protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS)).rejects.toThrow();
+    },
+  );
+
+  it.each([
+    ['categoryBudget', { minorUnits: 20000, currency: 'USD' }],
+    ['categorySpent', { minorUnits: '10000' }],
+    ['categoryRemaining', null],
+  ] as const)(
+    'rejects malformed %s money instead of coercing or defaulting it',
+    async (field, invalidMoney) => {
+      const malformed = structuredClone(fixture.decisions.ready) as unknown as Record<
+        string,
+        unknown
+      >;
+      const payload = malformed.payload as Record<string, unknown>;
+      payload[field] = invalidMoney;
+      const shim = nativeShim({
+        evaluateProspectivePurchase: () => JSON.stringify(malformed),
+      });
+      const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+      const { ledger } = canonicalLedger();
+
+      await expect(protocol.purchaseEvaluation!(ledger, PURCHASE_PARAMS)).rejects.toThrow();
+    },
+  );
+
+  it('falls back to evaluatePurchase and preserves its legacy wire output when the new binding is unavailable', async () => {
+    const expected = legacyPurchaseResult();
+    const legacyCalls: string[] = [];
+    const shim = nativeShim({
+      evaluatePurchase(input) {
+        legacyCalls.push(input);
+        return JSON.stringify(expected);
+      },
+    });
+    delete shim.evaluateProspectivePurchase;
+    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+    const synchronize = vi.fn(async () => ({ snapshot: fixture.full.legacySnapshot }));
+
+    const result = await protocol.purchaseEvaluation!({ synchronize }, PURCHASE_PARAMS);
+
+    expect(result).toEqual(expected);
+    expect(result).not.toHaveProperty('decision');
+    expect(legacyCalls).toHaveLength(1);
+    expect(JSON.parse(legacyCalls[0])).toMatchObject({
+      snapshot: fixture.full.legacySnapshot,
+      categoryId: PURCHASE_PARAMS.categoryId,
+      proposedTransaction: {
+        amount: PURCHASE_PARAMS.amount,
+        date: '2026-08-23',
+        categoryId: PURCHASE_PARAMS.categoryId,
+      },
+    });
+  });
+});
+
+describe('purchaseEvaluationAnalysis — typed application JSON', () => {
+  it('returns legacy fields and the unchanged typed decision without a model call', async () => {
+    const expected = decisionResult(fixture.decisions.blocked);
+    const purchaseEvaluation = vi.fn(async () => expected);
+    const protocol = { purchaseEvaluation } as AnalysisProtocol;
+
+    const envelope = await purchaseEvaluationAnalysis(
+      {
+        args: [],
+        mode: 'observe',
+        actorId: 'usr_financial_decision',
+        requestId: 'fd-request-application-2026-08-23',
+        ledger: { canonical: true },
+        freshness: {
+          actualDownloadedAt: '2026-08-23T12:00:00Z',
+          bankSyncedAt: '2026-08-23T11:58:00Z',
+          pendingTransactionsIncluded: true,
+          stalenessDays: 0,
+          isStale: false,
+        },
+        analysisProtocol: protocol,
+      },
+      PURCHASE_PARAMS,
+    );
+
+    expect(purchaseEvaluation).toHaveBeenCalledWith({ canonical: true }, PURCHASE_PARAMS);
+    expect(envelope.status).toBe('ok');
+    expect(envelope.result).toEqual(expected);
+    expect(envelope.result?.decision).toEqual(fixture.decisions.blocked);
+    expect(envelope.result?.decision?.issues.map(({ code }) => code)).toContain(
+      'fd_future_safety_code',
+    );
+  });
+});

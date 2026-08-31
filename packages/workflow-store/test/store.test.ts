@@ -45,7 +45,9 @@ const BASE_SUGGESTION: SaveSuggestionInput = {
 function tickSync(): void {
   // better-sqlite3 is sync — just ensure Date resolution changes
   const start = Date.now();
-  while (Date.now() === start) { /* spin */ }
+  while (Date.now() === start) {
+    /* spin */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -334,15 +336,19 @@ describe('SqliteWorkflowStore', () => {
       });
 
       const fast = await store.getActiveSuggestion(
-        BASE_SUGGESTION.budgetId, BASE_SUGGESTION.transactionId,
-        'fast-classifier', '1.0.0',
+        BASE_SUGGESTION.budgetId,
+        BASE_SUGGESTION.transactionId,
+        'fast-classifier',
+        '1.0.0',
       );
       expect(fast).not.toBeNull();
       expect(fast!.categoryId).toBe('cat-food');
 
       const deep = await store.getActiveSuggestion(
-        BASE_SUGGESTION.budgetId, BASE_SUGGESTION.transactionId,
-        'deep-analysis', '2.0.0',
+        BASE_SUGGESTION.budgetId,
+        BASE_SUGGESTION.transactionId,
+        'deep-analysis',
+        '2.0.0',
       );
       expect(deep).not.toBeNull();
       expect(deep!.categoryId).toBe('cat-other');
@@ -354,11 +360,13 @@ describe('SqliteWorkflowStore', () => {
       const s1 = await store.saveSuggestion(BASE_SUGGESTION);
       tickSync();
       const s2 = await store.saveSuggestion({
-        ...BASE_SUGGESTION, categoryId: 'cat-b',
+        ...BASE_SUGGESTION,
+        categoryId: 'cat-b',
       });
       tickSync();
       const s3 = await store.saveSuggestion({
-        ...BASE_SUGGESTION, categoryId: 'cat-c',
+        ...BASE_SUGGESTION,
+        categoryId: 'cat-c',
       });
 
       const all = await store.getTransactionSuggestions(BASE_SUGGESTION.transactionId);
@@ -424,15 +432,13 @@ describe('SqliteWorkflowStore', () => {
         transactionId: 'txn-002',
       });
 
-      await store.supersedeSuggestions(
-        BASE_SUGGESTION.budgetId,
-        BASE_SUGGESTION.transactionId,
-        99,
-      );
+      await store.supersedeSuggestions(BASE_SUGGESTION.budgetId, BASE_SUGGESTION.transactionId, 99);
 
       const otherActive = await store.getActiveSuggestion(
-        BASE_SUGGESTION.budgetId, 'txn-002',
-        BASE_SUGGESTION.classifier, BASE_SUGGESTION.promptVersion,
+        BASE_SUGGESTION.budgetId,
+        'txn-002',
+        BASE_SUGGESTION.classifier,
+        BASE_SUGGESTION.promptVersion,
       );
       expect(otherActive).not.toBeNull();
     });
@@ -651,7 +657,12 @@ describe('SqliteWorkflowStore', () => {
       const job = await store.enqueueJob({ jobType: 'classify', candidateId: 'txn-001/1' });
       await store.claimJob(job.id, 'token-abc');
 
-      const failure = await store.failJob(job.id, 'token-abc', 'INFERENCE_TIMEOUT', 'Model did not respond');
+      const failure = await store.failJob(
+        job.id,
+        'token-abc',
+        'INFERENCE_TIMEOUT',
+        'Model did not respond',
+      );
 
       expect(failure.id).toBeTypeOf('string');
       expect(failure.jobId).toBe(job.id);
@@ -707,9 +718,7 @@ describe('SqliteWorkflowStore', () => {
       await store.claimJob(job.id, 'token-abc');
 
       // Attempt fail with wrong token
-      await expect(
-        store.failJob(job.id, 'wrong-token', 'STALE', 'stale'),
-      ).rejects.toThrow();
+      await expect(store.failJob(job.id, 'wrong-token', 'STALE', 'stale')).rejects.toThrow();
 
       // Now fail correctly
       const failure = await store.failJob(job.id, 'token-abc', 'REAL_ERROR', 'Actually failed');
@@ -746,7 +755,12 @@ describe('SqliteWorkflowStore', () => {
       await store.claimJob(job.id, 'token-new', 60_000);
 
       // Fail with the new token — should succeed
-      const failure = await store.failJob(job.id, 'token-new', 'RECOVERED', 'Failed after recovery');
+      const failure = await store.failJob(
+        job.id,
+        'token-new',
+        'RECOVERED',
+        'Failed after recovery',
+      );
       expect(failure.errorCode).toBe('RECOVERED');
 
       const jobById = await store.getJobByCandidateId('classify', 'txn-001/1');
@@ -763,9 +777,7 @@ describe('SqliteWorkflowStore', () => {
       await store.claimJob(job.id, 'token-new', 60_000);
 
       // Old worker tries to fail — should throw
-      await expect(
-        store.failJob(job.id, 'token-old', 'STALE', 'Old worker'),
-      ).rejects.toThrow();
+      await expect(store.failJob(job.id, 'token-old', 'STALE', 'Old worker')).rejects.toThrow();
 
       const jobById = await store.getJobByCandidateId('classify', 'txn-001/1');
       expect(jobById!.status).toBe('processing'); // Still processing (new worker's claim)
@@ -780,7 +792,7 @@ describe('SqliteWorkflowStore', () => {
 
       const pending = await store.getPendingJobs();
       expect(pending).toHaveLength(2);
-      expect(pending.every(j => j.status === 'pending')).toBe(true);
+      expect(pending.every((j) => j.status === 'pending')).toBe(true);
     });
 
     it('excludes claimed/completed/failed jobs', async () => {
@@ -848,7 +860,10 @@ describe('SqliteWorkflowStore', () => {
 
       // Phase 5: verify suggestion is queryable
       const active = await store.getActiveSuggestion(
-        'budget-alpha', 'txn-001', 'fast-classifier', '1.0.0',
+        'budget-alpha',
+        'txn-001',
+        'fast-classifier',
+        '1.0.0',
       );
       expect(active!.id).toBe(suggestion.id);
     });
@@ -860,7 +875,12 @@ describe('SqliteWorkflowStore', () => {
       });
       await store.claimJob(job.id, 'worker-token');
 
-      const failure = await store.failJob(job.id, 'worker-token', 'PROVIDER_ERROR', 'Provider returned 503');
+      const failure = await store.failJob(
+        job.id,
+        'worker-token',
+        'PROVIDER_ERROR',
+        'Provider returned 503',
+      );
 
       expect(failure.errorCode).toBe('PROVIDER_ERROR');
       const failedJob = await store.getJobByCandidateId('classify', 'txn-002/v1');
@@ -983,9 +1003,7 @@ describe('SqliteWorkflowStore', () => {
       await store.claimJob(job.id, 'worker-b', 60_000);
 
       // Stale worker-a tries to fail — should throw
-      await expect(
-        store.failJob(job.id, 'worker-a', 'STALE', 'Old worker'),
-      ).rejects.toThrow();
+      await expect(store.failJob(job.id, 'worker-a', 'STALE', 'Old worker')).rejects.toThrow();
 
       const check = await store.getJobByCandidateId('classify', 'stale-002');
       expect(check!.status).toBe('processing');
@@ -1057,7 +1075,12 @@ describe('SqliteWorkflowStore', () => {
       await store.claimJob(job.id, 'recovery-token', 60_000);
 
       // New worker fails it
-      const failure = await store.failJob(job.id, 'recovery-token', 'CRASH', 'Job crashed and recovered');
+      const failure = await store.failJob(
+        job.id,
+        'recovery-token',
+        'CRASH',
+        'Job crashed and recovered',
+      );
       expect(failure.errorCode).toBe('CRASH');
 
       const finalJob = await store.getJobByCandidateId('classify', 'crash-002');
@@ -1129,11 +1152,7 @@ describe('SqliteWorkflowStore', () => {
       // bulk supersedes would require a separate transaction-version tracker.
       await store.saveSuggestion({ ...BASE_SUGGESTION, transactionVersion: 1 });
 
-      await store.supersedeSuggestions(
-        BASE_SUGGESTION.budgetId,
-        BASE_SUGGESTION.transactionId,
-        2,
-      );
+      await store.supersedeSuggestions(BASE_SUGGESTION.budgetId, BASE_SUGGESTION.transactionId, 2);
 
       // No active suggestion now (all version < 2 were superseded)
       const empty = await store.getActiveSuggestion(
@@ -1165,7 +1184,9 @@ describe('SqliteWorkflowStore', () => {
   describe('schema migrations', () => {
     it('creates schema_version table on instantiation', () => {
       const s = new SqliteWorkflowStore(':memory:');
-      const row = s['db'].prepare('SELECT COUNT(*) AS count FROM schema_version').get() as { count: number };
+      const row = s['db'].prepare('SELECT COUNT(*) AS count FROM schema_version').get() as {
+        count: number;
+      };
       expect(row.count).toBeGreaterThanOrEqual(0);
       s.close();
     });
@@ -1180,7 +1201,9 @@ describe('SqliteWorkflowStore', () => {
 
     it('applies version records on fresh database', () => {
       const s = new SqliteWorkflowStore(':memory:');
-      const versionRow = s['db'].prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number | null };
+      const versionRow = s['db']
+        .prepare('SELECT MAX(version) AS version FROM schema_version')
+        .get() as { version: number | null };
       expect(versionRow.version).not.toBeNull();
       s.close();
     });
@@ -1204,16 +1227,16 @@ describe('SqliteWorkflowStore', () => {
         const s = new SqliteWorkflowStore(dbPath);
 
         // Version should be upgraded to at least 1
-        const versionRow = s['db'].prepare(
-          'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
-        ).get() as { version: number };
+        const versionRow = s['db']
+          .prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1')
+          .get() as { version: number };
         expect(versionRow.version).toBeGreaterThanOrEqual(1);
 
         // Verify tables created by migration v1 exist
-        const tables = s['db'].prepare(
-          "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).all() as { name: string }[];
-        const tableNames = tables.map(t => t.name);
+        const tables = s['db']
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+          .all() as { name: string }[];
+        const tableNames = tables.map((t) => t.name);
 
         expect(tableNames).toContain('suggestions');
         expect(tableNames).toContain('candidate_jobs');
@@ -1231,8 +1254,16 @@ describe('SqliteWorkflowStore', () => {
 
         s.close();
       } finally {
-        try { unlinkSync(dbPath); } catch { /* ignore */ }
-        try { rmdirSync(tmpDir); } catch { /* ignore */ }
+        try {
+          unlinkSync(dbPath);
+        } catch {
+          /* ignore */
+        }
+        try {
+          rmdirSync(tmpDir);
+        } catch {
+          /* ignore */
+        }
       }
     });
   });
@@ -1250,16 +1281,25 @@ describe('SqliteWorkflowStore', () => {
     it('countReviewItems matches list length for single status', async () => {
       // Seed review items with distinct composite keys
       await store.createReviewItem({
-        budgetId: 'budget-alpha', transactionId: 'txn-seeded-1',
-        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-seeded-1',
+        categoryId: 'cat-food',
+        classifier: 'fast',
+        provenance: 'test',
       });
       await store.createReviewItem({
-        budgetId: 'budget-alpha', transactionId: 'txn-seeded-2',
-        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-seeded-2',
+        categoryId: 'cat-util',
+        classifier: 'fast',
+        provenance: 'test',
       });
       await store.createReviewItem({
-        budgetId: 'budget-beta', transactionId: 'txn-seeded-3',
-        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-seeded-3',
+        categoryId: 'cat-fun',
+        classifier: 'deep',
+        provenance: 'test',
       });
 
       const items = await store.listReviewItems({ status: 'discovered' });
@@ -1272,28 +1312,44 @@ describe('SqliteWorkflowStore', () => {
     it('countReviewItems totals across all statuses', async () => {
       // Create items across distinct statuses
       const i1 = await store.createReviewItem({
-        budgetId: 'budget-alpha', transactionId: 'txn-stat-1',
-        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-stat-1',
+        categoryId: 'cat-food',
+        classifier: 'fast',
+        provenance: 'test',
       });
       await store.createReviewItem({
-        budgetId: 'budget-alpha', transactionId: 'txn-stat-2',
-        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-stat-2',
+        categoryId: 'cat-util',
+        classifier: 'fast',
+        provenance: 'test',
       });
       const i3 = await store.createReviewItem({
-        budgetId: 'budget-beta', transactionId: 'txn-stat-3',
-        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-stat-3',
+        categoryId: 'cat-fun',
+        classifier: 'deep',
+        provenance: 'test',
       });
       const i4 = await store.createReviewItem({
-        budgetId: 'budget-beta', transactionId: 'txn-stat-4',
-        categoryId: 'cat-transport', classifier: 'deep', provenance: 'test',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-stat-4',
+        categoryId: 'cat-transport',
+        classifier: 'deep',
+        provenance: 'test',
       });
 
       // Transition i1 → suggestion_generated, i3 → pending_review
       await store.transitionReviewItem(i1.id, {
-        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+        toStatus: 'suggestion_generated',
+        actor: 'test',
+        expectedVersion: 1,
       });
       await store.transitionReviewItem(i3.id, {
-        toStatus: 'pending_review', actor: 'test', expectedVersion: 1,
+        toStatus: 'pending_review',
+        actor: 'test',
+        expectedVersion: 1,
       });
 
       // Now: 2 discovered (i2, i4) + 1 suggestion_generated (i1) + 1 pending_review (i3) = 4
@@ -1312,18 +1368,28 @@ describe('SqliteWorkflowStore', () => {
       const future = () => new Date(Date.now() + 86_400_000).toISOString();
 
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-alpha',
-        transactionId: 'txn-prop-1', categoryId: 'cat-food',
-        payloadHash: 'hash-aaa', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-prop-1',
+        categoryId: 'cat-food',
+        payloadHash: 'hash-aaa',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-beta',
-        transactionId: 'txn-prop-2', categoryId: 'cat-util',
-        payloadHash: 'hash-bbb', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-prop-2',
+        categoryId: 'cat-util',
+        payloadHash: 'hash-bbb',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
 
       const items = await store.listProposals();
@@ -1337,26 +1403,41 @@ describe('SqliteWorkflowStore', () => {
 
       // 2 active proposals
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-alpha',
-        transactionId: 'txn-ps-1', categoryId: 'cat-food',
-        payloadHash: 'hash-ccc', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-ps-1',
+        categoryId: 'cat-food',
+        payloadHash: 'hash-ccc',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-beta',
-        transactionId: 'txn-ps-2', categoryId: 'cat-util',
-        payloadHash: 'hash-ddd', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-ps-2',
+        categoryId: 'cat-util',
+        payloadHash: 'hash-ddd',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       // 1 superseded proposal
       const p3 = await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-gamma',
-        transactionId: 'txn-ps-3', categoryId: 'cat-fun',
-        payloadHash: 'hash-eee', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-gamma',
+        transactionId: 'txn-ps-3',
+        categoryId: 'cat-fun',
+        payloadHash: 'hash-eee',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.supersedeProposal(p3.id);
 
@@ -1375,22 +1456,35 @@ describe('SqliteWorkflowStore', () => {
 
     it('countReviewItems returns total irrespective of status filter with concrete values', async () => {
       const i1 = await store.createReviewItem({
-        budgetId: 'budget-pg', transactionId: 'txn-pg-1',
-        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-pg',
+        transactionId: 'txn-pg-1',
+        categoryId: 'cat-food',
+        classifier: 'fast',
+        provenance: 'test',
       });
       await store.createReviewItem({
-        budgetId: 'budget-pg', transactionId: 'txn-pg-2',
-        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-pg',
+        transactionId: 'txn-pg-2',
+        categoryId: 'cat-util',
+        classifier: 'fast',
+        provenance: 'test',
       });
       const i3 = await store.createReviewItem({
-        budgetId: 'budget-pg', transactionId: 'txn-pg-3',
-        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+        budgetId: 'budget-pg',
+        transactionId: 'txn-pg-3',
+        categoryId: 'cat-fun',
+        classifier: 'deep',
+        provenance: 'test',
       });
       await store.transitionReviewItem(i1.id, {
-        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+        toStatus: 'suggestion_generated',
+        actor: 'test',
+        expectedVersion: 1,
       });
       await store.transitionReviewItem(i3.id, {
-        toStatus: 'pending_review', actor: 'test', expectedVersion: 1,
+        toStatus: 'pending_review',
+        actor: 'test',
+        expectedVersion: 1,
       });
 
       expect(await store.countReviewItems()).toBe(3);
@@ -1404,8 +1498,11 @@ describe('SqliteWorkflowStore', () => {
       const created = [];
       for (let i = 0; i < 5; i++) {
         const item = await store.createReviewItem({
-          budgetId: 'budget-lim', transactionId: `txn-lim-${i}`,
-          categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+          budgetId: 'budget-lim',
+          transactionId: `txn-lim-${i}`,
+          categoryId: 'cat-food',
+          classifier: 'fast',
+          provenance: 'test',
         });
         created.push(item);
         tickSync();
@@ -1424,8 +1521,11 @@ describe('SqliteWorkflowStore', () => {
       const allItems = [];
       for (let i = 0; i < 5; i++) {
         const item = await store.createReviewItem({
-          budgetId: 'budget-off', transactionId: `txn-off-${i}`,
-          categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+          budgetId: 'budget-off',
+          transactionId: `txn-off-${i}`,
+          categoryId: 'cat-food',
+          classifier: 'fast',
+          provenance: 'test',
         });
         allItems.push(item);
         tickSync();
@@ -1444,22 +1544,35 @@ describe('SqliteWorkflowStore', () => {
 
     it('listReviewItems respects limit with status filter', async () => {
       const i1 = await store.createReviewItem({
-        budgetId: 'budget-st', transactionId: 'txn-st-1',
-        categoryId: 'cat-food', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-st',
+        transactionId: 'txn-st-1',
+        categoryId: 'cat-food',
+        classifier: 'fast',
+        provenance: 'test',
       });
       const i2 = await store.createReviewItem({
-        budgetId: 'budget-st', transactionId: 'txn-st-2',
-        categoryId: 'cat-util', classifier: 'fast', provenance: 'test',
+        budgetId: 'budget-st',
+        transactionId: 'txn-st-2',
+        categoryId: 'cat-util',
+        classifier: 'fast',
+        provenance: 'test',
       });
       const i3 = await store.createReviewItem({
-        budgetId: 'budget-st', transactionId: 'txn-st-3',
-        categoryId: 'cat-fun', classifier: 'deep', provenance: 'test',
+        budgetId: 'budget-st',
+        transactionId: 'txn-st-3',
+        categoryId: 'cat-fun',
+        classifier: 'deep',
+        provenance: 'test',
       });
       await store.transitionReviewItem(i1.id, {
-        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+        toStatus: 'suggestion_generated',
+        actor: 'test',
+        expectedVersion: 1,
       });
       await store.transitionReviewItem(i3.id, {
-        toStatus: 'suggestion_generated', actor: 'test', expectedVersion: 1,
+        toStatus: 'suggestion_generated',
+        actor: 'test',
+        expectedVersion: 1,
       });
 
       // Only i2 remains discovered
@@ -1481,20 +1594,30 @@ describe('SqliteWorkflowStore', () => {
       // 2 in budget-alpha, 3 in budget-beta
       for (let i = 0; i < 2; i++) {
         await store.createProposal({
-          operation: 'set_category', budgetId: 'budget-alpha',
-          transactionId: `txn-bfa-${i}`, categoryId: 'cat-food',
-          payloadHash: `hash-bfa-${i}`, policyVersion: '1',
-          preconditions: '{}', expiresAt: future(),
-          actorId: 'bot', provenance: 'test',
+          operation: 'set_category',
+          budgetId: 'budget-alpha',
+          transactionId: `txn-bfa-${i}`,
+          categoryId: 'cat-food',
+          payloadHash: `hash-bfa-${i}`,
+          policyVersion: '1',
+          preconditions: '{}',
+          expiresAt: future(),
+          actorId: 'bot',
+          provenance: 'test',
         });
       }
       for (let i = 0; i < 3; i++) {
         await store.createProposal({
-          operation: 'set_category', budgetId: 'budget-beta',
-          transactionId: `txn-bfb-${i}`, categoryId: 'cat-util',
-          payloadHash: `hash-bfb-${i}`, policyVersion: '1',
-          preconditions: '{}', expiresAt: future(),
-          actorId: 'bot', provenance: 'test',
+          operation: 'set_category',
+          budgetId: 'budget-beta',
+          transactionId: `txn-bfb-${i}`,
+          categoryId: 'cat-util',
+          payloadHash: `hash-bfb-${i}`,
+          policyVersion: '1',
+          preconditions: '{}',
+          expiresAt: future(),
+          actorId: 'bot',
+          provenance: 'test',
         });
       }
 
@@ -1509,56 +1632,91 @@ describe('SqliteWorkflowStore', () => {
 
       // budget-alpha: 3 active
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-alpha',
-        transactionId: 'txn-bs-a1', categoryId: 'cat-food',
-        payloadHash: 'hash-bs-a1', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-bs-a1',
+        categoryId: 'cat-food',
+        payloadHash: 'hash-bs-a1',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-alpha',
-        transactionId: 'txn-bs-a2', categoryId: 'cat-util',
-        payloadHash: 'hash-bs-a2', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-bs-a2',
+        categoryId: 'cat-util',
+        payloadHash: 'hash-bs-a2',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-alpha',
-        transactionId: 'txn-bs-a3', categoryId: 'cat-fun',
-        payloadHash: 'hash-bs-a3', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-alpha',
+        transactionId: 'txn-bs-a3',
+        categoryId: 'cat-fun',
+        payloadHash: 'hash-bs-a3',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       // budget-beta: 2 active, 1 superseded
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-beta',
-        transactionId: 'txn-bs-b1', categoryId: 'cat-food',
-        payloadHash: 'hash-bs-b1', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-bs-b1',
+        categoryId: 'cat-food',
+        payloadHash: 'hash-bs-b1',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-beta',
-        transactionId: 'txn-bs-b2', categoryId: 'cat-util',
-        payloadHash: 'hash-bs-b2', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-bs-b2',
+        categoryId: 'cat-util',
+        payloadHash: 'hash-bs-b2',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       const b3 = await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-beta',
-        transactionId: 'txn-bs-b3', categoryId: 'cat-fun',
-        payloadHash: 'hash-bs-b3', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-beta',
+        transactionId: 'txn-bs-b3',
+        categoryId: 'cat-fun',
+        payloadHash: 'hash-bs-b3',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.supersedeProposal(b3.id);
       // budget-gamma: 1 superseded
       const c1 = await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-gamma',
-        transactionId: 'txn-bs-c1', categoryId: 'cat-food',
-        payloadHash: 'hash-bs-c1', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-gamma',
+        transactionId: 'txn-bs-c1',
+        categoryId: 'cat-food',
+        payloadHash: 'hash-bs-c1',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.supersedeProposal(c1.id);
 
@@ -1587,11 +1745,16 @@ describe('SqliteWorkflowStore', () => {
       const created = [];
       for (let i = 0; i < 5; i++) {
         const p = await store.createProposal({
-          operation: 'set_category', budgetId: 'budget-pl',
-          transactionId: `txn-pl-${i}`, categoryId: 'cat-food',
-          payloadHash: `hash-pl-${i}`, policyVersion: '1',
-          preconditions: '{}', expiresAt: future(),
-          actorId: 'bot', provenance: 'test',
+          operation: 'set_category',
+          budgetId: 'budget-pl',
+          transactionId: `txn-pl-${i}`,
+          categoryId: 'cat-food',
+          payloadHash: `hash-pl-${i}`,
+          policyVersion: '1',
+          preconditions: '{}',
+          expiresAt: future(),
+          actorId: 'bot',
+          provenance: 'test',
         });
         created.push(p);
         tickSync();
@@ -1611,11 +1774,16 @@ describe('SqliteWorkflowStore', () => {
       const allItems = [];
       for (let i = 0; i < 5; i++) {
         const p = await store.createProposal({
-          operation: 'set_category', budgetId: 'budget-po',
-          transactionId: `txn-po-${i}`, categoryId: 'cat-food',
-          payloadHash: `hash-po-${i}`, policyVersion: '1',
-          preconditions: '{}', expiresAt: future(),
-          actorId: 'bot', provenance: 'test',
+          operation: 'set_category',
+          budgetId: 'budget-po',
+          transactionId: `txn-po-${i}`,
+          categoryId: 'cat-food',
+          payloadHash: `hash-po-${i}`,
+          policyVersion: '1',
+          preconditions: '{}',
+          expiresAt: future(),
+          actorId: 'bot',
+          provenance: 'test',
         });
         allItems.push(p);
         tickSync();
@@ -1637,25 +1805,40 @@ describe('SqliteWorkflowStore', () => {
 
       // Create 3 proposals, supersede the last two
       const p1 = await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-ls',
-        transactionId: 'txn-ls-1', categoryId: 'cat-food',
-        payloadHash: 'hash-ls-1', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-ls',
+        transactionId: 'txn-ls-1',
+        categoryId: 'cat-food',
+        payloadHash: 'hash-ls-1',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       const p2 = await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-ls',
-        transactionId: 'txn-ls-2', categoryId: 'cat-util',
-        payloadHash: 'hash-ls-2', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-ls',
+        transactionId: 'txn-ls-2',
+        categoryId: 'cat-util',
+        payloadHash: 'hash-ls-2',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       const p3 = await store.createProposal({
-        operation: 'set_category', budgetId: 'budget-ls',
-        transactionId: 'txn-ls-3', categoryId: 'cat-fun',
-        payloadHash: 'hash-ls-3', policyVersion: '1',
-        preconditions: '{}', expiresAt: future(),
-        actorId: 'bot', provenance: 'test',
+        operation: 'set_category',
+        budgetId: 'budget-ls',
+        transactionId: 'txn-ls-3',
+        categoryId: 'cat-fun',
+        payloadHash: 'hash-ls-3',
+        policyVersion: '1',
+        preconditions: '{}',
+        expiresAt: future(),
+        actorId: 'bot',
+        provenance: 'test',
       });
       await store.supersedeProposal(p2.id);
       await store.supersedeProposal(p3.id);
@@ -1672,391 +1855,392 @@ describe('SqliteWorkflowStore', () => {
     });
   });
 
+  // =======================================================================
+  // Registration lifecycle – bootstrap and invitation persistence
+  // =======================================================================
 
-// =======================================================================
-// Registration lifecycle – bootstrap and invitation persistence
-// =======================================================================
+  describe('registration lifecycle', () => {
+    // Direct DB access for schema-level assertions
+    let db: Database.Database;
+    let regStore: SqliteWorkflowStore;
 
-describe('registration lifecycle', () => {
-  // Direct DB access for schema-level assertions
-  let db: Database.Database;
-  let regStore: SqliteWorkflowStore;
+    const FIXED_USER_ID = '00000000-0000-0000-0000-000000000001';
+    const FIXED_INVITE_ID = '00000000-0000-0000-0000-000000000010';
+    const TOKEN_DIGEST = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
+    const FIXED_NOW = '2026-07-25T12:00:00.000Z';
+    const FUTURE_EXPIRY = '2026-08-01T12:00:00.000Z';
+    const OWNER_USER_ID = '00000000-0000-0000-0000-000000000099';
+    const PAST_EXPIRY = '2026-07-18T12:00:00.000Z';
 
-  const FIXED_USER_ID = '00000000-0000-0000-0000-000000000001';
-  const FIXED_INVITE_ID = '00000000-0000-0000-0000-000000000010';
-  const TOKEN_DIGEST =
-    '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
-  const FIXED_NOW = '2026-07-25T12:00:00.000Z';
-  const FUTURE_EXPIRY = '2026-08-01T12:00:00.000Z';
-  const OWNER_USER_ID = '00000000-0000-0000-0000-000000000099';
-  const PAST_EXPIRY = '2026-07-18T12:00:00.000Z';
-
-  beforeEach(() => {
-    db = new Database(':memory:');
-    regStore = new SqliteWorkflowStore(':memory:');
-  });
-
-  afterEach(() => {
-    regStore.close();
-    db.close();
-  });
-
-  // -----------------------------------------------------------------------
-  // Schema migration (v3)
-  // -----------------------------------------------------------------------
-
-  describe('schema migration (v3)', () => {
-    it('creates registration_state table with single-row constraint', () => {
-      const s = new SqliteWorkflowStore(':memory:');
-      const tableNames = s['db'].prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-      ).all() as { name: string }[];
-
-      expect(tableNames.map(t => t.name)).toContain('registration_state');
-
-      const colInfo = s['db'].prepare(
-        "PRAGMA table_info('registration_state')"
-      ).all() as { name: string; type: string; notnull: number; pk: number }[];
-
-      const colNames = colInfo.map(c => c.name);
-      expect(colNames).toContain('singleton');
-      expect(colNames).toContain('owner_user_id');
-      expect(colNames).toContain('bootstrapped_at');
-
-      const singletonCol = colInfo.find(c => c.name === 'singleton')!;
-      expect(singletonCol.type).toBe('INTEGER');
-      expect(singletonCol.pk).toBe(1);
-
-      s.close();
+    beforeEach(() => {
+      db = new Database(':memory:');
+      regStore = new SqliteWorkflowStore(':memory:');
     });
 
-    it('enforces singleton constraint on registration_state', () => {
-      const s = new SqliteWorkflowStore(':memory:');
-      const insert = s['db'].prepare(`
+    afterEach(() => {
+      regStore.close();
+      db.close();
+    });
+
+    // -----------------------------------------------------------------------
+    // Schema migration (v3)
+    // -----------------------------------------------------------------------
+
+    describe('schema migration (v3)', () => {
+      it('creates registration_state table with single-row constraint', () => {
+        const s = new SqliteWorkflowStore(':memory:');
+        const tableNames = s['db']
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+          .all() as { name: string }[];
+
+        expect(tableNames.map((t) => t.name)).toContain('registration_state');
+
+        const colInfo = s['db'].prepare("PRAGMA table_info('registration_state')").all() as {
+          name: string;
+          type: string;
+          notnull: number;
+          pk: number;
+        }[];
+
+        const colNames = colInfo.map((c) => c.name);
+        expect(colNames).toContain('singleton');
+        expect(colNames).toContain('owner_user_id');
+        expect(colNames).toContain('bootstrapped_at');
+
+        const singletonCol = colInfo.find((c) => c.name === 'singleton')!;
+        expect(singletonCol.type).toBe('INTEGER');
+        expect(singletonCol.pk).toBe(1);
+
+        s.close();
+      });
+
+      it('enforces singleton constraint on registration_state', () => {
+        const s = new SqliteWorkflowStore(':memory:');
+        const insert = s['db'].prepare(`
         INSERT INTO registration_state (singleton, owner_user_id, bootstrapped_at)
         VALUES (1, 'user-1', @now)
       `);
-      insert.run({ now: FIXED_NOW });
-
-      expect(() => {
         insert.run({ now: FIXED_NOW });
-      }).toThrow();
 
-      s.close();
-    });
+        expect(() => {
+          insert.run({ now: FIXED_NOW });
+        }).toThrow();
 
-    it('creates invitations table with token-digest-only columns', () => {
-      const s = new SqliteWorkflowStore(':memory:');
-      const tableNames = s['db'].prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-      ).all() as { name: string }[];
+        s.close();
+      });
 
-      expect(tableNames.map(t => t.name)).toContain('invitations');
+      it('creates invitations table with token-digest-only columns', () => {
+        const s = new SqliteWorkflowStore(':memory:');
+        const tableNames = s['db']
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+          .all() as { name: string }[];
 
-      const colInfo = s['db'].prepare(
-        "PRAGMA table_info('invitations')"
-      ).all() as { name: string; type: string; notnull: number; pk: number }[];
+        expect(tableNames.map((t) => t.name)).toContain('invitations');
 
-      const colNames = colInfo.map(c => c.name);
-      expect(colNames).toContain('id');
-      expect(colNames).toContain('token_digest');
-      expect(colNames).toContain('status');
-      expect(colNames).toContain('created_by_user_id');
-      expect(colNames).toContain('expires_at');
-      expect(colNames).toContain('claimed_email');
-      expect(colNames).toContain('claim_id');
-      expect(colNames).toContain('redeemed_user_id');
-      expect(colNames).toContain('created_at');
-      expect(colNames).toContain('claimed_at');
-      expect(colNames).toContain('redeemed_at');
+        const colInfo = s['db'].prepare("PRAGMA table_info('invitations')").all() as {
+          name: string;
+          type: string;
+          notnull: number;
+          pk: number;
+        }[];
 
-      // No column stores the raw bearer token
-      expect(colNames).not.toContain('token');
-      expect(colNames).not.toContain('raw_token');
-      expect(colNames).not.toContain('bearer_token');
+        const colNames = colInfo.map((c) => c.name);
+        expect(colNames).toContain('id');
+        expect(colNames).toContain('token_digest');
+        expect(colNames).toContain('status');
+        expect(colNames).toContain('created_by_user_id');
+        expect(colNames).toContain('expires_at');
+        expect(colNames).toContain('claimed_email');
+        expect(colNames).toContain('claim_id');
+        expect(colNames).toContain('redeemed_user_id');
+        expect(colNames).toContain('created_at');
+        expect(colNames).toContain('claimed_at');
+        expect(colNames).toContain('redeemed_at');
 
-      s.close();
-    });
+        // No column stores the raw bearer token
+        expect(colNames).not.toContain('token');
+        expect(colNames).not.toContain('raw_token');
+        expect(colNames).not.toContain('bearer_token');
 
-    it('enforces unique constraint on invitations.token_digest', () => {
-      const s = new SqliteWorkflowStore(':memory:');
-      const insertInvite = s['db'].prepare(`
+        s.close();
+      });
+
+      it('enforces unique constraint on invitations.token_digest', () => {
+        const s = new SqliteWorkflowStore(':memory:');
+        const insertInvite = s['db'].prepare(`
         INSERT INTO invitations (id, token_digest, status, created_by_user_id, expires_at, created_at)
         VALUES (@id, @digest, 'active', @creator, @expires, @now)
       `);
-      insertInvite.run({
-        id: FIXED_INVITE_ID,
-        digest: TOKEN_DIGEST,
-        creator: FIXED_USER_ID,
-        expires: FUTURE_EXPIRY,
-        now: FIXED_NOW,
-      });
-
-      expect(() => {
         insertInvite.run({
-          id: '00000000-0000-0000-0000-000000000011',
+          id: FIXED_INVITE_ID,
           digest: TOKEN_DIGEST,
           creator: FIXED_USER_ID,
           expires: FUTURE_EXPIRY,
           now: FIXED_NOW,
         });
-      }).toThrow();
 
-      s.close();
-    });
-  });
+        expect(() => {
+          insertInvite.run({
+            id: '00000000-0000-0000-0000-000000000011',
+            digest: TOKEN_DIGEST,
+            creator: FIXED_USER_ID,
+            expires: FUTURE_EXPIRY,
+            now: FIXED_NOW,
+          });
+        }).toThrow();
 
-  // -----------------------------------------------------------------------
-  // Bootstrap lifecycle
-  // -----------------------------------------------------------------------
-
-  describe('bootstrap', () => {
-    it('reports bootstrap available when no owner exists', async () => {
-      const state = await regStore.getRegistrationState();
-      expect(state.mode).toBe('bootstrap');
-      expect(state.ownerUserId).toBeNull();
-      expect(state.bootstrappedAt).toBeNull();
-    });
-    it('claimBootstrap creates exactly one owner under concurrent attempts', async () => {
-      const attempt1 = regStore.claimBootstrap({
-        name: 'Alice',
-        email: 'alice@example.com',
-        claimId: '00000000-0000-0000-0000-0000000000a1',
+        s.close();
       });
-      const attempt2 = regStore.claimBootstrap({
-        name: 'Bob',
-        email: 'bob@example.com',
-        claimId: '00000000-0000-0000-0000-0000000000a2',
+    });
+
+    // -----------------------------------------------------------------------
+    // Bootstrap lifecycle
+    // -----------------------------------------------------------------------
+
+    describe('bootstrap', () => {
+      it('reports bootstrap available when no owner exists', async () => {
+        const state = await regStore.getRegistrationState();
+        expect(state.mode).toBe('bootstrap');
+        expect(state.ownerUserId).toBeNull();
+        expect(state.bootstrappedAt).toBeNull();
       });
+      it('claimBootstrap creates exactly one owner under concurrent attempts', async () => {
+        const attempt1 = regStore.claimBootstrap({
+          name: 'Alice',
+          email: 'alice@example.com',
+          claimId: '00000000-0000-0000-0000-0000000000a1',
+        });
+        const attempt2 = regStore.claimBootstrap({
+          name: 'Bob',
+          email: 'bob@example.com',
+          claimId: '00000000-0000-0000-0000-0000000000a2',
+        });
 
-      const results = await Promise.allSettled([attempt1, attempt2]);
-      const succeeded = results.filter(
-        (r): r is PromiseFulfilledResult<Awaited<typeof attempt1>> => r.status === 'fulfilled'
-      );
-      expect(succeeded).toHaveLength(1);
+        const results = await Promise.allSettled([attempt1, attempt2]);
+        const succeeded = results.filter(
+          (r): r is PromiseFulfilledResult<Awaited<typeof attempt1>> => r.status === 'fulfilled',
+        );
+        expect(succeeded).toHaveLength(1);
 
-      await expect(
-        regStore.claimBootstrap({
-          name: 'Charlie',
-          email: 'charlie@example.com',
-          claimId: '00000000-0000-0000-0000-0000000000a3',
-        })
-      ).rejects.toThrow();
-    });
-
-    it('persists owner_user_id and prevents second bootstrap', async () => {
-      const claimId = '00000000-0000-0000-0000-000000000099-claim';
-
-      const claim = await regStore.claimBootstrap({
-        name: 'Owner',
-        email: 'owner@example.com',
-        claimId,
-      });
-      expect(claim.claimId).toBe(claimId);
-
-      await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
-
-      const state = await regStore.getRegistrationState();
-      expect(state.mode).toBe('complete');
-      expect(state.ownerUserId).toBe(OWNER_USER_ID);
-      expect(state.bootstrappedAt).not.toBeNull();
-
-      const row = regStore['db'].prepare(
-        'SELECT owner_user_id, bootstrapped_at FROM registration_state WHERE singleton = 1'
-      ).get() as { owner_user_id: string; bootstrapped_at: string } | undefined;
-      expect(row).not.toBeUndefined();
-      expect(row!.owner_user_id).toBe(OWNER_USER_ID);
-
-      await expect(
-        regStore.claimBootstrap({
-          name: 'Second',
-          email: 'second@example.com',
-          claimId: '00000000-0000-0000-0000-000000000099-second',
-        })
-      ).rejects.toThrow();
-    });
-    it('assigns owner an active membership with bootstrap capabilities', async () => {
-      const claimId = '00000000-0000-0000-0000-000000000099-membership';
-
-      await regStore.claimBootstrap({
-        name: 'Owner',
-        email: 'owner@example.com',
-        claimId,
-      });
-      await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
-
-      const membership = await regStore.getActorMembership(OWNER_USER_ID);
-      expect(membership).not.toBeNull();
-      expect(membership!.status).toBe('active');
-      expect(membership!.capabilities).toContain('observe');
-      expect(membership!.capabilities).toContain('notification:receive');
-      expect(membership!.capabilities).toContain('notification:admin');
-      expect(membership!.capabilities).toContain('finding:transition');
-      expect(membership!.capabilities).toContain('categorization:execute');
-      expect(membership!.capabilities).toContain('rule:execute');
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Invitation lifecycle
-  // -----------------------------------------------------------------------
-
-  describe('invitation lifecycle', () => {
-    it('createInvitation returns only id, expiresAt, and inviteUrl — no raw token', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-
-      expect(invite.invitation).toBeDefined();
-      expect(invite.invitation.id).toBeTypeOf('string');
-      expect(invite.invitation.expiresAt).toBeTypeOf('string');
-      expect(invite.invitation.status).toBe('active');
-      expect(invite.inviteUrl).toMatch(/^https?:\/\/.*\/invite#token=/);
-      const invitationJson = JSON.stringify(invite.invitation);
-      expect(invitationJson).not.toMatch(/[a-f0-9]{64}/i);
-    });
-
-    it('createInvitation persists only a token digest, never the raw token', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-      const expectedDigest = createHash('sha256').update(token).digest('hex');
-
-      const rows = regStore['db'].prepare(
-        'SELECT * FROM invitations'
-      ).all() as Record<string, unknown>[];
-      expect(rows).toHaveLength(1);
-
-      const row = rows[0];
-      expect(row.token_digest).toBe(expectedDigest);
-
-      // Only the token_digest column contains a 64-char hex value
-      const hex64Cols = Object.entries(row).filter(
-        ([_, v]) => typeof v === 'string' && /^[a-f0-9]{64}$/i.test(v)
-      );
-      expect(hex64Cols.map(([k]) => k)).toEqual(['token_digest']);
-    });
-
-    it('revokeInvitation marks an active invitation as revoked', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-      await regStore.revokeInvitation(invite.invitation.id);
-
-      const list = await regStore.listInvitations();
-      const revoked = list.find(i => i.id === invite.invitation.id);
-      expect(revoked).toBeDefined();
-      expect(revoked!.status).toBe('revoked');
-    });
-
-    it('claimInvitation rejects a revoked invitation', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-      await regStore.revokeInvitation(invite.invitation.id);
-
-      await expect(
-        regStore.claimInvitation({ token, email: 'user@example.com' })
-      ).rejects.toThrow();
-    });
-    it('claimInvitation rejects an expired invitation', async () => {
-      const s = new SqliteWorkflowStore(':memory:');
-      const invite = await s.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-      s['db'].prepare(
-        'UPDATE invitations SET expires_at = ? WHERE id = ?'
-      ).run(PAST_EXPIRY, invite.invitation.id);
-
-      await expect(
-        s.claimInvitation({ token, email: 'user@example.com' })
-      ).rejects.toThrow();
-      s.close();
-    });
-    it('expired invitation status persists as expired after claim rejection (no rollback)', async () => {
-      const s = new SqliteWorkflowStore(':memory:');
-      const invite = await s.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-      s['db'].prepare(
-        'UPDATE invitations SET expires_at = ? WHERE id = ?'
-      ).run(PAST_EXPIRY, invite.invitation.id);
-
-      await expect(
-        s.claimInvitation({ token, email: 'user@example.com' })
-      ).rejects.toThrow();
-
-      // Status MUST persist as 'expired' despite the thrown error
-      const row = s['db'].prepare(
-        'SELECT status FROM invitations WHERE id = ?'
-      ).get(invite.invitation.id) as { status: string } | undefined;
-      expect(row).toBeDefined();
-      expect(row!.status).toBe('expired');
-      s.close();
-    });
-
-    it('expired invitation creates an audit record with expired classification', async () => {
-      const s = new SqliteWorkflowStore(':memory:');
-      const invite = await s.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-      s['db'].prepare(
-        'UPDATE invitations SET expires_at = ? WHERE id = ?'
-      ).run(PAST_EXPIRY, invite.invitation.id);
-
-      await expect(
-        s.claimInvitation({ token, email: 'user@example.com' })
-      ).rejects.toThrow();
-
-      const auditRows = s['db'].prepare(
-        "SELECT * FROM audit_records WHERE classification = 'invitation_expired'"
-      ).all() as Record<string, unknown>[];
-      expect(auditRows.length).toBeGreaterThanOrEqual(1);
-      s.close();
-    });
-    it('claimInvitation is one-time: second claim with same token fails', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-
-      const claim1 = await regStore.claimInvitation({
-        token,
-        email: 'first@example.com',
-      });
-      expect(claim1.claimId).toBeTypeOf('string');
-      expect(claim1.email).toBe('first@example.com');
-
-      await expect(
-        regStore.claimInvitation({ token, email: 'second@example.com' })
-      ).rejects.toThrow();
-
-      const replay = await regStore.claimInvitation({
-        token,
-        email: 'first@example.com',
-      });
-      expect(replay.claimId).toBe(claim1.claimId);
-    });
-
-    it('completeInvitationRedemption finalizes the invitation with a user ID', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-      const claim = await regStore.claimInvitation({
-        token,
-        email: 'user@example.com',
+        await expect(
+          regStore.claimBootstrap({
+            name: 'Charlie',
+            email: 'charlie@example.com',
+            claimId: '00000000-0000-0000-0000-0000000000a3',
+          }),
+        ).rejects.toThrow();
       });
 
-      await regStore.completeInvitationRedemption(
-        claim.claimId,
-        '00000000-0000-0000-0000-000000000020',
-      );
+      it('persists owner_user_id and prevents second bootstrap', async () => {
+        const claimId = '00000000-0000-0000-0000-000000000099-claim';
 
-      const list = await regStore.listInvitations();
-      const completed = list.find(i => i.id === invite.invitation.id);
-      expect(completed).toBeDefined();
-      expect(completed!.status).toBe('redeemed');
-      expect(completed!.redeemedUserId).toBe('00000000-0000-0000-0000-000000000020');
-      expect(completed!.redeemedAt).not.toBeNull();
+        const claim = await regStore.claimBootstrap({
+          name: 'Owner',
+          email: 'owner@example.com',
+          claimId,
+        });
+        expect(claim.claimId).toBe(claimId);
+
+        await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
+
+        const state = await regStore.getRegistrationState();
+        expect(state.mode).toBe('complete');
+        expect(state.ownerUserId).toBe(OWNER_USER_ID);
+        expect(state.bootstrappedAt).not.toBeNull();
+
+        const row = regStore['db']
+          .prepare(
+            'SELECT owner_user_id, bootstrapped_at FROM registration_state WHERE singleton = 1',
+          )
+          .get() as { owner_user_id: string; bootstrapped_at: string } | undefined;
+        expect(row).not.toBeUndefined();
+        expect(row!.owner_user_id).toBe(OWNER_USER_ID);
+
+        await expect(
+          regStore.claimBootstrap({
+            name: 'Second',
+            email: 'second@example.com',
+            claimId: '00000000-0000-0000-0000-000000000099-second',
+          }),
+        ).rejects.toThrow();
+      });
+      it('assigns owner an active membership with bootstrap capabilities', async () => {
+        const claimId = '00000000-0000-0000-0000-000000000099-membership';
+
+        await regStore.claimBootstrap({
+          name: 'Owner',
+          email: 'owner@example.com',
+          claimId,
+        });
+        await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
+
+        const membership = await regStore.getActorMembership(OWNER_USER_ID);
+        expect(membership).not.toBeNull();
+        expect(membership!.status).toBe('active');
+        expect(membership!.capabilities).toContain('observe');
+        expect(membership!.capabilities).toContain('notification:receive');
+        expect(membership!.capabilities).toContain('notification:admin');
+        expect(membership!.capabilities).toContain('finding:transition');
+        expect(membership!.capabilities).toContain('categorization:execute');
+        expect(membership!.capabilities).toContain('rule:execute');
+      });
     });
 
-    it('reconcileClaimedInvitations finalizes stranded claimed invitations', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
-      await regStore.claimInvitation({ token, email: 'stranded@example.com' });
+    // -----------------------------------------------------------------------
+    // Invitation lifecycle
+    // -----------------------------------------------------------------------
 
-      const reconciled = await regStore.reconcileClaimedInvitations();
-      expect(reconciled).toBeGreaterThanOrEqual(1);
+    describe('invitation lifecycle', () => {
+      it('createInvitation returns only id, expiresAt, and inviteUrl — no raw token', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+
+        expect(invite.invitation).toBeDefined();
+        expect(invite.invitation.id).toBeTypeOf('string');
+        expect(invite.invitation.expiresAt).toBeTypeOf('string');
+        expect(invite.invitation.status).toBe('active');
+        expect(invite.inviteUrl).toMatch(/^https?:\/\/.*\/invite#token=/);
+        const invitationJson = JSON.stringify(invite.invitation);
+        expect(invitationJson).not.toMatch(/[a-f0-9]{64}/i);
+      });
+
+      it('createInvitation persists only a token digest, never the raw token', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        const expectedDigest = createHash('sha256').update(token).digest('hex');
+
+        const rows = regStore['db'].prepare('SELECT * FROM invitations').all() as Record<
+          string,
+          unknown
+        >[];
+        expect(rows).toHaveLength(1);
+
+        const row = rows[0];
+        expect(row.token_digest).toBe(expectedDigest);
+
+        // Only the token_digest column contains a 64-char hex value
+        const hex64Cols = Object.entries(row).filter(
+          ([_, v]) => typeof v === 'string' && /^[a-f0-9]{64}$/i.test(v),
+        );
+        expect(hex64Cols.map(([k]) => k)).toEqual(['token_digest']);
+      });
+
+      it('revokeInvitation marks an active invitation as revoked', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        await regStore.revokeInvitation(invite.invitation.id);
+
+        const list = await regStore.listInvitations();
+        const revoked = list.find((i) => i.id === invite.invitation.id);
+        expect(revoked).toBeDefined();
+        expect(revoked!.status).toBe('revoked');
+      });
+
+      it('claimInvitation rejects a revoked invitation', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        await regStore.revokeInvitation(invite.invitation.id);
+
+        await expect(
+          regStore.claimInvitation({ token, email: 'user@example.com' }),
+        ).rejects.toThrow();
+      });
+      it('claimInvitation rejects an expired invitation', async () => {
+        const s = new SqliteWorkflowStore(':memory:');
+        const invite = await s.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        s['db']
+          .prepare('UPDATE invitations SET expires_at = ? WHERE id = ?')
+          .run(PAST_EXPIRY, invite.invitation.id);
+
+        await expect(s.claimInvitation({ token, email: 'user@example.com' })).rejects.toThrow();
+        s.close();
+      });
+      it('expired invitation status persists as expired after claim rejection (no rollback)', async () => {
+        const s = new SqliteWorkflowStore(':memory:');
+        const invite = await s.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        s['db']
+          .prepare('UPDATE invitations SET expires_at = ? WHERE id = ?')
+          .run(PAST_EXPIRY, invite.invitation.id);
+
+        await expect(s.claimInvitation({ token, email: 'user@example.com' })).rejects.toThrow();
+
+        // Status MUST persist as 'expired' despite the thrown error
+        const row = s['db']
+          .prepare('SELECT status FROM invitations WHERE id = ?')
+          .get(invite.invitation.id) as { status: string } | undefined;
+        expect(row).toBeDefined();
+        expect(row!.status).toBe('expired');
+        s.close();
+      });
+
+      it('expired invitation creates an audit record with expired classification', async () => {
+        const s = new SqliteWorkflowStore(':memory:');
+        const invite = await s.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        s['db']
+          .prepare('UPDATE invitations SET expires_at = ? WHERE id = ?')
+          .run(PAST_EXPIRY, invite.invitation.id);
+
+        await expect(s.claimInvitation({ token, email: 'user@example.com' })).rejects.toThrow();
+
+        const auditRows = s['db']
+          .prepare("SELECT * FROM audit_records WHERE classification = 'invitation_expired'")
+          .all() as Record<string, unknown>[];
+        expect(auditRows.length).toBeGreaterThanOrEqual(1);
+        s.close();
+      });
+      it('claimInvitation is one-time: second claim with same token fails', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+
+        const claim1 = await regStore.claimInvitation({
+          token,
+          email: 'first@example.com',
+        });
+        expect(claim1.claimId).toBeTypeOf('string');
+        expect(claim1.email).toBe('first@example.com');
+
+        await expect(
+          regStore.claimInvitation({ token, email: 'second@example.com' }),
+        ).rejects.toThrow();
+
+        const replay = await regStore.claimInvitation({
+          token,
+          email: 'first@example.com',
+        });
+        expect(replay.claimId).toBe(claim1.claimId);
+      });
+
+      it('completeInvitationRedemption finalizes the invitation with a user ID', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        const claim = await regStore.claimInvitation({
+          token,
+          email: 'user@example.com',
+        });
+
+        await regStore.completeInvitationRedemption(
+          claim.claimId,
+          '00000000-0000-0000-0000-000000000020',
+        );
+
+        const list = await regStore.listInvitations();
+        const completed = list.find((i) => i.id === invite.invitation.id);
+        expect(completed).toBeDefined();
+        expect(completed!.status).toBe('redeemed');
+        expect(completed!.redeemedUserId).toBe('00000000-0000-0000-0000-000000000020');
+        expect(completed!.redeemedAt).not.toBeNull();
+      });
+
+      it('reconcileClaimedInvitations finalizes stranded claimed invitations', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        await regStore.claimInvitation({ token, email: 'stranded@example.com' });
+
+        const reconciled = await regStore.reconcileClaimedInvitations();
+        expect(reconciled).toBeGreaterThanOrEqual(1);
+      });
     });
-  });
     it('all six invitation lifecycle methods are exposed on WorkflowStore interface', async () => {
       // Type-level verification: the class satisfies the interface contract
       // for all invitation methods
@@ -2074,20 +2258,23 @@ describe('registration lifecycle', () => {
       // revokeInvitation
       await storeRef.revokeInvitation(invite.invitation.id);
       const afterRevoke = await storeRef.listInvitations();
-      const revokeEntry = afterRevoke.find(i => i.id === invite.invitation.id);
+      const revokeEntry = afterRevoke.find((i) => i.id === invite.invitation.id);
       expect(revokeEntry?.status).toBe('revoked');
 
       // claimInvitation — create a fresh one to claim
       const invite2 = await storeRef.createInvitation(FIXED_USER_ID);
       const token2 = invite2.inviteUrl.split('#token=')[1];
-      const claim = await storeRef.claimInvitation({ token: token2, email: 'claimant@example.com' });
+      const claim = await storeRef.claimInvitation({
+        token: token2,
+        email: 'claimant@example.com',
+      });
       expect(claim.claimId).toBeTypeOf('string');
       expect(claim.email).toBe('claimant@example.com');
 
       // completeInvitationRedemption
       await storeRef.completeInvitationRedemption(claim.claimId, 'user-redeemed');
       const afterRedeem = await storeRef.listInvitations();
-      const redeemEntry = afterRedeem.find(i => i.id === invite2.invitation.id);
+      const redeemEntry = afterRedeem.find((i) => i.id === invite2.invitation.id);
       expect(redeemEntry?.status).toBe('redeemed');
       expect(redeemEntry?.redeemedUserId).toBe('user-redeemed');
 
@@ -2096,60 +2283,64 @@ describe('registration lifecycle', () => {
       expect(typeof reconciled).toBe('number');
     });
 
-  // -----------------------------------------------------------------------
-  // Audit metadata never contains raw secrets
-  // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Audit metadata never contains raw secrets
+    // -----------------------------------------------------------------------
 
-  describe('audit: no raw secrets in persistence', () => {
-    it('bootstrap audit records do not contain the operator secret', async () => {
-      const claimId = '00000000-0000-0000-0000-000000000099-audit';
+    describe('audit: no raw secrets in persistence', () => {
+      it('bootstrap audit records do not contain the operator secret', async () => {
+        const claimId = '00000000-0000-0000-0000-000000000099-audit';
 
-      await regStore.claimBootstrap({
-        name: 'Owner',
-        email: 'owner@example.com',
-        claimId,
+        await regStore.claimBootstrap({
+          name: 'Owner',
+          email: 'owner@example.com',
+          claimId,
+        });
+        await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
+
+        const rows = regStore['db'].prepare('SELECT * FROM audit_records').all() as Record<
+          string,
+          unknown
+        >[];
+
+        const allText = rows.map((r) => JSON.stringify(Object.values(r))).join(' ');
+        expect(allText).not.toContain('s3kr1t');
+        expect(allText).not.toContain('correct-horse');
+        expect(allText).not.toContain('some-strong-password');
       });
-      await regStore.finalizeBootstrap({ claimId, ownerUserId: OWNER_USER_ID });
+      it('invitation audit records do not contain the raw bearer token', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
 
-      const rows = regStore['db'].prepare(
-        'SELECT * FROM audit_records'
-      ).all() as Record<string, unknown>[];
+        const rows = regStore['db']
+          .prepare("SELECT * FROM audit_records WHERE classification LIKE '%invit%'")
+          .all() as Record<string, unknown>[];
 
-      const allText = rows.map(r => JSON.stringify(Object.values(r))).join(' ');
-      expect(allText).not.toContain('s3kr1t');
-      expect(allText).not.toContain('correct-horse');
-      expect(allText).not.toContain('some-strong-password');
-    });
-    it('invitation audit records do not contain the raw bearer token', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-      const token = invite.inviteUrl.split('#token=')[1];
+        const allText = rows.map((r) => JSON.stringify(Object.values(r))).join(' ');
+        expect(allText).not.toContain(token);
+      });
 
-      const rows = regStore['db'].prepare(
-        "SELECT * FROM audit_records WHERE classification LIKE '%invit%'"
-      ).all() as Record<string, unknown>[];
+      it('inviteUrl is never persisted in any database table', async () => {
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
 
-      const allText = rows.map(r => JSON.stringify(Object.values(r))).join(' ');
-      expect(allText).not.toContain(token);
-    });
+        const tables = regStore['db']
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name != 'schema_version'")
+          .all() as { name: string }[];
 
-    it('inviteUrl is never persisted in any database table', async () => {
-      const invite = await regStore.createInvitation(FIXED_USER_ID);
-
-      const tables = regStore['db'].prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name != 'schema_version'"
-      ).all() as { name: string }[];
-
-      for (const { name: table } of tables) {
-        const rows = regStore['db'].prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[];
-        for (const row of rows) {
-          const allValues = Object.values(row).map(String).join(' ');
-          expect(allValues).not.toContain(invite.inviteUrl);
-          expect(allValues).not.toContain('invite#token=');
+        for (const { name: table } of tables) {
+          const rows = regStore['db'].prepare(`SELECT * FROM "${table}"`).all() as Record<
+            string,
+            unknown
+          >[];
+          for (const row of rows) {
+            const allValues = Object.values(row).map(String).join(' ');
+            expect(allValues).not.toContain(invite.inviteUrl);
+            expect(allValues).not.toContain('invite#token=');
+          }
         }
-      }
+      });
     });
   });
-});
   // =======================================================================
   // Saved view lifecycle
   // =======================================================================
@@ -2250,9 +2441,9 @@ describe('registration lifecycle', () => {
       });
 
       it('throws when viewId does not exist', async () => {
-        await expect(
-          store.updateSavedView('nonexistent-view', { name: 'Ghost' }),
-        ).rejects.toThrow('Saved view nonexistent-view not found');
+        await expect(store.updateSavedView('nonexistent-view', { name: 'Ghost' })).rejects.toThrow(
+          'Saved view nonexistent-view not found',
+        );
       });
 
       it('preserves lastUsedAt unchanged through rename', async () => {
@@ -2325,7 +2516,7 @@ describe('registration lifecycle', () => {
         await store.deleteSavedView(view.viewId);
 
         const views = await store.listSavedViews(ACTOR_ID);
-        expect(views.find(v => v.viewId === view.viewId)).toBeUndefined();
+        expect(views.find((v) => v.viewId === view.viewId)).toBeUndefined();
       });
     });
 
@@ -2347,21 +2538,31 @@ describe('registration lifecycle', () => {
 
         const second = await store.recordSavedViewUsage(view.viewId);
         expect(second.lastUsedAt).not.toBeNull();
-        expect(new Date(second.lastUsedAt!).getTime()).toBeGreaterThan(new Date(first.lastUsedAt!).getTime());
+        expect(new Date(second.lastUsedAt!).getTime()).toBeGreaterThan(
+          new Date(first.lastUsedAt!).getTime(),
+        );
       });
 
       it('throws when viewId does not exist', async () => {
-        await expect(
-          store.recordSavedViewUsage('nonexistent-view'),
-        ).rejects.toThrow('Saved view nonexistent-view not found');
+        await expect(store.recordSavedViewUsage('nonexistent-view')).rejects.toThrow(
+          'Saved view nonexistent-view not found',
+        );
       });
     });
 
     describe('listSavedViews', () => {
       it('returns all views for an actor', async () => {
         await store.createSavedView(BASE_VIEW_INPUT);
-        await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'View B', viewType: 'pending_review' });
-        await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'View C', viewType: 'budget_summary' });
+        await store.createSavedView({
+          ...BASE_VIEW_INPUT,
+          name: 'View B',
+          viewType: 'pending_review',
+        });
+        await store.createSavedView({
+          ...BASE_VIEW_INPUT,
+          name: 'View C',
+          viewType: 'budget_summary',
+        });
 
         const views = await store.listSavedViews(ACTOR_ID);
         expect(views).toHaveLength(3);
@@ -2374,9 +2575,9 @@ describe('registration lifecycle', () => {
 
       it('returns an empty scope for malformed persisted JSON', async () => {
         const view = await store.createSavedView(BASE_VIEW_INPUT);
-        store['db'].prepare(
-          'UPDATE saved_views SET scope = ? WHERE view_id = ?',
-        ).run('not-json', view.viewId);
+        store['db']
+          .prepare('UPDATE saved_views SET scope = ? WHERE view_id = ?')
+          .run('not-json', view.viewId);
 
         const views = await store.listSavedViews(ACTOR_ID);
 
@@ -2386,7 +2587,11 @@ describe('registration lifecycle', () => {
 
       it('does not return views belonging to other actors', async () => {
         await store.createSavedView(BASE_VIEW_INPUT);
-        await store.createSavedView({ ...BASE_VIEW_INPUT, name: 'Other View', actorId: 'actor-sv-other' });
+        await store.createSavedView({
+          ...BASE_VIEW_INPUT,
+          name: 'Other View',
+          actorId: 'actor-sv-other',
+        });
 
         const views = await store.listSavedViews(ACTOR_ID);
         expect(views).toHaveLength(1);
@@ -2471,9 +2676,24 @@ describe('registration lifecycle', () => {
 
     describe('listFindings', () => {
       beforeEach(async () => {
-        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'uncategorized', severity: 'medium' });
-        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'budget_risk', severity: 'high' });
-        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_B, classification: 'data_quality', severity: 'low' });
+        await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          budgetId: BUDGET_A,
+          classification: 'uncategorized',
+          severity: 'medium',
+        });
+        await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          budgetId: BUDGET_A,
+          classification: 'budget_risk',
+          severity: 'high',
+        });
+        await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          budgetId: BUDGET_B,
+          classification: 'data_quality',
+          severity: 'low',
+        });
       });
 
       it('returns all findings with no filter', async () => {
@@ -2525,9 +2745,23 @@ describe('registration lifecycle', () => {
 
     describe('countFindings', () => {
       beforeEach(async () => {
-        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'uncategorized' });
-        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_A, classification: 'budget_risk', severity: 'high' });
-        await store.createFinding({ ...BASE_FINDING_INPUT, budgetId: BUDGET_B, classification: 'data_quality', severity: 'low' });
+        await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          budgetId: BUDGET_A,
+          classification: 'uncategorized',
+        });
+        await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          budgetId: BUDGET_A,
+          classification: 'budget_risk',
+          severity: 'high',
+        });
+        await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          budgetId: BUDGET_B,
+          classification: 'data_quality',
+          severity: 'low',
+        });
       });
 
       it('counts all findings with no filter', async () => {
@@ -2580,15 +2814,28 @@ describe('registration lifecycle', () => {
 
       it('is idempotent when already acknowledged', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
-        const again = await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 });
+        await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
+        const again = await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 2,
+        });
 
         expect(again.status).toBe('acknowledged');
       });
 
       it('rejects transition from corrected status', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+        await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-1',
+          expectedVersion: 1,
+        });
 
         await expect(
           store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 }),
@@ -2598,13 +2845,21 @@ describe('registration lifecycle', () => {
       it('throws on version conflict', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
         await expect(
-          store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 99 }),
+          store.acknowledgeFinding({
+            findingId: finding.id,
+            actorId: ACTOR_A,
+            expectedVersion: 99,
+          }),
         ).rejects.toThrow('version conflict');
       });
 
       it('throws when finding does not exist', async () => {
         await expect(
-          store.acknowledgeFinding({ findingId: 'nonexistent', actorId: ACTOR_A, expectedVersion: 1 }),
+          store.acknowledgeFinding({
+            findingId: 'nonexistent',
+            actorId: ACTOR_A,
+            expectedVersion: 1,
+          }),
         ).rejects.toThrow('Finding nonexistent not found');
       });
     });
@@ -2628,7 +2883,11 @@ describe('registration lifecycle', () => {
 
       it('transitions from acknowledged to corrected', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+        await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
 
         const corrected = await store.correctFinding({
           findingId: finding.id,
@@ -2643,25 +2902,50 @@ describe('registration lifecycle', () => {
 
       it('is idempotent when already corrected', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
-        const again = await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 2 });
+        await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-1',
+          expectedVersion: 1,
+        });
+        const again = await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-1',
+          expectedVersion: 2,
+        });
 
         expect(again.status).toBe('corrected');
       });
 
       it('rejects transition from dismissed status', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Not relevant', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Not relevant',
+          expectedVersion: 1,
+        });
 
         await expect(
-          store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-x', expectedVersion: 2 }),
+          store.correctFinding({
+            findingId: finding.id,
+            actorId: ACTOR_A,
+            correctionRef: 'corr-x',
+            expectedVersion: 2,
+          }),
         ).rejects.toThrow('Cannot correct finding in status dismissed');
       });
 
       it('throws on version conflict', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
         await expect(
-          store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-conflict', expectedVersion: 99 }),
+          store.correctFinding({
+            findingId: finding.id,
+            actorId: ACTOR_A,
+            correctionRef: 'corr-conflict',
+            expectedVersion: 99,
+          }),
         ).rejects.toThrow('version conflict');
       });
     });
@@ -2685,7 +2969,11 @@ describe('registration lifecycle', () => {
 
       it('transitions from acknowledged to dismissed', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+        await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
 
         const dismissed = await store.dismissFinding({
           findingId: finding.id,
@@ -2698,25 +2986,50 @@ describe('registration lifecycle', () => {
 
       it('is idempotent when already dismissed', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 1 });
-        const again = await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 2 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Noise',
+          expectedVersion: 1,
+        });
+        const again = await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Noise',
+          expectedVersion: 2,
+        });
 
         expect(again.status).toBe('dismissed');
       });
 
       it('rejects transition from corrected status', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+        await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-1',
+          expectedVersion: 1,
+        });
 
         await expect(
-          store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Late', expectedVersion: 2 }),
+          store.dismissFinding({
+            findingId: finding.id,
+            actorId: ACTOR_A,
+            reason: 'Late',
+            expectedVersion: 2,
+          }),
         ).rejects.toThrow('Cannot dismiss finding in status corrected');
       });
 
       it('throws on version conflict', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
         await expect(
-          store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Conflict', expectedVersion: 99 }),
+          store.dismissFinding({
+            findingId: finding.id,
+            actorId: ACTOR_A,
+            reason: 'Conflict',
+            expectedVersion: 99,
+          }),
         ).rejects.toThrow('version conflict');
       });
     });
@@ -2724,7 +3037,12 @@ describe('registration lifecycle', () => {
     describe('reopenFinding', () => {
       it('transitions from dismissed to reopened', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Dismissed', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Dismissed',
+          expectedVersion: 1,
+        });
 
         const reopened = await store.reopenFinding({
           findingId: finding.id,
@@ -2740,7 +3058,11 @@ describe('registration lifecycle', () => {
 
       it('transitions from acknowledged to reopened', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+        await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
 
         const reopened = await store.reopenFinding({
           findingId: finding.id,
@@ -2753,16 +3075,30 @@ describe('registration lifecycle', () => {
 
       it('is idempotent when already reopened', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Noise',
+          expectedVersion: 1,
+        });
         await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_B, expectedVersion: 2 });
 
-        const again = await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_B, expectedVersion: 3 });
+        const again = await store.reopenFinding({
+          findingId: finding.id,
+          actorId: ACTOR_B,
+          expectedVersion: 3,
+        });
         expect(again.status).toBe('reopened');
       });
 
       it('rejects transition from corrected status', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+        await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-1',
+          expectedVersion: 1,
+        });
 
         await expect(
           store.reopenFinding({ findingId: finding.id, actorId: ACTOR_B, expectedVersion: 2 }),
@@ -2771,7 +3107,12 @@ describe('registration lifecycle', () => {
 
       it('throws on version conflict', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Dismissed', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Dismissed',
+          expectedVersion: 1,
+        });
         await expect(
           store.reopenFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 99 }),
         ).rejects.toThrow('version conflict');
@@ -2798,7 +3139,11 @@ describe('registration lifecycle', () => {
 
       it('transitions from acknowledged to superseded', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+        await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
 
         const superseded = await store.supersedeFinding({
           findingId: finding.id,
@@ -2812,7 +3157,12 @@ describe('registration lifecycle', () => {
 
       it('transitions from corrected to superseded', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+        await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-1',
+          expectedVersion: 1,
+        });
 
         const superseded = await store.supersedeFinding({
           findingId: finding.id,
@@ -2826,7 +3176,12 @@ describe('registration lifecycle', () => {
 
       it('transitions from dismissed to superseded', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Dismissed', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Dismissed',
+          expectedVersion: 1,
+        });
 
         const superseded = await store.supersedeFinding({
           findingId: finding.id,
@@ -2840,7 +3195,12 @@ describe('registration lifecycle', () => {
 
       it('transitions from reopened to superseded', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'First', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'First',
+          expectedVersion: 1,
+        });
         await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 });
 
         const superseded = await store.supersedeFinding({
@@ -2854,7 +3214,10 @@ describe('registration lifecycle', () => {
       });
 
       it('transitions from expired to superseded', async () => {
-        const finding = await store.createFinding({ ...BASE_FINDING_INPUT, expiresAt: '2020-01-01T00:00:00Z' });
+        const finding = await store.createFinding({
+          ...BASE_FINDING_INPUT,
+          expiresAt: '2020-01-01T00:00:00Z',
+        });
         await store.expireFinding(finding.id);
 
         const superseded = await store.supersedeFinding({
@@ -2869,8 +3232,20 @@ describe('registration lifecycle', () => {
 
       it('is idempotent when already superseded', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-1', reason: 'Replaced', actorId: ACTOR_A, expectedVersion: 1 });
-        const again = await store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-1', reason: 'Replaced', actorId: ACTOR_A, expectedVersion: 2 });
+        await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-1',
+          reason: 'Replaced',
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
+        const again = await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-1',
+          reason: 'Replaced',
+          actorId: ACTOR_A,
+          expectedVersion: 2,
+        });
 
         expect(again.status).toBe('superseded');
       });
@@ -2878,7 +3253,13 @@ describe('registration lifecycle', () => {
       it('throws on version conflict', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
         await expect(
-          store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-x', reason: 'Conflict', actorId: ACTOR_A, expectedVersion: 99 }),
+          store.supersedeFinding({
+            findingId: finding.id,
+            supersededBy: 'new-finding-x',
+            reason: 'Conflict',
+            actorId: ACTOR_A,
+            expectedVersion: 99,
+          }),
         ).rejects.toThrow('version conflict');
       });
     });
@@ -2894,7 +3275,11 @@ describe('registration lifecycle', () => {
 
       it('transitions from acknowledged to expired', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.acknowledgeFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 1 });
+        await store.acknowledgeFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
 
         const expired = await store.expireFinding(finding.id);
         expect(expired.status).toBe('expired');
@@ -2902,7 +3287,12 @@ describe('registration lifecycle', () => {
 
       it('transitions from corrected to expired', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.correctFinding({ findingId: finding.id, actorId: ACTOR_A, correctionRef: 'corr-1', expectedVersion: 1 });
+        await store.correctFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          correctionRef: 'corr-1',
+          expectedVersion: 1,
+        });
 
         const expired = await store.expireFinding(finding.id);
         expect(expired.status).toBe('expired');
@@ -2910,7 +3300,12 @@ describe('registration lifecycle', () => {
 
       it('transitions from dismissed to expired', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'Noise', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'Noise',
+          expectedVersion: 1,
+        });
 
         const expired = await store.expireFinding(finding.id);
         expect(expired.status).toBe('expired');
@@ -2918,7 +3313,12 @@ describe('registration lifecycle', () => {
 
       it('transitions from reopened to expired', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.dismissFinding({ findingId: finding.id, actorId: ACTOR_A, reason: 'First', expectedVersion: 1 });
+        await store.dismissFinding({
+          findingId: finding.id,
+          actorId: ACTOR_A,
+          reason: 'First',
+          expectedVersion: 1,
+        });
         await store.reopenFinding({ findingId: finding.id, actorId: ACTOR_A, expectedVersion: 2 });
 
         const expired = await store.expireFinding(finding.id);
@@ -2936,18 +3336,93 @@ describe('registration lifecycle', () => {
 
       it('rejects expire from superseded status', async () => {
         const finding = await store.createFinding(BASE_FINDING_INPUT);
-        await store.supersedeFinding({ findingId: finding.id, supersededBy: 'new-finding-x', reason: 'Replaced', actorId: ACTOR_A, expectedVersion: 1 });
+        await store.supersedeFinding({
+          findingId: finding.id,
+          supersededBy: 'new-finding-x',
+          reason: 'Replaced',
+          actorId: ACTOR_A,
+          expectedVersion: 1,
+        });
 
-        await expect(
-          store.expireFinding(finding.id),
-        ).rejects.toThrow('cannot be expired from status superseded');
+        await expect(store.expireFinding(finding.id)).rejects.toThrow(
+          'cannot be expired from status superseded',
+        );
       });
 
       it('throws when finding does not exist', async () => {
-        await expect(
-          store.expireFinding('nonexistent'),
-        ).rejects.toThrow('Finding nonexistent not found');
+        await expect(store.expireFinding('nonexistent')).rejects.toThrow(
+          'Finding nonexistent not found',
+        );
       });
+    });
+  });
+
+  // =======================================================================
+  // Durable notification event deduplication
+  // =======================================================================
+
+  describe('createOrGetNotificationEvent', () => {
+    it('atomically returns one event for a dedup key, recipient, and scope', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'wf-notification-dedup-'));
+      const dbPath = join(tmpDir, 'store.db');
+      const firstConnection = new SqliteWorkflowStore(dbPath);
+      const secondConnection = new SqliteWorkflowStore(dbPath);
+      const input = {
+        dedupKey: 'decision-revision-1',
+        budgetId: 'budget-notification-dedup',
+        classification: 'reservation_conflict',
+        payload: { summary: 'A reservation conflicts with this purchase.' },
+        policyVersion: 'financial-attention-v1',
+        recipientId: 'actor-primary',
+        scope: 'category:groceries',
+        redactionClass: 'restricted',
+      };
+
+      try {
+        const events = await Promise.all([
+          firstConnection.createOrGetNotificationEvent(input),
+          secondConnection.createOrGetNotificationEvent(input),
+          firstConnection.createOrGetNotificationEvent({ ...input }),
+          secondConnection.createOrGetNotificationEvent({ ...input }),
+        ]);
+
+        expect(new Set(events.map(({ id }) => id))).toEqual(new Set([events[0]!.id]));
+        expect(events[0]).toMatchObject({
+          recipientId: input.recipientId,
+          scope: input.scope,
+          classification: input.classification,
+        });
+
+        const otherRecipient = await firstConnection.createOrGetNotificationEvent({
+          ...input,
+          recipientId: 'actor-secondary',
+        });
+        const otherScope = await secondConnection.createOrGetNotificationEvent({
+          ...input,
+          scope: 'category:rent',
+        });
+        const otherRevision = await firstConnection.createOrGetNotificationEvent({
+          ...input,
+          dedupKey: 'decision-revision-2',
+        });
+
+        expect(otherRecipient.id).not.toBe(events[0]!.id);
+        expect(otherScope.id).not.toBe(events[0]!.id);
+        expect(otherRevision.id).not.toBe(events[0]!.id);
+      } finally {
+        firstConnection.close();
+        secondConnection.close();
+        try {
+          unlinkSync(dbPath);
+        } catch {
+          /* ignore */
+        }
+        try {
+          rmdirSync(tmpDir);
+        } catch {
+          /* ignore */
+        }
+      }
     });
   });
 
@@ -3028,8 +3503,17 @@ describe('registration lifecycle', () => {
     describe('listNotificationPolicies', () => {
       beforeEach(async () => {
         await store.saveNotificationPolicy(BASE_POLICY_INPUT);
-        await store.saveNotificationPolicy({ ...BASE_POLICY_INPUT, policyKey: 'eligibility', policy: { rules: [] } });
-        await store.saveNotificationPolicy({ ...BASE_POLICY_INPUT, spaceId: SPACE_B, policyKey: 'delivery', policy: { channels: ['sms'] } });
+        await store.saveNotificationPolicy({
+          ...BASE_POLICY_INPUT,
+          policyKey: 'eligibility',
+          policy: { rules: [] },
+        });
+        await store.saveNotificationPolicy({
+          ...BASE_POLICY_INPUT,
+          spaceId: SPACE_B,
+          policyKey: 'delivery',
+          policy: { channels: ['sms'] },
+        });
       });
 
       it('lists all policies when no spaceId filter', async () => {
@@ -3097,7 +3581,9 @@ describe('registration lifecycle', () => {
 
         const resolution = await store.resolveRecipients(SPACE_A, 'budget_risk', 'high');
 
-        expect(resolution.actorIds).toEqual(expect.arrayContaining(['actor-np-1', 'actor-1', 'actor-3']));
+        expect(resolution.actorIds).toEqual(
+          expect.arrayContaining(['actor-np-1', 'actor-1', 'actor-3']),
+        );
         expect(resolution.channels).toEqual(expect.arrayContaining(['email', 'in-app', 'pager']));
       });
 
@@ -3198,10 +3684,12 @@ describe('registration lifecycle', () => {
       it('gracefully handles malformed policy JSON (skips that policy)', async () => {
         // Insert a policy with invalid JSON via raw SQL
         const db = (store as unknown as { db: Database.Database }).db;
-        db.prepare(`
+        db.prepare(
+          `
           INSERT INTO notification_policies (id, space_id, policy_key, policy_version, policy, is_active, created_at, updated_at)
           VALUES ('bad-policy-id', $spaceId, 'delivery', '1.0.0', 'not valid json', 1, datetime('now'), datetime('now'))
-        `).run({ spaceId: SPACE_A });
+        `,
+        ).run({ spaceId: SPACE_A });
 
         // Save a valid policy too
         await store.saveNotificationPolicy({
@@ -3348,7 +3836,7 @@ describe('registration lifecycle', () => {
 
       it('derives label from config.label', async () => {
         const history = await store.getReportHistory(BUDGET_R);
-        const summary = history.find(h => h.reportType === 'budget_summary');
+        const summary = history.find((h) => h.reportType === 'budget_summary');
         expect(summary!.label).toBe('Q1 Budget');
       });
 
@@ -3361,7 +3849,7 @@ describe('registration lifecycle', () => {
         });
 
         const history = await store.getReportHistory(BUDGET_R);
-        const exportEntry = history.find(h => h.reportType === 'data_export');
+        const exportEntry = history.find((h) => h.reportType === 'data_export');
         expect(exportEntry!.label).toBe('data_export report');
       });
 
@@ -3375,7 +3863,7 @@ describe('registration lifecycle', () => {
         });
 
         const history = await store.getReportHistory(BUDGET_R);
-        const temp = history.find(h => h.reportType === 'temp_report');
+        const temp = history.find((h) => h.reportType === 'temp_report');
         expect(temp!.isExpired).toBe(true);
       });
 
@@ -3395,9 +3883,24 @@ describe('registration lifecycle', () => {
 
     describe('countReportRecords', () => {
       beforeEach(async () => {
-        await store.createReportRecord({ reportType: 'budget_summary', budgetId: BUDGET_R, config: { label: 'A' }, policyVersion: '1.0.0' });
-        await store.createReportRecord({ reportType: 'transaction_audit', budgetId: BUDGET_R, config: { label: 'B' }, policyVersion: '1.0.0' });
-        await store.createReportRecord({ reportType: 'budget_summary', budgetId: 'other-budget', config: { label: 'C' }, policyVersion: '1.0.0' });
+        await store.createReportRecord({
+          reportType: 'budget_summary',
+          budgetId: BUDGET_R,
+          config: { label: 'A' },
+          policyVersion: '1.0.0',
+        });
+        await store.createReportRecord({
+          reportType: 'transaction_audit',
+          budgetId: BUDGET_R,
+          config: { label: 'B' },
+          policyVersion: '1.0.0',
+        });
+        await store.createReportRecord({
+          reportType: 'budget_summary',
+          budgetId: 'other-budget',
+          config: { label: 'C' },
+          policyVersion: '1.0.0',
+        });
       });
 
       it('counts all report records', async () => {

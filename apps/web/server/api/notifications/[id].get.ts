@@ -14,7 +14,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   requireAuthorization,
   getActorId,
 } from '../../utils/workflow-store';
@@ -45,8 +44,137 @@ function getRuntime(store: ReturnType<typeof getWorkflowStore>): NotificationRun
   return runtime;
 }
 
+const EVENT_METADATA_FIELDS = [
+  'id',
+  'eventVersion',
+  'budgetId',
+  'classification',
+  'recipientId',
+  'scope',
+  'redactionClass',
+  'channelConfigVersion',
+  'policyVersion',
+  'correlationId',
+  'createdAt',
+] as const;
+
+const DELIVERY_STATE_FIELDS = [
+  'id',
+  'eventId',
+  'deliveryKey',
+  'channelType',
+  'channelConfigVersion',
+  'status',
+  'attemptCount',
+  'maxAttempts',
+  'claimExpiresAt',
+  'lastAttemptedAt',
+  'nextAttemptAt',
+  'acknowledgedAt',
+  'failedAt',
+  'failureReason',
+  'suppressedAt',
+  'suppressedReason',
+  'correlationId',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+const DELIVERY_ATTEMPT_FIELDS = [
+  'id',
+  'outboxId',
+  'attemptNumber',
+  'status',
+  'responseCode',
+  'attemptedAt',
+  'success',
+  'deliveredAt',
+  'failureReason',
+] as const;
+
+function isSensitivePayloadKey(key: string): boolean {
+  if (key === '__proto__' || key === 'prototype' || key === 'constructor') return true;
+
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (
+    normalized.includes('payload') ||
+    normalized.includes('rawevidence') ||
+    normalized.includes('secret') ||
+    normalized.includes('token') ||
+    normalized.includes('credential') ||
+    normalized.includes('password') ||
+    normalized.includes('apikey') ||
+    normalized.includes('privatekey') ||
+    normalized.includes('accesskey') ||
+    normalized === 'authorization' ||
+    normalized.endsWith('authorization') ||
+    (normalized.includes('provider') &&
+      (normalized.includes('auth') ||
+        normalized.includes('cookie') ||
+        normalized.includes('session') ||
+        normalized.endsWith('key')))
+  );
+}
+
+function sanitizePayloadValue(value: unknown, ancestors: Set<object>): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (ancestors.has(value)) return null;
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((entry) => sanitizePayloadValue(entry, ancestors));
+    }
+
+    const safe: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (!isSensitivePayloadKey(key)) {
+        safe[key] = sanitizePayloadValue(entry, ancestors);
+      }
+    }
+    return safe;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function sanitizeRedactedPayload(source: unknown): Record<string, unknown> {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return {};
+  return sanitizePayloadValue(source, new Set()) as Record<string, unknown>;
+}
+
+interface NotificationDetail {
+  readonly outbox: unknown;
+  readonly event: unknown;
+  readonly redactedPayload: Record<string, unknown>;
+  readonly deliveryAttempts: readonly unknown[];
+}
+
+function pickSafeFields(source: unknown, fields: readonly string[]): Record<string, unknown> {
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return {};
+
+  const safe: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(source, field)) {
+      safe[field] = (source as Record<string, unknown>)[field];
+    }
+  }
+  return safe;
+}
+
+/** Convert persisted notification records into the browser-safe DTO. */
+function sanitizeNotificationDetail(detail: NotificationDetail) {
+  return {
+    outbox: pickSafeFields(detail.outbox, DELIVERY_STATE_FIELDS),
+    event: pickSafeFields(detail.event, EVENT_METADATA_FIELDS),
+    redactedPayload: sanitizeRedactedPayload(detail.redactedPayload),
+    deliveryAttempts: detail.deliveryAttempts.map((attempt) =>
+      pickSafeFields(attempt, DELIVERY_ATTEMPT_FIELDS),
+    ),
+  };
+}
+
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
 
   // Authorization gate
@@ -55,6 +183,7 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 403);
     return auth.response;
   }
+  const authInfo = auth.info;
 
   try {
     const wf = getWorkflowStore(event);
@@ -91,7 +220,33 @@ export default defineEventHandler(async (event) => {
       );
     }
 
-    return okEnvelope(detail, auth.info, requestId);
+    if (detail.event.recipientId !== undefined && detail.event.recipientId !== actorId) {
+      const scope = typeof detail.event.scope === 'string' ? detail.event.scope.trim() : '';
+      if (!scope) {
+        setResponseStatus(event, 404);
+        return errorEnvelope(
+          'NOT_FOUND',
+          'Notification not found or access denied.',
+          authInfo,
+          false,
+          requestId,
+        );
+      }
+
+      const adminAuth = await requireAuthorization(event, 'notification:admin', scope);
+      if (!adminAuth.ok) {
+        setResponseStatus(event, 404);
+        return errorEnvelope(
+          'NOT_FOUND',
+          'Notification not found or access denied.',
+          authInfo,
+          false,
+          requestId,
+        );
+      }
+    }
+
+    return okEnvelope(sanitizeNotificationDetail(detail), auth.info, requestId);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     setResponseStatus(event, 503);

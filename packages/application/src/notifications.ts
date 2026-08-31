@@ -104,6 +104,21 @@ export interface NotificationPolicy {
   readonly defaultRedactionClass: string;
 }
 
+/** Canonical scope used to identify a financial decision issue. */
+export interface FinancialDecisionScope {
+  readonly kind: string;
+  readonly id?: string;
+}
+
+/** Complete stable identity of a revision of a financial decision issue. */
+export interface FinancialDecisionIdentity {
+  readonly classification: string;
+  readonly scope: FinancialDecisionScope;
+  readonly snapshotId: string;
+  readonly policyVersion: string;
+  readonly revision: string;
+}
+
 /** Input to create and process a notification. */
 export interface CreateNotificationInput {
   readonly budgetId: string;
@@ -114,6 +129,11 @@ export interface CreateNotificationInput {
   readonly scope?: string;
   readonly recipientId?: string;
   readonly redactionClass?: string;
+  /**
+   * Stable producer identity used to deduplicate one revision of a decision
+   * issue. Callers should derive this with {@link financialDecisionDedupKey}.
+   */
+  readonly dedupKey?: string;
 }
 
 /** Result of creating a notification (event + outbox records). */
@@ -156,6 +176,7 @@ interface ProducerBase {
   readonly recipientId?: string;
   readonly redactionClass?: string;
   readonly correlationId?: string;
+  readonly dedupKey?: string;
 }
 
 /** Input for a data-quality finding notification. */
@@ -409,16 +430,70 @@ function redactPayload(
   return result;
 }
 
+const ADAPTER_FORBIDDEN_PAYLOAD_FIELDS: Readonly<Record<string, true>> = {
+  rawEvidence: true,
+  rawPayload: true,
+  secrets: true,
+};
+
+/** Remove raw evidence and secret-bearing structures before provider code can observe them. */
+function sanitizeAdapterPayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeAdapterPayload(item));
+  }
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (!ADAPTER_FORBIDDEN_PAYLOAD_FIELDS[key]) {
+      sanitized[key] = sanitizeAdapterPayload(child);
+    }
+  }
+  return sanitized;
+}
+
 // ---------------------------------------------------------------------------
 // Idempotent retry key generator
 // ---------------------------------------------------------------------------
 
 /**
- * Generate a deterministic delivery key scoped to (eventId, channelType).
- * This ensures idempotent outbox enqueue.
+ * Generate the stable identity for one revision of a financial decision.
+ *
+ * The tuple encoding keeps each component structurally distinct, including
+ * the canonical scope kind and id, before hashing it into an opaque key.
  */
-function generateDeliveryKey(eventId: string, channelType: string): string {
-  return createHash('sha256').update(`${eventId}:${channelType}`).digest('hex');
+export function financialDecisionDedupKey(identity: FinancialDecisionIdentity): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        identity.classification,
+        identity.scope.kind,
+        identity.scope.id ?? null,
+        identity.snapshotId,
+        identity.policyVersion,
+        identity.revision,
+      ]),
+    )
+    .digest('hex');
+}
+
+/**
+ * Generate a deterministic delivery key bound to the producer identity,
+ * recipient, authorization scope, and channel. Provider idempotency therefore
+ * cannot coalesce deliveries intended for different recipients or scopes.
+ */
+function generateDeliveryKey(
+  eventId: string,
+  channelType: string,
+  recipientId: string | null,
+  scope: string | null,
+  dedupKey?: string,
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify([dedupKey ?? eventId, recipientId, scope, channelType]))
+    .digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +512,7 @@ export class NotificationRuntime {
   private readonly adapters: Map<ChannelType, ChannelAdapter>;
   private readonly policy: NotificationPolicy;
   private readonly rateLimiter: InProcessRateLimiter;
+  private readonly inFlightCreations = new Map<string, Promise<NotificationResult>>();
   private reAuthHook: ReAuthorizationHook | null = null;
   private auditHook: AuditHook | null = null;
 
@@ -495,21 +571,22 @@ export class NotificationRuntime {
    * Otherwise the store's getActorMembership is used to verify:
    *   - actor membership exists and status is 'active'
    *   - actor capabilities include the required capability
+   *   - membership scope exactly matches the requested scope or is wildcard
    */
   private async storeBackedReAuth(
     actorId: string,
     requiredCapability: string,
     scope: string = '',
   ): Promise<boolean> {
-    if (this.reAuthHook) {
-      return this.reAuthHook(actorId, requiredCapability, scope);
-    }
-    // Fallback: check store membership directly
     try {
+      if (this.reAuthHook) {
+        return await this.reAuthHook(actorId, requiredCapability, scope);
+      }
+      // Fallback: check store membership directly.
       const membership = await this.store.getActorMembership(actorId);
-      if (!membership) return false;
-      if (membership.status !== 'active') return false;
-      return membership.capabilities.includes(requiredCapability);
+      if (!membership || membership.status !== 'active') return false;
+      if (!membership.capabilities.includes(requiredCapability)) return false;
+      return membership.scope === scope || membership.scope === '*';
     } catch {
       return false;
     }
@@ -533,18 +610,81 @@ export class NotificationRuntime {
    * 6. Append audit records.
    */
   async create(input: CreateNotificationInput): Promise<NotificationResult> {
-    // 1. Evaluate eligibility
-    const eligible = this.evaluateEligibility(input.classification, input.severity);
-    if (!eligible) {
+    if (!input.dedupKey) {
+      return this.createNotification(input);
+    }
+
+    const inFlightKey = JSON.stringify([
+      input.dedupKey,
+      input.recipientId ?? null,
+      input.scope ?? null,
+    ]);
+    const existing = this.inFlightCreations.get(inFlightKey);
+    if (existing) {
+      return existing;
+    }
+
+    const creation = this.createNotification(input);
+    this.inFlightCreations.set(inFlightKey, creation);
+    try {
+      return await creation;
+    } finally {
+      if (this.inFlightCreations.get(inFlightKey) === creation) {
+        this.inFlightCreations.delete(inFlightKey);
+      }
+    }
+  }
+  private async createNotification(input: CreateNotificationInput): Promise<NotificationResult> {
+    const eligibilityRule = this.findMatchingRule(input.classification, input.severity);
+    if (!eligibilityRule) {
       throw new NotificationRuntimeError(
         'NOT_ELIGIBLE',
         `Notification classification "${input.classification}" with severity "${input.severity}" does not match any eligibility rule`,
       );
     }
 
-    const redactionClass = input.redactionClass ?? this.policy.defaultRedactionClass;
+    let recipientSpecs = this.resolveRecipients(input.classification, input.severity);
+    const hasBoundIdentity =
+      input.dedupKey !== undefined || input.recipientId !== undefined || input.scope !== undefined;
 
-    // 2. Persist the immutable event
+    if (hasBoundIdentity) {
+      if (!input.recipientId) {
+        throw new NotificationRuntimeError(
+          'RECIPIENT_MISMATCH',
+          'A recipient-bound notification requires an explicit policy recipient',
+        );
+      }
+
+      const recipient = recipientSpecs.find(({ actorId }) => actorId === input.recipientId);
+      if (!recipient) {
+        throw new NotificationRuntimeError(
+          'RECIPIENT_MISMATCH',
+          `Notification recipient "${input.recipientId}" is not an active policy recipient`,
+        );
+      }
+      if (input.scope !== eligibilityRule.requiredScope) {
+        throw new NotificationRuntimeError(
+          'SCOPE_MISMATCH',
+          `Notification scope "${input.scope ?? ''}" does not match required policy scope "${eligibilityRule.requiredScope ?? ''}"`,
+        );
+      }
+
+      const capability = eligibilityRule.requiredCapability ?? 'notification:receive';
+      const authorized = await this.storeBackedReAuth(
+        recipient.actorId,
+        capability,
+        input.scope ?? '',
+      );
+      if (!authorized) {
+        throw new NotificationRuntimeError(
+          'NOT_AUTHORIZED',
+          `Notification recipient "${recipient.actorId}" is not authorized for scope "${input.scope ?? ''}"`,
+        );
+      }
+      recipientSpecs = [recipient];
+    }
+
+    const redactionClass = input.redactionClass ?? this.policy.defaultRedactionClass;
     const eventInput: CreateNotificationEventInput = {
       budgetId: input.budgetId,
       classification: input.classification,
@@ -552,32 +692,36 @@ export class NotificationRuntime {
       policyVersion: this.policy.policyVersion,
       recipientId: input.recipientId ?? null,
       scope: input.scope ?? null,
-      redactionClass: redactionClass,
+      redactionClass,
       channelConfigVersion: null,
-      correlationId: input.correlationId ?? null,
+      correlationId: input.correlationId ?? input.dedupKey ?? null,
     };
-    const event = await this.store.createNotificationEvent(eventInput);
-
-    // 3. Resolve recipients and check channels
-    const recipientSpecs = this.resolveRecipients(input.classification, input.severity);
+    const event = input.dedupKey
+      ? await this.store.createOrGetNotificationEvent({
+          ...eventInput,
+          dedupKey: input.dedupKey,
+        })
+      : await this.store.createNotificationEvent(eventInput);
 
     const outboxRecords: NotificationOutboxRecord[] = [];
-
     for (const recipient of recipientSpecs) {
-      // 4. Re-authorization check (store-backed or hook-backed)
-      const eligibilityRule = this.findMatchingRule(input.classification, input.severity);
-      const capability = eligibilityRule?.requiredCapability ?? 'notification:receive';
-      const authorized = await this.storeBackedReAuth(recipient.actorId, capability);
-      if (!authorized) {
-        await this.recordAudit('notification_suppressed', {
-          eventId: event.id,
-          actorId: recipient.actorId,
-          reason: 're_authorization_failed',
-        });
-        continue;
+      if (!hasBoundIdentity) {
+        const capability = eligibilityRule.requiredCapability ?? 'notification:receive';
+        const authorized = await this.storeBackedReAuth(
+          recipient.actorId,
+          capability,
+          eligibilityRule.requiredScope ?? '',
+        );
+        if (!authorized) {
+          await this.recordAudit('notification_suppressed', {
+            eventId: event.id,
+            actorId: recipient.actorId,
+            reason: 're_authorization_failed',
+          });
+          continue;
+        }
       }
 
-      // Quiet hours check
       const inQuietHours = recipient.quietHours ? isInQuietHours(recipient.quietHours) : false;
       if (inQuietHours) {
         await this.recordAudit('notification_suppressed', {
@@ -588,16 +732,11 @@ export class NotificationRuntime {
         continue;
       }
 
-      // Resolve channels for this recipient
-      const channels = this.resolveChannels(recipient);
-
-      for (const channelType of channels) {
-        const channelConfig = this.policy.channels.find((c) => c.type === channelType);
-        if (!channelConfig || !channelConfig.enabled) {
-          continue; // Skip disabled channels
+      for (const channelType of this.resolveChannels(recipient)) {
+        const channelConfig = this.policy.channels.find(({ type }) => type === channelType);
+        if (!channelConfig?.enabled) {
+          continue;
         }
-
-        // Rate limit check
         if (!this.rateLimiter.allow(channelType, channelConfig.rateLimitPerMinute)) {
           await this.recordAudit('notification_suppressed', {
             eventId: event.id,
@@ -608,21 +747,25 @@ export class NotificationRuntime {
           continue;
         }
 
-        // 5. Enqueue outbox record
-        const deliveryKey = generateDeliveryKey(event.id, channelType);
+        const deliveryKey = generateDeliveryKey(
+          event.id,
+          channelType,
+          recipient.actorId,
+          input.scope ?? null,
+          input.dedupKey,
+        );
         const enqueued = await this.store.enqueueNotification({
           eventId: event.id,
           deliveryKey,
           channelType,
           channelConfigVersion: null,
           maxAttempts: this.policy.maxRetries,
-          correlationId: input.correlationId ?? null,
+          correlationId: input.correlationId ?? input.dedupKey ?? null,
         });
         outboxRecords.push(enqueued);
       }
     }
 
-    // 6. Audit trail
     await this.recordAudit('notification_created', {
       eventId: event.id,
       classification: input.classification,
@@ -680,10 +823,23 @@ export class NotificationRuntime {
       };
     }
 
-    const eligibilityRule = this.policy.eligibility.find((rule) =>
-      rule.classifications.includes(event.classification),
+    const eligibilityRule = this.policy.eligibility.find(
+      (rule) =>
+        rule.classifications.includes(event.classification) &&
+        (rule.requiredScope ?? null) === event.scope,
     );
-    const requiredCapability = eligibilityRule?.requiredCapability ?? 'notification:receive';
+    if (!eligibilityRule) {
+      const reason = 'Notification classification is no longer eligible';
+      await this.store.failNotificationDelivery(outboxId, claimToken, reason, false);
+      return {
+        outboxId,
+        channelType: record.channelType,
+        status: 'failed',
+        attemptNumber: record.attemptCount + 1,
+        errorMessage: reason,
+      };
+    }
+    const requiredCapability = eligibilityRule.requiredCapability ?? 'notification:receive';
     const authorized = await this.storeBackedReAuth(
       recipientId,
       requiredCapability,
@@ -742,9 +898,20 @@ export class NotificationRuntime {
     }
 
     try {
-      const payload = JSON.parse(event.payload);
-      const result = await adapter.deliver(payload, record.deliveryKey);
-
+      const parsedPayload: unknown = JSON.parse(event.payload);
+      const structurallySanitized = sanitizeAdapterPayload(parsedPayload);
+      const payload =
+        structurallySanitized !== null &&
+        typeof structurallySanitized === 'object' &&
+        !Array.isArray(structurallySanitized)
+          ? redactPayload(
+              structurallySanitized as Record<string, unknown>,
+              event.redactionClass ?? this.policy.defaultRedactionClass,
+              [],
+              this.policy.redaction,
+            )
+          : {};
+      const result = await adapter.deliver(payload, recipientId);
       if (result.ok) {
         const updated = await this.store.completeNotificationDelivery(outboxId, claimToken, {
           code: result.code,
@@ -1141,6 +1308,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         findingId: input.findingId,
         title: input.title,
@@ -1163,6 +1331,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         alertId: input.alertId,
         title: input.title,
@@ -1184,6 +1353,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         findingId: input.findingId,
         title: input.title,
@@ -1206,6 +1376,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         findingId: input.findingId,
         title: input.title,
@@ -1230,6 +1401,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         proposalId: input.proposalId,
         title: input.title,
@@ -1254,6 +1426,7 @@ export class NotificationRuntime {
       recipientId: input.recipientId,
       redactionClass: input.redactionClass,
       correlationId: input.correlationId,
+      dedupKey: input.dedupKey,
       payload: {
         workflowId: input.workflowId,
         title: input.title,

@@ -1,7 +1,7 @@
 # Phase 8.8 — Financial Decision and Evidence Foundation
 
 **Depends on:** implemented Phase 8 budget intelligence, implemented Phase 8.5 web intelligence, and Phase 7 governance  
-**Status:** Post-MVP
+**Status:** Implemented in v0.3.0
 
 ## Objective
 

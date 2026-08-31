@@ -2,7 +2,7 @@
  * GET /api/home/attention — get the prioritized attention/home dashboard.
  *
  * Read-only deterministic analysis — no model or cloud invocation.
- * Skips authorization gates — results are always observable.
+ * Requires observe authorization before accessing configuration or ledger state.
  *
  * Query params: categoryGroup (optional), detailed (optional boolean), month (optional YYYY-MM)
  * Response envelope: AttentionHomeOutput
@@ -19,8 +19,8 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   getActorId,
+  requireAuthorization,
   sanitizeError,
   envelopeMetadata,
 } from '../../utils/workflow-store';
@@ -46,8 +46,57 @@ function errorHasCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 
+type JsonObject = Record<string, unknown>;
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Keep canonical reference identity/status while withholding any attached
+ * details when the reference is not authorized for this response.
+ */
+function sanitizeEvidenceReference(reference: unknown): unknown {
+  if (!isJsonObject(reference)) return reference;
+
+  const isCanonicalReference = 'authorized' in reference || 'redaction' in reference;
+  const isRestricted =
+    isCanonicalReference && (reference.authorized !== true || reference.redaction === 'redacted');
+  if (!isRestricted) return sanitizeCanonicalEvidence(reference);
+
+  const sanitized: JsonObject = {};
+  for (const field of ['evidenceId', 'kind', 'authorized', 'redaction']) {
+    if (field in reference) sanitized[field] = reference[field];
+  }
+  return sanitized;
+}
+
+/**
+ * Clone the analysis result at the server boundary, removing raw evidence
+ * containers and reducing restricted canonical references to safe metadata.
+ */
+function sanitizeCanonicalEvidence(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeCanonicalEvidence(entry));
+  }
+  if (!isJsonObject(value)) return value;
+
+  const sanitized: JsonObject = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'rawEvidence' || key === 'rawPayload') continue;
+    sanitized[key] =
+      key === 'evidence' && Array.isArray(entry)
+        ? entry.map((reference) => sanitizeEvidenceReference(reference))
+        : sanitizeCanonicalEvidence(entry);
+  }
+  return sanitized;
+}
+
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const auth = await requireAuthorization(event, 'observe');
+  if (!auth.ok) return auth.response;
+
+  const authInfo = auth.info;
   const requestId = crypto.randomUUID();
   const query = getQuery(event);
 
@@ -114,7 +163,12 @@ export default defineEventHandler(async (event) => {
     });
 
     if (envelope.status === 'ok') {
-      return okEnvelope(envelope.result, authInfo, envelope.requestId, envelopeMetadata(envelope));
+      return okEnvelope(
+        sanitizeCanonicalEvidence(envelope.result) as typeof envelope.result,
+        authInfo,
+        envelope.requestId,
+        envelopeMetadata(envelope),
+      );
     }
 
     const status = httpStatusForCode(envelope.error.code);
