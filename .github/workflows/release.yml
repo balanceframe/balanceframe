@@ -6,18 +6,15 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   verify:
-    name: Verify and publish
+    name: Verify release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-
+    permissions:
+      contents: read
 
     steps:
       - name: Check out repository
@@ -27,13 +24,18 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d # v16
 
       - name: Enable Nix binary cache
-        uses: DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4 # v9
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Validate the flake
         run: nix flake check --print-build-logs
 
       - name: Tag/version policy verification
-        run: nix develop .#release --command just release-verify "$GITHUB_REF_NAME"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: nix develop .#release --command just release-verify
 
       - name: Install dependencies
         run: nix develop .#release --command pnpm install --frozen-lockfile
@@ -55,6 +57,29 @@ jobs:
 
       - name: Run Rust clippy
         run: nix develop .#release --command cargo clippy --workspace --all-targets -- -D warnings
+
+  publish:
+    name: Build and publish release
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d # v16
+
+      - name: Enable Nix binary cache
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
@@ -96,7 +121,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          nix develop .#release --command just release-assets "$TAG" "$DIGEST"
+          nix develop .#release --command just release-assets
 
       - name: Construct full image reference
         id: imgref

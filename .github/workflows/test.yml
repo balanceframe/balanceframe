@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
   actions: read
 
 jobs:
@@ -21,8 +20,11 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d # v16
 
-      - name: Enable Nix binary cache
-        uses: DeterminateSystems/magic-nix-cache-action@6221693898146dc97e38ad0e013488a16477a4c4 # v9
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Validate the flake and development shell
         run: nix flake check --print-build-logs
@@ -82,7 +84,6 @@ jobs:
 
       - name: Run Rust clippy
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
-
 
   portable:
     name: ${{ matrix.name }}
