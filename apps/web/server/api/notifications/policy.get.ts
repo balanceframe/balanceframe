@@ -17,48 +17,8 @@ import {
   sanitizeError,
 } from '../../utils/workflow-store';
 
-function getAuthorizedSpaceId(event: {
-  context: {
-    auth?: {
-      spaceId?: unknown;
-      user?: { spaceId?: unknown; space_id?: unknown };
-    };
-  };
-}): string {
-  const auth = event.context.auth;
-  if (typeof auth?.spaceId === 'string') {
-    const spaceId = auth.spaceId.trim();
-    if (spaceId) return spaceId;
-  }
-  if (typeof auth?.user?.spaceId === 'string') {
-    const spaceId = auth.user.spaceId.trim();
-    if (spaceId) return spaceId;
-  }
-  if (typeof auth?.user?.space_id === 'string') {
-    const spaceId = auth.user.space_id.trim();
-    if (spaceId) return spaceId;
-  }
-  return '';
-}
-
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-  const authorizedSpaceId = getAuthorizedSpaceId(event);
-  const auth = await requireAuthorization(event, 'notification:admin', authorizedSpaceId);
-  if (!auth.ok) return auth.response;
-  const authInfo = auth.info;
-
-  if (!authorizedSpaceId) {
-    setResponseStatus(event, 403);
-    return errorEnvelope(
-      'SPACE_SCOPE_REQUIRED',
-      'An authorized notification space is required.',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
-
   const query = getQuery(event);
   const spaceId = typeof query.spaceId === 'string' ? query.spaceId.trim() : '';
   const policyKey = typeof query.policyKey === 'string' ? query.policyKey.trim() : 'delivery';
@@ -68,22 +28,15 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope(
       'MISSING_SPACE_ID',
       'spaceId query parameter is required.',
-      authInfo,
+      null,
       false,
       requestId,
     );
   }
 
-  if (spaceId !== authorizedSpaceId) {
-    setResponseStatus(event, 403);
-    return errorEnvelope(
-      'SPACE_SCOPE_MISMATCH',
-      'The requested space is outside the authorized scope.',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
+  const auth = await requireAuthorization(event, 'notification:admin', spaceId);
+  if (!auth.ok) return auth.response;
+  const authInfo = auth.info;
 
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
@@ -92,12 +45,12 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const policy = await wf.store.getNotificationPolicy(authorizedSpaceId, policyKey);
+    const policy = await wf.store.getNotificationPolicy(spaceId, policyKey);
     if (!policy) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'POLICY_NOT_FOUND',
-        `No notification policy found for space "${authorizedSpaceId}" with key "${policyKey}".`,
+        `No notification policy found for space "${spaceId}" with key "${policyKey}".`,
         authInfo,
         false,
         requestId,

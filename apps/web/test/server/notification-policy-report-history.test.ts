@@ -11,16 +11,20 @@ const {
   mockGetQuery,
   mockGetRouterParam,
   mockRequireAuthorization,
-} = vi.hoisted(() => ({
-  mockReadBody: vi.fn(),
-  mockGetWorkflowStore: vi.fn(),
-  mockGetQuery: vi.fn(() => ({})),
-  mockGetRouterParam: vi.fn(),
-  mockRequireAuthorization: vi.fn(() => ({
+} = vi.hoisted(() => {
+  const mockRequireAuthorization = vi.fn();
+  mockRequireAuthorization.mockResolvedValue({
     ok: true,
     info: { actorId: 'test-actor', capability: 'notification:admin', allowed: true },
-  })),
-}));
+  });
+  return {
+    mockReadBody: vi.fn(),
+    mockGetWorkflowStore: vi.fn(),
+    mockGetQuery: vi.fn(() => ({})),
+    mockGetRouterParam: vi.fn(),
+    mockRequireAuthorization,
+  };
+});
 
 vi.mock('h3', () => ({
   defineEventHandler: <T>(h: T) => h,
@@ -54,10 +58,11 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result: r,
     error: null,
   }),
-  errorEnvelope: (c, m) => ({
+  errorEnvelope: (c, m, authorization) => ({
     schemaVersion: '1',
     requestId: 'tr',
     status: 'error',
+    authorization,
     error: { code: c, message: m, retryable: false },
   }),
 }));
@@ -83,31 +88,87 @@ describe('GET /api/notifications/policy', () => {
     mockGetQuery.mockReturnValue({});
   });
 
-  it('must return notification policy', async () => {
-    mockGetQuery.mockReturnValue({ spaceId: 'space_1', policyKey: 'delivery' });
-    mockStore.getNotificationPolicy.mockResolvedValue(SAMPLE_POLICY);
-    const r = await policyGet({
-      context: { auth: { authenticated: true, spaceId: 'space_1' } },
-    });
+  it('must return the requested notification policy for a Better Auth session without spaceId', async () => {
+    mockGetQuery.mockReturnValue({ spaceId: 'space-a', policyKey: 'delivery' });
+    const policy = { ...SAMPLE_POLICY, spaceId: 'space-a' };
+    mockStore.getNotificationPolicy.mockResolvedValue(policy);
+    const event = {
+      context: {
+        auth: { authenticated: true, user: { id: 'policy-admin' } },
+      },
+    };
+
+    const r = await policyGet(event);
+
     expect(r.status).toBe('ok');
-    expect(r.result.spaceId).toBe('space_1');
+    expect(r.result).toEqual(policy);
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      event,
+      'notification:admin',
+      'space-a',
+    );
+    expect(mockStore.getNotificationPolicy).toHaveBeenCalledWith('space-a', 'delivery');
   });
 
-  it('must reject missing spaceId', async () => {
-    mockGetQuery.mockReturnValue({});
-    const r = await policyGet({ context: { auth: { authenticated: true } } });
+  it('must deny a requested space outside the caller membership scope before store lookup', async () => {
+    mockGetQuery.mockReturnValue({ spaceId: 'space-b', policyKey: 'delivery' });
+    mockRequireAuthorization.mockResolvedValueOnce({
+      ok: false,
+      response: {
+        status: 'error',
+        error: { code: 'FORBIDDEN', message: 'Capability required', retryable: false },
+      },
+    });
+    const event = {
+      context: {
+        auth: { authenticated: true, user: { id: 'restricted-admin' } },
+      },
+    };
+
+    const r = await policyGet(event);
+
     expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('SPACE_SCOPE_REQUIRED');
+    expect(r.error?.code).toBe('FORBIDDEN');
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      event,
+      'notification:admin',
+      'space-b',
+    );
+    expect(mockStore.getNotificationPolicy).not.toHaveBeenCalled();
   });
 
-  it('must return 404 when policy not found', async () => {
+  it('must reject missing query spaceId before authorization or policy store lookup', async () => {
+    mockGetQuery.mockReturnValue({});
+    const r = await policyGet({
+      context: { auth: { authenticated: true, user: { id: 'policy-admin' } } },
+    });
+
+    expect(r.status).toBe('error');
+    expect(r.error?.code).toBe('MISSING_SPACE_ID');
+    expect(r.authorization).toBeNull();
+    expect(mockRequireAuthorization).not.toHaveBeenCalled();
+    expect(mockStore.getNotificationPolicy).not.toHaveBeenCalled();
+  });
+
+  it('must return 404 when the requested policy is not found', async () => {
     mockGetQuery.mockReturnValue({ spaceId: 'space_x' });
     mockStore.getNotificationPolicy.mockResolvedValue(null);
-    const r = await policyGet({
-      context: { auth: { authenticated: true, spaceId: 'space_x' } },
-    });
+    const event = {
+      context: {
+        auth: { authenticated: true, user: { id: 'policy-admin' } },
+      },
+    };
+
+    const r = await policyGet(event);
+
     expect(r.status).toBe('error');
     expect(r.error?.code).toBe('POLICY_NOT_FOUND');
+    expect(mockRequireAuthorization).toHaveBeenCalledWith(
+      event,
+      'notification:admin',
+      'space_x',
+    );
+    expect(mockStore.getNotificationPolicy).toHaveBeenCalledWith('space_x', 'delivery');
   });
 });
 
