@@ -1627,11 +1627,35 @@ export class SqliteWorkflowStore implements WorkflowStore {
            );
       `);
     },
-    // Version 9: Restore observe access for an existing active instance owner
+    // Version 9: Restore the current capability baseline for an active legacy owner
     (db) => {
       db.exec(`
+        WITH required_owner_capabilities(capability, position) AS (
+          VALUES
+            ('observe', 0),
+            ('finding:transition', 1),
+            ('notification:receive', 2),
+            ('notification:admin', 3),
+            ('categorization:execute', 4),
+            ('rule:execute', 5)
+        )
         UPDATE actor_memberships
-           SET capabilities = json_insert(capabilities, '$[#]', 'observe')
+           SET capabilities = (
+             SELECT json_group_array(capability)
+               FROM (
+                 SELECT value AS capability, 0 AS source, CAST(key AS INTEGER) AS position
+                   FROM json_each(actor_memberships.capabilities)
+                 UNION ALL
+                 SELECT required.capability, 1 AS source, required.position
+                   FROM required_owner_capabilities AS required
+                  WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM json_each(actor_memberships.capabilities)
+                     WHERE value = required.capability
+                  )
+                 ORDER BY source, position
+               )
+           )
          WHERE status = 'active'
            AND json_valid(capabilities)
            AND actor_id = (
@@ -1639,16 +1663,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
                FROM registration_state
               WHERE singleton = 1
            )
-           AND NOT EXISTS (
+           AND EXISTS (
              SELECT 1
-               FROM json_each(
-                 CASE
-                   WHEN json_valid(actor_memberships.capabilities)
-                     THEN actor_memberships.capabilities
-                   ELSE '[]'
-                 END
-               )
-              WHERE value = 'observe'
+               FROM required_owner_capabilities AS required
+              WHERE NOT EXISTS (
+                SELECT 1
+                  FROM json_each(actor_memberships.capabilities)
+                 WHERE value = required.capability
+              )
            );
       `);
     },

@@ -160,10 +160,10 @@ After bootstrap completes, registration transitions to invite-only:
 
 ### v0.3.2 (2026-09-01)
 
-- **Owner dashboard access** — the workflow-store migration restores the
-  read-only `observe` capability for an existing active instance owner while
-  preserving current capabilities and scope. Missing or inactive memberships
-  remain denied.
+- **Legacy owner access** — the workflow-store migration restores the current
+  owner capability baseline, including dashboard, findings, and notification
+  access, for an existing active instance owner while preserving custom
+  capabilities and scope. Missing or inactive memberships remain denied.
 
 ### v0.3.1 (2026-08-23)
 

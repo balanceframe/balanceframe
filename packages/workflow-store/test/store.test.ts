@@ -1364,7 +1364,7 @@ describe('SqliteWorkflowStore', () => {
       }
     });
 
-    it('adds observe to an active registered owner while preserving existing access', async () => {
+    it('restores the current capability baseline for an active legacy owner', async () => {
       const tmpDir = mkdtempSync(join(tmpdir(), 'wf-owner-observe-mig-'));
       const dbPath = join(tmpDir, 'test.db');
       let migrated: SqliteWorkflowStore | undefined;
@@ -1384,8 +1384,8 @@ describe('SqliteWorkflowStore', () => {
         `);
         insertMembership.run({
           actorId: 'legacy-owner',
-          capabilities: '["categorization:execute"]',
-          scope: 'budget:fixture',
+          capabilities: '["categorization:execute","rule:execute","custom:retained"]',
+          scope: '*',
         });
         insertMembership.run({
           actorId: 'unrelated-member',
@@ -1399,8 +1399,16 @@ describe('SqliteWorkflowStore', () => {
 
         await expect(migrated.getActorMembership('legacy-owner')).resolves.toMatchObject({
           status: 'active',
-          capabilities: ['categorization:execute', 'observe'],
-          scope: 'budget:fixture',
+          capabilities: [
+            'categorization:execute',
+            'rule:execute',
+            'custom:retained',
+            'observe',
+            'finding:transition',
+            'notification:receive',
+            'notification:admin',
+          ],
+          scope: '*',
         });
         await expect(migrated.getActorMembership('unrelated-member')).resolves.toMatchObject({
           capabilities: [],
