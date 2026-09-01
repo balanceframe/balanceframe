@@ -1627,6 +1627,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
            );
       `);
     },
+    // Version 9: Restore observe access for an existing active instance owner
+    (db) => {
+      db.exec(`
+        UPDATE actor_memberships
+           SET capabilities = json_insert(capabilities, '$[#]', 'observe')
+         WHERE status = 'active'
+           AND json_valid(capabilities)
+           AND actor_id = (
+             SELECT owner_user_id
+               FROM registration_state
+              WHERE singleton = 1
+           )
+           AND NOT EXISTS (
+             SELECT 1
+               FROM json_each(
+                 CASE
+                   WHEN json_valid(actor_memberships.capabilities)
+                     THEN actor_memberships.capabilities
+                   ELSE '[]'
+                 END
+               )
+              WHERE value = 'observe'
+           );
+      `);
+    },
   ];
 
   private getCurrentSchemaVersion(): number {

@@ -158,6 +158,13 @@ After bootstrap completes, registration transitions to invite-only:
 
 ## Release history
 
+### v0.3.2 (2026-09-01)
+
+- **Owner dashboard access** — the workflow-store migration restores the
+  read-only `observe` capability for an existing active instance owner while
+  preserving current capabilities and scope. Missing or inactive memberships
+  remain denied.
+
 ### v0.3.1 (2026-08-23)
 
 - **Invited-member read access** — invited accounts receive the read-only

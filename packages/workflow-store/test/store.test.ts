@@ -1363,6 +1363,117 @@ describe('SqliteWorkflowStore', () => {
         }
       }
     });
+
+    it('adds observe to an active registered owner while preserving existing access', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'wf-owner-observe-mig-'));
+      const dbPath = join(tmpDir, 'test.db');
+      let migrated: SqliteWorkflowStore | undefined;
+
+      try {
+        const seeded = new SqliteWorkflowStore(dbPath);
+        const db = seeded['db'];
+        db.prepare(
+          `
+          INSERT INTO registration_state (singleton, owner_user_id, bootstrapped_at)
+          VALUES (1, 'legacy-owner', '2026-07-25T12:00:00.000Z')
+        `,
+        ).run();
+        const insertMembership = db.prepare(`
+          INSERT INTO actor_memberships (actor_id, status, capabilities, scope)
+          VALUES (@actorId, 'active', @capabilities, @scope)
+        `);
+        insertMembership.run({
+          actorId: 'legacy-owner',
+          capabilities: '["categorization:execute"]',
+          scope: 'budget:fixture',
+        });
+        insertMembership.run({
+          actorId: 'unrelated-member',
+          capabilities: '[]',
+          scope: '*',
+        });
+        db.prepare('DELETE FROM schema_version WHERE version > 8').run();
+        seeded.close();
+
+        migrated = new SqliteWorkflowStore(dbPath);
+
+        await expect(migrated.getActorMembership('legacy-owner')).resolves.toMatchObject({
+          status: 'active',
+          capabilities: ['categorization:execute', 'observe'],
+          scope: 'budget:fixture',
+        });
+        await expect(migrated.getActorMembership('unrelated-member')).resolves.toMatchObject({
+          capabilities: [],
+        });
+      } finally {
+        migrated?.close();
+        try {
+          unlinkSync(dbPath);
+        } catch {
+          /* ignore */
+        }
+        try {
+          rmdirSync(tmpDir);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+
+    it('does not reactivate or recreate a registered owner membership', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'wf-owner-denial-mig-'));
+      const dbPath = join(tmpDir, 'test.db');
+      let migrated: SqliteWorkflowStore | undefined;
+
+      try {
+        const seeded = new SqliteWorkflowStore(dbPath);
+        const db = seeded['db'];
+        db.prepare(
+          `
+          INSERT INTO registration_state (singleton, owner_user_id, bootstrapped_at)
+          VALUES (1, 'inactive-owner', '2026-07-25T12:00:00.000Z')
+        `,
+        ).run();
+        db.prepare(
+          `
+          INSERT INTO actor_memberships (actor_id, status, capabilities, scope)
+          VALUES ('inactive-owner', 'inactive', '[]', 'budget:restricted')
+        `,
+        ).run();
+        db.prepare('DELETE FROM schema_version WHERE version > 8').run();
+        seeded.close();
+
+        migrated = new SqliteWorkflowStore(dbPath);
+        expect(migrated['getCurrentSchemaVersion']()).toBe(9);
+        await expect(migrated.getActorMembership('inactive-owner')).resolves.toMatchObject({
+          status: 'inactive',
+          capabilities: [],
+          scope: 'budget:restricted',
+        });
+        migrated.close();
+        migrated = undefined;
+
+        const revoked = new Database(dbPath);
+        revoked.prepare("DELETE FROM actor_memberships WHERE actor_id = 'inactive-owner'").run();
+        revoked.prepare('DELETE FROM schema_version WHERE version > 8').run();
+        revoked.close();
+
+        migrated = new SqliteWorkflowStore(dbPath);
+        await expect(migrated.getActorMembership('inactive-owner')).resolves.toBeNull();
+      } finally {
+        migrated?.close();
+        try {
+          unlinkSync(dbPath);
+        } catch {
+          /* ignore */
+        }
+        try {
+          rmdirSync(tmpDir);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
   });
 
   // =======================================================================
