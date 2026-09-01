@@ -70,12 +70,12 @@ vi.mock('../../server/utils/workflow-store', () => ({
     result: r,
     error: null,
   }),
-  errorEnvelope: (c, m, _a, _r, _rid) => ({
+  errorEnvelope: (c, m, authorization, _r, _rid) => ({
     schemaVersion: '1',
     requestId: 'tr',
     status: 'error',
     dataFreshness: null,
-    authorization: null,
+    authorization,
     result: null,
     error: { code: c, message: m, retryable: false },
   }),
@@ -430,26 +430,34 @@ describe('GET /api/notifications/policy', () => {
     mockGetQuery.mockReturnValue({ spaceId: 'space-a', policyKey: 'delivery' });
   });
 
-  it('rejects an unauthorized policy read before query or store access', async () => {
-    mockRequireAuthorization.mockResolvedValueOnce(forbidden());
+  it('denies a policy read outside the caller membership scope before store lookup', async () => {
+    mockGetQuery.mockReturnValueOnce({ spaceId: 'space-b', policyKey: 'delivery' });
+    mockRequireAuthorization.mockImplementationOnce(
+      async (_event: unknown, _capability: string, scope?: string) =>
+        scope === 'space-a'
+          ? authorized('restricted-admin', 'notification:admin')
+          : forbidden(),
+    );
+    const event = {
+      context: {
+        auth: { authenticated: true, user: { id: 'restricted-admin' } },
+      },
+    };
 
-    const event = request('anonymous', 'space-a');
-    event.context.auth.authenticated = false;
     const r = await policyHandler(event);
 
     expect(r.status).toBe('error');
     expect(r.error?.code).toBe('FORBIDDEN');
     expect(mockRequireAuthorization).toHaveBeenCalledWith(
-      expect.anything(),
+      event,
       'notification:admin',
-      'space-a',
+      'space-b',
     );
-    expect(mockGetQuery).not.toHaveBeenCalled();
     expect(mockGetWorkflowStore).not.toHaveBeenCalled();
     expect(mockGetNotificationPolicy).not.toHaveBeenCalled();
   });
 
-  it('returns policy only from the caller authorized space', async () => {
+  it('reads the requested policy for a scoped Better Auth session without auth spaceId', async () => {
     const policy = {
       id: 'policy-space-a',
       spaceId: 'space-a',
@@ -458,11 +466,18 @@ describe('GET /api/notifications/policy', () => {
       policy: JSON.stringify(defaultPersistedPolicy),
     };
     mockGetActorId.mockReturnValue('policy-admin');
-    mockRequireAuthorization.mockResolvedValueOnce(
-      authorized('policy-admin', 'notification:admin'),
+    mockRequireAuthorization.mockImplementationOnce(
+      async (_event: unknown, _capability: string, scope?: string) =>
+        scope === 'space-a'
+          ? authorized('policy-admin', 'notification:admin')
+          : forbidden(),
     );
     mockGetNotificationPolicy.mockResolvedValueOnce(policy);
-    const event = request('policy-admin', 'space-a');
+    const event = {
+      context: {
+        auth: { authenticated: true, user: { id: 'policy-admin' } },
+      },
+    };
 
     const r = await policyHandler(event);
 
@@ -472,17 +487,21 @@ describe('GET /api/notifications/policy', () => {
     expect(mockGetNotificationPolicy).toHaveBeenCalledWith('space-a', 'delivery');
   });
 
-  it('denies a policy ID from outside the caller authorized space before store lookup', async () => {
-    mockGetQuery.mockReturnValueOnce({ spaceId: 'space-b', policyKey: 'delivery' });
-    mockGetActorId.mockReturnValue('policy-admin');
-    mockRequireAuthorization.mockResolvedValueOnce(
-      authorized('policy-admin', 'notification:admin'),
-    );
+  it('returns MISSING_SPACE_ID before authorization or store lookup when spaceId is omitted', async () => {
+    mockGetQuery.mockReturnValueOnce({ policyKey: 'delivery' });
+    const event = {
+      context: {
+        auth: { authenticated: true, user: { id: 'policy-admin' } },
+      },
+    };
 
-    const r = await policyHandler(request('policy-admin', 'space-a'));
+    const r = await policyHandler(event);
 
     expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('SPACE_SCOPE_MISMATCH');
+    expect(r.error?.code).toBe('MISSING_SPACE_ID');
+    expect(r.authorization).toBeNull();
+    expect(mockRequireAuthorization).not.toHaveBeenCalled();
+    expect(mockGetWorkflowStore).not.toHaveBeenCalled();
     expect(mockGetNotificationPolicy).not.toHaveBeenCalled();
   });
 });
