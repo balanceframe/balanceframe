@@ -1266,6 +1266,103 @@ describe('SqliteWorkflowStore', () => {
         }
       }
     });
+    it('adds observe access only to redeemed invited members with empty capabilities', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'wf-observe-mig-'));
+      const dbPath = join(tmpDir, 'test.db');
+      let migrated: SqliteWorkflowStore | undefined;
+
+      try {
+        const seeded = new SqliteWorkflowStore(dbPath);
+        const db = seeded['db'];
+        const insertMembership = db.prepare(`
+          INSERT INTO actor_memberships (actor_id, status, capabilities, scope)
+          VALUES (@actorId, @status, @capabilities, @scope)
+        `);
+        insertMembership.run({
+          actorId: 'invited-member',
+          status: 'active',
+          capabilities: '[]',
+          scope: '*',
+        });
+        insertMembership.run({
+          actorId: 'unrelated-member',
+          status: 'active',
+          capabilities: '[]',
+          scope: '*',
+        });
+        insertMembership.run({
+          actorId: 'inactive-invited-member',
+          status: 'inactive',
+          capabilities: '[]',
+          scope: 'budget:restricted',
+        });
+        insertMembership.run({
+          actorId: 'existing-observer',
+          status: 'active',
+          capabilities: '["observe","notification:receive"]',
+          scope: '*',
+        });
+        const insertRedeemedInvitation = db.prepare(`
+          INSERT INTO invitations (
+            id, token_digest, status, created_by_user_id, expires_at,
+            redeemed_user_id, created_at, redeemed_at
+          )
+          VALUES (
+            @id, @digest, 'redeemed', 'owner', '2026-08-01T12:00:00.000Z',
+            @actorId, '2026-07-25T12:00:00.000Z', '2026-07-25T12:05:00.000Z'
+          )
+        `);
+        insertRedeemedInvitation.run({
+          id: 'invite-observe-migration',
+          digest: 'invite-observe-migration-digest',
+          actorId: 'invited-member',
+        });
+        insertRedeemedInvitation.run({
+          id: 'invite-missing-membership',
+          digest: 'invite-missing-membership-digest',
+          actorId: 'missing-member',
+        });
+        insertRedeemedInvitation.run({
+          id: 'invite-inactive-member',
+          digest: 'invite-inactive-member-digest',
+          actorId: 'inactive-invited-member',
+        });
+        db.prepare('DELETE FROM schema_version WHERE version > 7').run();
+        seeded.close();
+
+        migrated = new SqliteWorkflowStore(dbPath);
+
+        await expect(migrated.getActorMembership('invited-member')).resolves.toMatchObject({
+          capabilities: ['observe'],
+        });
+        await expect(migrated.getActorMembership('missing-member')).resolves.toBeNull();
+        await expect(migrated.getActorMembership('unrelated-member')).resolves.toMatchObject({
+          capabilities: [],
+        });
+        await expect(migrated.getActorMembership('existing-observer')).resolves.toMatchObject({
+          capabilities: ['observe', 'notification:receive'],
+        });
+        await expect(migrated.getActorMembership('inactive-invited-member')).resolves.toMatchObject(
+          {
+            status: 'inactive',
+            capabilities: [],
+            scope: 'budget:restricted',
+          },
+        );
+      } finally {
+        migrated?.close();
+        try {
+          unlinkSync(dbPath);
+        } catch {
+          /* ignore */
+        }
+        try {
+          rmdirSync(tmpDir);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
   });
 
   // =======================================================================
@@ -2211,7 +2308,7 @@ describe('SqliteWorkflowStore', () => {
         expect(replay.claimId).toBe(claim1.claimId);
       });
 
-      it('completeInvitationRedemption finalizes the invitation with a user ID', async () => {
+      it('completeInvitationRedemption atomically finalizes and provisions observe access', async () => {
         const invite = await regStore.createInvitation(FIXED_USER_ID);
         const token = invite.inviteUrl.split('#token=')[1];
         const claim = await regStore.claimInvitation({
@@ -2222,6 +2319,7 @@ describe('SqliteWorkflowStore', () => {
         await regStore.completeInvitationRedemption(
           claim.claimId,
           '00000000-0000-0000-0000-000000000020',
+          { provisionReadOnlyMembership: true },
         );
 
         const list = await regStore.listInvitations();
@@ -2230,6 +2328,61 @@ describe('SqliteWorkflowStore', () => {
         expect(completed!.status).toBe('redeemed');
         expect(completed!.redeemedUserId).toBe('00000000-0000-0000-0000-000000000020');
         expect(completed!.redeemedAt).not.toBeNull();
+
+        await expect(
+          regStore.getActorMembership('00000000-0000-0000-0000-000000000020'),
+        ).resolves.toMatchObject({
+          status: 'active',
+          capabilities: ['observe'],
+          scope: '*',
+        });
+      });
+
+      it('rejects redemption without changing an inactive existing membership', async () => {
+        const userId = '00000000-0000-0000-0000-000000000021';
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        const claim = await regStore.claimInvitation({
+          token,
+          email: 'inactive@example.com',
+        });
+        await regStore.upsertActorMembership(userId, 'inactive', [], 'budget:restricted');
+
+        await expect(
+          regStore.completeInvitationRedemption(claim.claimId, userId, {
+            provisionReadOnlyMembership: true,
+          }),
+        ).rejects.toThrow();
+
+        const storedInvitation = (await regStore.listInvitations()).find(
+          (candidate) => candidate.id === invite.invitation.id,
+        );
+        expect(storedInvitation?.status).toBe('claimed');
+        await expect(regStore.getActorMembership(userId)).resolves.toMatchObject({
+          status: 'inactive',
+          capabilities: [],
+          scope: 'budget:restricted',
+        });
+      });
+
+      it('preserves missing membership during existing-user recovery', async () => {
+        const userId = '00000000-0000-0000-0000-000000000022';
+        const invite = await regStore.createInvitation(FIXED_USER_ID);
+        const token = invite.inviteUrl.split('#token=')[1];
+        const claim = await regStore.claimInvitation({
+          token,
+          email: 'existing@example.com',
+        });
+
+        await regStore.completeInvitationRedemption(claim.claimId, userId, {
+          provisionReadOnlyMembership: false,
+        });
+
+        const storedInvitation = (await regStore.listInvitations()).find(
+          (candidate) => candidate.id === invite.invitation.id,
+        );
+        expect(storedInvitation?.status).toBe('redeemed');
+        await expect(regStore.getActorMembership(userId)).resolves.toBeNull();
       });
 
       it('reconcileClaimedInvitations finalizes stranded claimed invitations', async () => {
@@ -2272,7 +2425,9 @@ describe('SqliteWorkflowStore', () => {
       expect(claim.email).toBe('claimant@example.com');
 
       // completeInvitationRedemption
-      await storeRef.completeInvitationRedemption(claim.claimId, 'user-redeemed');
+      await storeRef.completeInvitationRedemption(claim.claimId, 'user-redeemed', {
+        provisionReadOnlyMembership: true,
+      });
       const afterRedeem = await storeRef.listInvitations();
       const redeemEntry = afterRedeem.find((i) => i.id === invite2.invitation.id);
       expect(redeemEntry?.status).toBe('redeemed');

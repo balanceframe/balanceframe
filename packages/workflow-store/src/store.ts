@@ -1612,6 +1612,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
           WHERE dedup_key IS NOT NULL;
       `);
     },
+    // Version 8: Restore read-only access for members redeemed before observe was granted
+    (db) => {
+      db.exec(`
+        UPDATE actor_memberships
+           SET capabilities = '["observe"]'
+         WHERE status = 'active'
+           AND capabilities = '[]'
+           AND actor_id IN (
+             SELECT redeemed_user_id
+               FROM invitations
+              WHERE status = 'redeemed'
+                AND redeemed_user_id IS NOT NULL
+           );
+      `);
+    },
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -4931,38 +4946,73 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async completeInvitationRedemption(
     claimId: string,
     userId: string,
-    requestId?: string,
+    options: {
+      readonly requestId?: string;
+      readonly provisionReadOnlyMembership: boolean;
+    },
   ): Promise<void> {
     const now = nowISO();
-    const result = this.stmt.updateInvitationRedeemed.run({
-      claimId,
-      userId,
-      redeemedAt: now,
+    const txn = this.db.transaction(() => {
+      const membership = this.stmt.selectActorMembership.get(userId) as
+        ActorMembershipRow | undefined;
+      if (options.provisionReadOnlyMembership && membership && membership.status !== 'active') {
+        throw new Error(`Member status is '${membership.status}', not 'active'`);
+      }
+
+      const result = this.stmt.updateInvitationRedeemed.run({
+        claimId,
+        userId,
+        redeemedAt: now,
+      });
+      if (result.changes === 0) {
+        throw new Error(`Claim ${claimId} not found or not in claimed state`);
+      }
+
+      if (options.provisionReadOnlyMembership) {
+        if (!membership) {
+          this.stmt.upsertActorMembershipStmt.run({
+            actorId: userId,
+            status: 'active',
+            capabilities: JSON.stringify(['observe']),
+            scope: '*',
+          });
+        } else {
+          const capabilities = JSON.parse(membership.capabilities) as string[];
+          if (capabilities.length === 0) {
+            this.stmt.upsertActorMembershipStmt.run({
+              actorId: userId,
+              status: membership.status,
+              capabilities: JSON.stringify(['observe']),
+              scope: membership.scope,
+            });
+          }
+        }
+      }
+
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'invitation_redeemed',
+        timestamp: now,
+        actorId: userId,
+        operation: 'redeem_invitation',
+        proposalId: null,
+        payloadHash: null,
+        budgetId: null,
+        backendIds: '[]',
+        policyVersion: null,
+        authorizationDisposition: null,
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: null,
+        providerModel: null,
+        correlationId: null,
+        requestId: options.requestId ?? null,
+        result: `Invitation redeemed for user ${userId}`,
+        isError: 0,
+      });
     });
-    if (result.changes === 0) {
-      throw new Error(`Claim ${claimId} not found or not in claimed state`);
-    }
-    this.stmt.insertAudit.run({
-      id: randomUUID(),
-      classification: 'invitation_redeemed',
-      timestamp: now,
-      actorId: userId,
-      operation: 'redeem_invitation',
-      proposalId: null,
-      payloadHash: null,
-      budgetId: null,
-      backendIds: '[]',
-      policyVersion: null,
-      authorizationDisposition: null,
-      idempotencyKey: null,
-      expectedPriorState: null,
-      observedResultState: null,
-      providerModel: null,
-      correlationId: null,
-      requestId: requestId ?? null,
-      result: `Invitation redeemed for user ${userId}`,
-      isError: 0,
-    });
+
+    txn();
   }
 
   async reconcileClaimedInvitations(): Promise<number> {
