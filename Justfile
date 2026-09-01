@@ -39,7 +39,6 @@ test-rust:
 # Run the complete project test suite.
 test: test-js test-rust
 
-
 # Start a local Actual fixture server and seed a test budget.
 # Run 'source tests/actual-integration/.env.test' afterwards to pick up connection vars.
 setup-fixture:
@@ -80,19 +79,19 @@ compose-validate:
 # Locally, reject an already-pushed tag. In GitHub Actions, verify that the
 # triggering annotated tag resolves to the checked-out commit.
 # Exits nonzero on a version mismatch, reused tag, or mismatched CI tag commit.
-release-verify TAG:
+release-verify:
     #!/usr/bin/env bash
     set -euo pipefail
     version="$(jq -r '.version' package.json)"
     expected="v${version}"
-    ref="{{TAG}}"
+    ref="${RELEASE_TAG:?RELEASE_TAG is required}"
     # Strip pre-release suffix for semantic comparison.
     base="${ref%%-*}"
     if [[ "$base" != "$expected" ]]; then
-      echo "ERROR: TAG '{{TAG}}' does not match package.json version 'v$version'" >&2
+      echo "ERROR: TAG '$ref' does not match package.json version 'v$version'" >&2
       exit 1
     fi
-    echo "OK: TAG '{{TAG}}' matches package.json version 'v$version'"
+    echo "OK: TAG '$ref' matches package.json version 'v$version'"
 
     if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
       tag_commit="$(git ls-remote --tags origin "refs/tags/$ref^{}" | awk '{print $1}')"
@@ -107,8 +106,12 @@ release-verify TAG:
     else
       echo "OK: Tag '$ref' has not been released yet."
     fi
-release-assets TAG DIGEST:
-    scripts/release-assets.sh "{{TAG}}" "{{DIGEST}}"
+release-assets:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${TAG:?TAG is required}"
+    : "${DIGEST:?DIGEST is required}"
+    scripts/release-assets.sh "$TAG" "$DIGEST"
 
 # Run code coverage for JavaScript/TypeScript and Rust, producing separate reports.
 # Fails if either language's coverage run fails.

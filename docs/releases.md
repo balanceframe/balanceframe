@@ -38,15 +38,19 @@ all stable releases. Before `1.0.0`, `0.y.z` semantics apply:
 1. Update root `package.json` version to the release version (e.g. `0.1.4`).
 2. Create an annotated Git tag: `git tag -a v0.1.4 -m "v0.1.4"`
 3. Push the tag: `git push origin v0.1.4`
-4. The `release.yml` GitHub Actions workflow runs:
-   - Nix flake checks
-   - Workspace build, typecheck, lint, and tests
-   - Rust workspace tests and clippy
-   - Tag/version policy verification (`just release-verify`)
-   - Multi-platform OCI image build and push to GHCR
-   - SBOM, provenance, signature generation
-   - Release asset generation (`just release-assets`)
-   - GitHub Release draft with all assets
+4. The `release.yml` GitHub Actions workflow runs two sequential jobs with
+   separate timeout budgets:
+   - `verify` (45 minutes):
+     - Nix flake checks
+     - Workspace build, typecheck, lint, and tests
+     - Rust workspace tests and clippy
+     - Tag/version policy verification (`just release-verify`)
+   - `publish` (an independent 60 minutes), which runs only after `verify`
+     succeeds:
+     - Multi-platform OCI image build and push to GHCR
+     - SBOM, provenance, signature generation
+     - Release asset generation (`just release-assets`)
+     - GitHub Release draft with all assets
 
 ## OCI registry
 

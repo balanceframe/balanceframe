@@ -24,6 +24,13 @@ mkdir -p "$out"
 owner="$(git remote get-url origin 2>/dev/null | sed -n 's|.*github.com[/:]\([^/]*\)/.*|\1|p' || echo "balanceframe")"
 image_ref="ghcr.io/${owner}/balanceframe@${DIGEST}"
 
+escape_sed_replacement() {
+  sed 's/[&|\\]/\\&/g'
+}
+
+escaped_image_ref="$(printf '%s' "$image_ref" | escape_sed_replacement)"
+escaped_tag="$(printf '%s' "$TAG" | escape_sed_replacement)"
+
 # ---------------------------------------------------------------------------
 # compose.yaml
 # ---------------------------------------------------------------------------
@@ -65,7 +72,7 @@ volumes:
   balanceframe-data:
 COMPOSE
 
-sed -i "s|IMAGE_REF_PLACEHOLDER|${image_ref}|; s|vTAG_PLACEHOLDER|${TAG}|" "$out/compose.yaml"
+sed -i "s|IMAGE_REF_PLACEHOLDER|${escaped_image_ref}|; s|vTAG_PLACEHOLDER|${escaped_tag}|" "$out/compose.yaml"
 
 # ---------------------------------------------------------------------------
 # compose.actual.yaml (overlay)
