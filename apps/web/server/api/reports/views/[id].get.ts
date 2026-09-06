@@ -1,8 +1,8 @@
+import { requireFullRead } from '../../../utils/legacy-financial-read';
 /**
  * GET /api/reports/views/:id — get a single saved view by ID.
  *
  * Read-only — no model or cloud invocation.
- * Skips authorization gates — results are always observable.
  *
  * Fails with VIEW_NOT_FOUND when the view does not exist.
  *
@@ -14,12 +14,13 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   sanitizeError,
 } from '../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
   const viewId = getRouterParam(event, 'id') ?? '';
 
@@ -36,7 +37,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const view = await wf.store.getSavedView(viewId);
-    if (!view) {
+    if (!view || view.actorId !== fullRead.info.actorId) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'VIEW_NOT_FOUND',

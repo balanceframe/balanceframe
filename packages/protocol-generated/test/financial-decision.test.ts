@@ -416,6 +416,28 @@ describe('money and canonical time boundaries', () => {
 });
 
 describe('financialSnapshotSchema', () => {
+  it('requires canonical rule trigger and actions while preserving explicit null values', () => {
+    const rule = { ...LEGACY_SNAPSHOT.rules[0], trigger: null, actions: null };
+    const snapshot = {
+      ...FINANCIAL_SNAPSHOT,
+      legacySnapshot: { ...LEGACY_SNAPSHOT, rules: [rule] },
+    };
+    expect(financialSnapshotSchema.parse(snapshot).legacySnapshot.rules[0]).toMatchObject({
+      trigger: null,
+      actions: null,
+    });
+    const { trigger: _trigger, ...missingTrigger } = rule;
+    const { actions: _actions, ...missingActions } = rule;
+    for (const incomplete of [missingTrigger, missingActions]) {
+      expect(
+        financialSnapshotSchema.safeParse({
+          ...snapshot,
+          legacySnapshot: { ...snapshot.legacySnapshot, rules: [incomplete] },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('accepts the full canonical snapshot and preserves every observation kind and state', () => {
     const parsed = financialSnapshotSchema.parse(FINANCIAL_SNAPSHOT);
     expect(parsed).toEqual(FINANCIAL_SNAPSHOT);

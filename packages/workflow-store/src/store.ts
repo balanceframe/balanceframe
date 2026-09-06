@@ -11,6 +11,8 @@
  */
 
 import Database from 'better-sqlite3';
+import { LiquidityWorkflow } from './liquidity.js';
+import { migrateLiquidityWorkflow, migrateTransferPreviews } from './liquidity-migration.js';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 
@@ -29,7 +31,7 @@ import type {
   TransitionReviewInput,
   CreateReviewItemInput,
   TransitionReviewResult,
-  CategorizationProposal,
+  ActionProposal,
   ProposalOperation,
   ApprovalStatus,
   ProposalApproval,
@@ -198,14 +200,15 @@ function rowToReviewAction(row: ReviewActionRow): ReviewAction {
   };
 }
 
-/** Map a raw DB row to a typed CategorizationProposal. */
-function rowToProposal(row: ProposalRow): CategorizationProposal {
+/** Map a raw DB row to a typed ActionProposal. */
+function rowToProposal(row: ProposalRow): ActionProposal {
   return {
     id: row.id,
     operation: row.operation as ProposalOperation,
     budgetId: row.budget_id,
-    transactionId: row.transaction_id,
-    categoryId: row.category_id,
+    payload: JSON.parse(row.payload),
+    version: row.version,
+    state: JSON.parse(row.state),
     payloadHash: row.payload_hash,
     policyVersion: row.policy_version,
     preconditions: row.preconditions,
@@ -216,7 +219,7 @@ function rowToProposal(row: ProposalRow): CategorizationProposal {
     correlationId: row.correlation_id,
     supersededAt: row.superseded_at,
     createdAt: row.created_at,
-  };
+  } as ActionProposal;
 }
 
 /** Map a raw DB row to a typed ProposalApproval. */
@@ -610,8 +613,9 @@ interface ProposalRow {
   id: string;
   operation: string;
   budget_id: string;
-  transaction_id: string;
-  category_id: string;
+  payload: string;
+  version: number;
+  state: string;
   payload_hash: string;
   policy_version: string;
   preconditions: string;
@@ -888,6 +892,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectReviewByIssue: null as unknown as ReturnType<DatabaseType['prepare']>,
     listReviewItems: null as unknown as ReturnType<DatabaseType['prepare']>,
     listReviewItemsByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listReviewItemsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
     listReviewItemsByCorrelation: null as unknown as ReturnType<DatabaseType['prepare']>,
     transitionReviewItemStale: null as unknown as ReturnType<DatabaseType['prepare']>,
     transitionReviewItemUpdate: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -948,6 +953,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     removeRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
     countReviewItems: null as unknown as ReturnType<DatabaseType['prepare']>,
     countReviewItemsByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
+    countReviewItemsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
     countProposals: null as unknown as ReturnType<DatabaseType['prepare']>,
     countProposalsActive: null as unknown as ReturnType<DatabaseType['prepare']>,
     countProposalsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1054,6 +1060,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     countReportRecordsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
+  readonly liquidity: LiquidityWorkflow;
+
   constructor(filename: string = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
@@ -1073,6 +1081,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     // (4) Prepare runtime statements
     this.prepareStatements();
+    this.liquidity = new LiquidityWorkflow(this.db, (row) => rowToProposal(row as ProposalRow));
   }
   /** Release the database connection. */
   close(): void {
@@ -1674,6 +1683,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
            );
       `);
     },
+    migrateLiquidityWorkflow,
+    migrateTransferPreviews,
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -1905,6 +1916,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
        LIMIT @limit OFFSET @offset
     `);
 
+    this.stmt.listReviewItemsByBudget = this.db.prepare(`
+      SELECT * FROM review_items
+       WHERE budget_id = @budgetId AND (@status IS NULL OR status = @status)
+       ORDER BY
+         CASE WHEN status IN ('applied', 'apply_failed', 'rejected', 'skipped', 'superseded') THEN 1 ELSE 0 END ASC,
+         priority DESC,
+         created_at ASC
+       LIMIT @limit OFFSET @offset
+    `);
+
     this.stmt.listReviewItemsByCorrelation = this.db.prepare(`
       SELECT * FROM review_items
        WHERE correlation_id = @correlationId
@@ -1978,13 +1999,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Proposals ──────────────────────────────────────────────────────
 
     this.stmt.insertProposal = this.db.prepare(`
-      INSERT OR IGNORE INTO categorization_proposals (id, operation, budget_id, transaction_id,
-                                            category_id, payload_hash, policy_version,
+      INSERT OR IGNORE INTO action_proposals (id, operation, budget_id, payload,
+                                            payload_hash, policy_version,
                                             preconditions, expires_at, actor_id,
                                             provenance, provider_model, correlation_id,
                                             superseded_at, created_at)
-      VALUES (@id, @operation, @budgetId, @transactionId,
-              @categoryId, @payloadHash, @policyVersion,
+      VALUES (@id, @operation, @budgetId, @payload,
+              @payloadHash, @policyVersion,
               @preconditions, @expiresAt, @actorId,
               @provenance, @providerModel, @correlationId,
               @supersededAt, @createdAt)
@@ -1992,13 +2013,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     this.stmt.selectProposal = this.db.prepare(`
-      SELECT * FROM categorization_proposals WHERE id = ?
+      SELECT * FROM action_proposals WHERE id = ?
     `);
 
     this.stmt.selectActiveProposal = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
        WHERE budget_id = @budgetId
-         AND transaction_id = @transactionId
+         AND json_extract(payload, '$.transactionId') IS @transactionId
          AND operation = @operation
          AND superseded_at IS NULL
        ORDER BY created_at DESC
@@ -2006,16 +2027,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     this.stmt.selectProposalByExactKey = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
        WHERE budget_id = @budgetId
-         AND transaction_id = @transactionId
+         AND json_extract(payload, '$.transactionId') IS @transactionId
          AND operation = @operation
          AND payload_hash = @payloadHash
        LIMIT 1
     `);
 
     this.stmt.supersedeProposalStmt = this.db.prepare(`
-      UPDATE categorization_proposals
+      UPDATE action_proposals
          SET superseded_at = @now
        WHERE id = @id
     `);
@@ -2065,31 +2086,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     this.stmt.selectProposalStatus = this.db.prepare(`
-      SELECT superseded_at FROM categorization_proposals WHERE id = ?
+      SELECT superseded_at FROM action_proposals WHERE id = ?
     `);
 
     this.stmt.listProposals = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
       ORDER BY created_at DESC
       LIMIT @limit OFFSET @offset
     `);
 
     this.stmt.listProposalsActive = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
        WHERE superseded_at IS NULL
       ORDER BY created_at DESC
       LIMIT @limit OFFSET @offset
     `);
 
     this.stmt.listProposalsByBudget = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
        WHERE budget_id = @budgetId
       ORDER BY created_at DESC
       LIMIT @limit OFFSET @offset
     `);
 
     this.stmt.listProposalsByBudgetActive = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
        WHERE budget_id = @budgetId
          AND superseded_at IS NULL
       ORDER BY created_at DESC
@@ -2097,14 +2118,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     this.stmt.listProposalsSuperseded = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
        WHERE superseded_at IS NOT NULL
       ORDER BY created_at DESC
       LIMIT @limit OFFSET @offset
     `);
 
     this.stmt.listProposalsSupersededByBudget = this.db.prepare(`
-      SELECT * FROM categorization_proposals
+      SELECT * FROM action_proposals
        WHERE budget_id = @budgetId
          AND superseded_at IS NOT NULL
       ORDER BY created_at DESC
@@ -2386,33 +2407,38 @@ export class SqliteWorkflowStore implements WorkflowStore {
       SELECT COUNT(*) AS count FROM review_items WHERE status = @status
     `);
 
+    this.stmt.countReviewItemsByBudget = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM review_items
+       WHERE budget_id = @budgetId AND (@status IS NULL OR status = @status)
+    `);
+
     this.stmt.countProposals = this.db.prepare(`
-      SELECT COUNT(*) AS count FROM categorization_proposals
+      SELECT COUNT(*) AS count FROM action_proposals
     `);
 
     this.stmt.countProposalsActive = this.db.prepare(`
-      SELECT COUNT(*) AS count FROM categorization_proposals
+      SELECT COUNT(*) AS count FROM action_proposals
        WHERE superseded_at IS NULL
     `);
 
     this.stmt.countProposalsByBudget = this.db.prepare(`
-      SELECT COUNT(*) AS count FROM categorization_proposals
+      SELECT COUNT(*) AS count FROM action_proposals
        WHERE budget_id = @budgetId
     `);
 
     this.stmt.countProposalsByBudgetActive = this.db.prepare(`
-      SELECT COUNT(*) AS count FROM categorization_proposals
+      SELECT COUNT(*) AS count FROM action_proposals
        WHERE budget_id = @budgetId
          AND superseded_at IS NULL
     `);
 
     this.stmt.countProposalsSuperseded = this.db.prepare(`
-      SELECT COUNT(*) AS count FROM categorization_proposals
+      SELECT COUNT(*) AS count FROM action_proposals
        WHERE superseded_at IS NOT NULL
     `);
 
     this.stmt.countProposalsSupersededByBudget = this.db.prepare(`
-      SELECT COUNT(*) AS count FROM categorization_proposals
+      SELECT COUNT(*) AS count FROM action_proposals
        WHERE budget_id = @budgetId
          AND superseded_at IS NOT NULL
     `);
@@ -3531,6 +3557,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
 
+    if (options?.budgetId !== undefined) {
+      const rows = this.stmt.listReviewItemsByBudget.all({
+        budgetId: options.budgetId,
+        status: options.status ?? null,
+        limit,
+        offset,
+      }) as ReviewItemRow[];
+      return rows.map(rowToReviewItem);
+    }
+
     let rows: ReviewItemRow[];
     if (options?.status) {
       rows = this.stmt.listReviewItemsByStatus.all({
@@ -3545,6 +3581,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async countReviewItems(options?: ReviewListOptions): Promise<number> {
+    if (options?.budgetId !== undefined) {
+      const row = this.stmt.countReviewItemsByBudget.get({
+        budgetId: options.budgetId,
+        status: options.status ?? null,
+      }) as { count: number };
+      return row.count;
+    }
     if (options?.status) {
       const row = this.stmt.countReviewItemsByStatus.get({ status: options.status }) as {
         count: number;
@@ -3913,7 +3956,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
   // ── Categorization proposal lifecycle ─────────────────────────────
 
-  async createProposal(input: CreateProposalInput): Promise<CategorizationProposal> {
+  async createProposal(
+    input: CreateProposalInput,
+  ): Promise<Exclude<ActionProposal, { operation: 'transfer' }>> {
+    if (
+      input.operation !== input.payload.kind ||
+      !['set_category', 'create_rule'].includes(input.operation)
+    )
+      throw new Error('Unsupported proposal operation');
     const id = randomUUID();
 
     // Validate expiresAt
@@ -3930,8 +3980,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       id,
       operation: input.operation,
       budgetId: input.budgetId,
-      transactionId: input.transactionId,
-      categoryId: input.categoryId,
+      payload: JSON.stringify(input.payload),
       payloadHash: input.payloadHash,
       policyVersion: input.policyVersion,
       preconditions: input.preconditions,
@@ -3948,27 +3997,28 @@ export class SqliteWorkflowStore implements WorkflowStore {
       // Duplicate (same target + payload_hash) — fetch existing by exact key
       const existing = this.stmt.selectProposalByExactKey.get({
         budgetId: input.budgetId,
-        transactionId: input.transactionId,
+        transactionId: input.payload.transactionId,
         operation: input.operation,
         payloadHash: input.payloadHash,
       }) as ProposalRow | undefined;
-      if (existing) return rowToProposal(existing);
+      if (existing)
+        return rowToProposal(existing) as Exclude<ActionProposal, { operation: 'transfer' }>;
       throw new Error('Failed to create or retrieve proposal');
     }
 
-    return rowToProposal(row);
+    return rowToProposal(row) as Exclude<ActionProposal, { operation: 'transfer' }>;
   }
 
-  async getProposal(id: string): Promise<CategorizationProposal | null> {
+  async getProposal(id: string): Promise<ActionProposal | null> {
     const row = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
     return row ? rowToProposal(row) : null;
   }
 
   async findActiveProposal(
     budgetId: string,
-    transactionId: string,
+    transactionId: string | null,
     operation: ProposalOperation,
-  ): Promise<CategorizationProposal | null> {
+  ): Promise<ActionProposal | null> {
     const row = this.stmt.selectActiveProposal.get({
       budgetId,
       transactionId,
@@ -3977,9 +4027,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return row ? rowToProposal(row) : null;
   }
 
-  async supersedeProposal(id: string): Promise<CategorizationProposal> {
+  async supersedeProposal(id: string): Promise<ActionProposal> {
     const existing = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
     if (!existing) throw new Error(`Proposal ${id} not found`);
+    if (existing.operation === 'transfer')
+      throw new Error('Transfer requires resource-scoped transition');
     if (existing.superseded_at) {
       // Already superseded — idempotent
       return rowToProposal(existing);
@@ -3995,7 +4047,35 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rowToProposal(updated);
   }
 
-  async listProposals(options?: ListProposalsOptions): Promise<CategorizationProposal[]> {
+  /** Discard a categorization/rule proposal and its approvals under current transactional authorization. */
+  async discardProposal(id: string, actorId: string): Promise<ActionProposal | null> {
+    return this.db.transaction(() => {
+      const proposal = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
+      if (!proposal || !this.approvalIssuerAuthorized(actorId, proposal)) return null;
+      if (!proposal.superseded_at) {
+        const now = nowISO();
+        this.stmt.supersedeProposalStmt.run({ id, now });
+        this.stmt.supersedeProposalApprovals.run({ proposalId: id, now });
+      }
+      return rowToProposal(this.stmt.selectProposal.get(id) as ProposalRow);
+    })();
+  }
+
+  async listProposals(options?: ListProposalsOptions): Promise<ActionProposal[]> {
+    if (options?.operations) {
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM action_proposals WHERE operation IN (SELECT value FROM json_each(@operations)) AND (@budgetId IS NULL OR budget_id=@budgetId) AND (@superseded IS NULL OR (superseded_at IS NOT NULL)=@superseded) ORDER BY created_at DESC LIMIT @limit OFFSET @offset`,
+        )
+        .all({
+          operations: JSON.stringify(options.operations),
+          budgetId: options.budgetId ?? null,
+          superseded: options.superseded === undefined ? null : Number(options.superseded),
+          limit: options.limit ?? 50,
+          offset: options.offset ?? 0,
+        }) as ProposalRow[];
+      return rows.map(rowToProposal);
+    }
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
     const hasBudget = options?.budgetId != null;
@@ -4036,6 +4116,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async countProposals(options?: ListProposalsOptions): Promise<number> {
+    if (options?.operations) {
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM action_proposals WHERE operation IN (SELECT value FROM json_each(@operations)) AND (@budgetId IS NULL OR budget_id=@budgetId) AND (@superseded IS NULL OR (superseded_at IS NOT NULL)=@superseded)`,
+        )
+        .get({
+          operations: JSON.stringify(options.operations),
+          budgetId: options.budgetId ?? null,
+          superseded: options.superseded === undefined ? null : Number(options.superseded),
+        }) as { count: number };
+      return row.count;
+    }
     const hasBudget = options?.budgetId != null;
     let row: { count: number };
 
@@ -4069,70 +4161,77 @@ export class SqliteWorkflowStore implements WorkflowStore {
   // ── Proposal approval lifecycle ───────────────────────────────────
 
   async createApproval(input: CreateApprovalInput): Promise<ProposalApproval> {
-    // Validate proposal exists and is not superseded
-    const proposalRow = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
-    if (!proposalRow) throw new Error(`Proposal ${input.proposalId} not found`);
-    if (proposalRow.superseded_at) throw new Error(`Proposal ${input.proposalId} is superseded`);
+    return this.db.transaction(() => {
+      // Validate proposal exists and is not superseded
+      const proposalRow = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+      if (!proposalRow) throw new Error(`Proposal ${input.proposalId} not found`);
+      if (proposalRow.operation === 'transfer')
+        throw new Error('Transfer approval requires trusted transactional validation');
+      if (!this.approvalIssuerAuthorized(input.actorId, proposalRow)) {
+        throw new Error('Approval authorization denied');
+      }
+      if (proposalRow.superseded_at) throw new Error(`Proposal ${input.proposalId} is superseded`);
 
-    // Validate proposal has not expired
-    if (isExpired(proposalRow.expires_at)) {
-      throw new Error(`Proposal ${input.proposalId} expired at ${proposalRow.expires_at}`);
-    }
+      // Validate proposal has not expired
+      if (isExpired(proposalRow.expires_at)) {
+        throw new Error(`Proposal ${input.proposalId} expired at ${proposalRow.expires_at}`);
+      }
 
-    // Validate payload hash matches proposal
-    if (input.payloadHash !== proposalRow.payload_hash) {
-      throw new Error(
-        `Payload hash mismatch: approval hash ${input.payloadHash} does not match proposal hash ${proposalRow.payload_hash}`,
-      );
-    }
-
-    // Validate approval expiry is in the future
-    if (isExpired(input.expiresAt)) {
-      throw new Error(`Approval expiry ${input.expiresAt} is in the past`);
-    }
-
-    const id = randomUUID();
-    const now = nowISO();
-
-    const row = this.stmt.insertApproval.get({
-      id,
-      proposalId: input.proposalId,
-      payloadHash: input.payloadHash,
-      actorId: input.actorId,
-      expiresAt: input.expiresAt,
-      createdAt: now,
-    }) as ApprovalRow | undefined;
-
-    if (!row) {
-      // Check if any approval (in any state) already exists for this (proposalId, actorId)
-      const existingAny = this.stmt.selectApprovalByProposalActor.get({
-        proposalId: input.proposalId,
-        actorId: input.actorId,
-      }) as ApprovalRow | undefined;
-
-      if (existingAny) {
-        if (existingAny.status === 'active') {
-          // Check if the existing active approval has actually expired
-          if (isExpired(existingAny.expires_at)) {
-            throw new Error(
-              `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
-                `already exists with status 'active' (expired at ${existingAny.expires_at}) and cannot be re-issued`,
-            );
-          }
-          // Active and not expired — idempotent return
-          return rowToApproval(existingAny);
-        }
-        // Reject re-issuance — a consumed/expired/superseded approval already exists
+      // Validate payload hash matches proposal
+      if (input.payloadHash !== proposalRow.payload_hash) {
         throw new Error(
-          `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
-            `already exists with status '${existingAny.status}' and cannot be re-issued`,
+          `Payload hash mismatch: approval hash ${input.payloadHash} does not match proposal hash ${proposalRow.payload_hash}`,
         );
       }
 
-      throw new Error('Failed to create approval');
-    }
+      // Validate approval expiry is in the future
+      if (isExpired(input.expiresAt)) {
+        throw new Error(`Approval expiry ${input.expiresAt} is in the past`);
+      }
 
-    return rowToApproval(row);
+      const id = randomUUID();
+      const now = nowISO();
+
+      const row = this.stmt.insertApproval.get({
+        id,
+        proposalId: input.proposalId,
+        payloadHash: input.payloadHash,
+        actorId: input.actorId,
+        expiresAt: input.expiresAt,
+        createdAt: now,
+      }) as ApprovalRow | undefined;
+
+      if (!row) {
+        // Check if any approval (in any state) already exists for this (proposalId, actorId)
+        const existingAny = this.stmt.selectApprovalByProposalActor.get({
+          proposalId: input.proposalId,
+          actorId: input.actorId,
+        }) as ApprovalRow | undefined;
+
+        if (existingAny) {
+          if (existingAny.status === 'active') {
+            // Check if the existing active approval has actually expired
+            if (isExpired(existingAny.expires_at)) {
+              throw new Error(
+                `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
+                  `already exists with status 'active' (expired at ${existingAny.expires_at}) and cannot be re-issued`,
+              );
+            }
+            // Active and not expired — idempotent return
+            return rowToApproval(existingAny);
+          }
+          // Reject re-issuance — a consumed/expired/superseded approval already exists
+          throw new Error(
+            `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
+              `already exists with status '${existingAny.status}' and cannot be re-issued`,
+          );
+        }
+
+        throw new Error('Failed to create approval');
+      }
+
+      return rowToApproval(row);
+    })();
   }
 
   async getApproval(id: string): Promise<ProposalApproval | null> {
@@ -4150,42 +4249,50 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async consumeApproval(id: string): Promise<ProposalApproval> {
-    const existing = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
-    if (!existing) throw new Error(`Approval ${id} not found`);
+    return this.db.transaction(() => {
+      const existing = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
+      if (!existing) throw new Error(`Approval ${id} not found`);
 
-    if (existing.consumed_at)
-      throw new Error(`Approval ${id} already consumed at ${existing.consumed_at}`);
-    if (existing.superseded_at) throw new Error(`Approval ${id} is superseded`);
+      if (existing.consumed_at)
+        throw new Error(`Approval ${id} already consumed at ${existing.consumed_at}`);
+      if (existing.superseded_at) throw new Error(`Approval ${id} is superseded`);
 
-    // Check proposal is not superseded
-    const proposalRow = this.stmt.selectProposal.get(existing.proposal_id) as
-      ProposalRow | undefined;
-    if (!proposalRow) throw new Error(`Proposal ${existing.proposal_id} not found`);
-    if (proposalRow.superseded_at)
-      throw new Error(
-        `Proposal ${existing.proposal_id} is superseded — cannot consume its approval`,
-      );
+      // Check proposal is not superseded
+      const proposalRow = this.stmt.selectProposal.get(existing.proposal_id) as
+        ProposalRow | undefined;
+      if (!proposalRow) throw new Error(`Proposal ${existing.proposal_id} not found`);
+      if (!this.approvalIssuerAuthorized(existing.actor_id, proposalRow)) {
+        throw new Error('Approval authorization denied');
+      }
+      if (existing.payload_hash !== proposalRow.payload_hash) {
+        throw new Error('Approval payload hash mismatch');
+      }
+      if (proposalRow.superseded_at)
+        throw new Error(
+          `Proposal ${existing.proposal_id} is superseded — cannot consume its approval`,
+        );
 
-    // Check proposal has not expired
-    if (isExpired(proposalRow.expires_at)) {
-      throw new Error(
-        `Proposal ${existing.proposal_id} expired at ${proposalRow.expires_at} — cannot consume its approval`,
-      );
-    }
+      // Check proposal has not expired
+      if (isExpired(proposalRow.expires_at)) {
+        throw new Error(
+          `Proposal ${existing.proposal_id} expired at ${proposalRow.expires_at} — cannot consume its approval`,
+        );
+      }
 
-    // Check expiry
-    const now = nowISO();
-    if (isExpired(existing.expires_at)) {
-      throw new Error(`Approval ${id} expired at ${existing.expires_at}`);
-    }
+      // Check expiry
+      const now = nowISO();
+      if (isExpired(existing.expires_at)) {
+        throw new Error(`Approval ${id} expired at ${existing.expires_at}`);
+      }
 
-    const result = this.stmt.consumeApprovalStmt.run({ id, now });
-    if (result.changes === 0) {
-      throw new Error(`Approval ${id} could not be consumed (concurrent state change)`);
-    }
+      const result = this.stmt.consumeApprovalStmt.run({ id, now });
+      if (result.changes === 0) {
+        throw new Error(`Approval ${id} could not be consumed (concurrent state change)`);
+      }
 
-    const updated = this.stmt.selectApproval.get(id) as ApprovalRow;
-    return rowToApproval(updated);
+      const updated = this.stmt.selectApproval.get(id) as ApprovalRow;
+      return rowToApproval(updated);
+    })();
   }
 
   async verifyApprovalForExecution(
@@ -4218,8 +4325,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
       now,
     }) as ApprovalRow[];
 
-    if (activeApprovals.length === 0) {
-      return `No active approvals found for proposal ${proposalId}`;
+    if (
+      !activeApprovals.some(
+        (approval) =>
+          approval.payload_hash === proposalRow.payload_hash &&
+          !isExpired(approval.expires_at) &&
+          this.approvalIssuerAuthorized(approval.actor_id, proposalRow),
+      )
+    ) {
+      return `No authorized active approvals found for proposal ${proposalId}`;
     }
 
     return null;
@@ -4384,12 +4498,39 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Authorization ─────────────────────────────────────────────────
 
+  private approvalIssuerAuthorized(actorId: string, proposal: ProposalRow): boolean {
+    const capability =
+      proposal.operation === 'set_category'
+        ? 'categorization:execute'
+        : proposal.operation === 'create_rule'
+          ? 'rule:execute'
+          : null;
+    return (
+      capability !== null &&
+      this.evaluateAuthorizationSync(
+        actorId,
+        capability,
+        `budget:${proposal.budget_id}`,
+        proposal.policy_version,
+      ).allowed
+    );
+  }
+
   async evaluateAuthorization(
     actorId: string,
     capability: string,
     scope: string,
     policyVersion: string,
   ): Promise<AuthorizationResult> {
+    return this.evaluateAuthorizationSync(actorId, capability, scope, policyVersion);
+  }
+
+  private evaluateAuthorizationSync(
+    actorId: string,
+    capability: string,
+    scope: string,
+    policyVersion: string,
+  ): AuthorizationResult {
     const row = this.stmt.selectActorMembership.get(actorId) as ActorMembershipRow | undefined;
 
     if (!row) {
@@ -4570,7 +4711,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
         deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
         deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
-        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM action_proposals').run().changes;
         deleted.auditRecords = db.prepare('DELETE FROM audit_records').run().changes;
         deleted.memberships = db.prepare('DELETE FROM actor_memberships').run().changes;
         deleted.exports = db.prepare('DELETE FROM export_records').run().changes;
@@ -4602,7 +4743,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
         deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
         deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
-        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM action_proposals').run().changes;
         deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
         deleted.deliveryAttempts = db.prepare('DELETE FROM delivery_attempts').run().changes;
         deleted.outboxRecords = db.prepare('DELETE FROM notification_outbox').run().changes;
@@ -4614,7 +4755,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
       case 'provider':
         deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
-        deleted.proposals = db.prepare('DELETE FROM categorization_proposals').run().changes;
+        deleted.proposals = db.prepare('DELETE FROM action_proposals').run().changes;
         break;
 
       case 'notification':

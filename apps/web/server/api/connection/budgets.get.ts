@@ -1,15 +1,13 @@
+import { requireRegisteredOwner } from '../../utils/legacy-financial-read';
 import { defineEventHandler, setResponseStatus } from 'h3';
 import { createDefaultConnectionManager } from '@balanceframe/application';
-import {
-  buildAuthorizationInfo,
-  errorEnvelope,
-  okEnvelope,
-  sanitizeError,
-} from '../../utils/workflow-store';
+import { errorEnvelope, okEnvelope, sanitizeError } from '../../utils/workflow-store';
 
 /** List Actual budgets available to the authenticated BalanceFrame user. */
 export default defineEventHandler(async (event) => {
-  const auth = buildAuthorizationInfo(event, 'observe');
+  const owner = await requireRegisteredOwner(event);
+  if (!owner.ok) return owner.response;
+  const auth = owner.info;
   const requestId = crypto.randomUUID();
 
   try {

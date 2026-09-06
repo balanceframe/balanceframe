@@ -11,6 +11,7 @@ pub mod duplicates;
 pub mod envelope;
 pub mod financial_state;
 pub mod freshness;
+pub mod liquidity;
 pub mod merchant;
 pub mod money;
 pub mod purchase;

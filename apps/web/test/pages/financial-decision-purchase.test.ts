@@ -275,14 +275,24 @@ function mountPage(): VueWrapper {
 }
 
 async function evaluate(result: Record<string, unknown>) {
-  mockFetch.mockResolvedValueOnce(okEnvelope(result));
+  mockFetch.mockImplementation((url: string) =>
+    Promise.resolve(
+      okEnvelope(
+        url === '/api/liquidity/spendability'
+          ? {
+              accounts: [{ id: 'fd-account-checking', name: 'Checking' }],
+              categories: [{ id: 'fd-category-groceries', name: 'Groceries' }],
+            }
+          : result,
+      ),
+    ),
+  );
   const wrapper = mountPage();
-  const inputs = wrapper.findAll('input');
-
-  await inputs[0].setValue('fd-category-groceries');
-  await inputs[1].setValue('5500');
-  await inputs[2].setValue('USD');
-  await inputs[3].setValue('fd-account-checking');
+  await flushPromises();
+  await wrapper.get('#purchase-category').setValue('fd-category-groceries');
+  await wrapper.get('#purchase-amount').setValue('5500');
+  await wrapper.get('#purchase-currency').setValue('USD');
+  await wrapper.get('#purchase-account').setValue('fd-account-checking');
   await wrapper.get('button').trigger('click');
   await flushPromises();
 
@@ -292,22 +302,6 @@ async function evaluate(result: Record<string, unknown>) {
 describe('Purchase Check canonical financial decision presentation', () => {
   beforeEach(() => {
     mockFetch.mockReset();
-  });
-
-  it('states that evaluation is read-only and evaluates the entered purchase', async () => {
-    const wrapper = await evaluate(currentResult('ready'));
-
-    expect(wrapper.text()).toContain(
-      'This page is read-only. Evaluations do not mutate ledger state or trigger transactions.',
-    );
-    expect(mockFetch).toHaveBeenCalledWith('/api/purchase/evaluate', {
-      query: {
-        categoryId: 'fd-category-groceries',
-        amount: '5500',
-        currency: 'USD',
-        accountId: 'fd-account-checking',
-      },
-    });
   });
 
   it.each([

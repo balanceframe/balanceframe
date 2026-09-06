@@ -9,6 +9,7 @@ export default defineConfig({
     bail: 1,
     coverage: {
       provider: 'v8',
+      all: true,
       reporter: ['text-summary', 'lcov', 'json'],
       reportsDirectory: '../../coverage/js/application',
       include: ['src/**'],
@@ -27,12 +28,24 @@ export default defineConfig({
   resolve: {
     alias: {
       '@balanceframe/protocol-generated': resolve(__dirname, '../protocol-generated/src'),
-      '@balanceframe/protocol-generated/validators': resolve(__dirname, '../protocol-generated/src/validators.ts'),
+      '@balanceframe/protocol-generated/validators': resolve(
+        __dirname,
+        '../protocol-generated/src/validators.ts',
+      ),
       '@balanceframe/actual-adapter': resolve(__dirname, '../actual-adapter/src'),
       '@balanceframe/actual-adapter/types': resolve(__dirname, '../actual-adapter/src/types.ts'),
-      '@balanceframe/actual-adapter/credentials': resolve(__dirname, '../actual-adapter/src/credentials.ts'),
-      '@balanceframe/actual-adapter/connector': resolve(__dirname, '../actual-adapter/src/connector.ts'),
-      '@balanceframe/actual-adapter/normalizer': resolve(__dirname, '../actual-adapter/src/normalizer.ts'),
+      '@balanceframe/actual-adapter/credentials': resolve(
+        __dirname,
+        '../actual-adapter/src/credentials.ts',
+      ),
+      '@balanceframe/actual-adapter/connector': resolve(
+        __dirname,
+        '../actual-adapter/src/connector.ts',
+      ),
+      '@balanceframe/actual-adapter/normalizer': resolve(
+        __dirname,
+        '../actual-adapter/src/normalizer.ts',
+      ),
       '@balanceframe/workflow-store': resolve(__dirname, '../workflow-store/src'),
       '@balanceframe/workflow-store/types': resolve(__dirname, '../workflow-store/src/types.ts'),
     },

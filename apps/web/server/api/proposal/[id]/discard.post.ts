@@ -5,46 +5,62 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
+  getActorId,
 } from '../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'rule.execute');
+  const auth = event.context.auth;
   const requestId = crypto.randomUUID();
+  const denied = () => {
+    setResponseStatus(event, 403);
+    return errorEnvelope(
+      'FORBIDDEN',
+      'Proposal discard is not authorized.',
+      null,
+      false,
+      requestId,
+    );
+  };
+  const hasIdentity =
+    (typeof auth?.user?.id === 'string' && auth.user.id.length > 0) ||
+    (typeof auth?.actorId === 'string' && auth.actorId.length > 0);
+  if (!auth?.authenticated || !hasIdentity) return denied();
   const proposalId = event.context.params?.id;
 
   if (!proposalId) {
     setResponseStatus(event, 400);
-    return errorEnvelope(
-      'MISSING_PROPOSAL_ID',
-      'Proposal ID is required.',
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope('MISSING_PROPOSAL_ID', 'Proposal ID is required.', null, false, requestId);
   }
 
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+    return errorEnvelope(
+      'STORE_UNAVAILABLE',
+      'Proposal store is unavailable.',
+      null,
+      false,
+      requestId,
+    );
   }
 
   try {
-    const proposal = await wf.store.getProposal(proposalId);
-    if (!proposal) {
-      setResponseStatus(event, 404);
-      return errorEnvelope('PROPOSAL_NOT_FOUND', 'Proposal not found.', authInfo, false, requestId);
-    }
-
-    const superseded = await wf.store.supersedeProposal(proposalId);
-    return okEnvelope({ proposalId: superseded.id, discarded: true }, authInfo, requestId);
-  } catch (error) {
+    const actorId = getActorId(event);
+    const superseded = await wf.store.discardProposal(proposalId, actorId);
+    if (!superseded) return denied();
+    const capability =
+      superseded.operation === 'set_category' ? 'categorization:execute' : 'rule:execute';
+    return okEnvelope(
+      { proposalId: superseded.id, discarded: true },
+      { actorId, capability, allowed: true },
+      requestId,
+    );
+  } catch {
     setResponseStatus(event, 500);
     return errorEnvelope(
       'DISCARD_FAILED',
-      error instanceof Error ? error.message : String(error),
-      authInfo,
+      'Proposal could not be discarded.',
+      null,
       false,
       requestId,
     );

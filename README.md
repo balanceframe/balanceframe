@@ -76,7 +76,7 @@ BalanceFrame is a **Rust–TypeScript modular monolith**:
 
 - **Actual integration** — Connects to Actual Budget via the
   published `@actual-app/api` to observe transactions, categories, and
-  budget state.  Categorisation mutations are written only when explicitly
+  budget state. Categorisation mutations are written only when explicitly
   authorised through the review-apply workflow (opt-in per deployment).
 - **Deterministic classification** — Rust-based rule engine that applies
   user-defined patterns and learned rules with full provenance.
@@ -108,6 +108,7 @@ docker compose up -d
 BalanceFrame starts on port 3030 by default. Open `http://localhost:3030` in your
 browser, log in, open **Connection**, and select the Actual budget to use.
 The selected budget is persisted in the configured BalanceFrame data volume.
+
 ### Deploy BalanceFrame with a bundled Actual Budget server
 
 For a new single-server setup include the optional overlay:
@@ -170,6 +171,7 @@ nix develop .#release
 
 just release-verify v0.1.4
 just release-assets v0.1.4 sha256:<64-hex-digest>
+```
 
 See [docs/releases.md](docs/releases.md) and
 [.github/workflows/release.yml](.github/workflows/release.yml) for the
@@ -178,30 +180,85 @@ full release process.
 ### Coverage
 
 ```bash
-# Full coverage (JS/TS + Rust) from the Nix development environment
+# After pnpm install and pnpm build, run the complete serial coverage gate.
+# Default HEAD includes staged, unstaged and untracked source changes.
 nix develop --command just coverage
+
+# Compare complete changed source files since an available branch/ref.
+nix develop --command just coverage origin/main
+
+# Recheck existing reports without rerunning tests.
+node scripts/coverage/check.mjs --base origin/main --require-execution
 ```
 
 **Report locations** (relative to project root):
 
-| Layer | Report | Path |
-|-------|--------|------|
-| JS/TS | LCOV (per package) | `coverage/js/<package>/lcov.info` |
-| JS/TS | JSON (per package) | `coverage/js/<package>/coverage-final.json` |
-| Rust | LCOV (workspace) | `coverage/rust/lcov.info` |
-| All | Machine-readable index | `coverage/summary.json` |
+| Layer                  | Report                                               | Path                                        |
+| ---------------------- | ---------------------------------------------------- | ------------------------------------------- |
+| JS/TS                  | LCOV (per package)                                   | `coverage/js/<package>/lcov.info`           |
+| JS/TS                  | JSON (per package)                                   | `coverage/js/<package>/coverage-final.json` |
+| CLI runtime entrypoint | Real child-process V8 LCOV                           | `coverage/js/cli/entrypoint-lcov.info`      |
+| Rust                   | Authoritative LLVM per-file line summaries (JSON)    | `coverage/rust/coverage.json`               |
+| Rust                   | LCOV (workspace, for coverage viewers)               | `coverage/rust/lcov.info`                   |
+| All                    | Threshold results, weighted totals and failures      | `coverage/summary.json`                     |
+| JS/TS suites           | Execution evidence (no failed/skipped/pending tests) | `coverage/js/<package>/tests.json`          |
 
 **Inclusion/exclusion:**
 
-- JS/TS coverage includes `src/**` source files only; tests, fixtures, build
-  output (`dist/`), and `node_modules/` are excluded.
-- Rust coverage includes all workspace crates; dependencies and the `target/`
-  directory are excluded by `cargo llvm-cov`.
+- JS V8 coverage includes all production source, including unimported files:
+  package `src/` and `bin/`, declared `main` / `module` / `bin` / `exports` source
+  targets, and Nuxt `app/`, `server/`, `lib/`, `composables/`, `types/` and
+  `nuxt.config.ts`. The runner passes the discovered inventory to V8's include-all
+  provider. Tests, fixtures, declarations, and build/dependency output are not
+  production. Canonical generated validators remain in scope. New workspace
+  packages and source files are discovered. Required reports always fail closed
+  when missing or malformed. Missing source records fail unless the source is
+  strictly type-only TypeScript (checked with the TypeScript AST), or conservative
+  Rust declarations with no function, implementation, constant, static or macro
+  invocation syntax. Existing provider counts are never discarded. Missing records
+  classified as non-executable are listed in `nonExecutableSources` and contribute
+  no artificial covered lines.
+- Rust uses the standard LLVM JSON per-file `summary.lines` metrics across the
+  workspace. These authoritative totals can differ from LCOV `DA` record counts;
+  LCOV remains available for coverage viewers.
+  External tests and test-only `fuzz.rs` / `phase_85_tests.rs` modules are excluded.
+  The runner uses matching LLVM tools from the development environment, an isolated instrumented
+  native build and real Node/N-API consumers; the live native addon is not replaced.
+  Linux GDB fault injection also exercises real N-API host-registration failures
+  that cannot be reached through successful addon loading; no production counters
+  are excluded. GDB is a required coverage prerequisite in the development shell.
+- Live Actual tests use the existing disposable fixture setup on a fresh loopback
+  port and private data directory. Before any consumer runs, inherited `ACTUAL_*`,
+  `BALANCEFRAME_*` and `NUXT_*` settings are cleared. Actual receives an explicit
+  private empty configuration; connection, credential-vault, workflow and auth paths
+  point into disposable storage. The runner restores any prior `.env.test` and
+  stops its own verified fixture on exit. On direct INT/TERM, it terminates the
+  owned command group (including descendants) and reaps its child before restoring state.
+  Local coverage uses Linux `setsid` and `/proc`, as does the Linux CI job.
+  Missing prerequisites or skipped integration tests are failures, not opt-outs.
+- Source-free and wholly non-executable packages report **N/A**, never artificial 100%;
+  contract/integration suites must still pass with no skipped tests. Test scripts
+  and discovered test files independently make a suite mandatory: deleting its
+  coverage script fails configuration rather than opting it out.
 
-**Coverage thresholds:** JS/TS and Rust are measured and reported independently.
-No unified project-wide percentage is calculated. Existing policy targets are
-documented in `AGENTS.md`; CI currently publishes reports without enforcing
-those targets, so the first baseline can be reviewed before adding gates.
+**Line thresholds** apply both to each package total and to the aggregate of
+changed production-source files within that package (not changed lines or
+individual tiny files):
+
+| Package                                                             | Minimum |
+| ------------------------------------------------------------------- | ------- |
+| `crates/financial-core`, `crates/core-protocol`                     | 95%     |
+| `crates/node-binding`, `packages/protocol-generated`                | 90%     |
+| `tests/contract` (where production source exists)                   | 100%    |
+| `tests/actual-integration` (where production source exists)         | 90%     |
+| Every other code package, including coverage checker infrastructure | 80%     |
+| Line-weighted workspace total                                       | 80%     |
+
+CI fetches history and supplies the pull-request base SHA. Local comparison uses
+the merge base with `HEAD`, plus working-tree and untracked sources. An unavailable
+base, malformed report, missing report/source, or threshold failure exits nonzero.
+The checker and runner isolation/cancellation contracts have executable behavior tests:
+`pnpm test:coverage-gates`.
 
 ## Project Status
 
@@ -220,4 +277,3 @@ BalanceFrame is in **initial release.** The current stable version is
 
 Copyright 2026 BalanceFrame contributors. Licensed under the Apache License,
 Version 2.0. See [LICENSE](LICENSE) for the full license text.
-

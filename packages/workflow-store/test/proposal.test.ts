@@ -47,25 +47,43 @@ function pastExpiry(): string {
 
 function tickSync(): void {
   const start = Date.now();
-  while (Date.now() === start) { /* spin */ }
+  while (Date.now() === start) {
+    /* spin */
+  }
 }
 
 /**
  * Bypass createProposal validation to force a proposal's expires_at in the DB.
  * Accesses private `db` property — intentional test seam.
  */
-function forceProposalExpiry(store: SqliteWorkflowStore, proposalId: string, expiresAt: string): void {
-  const s = store as unknown as { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } };
-  s.db.prepare('UPDATE categorization_proposals SET expires_at = ? WHERE id = ?').run(expiresAt, proposalId);
+function forceProposalExpiry(
+  store: SqliteWorkflowStore,
+  proposalId: string,
+  expiresAt: string,
+): void {
+  const s = store as unknown as {
+    db: { prepare(sql: string): { run(...params: unknown[]): unknown } };
+  };
+  s.db
+    .prepare('UPDATE action_proposals SET expires_at = ? WHERE id = ?')
+    .run(expiresAt, proposalId);
 }
 
 /**
  * Bypass createApproval validation to force an approval's expires_at in the DB.
  * Accesses private `db` property — intentional test seam.
  */
-function forceApprovalExpiry(store: SqliteWorkflowStore, approvalId: string, expiresAt: string): void {
-  const s = store as unknown as { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } };
-  s.db.prepare('UPDATE proposal_approvals SET expires_at = ? WHERE id = ?').run(expiresAt, approvalId);
+function forceApprovalExpiry(
+  store: SqliteWorkflowStore,
+  approvalId: string,
+  expiresAt: string,
+): void {
+  const s = store as unknown as {
+    db: { prepare(sql: string): { run(...params: unknown[]): unknown } };
+  };
+  s.db
+    .prepare('UPDATE proposal_approvals SET expires_at = ? WHERE id = ?')
+    .run(expiresAt, approvalId);
 }
 
 const SAMPLE_HASH = 'abc123def4567890abcdef1234567890abcdef1234567890abcdef1234567890';
@@ -74,8 +92,8 @@ const DIFFERENT_HASH = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 const BASE_PROPOSAL: CreateProposalInput = {
   operation: 'set_category',
   budgetId: 'budget-alpha',
-  transactionId: 'txn-001',
-  categoryId: 'cat-food',
+  payload: { kind: 'set_category', transactionId: 'txn-001', categoryId: 'cat-food' },
+
   payloadHash: SAMPLE_HASH,
   policyVersion: '1.0.0',
   preconditions: JSON.stringify({ transactionVersion: 3 }),
@@ -97,11 +115,28 @@ const BASE_APPROVAL: CreateApprovalInput = {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('CategorizationProposal', () => {
+describe('ActionProposal', () => {
   let store: SqliteWorkflowStore;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     store = new SqliteWorkflowStore(':memory:');
+    for (const actorId of [
+      'bob@example.com',
+      'carol@example.com',
+      'short@example.com',
+      'expirer@example.com',
+      'det-past@example.com',
+      'det-invalid@example.com',
+      'det-approval-past@example.com',
+      'det-approval-invalid@example.com',
+    ]) {
+      await store.upsertActorMembership(
+        actorId,
+        'active',
+        ['categorization:execute'],
+        'budget:budget-alpha',
+      );
+    }
   });
 
   // =======================================================================
@@ -115,8 +150,8 @@ describe('CategorizationProposal', () => {
       expect(p.id).toBeTypeOf('string');
       expect(p.operation).toBe('set_category');
       expect(p.budgetId).toBe(BASE_PROPOSAL.budgetId);
-      expect(p.transactionId).toBe(BASE_PROPOSAL.transactionId);
-      expect(p.categoryId).toBe(BASE_PROPOSAL.categoryId);
+      expect(p.payload.transactionId).toBe(BASE_PROPOSAL.payload.transactionId);
+      expect(p.payload.categoryId).toBe(BASE_PROPOSAL.payload.categoryId);
       expect(p.payloadHash).toBe(SAMPLE_HASH);
       expect(p.policyVersion).toBe(BASE_PROPOSAL.policyVersion);
       expect(p.preconditions).toBe(BASE_PROPOSAL.preconditions);
@@ -162,7 +197,7 @@ describe('CategorizationProposal', () => {
       const second = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: DIFFERENT_HASH,
-        categoryId: 'cat-utilities',
+        payload: { ...BASE_PROPOSAL.payload, categoryId: 'cat-utilities' },
       });
 
       expect(second.id).not.toBe(first.id);
@@ -207,7 +242,7 @@ describe('CategorizationProposal', () => {
       const second = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: DIFFERENT_HASH,
-        categoryId: 'cat-utilities',
+        payload: { ...BASE_PROPOSAL.payload, categoryId: 'cat-utilities' },
       });
       expect(second.id).not.toBe(first.id);
 
@@ -215,7 +250,7 @@ describe('CategorizationProposal', () => {
       const retry = await store.createProposal(BASE_PROPOSAL);
       expect(retry.id).toBe(first.id);
       expect(retry.payloadHash).toBe(SAMPLE_HASH);
-      expect(retry.categoryId).toBe('cat-food');
+      expect(retry.payload.categoryId).toBe('cat-food');
     });
 
     it('rejects malformed expiresAt', async () => {
@@ -244,7 +279,6 @@ describe('CategorizationProposal', () => {
         }),
       ).rejects.toThrow(/expiresAt/i);
     });
-
   });
 
   describe('findActiveProposal', () => {
@@ -255,7 +289,11 @@ describe('CategorizationProposal', () => {
 
     it('finds an active proposal by budget, transaction, and operation', async () => {
       const p = await store.createProposal(BASE_PROPOSAL);
-      const found = await store.findActiveProposal(BASE_PROPOSAL.budgetId, BASE_PROPOSAL.transactionId, BASE_PROPOSAL.operation);
+      const found = await store.findActiveProposal(
+        BASE_PROPOSAL.budgetId,
+        BASE_PROPOSAL.payload.transactionId,
+        BASE_PROPOSAL.operation,
+      );
       expect(found).not.toBeNull();
       expect(found!.id).toBe(p.id);
     });
@@ -263,7 +301,11 @@ describe('CategorizationProposal', () => {
     it('returns null if the only matching proposal is superseded', async () => {
       const p = await store.createProposal(BASE_PROPOSAL);
       await store.supersedeProposal(p.id);
-      const found = await store.findActiveProposal(BASE_PROPOSAL.budgetId, BASE_PROPOSAL.transactionId, BASE_PROPOSAL.operation);
+      const found = await store.findActiveProposal(
+        BASE_PROPOSAL.budgetId,
+        BASE_PROPOSAL.payload.transactionId,
+        BASE_PROPOSAL.operation,
+      );
       expect(found).toBeNull();
     });
   });
@@ -275,7 +317,7 @@ describe('CategorizationProposal', () => {
 
       const superseded = await store.supersedeProposal(p.id);
       expect(superseded.supersededAt).not.toBeNull();
-      expect(superseded.categoryId).toBe(BASE_PROPOSAL.categoryId);
+      expect(superseded.payload).toMatchObject({ categoryId: BASE_PROPOSAL.payload.categoryId });
       expect(superseded.payloadHash).toBe(SAMPLE_HASH);
     });
 
@@ -312,15 +354,21 @@ describe('CategorizationProposal', () => {
       const p2 = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: DIFFERENT_HASH,
-        transactionId: 'txn-002',
-        categoryId: 'cat-utilities',
+        payload: {
+          ...BASE_PROPOSAL.payload,
+          transactionId: 'txn-002',
+          categoryId: 'cat-utilities',
+        },
       });
       tickSync();
       const p3 = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: '3333333333333333333333333333333333333333333333333333333333333333',
-        transactionId: 'txn-003',
-        categoryId: 'cat-entertainment',
+        payload: {
+          ...BASE_PROPOSAL.payload,
+          transactionId: 'txn-003',
+          categoryId: 'cat-entertainment',
+        },
       });
 
       const results = await store.listProposals();
@@ -337,8 +385,11 @@ describe('CategorizationProposal', () => {
       const p2 = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: DIFFERENT_HASH,
-        transactionId: 'txn-002',
-        categoryId: 'cat-utilities',
+        payload: {
+          ...BASE_PROPOSAL.payload,
+          transactionId: 'txn-002',
+          categoryId: 'cat-utilities',
+        },
       });
 
       await store.supersedeProposal(p1.id);
@@ -354,8 +405,11 @@ describe('CategorizationProposal', () => {
       const p2 = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: DIFFERENT_HASH,
-        transactionId: 'txn-002',
-        categoryId: 'cat-utilities',
+        payload: {
+          ...BASE_PROPOSAL.payload,
+          transactionId: 'txn-002',
+          categoryId: 'cat-utilities',
+        },
       });
 
       await store.supersedeProposal(p1.id);
@@ -371,8 +425,8 @@ describe('CategorizationProposal', () => {
       const pBeta = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: DIFFERENT_HASH,
-        transactionId: 'txn-beta',
-        categoryId: 'cat-beta',
+        payload: { ...BASE_PROPOSAL.payload, transactionId: 'txn-beta', categoryId: 'cat-beta' },
+
         budgetId: 'budget-beta',
       });
 
@@ -391,8 +445,11 @@ describe('CategorizationProposal', () => {
       const p2 = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: DIFFERENT_HASH,
-        transactionId: 'txn-002',
-        categoryId: 'cat-utilities',
+        payload: {
+          ...BASE_PROPOSAL.payload,
+          transactionId: 'txn-002',
+          categoryId: 'cat-utilities',
+        },
       });
 
       await store.supersedeProposal(p1.id);
@@ -418,7 +475,7 @@ describe('CategorizationProposal', () => {
         const p = await store.createProposal({
           ...BASE_PROPOSAL,
           payloadHash: `${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}${i}`,
-          transactionId: `txn-paginate-${i}`,
+          payload: { ...BASE_PROPOSAL.payload, transactionId: `txn-paginate-${i}` },
         });
         ids.unshift(p.id); // prepend because created_at DESC
         tickSync();
@@ -489,9 +546,9 @@ describe('CategorizationProposal', () => {
 
     it('rejects approval when proposal is superseded', async () => {
       await store.supersedeProposal(proposalId);
-      await expect(
-        store.createApproval({ ...BASE_APPROVAL, proposalId }),
-      ).rejects.toThrow(/superseded/i);
+      await expect(store.createApproval({ ...BASE_APPROVAL, proposalId })).rejects.toThrow(
+        /superseded/i,
+      );
     });
 
     it('rejects approval when proposal is expired', async () => {
@@ -499,7 +556,7 @@ describe('CategorizationProposal', () => {
       const validProposal = await store.createProposal({
         ...BASE_PROPOSAL,
         payloadHash: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
-        transactionId: 'txn-expired',
+        payload: { ...BASE_PROPOSAL.payload, transactionId: 'txn-expired' },
       });
       forceProposalExpiry(store, validProposal.id, '2020-01-01T00:00:00.000Z');
 
@@ -510,7 +567,6 @@ describe('CategorizationProposal', () => {
         }),
       ).rejects.toThrow(/expir/i);
     });
-
 
     it('rejects approval for nonexistent proposal', async () => {
       await expect(
@@ -542,9 +598,9 @@ describe('CategorizationProposal', () => {
       const a = await store.createApproval({ ...BASE_APPROVAL, proposalId });
       await store.supersedeProposal(proposalId); // cascades to supersede the approval and proposal
 
-      await expect(
-        store.createApproval({ ...BASE_APPROVAL, proposalId }),
-      ).rejects.toThrow(/superseded/i);
+      await expect(store.createApproval({ ...BASE_APPROVAL, proposalId })).rejects.toThrow(
+        /superseded/i,
+      );
     });
 
     it('rejects re-issuing approval when an expired approval already exists for the same proposal and actor', async () => {
@@ -554,11 +610,11 @@ describe('CategorizationProposal', () => {
         proposalId,
         expiresAt: shortExpiry,
       });
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
-      await expect(
-        store.createApproval({ ...BASE_APPROVAL, proposalId }),
-      ).rejects.toThrow(/cannot be re-issued/i);
+      await expect(store.createApproval({ ...BASE_APPROVAL, proposalId })).rejects.toThrow(
+        /cannot be re-issued/i,
+      );
     });
   });
 
@@ -586,12 +642,20 @@ describe('CategorizationProposal', () => {
 
     it('returns active approvals for a proposal', async () => {
       const p = await store.createProposal(BASE_PROPOSAL);
-      const a1 = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'bob@example.com' });
-      const a2 = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'carol@example.com' });
+      const a1 = await store.createApproval({
+        ...BASE_APPROVAL,
+        proposalId: p.id,
+        actorId: 'bob@example.com',
+      });
+      const a2 = await store.createApproval({
+        ...BASE_APPROVAL,
+        proposalId: p.id,
+        actorId: 'carol@example.com',
+      });
 
       const active = await store.findActiveApprovals(p.id);
       expect(active).toHaveLength(2);
-      expect(active.map(a => a.id).sort()).toEqual([a1.id, a2.id].sort());
+      expect(active.map((a) => a.id).sort()).toEqual([a1.id, a2.id].sort());
     });
 
     it('excludes consumed approvals from active results', async () => {
@@ -622,10 +686,10 @@ describe('CategorizationProposal', () => {
       });
 
       // Wait past the short expiry
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise((resolve) => setTimeout(resolve, 150));
 
       const active = await store.findActiveApprovals(p.id);
-      expect(active.every(a => a.actorId === 'bob@example.com')).toBe(true);
+      expect(active.every((a) => a.actorId === 'bob@example.com')).toBe(true);
     });
   });
 
@@ -651,7 +715,7 @@ describe('CategorizationProposal', () => {
         expiresAt: shortExpiry,
       });
 
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
       await expect(store.consumeApproval(a.id)).rejects.toThrow(/expir/i);
     });
@@ -678,7 +742,11 @@ describe('CategorizationProposal', () => {
 
     it('rejects consuming an approval when proposal has past expires_at (deterministic)', async () => {
       const p = await store.createProposal(BASE_PROPOSAL);
-      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-past@example.com' });
+      const a = await store.createApproval({
+        ...BASE_APPROVAL,
+        proposalId: p.id,
+        actorId: 'det-past@example.com',
+      });
 
       // Force proposal expires_at to a fixed past timestamp
       forceProposalExpiry(store, p.id, '2020-01-01T00:00:00.000Z');
@@ -688,7 +756,11 @@ describe('CategorizationProposal', () => {
 
     it('rejects consuming an approval when proposal has invalid expires_at', async () => {
       const p = await store.createProposal(BASE_PROPOSAL);
-      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-invalid@example.com' });
+      const a = await store.createApproval({
+        ...BASE_APPROVAL,
+        proposalId: p.id,
+        actorId: 'det-invalid@example.com',
+      });
 
       // Force proposal expires_at to a malformed string
       forceProposalExpiry(store, p.id, 'garbage-timestamp');
@@ -698,7 +770,11 @@ describe('CategorizationProposal', () => {
 
     it('rejects consuming an approval with past expires_at (deterministic)', async () => {
       const p = await store.createProposal(BASE_PROPOSAL);
-      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-approval-past@example.com' });
+      const a = await store.createApproval({
+        ...BASE_APPROVAL,
+        proposalId: p.id,
+        actorId: 'det-approval-past@example.com',
+      });
 
       // Force approval expires_at to a fixed past timestamp
       forceApprovalExpiry(store, a.id, '2020-01-01T00:00:00.000Z');
@@ -708,14 +784,17 @@ describe('CategorizationProposal', () => {
 
     it('rejects consuming an approval with invalid expires_at', async () => {
       const p = await store.createProposal(BASE_PROPOSAL);
-      const a = await store.createApproval({ ...BASE_APPROVAL, proposalId: p.id, actorId: 'det-approval-invalid@example.com' });
+      const a = await store.createApproval({
+        ...BASE_APPROVAL,
+        proposalId: p.id,
+        actorId: 'det-approval-invalid@example.com',
+      });
 
       // Force approval expires_at to a malformed string
       forceApprovalExpiry(store, a.id, 'garbage-timestamp');
 
       await expect(store.consumeApproval(a.id)).rejects.toThrow(/expir/i);
     });
-
   });
 
   describe('verifyApprovalForExecution', () => {
@@ -791,7 +870,6 @@ describe('CategorizationProposal', () => {
       expect(rejection).not.toBeNull();
       expect(rejection!.toLowerCase()).toContain('expir');
     });
-
   });
 
   // =======================================================================
@@ -883,9 +961,9 @@ describe('CategorizationProposal', () => {
         Array.from({ length: 5 }, () => store.createIdempotencyRecord(input)),
       );
 
-      const owners = claims.filter(c => c.isOwner);
+      const owners = claims.filter((c) => c.isOwner);
       expect(owners).toHaveLength(1);
-      expect(claims.every(c => c.record.idempotencyKey === key)).toBe(true);
+      expect(claims.every((c) => c.record.idempotencyKey === key)).toBe(true);
     });
 
     it('returns null for nonexistent idempotency key', async () => {
@@ -927,7 +1005,10 @@ describe('CategorizationProposal', () => {
         serialisedEffect: 'effect',
       });
 
-      const completed = await store.completeIdempotencyRecord('ik-error', 'Postcondition verification failed');
+      const completed = await store.completeIdempotencyRecord(
+        'ik-error',
+        'Postcondition verification failed',
+      );
       expect(completed.completed).toBe(true);
       expect(completed.errorMessage).toBe('Postcondition verification failed');
     });
@@ -973,19 +1054,21 @@ describe('CategorizationProposal', () => {
     }
 
     it('appends an audit record with all fields', async () => {
-      const record = await store.appendAuditRecord(baseAudit({
-        classification: 'proposal_created',
-        proposalId: 'prop-001',
-        payloadHash: SAMPLE_HASH,
-        policyVersion: '1.0.0',
-        authorizationDisposition: { kind: 'approval_required' },
-        idempotencyKey: 'ik-001',
-        expectedPriorState: '{"version":3}',
-        observedResultState: '{"version":4}',
-        providerModel: 'fast-classifier/v2',
-        correlationId: 'corr-001',
-        requestId: 'req-001',
-      }));
+      const record = await store.appendAuditRecord(
+        baseAudit({
+          classification: 'proposal_created',
+          proposalId: 'prop-001',
+          payloadHash: SAMPLE_HASH,
+          policyVersion: '1.0.0',
+          authorizationDisposition: { kind: 'approval_required' },
+          idempotencyKey: 'ik-001',
+          expectedPriorState: '{"version":3}',
+          observedResultState: '{"version":4}',
+          providerModel: 'fast-classifier/v2',
+          correlationId: 'corr-001',
+          requestId: 'req-001',
+        }),
+      );
 
       expect(record.id).toBeTypeOf('string');
       expect(record.classification).toBe('proposal_created');
@@ -998,17 +1081,31 @@ describe('CategorizationProposal', () => {
     });
 
     it('appends audit records in order with distinct IDs', async () => {
-      const r1 = await store.appendAuditRecord(baseAudit({ classification: 'execution_started', result: 'started' }));
-      const r2 = await store.appendAuditRecord(baseAudit({ classification: 'execution_completed', result: 'completed' }));
+      const r1 = await store.appendAuditRecord(
+        baseAudit({ classification: 'execution_started', result: 'started' }),
+      );
+      const r2 = await store.appendAuditRecord(
+        baseAudit({ classification: 'execution_completed', result: 'completed' }),
+      );
 
       expect(r1.id).not.toBe(r2.id);
       expect(r1.timestamp <= r2.timestamp).toBe(true);
     });
 
     it('queries audit records by classification', async () => {
-      await store.appendAuditRecord(baseAudit({ classification: 'proposal_created', result: 'created' }));
-      await store.appendAuditRecord(baseAudit({ classification: 'approval_granted', result: 'granted', actorId: 'bob@example.com' }));
-      await store.appendAuditRecord(baseAudit({ classification: 'execution_completed', result: 'done' }));
+      await store.appendAuditRecord(
+        baseAudit({ classification: 'proposal_created', result: 'created' }),
+      );
+      await store.appendAuditRecord(
+        baseAudit({
+          classification: 'approval_granted',
+          result: 'granted',
+          actorId: 'bob@example.com',
+        }),
+      );
+      await store.appendAuditRecord(
+        baseAudit({ classification: 'execution_completed', result: 'done' }),
+      );
 
       const approvals = await store.queryAuditRecords('approval_granted');
       expect(approvals).toHaveLength(1);
@@ -1017,9 +1114,27 @@ describe('CategorizationProposal', () => {
     });
 
     it('queries audit records by proposal ID', async () => {
-      await store.appendAuditRecord(baseAudit({ classification: 'proposal_created', proposalId: 'prop-query', result: 'created' }));
-      await store.appendAuditRecord(baseAudit({ classification: 'approval_granted', proposalId: 'prop-query', result: 'granted' }));
-      await store.appendAuditRecord(baseAudit({ classification: 'execution_completed', proposalId: 'prop-other', result: 'done' }));
+      await store.appendAuditRecord(
+        baseAudit({
+          classification: 'proposal_created',
+          proposalId: 'prop-query',
+          result: 'created',
+        }),
+      );
+      await store.appendAuditRecord(
+        baseAudit({
+          classification: 'approval_granted',
+          proposalId: 'prop-query',
+          result: 'granted',
+        }),
+      );
+      await store.appendAuditRecord(
+        baseAudit({
+          classification: 'execution_completed',
+          proposalId: 'prop-other',
+          result: 'done',
+        }),
+      );
 
       const records = await store.queryAuditRecordsByProposal('prop-query');
       expect(records).toHaveLength(2);
@@ -1032,10 +1147,12 @@ describe('CategorizationProposal', () => {
 
     it('paginates audit record queries', async () => {
       for (let i = 0; i < 10; i++) {
-        await store.appendAuditRecord(baseAudit({
-          classification: 'proposal_created',
-          result: `event-${i}`,
-        }));
+        await store.appendAuditRecord(
+          baseAudit({
+            classification: 'proposal_created',
+            result: `event-${i}`,
+          }),
+        );
       }
 
       const page1 = await store.queryAuditRecords(undefined, 3, 0);
@@ -1053,35 +1170,80 @@ describe('CategorizationProposal', () => {
 
   describe('Authorization', () => {
     it('returns allowed=false for unknown actor', async () => {
-      const result = await store.evaluateAuthorization('unknown@example.com', 'review.approve', 'budget-alpha', '1.0.0');
+      const result = await store.evaluateAuthorization(
+        'unknown@example.com',
+        'review.approve',
+        'budget-alpha',
+        '1.0.0',
+      );
       expect(result.allowed).toBe(false);
       expect(result.membershipStatus).toBe('unknown');
     });
 
     it('returns allowed=false for inactive member', async () => {
-      await store.upsertActorMembership('alice@example.com', 'inactive', ['review.approve'], 'budget-alpha');
-      const result = await store.evaluateAuthorization('alice@example.com', 'review.approve', 'budget-alpha', '1.0.0');
+      await store.upsertActorMembership(
+        'alice@example.com',
+        'inactive',
+        ['review.approve'],
+        'budget-alpha',
+      );
+      const result = await store.evaluateAuthorization(
+        'alice@example.com',
+        'review.approve',
+        'budget-alpha',
+        '1.0.0',
+      );
       expect(result.allowed).toBe(false);
       expect(result.membershipStatus).toBe('inactive');
     });
 
     it('returns allowed=false for member lacking capability', async () => {
-      await store.upsertActorMembership('alice@example.com', 'active', ['other.capability'], 'budget-alpha');
-      const result = await store.evaluateAuthorization('alice@example.com', 'review.approve', 'budget-alpha', '1.0.0');
+      await store.upsertActorMembership(
+        'alice@example.com',
+        'active',
+        ['other.capability'],
+        'budget-alpha',
+      );
+      const result = await store.evaluateAuthorization(
+        'alice@example.com',
+        'review.approve',
+        'budget-alpha',
+        '1.0.0',
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('capability');
     });
 
     it('returns allowed=false for member lacking scope', async () => {
-      await store.upsertActorMembership('alice@example.com', 'active', ['review.approve'], 'budget-other');
-      const result = await store.evaluateAuthorization('alice@example.com', 'review.approve', 'budget-alpha', '1.0.0');
+      await store.upsertActorMembership(
+        'alice@example.com',
+        'active',
+        ['review.approve'],
+        'budget-other',
+      );
+      const result = await store.evaluateAuthorization(
+        'alice@example.com',
+        'review.approve',
+        'budget-alpha',
+        '1.0.0',
+      );
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('scope');
     });
 
     it('returns allowed=true for fully authorized actor', async () => {
-      await store.upsertActorMembership('alice@example.com', 'active', ['review.approve', 'category.set'], 'budget-alpha');
-      const result = await store.evaluateAuthorization('alice@example.com', 'review.approve', 'budget-alpha', '1.0.0');
+      await store.upsertActorMembership(
+        'alice@example.com',
+        'active',
+        ['review.approve', 'category.set'],
+        'budget-alpha',
+      );
+      const result = await store.evaluateAuthorization(
+        'alice@example.com',
+        'review.approve',
+        'budget-alpha',
+        '1.0.0',
+      );
       expect(result.allowed).toBe(true);
       expect(result.membershipStatus).toBe('active');
       expect(result.capability).toBe('review.approve');
@@ -1091,22 +1253,57 @@ describe('CategorizationProposal', () => {
     });
 
     it('returns consistent result for same inputs (deterministic)', async () => {
-      await store.upsertActorMembership('bob@example.com', 'active', ['category.set'], 'budget-alpha');
+      await store.upsertActorMembership(
+        'bob@example.com',
+        'active',
+        ['category.set'],
+        'budget-alpha',
+      );
 
-      const r1 = await store.evaluateAuthorization('bob@example.com', 'category.set', 'budget-alpha', '1.0.0');
-      const r2 = await store.evaluateAuthorization('bob@example.com', 'category.set', 'budget-alpha', '1.0.0');
+      const r1 = await store.evaluateAuthorization(
+        'bob@example.com',
+        'category.set',
+        'budget-alpha',
+        '1.0.0',
+      );
+      const r2 = await store.evaluateAuthorization(
+        'bob@example.com',
+        'category.set',
+        'budget-alpha',
+        '1.0.0',
+      );
 
       expect(r1.allowed).toBe(r2.allowed);
       expect(r1.disposition.kind).toBe(r2.disposition.kind);
     });
 
     it('upsertActorMembership overwrites previous capabilities', async () => {
-      await store.upsertActorMembership('alice@example.com', 'active', ['review.approve'], 'budget-alpha');
-      let result = await store.evaluateAuthorization('alice@example.com', 'category.set', 'budget-alpha', '1.0.0');
+      await store.upsertActorMembership(
+        'alice@example.com',
+        'active',
+        ['review.approve'],
+        'budget-alpha',
+      );
+      let result = await store.evaluateAuthorization(
+        'alice@example.com',
+        'category.set',
+        'budget-alpha',
+        '1.0.0',
+      );
       expect(result.allowed).toBe(false);
 
-      await store.upsertActorMembership('alice@example.com', 'active', ['review.approve', 'category.set'], 'budget-alpha');
-      result = await store.evaluateAuthorization('alice@example.com', 'category.set', 'budget-alpha', '1.0.0');
+      await store.upsertActorMembership(
+        'alice@example.com',
+        'active',
+        ['review.approve', 'category.set'],
+        'budget-alpha',
+      );
+      result = await store.evaluateAuthorization(
+        'alice@example.com',
+        'category.set',
+        'budget-alpha',
+        '1.0.0',
+      );
       expect(result.allowed).toBe(true);
     });
 
@@ -1116,7 +1313,12 @@ describe('CategorizationProposal', () => {
     });
 
     it('getActorMembership returns stored membership', async () => {
-      await store.upsertActorMembership('alice@example.com', 'active', ['review.approve', 'category.set'], 'budget-alpha');
+      await store.upsertActorMembership(
+        'alice@example.com',
+        'active',
+        ['review.approve', 'category.set'],
+        'budget-alpha',
+      );
       const membership = await store.getActorMembership('alice@example.com');
       expect(membership).not.toBeNull();
       expect(membership!.status).toBe('active');

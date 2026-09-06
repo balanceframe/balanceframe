@@ -1,3 +1,4 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * GET /api/proposal — list categorization proposals.
  *
@@ -7,27 +8,22 @@
  * stored preconditions.
  *
  * Response envelope:
- *   { proposals: CategorizationProposalListItem[], total: number }
+ *   { proposals: ActionProposalListItem[], total: number }
  */
 
-import type { CategorizationProposal } from '@balanceframe/workflow-store';
-import {
-  getWorkflowStore,
-  okEnvelope,
-  errorEnvelope,
-  buildAuthorizationInfo,
-} from '../../utils/workflow-store';
+import type { ActionProposal } from '@balanceframe/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope } from '../../utils/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /** A proposal list item enriched with simulation status and preconditions. */
-export interface CategorizationProposalListItem {
+export interface ActionProposalListItem {
   readonly id: string;
   readonly operation: string;
   readonly budgetId: string;
-  readonly transactionId: string;
+  readonly transactionId: string | null;
   readonly categoryId: string;
   /** JSON-encoded preconditions (includes merchant, source, reviewId, nativeRule, simulation). */
   readonly preconditions: string;
@@ -54,7 +50,9 @@ interface PreconditionsShape {
 // ---------------------------------------------------------------------------
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
 
   const wf = getWorkflowStore(event);
@@ -64,30 +62,41 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const proposals = await wf.store.listProposals({ superseded: false });
-
-    const items: CategorizationProposalListItem[] = proposals.map((p) => {
-      const simulationStatus = computeSimulationStatus(p);
-      return {
-        id: p.id,
-        operation: p.operation,
-        budgetId: p.budgetId,
-        transactionId: p.transactionId,
-        categoryId: p.categoryId,
-        preconditions: p.preconditions,
-        expiresAt: p.expiresAt,
-        actorId: p.actorId,
-        provenance: p.provenance,
-        providerModel: p.providerModel,
-        correlationId: p.correlationId,
-        supersededAt: p.supersededAt,
-        createdAt: p.createdAt,
-        simulationStatus,
-      };
+    const proposals = await wf.store.listProposals({
+      budgetId: fullRead.budgetId,
+      superseded: false,
+      operations: ['set_category', 'create_rule'],
     });
 
+    const items: ActionProposalListItem[] = proposals
+      .filter((p) => p.operation === 'set_category' || p.operation === 'create_rule')
+      .map((p) => {
+        const simulationStatus = computeSimulationStatus(p);
+        return {
+          id: p.id,
+          operation: p.operation,
+          budgetId: p.budgetId,
+          transactionId: p.payload.transactionId,
+          categoryId: p.payload.categoryId,
+
+          preconditions: p.preconditions,
+          expiresAt: p.expiresAt,
+          actorId: p.actorId,
+          provenance: p.provenance,
+          providerModel: p.providerModel,
+          correlationId: p.correlationId,
+          supersededAt: p.supersededAt,
+          createdAt: p.createdAt,
+          simulationStatus,
+        };
+      });
+
     // Independent total count for pagination
-    const total = await wf.store.countProposals({ superseded: false });
+    const total = await wf.store.countProposals({
+      budgetId: fullRead.budgetId,
+      superseded: false,
+      operations: ['set_category', 'create_rule'],
+    });
 
     return okEnvelope({ proposals: items, total }, authInfo, requestId);
   } catch (e) {
@@ -106,7 +115,7 @@ export default defineEventHandler(async (event) => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function computeSimulationStatus(p: CategorizationProposal): 'present' | 'missing' | 'stale' {
+function computeSimulationStatus(p: ActionProposal): 'present' | 'missing' | 'stale' {
   let parsed: PreconditionsShape;
   try {
     parsed = JSON.parse(p.preconditions);

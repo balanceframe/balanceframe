@@ -1,11 +1,7 @@
+import { requireRegisteredOwner } from '../../utils/legacy-financial-read';
 import { defineEventHandler, readBody, setResponseStatus } from 'h3';
 import { createDefaultConnectionManager } from '@balanceframe/application';
-import {
-  buildAuthorizationInfo,
-  errorEnvelope,
-  okEnvelope,
-  sanitizeError,
-} from '../../utils/workflow-store';
+import { errorEnvelope, okEnvelope, sanitizeError } from '../../utils/workflow-store';
 import { updateReviewCategoryCatalog } from '../../utils/review-category-catalog';
 
 interface SelectBudgetBody {
@@ -14,7 +10,9 @@ interface SelectBudgetBody {
 
 /** Select, synchronize, and persist an Actual budget connection. */
 export default defineEventHandler(async (event) => {
-  const auth = buildAuthorizationInfo(event, 'observe');
+  const owner = await requireRegisteredOwner(event);
+  if (!owner.ok) return owner.response;
+  const auth = owner.info;
   const requestId = crypto.randomUUID();
   const body = await readBody<SelectBudgetBody>(event);
   const budgetId = typeof body?.budgetId === 'string' ? body.budgetId.trim() : '';

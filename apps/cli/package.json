@@ -13,13 +13,14 @@
   },
   "scripts": {
     "build": "tsc",
-    "coverage": "vitest run --coverage --exclude test/build-smoke.test.ts",
+    "coverage": "vitest run --coverage",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@balanceframe/application": "workspace:*",
-    "@balanceframe/protocol-generated": "workspace:*"
+    "@balanceframe/protocol-generated": "workspace:*",
+    "@balanceframe/workflow-store": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

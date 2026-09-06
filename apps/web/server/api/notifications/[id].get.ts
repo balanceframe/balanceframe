@@ -10,6 +10,7 @@
  */
 
 import { defineEventHandler, setResponseStatus, getRouterParam } from 'h3';
+import { canReadFinancialNotification } from '../../utils/liquidity-service';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -209,7 +210,7 @@ export default defineEventHandler(async (event) => {
 
     const detail = await rt.getOutboxDetail(outboxId, actorId);
 
-    if (!detail) {
+    if (!detail || !(await canReadFinancialNotification(wf.store, actorId, detail.event))) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'NOT_FOUND',

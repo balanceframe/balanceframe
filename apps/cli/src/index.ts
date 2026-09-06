@@ -62,8 +62,12 @@ import {
   type DataFreshness,
   AuthorizationContext,
   createObserveComposition,
+  createLiquidityService,
 } from '@balanceframe/application';
 import { createDefaultConnectionManager, type ConnectionManager } from '@balanceframe/application';
+import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Parsed CLI command
@@ -91,18 +95,13 @@ export interface CliCommand {
 }
 
 export type ParseResult =
-  | { ok: true; cmd: CliCommand }
-  | { ok: false; error: { code: string; message: string } };
+  { ok: true; cmd: CliCommand } | { ok: false; error: { code: string; message: string } };
 
 // ---------------------------------------------------------------------------
 // Rejected command patterns
 // ---------------------------------------------------------------------------
 
-const REJECTED_PATTERNS = [
-  'raw-query',
-  'invoke-method',
-  'shell',
-];
+const REJECTED_PATTERNS = ['raw-query', 'invoke-method', 'shell'];
 
 // ---------------------------------------------------------------------------
 // parseArgs
@@ -115,7 +114,7 @@ const REJECTED_PATTERNS = [
  * whether the command can be dispatched.
  */
 export function parseArgs(argv: string[]): ParseResult {
-  const normalized = argv.filter(a => a !== '');
+  const normalized = argv.filter((a) => a !== '');
 
   // Reject dangerous commands
   for (const pat of REJECTED_PATTERNS) {
@@ -162,6 +161,8 @@ export function parseArgs(argv: string[]): ParseResult {
     '--start-month': true,
     '--amount': true,
     '--account-id': true,
+    '--purchase-at': true,
+    '--required-by': true,
     '--currency': true,
     '--report-type': true,
     '--month-range': true,
@@ -172,7 +173,7 @@ export function parseArgs(argv: string[]): ParseResult {
     '--detailed': true,
     '--category-group': true,
   };
-  const unknownFlags = normalized.filter(a => a.startsWith('--') && !KNOWN_FLAGS[a]);
+  const unknownFlags = normalized.filter((a) => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
     return {
       ok: false,
@@ -182,22 +183,25 @@ export function parseArgs(argv: string[]): ParseResult {
 
   const hasJson = normalized.includes('--json');
   const format = hasJson ? 'json' : 'json';
-  const cleanArgs = normalized.filter(a => a !== '--json');
+  const cleanArgs = normalized.filter((a) => a !== '--json');
 
   // Extract command path
   if (cleanArgs[0] === 'connect') {
     const budgetIndex = cleanArgs.indexOf('--budget-id');
     const budgetId = budgetIndex >= 0 ? cleanArgs[budgetIndex + 1] : undefined;
     if (!budgetId || budgetId.startsWith('--')) {
-      return { ok: false, error: { code: 'missing_budget_id', message: 'connect requires --budget-id BUDGET_ID.' } };
+      return {
+        ok: false,
+        error: { code: 'missing_budget_id', message: 'connect requires --budget-id BUDGET_ID.' },
+      };
     }
-    return { ok: true, cmd: { command: 'connect', format, args: normalized, options: { budgetId } } };
+    return {
+      ok: true,
+      cmd: { command: 'connect', format, args: normalized, options: { budgetId } },
+    };
   }
 
-  if (
-    cleanArgs[0] === 'transactions' &&
-    cleanArgs[1] === 'pending-review'
-  ) {
+  if (cleanArgs[0] === 'transactions' && cleanArgs[1] === 'pending-review') {
     if (cleanArgs.length > 2) {
       return {
         ok: false,
@@ -222,7 +226,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!reviewId || reviewId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_review_id', message: 'reviews show requires a REVIEW_ID argument.' },
+        error: {
+          code: 'missing_review_id',
+          message: 'reviews show requires a REVIEW_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -251,7 +258,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!reviewId || reviewId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_review_id', message: 'reviews approve requires a REVIEW_ID argument.' },
+        error: {
+          code: 'missing_review_id',
+          message: 'reviews approve requires a REVIEW_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -307,13 +317,20 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!reviewId) {
       return {
         ok: false,
-        error: { code: 'missing_review_id', message: 'reviews correct requires a REVIEW_ID argument.' },
+        error: {
+          code: 'missing_review_id',
+          message: 'reviews correct requires a REVIEW_ID argument.',
+        },
       };
     }
     if (!categoryId) {
       return {
         ok: false,
-        error: { code: 'missing_category_id', message: 'reviews correct requires a CATEGORY_ID argument (provide it positionally or via --category-id).' },
+        error: {
+          code: 'missing_category_id',
+          message:
+            'reviews correct requires a CATEGORY_ID argument (provide it positionally or via --category-id).',
+        },
       };
     }
     if (remaining.length > 0) {
@@ -342,7 +359,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!reviewId || reviewId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_review_id', message: 'reviews reject requires a REVIEW_ID argument.' },
+        error: {
+          code: 'missing_review_id',
+          message: 'reviews reject requires a REVIEW_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -370,7 +390,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!reviewId || reviewId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_review_id', message: 'reviews skip requires a REVIEW_ID argument.' },
+        error: {
+          code: 'missing_review_id',
+          message: 'reviews skip requires a REVIEW_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -398,7 +421,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!reviewId || reviewId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_review_id', message: 'reviews undo requires a REVIEW_ID argument.' },
+        error: {
+          code: 'missing_review_id',
+          message: 'reviews undo requires a REVIEW_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -428,7 +454,10 @@ export function parseArgs(argv: string[]): ParseResult {
       if (!a.startsWith('rev_')) {
         return {
           ok: false,
-          error: { code: 'invalid_review_id', message: `Invalid review ID: "${a}". Review IDs must start with "rev_".` },
+          error: {
+            code: 'invalid_review_id',
+            message: `Invalid review ID: "${a}". Review IDs must start with "rev_".`,
+          },
         };
       }
       ids.push(a);
@@ -436,7 +465,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (ids.length < 1) {
       return {
         ok: false,
-        error: { code: 'missing_review_ids', message: 'reviews approve-bulk requires at least one REVIEW_ID.' },
+        error: {
+          code: 'missing_review_ids',
+          message: 'reviews approve-bulk requires at least one REVIEW_ID.',
+        },
       };
     }
     return {
@@ -457,7 +489,10 @@ export function parseArgs(argv: string[]): ParseResult {
       if (!a.startsWith('rev_')) {
         return {
           ok: false,
-          error: { code: 'invalid_review_id', message: `Invalid review ID: "${a}". Review IDs must start with "rev_".` },
+          error: {
+            code: 'invalid_review_id',
+            message: `Invalid review ID: "${a}". Review IDs must start with "rev_".`,
+          },
         };
       }
       ids.push(a);
@@ -465,7 +500,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (ids.length < 1) {
       return {
         ok: false,
-        error: { code: 'missing_review_ids', message: 'reviews group requires at least one REVIEW_ID.' },
+        error: {
+          code: 'missing_review_ids',
+          message: 'reviews group requires at least one REVIEW_ID.',
+        },
       };
     }
     return {
@@ -597,7 +635,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!VALID_SCOPES.includes(scopeValue)) {
       return {
         ok: false,
-        error: { code: 'invalid_scope', message: `Invalid scope "${scopeValue}". Must be one of: connection, space, user, provider, workflow, notification.` },
+        error: {
+          code: 'invalid_scope',
+          message: `Invalid scope "${scopeValue}". Must be one of: connection, space, user, provider, workflow, notification.`,
+        },
       };
     }
     // Check for unexpected extra arguments
@@ -605,7 +646,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (cleanWithoutScope.length > 1) {
       return {
         ok: false,
-        error: { code: 'trailing_args', message: `Unexpected arguments after 'delete-data': ${cleanWithoutScope.slice(1).join(' ')}` },
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'delete-data': ${cleanWithoutScope.slice(1).join(' ')}`,
+        },
       };
     }
     return {
@@ -630,15 +674,58 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--category-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--category-id requires a value.' } }; options['category-id'] = v; i++; }
-      else if (a === '--transaction-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' } }; options['transaction-id'] = v; i++; }
-      else if (a === '--message') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--message requires a value.' } }; options.message = v; i++; }
-      else if (a === '--reason') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--reason requires a value.' } }; options.reason = v; i++; }
-      else if (a === '--operation') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--operation requires a value.' } }; options.operation = v; i++; }
-      else if (!a.startsWith('--')) {
+      if (a === '--category-id') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--category-id requires a value.' },
+          };
+        options['category-id'] = v;
+        i++;
+      } else if (a === '--transaction-id') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' },
+          };
+        options['transaction-id'] = v;
+        i++;
+      } else if (a === '--message') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--message requires a value.' },
+          };
+        options.message = v;
+        i++;
+      } else if (a === '--reason') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--reason requires a value.' },
+          };
+        options.reason = v;
+        i++;
+      } else if (a === '--operation') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--operation requires a value.' },
+          };
+        options.operation = v;
+        i++;
+      } else if (!a.startsWith('--')) {
         return {
           ok: false,
-          error: { code: 'trailing_args', message: `Unexpected argument after 'proposals create': ${a}` },
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'proposals create': ${a}`,
+          },
         };
       }
     }
@@ -658,7 +745,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!proposalId || proposalId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_proposal_id', message: 'proposals show requires a PROPOSAL_ID argument.' },
+        error: {
+          code: 'missing_proposal_id',
+          message: 'proposals show requires a PROPOSAL_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -686,7 +776,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!proposalId || proposalId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_proposal_id', message: 'proposals approve requires a PROPOSAL_ID argument.' },
+        error: {
+          code: 'missing_proposal_id',
+          message: 'proposals approve requires a PROPOSAL_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -714,7 +807,10 @@ export function parseArgs(argv: string[]): ParseResult {
     if (!proposalId || proposalId.startsWith('--')) {
       return {
         ok: false,
-        error: { code: 'missing_proposal_id', message: 'proposals execute requires a PROPOSAL_ID argument.' },
+        error: {
+          code: 'missing_proposal_id',
+          message: 'proposals execute requires a PROPOSAL_ID argument.',
+        },
       };
     }
     if (cleanArgs.length > 3) {
@@ -768,17 +864,55 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--limit') { const v = nextVal(); if (v !== undefined) { options.limit = v; i++; } }
-      else if (a === '--offset') { const v = nextVal(); if (v !== undefined) { options.offset = v; i++; } }
-      else if (a === '--actor-id') { const v = nextVal(); if (v !== undefined) { options['actor-id'] = v; i++; } }
-      else if (a === '--entity-id') { const v = nextVal(); if (v !== undefined) { options['entity-id'] = v; i++; } }
-      else if (a === '--action') { const v = nextVal(); if (v !== undefined) { options.action = v; i++; } }
-      else if (a === '--from') { const v = nextVal(); if (v !== undefined) { options.from = v; i++; } }
-      else if (a === '--to') { const v = nextVal(); if (v !== undefined) { options.to = v; i++; } }
-      else if (!a.startsWith('--')) {
+      if (a === '--limit') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.limit = v;
+          i++;
+        }
+      } else if (a === '--offset') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.offset = v;
+          i++;
+        }
+      } else if (a === '--actor-id') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options['actor-id'] = v;
+          i++;
+        }
+      } else if (a === '--entity-id') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options['entity-id'] = v;
+          i++;
+        }
+      } else if (a === '--action') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.action = v;
+          i++;
+        }
+      } else if (a === '--from') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.from = v;
+          i++;
+        }
+      } else if (a === '--to') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.to = v;
+          i++;
+        }
+      } else if (!a.startsWith('--')) {
         return {
           ok: false,
-          error: { code: 'trailing_args', message: `Unexpected argument after 'audit query': ${a}` },
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'audit query': ${a}`,
+          },
         };
       }
     }
@@ -788,7 +922,10 @@ export function parseArgs(argv: string[]): ParseResult {
       if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
         return {
           ok: false,
-          error: { code: 'invalid_limit', message: `--limit must be a finite non-negative integer, got "${options.limit}"` },
+          error: {
+            code: 'invalid_limit',
+            message: `--limit must be a finite non-negative integer, got "${options.limit}"`,
+          },
         };
       }
     }
@@ -797,7 +934,10 @@ export function parseArgs(argv: string[]): ParseResult {
       if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
         return {
           ok: false,
-          error: { code: 'invalid_offset', message: `--offset must be a finite non-negative integer, got "${options.offset}"` },
+          error: {
+            code: 'invalid_offset',
+            message: `--offset must be a finite non-negative integer, got "${options.offset}"`,
+          },
         };
       }
     }
@@ -823,15 +963,58 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--name') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--name requires a value.' } }; options.name = v; i++; }
-      else if (a === '--payee') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--payee requires a value.' } }; options.payee = v; i++; }
-      else if (a === '--category-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--category-id requires a value.' } }; options['category-id'] = v; i++; }
-      else if (a === '--transaction-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' } }; options['transaction-id'] = v; i++; }
-      else if (a === '--operation') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--operation requires a value.' } }; options.operation = v; i++; }
-      else if (!a.startsWith('--')) {
+      if (a === '--name') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--name requires a value.' },
+          };
+        options.name = v;
+        i++;
+      } else if (a === '--payee') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--payee requires a value.' },
+          };
+        options.payee = v;
+        i++;
+      } else if (a === '--category-id') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--category-id requires a value.' },
+          };
+        options['category-id'] = v;
+        i++;
+      } else if (a === '--transaction-id') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' },
+          };
+        options['transaction-id'] = v;
+        i++;
+      } else if (a === '--operation') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--operation requires a value.' },
+          };
+        options.operation = v;
+        i++;
+      } else if (!a.startsWith('--')) {
         return {
           ok: false,
-          error: { code: 'trailing_args', message: `Unexpected argument after 'rules create': ${a}` },
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'rules create': ${a}`,
+          },
         };
       }
     }
@@ -916,20 +1099,73 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--category-id') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_category_value', message: '--category-id requires a value.' } }; options['category-id'] = v; i++; }
-      else if (a === '--amount') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--amount requires a value.' } }; options.amount = v; i++; }
-      else if (a === '--account-id') { const v = nextVal(); if (v !== undefined) { options['account-id'] = v; i++; } }
-      else if (a === '--currency') { const v = nextVal(); if (v !== undefined) { options.currency = v; i++; } }
-      else if (!a.startsWith('--')) {
-        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'purchase evaluate': ${a}` } };
+      if (a === '--category-id') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_category_value', message: '--category-id requires a value.' },
+          };
+        options['category-id'] = v;
+        i++;
+      } else if (a === '--amount') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--amount requires a value.' },
+          };
+        options.amount = v;
+        i++;
+      } else if (a === '--account-id') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options['account-id'] = v;
+          i++;
+        }
+      } else if (a === '--currency') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.currency = v;
+          i++;
+        }
+      } else if (a === '--purchase-at' || a === '--required-by') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: `${a} requires a UTC timestamp.` },
+          };
+        options[a.slice(2)] = v;
+        i++;
+      } else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'purchase evaluate': ${a}`,
+          },
+        };
       }
     }
     // Validate required params
     if (!options['category-id']) {
-      return { ok: false, error: { code: 'missing_category_value', message: '--category-id is required for purchase evaluate.' } };
+      return {
+        ok: false,
+        error: {
+          code: 'missing_category_value',
+          message: '--category-id is required for purchase evaluate.',
+        },
+      };
     }
     if (!options.amount) {
-      return { ok: false, error: { code: 'missing_flag_value', message: '--amount is required for purchase evaluate.' } };
+      return {
+        ok: false,
+        error: {
+          code: 'missing_flag_value',
+          message: '--amount is required for purchase evaluate.',
+        },
+      };
     }
     return { ok: true, cmd: { command: 'purchase.evaluate', format, args: normalized, options } };
   }
@@ -942,10 +1178,26 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--months') { const v = nextVal(); if (v !== undefined) { options.months = v; i++; } }
-      else if (a === '--start-month') { const v = nextVal(); if (v !== undefined) { options['start-month'] = v; i++; } }
-      else if (!a.startsWith('--')) {
-        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'cash-flow project': ${a}` } };
+      if (a === '--months') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.months = v;
+          i++;
+        }
+      } else if (a === '--start-month') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options['start-month'] = v;
+          i++;
+        }
+      } else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'cash-flow project': ${a}`,
+          },
+        };
       }
     }
     return { ok: true, cmd: { command: 'cash-flow.project', format, args: normalized, options } };
@@ -954,7 +1206,13 @@ export function parseArgs(argv: string[]): ParseResult {
   // target health
   if (cleanArgs[0] === 'target' && cleanArgs[1] === 'health') {
     if (cleanArgs.length > 2) {
-      return { ok: false, error: { code: 'trailing_args', message: `Unexpected arguments after 'target health': ${cleanArgs.slice(2).join(' ')}` } };
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'target health': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
     }
     return { ok: true, cmd: { command: 'target.health', format, args: normalized } };
   }
@@ -962,7 +1220,13 @@ export function parseArgs(argv: string[]): ParseResult {
   // sinking-fund health
   if (cleanArgs[0] === 'sinking-fund' && cleanArgs[1] === 'health') {
     if (cleanArgs.length > 2) {
-      return { ok: false, error: { code: 'trailing_args', message: `Unexpected arguments after 'sinking-fund health': ${cleanArgs.slice(2).join(' ')}` } };
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'sinking-fund health': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
     }
     return { ok: true, cmd: { command: 'sinking-fund.health', format, args: normalized } };
   }
@@ -975,20 +1239,64 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--report-type') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--report-type requires a value.' } }; options['report-type'] = v; i++; }
-      else if (a === '--month-range') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--month-range requires a value.' } }; options['month-range'] = v; i++; }
-      else if (a === '--label') { const v = nextVal(); if (v !== undefined) { options.label = v; i++; } }
-      else if (a === '--tag') { const v = nextVal(); if (v !== undefined) { options['tag'] = v; i++; } }
-      else if (!a.startsWith('--')) {
-        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'reports generate': ${a}` } };
+      if (a === '--report-type') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--report-type requires a value.' },
+          };
+        options['report-type'] = v;
+        i++;
+      } else if (a === '--month-range') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--month-range requires a value.' },
+          };
+        options['month-range'] = v;
+        i++;
+      } else if (a === '--label') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.label = v;
+          i++;
+        }
+      } else if (a === '--tag') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options['tag'] = v;
+          i++;
+        }
+      } else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'reports generate': ${a}`,
+          },
+        };
       }
     }
     // Validate required params
     if (!options['report-type']) {
-      return { ok: false, error: { code: 'missing_flag_value', message: '--report-type is required for reports generate.' } };
+      return {
+        ok: false,
+        error: {
+          code: 'missing_flag_value',
+          message: '--report-type is required for reports generate.',
+        },
+      };
     }
     if (!options['month-range']) {
-      return { ok: false, error: { code: 'missing_flag_value', message: '--month-range is required for reports generate.' } };
+      return {
+        ok: false,
+        error: {
+          code: 'missing_flag_value',
+          message: '--month-range is required for reports generate.',
+        },
+      };
     }
     return { ok: true, cmd: { command: 'reports.generate', format, args: normalized, options } };
   }
@@ -996,7 +1304,13 @@ export function parseArgs(argv: string[]): ParseResult {
   // views list
   if (cleanArgs[0] === 'views' && cleanArgs[1] === 'list') {
     if (cleanArgs.length > 2) {
-      return { ok: false, error: { code: 'trailing_args', message: `Unexpected arguments after 'views list': ${cleanArgs.slice(2).join(' ')}` } };
+      return {
+        ok: false,
+        error: {
+          code: 'trailing_args',
+          message: `Unexpected arguments after 'views list': ${cleanArgs.slice(2).join(' ')}`,
+        },
+      };
     }
     return { ok: true, cmd: { command: 'views.list', format, args: normalized } };
   }
@@ -1009,19 +1323,57 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--name') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--name requires a value.' } }; options.name = v; i++; }
-      else if (a === '--view-type') { const v = nextVal(); if (!v) return { ok: false, error: { code: 'missing_flag_value', message: '--view-type requires a value.' } }; options['view-type'] = v; i++; }
-      else if (a === '--scope') { const v = nextVal(); if (v !== undefined) { options.scope = v; i++; } }
-      else if (a === '--sort') { const v = nextVal(); if (v !== undefined) { options.sort = v; i++; } }
-      else if (!a.startsWith('--')) {
-        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'views create': ${a}` } };
+      if (a === '--name') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--name requires a value.' },
+          };
+        options.name = v;
+        i++;
+      } else if (a === '--view-type') {
+        const v = nextVal();
+        if (!v)
+          return {
+            ok: false,
+            error: { code: 'missing_flag_value', message: '--view-type requires a value.' },
+          };
+        options['view-type'] = v;
+        i++;
+      } else if (a === '--scope') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.scope = v;
+          i++;
+        }
+      } else if (a === '--sort') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options.sort = v;
+          i++;
+        }
+      } else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'views create': ${a}`,
+          },
+        };
       }
     }
     if (!options.name) {
-      return { ok: false, error: { code: 'missing_flag_value', message: '--name is required for views create.' } };
+      return {
+        ok: false,
+        error: { code: 'missing_flag_value', message: '--name is required for views create.' },
+      };
     }
     if (!options['view-type']) {
-      return { ok: false, error: { code: 'missing_flag_value', message: '--view-type is required for views create.' } };
+      return {
+        ok: false,
+        error: { code: 'missing_flag_value', message: '--view-type is required for views create.' },
+      };
     }
     return { ok: true, cmd: { command: 'views.create', format, args: normalized, options } };
   }
@@ -1034,10 +1386,22 @@ export function parseArgs(argv: string[]): ParseResult {
       const a = remaining[i];
       const nextVal = (): string | undefined =>
         remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--detailed') { options.detailed = 'true'; }
-      else if (a === '--category-group') { const v = nextVal(); if (v !== undefined) { options['category-group'] = v; i++; } }
-      else if (!a.startsWith('--')) {
-        return { ok: false, error: { code: 'trailing_args', message: `Unexpected argument after 'home attention': ${a}` } };
+      if (a === '--detailed') {
+        options.detailed = 'true';
+      } else if (a === '--category-group') {
+        const v = nextVal();
+        if (v !== undefined) {
+          options['category-group'] = v;
+          i++;
+        }
+      } else if (!a.startsWith('--')) {
+        return {
+          ok: false,
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected argument after 'home attention': ${a}`,
+          },
+        };
       }
     }
     return { ok: true, cmd: { command: 'home.attention', format, args: normalized, options } };
@@ -1063,7 +1427,11 @@ export function parseArgs(argv: string[]): ParseResult {
  * Read-lifecycle operations (export, disconnect) proceed in any mode, but
  * the returned context reflects the operation name so callers can audit it.
  */
-function modeAuthorization(mode: ConnectionMode, actorId: string, operation: string): AuthorizationContext {
+function modeAuthorization(
+  mode: ConnectionMode,
+  actorId: string,
+  operation: string,
+): AuthorizationContext {
   if ((operation === 'remove-connection' || operation === 'delete-data') && mode === 'observe') {
     return AuthorizationContext.denied(actorId, operation);
   }
@@ -1074,9 +1442,7 @@ function modeAuthorization(mode: ConnectionMode, actorId: string, operation: str
 // Main dispatcher (called from bin script or tests)
 // ---------------------------------------------------------------------------
 
-function freshnessFromSynchronization(
-  synchronization: unknown,
-): DataFreshness | null {
+function freshnessFromSynchronization(synchronization: unknown): DataFreshness | null {
   if (!synchronization || typeof synchronization !== 'object') return null;
   const result = synchronization as {
     snapshot?: {
@@ -1113,7 +1479,7 @@ export async function main(
   },
 ): Promise<string> {
   const mode: ConnectionMode = opts?.mode ?? 'observe';
-  const actorId = opts?.actorId ?? 'usr_cli';
+  const actorId = opts?.actorId ?? process.env.BALANCEFRAME_ACTOR_ID ?? 'usr_cli';
   const requestId = opts?.requestId ?? `req_${Date.now().toString(36)}`;
   let ledger = opts?.ledger ?? null;
   let freshness: DataFreshness | null = opts?.freshness ?? null;
@@ -1133,24 +1499,38 @@ export async function main(
   let connectionManager: ConnectionManager | null = null;
   if (opts === undefined) {
     try {
-      connectionManager = createDefaultConnectionManager({ configPath: process.env.BALANCEFRAME_CONFIG_PATH });
+      connectionManager = createDefaultConnectionManager({
+        configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+      });
       if (cmd.command === 'budget.list') {
         const budgets = await connectionManager.listBudgets();
-        return JSON.stringify(okResponse(requestId, null, AuthorizationContext.observe(actorId), {
-          budgets,
-        }), null, 2);
+        return JSON.stringify(
+          okResponse(requestId, null, AuthorizationContext.observe(actorId), {
+            budgets,
+          }),
+          null,
+          2,
+        );
       }
       if (cmd.command === 'connect') {
-        const connected = await connectionManager.connect({ budgetId: cmd.options?.budgetId ?? '' });
-        return JSON.stringify(okResponse(requestId, null, AuthorizationContext.observe(actorId), {
-          connected: true,
-          budget: connected.budget,
-          synchronized: true,
-        }), null, 2);
+        const connected = await connectionManager.connect({
+          budgetId: cmd.options?.budgetId ?? '',
+        });
+        return JSON.stringify(
+          okResponse(requestId, null, AuthorizationContext.observe(actorId), {
+            connected: true,
+            budget: connected.budget,
+            synchronized: true,
+          }),
+          null,
+          2,
+        );
       }
-      const restored = await connectionManager.restore();
-      ledger = restored.connector;
-      freshness = freshnessFromSynchronization(restored.synchronization);
+      if (cmd.command !== 'purchase.evaluate') {
+        const restored = await connectionManager.restore();
+        ledger = restored.connector;
+        freshness = freshnessFromSynchronization(restored.synchronization);
+      }
     } catch (err) {
       if (cmd.command === 'connect' || cmd.command === 'budget.list') {
         const info = new ErrorInfo({
@@ -1272,7 +1652,12 @@ export async function main(
         }
         try {
           const result = await callbacks.doExport(ledger);
-          const envelope = okResponse(requestId, freshness, modeAuthorization(mode, actorId, 'export'), result);
+          const envelope = okResponse(
+            requestId,
+            freshness,
+            modeAuthorization(mode, actorId, 'export'),
+            result,
+          );
           return JSON.stringify(envelope, null, 2);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -1308,7 +1693,12 @@ export async function main(
         }
         try {
           const result = await callbacks.doDisconnect(ledger);
-          const envelope = okResponse(requestId, null, modeAuthorization(mode, actorId, 'disconnect'), result);
+          const envelope = okResponse(
+            requestId,
+            null,
+            modeAuthorization(mode, actorId, 'disconnect'),
+            result,
+          );
           return JSON.stringify(envelope, null, 2);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -1346,7 +1736,8 @@ export async function main(
         if (mode === 'observe') {
           const info = new ErrorInfo({
             code: 'write_rejected',
-            message: 'remove-connection requires write authorization and is not available in observe mode.',
+            message:
+              'remove-connection requires write authorization and is not available in observe mode.',
             retryable: false,
             reasonCodes: ['observe_mode_write_blocked'],
           });
@@ -1354,7 +1745,12 @@ export async function main(
         }
         try {
           const result = await callbacks.doRemoveConnection(ledger);
-          const envelope = okResponse(requestId, null, modeAuthorization(mode, actorId, 'remove-connection'), result);
+          const envelope = okResponse(
+            requestId,
+            null,
+            modeAuthorization(mode, actorId, 'remove-connection'),
+            result,
+          );
           return JSON.stringify(envelope, null, 2);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -1392,7 +1788,8 @@ export async function main(
         if (mode === 'observe') {
           const info = new ErrorInfo({
             code: 'write_rejected',
-            message: 'delete-data requires write authorization and is not available in observe mode.',
+            message:
+              'delete-data requires write authorization and is not available in observe mode.',
             retryable: false,
             reasonCodes: ['observe_mode_write_blocked'],
           });
@@ -1401,7 +1798,12 @@ export async function main(
         try {
           const scope = cmd.options?.scope;
           const result = await callbacks.doDeleteData(ledger, scope!);
-          const envelope = okResponse(requestId, null, modeAuthorization(mode, actorId, 'delete-data'), result);
+          const envelope = okResponse(
+            requestId,
+            null,
+            modeAuthorization(mode, actorId, 'delete-data'),
+            result,
+          );
           return JSON.stringify(envelope, null, 2);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -1418,7 +1820,8 @@ export async function main(
       case 'proposals.create': {
         const proposalOptions: ReviewActionOptions = {};
         if (cmd.options?.['category-id']) proposalOptions.categoryId = cmd.options['category-id'];
-        if (cmd.options?.['transaction-id']) proposalOptions.transactionId = cmd.options['transaction-id'];
+        if (cmd.options?.['transaction-id'])
+          proposalOptions.transactionId = cmd.options['transaction-id'];
         if (cmd.options?.message) proposalOptions.message = cmd.options.message;
         if (cmd.options?.reason) proposalOptions.reason = cmd.options.reason;
         if (cmd.options?.operation) proposalOptions.operation = cmd.options.operation;
@@ -1462,7 +1865,8 @@ export async function main(
         if (cmd.options?.['name']) ruleOptions.message = cmd.options['name'];
         if (cmd.options?.['payee']) ruleOptions.reason = cmd.options['payee'];
         if (cmd.options?.['category-id']) ruleOptions.categoryId = cmd.options['category-id'];
-        if (cmd.options?.['transaction-id']) ruleOptions.transactionId = cmd.options['transaction-id'];
+        if (cmd.options?.['transaction-id'])
+          ruleOptions.transactionId = cmd.options['transaction-id'];
         if (cmd.options?.operation) ruleOptions.operation = cmd.options.operation;
         const envelope = await ruleCreateAnalysis(commandInput, ruleOptions);
         return JSON.stringify(envelope, null, 2);
@@ -1509,7 +1913,26 @@ export async function main(
             currency: cmd.options?.currency ?? 'USD',
           },
           accountId: cmd.options?.['account-id'],
+          purchaseAt: cmd.options?.['purchase-at'],
+          requiredBy: cmd.options?.['required-by'],
         };
+        if (connectionManager) {
+          const config = await connectionManager.loadConfig();
+          if (!config) throw new Error('Configure an Actual budget first.');
+          const path = process.env.BALANCEFRAME_WORKFLOW_DB_PATH ?? './data/workflow.db';
+          mkdirSync(dirname(path), { recursive: true });
+          const store = new SqliteWorkflowStore(path);
+          try {
+            const service = await createLiquidityService({ connectionManager, store });
+            const envelope = await purchaseEvaluationAnalysis(
+              { ...commandInput, liquidity: { service, budgetId: config.budgetId } },
+              purchaseParams,
+            );
+            return JSON.stringify(envelope, null, 2);
+          } finally {
+            store.close();
+          }
+        }
         const envelope = await purchaseEvaluationAnalysis(commandInput, purchaseParams);
         return JSON.stringify(envelope, null, 2);
       }

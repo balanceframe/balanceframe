@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@e50d5f73bfe71c2dd0aa4218de8f4afa59f8f81d # v16
@@ -41,45 +43,26 @@ jobs:
       - name: Lint workspace
         run: nix develop --command pnpm lint
 
-      - name: Run JavaScript and TypeScript tests
-        run: nix develop --command pnpm test
-
-      - name: Run Rust tests
-        run: nix develop --command cargo test --workspace
-
-      - name: Run code coverage
-        run: nix develop --command just coverage
-      - name: Check coverage thresholds
-        run: |
-          SUMMARY="coverage/summary.json"
-          if [ -f "$SUMMARY" ]; then
-            echo "Checking coverage thresholds..."
-            # Extract per-package line coverage and validate against thresholds
-            FAIL=0
-            while read -r pkg cov; do
-              cov_int=${cov%.*}
-              if [ "$cov_int" -lt 40 ] 2>/dev/null; then
-                echo "::error::FAIL: $pkg line coverage $cov% is below minimum 40%"
-                FAIL=1
-              elif [ "$cov_int" -lt 60 ] 2>/dev/null; then
-                echo "::warning::WARN: $pkg line coverage $cov% is below target 60%"
-              else
-                echo "  OK: $pkg line coverage $cov%"
-              fi
-            done < <(jq -r '.packages | to_entries[] | "\(.key) \(.value.line)"' "$SUMMARY" 2>/dev/null || echo "")
-            exit $FAIL
-          else
-            echo "No coverage summary found at $SUMMARY — skipping threshold check"
-          fi
+      # This serial run includes all JS/Rust tests, real instrumented N-API
+      # consumers and its own isolated live Actual fixture with teardown.
+      - name: Run tests and enforce source coverage
+        env:
+          COVERAGE_BASE: ${{ github.event.pull_request.base.sha }}
+        run: nix develop --command just coverage "$COVERAGE_BASE"
 
       - name: Run dependency security audit
         run: nix develop --command pnpm audit --audit-level=high || echo "Audit found issues — review required"
 
       - name: Upload coverage reports
+        if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: coverage-reports
-          path: coverage/
+          path: |
+            coverage/js/
+            coverage/rust/
+            coverage/summary.json
+            coverage/native/loads.log
           retention-days: 14
 
       - name: Run Rust clippy

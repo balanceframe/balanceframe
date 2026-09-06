@@ -23,9 +23,18 @@ export default defineConfig({
     bail: 1,
     coverage: {
       provider: 'v8',
+      all: true,
       reporter: ['text-summary', 'lcov', 'json'],
       reportsDirectory: '../../coverage/js/web',
-      include: ['src/**'],
+      include: [
+        'src/**',
+        'app/**',
+        'server/**',
+        'lib/**',
+        'composables/**',
+        'types/**',
+        'nuxt.config.ts',
+      ],
       exclude: [
         'test/**',
         '**/*.test.ts',

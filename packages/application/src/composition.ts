@@ -356,6 +356,10 @@ export interface NativeBindingShim {
   evaluatePurchase(input: string): string;
   /** Evaluate a purchase through the canonical prospective-decision contract. */
   evaluateProspectivePurchase?(input: string): string;
+  /** Account-aware scenarios and transfer verification share the native singleton. */
+  evaluateAccountAwareSpendability?(input: string): string;
+  verifyTransferPreconditions?(input: string): string;
+  verifyTransferSettlement?(input: string): string;
   /** Project future cash flow based on schedules and budgets. */
   projectCashFlow(input: string): string;
   /** Evaluate target/sinking-fund health. */
@@ -402,7 +406,7 @@ let nativeSingleton: NativeBindingShim | null = null;
  * Static import would break module resolution in those environments. This
  * pattern matches `rule-mutation.ts` line 122.
  */
-async function loadNativeBindings(
+export async function loadNativeBindings(
   override?: () => Promise<NativeBindingShim>,
 ): Promise<NativeBindingShim> {
   if (override) {
@@ -519,6 +523,7 @@ const FINANCIAL_ATTENTION_POLICY_VERSION = 'financial-attention-v1';
 const KNOWN_OBSERVATION_KINDS: Record<string, true> = {
   account_freshness: true,
   account_coverage: true,
+  account_collection_coverage: true,
   account_type: true,
   account_balance: true,
   pending_activity: true,
@@ -534,6 +539,7 @@ const KNOWN_OBSERVATION_KINDS: Record<string, true> = {
 const NON_ACTIONABLE_OBSERVATIONS: Record<string, true> = {
   'account_freshness:fresh': true,
   'account_coverage:complete': true,
+  'account_collection_coverage:complete': true,
   'account_type:complete': true,
   'account_balance:complete': true,
   'pending_activity:included': true,
@@ -547,6 +553,7 @@ function observationIssueCode(kind: string): string {
   switch (kind) {
     case 'account_freshness':
     case 'account_coverage':
+    case 'account_collection_coverage':
     case 'account_type':
     case 'account_balance':
       return 'account_freshness_coverage';

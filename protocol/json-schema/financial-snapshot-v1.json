@@ -286,6 +286,7 @@
           "enum": [
             "account_freshness",
             "account_coverage",
+            "account_collection_coverage",
             "account_type",
             "account_balance",
             "pending_activity",
@@ -344,6 +345,12 @@
         "legacySnapshot": { "$ref": "#/$defs/ProtocolSnapshot" },
         "coverage": { "$ref": "#/$defs/SnapshotCoverage" },
         "inclusionScope": { "$ref": "#/$defs/InclusionScope" },
+        "liquidity": {
+          "anyOf": [
+            { "$ref": "account-aware-liquidity-v1.json#/$defs/LiquidityFacts" },
+            { "type": "null" }
+          ]
+        },
         "observations": { "type": "array", "items": { "$ref": "#/$defs/SourceObservation" } }
       }
     }

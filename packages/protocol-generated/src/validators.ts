@@ -88,12 +88,16 @@ export const payeeSchema = z.object({
   mtid: z.string().nullable(),
 });
 
+const requiredRuleValueSchema = z
+  .unknown()
+  .refine((value): value is NonNullable<unknown> | null => value !== undefined);
+
 export const ruleSchema = z.object({
   id: z.string(),
   name: z.string(),
   order: z.number().int().nonnegative(),
-  trigger: z.unknown(),
-  actions: z.unknown(),
+  trigger: requiredRuleValueSchema,
+  actions: requiredRuleValueSchema,
   inactive: z.boolean(),
 });
 
@@ -248,6 +252,569 @@ export type Suggestion = z.infer<typeof suggestionSchema>;
 // Phase 8 — Budget Intelligence Zod schemas (camelCase, decimal-string Money)
 // ---------------------------------------------------------------------------
 
+// Rust-owned liquidity boundary. No defaults turn missing evidence into known facts.
+export const factStateSchema = z.enum(['known', 'unknown', 'unavailable']);
+
+export const factSourceSchema = z.enum([
+  'actual_ledger',
+  'institution_provider',
+  'user_attested',
+  'policy_assumption',
+]);
+
+export const liquidityAccountKindSchema = z.enum(['cash', 'credit', 'unknown']);
+
+export const accountRoleSchema = z.enum([
+  'daily_spending',
+  'bill_payment',
+  'reserve',
+  'savings',
+  'restricted',
+  'credit_payment',
+  'cash',
+  'excluded',
+]);
+
+export const liquidityCategoryKindSchema = z.enum([
+  'ordinary',
+  'income',
+  'transfer',
+  'reimbursement',
+  'debt',
+  'credit_payment',
+]);
+
+export const categoryPeriodKindSchema = z.enum(['current', 'future']);
+
+export const flowDirectionSchema = z.enum(['inflow', 'outflow']);
+
+export const calendarModeSchema = z.enum(['instant', 'calendar_days', 'business_days']);
+
+export const liquidityClaimStateSchema = z.enum([
+  'active',
+  'initiated',
+  'cancelled',
+  'expired',
+  'settled',
+]);
+
+export const claimEffectKindSchema = z.enum(['category', 'account_debit', 'destination_hold']);
+
+export const budgetFundingStatusSchema = z.enum(['funded', 'unfunded', 'insufficient_data']);
+
+export const paymentLiquidityStatusSchema = z.enum([
+  'ready',
+  'use_other_account',
+  'transfer_required',
+  'transfer_too_late',
+  'not_liquid',
+  'insufficient_data',
+]);
+
+export const settlementProvenanceSchema = z.enum([
+  'institution_import',
+  'provider_confirmed',
+  'actual_import',
+  'manual_ledger',
+]);
+
+export const factEvidenceSchema = z
+  .object({
+    state: factStateSchema,
+    source: factSourceSchema,
+    observedAt: canonicalUtcTimestampSchema.nullable(),
+    expiresAt: canonicalUtcTimestampSchema.nullable(),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+export const categoryLiquidityFactSchema = z
+  .object({
+    categoryId: z.string(),
+    cashBucketId: z.string(),
+    asOfMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+    kind: liquidityCategoryKindSchema,
+    periodKind: categoryPeriodKindSchema,
+    availability: moneySchema.strict(),
+    evidence: factEvidenceSchema,
+  })
+  .strict();
+
+export const unsettledFlowSchema = z
+  .object({
+    id: z.string(),
+    economicObligationId: z.string(),
+    direction: flowDirectionSchema,
+    amount: moneySchema.strict(),
+    includedInBalance: z.boolean(),
+    matchedTransactionIds: z.array(z.string()),
+    scheduleId: z.string().nullable(),
+    transferTransactionId: z.string().nullable(),
+    importedId: z.string().nullable(),
+    reconciled: z.boolean(),
+    provenance: settlementProvenanceSchema,
+  })
+  .strict();
+
+export const cashObligationSchema = z
+  .object({
+    id: z.string(),
+    economicObligationId: z.string(),
+    categoryId: z.string().nullable(),
+    amount: moneySchema.strict(),
+    dueAt: z.union([canonicalDateSchema, canonicalUtcTimestampSchema]),
+    paid: z.boolean(),
+    includedInBalance: z.boolean(),
+    matchedTransactionIds: z.array(z.string()),
+  })
+  .strict();
+
+export const creditLiquidityFactSchema = z
+  .object({
+    authorizationAvailable: moneySchema.strict(),
+    pendingIncludedInAuthorization: z.boolean(),
+    paymentAccountId: z.string(),
+    paymentCategoryId: z.string(),
+    dueAt: canonicalUtcTimestampSchema,
+    reservedCash: moneySchema.strict(),
+    economicObligationId: z.string(),
+    evidence: factEvidenceSchema,
+  })
+  .strict();
+
+export const accountLiquidityFactSchema = z
+  .object({
+    accountId: z.string(),
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    currencyEvidence: factEvidenceSchema,
+    kind: liquidityAccountKindSchema,
+    kindEvidence: factEvidenceSchema,
+    onBudget: z.boolean(),
+    closed: z.boolean(),
+    owned: z.boolean(),
+    ownershipEvidence: factEvidenceSchema,
+    recordedBalance: moneySchema.strict(),
+    balanceEvidence: factEvidenceSchema,
+    freshnessEvidence: factEvidenceSchema,
+    activityEvidence: factEvidenceSchema,
+    scheduleEvidence: factEvidenceSchema,
+    baselineTransactionIds: z.array(z.string()),
+    unsettledFlows: z.array(unsettledFlowSchema),
+    holds: moneySchema.strict(),
+    holdsEvidence: factEvidenceSchema,
+    obligations: z.array(cashObligationSchema),
+    credit: creditLiquidityFactSchema.nullable(),
+    ambiguityReasons: z.array(z.string()),
+  })
+  .strict();
+
+export const scheduleAmountCertaintySchema = z.enum(['exact', 'approximate', 'range', 'unknown']);
+export const scheduleFrequencySchema = z.enum(['daily', 'weekly', 'monthly', 'yearly']);
+export const scheduleEndModeSchema = z.enum(['never', 'after_n_occurrences', 'on_date']);
+export const scheduleWeekendSolveModeSchema = z.enum(['before', 'after']);
+export const schedulePatternKindSchema = z.enum(['su', 'mo', 'tu', 'we', 'th', 'fr', 'sa', 'day']);
+export const scheduleRecurrencePatternSchema = z
+  .object({
+    kind: schedulePatternKindSchema,
+    value: z.number().int().min(-2147483648).max(2147483647),
+  })
+  .strict();
+export const scheduleRecurrenceSchema = z
+  .object({
+    frequency: scheduleFrequencySchema,
+    interval: z.number().int().min(0).max(4294967295).nullable(),
+    patterns: z.array(scheduleRecurrencePatternSchema).nullable(),
+    start: canonicalDateSchema,
+    endMode: scheduleEndModeSchema.nullable(),
+    endOccurrences: z.number().int().min(0).max(4294967295).nullable(),
+    endDate: canonicalDateSchema.nullable(),
+    skipWeekend: z.boolean().nullable(),
+    weekendSolveMode: scheduleWeekendSolveModeSchema.nullable(),
+  })
+  .strict();
+export const scheduleLiquidityFactSchema = z
+  .object({
+    id: z.string(),
+    accountId: z.string().nullable(),
+    categoryId: z.string().nullable(),
+    ruleId: z.string().nullable(),
+    dueDate: canonicalDateSchema.nullable(),
+    certainty: scheduleAmountCertaintySchema,
+    amount: moneySchema.strict().nullable(),
+    minimum: moneySchema.strict().nullable(),
+    maximum: moneySchema.strict().nullable(),
+    recurrence: scheduleRecurrenceSchema.nullable(),
+  })
+  .strict();
+
+export const liquidityFactsSchema = z
+  .object({
+    version: z.string(),
+    ledgerContentHash: z.string(),
+    asOfMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+    categories: z.array(categoryLiquidityFactSchema),
+    accounts: z.array(accountLiquidityFactSchema),
+    schedules: z.array(scheduleLiquidityFactSchema),
+  })
+  .strict();
+
+export const accountLiquidityPolicySchema = z
+  .object({
+    accountId: z.string(),
+    role: accountRoleSchema,
+    protectedBuffer: moneySchema.strict(),
+    paymentEligible: z.boolean(),
+    sourceEligible: z.boolean(),
+    backingEligible: z.boolean(),
+    eligibleCategoryIds: z.array(z.string()),
+    restrictedCashBucketIds: z.array(z.string()),
+    automationAllowed: z.boolean(),
+    resourceScope: z.string(),
+  })
+  .strict();
+
+export const transferTimingRouteSchema = z
+  .object({
+    id: z.string(),
+    sourceAccountId: z.string(),
+    destinationAccountId: z.string(),
+    providerArrivalAt: canonicalUtcTimestampSchema.nullable(),
+    calendarMode: calendarModeSchema.nullable(),
+    delayDays: z.number().int().min(0).max(4294967295),
+    utcOffsetMinutes: z.number().int().min(-2147483648).max(2147483647).nullable(),
+    cutoffMinute: z.number().int().min(0).max(4294967295).nullable(),
+    weekendsAvailable: z.boolean().nullable(),
+    holidaysComplete: z.boolean(),
+    holidays: z.array(canonicalDateSchema),
+    evidence: factEvidenceSchema,
+  })
+  .strict();
+
+export const liquidityPolicySchema = z
+  .object({
+    version: z.string(),
+    policyHash: z.string(),
+    expiresAt: canonicalUtcTimestampSchema,
+    accounts: z.array(accountLiquidityPolicySchema),
+    transferRoutes: z.array(transferTimingRouteSchema),
+  })
+  .strict();
+
+export const liquidityClaimEffectSchema = z
+  .object({
+    kind: claimEffectKindSchema,
+    resourceId: z.string(),
+    amount: moneySchema.strict(),
+    economicObligationId: z.string(),
+    categoryId: z.string().nullable(),
+    includedInBalance: z.boolean(),
+    matchedTransactionIds: z.array(z.string()),
+  })
+  .strict();
+
+export const liquidityClaimBundleSchema = z
+  .object({
+    id: z.string(),
+    creationSnapshotId: z.string(),
+    creationPolicyVersion: z.string(),
+    state: liquidityClaimStateSchema,
+    expiresAt: canonicalUtcTimestampSchema,
+    initiated: z.boolean(),
+    effects: z.array(liquidityClaimEffectSchema),
+  })
+  .strict();
+
+export const liquidityClaimSetSchema = z
+  .object({
+    revision: z.string(),
+    bundles: z.array(liquidityClaimBundleSchema),
+  })
+  .strict();
+
+export const trustedRouteSchema = z
+  .object({
+    accountId: z.string(),
+    referenceId: z.string(),
+  })
+  .strict();
+
+export const routeSelectionSchema = z
+  .object({
+    explicitAccountId: z.string().nullable(),
+    sessionAccountId: z.string().nullable(),
+    approvedPreference: trustedRouteSchema.nullable(),
+    historicalRoute: trustedRouteSchema.nullable(),
+  })
+  .strict();
+
+export const liquidityPurchaseItemSchema = z
+  .object({
+    id: z.string(),
+    categoryId: z.string(),
+    amount: moneySchema.strict(),
+    purchaseAt: canonicalUtcTimestampSchema,
+    requiredBy: canonicalUtcTimestampSchema,
+    routeSelection: routeSelectionSchema,
+  })
+  .strict();
+
+export const categoryReallocationSchema = z
+  .object({
+    id: z.string(),
+    sourceCategoryId: z.string(),
+    destinationCategoryId: z.string(),
+    amount: moneySchema.strict(),
+  })
+  .strict();
+
+export const liquidityHorizonSchema = z
+  .object({
+    startsAt: canonicalUtcTimestampSchema,
+    endsAt: canonicalUtcTimestampSchema,
+  })
+  .strict();
+
+export const backingLineSchema = z
+  .object({
+    accountId: z.string(),
+    categoryId: z.string(),
+    cashBucketId: z.string(),
+    amount: moneySchema.strict(),
+  })
+  .strict();
+
+export const backingAllocationSchema = z
+  .object({
+    version: z.string(),
+    snapshotId: z.string(),
+    contentHash: z.string(),
+    policyVersion: z.string(),
+    policyHash: z.string(),
+    claimSetRevision: z.string(),
+    feasible: z.boolean(),
+    lines: z.array(backingLineSchema),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+export const capacityDeductionSchema = z
+  .object({
+    reason: z.string(),
+    evidenceId: z.string(),
+    amount: moneySchema.strict(),
+    affectsBacking: z.boolean(),
+  })
+  .strict();
+
+export const accountCapacitySchema = z
+  .object({
+    accountId: z.string(),
+    recordedBalance: moneySchema.strict(),
+    adjustedCash: moneySchema.strict().nullable(),
+    signedHeadroom: moneySchema.strict().nullable(),
+    existingShortfall: moneySchema.strict().nullable(),
+    safeSpendingCapacity: moneySchema.strict().nullable(),
+    safeTransferCapacity: moneySchema.strict().nullable(),
+    backingCapacity: moneySchema.strict().nullable(),
+    deductions: z.array(capacityDeductionSchema),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+export const categoryCapacitySchema = z
+  .object({
+    categoryId: z.string(),
+    cashBucketId: z.string(),
+    authoritativeAvailability: moneySchema.strict(),
+    remainingAvailability: moneySchema.strict().nullable(),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+export const paymentAlternativeSchema = z
+  .object({
+    accountId: z.string(),
+    status: paymentLiquidityStatusSchema,
+    capacity: moneySchema.strict(),
+  })
+  .strict();
+
+export const accountPlanPreconditionSchema = z
+  .object({
+    accountId: z.string(),
+    recordedBalance: moneySchema.strict(),
+    signedHeadroom: moneySchema.strict(),
+    backingCapacity: moneySchema.strict(),
+    baselineTransactionIds: z.array(z.string()),
+  })
+  .strict();
+
+export const transferLegSchema = z
+  .object({
+    id: z.string(),
+    sourceAccountId: z.string(),
+    destinationAccountId: z.string(),
+    amount: moneySchema.strict(),
+    requiredBy: canonicalUtcTimestampSchema,
+    estimatedArrival: canonicalUtcTimestampSchema,
+    timingRouteId: z.string(),
+    sourceBefore: accountPlanPreconditionSchema,
+    destinationBefore: accountPlanPreconditionSchema,
+    sourceAfter: moneySchema.strict(),
+    destinationAfter: moneySchema.strict(),
+  })
+  .strict();
+
+export const creditPaymentResultSchema = z
+  .object({
+    accountId: z.string(),
+    authorizationAvailable: moneySchema.strict(),
+    authorizationAfter: moneySchema.strict(),
+    paymentAccountId: z.string(),
+    paymentCategoryId: z.string(),
+    dueAt: canonicalUtcTimestampSchema,
+    additionalPaymentCash: moneySchema.strict(),
+    paymentCashReady: z.boolean(),
+  })
+  .strict();
+
+export const transferSettlementRecordSchema = z
+  .object({
+    id: z.string(),
+    accountId: z.string(),
+    amount: moneySchema.strict(),
+    observedAt: canonicalUtcTimestampSchema,
+    occurredAt: z.union([canonicalDateSchema, canonicalUtcTimestampSchema]),
+    importedId: z.string().nullable(),
+    providerReference: z.string().nullable(),
+    pairId: z.string(),
+    reconciled: z.boolean(),
+    reversed: z.boolean(),
+    provenance: settlementProvenanceSchema,
+  })
+  .strict();
+
+export const transferSettlementResultSchema = z
+  .object({
+    confirmed: z.boolean(),
+    sourceObserved: z.boolean(),
+    destinationObserved: z.boolean(),
+    reconciled: z.boolean(),
+    evidenceIds: z.array(z.string()),
+    reasons: z.array(z.string()),
+    claimEffects: z.array(liquidityClaimEffectSchema).nullable(),
+  })
+  .strict();
+
+export const transferPreconditionResultSchema = z
+  .object({
+    valid: z.boolean(),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+export const liquidityScenarioSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('none') }).strict(),
+  z.object({ kind: z.literal('purchases'), items: z.array(liquidityPurchaseItemSchema) }).strict(),
+  z
+    .object({ kind: z.literal('reallocation'), moves: z.array(categoryReallocationSchema) })
+    .strict(),
+]);
+
+export const liquidityInputSchema = z
+  .object({
+    snapshotId: z.string(),
+    contentHash: z.string(),
+    evaluatedAt: canonicalUtcTimestampSchema,
+    maxBudgetSnapshotAgeMinutes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    sourceCoverageComplete: z.boolean(),
+    horizon: liquidityHorizonSchema,
+    facts: liquidityFactsSchema.nullable(),
+    liquidityPolicy: liquidityPolicySchema,
+    claimSet: liquidityClaimSetSchema,
+    priorAllocation: backingAllocationSchema.nullable(),
+    scenario: liquidityScenarioSchema,
+    validUntil: canonicalUtcTimestampSchema,
+  })
+  .strict();
+
+export const transferPlanSchema = z
+  .object({
+    version: z.string(),
+    snapshotId: z.string(),
+    contentHash: z.string(),
+    policyVersion: z.string(),
+    policyHash: z.string(),
+    claimSetRevision: z.string(),
+    evaluatedAt: canonicalUtcTimestampSchema,
+    expiresAt: canonicalUtcTimestampSchema,
+    minimumAmount: moneySchema.strict(),
+    legs: z.array(transferLegSchema),
+    reservations: z.array(liquidityClaimEffectSchema),
+    backingAfter: backingAllocationSchema,
+    scenario: liquidityScenarioSchema,
+    preconditionsHash: z.string(),
+    payloadHash: z.string(),
+  })
+  .strict();
+
+export const purchaseLiquidityResultSchema = z
+  .object({
+    itemId: z.string(),
+    categoryId: z.string(),
+    budgetFundingStatus: budgetFundingStatusSchema,
+    paymentLiquidityStatus: paymentLiquidityStatusSchema,
+    selectedAccountId: z.string().nullable(),
+    selectionSource: z.string(),
+    selectedBefore: accountCapacitySchema.nullable(),
+    selectedAfter: accountCapacitySchema.nullable(),
+    alternatives: z.array(paymentAlternativeSchema),
+    transferPlan: transferPlanSchema.nullable(),
+    credit: creditPaymentResultSchema.nullable(),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+export const accountAwareSpendabilityResultSchema = z
+  .object({
+    version: z.string(),
+    snapshotId: z.string(),
+    contentHash: z.string(),
+    policyVersion: z.string(),
+    policyHash: z.string(),
+    claimSetRevision: z.string(),
+    budgetFundingStatus: budgetFundingStatusSchema,
+    paymentLiquidityStatus: paymentLiquidityStatusSchema,
+    accountsBefore: z.array(accountCapacitySchema),
+    accountsAfter: z.array(accountCapacitySchema),
+    categories: z.array(categoryCapacitySchema),
+    backingBefore: backingAllocationSchema,
+    backingAfter: backingAllocationSchema,
+    purchases: z.array(purchaseLiquidityResultSchema),
+    horizon: liquidityHorizonSchema,
+    expiresAt: canonicalUtcTimestampSchema,
+    assumptions: z.array(z.string()),
+    reasons: z.array(z.string()),
+  })
+  .strict();
+
+export const transferSettlementRequestSchema = z
+  .object({
+    plan: transferPlanSchema,
+    evaluatedAt: canonicalUtcTimestampSchema,
+    records: z.array(transferSettlementRecordSchema),
+    consumedEvidenceIds: z.array(z.string()),
+  })
+  .strict();
+
+export const transferPreconditionRequestSchema = z
+  .object({
+    plan: transferPlanSchema,
+    currentInput: liquidityInputSchema,
+    ownClaimId: z.string().nullable(),
+  })
+  .strict();
+
 export const purchaseEvaluationSchema = z
   .object({
     allowable: z.boolean(),
@@ -256,6 +823,7 @@ export const purchaseEvaluationSchema = z
     categorySpent: moneySchema,
     categoryRemaining: moneySchema,
     projectedBalance: moneySchema.nullable(),
+    accountAware: accountAwareSpendabilityResultSchema.nullable().optional(),
   })
   .strict();
 
@@ -419,6 +987,7 @@ export const inclusionScopeSchema = z
 export const observationKindSchema = z.enum([
   'account_freshness',
   'account_coverage',
+  'account_collection_coverage',
   'account_type',
   'account_balance',
   'pending_activity',
@@ -517,6 +1086,7 @@ export const financialSnapshotSchema = z
     coverage: snapshotCoverageSchema,
     inclusionScope: inclusionScopeSchema,
     observations: z.array(sourceObservationSchema),
+    liquidity: liquidityFactsSchema.nullable().optional(),
   })
   .strict();
 
@@ -640,5 +1210,53 @@ export const purchaseProspectiveDecisionEnvelopeSchema = z
     expiresAt: canonicalUtcTimestampSchema,
     redaction: redactionStateSchema,
     payload: purchaseEvaluationSchema,
+  })
+  .strict();
+
+/** Trusted native request boundary; never accept this structure directly from public clients. */
+export const accountAwareSpendabilityRequestSchema = z
+  .object({
+    financialSnapshot: financialSnapshotSchema,
+    context: decisionContextSchema,
+    liquidityPolicy: liquidityPolicySchema,
+    claimSet: liquidityClaimSetSchema,
+    priorAllocation: backingAllocationSchema.nullable(),
+    scenario: liquidityScenarioSchema,
+    validUntil: canonicalUtcTimestampSchema,
+  })
+  .strict();
+
+export const purchaseLiquidityContextSchema = z
+  .object({
+    liquidityPolicy: liquidityPolicySchema,
+    claimSet: liquidityClaimSetSchema,
+    priorAllocation: backingAllocationSchema.nullable(),
+    routeSelection: routeSelectionSchema,
+    purchaseAt: canonicalUtcTimestampSchema,
+    requiredBy: canonicalUtcTimestampSchema,
+  })
+  .strict();
+
+export const prospectivePurchaseEvaluationRequestSchema = z
+  .object({
+    financialSnapshot: financialSnapshotSchema,
+    context: decisionContextSchema,
+    claims: z.array(prospectiveClaimSchema),
+    proposedTransaction: financialSnapshotTransactionSchema,
+    categoryId: z.string(),
+    requestId: z.string(),
+    correlationId: z.string(),
+    decisionId: z.string(),
+    validUntil: canonicalUtcTimestampSchema,
+    redaction: redactionStateSchema,
+    liquidity: purchaseLiquidityContextSchema.nullable().optional(),
+  })
+  .strict();
+
+export const verifyTransferPreconditionsRequestSchema = z
+  .object({
+    plan: transferPlanSchema,
+    currentInput: accountAwareSpendabilityRequestSchema,
+    ownClaimId: z.string().nullable(),
   })
   .strict();

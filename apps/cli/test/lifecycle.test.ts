@@ -383,7 +383,15 @@ describe('CLI lifecycle — delete-data', () => {
 
 describe('CLI lifecycle — destructive flow (real artifacts)', () => {
   /** Create a minimal in-memory store that satisfies LifecycleStore. */
-  function createTestStore(): LifecycleStore & { exports: Array<{ exportedAt: string; budgetName: string; exportPath: string; accountCount: number; transactionCount: number }> } {
+  function createTestStore(): LifecycleStore & {
+    exports: Array<{
+      exportedAt: string;
+      budgetName: string;
+      exportPath: string;
+      accountCount: number;
+      transactionCount: number;
+    }>;
+  } {
     const exports: Array<{
       exportedAt: string;
       budgetName: string;
@@ -393,8 +401,12 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
     }> = [];
     return {
       exports,
-      async cancelPendingJobs() { return 0; },
-      async deleteActorMembership() { return true; },
+      async cancelPendingJobs() {
+        return 0;
+      },
+      async deleteActorMembership() {
+        return true;
+      },
       async recordExport(input) {
         exports.length = 0; // single-row tracking
         exports.push({ ...input, exportedAt: new Date().toISOString() });
@@ -403,7 +415,10 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
         return exports[0] ?? null;
       },
       async deleteScopeData() {
-        return { deleted: { memberships: 1, jobs: 0, corrections: 3 }, retained: { count: 0, reasons: [] } };
+        return {
+          deleted: { memberships: 1, jobs: 0, corrections: 3 },
+          retained: { count: 0, reasons: [] },
+        };
       },
     };
   }
@@ -421,33 +436,68 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
             bankSyncedAt: null,
             encrypted: false,
             unlocked: true,
-            accounts: [{
-              id: 'a1', name: 'Test Checking', accountType: 'checking' as const,
-              offBudget: false, isClosed: false,
-              clearedBalance: { minorUnits: '100000', currency: 'USD' },
-              importedBalance: { minorUnits: '100000', currency: 'USD' },
-              mtid: null,
-            }],
-            transactions: [{
-              id: 't1', accountId: 'a1',
-              date: '2026-07-15', payeeId: 'p1', payeeName: 'Test Store',
-              categoryId: 'c1', categoryName: 'Groceries',
-              amount: { minorUnits: '-2500', currency: 'USD' },
-              cleared: true, reconciled: false,
-              importedId: null, importedPayee: null,
-              notes: null, tags: [], transferAccountId: null, subtransactions: [],
-            }],
-            categories: [{
-              id: 'c1', name: 'Groceries', groupName: 'Food',
-              isIncome: false, mtid: null, deleted: false,
-            }],
-            payees: [{
-              id: 'p1', name: 'Test Store', transferAccountId: null, mtid: null,
-            }],
-            rules: [], schedules: [], budgets: [], tags: [],
+            accounts: [
+              {
+                id: 'a1',
+                name: 'Test Checking',
+                accountType: 'checking' as const,
+                offBudget: false,
+                isClosed: false,
+                clearedBalance: { minorUnits: '100000', currency: 'USD' },
+                importedBalance: { minorUnits: '100000', currency: 'USD' },
+                mtid: null,
+              },
+            ],
+            transactions: [
+              {
+                id: 't1',
+                accountId: 'a1',
+                date: '2026-07-15',
+                payeeId: 'p1',
+                payeeName: 'Test Store',
+                categoryId: 'c1',
+                categoryName: 'Groceries',
+                amount: { minorUnits: '-2500', currency: 'USD' },
+                cleared: true,
+                reconciled: false,
+                importedId: null,
+                importedPayee: null,
+                notes: null,
+                tags: [],
+                transferAccountId: null,
+                subtransactions: [],
+              },
+            ],
+            categories: [
+              {
+                id: 'c1',
+                name: 'Groceries',
+                groupName: 'Food',
+                isIncome: false,
+                mtid: null,
+                deleted: false,
+              },
+            ],
+            payees: [
+              {
+                id: 'p1',
+                name: 'Test Store',
+                transferAccountId: null,
+                mtid: null,
+              },
+            ],
+            rules: [],
+            schedules: [],
+            budgets: [],
+            tags: [],
           },
           health: { state: 'healthy' as const, checks: [] },
-          watermark: { lastTransactionDate: null, lastTransactionCount: 0, lastSyncCompletedAt: null, overlapDays: 3 },
+          watermark: {
+            lastTransactionDate: null,
+            lastTransactionCount: 0,
+            lastSyncCompletedAt: null,
+            overlapDays: 3,
+          },
         };
       },
     };
@@ -458,7 +508,10 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
     try {
       const store = createTestStore();
       const ledger = mockSyncLedger();
-      const callbacks = createLifecycleCallbacks(() => ledger, { workflowStore: store, actorId: 'usr_dtest' });
+      const callbacks = createLifecycleCallbacks(() => ledger, {
+        workflowStore: store,
+        actorId: 'usr_dtest',
+      });
 
       const exportResult = await callbacks.doExport(ledger);
       expect(exportResult.byteSize).toBeGreaterThan(50);
@@ -475,7 +528,10 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
   it('rejects delete-data when no export has been performed', async () => {
     const store = createTestStore();
     const ledger = { mockLedger: true };
-    const callbacks = createLifecycleCallbacks(() => ledger, { workflowStore: store, actorId: 'usr_dtest2' });
+    const callbacks = createLifecycleCallbacks(() => ledger, {
+      workflowStore: store,
+      actorId: 'usr_dtest2',
+    });
 
     await expect(callbacks.doDeleteData(ledger, 'connection')).rejects.toThrowError(
       /export.*first/i,
@@ -487,7 +543,10 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
     try {
       const store = createTestStore();
       const ledger = mockSyncLedger();
-      const callbacks = createLifecycleCallbacks(() => ledger, { workflowStore: store, actorId: 'usr_dtest3' });
+      const callbacks = createLifecycleCallbacks(() => ledger, {
+        workflowStore: store,
+        actorId: 'usr_dtest3',
+      });
 
       // Perform export to create real files
       const exportResult = await callbacks.doExport(ledger);
@@ -524,10 +583,10 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
     expect(resultNoCleanup.message).toMatch(/does not support disconnect cleanup/);
 
     const store = createTestStore();
-    const callbacksWithStore = createLifecycleCallbacks(
-      () => ledgerNoDisconnect,
-      { workflowStore: store, actorId: 'usr_dtest4' },
-    );
+    const callbacksWithStore = createLifecycleCallbacks(() => ledgerNoDisconnect, {
+      workflowStore: store,
+      actorId: 'usr_dtest4',
+    });
     const resultWithStore = await callbacksWithStore.doDisconnect(ledgerNoDisconnect);
     // Even with a store, cache/credentials not removed when ledger lacks disconnect
     expect(resultWithStore.cacheRemoved).toBe(false);
@@ -560,10 +619,10 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
     expect(resultNoCleanup.broadAccessCaveat).toMatch(/does not support disconnect cleanup/);
 
     const store = createTestStore();
-    const callbacksWithStore = createLifecycleCallbacks(
-      () => ledgerNoDisconnect,
-      { workflowStore: store, actorId: 'usr_dtest5' },
-    );
+    const callbacksWithStore = createLifecycleCallbacks(() => ledgerNoDisconnect, {
+      workflowStore: store,
+      actorId: 'usr_dtest5',
+    });
     const resultWithStore = await callbacksWithStore.doRemoveConnection(ledgerNoDisconnect);
     // Even with a store, cache/credentials not removed when ledger lacks disconnect
     expect(resultWithStore.cacheRemoved).toBe(false);
@@ -579,10 +638,89 @@ describe('CLI lifecycle — destructive flow (real artifacts)', () => {
       },
     };
     const callbacksWithDisconnect = createLifecycleCallbacks(() => ledgerWithDisconnect);
-    const resultWithDisconnect = await callbacksWithDisconnect.doRemoveConnection(ledgerWithDisconnect);
+    const resultWithDisconnect =
+      await callbacksWithDisconnect.doRemoveConnection(ledgerWithDisconnect);
     expect(disconnectCalled).toBe(true);
     expect(resultWithDisconnect.cacheRemoved).toBe(true);
     expect(resultWithDisconnect.credentialsRemoved).toBe(true);
     expect(resultWithDisconnect.broadAccessCaveat).toMatch(/broad access/i);
   });
+});
+
+describe('CLI lifecycle failure boundaries', () => {
+  const failures = [
+    { args: ['export'], callback: 'doExport', code: 'export_failed' },
+    { args: ['disconnect'], callback: 'doDisconnect', code: 'disconnect_failed' },
+    {
+      args: ['remove-connection'],
+      callback: 'doRemoveConnection',
+      code: 'remove_connection_failed',
+    },
+    {
+      args: ['delete-data', '--scope', 'connection'],
+      callback: 'doDeleteData',
+      code: 'delete_data_failed',
+    },
+  ] as const;
+
+  for (const { args, callback, code } of failures) {
+    it(`returns a retryable ${code} envelope instead of throwing or claiming success`, async () => {
+      const tracker = createLifecycleTracker();
+      tracker.callbacks[callback] = async () => {
+        throw new Error('Disposable lifecycle storage unavailable');
+      };
+      const response = JSON.parse(
+        await main([...args], {
+          actorId: 'usr_lifecycle_failure',
+          requestId: 'req_lifecycle_failure',
+          mode: 'managedAutomation',
+          ledger: { mockLedger: true },
+          lifecycleCallbacks: tracker.callbacks,
+          analysisProtocol: noopProtocol(),
+        }),
+      );
+      expect(response.status).toBe('error');
+      expect(response.error).toMatchObject({ code, retryable: true });
+    });
+  }
+
+  for (const command of ['disconnect', 'remove-connection']) {
+    it(`rejects ${command} when lifecycle services are unavailable`, async () => {
+      const response = JSON.parse(
+        await main([command], {
+          mode: 'managedAutomation',
+          ledger: { mockLedger: true },
+          analysisProtocol: noopProtocol(),
+        }),
+      );
+      expect(response.status).toBe('error');
+      expect(response.error.code).toBe('no_lifecycle_callbacks');
+    });
+  }
+
+  for (const args of [
+    ['disconnect'],
+    ['remove-connection'],
+    ['delete-data', '--scope', 'connection'],
+  ]) {
+    it(`rejects disconnected ${args[0]} before performing any lifecycle side effect`, async () => {
+      const tracker = createLifecycleTracker();
+      const response = JSON.parse(
+        await main(args, {
+          mode: 'managedAutomation',
+          ledger: null,
+          lifecycleCallbacks: tracker.callbacks,
+          analysisProtocol: noopProtocol(),
+        }),
+      );
+      expect(response.status).toBe('error');
+      expect(response.error.code).toBe('not_connected');
+      expect([
+        tracker.exportCallCount,
+        tracker.disconnectCallCount,
+        tracker.removeCallCount,
+        tracker.deleteDataCallCount,
+      ]).toEqual([0, 0, 0, 0]);
+    });
+  }
 });

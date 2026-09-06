@@ -3043,7 +3043,7 @@ fn purchase_evaluation_uses_requested_account_balance() {
         proposed_transaction: proposed,
         category_id: "cat1".into(),
     });
-    assert_eq!(result.projected_balance.unwrap().minor_units(), 100000);
+    assert_eq!(result.projected_balance.unwrap().minor_units(), 99000);
 }
 
 #[test]
@@ -3139,7 +3139,7 @@ fn purchase_evaluation_does_not_double_count_pending_and_uncleared() {
         proposed_transaction: sample_transaction("proposed-totals", Some("cat1"), -1000),
         category_id: "cat1".into(),
     });
-    assert_eq!(result.projected_balance.unwrap().minor_units(), 91000);
+    assert_eq!(result.projected_balance.unwrap().minor_units(), 90000);
 }
 
 #[test]
@@ -3297,4 +3297,151 @@ fn test_financial_state_at_risk() {
     let label = evaluate_financial_state(request);
     assert_eq!(label.label, "critical");
     assert!(label.score < 0.5);
+}
+
+#[test]
+fn rule_plan_preview_detects_active_overlaps_without_mutating_transactions() {
+    use balanceframe_core_protocol::simulate_create_rule_plan;
+    let mut snapshot = empty_snapshot();
+    snapshot.transactions = vec![
+        sample_transaction("uncategorized", None, -100),
+        sample_transaction("already", Some("food"), -200),
+    ];
+    let plan = plan_create_rule(
+        "Food rule",
+        &[PayeeCondition {
+            field: "payee".into(),
+            operation: "is".into(),
+            value: " Test Payee ".into(),
+        }],
+        "food",
+        &snapshot,
+    );
+    let rule = |id: &str, category: &str, inactive| Rule {
+        id: id.into(),
+        name: id.into(),
+        order: 0,
+        trigger: serde_json::json!({"type": "payee_is", "value": "TEST PAYEE"}),
+        actions: serde_json::json!([{"type": "set_category", "value": category}]),
+        inactive,
+    };
+    snapshot.rules = vec![
+        rule("same", "food", false),
+        rule("different", "travel", false),
+        rule("inactive", "food", true),
+    ];
+    let original = snapshot.clone();
+    let result = simulate_create_rule_plan(&plan, &snapshot);
+    assert_eq!(
+        result.transactions_affected,
+        vec!["uncategorized", "already"]
+    );
+    assert_eq!(result.category_distribution["food"], 2);
+    assert!(result.examples[0].would_change);
+    assert!(!result.examples[1].would_change);
+    assert_eq!(result.conflicts.len(), 2);
+    assert_eq!(snapshot, original);
+    snapshot.rules.clear();
+    assert!(simulate_create_rule_plan(&plan, &snapshot)
+        .conflicts
+        .is_empty());
+}
+
+#[test]
+fn simulation_respects_strict_amount_boundaries_unknown_triggers_and_inactive_rules() {
+    let transactions = vec![
+        sample_transaction("below", None, -101),
+        sample_transaction("equal", Some("food"), -100),
+        sample_transaction("above", None, -99),
+    ];
+    let mut rule = Rule {
+        id: "boundary".into(),
+        name: "Boundary".into(),
+        order: 0,
+        trigger: serde_json::json!({"type": "amount_less_than", "value": -100}),
+        actions: serde_json::json!([null, {}, {"value": ""}, {"type": "set_category", "value": "food"}]),
+        inactive: false,
+    };
+    assert_eq!(
+        simulate_rule(&rule, &transactions).transactions_affected,
+        vec!["below"]
+    );
+    rule.trigger["type"] = "amount_greater_than".into();
+    assert_eq!(
+        simulate_rule(&rule, &transactions).transactions_affected,
+        vec!["above"]
+    );
+    rule.trigger["type"] = "unsupported".into();
+    assert!(simulate_rule(&rule, &transactions)
+        .transactions_affected
+        .is_empty());
+    rule.trigger["type"] = "transaction_added".into();
+    rule.inactive = true;
+    let inactive = simulate_rule(&rule, &transactions);
+    assert!(inactive.examples.is_empty());
+    assert!(inactive.category_distribution.is_empty());
+    assert_eq!(inactive.transactions_matched, 0);
+}
+
+#[test]
+fn correction_history_requires_consensus_and_preserves_conflicts() {
+    use balanceframe_core_protocol::{
+        analyze_rule_candidates_from_corrections, CorrectionHistoryInput,
+    };
+    let mut corrections: Vec<CorrectionHistoryInput> = (0..3)
+        .map(|index| CorrectionHistoryInput {
+            source_review_id: format!("review-{index}"),
+            transaction_id: format!("tx-{index}"),
+            transaction_version: 1,
+            merchant: Some("Test Payee".into()),
+            imported_payee: None,
+            account_id: Some("account".into()),
+            direction: Some("outflow".into()),
+            amount: Some(-100),
+            date: Some("2026-07-15".into()),
+            category_id: "food".into(),
+            category_name: Some("Food".into()),
+            actor: "user".into(),
+            from_status: "pending".into(),
+            to_status: "approved".into(),
+        })
+        .collect();
+    assert!(analyze_rule_candidates_from_corrections(&corrections[..2], 3).is_empty());
+    let agreed = analyze_rule_candidates_from_corrections(&corrections, 3);
+    assert_eq!(agreed.len(), 1);
+    assert_eq!(agreed[0].proposed_category_id, "food");
+    assert!(agreed[0].conflict_reason.is_none());
+    corrections[2].category_id = "travel".into();
+    let conflicted = analyze_rule_candidates_from_corrections(&corrections, 2);
+    assert_eq!(conflicted.len(), 1);
+    assert!(conflicted[0].conflict_reason.is_some());
+}
+
+#[test]
+fn readiness_preserves_deleted_category_and_accumulation_blockers() {
+    let mut snapshot = empty_snapshot();
+    snapshot
+        .categories
+        .push(sample_category("deleted", "Deleted", true));
+    snapshot.transactions = vec![
+        sample_transaction("max", None, i64::MAX),
+        sample_transaction("overflow", None, 1),
+        sample_transaction("deleted-reference", Some("deleted"), -100),
+    ];
+    let result = analyze_snapshot(AnalysisRequest {
+        snapshot,
+        options: AnalysisOptions {
+            include_pending: false,
+            include_cleared: true,
+            max_results: None,
+        },
+    });
+    assert_eq!(result.result_code, "error");
+    assert!(result.reason_codes.contains(&"amount_overflow".into()));
+    assert!(result
+        .reason_codes
+        .contains(&"deleted_category_referenced".into()));
+    assert!(result.findings.iter().any(
+        |finding| finding.finding_type == "amount_overflow" && finding.entity_id == "overflow"
+    ));
 }

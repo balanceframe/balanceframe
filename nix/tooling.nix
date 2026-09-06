@@ -49,7 +49,13 @@ in
 
   packages = [ pkgs.nixfmt-rfc-style ];
 
-  nativeBuildInputs = rust ++ node ++ nativeBuildInputs ++ repoTools ++ [ pkgs.nixfmt-rfc-style ];
+  nativeBuildInputs =
+    rust
+    ++ node
+    ++ nativeBuildInputs
+    ++ repoTools
+    ++ [ pkgs.nixfmt-rfc-style ]
+    ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.gdb ];
 
   buildInputs = buildInputs;
 
@@ -74,8 +80,11 @@ in
     "sqlite3"
     "git"
     "jq"
+    "python3"
+    "nixfmt"
     "expect"
     "just"
     "actual-server"
-  ];
+  ]
+  ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ "gdb" ];
 }

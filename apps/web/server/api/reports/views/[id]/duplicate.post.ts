@@ -1,3 +1,4 @@
+import { requireFullRead } from '../../../../utils/legacy-financial-read';
 /**
  * POST /api/reports/views/:id/duplicate — duplicate a saved view.
  *
@@ -13,13 +14,14 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   getActorId,
   sanitizeError,
 } from '../../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
   const sourceViewId = getRouterParam(event, 'id') ?? '';
 
@@ -67,6 +69,11 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
+    const existing = await wf.store.getSavedView(sourceViewId);
+    if (!existing || existing.actorId !== fullRead.info.actorId) {
+      setResponseStatus(event, 404);
+      return errorEnvelope('VIEW_NOT_FOUND', 'Saved view not found.', authInfo, false, requestId);
+    }
     const duplicated = await wf.store.duplicateSavedView({
       sourceViewId,
       name,

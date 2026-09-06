@@ -96,6 +96,12 @@ import {
   buildCategoryInfoMap,
   buildTransferAcctMap,
 } from './normalizer.js';
+import {
+  normalizeActualLiquidityFacts,
+  normalizeActualTransferSettlementRecords,
+  withLiquidityFacts,
+} from './liquidity-normalizer.js';
+import type { ActualLiquidityBudgetMonth } from './liquidity-normalizer.js';
 
 type CollectionRead<T> = { available: true; items: T[] } | { available: false; items: [] };
 
@@ -131,7 +137,10 @@ function healthCoverageFor(accountRead: CollectionRead<APIAccountEntity>): Cover
   };
 }
 
-type SnapshotBuildResult = Pick<LedgerSnapshotResult, 'snapshot' | 'financialSnapshot'> & {
+type SnapshotBuildResult = Pick<
+  LedgerSnapshotResult,
+  'snapshot' | 'financialSnapshot' | 'transferSettlementRecords'
+> & {
   accountRead: CollectionRead<APIAccountEntity>;
 };
 
@@ -463,11 +472,12 @@ export class ActualConnector implements BudgetLedger {
     });
 
     const capturedAt = new Date().toISOString();
-    const { snapshot, financialSnapshot, accountRead } = await this.buildSnapshot(capturedAt);
+    const { snapshot, financialSnapshot, transferSettlementRecords, accountRead } =
+      await this.buildSnapshot(capturedAt);
     const health = await this.buildHealthReport(accountRead);
     const watermark = this.getWatermark(budgetId);
 
-    return { snapshot, financialSnapshot, health, watermark };
+    return { snapshot, financialSnapshot, transferSettlementRecords, health, watermark };
   }
 
   // -------------------------------------------------------------------------
@@ -1369,11 +1379,13 @@ export class ActualConnector implements BudgetLedger {
     }
 
     const budgets: BudgetMonth[] = [];
+    const liquidityBudgetMonths: ActualLiquidityBudgetMonth[] = [];
     let loadedBudgetMonths = 0;
     if (budgetMonthRead.available) {
       for (const month of budgetMonthRead.items) {
         try {
           const monthData = await this.client.getBudgetMonth(month);
+          liquidityBudgetMonths.push(monthData);
           const categoryBudgets: Record<string, number> = {};
           for (const group of monthData.categoryGroups ?? []) {
             for (const category of (group.categories ?? []) as Array<Record<string, unknown>>) {
@@ -1464,7 +1476,15 @@ export class ActualConnector implements BudgetLedger {
       tags: coverageFor(tagRead),
     };
 
-    const observations: SourceObservation[] = [];
+    const observations: SourceObservation[] = [
+      {
+        kind: 'account_collection_coverage',
+        scope: { kind: 'global' },
+        state: accountRead.available ? 'complete' : 'unknown',
+        observedAt: accountRead.available ? capturedAt : null,
+        evidence: [],
+      },
+    ];
     for (const account of accountRead.items) {
       const evidence = [visibleEvidence(account.id, 'account')];
       const scope = { kind: 'account' as const, id: account.id };
@@ -1620,12 +1640,32 @@ export class ActualConnector implements BudgetLedger {
       observations,
     };
     const digest = sha256(hashInput);
-    const financialSnapshot: FinancialSnapshot = {
+    const ledgerFinancialSnapshot: FinancialSnapshot = {
       ...hashInput,
       snapshotId: `actual:${source.ledgerId}:${source.budgetId}:sha256:${digest}`,
       contentHash: `sha256:${digest}`,
     };
+    const financialSnapshot = withLiquidityFacts(
+      ledgerFinancialSnapshot,
+      normalizeActualLiquidityFacts({
+        capturedAt,
+        ledgerContentHash: ledgerFinancialSnapshot.contentHash,
+        currency: this.currency,
+        accounts: accountRead,
+        categories: categoryRead.available
+          ? { available: true, items: rawCategories }
+          : { available: false, items: [] },
+        budgetMonths: liquidityBudgetMonths,
+        transactions: transactionReads,
+        schedules: scheduleRead,
+      }),
+    );
 
-    return { snapshot, financialSnapshot, accountRead };
+    const transferSettlementRecords = normalizeActualTransferSettlementRecords(
+      allRawTransactions,
+      capturedAt,
+      this.currency,
+    );
+    return { snapshot, financialSnapshot, transferSettlementRecords, accountRead };
   }
 }

@@ -10,6 +10,15 @@
       <div v-if="targetData">
         <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Categories</h3>
         <AnalysisTable :columns="targetColumns" :rows="targetRows" class="mb-6" />
+        <nav aria-label="Category backing details" class="mb-6 flex flex-wrap gap-3 text-sm">
+          <NuxtLink
+            v-for="category in targetData.categories"
+            :key="category.categoryId"
+            :to="`/liquidity#category-${encodeURIComponent(category.categoryId)}`"
+            class="underline"
+            >{{ category.categoryName }} — current cash backing</NuxtLink
+          >
+        </nav>
       </div>
       <div v-if="sinkingData && sinkingRows.length">
         <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Sinking Funds</h3>

@@ -1,8 +1,8 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * GET /api/cash-flow/project — project future cash flow.
  *
  * Read-only deterministic projection — no model or cloud invocation.
- * Skips authorization gates — results are always observable.
  *
  * Query params: months (optional, default 3, 1-24), startMonth (optional, YYYY-MM)
  * Response envelope: CashFlowProjectionOutput
@@ -19,7 +19,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   getActorId,
   sanitizeError,
   envelopeMetadata,
@@ -42,7 +41,9 @@ function httpStatusForCode(code: string): number {
 }
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
   const query = getQuery(event);
 
@@ -72,6 +73,7 @@ export default defineEventHandler(async (event) => {
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,
     });
     return await manager.withConnection(async (connected) => {
+      if (connected.budget.id !== fullRead.budgetId) throw new Error('Selected budget changed');
       const protocol = await createNativeAnalysisProtocol();
 
       const input: CommandInput = {

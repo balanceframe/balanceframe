@@ -32,7 +32,7 @@
 
 import type {
   WorkflowStore,
-  CategorizationProposal,
+  ActionProposal,
   IdempotencyRecord,
   IdempotencyClaim,
   AuditRecord,
@@ -237,6 +237,15 @@ export class CategorizationMutationService {
       return this.fail(baseResult, 'proposal_not_found', 'Proposal not found', input);
     }
 
+    if (proposal.operation !== 'set_category') {
+      return this.fail(
+        baseResult,
+        'unsupported_operation',
+        'Unsupported proposal operation',
+        input,
+      );
+    }
+
     if (proposal.supersededAt) {
       await this.appendFailureAudit(input, proposal, null, 'proposal_superseded');
       return this.fail(baseResult, 'proposal_superseded', 'Proposal has been superseded', input);
@@ -292,8 +301,8 @@ export class CategorizationMutationService {
     //    in-flight → conflict; owner → proceed to approval
     // =====================================================================
     const serialisedEffect = JSON.stringify({
-      transactionId: proposal.transactionId,
-      newCategoryId: proposal.categoryId,
+      transactionId: proposal.payload.transactionId,
+      newCategoryId: proposal.payload.categoryId,
     });
 
     let idemClaim: IdempotencyClaim;
@@ -361,17 +370,6 @@ export class CategorizationMutationService {
         baseResult,
         'payload_hash_mismatch',
         'Approval payload hash does not match proposal',
-        input,
-      );
-    }
-
-    // Verify operation is supported
-    if (proposal.operation !== 'set_category') {
-      await this.appendFailureAudit(input, proposal, auth, 'unsupported_operation');
-      return this.fail(
-        baseResult,
-        'unsupported_operation',
-        `Proposal operation "${proposal.operation}" is not supported`,
         input,
       );
     }
@@ -469,7 +467,7 @@ export class CategorizationMutationService {
     }
 
     // Find transaction in snapshot
-    const tx = snapshot.transactions.find((t) => t.id === proposal.transactionId);
+    const tx = snapshot.transactions.find((t) => t.id === proposal.payload.transactionId);
     if (!tx) {
       await this.recordFailure(input, new Error('Transaction not found in latest snapshot'));
       await this.appendFailureAudit(input, proposal, auth, 'transaction_not_found');
@@ -482,7 +480,7 @@ export class CategorizationMutationService {
     }
 
     // Find category in snapshot
-    const cat = snapshot.categories.find((c) => c.id === proposal.categoryId);
+    const cat = snapshot.categories.find((c) => c.id === proposal.payload.categoryId);
     if (!cat) {
       await this.recordFailure(input, new Error('Category not found in latest snapshot'));
       await this.appendFailureAudit(input, proposal, auth, 'category_not_found');
@@ -535,8 +533,8 @@ export class CategorizationMutationService {
     let writeResult: SetCategoryResult;
     try {
       writeResult = await this.ledger.setTransactionCategory(
-        proposal.transactionId,
-        proposal.categoryId,
+        proposal.payload.transactionId,
+        proposal.payload.categoryId,
         plan.currentCategoryId,
       );
     } catch (err) {
@@ -676,7 +674,7 @@ export class CategorizationMutationService {
    * Check that the proposal's preconditions match the plan's current state.
    */
   private checkPreconditions(
-    proposal: CategorizationProposal,
+    proposal: ActionProposal,
     plan: MutationPlan,
   ): { ok: true } | { ok: false; reason: string } {
     if (proposal.operation !== 'set_category') {
@@ -772,7 +770,7 @@ export class CategorizationMutationService {
    */
   private async auditFailure(
     input: ExecuteCategorizationInput,
-    proposal: CategorizationProposal,
+    proposal: ActionProposal,
     auth: AuthorizationResult,
     err: unknown,
   ): Promise<void> {
@@ -803,7 +801,7 @@ export class CategorizationMutationService {
    */
   private async appendFailureAudit(
     input: ExecuteCategorizationInput,
-    proposal: CategorizationProposal | null,
+    proposal: ActionProposal | null,
     auth: AuthorizationResult | null,
     result: string,
   ): Promise<void> {

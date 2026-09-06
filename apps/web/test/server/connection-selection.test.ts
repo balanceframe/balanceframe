@@ -171,3 +171,18 @@ describe('POST /api/connection', () => {
     expect(response.error?.code).toBe('ACTUAL_BUDGET_CONNECT_FAILED');
   });
 });
+
+// These behavior fixtures explicitly represent an authorized legacy full-read request.
+// Real membership, revocation and resource denial are covered in legacy-financial-read.test.ts.
+vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requireFullRead: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'liquidity:full-read', allowed: true },
+    budgetId: 'budget_test',
+  })),
+  requireRegisteredOwner: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'owner:financial-discovery', allowed: true },
+  })),
+}));

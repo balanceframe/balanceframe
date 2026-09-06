@@ -1,3 +1,4 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * GET /api/proposal/[id] — show a single categorization proposal with
  * full detail including decoded simulation evidence.
@@ -8,20 +9,15 @@
  *
  * Response envelope:
  *   {
- *     proposal: CategorizationProposalDetail,
+ *     proposal: ActionProposalDetail,
  *     simulation: SimulationEvidence | null,
  *     stale: boolean,
  *     simulationStatus: 'present' | 'missing' | 'stale'
  *   }
  */
 
-import {
-  getWorkflowStore,
-  okEnvelope,
-  errorEnvelope,
-  buildAuthorizationInfo,
-} from '../../utils/workflow-store';
-import type { CategorizationProposal } from '@balanceframe/workflow-store';
+import { getWorkflowStore, okEnvelope, errorEnvelope } from '../../utils/workflow-store';
+import type { ActionProposal } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Simulation evidence types — mirrors the package-level shape without
@@ -56,11 +52,11 @@ interface PreconditionsWithSimulation {
 }
 
 /** Enriched proposal detail returned to the client. */
-export interface CategorizationProposalDetail {
+export interface ActionProposalDetail {
   readonly id: string;
   readonly operation: string;
   readonly budgetId: string;
-  readonly transactionId: string;
+  readonly transactionId: string | null;
   readonly categoryId: string;
   readonly payloadHash: string;
   readonly policyVersion: string;
@@ -76,7 +72,7 @@ export interface CategorizationProposalDetail {
 
 /** Full response payload for the proposal detail endpoint. */
 export interface ProposalDetailPayload {
-  readonly proposal: CategorizationProposalDetail;
+  readonly proposal: ActionProposalDetail;
   readonly simulation: SimulationEvidence | null;
   readonly stale: boolean;
   readonly simulationStatus: 'present' | 'missing' | 'stale';
@@ -87,7 +83,9 @@ export interface ProposalDetailPayload {
 // ---------------------------------------------------------------------------
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
 
   const wf = getWorkflowStore(event);
@@ -110,11 +108,22 @@ export default defineEventHandler(async (event) => {
 
   try {
     const proposal = await wf.store.getProposal(proposalId);
-    if (!proposal) {
+    if (!proposal || proposal.budgetId !== fullRead.budgetId) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'PROPOSAL_NOT_FOUND',
         `Proposal not found: ${proposalId}`,
+        authInfo,
+        false,
+        requestId,
+      );
+    }
+
+    if (proposal.operation !== 'set_category' && proposal.operation !== 'create_rule') {
+      setResponseStatus(event, 400);
+      return errorEnvelope(
+        'UNSUPPORTED_OPERATION',
+        'Unsupported proposal operation.',
         authInfo,
         false,
         requestId,
@@ -142,12 +151,13 @@ export default defineEventHandler(async (event) => {
 
     simulationStatus = !simulation ? 'missing' : expired ? 'stale' : 'present';
 
-    const detail: CategorizationProposalDetail = {
+    const detail: ActionProposalDetail = {
       id: proposal.id,
       operation: proposal.operation,
       budgetId: proposal.budgetId,
-      transactionId: proposal.transactionId,
-      categoryId: proposal.categoryId,
+      transactionId: proposal.payload.transactionId,
+      categoryId: proposal.payload.categoryId,
+
       payloadHash: proposal.payloadHash,
       policyVersion: proposal.policyVersion,
       preconditions: proposal.preconditions,

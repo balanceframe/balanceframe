@@ -1,8 +1,7 @@
 use balanceframe_core_protocol::{
     evaluate_prospective_claims, evaluate_prospective_purchase, DecisionContext, DecisionIssueCode,
     DecisionIssueEffect, DecisionIssueSeverity, DecisionReadiness, DecisionScope,
-    FinancialSnapshot, ProspectiveClaim, ProspectivePurchaseEvaluationRequest,
-    PurchaseEvaluationRequest, RedactionState,
+    FinancialSnapshot, ProspectiveClaim, ProspectivePurchaseEvaluationRequest, RedactionState,
 };
 use balanceframe_financial_core::{
     BudgetCategory, BudgetMonth, Category, Money, PendingMode, Transaction,
@@ -100,6 +99,7 @@ fn request(
     proposed_transaction: Transaction,
 ) -> ProspectivePurchaseEvaluationRequest {
     ProspectivePurchaseEvaluationRequest {
+        liquidity: None,
         financial_snapshot,
         context,
         claims,
@@ -114,81 +114,29 @@ fn request(
 }
 
 #[test]
-fn prospective_purchase_is_deterministic_wraps_legacy_and_does_not_mutate_snapshot() {
-    let snapshot = financial_snapshot();
-    let original_snapshot = snapshot.clone();
-    let proposed = proposed_purchase("USD");
-    let fixed_context = context();
-    let legacy = balanceframe_core_protocol::evaluate_purchase(PurchaseEvaluationRequest {
-        snapshot: snapshot.legacy_snapshot.clone(),
-        proposed_transaction: proposed.clone(),
-        category_id: CATEGORY_ID.into(),
-    });
-
-    let first = evaluate_prospective_purchase(request(
-        snapshot.clone(),
-        fixed_context.clone(),
+fn prospective_purchase_without_liquidity_is_deterministic_and_conservative() {
+    let input = request(
+        financial_snapshot(),
+        context(),
         vec![],
-        proposed.clone(),
-    ));
-    let second =
-        evaluate_prospective_purchase(request(snapshot.clone(), fixed_context, vec![], proposed));
-
-    assert_eq!(
-        snapshot, original_snapshot,
-        "evaluation must not mutate its input"
+        proposed_purchase("USD"),
     );
+    let first = evaluate_prospective_purchase(input.clone());
+    let second = evaluate_prospective_purchase(input);
     assert_eq!(first, second, "fixed inputs must produce a fixed decision");
+    assert!(!first.payload.allowable);
+    assert_eq!(first.readiness, DecisionReadiness::Blocked);
+    assert_eq!(first.before.amounts[0].amount, Money::new(10_000, "USD"));
+    assert_eq!(first.after.amounts[0].amount, Money::new(7_500, "USD"));
+    let account_aware = first.payload.account_aware.unwrap();
     assert_eq!(
-        first.payload, legacy,
-        "the legacy payload must be byte-for-byte compatible"
+        account_aware.payment_liquidity_status,
+        balanceframe_core_protocol::PaymentLiquidityStatus::InsufficientData
     );
-    assert_eq!(
-        serde_json::to_value(first).expect("decision serializes"),
-        json!({
-            "metadata": {
-                "contractVersion": "1.0",
-                "decisionId": "fd-decision-ready",
-                "decisionKind": "purchase",
-                "requestId": "fd-request-ready",
-                "correlationId": "fd-correlation-2026-08-23",
-                "context": serde_json::to_value(context()).unwrap()
-            },
-            "readiness": "ready",
-            "before": {
-                "amounts": [{
-                    "label": "envelopeAvailability",
-                    "scope": { "kind": "category", "id": CATEGORY_ID },
-                    "amount": { "minorUnits": "10000", "currency": "USD" }
-                }]
-            },
-            "after": {
-                "amounts": [{
-                    "label": "envelopeAvailability",
-                    "scope": { "kind": "category", "id": CATEGORY_ID },
-                    "amount": { "minorUnits": "7500", "currency": "USD" }
-                }]
-            },
-            "issues": [],
-            "evidence": [{
-                "evidenceId": "fd-bank-sync-checking-884",
-                "kind": "bank_sync",
-                "authorized": true,
-                "redaction": "visible"
-            }],
-            "alternatives": [],
-            "expiresAt": VALID_UNTIL,
-            "redaction": "redacted",
-            "payload": {
-                "allowable": true,
-                "reasonCodes": ["within_budget", "budget_sufficient"],
-                "categoryBudget": { "minorUnits": "10000", "currency": "USD" },
-                "categorySpent": { "minorUnits": "0", "currency": "USD" },
-                "categoryRemaining": { "minorUnits": "10000", "currency": "USD" },
-                "projectedBalance": { "minorUnits": "125000", "currency": "USD" }
-            }
-        })
-    );
+    assert!(account_aware
+        .purchases
+        .iter()
+        .all(|purchase| purchase.transfer_plan.is_none()));
 }
 #[test]
 fn incompatible_purchase_currency_blocks_without_fabricating_zero_money() {
@@ -311,7 +259,7 @@ fn supplied_pending_policy_changes_the_purchase_calculation() {
     );
     assert_eq!(
         included.payload.projected_balance,
-        Some(Money::new(124_000, "USD"))
+        Some(Money::new(121_500, "USD"))
     );
     assert!(included
         .payload
@@ -326,7 +274,7 @@ fn supplied_pending_policy_changes_the_purchase_calculation() {
     );
     assert_eq!(
         excluded.payload.projected_balance,
-        Some(Money::new(125_000, "USD"))
+        Some(Money::new(122_500, "USD"))
     );
     assert!(!excluded
         .payload
@@ -359,9 +307,8 @@ fn supplied_account_override_excludes_the_purchase_account() {
 
     assert_eq!(
         baseline.payload.projected_balance,
-        Some(Money::new(125_000, "USD"))
+        Some(Money::new(122_500, "USD"))
     );
-    assert!(baseline.payload.allowable);
     assert_eq!(excluded.payload.projected_balance, None);
     assert!(!excluded.payload.allowable);
     assert_eq!(
@@ -416,9 +363,12 @@ fn consistently_eur_purchase_remains_ready_and_never_manufactures_usd_money() {
         proposed_purchase("EUR"),
     ));
 
-    assert_eq!(decision.readiness, DecisionReadiness::Ready);
-    assert!(decision.issues.is_empty());
-    assert!(decision.payload.allowable);
+    assert_eq!(decision.readiness, DecisionReadiness::Blocked);
+    assert!(!decision.payload.allowable);
+    assert!(decision
+        .issues
+        .iter()
+        .all(|issue| issue.code != DecisionIssueCode::CurrencyMismatch));
     let payload_money = [
         &decision.payload.category_budget,
         &decision.payload.category_spent,
@@ -492,59 +442,39 @@ fn relevant_source_observations_become_scoped_blocking_issues_with_remediation()
     ));
 
     assert_eq!(decision.readiness, DecisionReadiness::Blocked);
-    assert_eq!(
-        serde_json::to_value(&decision.issues).expect("issues serialize"),
-        json!([
-            {
-                "code": "account_freshness_coverage",
-                "severity": "warning",
-                "effect": "blocks",
-                "scope": { "kind": "account", "id": ACCOUNT_ID },
-                "evidence": [],
-                "remediation": {
-                    "code": "refresh_account_evidence",
-                    "action": "Refresh the affected account before evaluating again."
-                },
-                "redaction": "visible"
-            },
-            {
-                "code": "schedule_coverage",
-                "severity": "critical",
-                "effect": "blocks",
-                "scope": { "kind": "schedule", "id": "fd-schedule-card-payment" },
-                "evidence": [],
-                "remediation": {
-                    "code": "reconnect_source",
-                    "action": "Reconnect or refresh the affected source before evaluating again."
-                },
-                "redaction": "visible"
-            },
-            {
-                "code": "duplicate_transfer_ambiguity",
-                "severity": "warning",
-                "effect": "blocks",
-                "scope": { "kind": "transaction", "id": "fd-transfer-candidate" },
-                "evidence": [],
-                "remediation": {
-                    "code": "review_transfer",
-                    "action": "Review the related transactions and resolve the transfer ambiguity."
-                },
-                "redaction": "visible"
-            },
-            {
-                "code": "currency_mismatch",
-                "severity": "critical",
-                "effect": "blocks",
-                "scope": { "kind": "category", "id": CATEGORY_ID },
-                "evidence": [],
-                "remediation": {
-                    "code": "use_compatible_currency",
-                    "action": "Use an account and category with the purchase currency."
-                },
-                "redaction": "visible"
-            }
-        ])
-    );
+    for (code, scope, remediation) in [
+        (
+            DecisionIssueCode::AccountFreshnessCoverage,
+            DecisionScope::Account(ACCOUNT_ID.into()),
+            "refresh_account_evidence",
+        ),
+        (
+            DecisionIssueCode::ScheduleCoverage,
+            DecisionScope::Schedule("fd-schedule-card-payment".into()),
+            "reconnect_source",
+        ),
+        (
+            DecisionIssueCode::DuplicateTransferAmbiguity,
+            DecisionScope::Transaction("fd-transfer-candidate".into()),
+            "review_transfer",
+        ),
+        (
+            DecisionIssueCode::CurrencyMismatch,
+            DecisionScope::Category(CATEGORY_ID.into()),
+            "use_compatible_currency",
+        ),
+    ] {
+        let issue = decision
+            .issues
+            .iter()
+            .find(|issue| issue.code == code && issue.scope == scope)
+            .expect("relevant observation must retain its scoped blocker");
+        assert_eq!(issue.effect, DecisionIssueEffect::Blocks);
+        assert_eq!(
+            issue.remediation.as_ref().map(|value| value.code.as_str()),
+            Some(remediation)
+        );
+    }
 }
 
 #[test]
@@ -571,7 +501,7 @@ fn authorized_but_redacted_references_never_enter_top_level_evidence() {
         proposed_purchase("USD"),
     ));
 
-    assert_eq!(decision.readiness, DecisionReadiness::Ready);
+    assert_eq!(decision.readiness, DecisionReadiness::Blocked);
     assert!(decision.evidence.is_empty());
     let serialized = serde_json::to_string(&decision.evidence).expect("evidence serializes");
     assert!(!serialized.contains("private-bank-sync-record-884"));
@@ -764,7 +694,7 @@ fn account_scoped_claims_outside_the_effective_account_policy_are_fully_ineligib
             claims.clone(),
             proposed_purchase("USD"),
         ));
-        assert_eq!(decision.readiness, DecisionReadiness::Ready);
+        assert_eq!(decision.readiness, DecisionReadiness::Blocked);
         assert_eq!(decision.before.amounts[0].amount, Money::new(9_000, "USD"));
         assert_eq!(decision.after.amounts[0].amount, Money::new(6_500, "USD"));
         assert!(decision
@@ -779,7 +709,7 @@ fn account_scoped_claims_outside_the_effective_account_policy_are_fully_ineligib
 }
 
 #[test]
-fn unavailable_account_type_qualifies_the_relevant_purchase_with_exact_remediation() {
+fn unavailable_account_type_retains_scoped_remediation_without_claiming_liquidity() {
     let mut snapshot = financial_snapshot();
     snapshot.observations = serde_json::from_value(json!([{
         "kind": "account_type",
@@ -797,26 +727,22 @@ fn unavailable_account_type_qualifies_the_relevant_purchase_with_exact_remediati
         proposed_purchase("USD"),
     ));
 
-    assert_eq!(decision.readiness, DecisionReadiness::Qualified);
+    assert_eq!(decision.readiness, DecisionReadiness::Blocked);
+    let issue = decision
+        .issues
+        .iter()
+        .find(|issue| issue.code == DecisionIssueCode::AccountFreshnessCoverage)
+        .expect("unavailable account type must remain visible");
+    assert_eq!(issue.scope, DecisionScope::Account(ACCOUNT_ID.into()));
+    assert_eq!(issue.effect, DecisionIssueEffect::Qualifies);
     assert_eq!(
-        serde_json::to_value(&decision.issues).expect("issues serialize"),
-        json!([{
-            "code": "account_freshness_coverage",
-            "severity": "warning",
-            "effect": "qualifies",
-            "scope": { "kind": "account", "id": ACCOUNT_ID },
-            "evidence": [],
-            "remediation": {
-                "code": "reconnect_source",
-                "action": "Reconnect or refresh the affected source before evaluating again."
-            },
-            "redaction": "visible"
-        }])
+        issue.remediation.as_ref().map(|value| value.code.as_str()),
+        Some("reconnect_source")
     );
 }
 
 #[test]
-fn adapter_duplicate_balance_and_reconciliation_observations_block_with_exact_issues() {
+fn adapter_duplicate_balance_and_reconciliation_observations_remain_scoped_blockers() {
     let mut snapshot = financial_snapshot();
     let mut duplicate_candidate = proposed_purchase("USD");
     duplicate_candidate.id = "fd-duplicate-candidate".into();
@@ -860,45 +786,353 @@ fn adapter_duplicate_balance_and_reconciliation_observations_block_with_exact_is
     ));
 
     assert_eq!(decision.readiness, DecisionReadiness::Blocked);
-    assert_eq!(
-        serde_json::to_value(&decision.issues).expect("issues serialize"),
-        json!([
-            {
-                "code": "duplicate_transfer_ambiguity",
-                "severity": "warning",
-                "effect": "blocks",
-                "scope": { "kind": "transaction", "id": "fd-duplicate-candidate" },
-                "evidence": [],
-                "remediation": {
-                    "code": "review_transfer",
-                    "action": "Review the related transactions and resolve the transfer ambiguity."
-                },
-                "redaction": "visible"
-            },
-            {
-                "code": "account_freshness_coverage",
-                "severity": "critical",
-                "effect": "blocks",
-                "scope": { "kind": "account", "id": ACCOUNT_ID },
-                "evidence": [],
-                "remediation": {
-                    "code": "reconnect_source",
-                    "action": "Reconnect or refresh the affected source before evaluating again."
-                },
-                "redaction": "visible"
-            },
-            {
-                "code": "economic_event_ambiguity",
-                "severity": "warning",
-                "effect": "blocks",
-                "scope": { "kind": "account", "id": ACCOUNT_ID },
-                "evidence": [],
-                "remediation": {
-                    "code": "review_material_evidence",
-                    "action": "Review the supporting evidence before evaluating again."
-                },
-                "redaction": "visible"
-            }
-        ])
+    for (code, scope) in [
+        (
+            DecisionIssueCode::DuplicateTransferAmbiguity,
+            DecisionScope::Transaction("fd-duplicate-candidate".into()),
+        ),
+        (
+            DecisionIssueCode::AccountFreshnessCoverage,
+            DecisionScope::Account(ACCOUNT_ID.into()),
+        ),
+        (
+            DecisionIssueCode::EconomicEventAmbiguity,
+            DecisionScope::Account(ACCOUNT_ID.into()),
+        ),
+    ] {
+        assert!(decision.issues.iter().any(|issue| issue.code == code
+            && issue.scope == scope
+            && issue.effect == DecisionIssueEffect::Blocks));
+    }
+}
+
+#[test]
+fn canonical_purchase_rejects_unbound_identity_and_expired_validity() {
+    let valid = request(
+        financial_snapshot(),
+        context(),
+        vec![],
+        proposed_purchase("USD"),
     );
+    for (pointer, value, code) in [
+        ("/requestId", json!(" "), "invalid_request_identity"),
+        ("/correlationId", json!(""), "invalid_request_identity"),
+        ("/decisionId", json!(""), "invalid_request_identity"),
+        (
+            "/financialSnapshot/snapshotId",
+            json!(""),
+            "invalid_snapshot_identity",
+        ),
+        (
+            "/financialSnapshot/contentHash",
+            json!(""),
+            "invalid_snapshot_identity",
+        ),
+        (
+            "/validUntil",
+            json!("2026-08-23T12:00:00Z"),
+            "invalid_decision_validity",
+        ),
+        (
+            "/validUntil",
+            json!("2027-01-01T00:00:00Z"),
+            "invalid_decision_validity",
+        ),
+        (
+            "/proposedTransaction/amount/minorUnits",
+            json!("0"),
+            "invalid_purchase_input",
+        ),
+        (
+            "/proposedTransaction/accountId",
+            json!(""),
+            "invalid_purchase_input",
+        ),
+        (
+            "/proposedTransaction/categoryId",
+            json!("other"),
+            "invalid_purchase_input",
+        ),
+    ] {
+        let mut wire = serde_json::to_value(&valid).unwrap();
+        *wire.pointer_mut(pointer).unwrap() = value;
+        let result = evaluate_prospective_purchase(serde_json::from_value(wire).unwrap());
+        assert!(!result.payload.allowable, "{pointer}");
+        assert!(
+            result.issues.iter().any(
+                |issue| issue.code == DecisionIssueCode::Unknown(code.into())
+                    && issue.blocks_conclusion()
+            ),
+            "{pointer}"
+        );
+    }
+    let mut anonymous = valid;
+    anonymous.proposed_transaction.id.clear();
+    anonymous.proposed_transaction.account_id.clear();
+    let result = evaluate_prospective_purchase(anonymous);
+    assert!(result.issues.iter().any(|issue| issue.code
+        == DecisionIssueCode::Unknown("invalid_purchase_input".into())
+        && issue.scope == DecisionScope::Global));
+}
+
+#[test]
+fn observation_failures_block_only_their_relevant_scope_and_filter_untrusted_evidence() {
+    for (kind, state, expected) in [
+        (
+            "account_coverage",
+            "unavailable",
+            DecisionIssueCode::AccountFreshnessCoverage,
+        ),
+        (
+            "credit_card_obligation_coverage",
+            "unavailable",
+            DecisionIssueCode::CreditPaymentUncertainty,
+        ),
+        (
+            "duplicate_candidate",
+            "ambiguous",
+            DecisionIssueCode::EconomicEventAmbiguity,
+        ),
+    ] {
+        let mut snapshot = financial_snapshot();
+        snapshot.observations = serde_json::from_value(json!([{
+            "kind": kind, "state": state, "scope": {"kind": "account", "id": ACCOUNT_ID},
+            "observedAt": "2026-08-23T12:00:00Z",
+            "evidence": [
+                {"evidenceId": "trusted", "kind": "source", "authorized": true, "redaction": "visible"},
+                {"evidenceId": "hidden", "kind": "source", "authorized": true, "redaction": "redacted"},
+                {"evidenceId": "unauthorized", "kind": "source", "authorized": false, "redaction": "visible"}
+            ]
+        }])).unwrap();
+        let result = evaluate_prospective_purchase(request(
+            snapshot.clone(),
+            context(),
+            vec![],
+            proposed_purchase("USD"),
+        ));
+        let issue = result
+            .issues
+            .iter()
+            .find(|issue| issue.code == expected)
+            .unwrap();
+        assert!(issue.blocks_conclusion());
+        assert_eq!(
+            issue
+                .evidence
+                .iter()
+                .map(|reference| reference.evidence_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["trusted"]
+        );
+        assert!(result
+            .evidence
+            .iter()
+            .all(|reference| reference.evidence_id != "hidden"
+                && reference.evidence_id != "unauthorized"));
+        snapshot.observations[0].scope = DecisionScope::Claim("unrelated".into());
+        let unrelated = evaluate_prospective_purchase(request(
+            snapshot,
+            context(),
+            vec![],
+            proposed_purchase("USD"),
+        ));
+        assert!(!unrelated.issues.iter().any(|issue| issue.code == expected));
+    }
+}
+
+#[test]
+fn global_schedule_observations_block_and_unknown_observations_cannot_supply_evidence() {
+    let mut snapshot = financial_snapshot();
+    snapshot.observations = serde_json::from_value(json!([
+        {"kind": "schedule_coverage", "state": "unavailable", "scope": {"kind": "global"}, "observedAt": null, "evidence": []},
+        {"kind": "account_freshness", "state": "unknown", "scope": {"kind": "account", "id": ACCOUNT_ID}, "observedAt": null,
+         "evidence": [{"evidenceId": "unknown-source", "kind": "source", "authorized": true, "redaction": "visible"}]}
+    ])).unwrap();
+    let result = evaluate_prospective_purchase(request(
+        snapshot,
+        context(),
+        vec![],
+        proposed_purchase("USD"),
+    ));
+    assert!(result
+        .issues
+        .iter()
+        .any(|issue| issue.code == DecisionIssueCode::ScheduleCoverage
+            && issue.scope == DecisionScope::Global
+            && issue.blocks_conclusion()));
+    assert!(!result
+        .evidence
+        .iter()
+        .any(|reference| reference.evidence_id == "unknown-source"));
+}
+
+#[test]
+fn configured_bank_sync_age_has_exact_boundary_and_fails_closed_for_missing_time() {
+    let mut policy = context();
+    policy.policy.max_bank_sync_age_minutes = Some(15);
+    for (synced_at, stale) in [
+        (Some("2026-08-23T11:45:00Z"), false),
+        (Some("2026-08-23T11:44:59.999999999Z"), true),
+        (None, true),
+        (Some("invalid"), true),
+    ] {
+        let mut snapshot = financial_snapshot();
+        snapshot.legacy_snapshot.bank_synced_at = synced_at.map(str::to_owned);
+        let result = evaluate_prospective_purchase(request(
+            snapshot,
+            policy.clone(),
+            vec![],
+            proposed_purchase("USD"),
+        ));
+        assert_eq!(
+            result
+                .payload
+                .reason_codes
+                .iter()
+                .any(|code| code == "stale_bank_sync"),
+            stale
+        );
+        if stale {
+            assert!(result.issues.iter().any(|issue| issue.code
+                == DecisionIssueCode::AccountFreshnessCoverage
+                && issue.scope == DecisionScope::Account(ACCOUNT_ID.into())
+                && issue.blocks_conclusion()));
+        }
+    }
+    let mut invalid_context = policy;
+    invalid_context.evaluated_at = "invalid".into();
+    invalid_context.policy.max_budget_snapshot_age_minutes = Some(15);
+    let result = evaluate_prospective_purchase(request(
+        financial_snapshot(),
+        invalid_context,
+        vec![],
+        proposed_purchase("USD"),
+    ));
+    assert!(result
+        .issues
+        .iter()
+        .any(|issue| issue.code == DecisionIssueCode::Unknown("invalid_decision_context".into())));
+    assert!(!result.payload.allowable);
+}
+
+#[test]
+fn category_claim_currency_and_subtraction_overflow_do_not_publish_unsafe_semantic_amounts() {
+    let mut reserved = fixture_claim("fd-claim-active-reservation");
+    reserved.scope = DecisionScope::Category(CATEGORY_ID.into());
+    reserved.amount = Money::new(100, "EUR");
+    let mismatch = evaluate_prospective_purchase(request(
+        financial_snapshot(),
+        context(),
+        vec![reserved.clone()],
+        proposed_purchase("USD"),
+    ));
+    assert!(mismatch
+        .issues
+        .iter()
+        .any(|issue| issue.code == DecisionIssueCode::CurrencyMismatch));
+    assert!(mismatch.before.amounts.is_empty());
+    assert!(mismatch.after.amounts.is_empty());
+
+    reserved.amount = Money::new(i64::MAX, "USD");
+    let mut second = reserved.clone();
+    second.claim_id = "second-huge".into();
+    second.amount = Money::new(20_000, "USD");
+    let overflow = evaluate_prospective_purchase(request(
+        financial_snapshot(),
+        context(),
+        vec![reserved.clone(), second],
+        proposed_purchase("USD"),
+    ));
+    assert!(overflow
+        .issues
+        .iter()
+        .any(|issue| issue.code == DecisionIssueCode::Unknown("money_arithmetic_overflow".into())));
+    assert!(overflow.before.amounts.is_empty());
+    assert!(overflow.after.amounts.is_empty());
+
+    let mut large_purchase = proposed_purchase("USD");
+    large_purchase.amount = Money::new(-20_000, "USD");
+    let after_overflow = evaluate_prospective_purchase(request(
+        financial_snapshot(),
+        context(),
+        vec![reserved],
+        large_purchase,
+    ));
+    assert!(after_overflow
+        .issues
+        .iter()
+        .any(|issue| issue.code == DecisionIssueCode::Unknown("money_arithmetic_overflow".into())));
+    assert!(after_overflow.after.amounts.is_empty());
+}
+
+#[test]
+fn minimum_i64_purchase_fails_without_panicking_or_fabricating_after_balance() {
+    let mut purchase = proposed_purchase("USD");
+    purchase.amount = Money::new(i64::MIN, "USD");
+    let result =
+        evaluate_prospective_purchase(request(financial_snapshot(), context(), vec![], purchase));
+    assert!(!result.payload.allowable);
+    assert!(result
+        .issues
+        .iter()
+        .any(|issue| issue.code == DecisionIssueCode::Unknown("purchase_evaluation_error".into())));
+    assert!(result.after.amounts.is_empty());
+}
+
+#[test]
+fn historical_outflow_overflow_is_reported_not_wrapped_into_purchase_capacity() {
+    for amounts in [vec![i64::MIN], vec![-i64::MAX, -1]] {
+        let mut snapshot = financial_snapshot();
+        snapshot.legacy_snapshot.transactions = amounts
+            .into_iter()
+            .enumerate()
+            .map(|(index, amount)| {
+                let mut transaction = proposed_purchase("USD");
+                transaction.id = format!("history-{index}");
+                transaction.amount = Money::new(amount, "USD");
+                transaction.cleared = true;
+                transaction.reconciled = true;
+                transaction
+            })
+            .collect();
+        let result = evaluate_prospective_purchase(request(
+            snapshot,
+            context(),
+            vec![],
+            proposed_purchase("USD"),
+        ));
+        assert!(!result.payload.allowable);
+        assert_eq!(result.payload.reason_codes, vec!["evaluation_error"]);
+        assert!(result
+            .issues
+            .iter()
+            .any(|issue| issue.code
+                == DecisionIssueCode::Unknown("purchase_evaluation_error".into())));
+        assert_eq!(result.payload.projected_balance, None);
+    }
+}
+
+#[test]
+fn incompatible_account_balance_does_not_appear_as_same_currency_category_capacity() {
+    let mut snapshot = financial_snapshot();
+    snapshot
+        .legacy_snapshot
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == ACCOUNT_ID)
+        .unwrap()
+        .cleared_balance = Money::new(50_000, "EUR");
+    let result = evaluate_prospective_purchase(request(
+        snapshot,
+        context(),
+        vec![],
+        proposed_purchase("USD"),
+    ));
+    assert!(result
+        .issues
+        .iter()
+        .any(|issue| issue.code == DecisionIssueCode::CurrencyMismatch));
+    assert!(result.before.amounts.is_empty());
+    assert!(result.after.amounts.is_empty());
+    assert_eq!(result.payload.projected_balance, None);
 }

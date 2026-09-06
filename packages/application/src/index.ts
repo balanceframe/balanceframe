@@ -16,6 +16,10 @@ export * from './composition.js';
 export * from './connection-manager.js';
 export * from './notifications.js';
 export * from './review-persistence.js';
+export * from './liquidity-public.js';
+export * from './liquidity-service.js';
+export * from './liquidity-inputs.js';
+export { LiquidityProjector } from './liquidity-projector.js';
 
 export type {
   DecisionContext,

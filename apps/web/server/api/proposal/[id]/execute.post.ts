@@ -16,8 +16,7 @@
  *
  * Error codes:
  *   400 — MISSING_PROPOSAL_ID
- *   404 — PROPOSAL_NOT_FOUND
- *   403 — PROPOSAL_NOT_APPROVED
+ *   403 — FORBIDDEN / PROPOSAL_NOT_APPROVED
  *   409 — PROPOSAL_SUPERSEDED / PROPOSAL_EXPIRED
  *   422 — INVALID_PRECONDITIONS / NATIVE_RULE_MISSING
  *   501 — NOT_IMPLEMENTED (native protocol unavailable)
@@ -32,13 +31,13 @@ import {
   okEnvelope,
   errorEnvelope,
   requireAuthorization,
-  buildAuthorizationInfo,
   sanitizeError,
 } from '../../../utils/workflow-store';
 import { createMutationConnectionManager } from '../../../utils/mutation-executor';
 import { RuleMutationService, createNativeRuleMutationProtocol } from '@balanceframe/application';
 import type { BudgetLedger } from '@balanceframe/actual-adapter';
 import type { RustRuleMutationProtocol, ExecuteRuleResult } from '@balanceframe/application';
+import type { AuthorizationInfo } from '../../../utils/workflow-store';
 
 /**
  * Map reason codes from the service to HTTP status codes and public error codes.
@@ -133,9 +132,15 @@ function mapServiceError(reasonCodes: string[]): {
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-  const authCheck = await requireAuthorization(event, 'rule.execute');
-  if (!authCheck.ok) return authCheck.response;
-  const authInfo = authCheck.info;
+  let authInfo: AuthorizationInfo | null = null;
+  const auth = event.context.auth;
+  const hasIdentity =
+    (typeof auth?.user?.id === 'string' && auth.user.id.length > 0) ||
+    (typeof auth?.actorId === 'string' && auth.actorId.length > 0);
+  if (!auth?.authenticated || !hasIdentity) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Rule execution is not authorized.', null, false, requestId);
+  }
 
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
@@ -160,10 +165,32 @@ export default defineEventHandler(async (event) => {
     // 1. Load the proposal
     // -------------------------------------------------------------------
     const proposal = await wf.store.getProposal(proposalId);
-    if (!proposal) {
-      setResponseStatus(event, 404);
-      return errorEnvelope('PROPOSAL_NOT_FOUND', 'Proposal not found.', authInfo, false, requestId);
+    if (!proposal || proposal.operation !== 'create_rule') {
+      setResponseStatus(event, 403);
+      return errorEnvelope(
+        'FORBIDDEN',
+        'Rule execution is not authorized.',
+        null,
+        false,
+        requestId,
+      );
     }
+    const authCheck = await requireAuthorization(
+      event,
+      'rule:execute',
+      `budget:${proposal.budgetId}`,
+    );
+    if (!authCheck.ok) {
+      // Do not forward membership reasons that include a hidden budget scope.
+      return errorEnvelope(
+        'FORBIDDEN',
+        'Rule execution is not authorized.',
+        null,
+        false,
+        requestId,
+      );
+    }
+    authInfo = authCheck.info;
 
     // -------------------------------------------------------------------
     // 2. Validate proposal state
@@ -180,7 +207,7 @@ export default defineEventHandler(async (event) => {
     }
 
     const expiryTime = new Date(proposal.expiresAt).getTime();
-    if (expiryTime <= Date.now()) {
+    if (!Number.isFinite(expiryTime) || expiryTime <= Date.now()) {
       setResponseStatus(event, 409);
       return errorEnvelope(
         'PROPOSAL_EXPIRED',

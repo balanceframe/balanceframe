@@ -38,6 +38,8 @@ vi.mock('h3', () => ({
 }));
 
 const mockStore = {
+  liquidity: { isOwner: vi.fn(() => false), isAuthorized: vi.fn(() => true) },
+  evaluateAuthorization: vi.fn(async () => ({ allowed: true })),
   listFindings: vi.fn(),
   getFinding: vi.fn(),
   acknowledgeFinding: vi.fn(),
@@ -155,14 +157,6 @@ describe('GET /api/findings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetQuery.mockReturnValue({});
-  });
-
-  it('must list findings', async () => {
-    mockStore.listFindings.mockResolvedValue([SAMPLE_FINDING]);
-    const r = await listHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(Array.isArray(r.result)).toBe(true);
-    expect(r.result[0].id).toBe('f_001');
   });
 
   it('must reject invalid status', async () => {

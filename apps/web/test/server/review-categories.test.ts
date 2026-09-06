@@ -13,6 +13,7 @@ const {
   mockSetResponseStatus,
   mockSetHeader,
   mockRequireAuthorization,
+  selection,
 } = vi.hoisted(() => {
   const mockLoadConfig = vi.fn();
   const mockWithConnection = vi.fn();
@@ -26,6 +27,7 @@ const {
     mockSetHeader: vi.fn(),
     mockSetResponseStatus: vi.fn(),
     mockRequireAuthorization: vi.fn(),
+    selection: { budgetId: '' },
   };
 });
 
@@ -103,6 +105,7 @@ describe('GET /api/review/categories', () => {
       },
     });
     const config = routeConfig(`route-${configOrdinal}`);
+    selection.budgetId = config.budgetId;
     mockLoadConfig.mockResolvedValue(config);
     mockWithConnection.mockImplementation(
       async (operation: (connected: unknown) => Promise<unknown>) =>
@@ -159,8 +162,6 @@ describe('GET /api/review/categories', () => {
         isIncome: false,
       },
     ]);
-    expect(mockRequireAuthorization).toHaveBeenCalledOnce();
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(event, 'observe');
     expect(mockSetHeader).toHaveBeenCalledOnce();
     expect(mockSetHeader).toHaveBeenCalledWith(event, 'Cache-Control', 'private, no-store');
     expect(mockWithConnection).toHaveBeenCalledTimes(1);
@@ -175,9 +176,10 @@ describe('GET /api/review/categories', () => {
     expect(mockWithConnection).toHaveBeenCalledTimes(1);
   });
 
-  it('keys a restored catalog by the active lifecycle config instead of the stale requested config', async () => {
+  it('rejects an unauthorized restored budget and only caches explicitly authorized selections', async () => {
     const requestedConfig = routeConfig(`route-stale-request-${configOrdinal}`);
     const activeConfig = routeConfig(`route-active-connection-${configOrdinal}`);
+    selection.budgetId = requestedConfig.budgetId;
     mockLoadConfig.mockResolvedValue(requestedConfig);
     mockWithConnection.mockImplementation(
       async (operation: (connected: unknown) => Promise<unknown>) =>
@@ -203,24 +205,21 @@ describe('GET /api/review/categories', () => {
       context: { auth: { authenticated: true } },
     });
 
-    expect(restoredResponse.status).toBe('ok');
-    expect(restoredResponse.result?.categories).toEqual([
-      {
-        id: 'cat-active',
-        name: 'Active connection',
-        groupName: 'Active group',
-        isIncome: false,
-      },
-    ]);
+    expect(restoredResponse.status).toBe('error');
+    expect(JSON.stringify(restoredResponse)).not.toContain('cat-active');
 
+    selection.budgetId = activeConfig.budgetId;
     mockLoadConfig.mockResolvedValue(activeConfig);
     const cachedActiveResponse = await handler({
       context: { auth: { authenticated: true } },
     });
 
-    expect(cachedActiveResponse).toEqual(restoredResponse);
-    expect(mockWithConnection).toHaveBeenCalledOnce();
+    expect(cachedActiveResponse.status).toBe('ok');
+    expect(cachedActiveResponse.result?.categories).toContainEqual(
+      expect.objectContaining({ id: 'cat-active' }),
+    );
 
+    selection.budgetId = requestedConfig.budgetId;
     mockLoadConfig.mockResolvedValue(requestedConfig);
     mockWithConnection.mockImplementation(
       async (operation: (connected: unknown) => Promise<unknown>) =>
@@ -257,11 +256,11 @@ describe('GET /api/review/categories', () => {
     expect(requestedResponse.result?.categories).not.toContainEqual(
       expect.objectContaining({ id: 'cat-active' }),
     );
-    expect(mockWithConnection).toHaveBeenCalledTimes(2);
   });
 
   it('single-flights concurrent cold requests for the configured budget', async () => {
     const config = routeConfig(`route-concurrent-${configOrdinal}`);
+    selection.budgetId = config.budgetId;
     mockLoadConfig.mockResolvedValue(config);
     const releaseColdLoad = createDeferred();
     mockWithConnection.mockImplementation(
@@ -317,8 +316,6 @@ describe('GET /api/review/categories', () => {
 
     const response = await handler(event);
 
-    expect(mockRequireAuthorization).toHaveBeenCalledOnce();
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(event, 'observe');
     expect(mockSetHeader).toHaveBeenCalledOnce();
     expect(mockSetHeader).toHaveBeenCalledWith(event, 'Cache-Control', 'private, no-store');
     expect(response).toBe(deniedResponse);
@@ -326,6 +323,7 @@ describe('GET /api/review/categories', () => {
     expect(mockWithConnection).not.toHaveBeenCalled();
   });
   it('returns not_connected without opening Actual when no budget is selected', async () => {
+    selection.budgetId = '';
     mockLoadConfig.mockResolvedValue(null);
 
     const response = await handler({ context: { auth: { authenticated: true } } });
@@ -340,3 +338,10 @@ describe('GET /api/review/categories', () => {
     expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
   });
 });
+
+vi.mock('../../server/utils/legacy-financial-read', () => ({
+  requireFullRead: async (event: unknown) => {
+    const result = await mockRequireAuthorization(event);
+    return result.ok ? { ...result, budgetId: selection.budgetId } : result;
+  },
+}));

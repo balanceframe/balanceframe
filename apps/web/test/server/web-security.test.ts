@@ -18,7 +18,7 @@ import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type {
   CreateReviewItemInput,
   ReviewItem,
-  CategorizationProposal,
+  ActionProposal,
 } from '@balanceframe/workflow-store';
 import {
   setReviewMutationExecutor,
@@ -535,8 +535,8 @@ describe('rule simulation binding', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: 'budget-test',
-      transactionId: '__rule__',
-      categoryId: 'cat-test',
+      payload: { kind: 'create_rule', transactionId: null, categoryId: 'cat-test', rule: {} },
+
       payloadHash,
       policyVersion: '1.0',
       preconditions,
@@ -564,8 +564,8 @@ describe('rule simulation binding', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: 'budget-test',
-      transactionId: '__rule__',
-      categoryId: 'cat-test',
+      payload: { kind: 'create_rule', transactionId: null, categoryId: 'cat-test', rule: {} },
+
       payloadHash: 'hash-no-sim',
       policyVersion: '1.0',
       preconditions: JSON.stringify({

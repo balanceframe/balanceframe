@@ -16,7 +16,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
-coverage/
+/coverage/
+/.coverage-run.lock/
 .nuxt/
 .output/
 tests/actual-integration/.actual-server-data/

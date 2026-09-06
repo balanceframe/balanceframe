@@ -215,6 +215,9 @@ pub struct ProspectivePurchaseEvaluationRequest {
     pub valid_until: String,
     /// Redaction applied to the resulting decision.
     pub redaction: RedactionState,
+    /// Optional governed account-liquidity policy, claims, timing and route context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidity: Option<crate::PurchaseLiquidityContext>,
 }
 
 /// Evaluates supplied prospective claims against a fixed decision context.
@@ -346,6 +349,7 @@ pub fn evaluate_prospective_purchase(
         decision_id,
         valid_until,
         redaction,
+        liquidity,
     } = request;
 
     let claim_evaluation = evaluate_prospective_claims(&context, &claims);
@@ -601,7 +605,9 @@ pub fn evaluate_prospective_purchase(
                     .is_none_or(|date| date < legacy_snapshot.snapshot_date.get(..10).unwrap_or(""))
             })
     };
-    let payload = evaluate_purchase_with_policy(
+    let source_coverage_complete =
+        crate::account_aware_liquidity::source_coverage_complete(&financial_snapshot);
+    let mut payload = evaluate_purchase_with_policy(
         PurchaseEvaluationRequest {
             snapshot: financial_snapshot.legacy_snapshot,
             proposed_transaction: proposed_transaction.clone(),
@@ -780,6 +786,189 @@ pub fn evaluate_prospective_purchase(
         }
     }
 
+    let liquidity_was_supplied = liquidity.is_some();
+    let mut liquidity = liquidity.unwrap_or_else(|| crate::PurchaseLiquidityContext {
+        liquidity_policy: crate::LiquidityPolicy {
+            version: context.policy_version.clone(),
+            policy_hash: context.policy_hash.clone(),
+            expires_at: valid_until.clone(),
+            accounts: Vec::new(),
+            transfer_routes: Vec::new(),
+        },
+        claim_set: crate::LiquidityClaimSet {
+            revision: "unavailable".into(),
+            bundles: Vec::new(),
+        },
+        prior_allocation: None,
+        route_selection: crate::RouteSelection {
+            explicit_account_id: Some(proposed_transaction.account_id.clone()),
+            session_account_id: None,
+            approved_preference: None,
+            historical_route: None,
+        },
+        purchase_at: context.evaluated_at.clone(),
+        required_by: context.evaluated_at.clone(),
+    });
+    let mut legacy_claims_representable = true;
+    for claim in claims.iter().filter(|claim| {
+        claim_evaluation
+            .eligible_claim_ids
+            .contains(&claim.claim_id)
+    }) {
+        let (kind, resource_id) = match &claim.scope {
+            DecisionScope::Category(id) => (crate::ClaimEffectKind::Category, id.clone()),
+            DecisionScope::Account(id) => (crate::ClaimEffectKind::AccountDebit, id.clone()),
+            _ => {
+                legacy_claims_representable = false;
+                continue;
+            }
+        };
+        let linked_categories: Vec<_> = claims
+            .iter()
+            .filter_map(|candidate| {
+                if candidate.source_id == claim.source_id
+                    && candidate.amount == claim.amount
+                    && claim_evaluation
+                        .eligible_claim_ids
+                        .contains(&candidate.claim_id)
+                {
+                    if let DecisionScope::Category(id) = &candidate.scope {
+                        return Some(id.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+        if kind == crate::ClaimEffectKind::AccountDebit && linked_categories.len() > 1 {
+            legacy_claims_representable = false;
+            continue;
+        }
+        let effect = crate::LiquidityClaimEffect {
+            kind,
+            resource_id,
+            amount: claim.amount.clone(),
+            economic_obligation_id: claim.source_id.clone(),
+            category_id: if kind == crate::ClaimEffectKind::AccountDebit {
+                linked_categories.into_iter().next()
+            } else {
+                None
+            },
+            included_in_balance: false,
+            matched_transaction_ids: Vec::new(),
+        };
+        if let Some(existing) = liquidity
+            .claim_set
+            .bundles
+            .iter()
+            .find(|bundle| bundle.id == claim.claim_id)
+        {
+            // A shared stable ID is one claim, not permission to silently change its effect.
+            if existing.state != crate::LiquidityClaimState::Active
+                || !existing
+                    .effects
+                    .iter()
+                    .any(|candidate| candidate == &effect)
+            {
+                legacy_claims_representable = false;
+            }
+            continue;
+        }
+        liquidity
+            .claim_set
+            .bundles
+            .push(crate::LiquidityClaimBundle {
+                id: claim.claim_id.clone(),
+                creation_snapshot_id: claim.snapshot_id.clone(),
+                creation_policy_version: claim.policy_version.clone(),
+                state: crate::LiquidityClaimState::Active,
+                expires_at: claim
+                    .expires_at
+                    .clone()
+                    .unwrap_or_else(|| valid_until.clone()),
+                initiated: false,
+                effects: vec![effect],
+            });
+    }
+    let identity_matches = financial_snapshot.snapshot_id == context.snapshot_id
+        && financial_snapshot.content_hash == context.content_hash
+        && liquidity.liquidity_policy.version == context.policy_version
+        && liquidity.liquidity_policy.policy_hash == context.policy_hash;
+    let amount = proposed_transaction
+        .amount
+        .abs()
+        .unwrap_or_else(|_| Money::new(-1, proposed_transaction.amount.currency()));
+    let mut account_aware =
+        balanceframe_financial_core::liquidity::evaluate_account_aware_spendability(
+            crate::LiquidityInput {
+                source_coverage_complete,
+                max_budget_snapshot_age_minutes: context
+                    .policy
+                    .max_budget_snapshot_age_minutes
+                    .unwrap_or(15),
+                snapshot_id: financial_snapshot.snapshot_id,
+                content_hash: financial_snapshot.content_hash,
+                evaluated_at: context.evaluated_at.clone(),
+                horizon: crate::LiquidityHorizon {
+                    starts_at: context.horizon.starts_at.clone(),
+                    ends_at: context.horizon.ends_at.clone(),
+                },
+                facts: if liquidity_was_supplied && identity_matches && legacy_claims_representable
+                {
+                    financial_snapshot.liquidity
+                } else {
+                    None
+                },
+                liquidity_policy: liquidity.liquidity_policy,
+                claim_set: liquidity.claim_set,
+                prior_allocation: liquidity.prior_allocation,
+                scenario: crate::LiquidityScenario::Purchases {
+                    items: vec![crate::LiquidityPurchaseItem {
+                        id: request_id.clone(),
+                        category_id: category_id.clone(),
+                        amount,
+                        purchase_at: liquidity.purchase_at,
+                        required_by: liquidity.required_by,
+                        route_selection: liquidity.route_selection,
+                    }],
+                },
+                valid_until: valid_until.clone(),
+            },
+        );
+    if !legacy_claims_representable {
+        account_aware.reasons = vec!["legacy_claim_scope_or_identity_conflict".into()];
+    }
+    if context.policy.max_budget_snapshot_age_minutes.is_none() {
+        account_aware
+            .assumptions
+            .push("default_15_minute_snapshot_age_policy".into());
+    }
+    let account_ready = account_aware.budget_funding_status == crate::BudgetFundingStatus::Funded
+        && account_aware.payment_liquidity_status == crate::PaymentLiquidityStatus::Ready;
+    payload.allowable = account_ready
+        && !issues
+            .iter()
+            .any(|issue| issue.effect == DecisionIssueEffect::Blocks);
+    if !account_ready {
+        let mut issue = blocking_issue(
+            DecisionIssueCode::Unknown("account_payment_not_ready".into()),
+            DecisionScope::Account(proposed_transaction.account_id.clone()),
+            redaction,
+            Vec::new(),
+        );
+        if matches!(
+            account_aware.payment_liquidity_status,
+            crate::PaymentLiquidityStatus::UseOtherAccount
+                | crate::PaymentLiquidityStatus::TransferRequired
+                | crate::PaymentLiquidityStatus::TransferTooLate
+        ) && account_aware.budget_funding_status == crate::BudgetFundingStatus::Funded
+        {
+            issue.effect = DecisionIssueEffect::Qualifies;
+        }
+        push_issue_once(&mut issues, issue);
+    }
+    let result_expires_at = account_aware.expires_at.clone();
+    payload.account_aware = Some(account_aware);
+
     let readiness = if issues
         .iter()
         .any(|issue| issue.effect == DecisionIssueEffect::Blocks)
@@ -809,7 +998,7 @@ pub fn evaluate_prospective_purchase(
         issues,
         evidence,
         alternatives: Vec::new(),
-        expires_at: valid_until,
+        expires_at: result_expires_at,
         redaction,
         payload,
     }

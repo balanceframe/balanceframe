@@ -29,6 +29,9 @@ pub struct FinancialSnapshot {
     pub inclusion_scope: InclusionScope,
     /// Source observations that qualify facts in the snapshot.
     pub observations: Vec<SourceObservation>,
+    /// Optional normalized liquidity observations; absence never proves account readiness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidity: Option<balanceframe_financial_core::liquidity::LiquidityFacts>,
 }
 
 /// Source namespace for ledger-local identifiers.
@@ -154,6 +157,8 @@ pub enum ObservationKind {
     AccountFreshness,
     /// Coverage reported for an account.
     AccountCoverage,
+    /// Trusted completeness of the account enumeration, independent of account metadata.
+    AccountCollectionCoverage,
     /// Type reported for an account.
     AccountType,
     /// Balance reported for an account.

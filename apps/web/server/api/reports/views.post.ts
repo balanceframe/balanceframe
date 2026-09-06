@@ -1,9 +1,9 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * POST /api/reports/views — create a saved view.
  *
  * Provider-neutral — no model or cloud invocation.
  * Read-only with respect to ledger data (persists view scope only).
- * Skips authorization gates — results are always observable.
  *
  * Body schema:
  *   name     (required) string — human-readable view name
@@ -21,7 +21,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   getActorId,
   sanitizeError,
 } from '../../utils/workflow-store';
@@ -43,7 +42,9 @@ function httpStatusForCode(code: string): number {
 }
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
 
   // Parse and validate body

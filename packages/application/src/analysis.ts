@@ -1376,6 +1376,35 @@ export async function purchaseEvaluationAnalysis(
 ): Promise<PurchaseEvaluationOutput['envelope']> {
   const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
   const auth = AuthorizationContext.observe(actorId);
+  if (input.liquidity) {
+    try {
+      const result = await input.liquidity.service.evaluatePurchase(
+        { actorId, budgetId: input.liquidity.budgetId },
+        {
+          kind: 'purchase',
+          categoryId: params.categoryId,
+          amount: params.amount,
+          ...(params.accountId ? { accountId: params.accountId } : {}),
+          purchaseAt: params.purchaseAt,
+          requiredBy: params.requiredBy,
+        },
+      );
+      return okResponse(requestId, freshness, auth, result);
+    } catch {
+      return errorResponse(
+        requestId,
+        new ErrorInfo({
+          code: 'liquidity_unavailable',
+          message:
+            'The purchase cannot be evaluated with current authorization and evidence. Refresh the account setup and retry.',
+          retryable: true,
+          reasonCodes: ['liquidity_refresh_required'],
+        }),
+        undefined,
+        auth,
+      );
+    }
+  }
 
   if (!ledger) {
     const err = new ErrorInfo({
