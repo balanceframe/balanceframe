@@ -2,6 +2,7 @@ import {
   createDefaultConnectionManager,
   createNativeAnalysisProtocol,
   persistPendingReviewResult,
+  createLiquidityService,
 } from '@balanceframe/application';
 import {
   getWorkflowStore,
@@ -9,8 +10,10 @@ import {
   errorEnvelope,
   buildAuthorizationInfo,
   sanitizeError,
+  getActorId,
 } from '../../utils/workflow-store';
 import { updateReviewCategoryCatalog } from '../../utils/review-category-catalog';
+import { requireFullRead } from '../../utils/legacy-financial-read';
 
 /** Structured sync result with per-item outcome counts. */
 export interface SyncReviewResult {
@@ -35,7 +38,9 @@ function errorHasCode(error: unknown, code: string): boolean {
 
 /** Synchronize the configured Actual budget and persist deterministic review candidates. */
 export default defineEventHandler(async (event) => {
-  const auth = buildAuthorizationInfo(event, 'observe');
+  const access = await requireFullRead(event);
+  if (!access.ok) return access.response;
+  const auth = access.info;
   const requestId = crypto.randomUUID();
   try {
     const manager = createDefaultConnectionManager({
@@ -68,6 +73,11 @@ export default defineEventHandler(async (event) => {
       );
       return { result, created };
     });
+    const liquidity = await createLiquidityService({
+      connectionManager: manager,
+      store: workflow.store,
+    });
+    await liquidity.reconcileActive({ actorId: getActorId(event), budgetId: config.budgetId });
 
     // Transition all discovered items to pending_review with structured reporting.
     const discovered = await workflow.store.listReviewItems({ status: 'discovered' });

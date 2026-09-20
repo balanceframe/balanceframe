@@ -307,3 +307,21 @@ export function buildCategoryInfoMap(
   for (const c of categories) map[c.id] = { name: c.name, groupName: c.groupName };
   return map;
 }
+
+export {
+  normalizeActualLiquidityFacts,
+  normalizeActualScheduleLiquiditySource,
+  normalizeActualTransferSettlementRecords,
+  withLiquidityFacts,
+  mergeUserAttestedLiquidityObservations,
+  userAttestedLiquidityObservationSchema,
+  bindUserAttestedLiquidityObservations,
+  persistedUserAttestedLiquidityObservationSchema,
+} from './liquidity-normalizer.js';
+export type {
+  ActualLiquidityNormalizationInput,
+  ActualLiquidityCollection,
+  ActualLiquidityBudgetMonth,
+  UserAttestedLiquidityObservation,
+  PersistedUserAttestedLiquidityObservation,
+} from './liquidity-normalizer.js';

@@ -10,6 +10,7 @@
  */
 
 import { defineEventHandler, readBody, getRouterParam, setResponseStatus } from 'h3';
+import { canReadFinancialFinding } from '../../../utils/liquidity-service';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -71,6 +72,17 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
+    const current = await wf.store.getFinding(findingId);
+    if (current && !(await canReadFinancialFinding(wf.store, getActorId(event), current))) {
+      setResponseStatus(event, 403);
+      return errorEnvelope(
+        'FINDING_DENIED',
+        'Finding unavailable or not authorized.',
+        authInfo,
+        false,
+        requestId,
+      );
+    }
     const finding = await wf.store.reopenFinding({
       findingId,
       actorId: getActorId(event),

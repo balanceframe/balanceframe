@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type {
-  CategorizationProposal,
+  ActionProposal,
   ReviewItem,
   CreateReviewItemInput,
 } from '@balanceframe/workflow-store';
@@ -120,7 +120,7 @@ function isValidSimulation(value: unknown): value is StoredSimulation {
   );
 }
 
-function computeSimulationStatus(p: CategorizationProposal): 'present' | 'missing' | 'stale' {
+function computeSimulationStatus(p: ActionProposal): 'present' | 'missing' | 'stale' {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(p.preconditions);
@@ -202,8 +202,8 @@ describe('proposal API — simulation evidence', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions,
@@ -230,8 +230,8 @@ describe('proposal API — simulation evidence', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions,
@@ -257,8 +257,8 @@ describe('proposal API — simulation evidence', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions,
@@ -278,8 +278,8 @@ describe('proposal API — simulation evidence', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions,
@@ -300,8 +300,8 @@ describe('proposal API — simulation evidence', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions,
@@ -317,7 +317,7 @@ describe('proposal API — simulation evidence', () => {
       db: { prepare(sql: string): { run(...params: unknown[]): unknown } };
     };
     s.db
-      .prepare('UPDATE categorization_proposals SET expires_at = ? WHERE id = ?')
+      .prepare('UPDATE action_proposals SET expires_at = ? WHERE id = ?')
       .run(new Date(Date.now() - 86_400_000).toISOString(), proposal.id);
 
     const staleProposal = await store.getProposal(proposal.id);
@@ -337,8 +337,8 @@ describe('proposal API — simulation evidence', () => {
     await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions: preconditions1,
@@ -352,8 +352,8 @@ describe('proposal API — simulation evidence', () => {
     await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: 'cat_other',
+      payload: { kind: 'create_rule', transactionId: null, categoryId: 'cat_other', rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions: preconditions2,
@@ -386,8 +386,8 @@ describe('proposal API — simulation evidence', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions,
@@ -443,8 +443,8 @@ describe('proposal execute — cross-actor idempotency', () => {
     const proposal = await store.createProposal({
       operation: 'create_rule',
       budgetId: BUDGET,
-      transactionId: '__rule__',
-      categoryId: CATEGORY_ID,
+      payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
       payloadHash: crypto.randomUUID(),
       policyVersion: '1.0',
       preconditions,
@@ -520,8 +520,8 @@ it('rejects actor without approval before idempotency creation', async () => {
   const proposal = await store.createProposal({
     operation: 'create_rule',
     budgetId: BUDGET,
-    transactionId: '__rule__',
-    categoryId: CATEGORY_ID,
+    payload: { kind: 'create_rule', transactionId: null, categoryId: CATEGORY_ID, rule: {} },
+
     payloadHash: crypto.randomUUID(),
     policyVersion: '1.0',
     preconditions,

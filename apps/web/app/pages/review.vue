@@ -111,6 +111,7 @@
           @propose-rule="promptProposeRule"
           @approve="adapter.approve()"
           @reject="adapter.reject()"
+          @skip="adapter.skip()"
           @refresh="adapter.refresh()"
           :proposal-count="activeProposals.length"
           @undo="adapter.undo()"

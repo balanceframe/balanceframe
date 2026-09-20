@@ -19,6 +19,8 @@ import type {
   RedactionState,
 } from '@balanceframe/protocol-generated';
 import type { FindingStatus, WorkflowStore } from '@balanceframe/workflow-store';
+import type { PublicLiquidityView } from './liquidity-public.js';
+import type { LiquidityService } from './liquidity-service.js';
 
 // ---------------------------------------------------------------------------
 // Analysis protocol — Rust-backed analysis interface
@@ -301,6 +303,8 @@ export interface CommandInput {
   lifecycleCallbacks?: LifecycleCallbacks;
   /** Workflow store for persistence operations (web routes). */
   workflowStore?: WorkflowStore;
+  /** Trusted account-aware purchase orchestration, bound to the selected budget. */
+  liquidity?: { service: LiquidityService; budgetId: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +898,8 @@ export interface PurchaseEvaluationParams {
   amount: Money;
   /** Optional account identifier for balance projection. */
   accountId?: string;
+  purchaseAt?: string;
+  requiredBy?: string;
   /** Canonical decision context. Required when using prospective evaluation. */
   context?: DecisionContext;
   /** Existing reservations and commitments considered by the decision. */
@@ -948,6 +954,8 @@ export interface PurchaseEvaluationResult {
   entityLabels?: Record<string, string>;
   /** Full canonical decision, when evaluated by the prospective-decision path. */
   decision?: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
+  /** Allowlisted account-aware financial projection; canonical private results remain server-only. */
+  liquidity?: PublicLiquidityView;
 }
 
 export interface PurchaseEvaluationOutput {
@@ -1533,6 +1541,8 @@ export type FinancialAttentionClassification =
  */
 export interface AttentionDecisionMetadata {
   classification?: FinancialAttentionClassification;
+  /** Present only after current transfer resource authorization. */
+  transferId?: string;
   issue?: DecisionIssue;
   /** Canonical human-readable label for the affected scope. */
   scopeLabel?: string;
@@ -1636,8 +1646,10 @@ export interface AttentionHomeResult {
   recurrences: RecurrencePattern[];
   /** Category and cash-flow risk assessments. */
   categoryRisks: CategoryRisk[];
-  /** Target and sinking-fund progress. */
-  targetProgress: TargetProgressSummary;
+  /** Whole-budget target progress is omitted for scoped readers, never replaced with zero. */
+  targetProgress?: TargetProgressSummary;
+  /** True when only resource-authorized attention is present. */
+  scopeLimited?: boolean;
   /** Optional detailed breakdowns when context.detailed is true. */
   details?: {
     uncategorizedCount: number;

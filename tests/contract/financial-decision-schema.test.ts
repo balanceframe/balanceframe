@@ -39,12 +39,14 @@ const legacyProtocolSchema = loadSchema('protocol-v1.json');
 const financialSnapshotSchema = loadSchema('financial-snapshot-v1.json');
 const prospectiveClaimSchema = loadSchema('prospective-claim-v1.json');
 const prospectiveDecisionSchema = loadSchema('prospective-decision-v1.json');
+const accountAwareLiquiditySchema = loadSchema('account-aware-liquidity-v1.json');
 const foundationFixture = loadJson(
   path.resolve(__dirname, '../../protocol/fixtures/financial-decision-foundation.json'),
 ) as FinancialDecisionFixture;
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 for (const schema of [
+  accountAwareLiquiditySchema,
   legacyProtocolSchema,
   financialSnapshotSchema,
   prospectiveClaimSchema,

@@ -11,6 +11,10 @@
  *   recovery — the same token always yields the same result.
  */
 
+import type { TransferPlan } from '@balanceframe/protocol-generated';
+import type { TransferState } from './liquidity-types.js';
+import type { LiquidityWorkflow } from './liquidity.js';
+
 // ---------------------------------------------------------------------------
 // Suggestion — immutable candidate output from a classifier
 // ---------------------------------------------------------------------------
@@ -259,6 +263,8 @@ export interface TransitionReviewResult {
 
 /** Options for listing review items. */
 export interface ReviewListOptions {
+  /** Trusted selected-budget scope, applied before pagination and counting. */
+  readonly budgetId?: string;
   readonly status?: ReviewStatus;
   readonly limit?: number;
   readonly offset?: number;
@@ -266,6 +272,7 @@ export interface ReviewListOptions {
 
 /** Options for listing categorization proposals. */
 export interface ListProposalsOptions {
+  readonly operations?: readonly ProposalOperation[];
   /** Filter by superseded state. Omit for all. */
   readonly superseded?: boolean;
   /** Filter by budget ID. Omit for all budgets. */
@@ -915,6 +922,7 @@ export interface ListNotificationPoliciesOptions {
  * All methods are async (the implementation wraps synchronous better-sqlite3).
  */
 export interface WorkflowStore {
+  readonly liquidity: LiquidityWorkflow;
   // ── Suggestion lifecycle ───────────────────────────────────────────
 
   /**
@@ -1116,24 +1124,26 @@ export interface WorkflowStore {
    * Idempotent: if a proposal with the same `(budgetId, transactionId, operation,
    * payloadHash)` already exists, the existing record is returned unchanged.
    */
-  createProposal(input: CreateProposalInput): Promise<CategorizationProposal>;
+  createProposal(
+    input: CreateProposalInput,
+  ): Promise<Exclude<ActionProposal, { operation: 'transfer' }>>;
 
   /** Retrieve a single proposal by ID, or null. */
-  getProposal(id: string): Promise<CategorizationProposal | null>;
+  getProposal(id: string): Promise<ActionProposal | null>;
 
   /**
    * Find the active (non-superseded) proposal for a given target, or null.
    */
   findActiveProposal(
     budgetId: string,
-    transactionId: string,
+    transactionId: string | null,
     operation: ProposalOperation,
-  ): Promise<CategorizationProposal | null>;
+  ): Promise<ActionProposal | null>;
 
   /**
    * List categorization proposals ordered by creation time descending.
    */
-  listProposals(options?: ListProposalsOptions): Promise<CategorizationProposal[]>;
+  listProposals(options?: ListProposalsOptions): Promise<ActionProposal[]>;
 
   /**
    * Return the total number of categorization proposals matching the
@@ -1146,16 +1156,19 @@ export interface WorkflowStore {
    *
    * Idempotent on already-superseded proposals.
    */
-  supersedeProposal(id: string): Promise<CategorizationProposal>;
+  supersedeProposal(id: string): Promise<ActionProposal>;
+
+  /** Atomically discard a legacy proposal after current operation/budget authorization; deny missing or inaccessible IDs with null. */
+  discardProposal(id: string, actorId: string): Promise<ActionProposal | null>;
 
   // ── Proposal approval lifecycle ───────────────────────────────────
 
   /**
    * Create a one-time approval for a proposal.
    *
-   * Validates: proposal exists and is not superseded, payload hash matches
-   * proposal, expiry is in the future. Idempotent for same
-   * `(proposalId, actorId)`.
+   * Atomically validates current active issuer membership, operation execution
+   * capability and exact budget scope, proposal state, payload hash and expiry.
+   * Idempotent for the same active `(proposalId, actorId)` after reauthorization.
    */
   createApproval(input: CreateApprovalInput): Promise<ProposalApproval>;
 
@@ -1171,13 +1184,16 @@ export interface WorkflowStore {
   /**
    * Consume an approval (one-time use).
    *
-   * @throws If the approval is already consumed, expired, superseded, or
-   *         its proposal is superseded.
+   * Atomically reauthorizes the issuer against the proposal's operation/budget
+   * and verifies the exact hash and lifecycle before consuming.
+   * @throws If authorization is revoked, the hash differs, or the approval or
+   *         proposal is consumed, expired or superseded.
    */
   consumeApproval(id: string): Promise<ProposalApproval>;
 
   /**
-   * Verify that a proposal has at least one active approval for execution.
+   * Verify that a proposal has an active exact-hash approval from a currently
+   * authorized issuer. Consumption repeats these checks atomically.
    *
    * @returns null if the proposal can be executed, or an error string
    *          describing the reason it cannot.
@@ -1839,28 +1855,22 @@ export interface WorkflowStore {
 }
 
 // ---------------------------------------------------------------------------
-// CategorizationProposal — immutable proposal for a workflow action
+// ActionProposal — immutable proposal for a workflow action
 // ---------------------------------------------------------------------------
 
 /** Supported categorization proposal operations. */
-export type ProposalOperation = 'set_category' | 'create_rule';
+export type ProposalOperation = 'set_category' | 'create_rule' | 'transfer';
 
 /**
  * A categorized proposal for a transaction. Immutable once persisted.
  * The payload hash binds the proposal to exact content — any change
  * produces a distinct hash and thus a distinct proposal.
  */
-export interface CategorizationProposal {
+export interface ActionProposalBase {
   /** Stable unique identifier (UUID v4). */
   readonly id: string;
-  /** The operation this proposal represents. */
-  readonly operation: ProposalOperation;
   /** Budget this proposal targets. */
   readonly budgetId: string;
-  /** The transaction being proposed for change. */
-  readonly transactionId: string;
-  /** The proposed new category. */
-  readonly categoryId: string;
   /** Hex-encoded SHA-256 hash of the full proposal content. */
   readonly payloadHash: string;
   /** Policy version active when the proposal was created. */
@@ -1881,39 +1891,41 @@ export interface CategorizationProposal {
   readonly supersededAt: string | null;
   /** ISO-8601 creation timestamp. */
   readonly createdAt: string;
+  readonly version: number;
+  readonly state: TransferState;
 }
+
+export interface CategoryActionPayload {
+  readonly kind: 'set_category';
+  readonly transactionId: string;
+  readonly categoryId: string;
+}
+export interface RuleActionPayload {
+  readonly kind: 'create_rule';
+  readonly transactionId: string | null;
+  readonly categoryId: string;
+  readonly rule: Record<string, unknown>;
+}
+export type ActionProposal = ActionProposalBase &
+  (
+    | { readonly operation: 'set_category'; readonly payload: CategoryActionPayload }
+    | { readonly operation: 'create_rule'; readonly payload: RuleActionPayload }
+    | {
+        readonly operation: 'transfer';
+        readonly payload: {
+          readonly kind: 'transfer';
+          readonly plan: TransferPlan;
+          readonly sessionId: string | null;
+          readonly sessionVersion: number | null;
+        };
+      }
+  );
 
 /** Input to create a new categorization proposal. */
 export interface CreateProposalInput {
-  readonly operation: ProposalOperation;
+  readonly operation: 'set_category' | 'create_rule';
   readonly budgetId: string;
-  readonly transactionId: string;
-  readonly categoryId: string;
-  /** Hex-encoded SHA-256 hash of the full proposal content. */
-  readonly payloadHash: string;
-  readonly policyVersion: string;
-  /** JSON-encoded preconditions for execution. */
-  readonly preconditions: string;
-  /** ISO-8601 expiry timestamp. */
-  readonly expiresAt: string;
-  readonly actorId: string;
-  readonly provenance: string;
-  readonly providerModel?: string | null;
-  readonly correlationId?: string | null;
-}
-
-/** Input to create a new rule proposal. */
-export interface CreateRuleProposalInput {
-  /** The operation — always 'create_rule' for this input. */
-  readonly operation: 'create_rule';
-  /** Budget this rule targets. */
-  readonly budgetId: string;
-  /** The transaction being proposed for change, or null for rule-only proposals. */
-  readonly transactionId: string | null;
-  /** Rule action configuration (serializable JSON object). */
-  readonly action: Record<string, unknown>;
-  /** Rule condition / filter configuration (serializable JSON object). */
-  readonly conditions: Record<string, unknown>;
+  readonly payload: CategoryActionPayload | RuleActionPayload;
   /** Hex-encoded SHA-256 hash of the full proposal content. */
   readonly payloadHash: string;
   readonly policyVersion: string;

@@ -325,6 +325,7 @@ fn decision_context_is_complete_round_trip_input_not_a_wall_clock_lookup() {
 
 fn purchase_payload() -> PurchaseEvaluation {
     PurchaseEvaluation {
+        account_aware: None,
         allowable: false,
         reason_codes: vec!["reservation_conflict".into()],
         category_budget: Money::new(50_00, "USD"),
@@ -441,4 +442,175 @@ fn prospective_claim_evaluation_is_pure_deterministic_and_requires_no_model() {
     assert_eq!(first.eligible_claim_ids, vec!["deterministic".to_string()]);
     assert_eq!(first.commitment_total, Some(Money::new(12_34, "USD")));
     assert!(first.issues.is_empty());
+}
+
+#[test]
+fn invalid_context_identity_or_window_never_admits_claims() {
+    let valid = claim(
+        "reserved",
+        ProspectiveClaimKind::Reservation,
+        DecisionScope::Global,
+        Money::new(1, "USD"),
+    );
+    for field in ["policyVersion", "policyHash", "snapshotId", "contentHash"] {
+        let mut wire = serde_json::to_value(context()).unwrap();
+        wire[field] = "".into();
+        let result = evaluate_prospective_claims(
+            &serde_json::from_value(wire).unwrap(),
+            std::slice::from_ref(&valid),
+        );
+        assert!(result.eligible_claim_ids.is_empty());
+        assert_eq!(result.reservation_total, None);
+        assert!(issue_codes(&result).contains(&DecisionIssueCode::Unknown(
+            "invalid_decision_context".into()
+        )));
+    }
+    for (field, value) in [
+        ("startsAt", "invalid"),
+        ("endsAt", "invalid"),
+        ("startsAt", HORIZON_END),
+        ("endsAt", EVALUATED_AT),
+    ] {
+        let mut wire = serde_json::to_value(context()).unwrap();
+        wire["horizon"][field] = value.into();
+        let result = evaluate_prospective_claims(
+            &serde_json::from_value(wire).unwrap(),
+            std::slice::from_ref(&valid),
+        );
+        assert!(result.eligible_claim_ids.is_empty());
+        assert!(issue_codes(&result).contains(&DecisionIssueCode::Unknown(
+            "invalid_decision_context".into()
+        )));
+    }
+}
+
+#[test]
+fn claim_timestamps_validate_calendar_offsets_and_fractional_expiry() {
+    let mut reservation = claim(
+        "time",
+        ProspectiveClaimKind::Reservation,
+        DecisionScope::Global,
+        Money::new(10, "USD"),
+    );
+    for invalid in [
+        "2026/08/23T12:00:00Z",
+        "x026-08-23T12:00:00Z",
+        "2026-02-29T12:00:00Z",
+        "2026-04-31T12:00:00Z",
+        "2026-08-23T24:00:00Z",
+        "2026-08-23T12:60:00Z",
+        "2026-08-23T12:00:60Z",
+        "2026-08-23T12:00:00.Z",
+        "2026-08-23T12:00:00.1234567890Z",
+        "2026-08-23T12:00:00+01x00",
+        "2026-08-23T12:00:00+24:00",
+        "2026-08-23T12:00:00+00:60",
+        "2026-08-23T12:00:00+aa:00",
+        "2026-08-23T12:00:00Q",
+    ] {
+        reservation.effective_from = invalid.into();
+        let result = evaluate_prospective_claims(&context(), &[reservation.clone()]);
+        assert!(result.eligible_claim_ids.is_empty(), "{invalid}");
+        assert!(
+            issue_codes(&result).contains(&DecisionIssueCode::Unknown("invalid_claim_time".into())),
+            "{invalid}"
+        );
+    }
+    for equivalent in [
+        "2026-08-23T13:30:00+01:30",
+        "2026-08-23T07:00:00-05:00",
+        "2026-08-23T12:00:00.000000000Z",
+        "2024-02-29T00:00:00Z",
+    ] {
+        reservation.effective_from = equivalent.into();
+        reservation.expires_at = None;
+        let result = evaluate_prospective_claims(&context(), &[reservation.clone()]);
+        assert_eq!(
+            result.reservation_total,
+            Some(Money::new(10, "USD")),
+            "{equivalent}"
+        );
+        assert!(result.issues.is_empty());
+    }
+    reservation.effective_from = EVALUATED_AT.into();
+    reservation.expires_at = Some("2026-08-23T12:00:00.1Z".into());
+    assert_eq!(
+        evaluate_prospective_claims(&context(), &[reservation.clone()]).eligible_claim_ids,
+        vec!["time"]
+    );
+    for expiry in ["invalid", "2026-08-22T12:00:00Z", EVALUATED_AT] {
+        reservation.expires_at = Some(expiry.into());
+        let result = evaluate_prospective_claims(&context(), &[reservation.clone()]);
+        assert!(result.eligible_claim_ids.is_empty());
+        assert!(
+            issue_codes(&result).contains(&DecisionIssueCode::Unknown("invalid_claim_time".into()))
+        );
+    }
+}
+
+#[test]
+fn malformed_claim_identity_and_negative_amount_cannot_reserve_money() {
+    let valid = claim(
+        "valid",
+        ProspectiveClaimKind::Reservation,
+        DecisionScope::Global,
+        Money::new(1, "USD"),
+    );
+    let mut invalid = vec![];
+    for field in ["claimId", "sourceId"] {
+        let mut wire = serde_json::to_value(&valid).unwrap();
+        wire[field] = "".into();
+        invalid.push(serde_json::from_value::<ProspectiveClaim>(wire).unwrap());
+    }
+    for scope in [
+        DecisionScope::Transaction("".into()),
+        DecisionScope::Schedule("".into()),
+        DecisionScope::Claim("".into()),
+    ] {
+        let mut input = valid.clone();
+        input.scope = scope;
+        invalid.push(input);
+    }
+    let mut negative = valid.clone();
+    negative.amount = Money::new(-1, "USD");
+    invalid.push(negative);
+    for input in invalid {
+        let result = evaluate_prospective_claims(&context(), &[input]);
+        assert!(result.eligible_claim_ids.is_empty());
+        assert_eq!(result.reservation_total, None);
+        assert!(issue_codes(&result)
+            .contains(&DecisionIssueCode::Unknown("invalid_claim_input".into())));
+    }
+}
+
+#[test]
+fn claim_overflow_and_redacted_duplicates_never_publish_partial_totals_or_identity() {
+    let first = claim(
+        "one",
+        ProspectiveClaimKind::Reservation,
+        DecisionScope::Category("first".into()),
+        Money::new(i64::MAX, "USD"),
+    );
+    let second = claim(
+        "two",
+        ProspectiveClaimKind::Reservation,
+        DecisionScope::Category("second".into()),
+        Money::new(1, "USD"),
+    );
+    let result = evaluate_prospective_claims(&context(), &[first.clone(), second]);
+    assert_eq!(result.reservation_total, None);
+    assert!(issue_codes(&result).contains(&DecisionIssueCode::Unknown(
+        "money_arithmetic_overflow".into()
+    )));
+    let mut hidden = first.clone();
+    hidden.visibility = RedactionState::Redacted;
+    let duplicate = evaluate_prospective_claims(&context(), &[first, hidden]);
+    let issue = duplicate
+        .issues
+        .iter()
+        .find(|issue| issue.code == DecisionIssueCode::Unknown("duplicate_claim_id".into()))
+        .unwrap();
+    assert_eq!(issue.scope, DecisionScope::Global);
+    assert!(issue.evidence.is_empty());
+    assert!(duplicate.eligible_claim_ids.is_empty());
 }

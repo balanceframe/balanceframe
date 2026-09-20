@@ -9,6 +9,8 @@
  */
 
 import { defineEventHandler, setResponseStatus, getQuery } from 'h3';
+import { canReadFinancialNotification } from '../../utils/liquidity-service';
+import { hasLegacyFullRead } from '../../utils/legacy-financial-read';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -20,6 +22,7 @@ import type { OutboxStatus } from '@balanceframe/workflow-store';
 import {
   NotificationRuntime,
   InAppChannelAdapter,
+  createDefaultConnectionManager,
   type NotificationPolicy,
 } from '@balanceframe/application';
 
@@ -184,13 +187,14 @@ function sanitizeNotificationItem(item: NotificationItem) {
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
 
-  // Authorization gate
-  const auth = await requireAuthorization(event, 'notification:receive');
-  if (!auth.ok) {
+  if (!event.context.auth?.authenticated) {
+    const auth = await requireAuthorization(event, 'notification:receive');
     setResponseStatus(event, 403);
-    return auth.response;
+    return auth.ok
+      ? errorEnvelope('AUTHORIZATION_REQUIRED', 'Authentication is required.', null)
+      : auth.response;
   }
-  const authInfo = auth.info;
+  let authInfo: Parameters<typeof errorEnvelope>[2] = null;
 
   try {
     const wf = getWorkflowStore(event);
@@ -198,6 +202,18 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 503);
       return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
     }
+    const manager = createDefaultConnectionManager({
+      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+    });
+    const config = await manager.loadConfig();
+    if (!config?.budgetId) throw new Error('Selected budget unavailable');
+    const auth = await requireAuthorization(
+      event,
+      'notification:receive',
+      `budget:${config.budgetId}`,
+    );
+    if (!auth.ok) return auth.response;
+    authInfo = auth.info;
 
     const rt = getRuntime(wf);
     const actorId = getActorId(event);
@@ -216,12 +232,17 @@ export default defineEventHandler(async (event) => {
         : undefined;
 
     const storedItems = await rt.listOutbox(actorId, {
+      budgetId: config.budgetId,
+      canReadEvent: (notification) =>
+        notification.classification === 'transfer_needs_attention'
+          ? canReadFinancialNotification(wf.store, actorId, notification)
+          : hasLegacyFullRead(wf.store, actorId, notification.budgetId),
       status: statusFilter,
       channelType: query.channel || undefined,
       limit: query.limit ? parseInt(query.limit, 10) : undefined,
       offset: query.offset ? parseInt(query.offset, 10) : undefined,
     });
-    const items = storedItems.map((item) => sanitizeNotificationItem(item));
+    const items = storedItems.map(sanitizeNotificationItem);
 
     return okEnvelope({ items, count: items.length }, auth.info, requestId);
   } catch (err) {

@@ -28,7 +28,6 @@ import type {
   AuditClassification,
   CreateNotificationEventInput,
   OutboxStatus,
-  ListOutboxRecordsOptions,
 } from '@balanceframe/workflow-store';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -1100,7 +1099,14 @@ export class NotificationRuntime {
    */
   async listOutbox(
     actorId: string,
-    options?: { status?: OutboxStatus; channelType?: string; limit?: number; offset?: number },
+    options?: {
+      status?: OutboxStatus;
+      channelType?: string;
+      limit?: number;
+      offset?: number;
+      budgetId?: string;
+      canReadEvent?: (event: NotificationEvent) => Promise<boolean>;
+    },
   ): Promise<
     Array<{
       outbox: NotificationOutboxRecord;
@@ -1109,13 +1115,9 @@ export class NotificationRuntime {
       deliveryAttempts: DeliveryAttempt[];
     }>
   > {
-    const storeOptions: ListOutboxRecordsOptions = {
-      status: options?.status,
-      channelType: options?.channelType,
-      limit: options?.limit,
-      offset: options?.offset,
-    };
-    const records = await this.store.listOutboxRecords(storeOptions);
+    const limit = Math.max(0, options?.limit ?? 50);
+    const offset = Math.max(0, options?.offset ?? 0);
+    let visibleIndex = 0;
 
     const results: Array<{
       outbox: NotificationOutboxRecord;
@@ -1124,21 +1126,29 @@ export class NotificationRuntime {
       deliveryAttempts: DeliveryAttempt[];
     }> = [];
 
-    for (const outbox of records) {
-      // Fetch the event for recipient check
-      const event = await this.store.getNotificationEvent(outbox.eventId);
-      if (!event) continue;
-
-      // Filter by recipient match
-      if (event.recipientId !== actorId) continue;
-
-      // Redact the payload
-      const redactedPayload = await this.redactForActor(event, actorId);
-
-      // Get delivery attempts
-      const deliveryAttempts = await this.store.getDeliveryAttempts(outbox.id);
-
-      results.push({ outbox, event, redactedPayload, deliveryAttempts });
+    for (let storeOffset = 0; results.length < limit; storeOffset += 500) {
+      const records = await this.store.listOutboxRecords({
+        status: options?.status,
+        channelType: options?.channelType,
+        limit: 500,
+        offset: storeOffset,
+      });
+      for (const outbox of records) {
+        const event = await this.store.getNotificationEvent(outbox.eventId);
+        if (
+          !event ||
+          event.recipientId !== actorId ||
+          (options?.budgetId !== undefined && event.budgetId !== options.budgetId)
+        )
+          continue;
+        if (options?.canReadEvent && !(await options.canReadEvent(event))) continue;
+        if (visibleIndex++ < offset) continue;
+        const redactedPayload = await this.redactForActor(event, actorId);
+        const deliveryAttempts = await this.store.getDeliveryAttempts(outbox.id);
+        results.push({ outbox, event, redactedPayload, deliveryAttempts });
+        if (results.length === limit) break;
+      }
+      if (records.length < 500) break;
     }
 
     return results;
@@ -1209,10 +1219,16 @@ export class NotificationRuntime {
   // -----------------------------------------------------------------------
 
   /** Return runtime health and activity summary. */
-  async getStatus(): Promise<RuntimeStatus> {
+  async getStatus(scope?: {
+    actorId: string;
+    budgetId: string;
+    canReadEvent: (event: NotificationEvent) => Promise<boolean>;
+  }): Promise<RuntimeStatus> {
     let storeConnected = false;
     try {
-      const pending = await this.store.getPendingNotifications(1);
+      await (scope
+        ? this.store.getActorMembership(scope.actorId)
+        : this.store.getPendingNotifications(1));
       storeConnected = true;
     } catch {
       storeConnected = false;
@@ -1239,12 +1255,42 @@ export class NotificationRuntime {
     let pendingCount = 0;
     let failedCount = 0;
     try {
-      const pending = await this.store.getPendingNotifications(1000);
-      pendingCount = pending.length;
-      const retryable = await this.store.getRetryableNotifications(1000);
-      failedCount = retryable.length;
-    } catch {
-      // Store errors are reflected in storeConnected
+      if (scope) {
+        const authorization = await this.store.evaluateAuthorization(
+          scope.actorId,
+          'notification:receive',
+          `budget:${scope.budgetId}`,
+          '1.0',
+        );
+        if (authorization.allowed) {
+          for (const status of ['pending', 'failed'] as const) {
+            for (let offset = 0; ; offset += 500) {
+              const records = await this.store.listOutboxRecords({ status, limit: 500, offset });
+              for (const record of records) {
+                const event = await this.store.getNotificationEvent(record.eventId);
+                if (
+                  !event ||
+                  event.budgetId !== scope.budgetId ||
+                  event.recipientId !== scope.actorId ||
+                  !(await scope.canReadEvent(event))
+                )
+                  continue;
+                if (status === 'pending') pendingCount += 1;
+                else failedCount += 1;
+              }
+              if (records.length < 500) break;
+            }
+          }
+        }
+      } else {
+        const pending = await this.store.getPendingNotifications(1000);
+        pendingCount = pending.length;
+        const retryable = await this.store.getRetryableNotifications(1000);
+        failedCount = retryable.length;
+      }
+    } catch (error) {
+      if (scope) throw error;
+      // Preserve the unscoped operational health behavior for trusted internal callers.
     }
 
     const healthy = storeConnected && channelStatuses.every((cs) => cs.healthy);

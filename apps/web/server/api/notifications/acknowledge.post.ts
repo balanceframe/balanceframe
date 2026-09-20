@@ -9,6 +9,7 @@
  */
 
 import { defineEventHandler, readBody, setResponseStatus } from 'h3';
+import { canReadFinancialNotification } from '../../utils/liquidity-service';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -84,8 +85,10 @@ export default defineEventHandler(async (event) => {
     const rt = getRuntime(event as { context: Record<string, unknown> });
     const actorId = getActorId(event);
     const detail = await rt.getOutboxDetail(outboxId, actorId);
+    const workflow = getWorkflowStore(event);
+    if ('error' in workflow) throw new Error('Workflow store unavailable');
 
-    if (!detail) {
+    if (!detail || !(await canReadFinancialNotification(workflow.store, actorId, detail.event))) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'NOT_FOUND',

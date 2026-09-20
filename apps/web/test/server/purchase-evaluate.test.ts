@@ -1,223 +1,82 @@
-/**
- * TDD: GET /api/purchase/evaluate delegates to purchaseEvaluationAnalysis.
- *
- * Verifies that the route invokes the real analysis function with a
- * properly constructed CommandInput and that non-trivial data from
- * the protocol flows back through the response envelope.
- *
- * Must fail against the current hardcoded stub.
- */
-
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-
-// ---------------------------------------------------------------------------
-// Hoisted mocks — available inside vi.mock factories
-// ---------------------------------------------------------------------------
-
-const {
-  mockRestore,
-  mockCreateDefaultConnectionManager,
-  mockCreateNativeAnalysisProtocol,
-  mockRequireAuthorization,
-} = vi.hoisted(() => ({
-  mockRestore: vi.fn(),
-  mockCreateDefaultConnectionManager: vi.fn(() => ({
-    restore: mockRestore,
-    withConnection: async (operation: (connected: unknown) => Promise<unknown>) =>
-      operation(await mockRestore()),
-  })),
-  mockCreateNativeAnalysisProtocol: vi.fn(),
-  mockRequireAuthorization: vi.fn(),
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+const { authorize, evaluate, status, factory } = vi.hoisted(() => ({
+  authorize: vi.fn(),
+  evaluate: vi.fn(),
+  status: vi.fn(),
+  factory: vi.fn(),
 }));
-
-// ---------------------------------------------------------------------------
-// Mock @balanceframe/application — keep real analysis functions, mock deps
-// ---------------------------------------------------------------------------
-
-vi.mock('@balanceframe/application', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    createDefaultConnectionManager: mockCreateDefaultConnectionManager,
-    createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol,
-  };
-});
-
-// ---------------------------------------------------------------------------
-// Mock h3 — unwrap defineEventHandler so tests call the raw handler
-// ---------------------------------------------------------------------------
-
+vi.mock('@balanceframe/application', async (importOriginal) => ({
+  ...(await importOriginal()),
+  createDefaultConnectionManager: () => ({ loadConfig: async () => ({ budgetId: 'budget' }) }),
+  createLiquidityService: factory,
+}));
 vi.mock('h3', () => ({
   defineEventHandler: <T>(handler: T) => handler,
-  getQuery: (event: Record<string, unknown>) => event.query ?? {},
-  setResponseStatus: vi.fn(),
+  getQuery: (event: { query?: unknown }) => event.query ?? {},
+  setResponseStatus: status,
 }));
-
-// ---------------------------------------------------------------------------
-// Mock workflow-store helpers
-// ---------------------------------------------------------------------------
-
 vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: vi.fn(() => ({ store: {} })),
-  buildAuthorizationInfo: vi.fn(() => ({
-    actorId: 'test-actor',
-    capability: 'observe',
-    allowed: true,
-  })),
-  requireAuthorization: mockRequireAuthorization,
-  getActorId: vi.fn(() => 'test-actor'),
-  okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
-    schemaVersion: '1',
-    requestId: requestId ?? 'test-req',
-    status: 'ok' as const,
-    dataFreshness: null,
-    authorization: null,
-    result,
-    error: null,
-  }),
-  errorEnvelope: (
-    code: string,
-    message: string,
-    _auth: unknown,
-    retryable?: boolean,
-    requestId?: string,
-  ) => ({
-    schemaVersion: '1',
-    requestId: requestId ?? 'test-req',
-    status: 'error' as const,
-    dataFreshness: null,
-    authorization: null,
-    result: null,
-    error: { code, message, retryable: retryable ?? false },
-  }),
+  requireAuthorization: authorize,
+  getActorId: () => 'reader',
+  getWorkflowStore: () => ({ store: {} }),
+  okEnvelope: (result: unknown) => ({ status: 'ok', result }),
+  errorEnvelope: (code: string, message: string) => ({ status: 'error', error: { code, message } }),
 }));
-
-// ---------------------------------------------------------------------------
-// Import handler (after mocks)
-// ---------------------------------------------------------------------------
-
 import handler from '../../server/api/purchase/evaluate.get';
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe('GET /api/purchase/evaluate', () => {
+describe('existing purchase endpoint account-aware trust boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-
-    mockRequireAuthorization.mockResolvedValue({
+    authorize.mockResolvedValue({
       ok: true,
-      info: { actorId: 'test-actor', capability: 'observe', allowed: true },
+      info: { actorId: 'reader', capability: 'observe', allowed: true },
     });
-
-    // Default: connected ledger + protocol available
-    mockRestore.mockResolvedValue({
-      connector: { name: 'mock-connector' },
-      budget: { id: 'budget_test', groupId: 'group_test', name: 'Test', encrypted: false },
-      synchronization: {},
-    });
-    mockCreateNativeAnalysisProtocol.mockResolvedValue({
-      purchaseEvaluation: vi.fn(),
-    });
+    factory.mockResolvedValue({ evaluatePurchase: evaluate });
   });
-
-  it('rejects unauthenticated callers before restoring the ledger', async () => {
-    mockRequireAuthorization.mockResolvedValueOnce({
+  it('denies unauthenticated access before composing the financial service', async () => {
+    authorize.mockResolvedValue({
       ok: false,
-      info: null,
       response: { status: 'error', error: { code: 'AUTHORIZATION_REQUIRED' } },
     });
-    const response = await handler({ query: { categoryId: 'cat', amount: '100' }, context: {} });
+    const response = await handler({ query: { categoryId: 'food', amount: '2000' }, context: {} });
     expect(response.status).toBe('error');
-    expect(response.error?.code).toBe('AUTHORIZATION_REQUIRED');
-    expect(mockRestore).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
   });
-
-  it('must delegate to purchaseEvaluationAnalysis and return non-stub data', async () => {
-    const mockProtocol = await mockCreateNativeAnalysisProtocol();
-    mockProtocol.purchaseEvaluation.mockResolvedValue({
-      allowable: false,
-      reasonCodes: ['test_mock_reason'],
-      categoryBudget: { minorUnits: '50000', currency: 'USD' },
-      categorySpent: { minorUnits: '30000', currency: 'USD' },
-      categoryRemaining: { minorUnits: '20000', currency: 'USD' },
-      projectedBalance: { minorUnits: '100000', currency: 'USD' },
-      hasEnvelope: true,
+  it('rejects caller financial context before executing a purchase evaluation', async () => {
+    const response = await handler({
+      query: { categoryId: 'food', amount: '2000', context: { actorId: 'owner' } },
+      context: { auth: { authenticated: true, actorId: 'reader' } },
     });
-
-    const event = {
-      query: {
-        categoryId: 'cat_groceries',
-        amount: '2500',
-        currency: 'USD',
-      },
-      context: { auth: { authenticated: true } },
-    };
-
-    const response = await handler(event);
-
-    expect(response.status).toBe('ok');
-    expect(response.result).toEqual({
-      allowable: false,
-      reasonCodes: ['test_mock_reason'],
-      categoryBudget: { minorUnits: '50000', currency: 'USD' },
-      categorySpent: { minorUnits: '30000', currency: 'USD' },
-      categoryRemaining: { minorUnits: '20000', currency: 'USD' },
-      projectedBalance: { minorUnits: '100000', currency: 'USD' },
-      hasEnvelope: true,
+    expect(response.status).toBe('error');
+    expect(status).toHaveBeenCalledWith(expect.anything(), 400);
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+  it('does not expose private source details from a failed evaluation', async () => {
+    evaluate.mockRejectedValue(
+      new Error('Private savings source insufficient: account-private, 900000 USD'),
+    );
+    const response = await handler({
+      query: { categoryId: 'food', amount: '2000' },
+      context: { auth: { authenticated: true, actorId: 'reader' } },
     });
-    // Assertions that prove delegation (would fail against hardcoded stub):
-    expect(response.result.reasonCodes).not.toEqual(['sufficient_budget']);
-    expect(response.result.categoryBudget.minorUnits).not.toBe('0');
-    expect(response.result.categorySpent.minorUnits).not.toBe('0');
-    expect(response.result.projectedBalance).not.toBeNull();
-  });
-
-  it('must return error envelope when analysis returns error', async () => {
-    mockRestore.mockResolvedValue({
-      connector: null,
-      budget: { id: 'budget_test', groupId: 'group_test', name: 'Test', encrypted: false },
-      synchronization: {},
-    });
-
-    const event = {
-      query: {
-        categoryId: 'cat_groceries',
-        amount: '2500',
-        currency: 'USD',
-      },
-      context: { auth: { authenticated: true } },
-    };
-
-    const response = await handler(event);
-
-    // ledger is null → analysis returns not_connected error
     expect(response.status).toBe('error');
-    expect(response.error).toBeDefined();
+    expect(status).toHaveBeenCalledWith(expect.anything(), 409);
+    expect(JSON.stringify(response)).not.toMatch(/Private savings|account-private|900000/);
   });
-
-  it('must require categoryId', async () => {
-    const event = {
-      query: { amount: '2500' },
-      context: { auth: { authenticated: true } },
-    };
-
-    const response = await handler(event);
-
-    expect(response.status).toBe('error');
-    expect(response.error?.code).toBe('PURCHASE_CATEGORY_REQUIRED');
-  });
-
-  it('must require a non-zero amount', async () => {
-    const event = {
-      query: { categoryId: 'cat_test', amount: '0' },
-      context: { auth: { authenticated: true } },
-    };
-
-    const response = await handler(event);
-
-    expect(response.status).toBe('error');
-    expect(response.error?.code).toBe('PURCHASE_AMOUNT_REQUIRED');
+  it('accepts a current selected-budget member without requiring wildcard observation authority', async () => {
+    authorize.mockImplementation(async (_event, _capability, scope) =>
+      scope === 'budget:budget'
+        ? { ok: true, info: { actorId: 'reader', capability: 'observe', allowed: true } }
+        : { ok: false, response: { status: 'error', error: { code: 'FORBIDDEN' } } },
+    );
+    evaluate.mockResolvedValue({ allowable: false });
+    expect(
+      (
+        await handler({
+          query: { categoryId: 'food', amount: '2000' },
+          context: { auth: { authenticated: true, actorId: 'reader' } },
+        })
+      ).status,
+    ).toBe('ok');
   });
 });

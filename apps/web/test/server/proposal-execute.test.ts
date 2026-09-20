@@ -89,6 +89,7 @@ vi.mock('../../server/utils/workflow-store', async (importOriginal) => {
 
 // Import must come after mocks
 import handler from '../../server/api/proposal/[id]/execute.post';
+import { requireAuthorization, errorEnvelope } from '../../server/utils/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -101,6 +102,7 @@ const TEST_PAYLOAD_HASH = 'b1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c
 function mockEvent(): Record<string, unknown> {
   return {
     context: {
+      auth: { authenticated: true, user: { id: 'test-actor' } },
       params: { id: TEST_PROPOSAL_ID },
       runtimeConfig: {},
     },
@@ -227,6 +229,18 @@ describe('proposal-execute — bypass elimination', () => {
 
     // Native protocol available by default
     mockNativeProtocolFactory.mockResolvedValue(mockRustProtocol());
+  });
+
+  it('allows a rule executor scoped to the stored proposal budget', async () => {
+    vi.mocked(requireAuthorization).mockImplementationOnce(async (_event, capability, scope) => {
+      if (capability === 'rule:execute' && scope === 'budget:budget_main') {
+        return { ok: true, info: { actorId: 'test-actor', capability, allowed: true } };
+      }
+      return { ok: false, response: errorEnvelope('FORBIDDEN', 'Not authorized.', null) };
+    });
+    const response = await handler(mockEvent());
+    expect(response).toEqual(expect.objectContaining({ ok: true }));
+    expect(mockCreateRule).toHaveBeenCalledTimes(1);
   });
 
   // -----------------------------------------------------------------------

@@ -240,8 +240,13 @@ export default defineEventHandler(async (event) => {
     const proposal = await wf.store.createProposal({
       operation: 'create_rule',
       budgetId,
-      transactionId: '__rule__',
-      categoryId,
+      payload: {
+        kind: 'create_rule',
+        transactionId: null,
+        categoryId,
+        rule: normalizedRule as unknown as Record<string, unknown>,
+      },
+
       payloadHash,
       policyVersion: '1.0',
       preconditions: JSON.stringify(preconditions),

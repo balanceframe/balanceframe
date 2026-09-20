@@ -1,7 +1,7 @@
 # Phase 8.7 — Account-Aware Spendability and Liquidity Routing
 
 **Depends on:** Phase 8 budget intelligence, Phase 8.5 web intelligence, Phase 8.8 canonical financial snapshot contract, and Phase 7 governance  
-**Status:** Post-MVP
+**Status:** Implemented
 
 ## Objective
 

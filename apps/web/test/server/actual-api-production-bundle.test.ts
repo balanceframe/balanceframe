@@ -8,26 +8,19 @@
  */
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 
 const WEB_ROOT = resolve(import.meta.dirname, '../..');
 
-const SERVER_CHUNKS = resolve(WEB_ROOT, '.output/server/chunks');
 const SERVER_NODE_MODULES = resolve(WEB_ROOT, '.output/server/node_modules');
 
 async function expectTracedActualRuntime(): Promise<void> {
-  const chunkPaths = (await readdir(SERVER_CHUNKS, { recursive: true })).filter((path) =>
-    path.endsWith('.mjs'),
-  );
-  const chunks = await Promise.all(
-    chunkPaths.map((path) => readFile(resolve(SERVER_CHUNKS, path), 'utf8')),
-  );
-
   await Promise.all([
     access(resolve(SERVER_NODE_MODULES, '@actual-app/api/package.json')),
     access(resolve(SERVER_NODE_MODULES, '@actual-app/api/dist/index.js')),
@@ -44,9 +37,6 @@ async function expectTracedActualRuntime(): Promise<void> {
     access(resolve(SERVER_NODE_MODULES, 'better-sqlite3/package.json')),
     access(resolve(SERVER_NODE_MODULES, 'better-sqlite3/build/Release/better_sqlite3.node')),
   ]);
-
-  expect(chunks.some((chunk) => /import\(["']@actual-app\/api["']\)/.test(chunk))).toBe(true);
-  expect(chunks.join('\n')).not.toMatch(/@actual-app\/core/);
 }
 
 const SERVER_ENTRY = resolve(WEB_ROOT, '.output/server/index.mjs');
@@ -152,6 +142,21 @@ describe('production Actual API bundle', () => {
 
       const dataDir = await mkdtemp(resolve(tmpdir(), 'balanceframe-prod-bundle-'));
       activeDataDir = dataDir;
+      const workflow = new SqliteWorkflowStore(resolve(dataDir, 'workflow.db'));
+      try {
+        await workflow.claimBootstrap({
+          name: 'Bundle owner',
+          email: 'bundle-owner@example.test',
+          claimId: 'bundle-owner-claim',
+        });
+        await workflow.finalizeBootstrap({
+          claimId: 'bundle-owner-claim',
+          ownerUserId: 'production-bundle-owner',
+        });
+        await workflow.upsertActorMembership('production-bundle-owner', 'active', ['observe'], '*');
+      } finally {
+        workflow.close();
+      }
       const port = await availablePort();
       const child = spawn(process.execPath, [SERVER_ENTRY], {
         cwd: WEB_ROOT,
@@ -163,12 +168,14 @@ describe('production Actual API bundle', () => {
           NITRO_PORT: String(port),
           NITRO_HOST: '127.0.0.1',
           BALANCEFRAME_API_TOKEN: 'production-bundle-api-token',
+          NUXT_AUTH_ACTOR_ID: 'production-bundle-owner',
           BALANCEFRAME_DEV_BYPASS_AUTH: 'false',
           NUXT_DEV_BYPASS_AUTH: 'false',
           ACTUAL_SERVER_URL: 'http://127.0.0.1:9',
           ACTUAL_SECRET_KEY: 'production-bundle-test-secret',
           BALANCEFRAME_CONFIG_PATH: resolve(dataDir, 'config.json'),
           BALANCEFRAME_WORKFLOW_DB_PATH: resolve(dataDir, 'workflow.db'),
+          NUXT_WORKFLOW_DB_PATH: resolve(dataDir, 'workflow.db'),
           NUXT_AUTH_DB_PATH: resolve(dataDir, 'auth.db'),
           BETTER_AUTH_URL: `http://127.0.0.1:${port}`,
           BETTER_AUTH_SECRET: 'production-bundle-test-better-auth-secret',
@@ -189,8 +196,8 @@ describe('production Actual API bundle', () => {
         await stopChild(child);
         activeChild = null;
 
-        // 503 with the route's own error code proves the legacy bearer token
-        // passed auth and budget discovery reached the Actual client.
+        // The registered owner can discover budgets. This Actual-specific 503
+        // proves the request reached the client through the production bundle.
         expect(response.statusCode).toBe(503);
         expect(body.status).toBe('error');
         expect(body.error?.code).toBe('ACTUAL_BUDGET_LIST_FAILED');

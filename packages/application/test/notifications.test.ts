@@ -1202,24 +1202,6 @@ describe('NotificationRuntime', () => {
 
       expect(items).toHaveLength(0);
     });
-
-    it('passes filter options to the store', async () => {
-      store.listOutboxRecords.mockResolvedValue([]);
-
-      await runtime.listOutbox(TEST_ACTOR_A, {
-        status: 'delivered',
-        channelType: 'in_app',
-        limit: 10,
-        offset: 5,
-      });
-
-      expect(store.listOutboxRecords).toHaveBeenCalledWith({
-        status: 'delivered',
-        channelType: 'in_app',
-        limit: 10,
-        offset: 5,
-      });
-    });
   });
 
   // -----------------------------------------------------------------------

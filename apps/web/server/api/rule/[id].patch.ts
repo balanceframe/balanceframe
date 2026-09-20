@@ -11,6 +11,7 @@
  */
 
 import { readBody, setResponseStatus } from 'h3';
+import { z } from 'zod';
 import type { LedgerHandle, RuleOperationResult, RuleShowResult } from '../../utils/rule-types';
 import { createMutationConnectionManager } from '../../utils/mutation-executor';
 import {
@@ -22,9 +23,11 @@ import {
   sanitizeError,
 } from '../../utils/workflow-store';
 
+const BodySchema = z.record(z.string(), z.unknown());
+
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-  const authCheck = await requireAuthorization(event, 'rule.execute');
+  const authCheck = await requireAuthorization(event, 'rule:execute');
   if (!authCheck.ok) return authCheck.response;
   const authInfo = authCheck.info;
 
@@ -42,12 +45,12 @@ export default defineEventHandler(async (event) => {
 
   let body: Record<string, unknown>;
   try {
-    body = await readBody(event);
+    body = BodySchema.parse(await readBody<unknown>(event));
   } catch {
     setResponseStatus(event, 400);
     return errorEnvelope(
       'INVALID_BODY',
-      'Request body must be valid JSON.',
+      'Request body must be a JSON object.',
       authInfo,
       false,
       requestId,

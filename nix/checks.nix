@@ -46,10 +46,7 @@ let
         buildInputs = tooling.buildInputs;
       }
       ''
-        for tool in \
-          rustc cargo rustfmt cargo-clippy rust-analyzer \
-          cargo-nextest cargo-audit cargo-deny \
-          sqlite3 git jq python3 nixfmt expect actual-server just; do
+        for tool in ${pkgs.lib.escapeShellArgs tooling.commands}; do
           path="$(command -v "$tool" 2>/dev/null)" || {
             echo "missing command: $tool" >&2
             exit 1

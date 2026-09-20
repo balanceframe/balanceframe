@@ -144,8 +144,12 @@ export function createDefaultExecutorFactory(
 
             // Build proposal content hash
             const payloadContent = {
-              transactionId: item.transactionId,
-              categoryId: input.categoryId ?? item.categoryId,
+              payload: {
+                kind: 'set_category',
+                transactionId: item.transactionId,
+                categoryId: input.categoryId ?? item.categoryId,
+              },
+
               budgetId: item.budgetId,
               operation: 'set_category',
             };
@@ -162,8 +166,12 @@ export function createDefaultExecutorFactory(
             const proposal = await store.createProposal({
               operation: 'set_category',
               budgetId: item.budgetId,
-              transactionId: item.transactionId,
-              categoryId: input.categoryId ?? item.categoryId,
+              payload: {
+                kind: 'set_category',
+                transactionId: item.transactionId,
+                categoryId: input.categoryId ?? item.categoryId,
+              },
+
               payloadHash,
               policyVersion: '1.0',
               preconditions,

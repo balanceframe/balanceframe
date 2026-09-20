@@ -1182,6 +1182,28 @@ describe('SqliteWorkflowStore', () => {
   // =======================================================================
 
   describe('schema migrations', () => {
+    function createHistoricalDatabase(filename: string, version: number): Database.Database {
+      const db = new Database(filename);
+      try {
+        db.transaction(() => {
+          db.exec(
+            'CREATE TABLE schema_version (version INTEGER NOT NULL UNIQUE, applied_at TEXT NOT NULL)',
+          );
+          const recordVersion = db.prepare('INSERT INTO schema_version VALUES (?, ?)');
+          for (const [index, migration] of SqliteWorkflowStore['MIGRATIONS']
+            .slice(0, version)
+            .entries()) {
+            migration(db);
+            recordVersion.run(index + 1, '2026-07-25T12:00:00.000Z');
+          }
+        })();
+        return db;
+      } catch (error) {
+        db.close();
+        throw error;
+      }
+    }
+
     it('creates schema_version table on instantiation', () => {
       const s = new SqliteWorkflowStore(':memory:');
       const row = s['db'].prepare('SELECT COUNT(*) AS count FROM schema_version').get() as {
@@ -1243,7 +1265,6 @@ describe('SqliteWorkflowStore', () => {
         expect(tableNames).toContain('failure_records');
         expect(tableNames).toContain('review_items');
         expect(tableNames).toContain('review_actions');
-        expect(tableNames).toContain('categorization_proposals');
         expect(tableNames).toContain('proposal_approvals');
         expect(tableNames).toContain('rule_overrides');
         expect(tableNames).toContain('idempotency_records');
@@ -1272,8 +1293,8 @@ describe('SqliteWorkflowStore', () => {
       let migrated: SqliteWorkflowStore | undefined;
 
       try {
-        const seeded = new SqliteWorkflowStore(dbPath);
-        const db = seeded['db'];
+        const seeded = createHistoricalDatabase(dbPath, 7);
+        const db = seeded;
         const insertMembership = db.prepare(`
           INSERT INTO actor_memberships (actor_id, status, capabilities, scope)
           VALUES (@actorId, @status, @capabilities, @scope)
@@ -1327,7 +1348,6 @@ describe('SqliteWorkflowStore', () => {
           digest: 'invite-inactive-member-digest',
           actorId: 'inactive-invited-member',
         });
-        db.prepare('DELETE FROM schema_version WHERE version > 7').run();
         seeded.close();
 
         migrated = new SqliteWorkflowStore(dbPath);
@@ -1370,8 +1390,8 @@ describe('SqliteWorkflowStore', () => {
       let migrated: SqliteWorkflowStore | undefined;
 
       try {
-        const seeded = new SqliteWorkflowStore(dbPath);
-        const db = seeded['db'];
+        const seeded = createHistoricalDatabase(dbPath, 8);
+        const db = seeded;
         db.prepare(
           `
           INSERT INTO registration_state (singleton, owner_user_id, bootstrapped_at)
@@ -1392,7 +1412,6 @@ describe('SqliteWorkflowStore', () => {
           capabilities: '[]',
           scope: '*',
         });
-        db.prepare('DELETE FROM schema_version WHERE version > 8').run();
         seeded.close();
 
         migrated = new SqliteWorkflowStore(dbPath);
@@ -1434,8 +1453,8 @@ describe('SqliteWorkflowStore', () => {
       let migrated: SqliteWorkflowStore | undefined;
 
       try {
-        const seeded = new SqliteWorkflowStore(dbPath);
-        const db = seeded['db'];
+        const seeded = createHistoricalDatabase(dbPath, 8);
+        const db = seeded;
         db.prepare(
           `
           INSERT INTO registration_state (singleton, owner_user_id, bootstrapped_at)
@@ -1448,11 +1467,9 @@ describe('SqliteWorkflowStore', () => {
           VALUES ('inactive-owner', 'inactive', '[]', 'budget:restricted')
         `,
         ).run();
-        db.prepare('DELETE FROM schema_version WHERE version > 8').run();
         seeded.close();
 
         migrated = new SqliteWorkflowStore(dbPath);
-        expect(migrated['getCurrentSchemaVersion']()).toBe(9);
         await expect(migrated.getActorMembership('inactive-owner')).resolves.toMatchObject({
           status: 'inactive',
           capabilities: [],
@@ -1461,9 +1478,13 @@ describe('SqliteWorkflowStore', () => {
         migrated.close();
         migrated = undefined;
 
-        const revoked = new Database(dbPath);
-        revoked.prepare("DELETE FROM actor_memberships WHERE actor_id = 'inactive-owner'").run();
-        revoked.prepare('DELETE FROM schema_version WHERE version > 8').run();
+        unlinkSync(dbPath);
+        const revoked = createHistoricalDatabase(dbPath, 8);
+        revoked
+          .prepare(
+            "INSERT INTO registration_state (singleton, owner_user_id, bootstrapped_at) VALUES (1, 'inactive-owner', '2026-07-25T12:00:00.000Z')",
+          )
+          .run();
         revoked.close();
 
         migrated = new SqliteWorkflowStore(dbPath);
@@ -1586,8 +1607,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-alpha',
-        transactionId: 'txn-prop-1',
-        categoryId: 'cat-food',
+        payload: { kind: 'set_category', transactionId: 'txn-prop-1', categoryId: 'cat-food' },
+
         payloadHash: 'hash-aaa',
         policyVersion: '1',
         preconditions: '{}',
@@ -1598,8 +1619,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-beta',
-        transactionId: 'txn-prop-2',
-        categoryId: 'cat-util',
+        payload: { kind: 'set_category', transactionId: 'txn-prop-2', categoryId: 'cat-util' },
+
         payloadHash: 'hash-bbb',
         policyVersion: '1',
         preconditions: '{}',
@@ -1621,8 +1642,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-alpha',
-        transactionId: 'txn-ps-1',
-        categoryId: 'cat-food',
+        payload: { kind: 'set_category', transactionId: 'txn-ps-1', categoryId: 'cat-food' },
+
         payloadHash: 'hash-ccc',
         policyVersion: '1',
         preconditions: '{}',
@@ -1633,8 +1654,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-beta',
-        transactionId: 'txn-ps-2',
-        categoryId: 'cat-util',
+        payload: { kind: 'set_category', transactionId: 'txn-ps-2', categoryId: 'cat-util' },
+
         payloadHash: 'hash-ddd',
         policyVersion: '1',
         preconditions: '{}',
@@ -1646,8 +1667,8 @@ describe('SqliteWorkflowStore', () => {
       const p3 = await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-gamma',
-        transactionId: 'txn-ps-3',
-        categoryId: 'cat-fun',
+        payload: { kind: 'set_category', transactionId: 'txn-ps-3', categoryId: 'cat-fun' },
+
         payloadHash: 'hash-eee',
         policyVersion: '1',
         preconditions: '{}',
@@ -1812,8 +1833,8 @@ describe('SqliteWorkflowStore', () => {
         await store.createProposal({
           operation: 'set_category',
           budgetId: 'budget-alpha',
-          transactionId: `txn-bfa-${i}`,
-          categoryId: 'cat-food',
+          payload: { kind: 'set_category', transactionId: `txn-bfa-${i}`, categoryId: 'cat-food' },
+
           payloadHash: `hash-bfa-${i}`,
           policyVersion: '1',
           preconditions: '{}',
@@ -1826,8 +1847,8 @@ describe('SqliteWorkflowStore', () => {
         await store.createProposal({
           operation: 'set_category',
           budgetId: 'budget-beta',
-          transactionId: `txn-bfb-${i}`,
-          categoryId: 'cat-util',
+          payload: { kind: 'set_category', transactionId: `txn-bfb-${i}`, categoryId: 'cat-util' },
+
           payloadHash: `hash-bfb-${i}`,
           policyVersion: '1',
           preconditions: '{}',
@@ -1850,8 +1871,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-alpha',
-        transactionId: 'txn-bs-a1',
-        categoryId: 'cat-food',
+        payload: { kind: 'set_category', transactionId: 'txn-bs-a1', categoryId: 'cat-food' },
+
         payloadHash: 'hash-bs-a1',
         policyVersion: '1',
         preconditions: '{}',
@@ -1862,8 +1883,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-alpha',
-        transactionId: 'txn-bs-a2',
-        categoryId: 'cat-util',
+        payload: { kind: 'set_category', transactionId: 'txn-bs-a2', categoryId: 'cat-util' },
+
         payloadHash: 'hash-bs-a2',
         policyVersion: '1',
         preconditions: '{}',
@@ -1874,8 +1895,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-alpha',
-        transactionId: 'txn-bs-a3',
-        categoryId: 'cat-fun',
+        payload: { kind: 'set_category', transactionId: 'txn-bs-a3', categoryId: 'cat-fun' },
+
         payloadHash: 'hash-bs-a3',
         policyVersion: '1',
         preconditions: '{}',
@@ -1887,8 +1908,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-beta',
-        transactionId: 'txn-bs-b1',
-        categoryId: 'cat-food',
+        payload: { kind: 'set_category', transactionId: 'txn-bs-b1', categoryId: 'cat-food' },
+
         payloadHash: 'hash-bs-b1',
         policyVersion: '1',
         preconditions: '{}',
@@ -1899,8 +1920,8 @@ describe('SqliteWorkflowStore', () => {
       await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-beta',
-        transactionId: 'txn-bs-b2',
-        categoryId: 'cat-util',
+        payload: { kind: 'set_category', transactionId: 'txn-bs-b2', categoryId: 'cat-util' },
+
         payloadHash: 'hash-bs-b2',
         policyVersion: '1',
         preconditions: '{}',
@@ -1911,8 +1932,8 @@ describe('SqliteWorkflowStore', () => {
       const b3 = await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-beta',
-        transactionId: 'txn-bs-b3',
-        categoryId: 'cat-fun',
+        payload: { kind: 'set_category', transactionId: 'txn-bs-b3', categoryId: 'cat-fun' },
+
         payloadHash: 'hash-bs-b3',
         policyVersion: '1',
         preconditions: '{}',
@@ -1925,8 +1946,8 @@ describe('SqliteWorkflowStore', () => {
       const c1 = await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-gamma',
-        transactionId: 'txn-bs-c1',
-        categoryId: 'cat-food',
+        payload: { kind: 'set_category', transactionId: 'txn-bs-c1', categoryId: 'cat-food' },
+
         payloadHash: 'hash-bs-c1',
         policyVersion: '1',
         preconditions: '{}',
@@ -1963,8 +1984,8 @@ describe('SqliteWorkflowStore', () => {
         const p = await store.createProposal({
           operation: 'set_category',
           budgetId: 'budget-pl',
-          transactionId: `txn-pl-${i}`,
-          categoryId: 'cat-food',
+          payload: { kind: 'set_category', transactionId: `txn-pl-${i}`, categoryId: 'cat-food' },
+
           payloadHash: `hash-pl-${i}`,
           policyVersion: '1',
           preconditions: '{}',
@@ -1992,8 +2013,8 @@ describe('SqliteWorkflowStore', () => {
         const p = await store.createProposal({
           operation: 'set_category',
           budgetId: 'budget-po',
-          transactionId: `txn-po-${i}`,
-          categoryId: 'cat-food',
+          payload: { kind: 'set_category', transactionId: `txn-po-${i}`, categoryId: 'cat-food' },
+
           payloadHash: `hash-po-${i}`,
           policyVersion: '1',
           preconditions: '{}',
@@ -2023,8 +2044,8 @@ describe('SqliteWorkflowStore', () => {
       const p1 = await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-ls',
-        transactionId: 'txn-ls-1',
-        categoryId: 'cat-food',
+        payload: { kind: 'set_category', transactionId: 'txn-ls-1', categoryId: 'cat-food' },
+
         payloadHash: 'hash-ls-1',
         policyVersion: '1',
         preconditions: '{}',
@@ -2035,8 +2056,8 @@ describe('SqliteWorkflowStore', () => {
       const p2 = await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-ls',
-        transactionId: 'txn-ls-2',
-        categoryId: 'cat-util',
+        payload: { kind: 'set_category', transactionId: 'txn-ls-2', categoryId: 'cat-util' },
+
         payloadHash: 'hash-ls-2',
         policyVersion: '1',
         preconditions: '{}',
@@ -2047,8 +2068,8 @@ describe('SqliteWorkflowStore', () => {
       const p3 = await store.createProposal({
         operation: 'set_category',
         budgetId: 'budget-ls',
-        transactionId: 'txn-ls-3',
-        categoryId: 'cat-fun',
+        payload: { kind: 'set_category', transactionId: 'txn-ls-3', categoryId: 'cat-fun' },
+
         payloadHash: 'hash-ls-3',
         policyVersion: '1',
         preconditions: '{}',

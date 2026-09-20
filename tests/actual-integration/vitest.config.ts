@@ -2,7 +2,6 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 
-
 loadEnv({ path: resolve(__dirname, '.env.test') });
 
 export default defineConfig({
@@ -25,8 +24,9 @@ export default defineConfig({
     bail: 1,
     coverage: {
       provider: 'v8',
+      all: true,
       reporter: ['text-summary', 'lcov', 'json'],
-      reportsDirectory: '../../../coverage/js/actual-integration',
+      reportsDirectory: '../../coverage/js/actual-integration',
       include: ['src/**'],
       exclude: [
         'test/**',
@@ -64,14 +64,8 @@ export default defineConfig({
   resolve: {
     alias: {
       // Allow tests to import from the monorepo workspace packages.
-      '@balanceframe/actual-adapter': resolve(
-        __dirname,
-        '../../packages/actual-adapter/src',
-      ),
-      '@balanceframe/workflow-store': resolve(
-        __dirname,
-        '../../packages/workflow-store/src',
-      ),
+      '@balanceframe/actual-adapter': resolve(__dirname, '../../packages/actual-adapter/src'),
+      '@balanceframe/workflow-store': resolve(__dirname, '../../packages/workflow-store/src'),
       '@balanceframe/protocol-generated': resolve(
         __dirname,
         '../../packages/protocol-generated/src',

@@ -229,6 +229,12 @@
         "categoryBudget": { "$ref": "#/$defs/Money" },
         "categorySpent": { "$ref": "#/$defs/Money" },
         "categoryRemaining": { "$ref": "#/$defs/Money" },
+        "accountAware": {
+          "anyOf": [
+            { "$ref": "account-aware-liquidity-v1.json#/$defs/AccountAwareSpendabilityResult" },
+            { "type": "null" }
+          ]
+        },
         "projectedBalance": {
           "anyOf": [{ "$ref": "#/$defs/Money" }, { "type": "null" }]
         }

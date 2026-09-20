@@ -1,12 +1,8 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
 import { createDefaultConnectionManager } from '@balanceframe/application';
 import { getReviewCategoryCatalog } from '../../utils/review-category-catalog';
-import {
-  requireAuthorization,
-  errorEnvelope,
-  okEnvelope,
-  sanitizeError,
-} from '../../utils/workflow-store';
+import { errorEnvelope, okEnvelope, sanitizeError } from '../../utils/workflow-store';
 
 /** Return whether an unknown failure carries the requested application error code. */
 function errorHasCode(error: unknown, code: string): boolean {
@@ -16,7 +12,7 @@ function errorHasCode(error: unknown, code: string): boolean {
 /** List all current categories from the selected Actual budget for review correction. */
 export default defineEventHandler(async (event) => {
   setHeader(event, 'Cache-Control', 'private, no-store');
-  const authCheck = await requireAuthorization(event, 'observe');
+  const authCheck = await requireFullRead(event);
   if (!authCheck.ok) return authCheck.response;
   const auth = authCheck.info;
   const requestId = crypto.randomUUID();
@@ -37,11 +33,13 @@ export default defineEventHandler(async (event) => {
       );
     }
 
+    if (config.budgetId !== authCheck.budgetId) throw new Error('Selected budget changed');
     const categories = await getReviewCategoryCatalog(config, () =>
-      manager.withConnection(async (connected) => ({
-        config: connected.config,
-        synchronization: connected.synchronization,
-      })),
+      manager.withConnection(async (connected) => {
+        if (connected.config.budgetId !== authCheck.budgetId)
+          throw new Error('Selected budget changed');
+        return { config: connected.config, synchronization: connected.synchronization };
+      }),
     );
     return okEnvelope({ categories }, auth, requestId);
   } catch (error) {

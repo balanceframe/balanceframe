@@ -30,7 +30,7 @@ import {
   type RustRuleMutationProtocol,
 } from '../src/rule-mutation';
 import type {
-  CategorizationProposal,
+  ActionProposal,
   ProposalApproval,
   IdempotencyRecord,
   WorkflowStore,
@@ -105,13 +105,23 @@ function mockRule(overrides: Partial<Rule> = {}): Rule {
   };
 }
 
-function mockProposal(overrides: Partial<CategorizationProposal> = {}): CategorizationProposal {
+function mockProposal(
+  overrides: Partial<ActionProposal> = {},
+): Extract<ActionProposal, { operation: 'create_rule' }> {
   return {
     id: TEST_PROPOSAL_ID,
+    version: 1,
+    state: {
+      phase: 'proposed',
+      sourceObserved: false,
+      destinationObserved: false,
+      reconciled: false,
+      outcome: null,
+    },
     operation: 'create_rule',
     budgetId: TEST_BUDGET_ID,
-    transactionId: '__rule__',
-    categoryId: '__rule__',
+    payload: { kind: 'create_rule', transactionId: null, categoryId: '__rule__', rule: {} },
+
     payloadHash: TEST_PAYLOAD_HASH,
     policyVersion: '1.0',
     preconditions: JSON.stringify({
@@ -127,7 +137,7 @@ function mockProposal(overrides: Partial<CategorizationProposal> = {}): Categori
     supersededAt: null,
     createdAt: '2026-07-20T10:00:00Z',
     ...overrides,
-  };
+  } as Extract<ActionProposal, { operation: 'create_rule' }>;
 }
 
 function mockApproval(overrides: Partial<ProposalApproval> = {}): ProposalApproval {

@@ -1,0 +1,279 @@
+{
+  "sourceCoverageComplete": true,
+  "snapshotId": "snapshot-1",
+  "contentHash": "composite-hash-1",
+  "evaluatedAt": "2026-09-06T10:00:00Z",
+  "horizon": {
+    "startsAt": "2026-09-06T00:00:00Z",
+    "endsAt": "2026-10-01T00:00:00Z"
+  },
+  "facts": {
+    "version": "1",
+    "ledgerContentHash": "ledger-hash-1",
+    "asOfMonth": "2026-09",
+    "categories": [
+      {
+        "categoryId": "food",
+        "cashBucketId": "food",
+        "asOfMonth": "2026-09",
+        "kind": "ordinary",
+        "availability": {
+          "minorUnits": "2000",
+          "currency": "USD"
+        },
+        "evidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "periodKind": "current"
+      }
+    ],
+    "accounts": [
+      {
+        "accountId": "checking",
+        "currency": "USD",
+        "kind": "cash",
+        "onBudget": true,
+        "closed": false,
+        "owned": true,
+        "recordedBalance": {
+          "minorUnits": "9000",
+          "currency": "USD"
+        },
+        "balanceEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "activityEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "scheduleEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "unsettledFlows": [],
+        "holds": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "obligations": [],
+        "credit": null,
+        "ambiguityReasons": [],
+        "currencyEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "kindEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "ownershipEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "holdsEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "baselineTransactionIds": [],
+        "freshnessEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        }
+      },
+      {
+        "accountId": "savings",
+        "currency": "USD",
+        "kind": "cash",
+        "onBudget": true,
+        "closed": false,
+        "owned": true,
+        "recordedBalance": {
+          "minorUnits": "20000",
+          "currency": "USD"
+        },
+        "balanceEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "activityEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "scheduleEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "unsettledFlows": [],
+        "holds": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "obligations": [],
+        "credit": null,
+        "ambiguityReasons": [],
+        "currencyEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "kindEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "ownershipEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "holdsEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        },
+        "baselineTransactionIds": [],
+        "freshnessEvidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        }
+      }
+    ],
+    "schedules": []
+  },
+  "liquidityPolicy": {
+    "version": "policy-1",
+    "policyHash": "policy-hash-1",
+    "expiresAt": "2026-09-07T00:00:00Z",
+    "accounts": [
+      {
+        "accountId": "checking",
+        "role": "daily_spending",
+        "protectedBuffer": {
+          "minorUnits": "10000",
+          "currency": "USD"
+        },
+        "paymentEligible": true,
+        "sourceEligible": true,
+        "backingEligible": true,
+        "eligibleCategoryIds": [],
+        "restrictedCashBucketIds": [],
+        "automationAllowed": false,
+        "resourceScope": "checking"
+      },
+      {
+        "accountId": "savings",
+        "role": "daily_spending",
+        "protectedBuffer": {
+          "minorUnits": "0",
+          "currency": "USD"
+        },
+        "paymentEligible": false,
+        "sourceEligible": true,
+        "backingEligible": true,
+        "eligibleCategoryIds": [],
+        "restrictedCashBucketIds": [],
+        "automationAllowed": false,
+        "resourceScope": "savings"
+      }
+    ],
+    "transferRoutes": [
+      {
+        "id": "savings-checking",
+        "sourceAccountId": "savings",
+        "destinationAccountId": "checking",
+        "providerArrivalAt": "2026-09-06T11:00:00Z",
+        "calendarMode": null,
+        "delayDays": 0,
+        "utcOffsetMinutes": null,
+        "cutoffMinute": null,
+        "weekendsAvailable": null,
+        "holidaysComplete": false,
+        "holidays": [],
+        "evidence": {
+          "state": "known",
+          "source": "user_attested",
+          "observedAt": "2026-09-06T09:00:00Z",
+          "expiresAt": "2026-09-07T09:00:00Z",
+          "reasons": []
+        }
+      }
+    ]
+  },
+  "claimSet": {
+    "revision": "claims-1",
+    "bundles": []
+  },
+  "priorAllocation": null,
+  "scenario": {
+    "kind": "purchases",
+    "items": [
+      {
+        "id": "purchase-1",
+        "categoryId": "food",
+        "amount": {
+          "minorUnits": "2000",
+          "currency": "USD"
+        },
+        "purchaseAt": "2026-09-06T12:00:00Z",
+        "requiredBy": "2026-09-06T12:00:00Z",
+        "routeSelection": {
+          "explicitAccountId": "checking",
+          "sessionAccountId": null,
+          "approvedPreference": null,
+          "historicalRoute": null
+        }
+      }
+    ]
+  },
+  "validUntil": "2026-09-06T18:00:00Z",
+  "maxBudgetSnapshotAgeMinutes": 15
+}

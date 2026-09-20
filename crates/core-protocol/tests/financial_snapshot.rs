@@ -129,6 +129,7 @@ fn observation(
 
 fn financial_snapshot() -> FinancialSnapshot {
     FinancialSnapshot {
+        liquidity: None,
         contract_version: "1.0".into(),
         snapshot_id: "snapshot-supplied-0001".into(),
         content_hash: "sha256:content-supplied-0001".into(),

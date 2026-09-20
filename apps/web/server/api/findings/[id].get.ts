@@ -8,12 +8,14 @@
  */
 
 import { defineEventHandler, getRouterParam, setResponseStatus } from 'h3';
+import { canReadFinancialFinding } from '../../utils/liquidity-service';
 import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
   buildAuthorizationInfo,
   sanitizeError,
+  getActorId,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
@@ -40,7 +42,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const finding = await wf.store.getFinding(findingId);
-    if (!finding) {
+    if (!finding || !(await canReadFinancialFinding(wf.store, getActorId(event), finding))) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'FINDING_NOT_FOUND',

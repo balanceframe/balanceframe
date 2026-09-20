@@ -10,6 +10,7 @@
 import { defineEventHandler, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
+  getActorId,
   okEnvelope,
   errorEnvelope,
   buildAuthorizationInfo,
@@ -18,9 +19,12 @@ import {
 import {
   NotificationRuntime,
   InAppChannelAdapter,
+  createDefaultConnectionManager,
   type NotificationPolicy,
 } from '@balanceframe/application';
 import type { WorkflowStore } from '@balanceframe/workflow-store';
+import { canReadFinancialNotification } from '../../utils/liquidity-service';
+import { hasLegacyFullRead } from '../../utils/legacy-financial-read';
 
 /**
  * Build a NotificationRuntime from the active workflow store.
@@ -93,6 +97,12 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 503);
       return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
     }
+    const actorId = getActorId(event);
+    const manager = createDefaultConnectionManager({
+      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+    });
+    const config = await manager.loadConfig();
+    if (!config?.budgetId) throw new Error('Selected budget unavailable');
 
     // Build runtime per-request from the active store (no singleton)
     const rt = buildRuntime(wf.store, 'default');
@@ -106,11 +116,20 @@ export default defineEventHandler(async (event) => {
       // Use default version when store lookup fails
     }
 
-    const status = await rt.getStatus();
+    const status = await rt.getStatus({
+      actorId,
+      budgetId: config.budgetId,
+      canReadEvent: (notification) =>
+        notification.classification === 'transfer_needs_attention'
+          ? canReadFinancialNotification(wf.store, actorId, notification)
+          : hasLegacyFullRead(wf.store, actorId, notification.budgetId),
+    });
 
     // Count recipients from persisted policy
     const policy = await rt.loadPersistedPolicy('default');
-    const recipientCount = policy.recipients.length;
+    const recipientCount = policy.recipients.filter(
+      (recipient) => recipient.actorId === actorId,
+    ).length;
 
     return okEnvelope(
       {

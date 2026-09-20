@@ -80,10 +80,7 @@
   "$defs": {
     "Money": {
       "type": "object",
-      "required": [
-        "minorUnits",
-        "currency"
-      ],
+      "required": ["minorUnits", "currency"],
       "additionalProperties": false,
       "properties": {
         "minorUnits": {
@@ -141,10 +138,7 @@
           "$ref": "#/$defs/Money"
         },
         "mtid": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       }
     },
@@ -180,28 +174,16 @@
           "type": "string"
         },
         "payeeId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "payeeName": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "categoryId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "categoryName": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "amount": {
           "$ref": "#/$defs/Money"
@@ -213,22 +195,13 @@
           "type": "boolean"
         },
         "importedId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "importedPayee": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "notes": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "tags": {
           "type": "array",
@@ -237,10 +210,7 @@
           }
         },
         "transferAccountId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "subtransactions": {
           "type": "array",
@@ -252,14 +222,7 @@
     },
     "Category": {
       "type": "object",
-      "required": [
-        "id",
-        "name",
-        "groupName",
-        "isIncome",
-        "mtid",
-        "deleted"
-      ],
+      "required": ["id", "name", "groupName", "isIncome", "mtid", "deleted"],
       "additionalProperties": true,
       "properties": {
         "id": {
@@ -269,19 +232,13 @@
           "type": "string"
         },
         "groupName": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "isIncome": {
           "type": "boolean"
         },
         "mtid": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "deleted": {
           "type": "boolean"
@@ -290,12 +247,7 @@
     },
     "Payee": {
       "type": "object",
-      "required": [
-        "id",
-        "name",
-        "transferAccountId",
-        "mtid"
-      ],
+      "required": ["id", "name", "transferAccountId", "mtid"],
       "additionalProperties": true,
       "properties": {
         "id": {
@@ -305,29 +257,16 @@
           "type": "string"
         },
         "transferAccountId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "mtid": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       }
     },
     "Rule": {
       "type": "object",
-      "required": [
-        "id",
-        "name",
-        "order",
-        "trigger",
-        "actions",
-        "inactive"
-      ],
+      "required": ["id", "name", "order", "trigger", "actions", "inactive"],
       "additionalProperties": true,
       "properties": {
         "id": {
@@ -349,14 +288,7 @@
     },
     "Schedule": {
       "type": "object",
-      "required": [
-        "id",
-        "frequency",
-        "amount",
-        "payeeName",
-        "accountId",
-        "nextExpected"
-      ],
+      "required": ["id", "frequency", "amount", "payeeName", "accountId", "nextExpected"],
       "additionalProperties": true,
       "properties": {
         "id": {
@@ -369,10 +301,7 @@
           "$ref": "#/$defs/Money"
         },
         "payeeName": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "accountId": {
           "type": "string"
@@ -384,13 +313,7 @@
     },
     "BudgetCategory": {
       "type": "object",
-      "required": [
-        "categoryId",
-        "amount",
-        "carryover",
-        "carryoverFromPrevious",
-        "carriesOver"
-      ],
+      "required": ["categoryId", "amount", "carryover", "carryoverFromPrevious", "carriesOver"],
       "additionalProperties": true,
       "properties": {
         "categoryId": {
@@ -412,11 +335,7 @@
     },
     "BudgetMonth": {
       "type": "object",
-      "required": [
-        "id",
-        "month",
-        "categories"
-      ],
+      "required": ["id", "month", "categories"],
       "additionalProperties": true,
       "properties": {
         "id": {
@@ -436,10 +355,7 @@
     },
     "Tag": {
       "type": "object",
-      "required": [
-        "id",
-        "name"
-      ],
+      "required": ["id", "name"],
       "additionalProperties": true,
       "properties": {
         "id": {
@@ -449,13 +365,10 @@
           "type": "string"
         }
       }
-      },
+    },
     "Provenance": {
       "type": "object",
-      "required": [
-        "payloadHash",
-        "createdAt"
-      ],
+      "required": ["payloadHash", "createdAt"],
       "additionalProperties": false,
       "properties": {
         "payloadHash": {
@@ -483,14 +396,7 @@
     },
     "HistoryRecord": {
       "type": "object",
-      "required": [
-        "transactionId",
-        "payeeName",
-        "categoryId",
-        "categoryName",
-        "amount",
-        "date"
-      ],
+      "required": ["transactionId", "payeeName", "categoryId", "categoryName", "amount", "date"],
       "additionalProperties": false,
       "properties": {
         "transactionId": {
@@ -601,10 +507,7 @@
           "type": ["string", "null"]
         },
         "provenance": {
-          "anyOf": [
-            {"$ref": "#/$defs/Provenance"},
-            {"type": "null"}
-          ]
+          "anyOf": [{ "$ref": "#/$defs/Provenance" }, { "type": "null" }]
         },
         "history": {
           "type": "array",
@@ -659,23 +562,20 @@
         "categoryBudget": { "$ref": "#/$defs/Money" },
         "categorySpent": { "$ref": "#/$defs/Money" },
         "categoryRemaining": { "$ref": "#/$defs/Money" },
-        "projectedBalance": {
+        "accountAware": {
           "anyOf": [
-            { "$ref": "#/$defs/Money" },
+            { "$ref": "account-aware-liquidity-v1.json#/$defs/AccountAwareSpendabilityResult" },
             { "type": "null" }
           ]
+        },
+        "projectedBalance": {
+          "anyOf": [{ "$ref": "#/$defs/Money" }, { "type": "null" }]
         }
       }
     },
     "MonthlyProjection": {
       "type": "object",
-      "required": [
-        "month",
-        "projectedIncome",
-        "projectedExpenses",
-        "netChange",
-        "endingBalance"
-      ],
+      "required": ["month", "projectedIncome", "projectedExpenses", "netChange", "endingBalance"],
       "additionalProperties": false,
       "properties": {
         "month": { "type": "string" },
@@ -687,10 +587,7 @@
     },
     "CashFlowProjectionResponse": {
       "type": "object",
-      "required": [
-        "projectionMonths",
-        "monthlyProjections"
-      ],
+      "required": ["projectionMonths", "monthlyProjections"],
       "additionalProperties": false,
       "properties": {
         "projectionMonths": { "type": "integer", "minimum": 0 },
@@ -702,14 +599,7 @@
     },
     "CategoryHealth": {
       "type": "object",
-      "required": [
-        "categoryId",
-        "categoryName",
-        "budgeted",
-        "spent",
-        "remaining",
-        "healthLabel"
-      ],
+      "required": ["categoryId", "categoryName", "budgeted", "spent", "remaining", "healthLabel"],
       "additionalProperties": false,
       "properties": {
         "categoryId": { "type": "string" },
@@ -725,10 +615,7 @@
     },
     "TargetHealthResult": {
       "type": "object",
-      "required": [
-        "categoryHealth",
-        "overallLabel"
-      ],
+      "required": ["categoryHealth", "overallLabel"],
       "additionalProperties": false,
       "properties": {
         "categoryHealth": {
@@ -740,11 +627,7 @@
     },
     "FinancialStateLabel": {
       "type": "object",
-      "required": [
-        "label",
-        "score",
-        "reasonCodes"
-      ],
+      "required": ["label", "score", "reasonCodes"],
       "additionalProperties": false,
       "properties": {
         "label": {

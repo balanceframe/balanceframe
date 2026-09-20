@@ -37,7 +37,7 @@ export type {
   TransitionReviewResult,
   ReviewListOptions,
   ListProposalsOptions,
-  CategorizationProposal,
+  ActionProposal,
   ProposalOperation,
   ProposalApproval,
   IdempotencyClaim,
@@ -46,7 +46,6 @@ export type {
   AuditRecord,
   AuditClassification,
   CreateProposalInput,
-  CreateRuleProposalInput,
   CreateApprovalInput,
   CreateIdempotencyInput,
   AppendAuditInput,
@@ -111,3 +110,5 @@ export type {
   RecipientResolution,
   ListNotificationPoliciesOptions,
 } from './types.js';
+export { LiquidityWorkflow } from './liquidity.js';
+export type * from './liquidity-types.js';

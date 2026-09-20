@@ -1,3 +1,4 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * GET /api/reports/history — get time-ordered report history.
  *
@@ -12,16 +13,27 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   sanitizeError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
   const query = getQuery(event);
 
-  const budgetId = typeof query.budgetId === 'string' ? query.budgetId.trim() : undefined;
+  const budgetId = fullRead.budgetId;
+  if (typeof query.budgetId === 'string' && query.budgetId !== budgetId) {
+    setResponseStatus(event, 403);
+    return errorEnvelope(
+      'FORBIDDEN',
+      'Full financial read is not authorized.',
+      null,
+      false,
+      requestId,
+    );
+  }
   const limit =
     typeof query.limit === 'string' ? Math.min(parseInt(query.limit, 10) || 50, 200) : 50;
   const offset = typeof query.offset === 'string' ? parseInt(query.offset, 10) || 0 : 0;

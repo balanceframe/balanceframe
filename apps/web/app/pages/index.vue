@@ -248,6 +248,7 @@ interface DecisionIssue {
 
 interface AttentionDecisionMetadata {
   classification?: FinancialAttentionClassification;
+  transferId?: string;
   issue?: DecisionIssue;
   scopeLabel?: string;
   snapshotId?: string;
@@ -444,6 +445,7 @@ function attentionFinding(item: AttentionItem) {
     entityType,
     reasonCodes: item.issue ? undefined : [item.code],
     classification: item.classification,
+    transferId: item.transferId,
     status: item.findingStatus,
     issue: item.issue,
     snapshotId: item.snapshotId,

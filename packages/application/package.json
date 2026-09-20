@@ -24,7 +24,8 @@
     "@balanceframe/native": "workspace:*",
     "@balanceframe/actual-adapter": "workspace:*",
     "@balanceframe/workflow-store": "workspace:*",
-    "@balanceframe/protocol-generated": "workspace:*"
+    "@balanceframe/protocol-generated": "workspace:*",
+    "zod": "^3.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

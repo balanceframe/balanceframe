@@ -1,3 +1,4 @@
+import { requireFullRead } from '../../../../utils/legacy-financial-read';
 /**
  * PATCH /api/reports/views/:id/last-used — record last-used timestamp.
  *
@@ -14,12 +15,13 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   sanitizeError,
 } from '../../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
   const viewId = getRouterParam(event, 'id') ?? '';
 
@@ -36,7 +38,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     const existing = await wf.store.getSavedView(viewId);
-    if (!existing) {
+    if (!existing || existing.actorId !== fullRead.info.actorId) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'VIEW_NOT_FOUND',

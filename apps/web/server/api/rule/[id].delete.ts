@@ -24,7 +24,7 @@ import {
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-  const authCheck = await requireAuthorization(event, 'rule.execute');
+  const authCheck = await requireAuthorization(event, 'rule:execute');
   if (!authCheck.ok) return authCheck.response;
   const authInfo = authCheck.info;
 

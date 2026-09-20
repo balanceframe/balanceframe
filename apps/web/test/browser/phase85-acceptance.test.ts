@@ -2,7 +2,6 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { nextTick } from 'vue';
 import { flushPromises, shallowMount } from '@vue/test-utils';
 import IndexPage from '../../app/pages/index.vue';
-import PurchasePage from '../../app/pages/purchase-check.vue';
 import CashFlowPage from '../../app/pages/cash-flow.vue';
 import TargetsPage from '../../app/pages/targets.vue';
 import ReportsPage from '../../app/pages/reports.vue';
@@ -266,9 +265,6 @@ beforeEach(() => {
 });
 
 type WorkflowVm = {
-  categoryId: string;
-  amountStr: string;
-  evaluate: () => Promise<void>;
   project?: () => Promise<void>;
   generate?: () => Promise<void>;
   createView?: () => Promise<void>;
@@ -285,59 +281,6 @@ const mount = async (component: unknown) => {
 describe('Phase 8.5 deterministic browser acceptance workflows', () => {
   it('P8.5-01 overview with uncategorized blockers', async () => {
     expect((await mount(IndexPage)).text()).toMatch(/uncategorized/i);
-  });
-  it('P8.5-02 safe purchase', async () => {
-    const w = await mount(PurchasePage);
-    const vm = vmOf(w);
-    vm.categoryId = 'food';
-    vm.amountStr = '100';
-    fetchMock.mockResolvedValueOnce(
-      envelope({ allowable: true, verdict: 'safe', reasonCodes: [] }),
-    );
-    await vm.evaluate();
-    await flushPromises();
-    expect(w.text()).toMatch(/safe/i);
-  });
-  it('P8.5-03 not-safe purchase', async () => {
-    const w = await mount(PurchasePage);
-    const vm = vmOf(w);
-    vm.categoryId = 'food';
-    vm.amountStr = '100';
-    fetchMock.mockResolvedValueOnce(
-      envelope({ allowable: false, verdict: 'not_safe', reasonCodes: ['over_budget'] }),
-    );
-    await vm.evaluate();
-    await flushPromises();
-    expect(w.text()).toMatch(/not.?safe/i);
-  });
-  it('P8.5-04 safe-with-reallocation proposal with no mutation', async () => {
-    const w = await mount(PurchasePage);
-    const vm = vmOf(w);
-    vm.categoryId = 'food';
-    vm.amountStr = '100';
-    fetchMock.mockResolvedValueOnce(
-      envelope({
-        allowable: true,
-        verdict: 'safe_with_reallocation',
-        proposals: [{ label: 'Move funds' }],
-      }),
-    );
-    await vm.evaluate();
-    await flushPromises();
-    expect(w.text()).toMatch(/reallocation/i);
-    expect(fetchMock.mock.calls.some((c: unknown[]) => fetchCall(c)?.method === 'POST')).toBe(
-      false,
-    );
-  });
-  it('P8.5-05 insufficient purchase data', async () => {
-    const w = await mount(PurchasePage);
-    const vm = vmOf(w);
-    vm.categoryId = 'food';
-    vm.amountStr = '100';
-    fetchMock.mockResolvedValueOnce(envelope({ allowable: false, verdict: 'insufficient_data' }));
-    await vm.evaluate();
-    await flushPromises();
-    expect(w.text()).toMatch(/insufficient.?data/i);
   });
   it('P8.5-06 no schedules and insufficient cash-flow data', async () => {
     expect((await mount(CashFlowPage)).text()).toContain('Insufficient data');

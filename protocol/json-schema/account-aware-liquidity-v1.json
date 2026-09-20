@@ -1,0 +1,2456 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json",
+  "title": "Account-aware liquidity v1",
+  "description": "Immutable normalized Rust liquidity contracts. Money is bounded signed i64 in canonical string minor units.",
+  "$ref": "#/$defs/AccountAwareSpendabilityRequest",
+  "$defs": {
+    "Money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minorUnits", "currency"],
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^(?:0|(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)|-(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-7]|9223372036854775808))$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    },
+    "FactState": {
+      "type": "string",
+      "enum": ["known", "unknown", "unavailable"]
+    },
+    "FactSource": {
+      "type": "string",
+      "enum": ["actual_ledger", "institution_provider", "user_attested", "policy_assumption"]
+    },
+    "LiquidityAccountKind": {
+      "type": "string",
+      "enum": ["cash", "credit", "unknown"]
+    },
+    "AccountRole": {
+      "type": "string",
+      "enum": [
+        "daily_spending",
+        "bill_payment",
+        "reserve",
+        "savings",
+        "restricted",
+        "credit_payment",
+        "cash",
+        "excluded"
+      ]
+    },
+    "LiquidityCategoryKind": {
+      "type": "string",
+      "enum": ["ordinary", "income", "transfer", "reimbursement", "debt", "credit_payment"]
+    },
+    "CategoryPeriodKind": {
+      "type": "string",
+      "enum": ["current", "future"]
+    },
+    "FlowDirection": {
+      "type": "string",
+      "enum": ["inflow", "outflow"]
+    },
+    "CalendarMode": {
+      "type": "string",
+      "enum": ["instant", "calendar_days", "business_days"]
+    },
+    "LiquidityClaimState": {
+      "type": "string",
+      "enum": ["active", "initiated", "cancelled", "expired", "settled"]
+    },
+    "ClaimEffectKind": {
+      "type": "string",
+      "enum": ["category", "account_debit", "destination_hold"]
+    },
+    "BudgetFundingStatus": {
+      "type": "string",
+      "enum": ["funded", "unfunded", "insufficient_data"]
+    },
+    "PaymentLiquidityStatus": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "use_other_account",
+        "transfer_required",
+        "transfer_too_late",
+        "not_liquid",
+        "insufficient_data"
+      ]
+    },
+    "SettlementProvenance": {
+      "type": "string",
+      "enum": ["actual_import", "institution_import", "provider_confirmed", "manual_ledger"]
+    },
+    "FactEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "source", "observedAt", "expiresAt", "reasons"],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/FactState",
+          "description": "Explicit evidence or lifecycle state; unknown is never coerced complete."
+        },
+        "source": {
+          "$ref": "#/$defs/FactSource",
+          "description": "Provenance of the observation; policy assumptions cannot establish a missing fact."
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        }
+      }
+    },
+    "CategoryLiquidityFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "categoryId",
+        "cashBucketId",
+        "asOfMonth",
+        "kind",
+        "periodKind",
+        "availability",
+        "evidence"
+      ],
+      "properties": {
+        "categoryId": {
+          "type": "string",
+          "description": "Stable category resource identifier."
+        },
+        "cashBucketId": {
+          "type": "string",
+          "description": "Disjoint authoritative cash bucket; duplicate buckets are rejected."
+        },
+        "asOfMonth": {
+          "type": "string",
+          "description": "Authoritative YYYY-MM period of the balance.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        },
+        "kind": {
+          "$ref": "#/$defs/LiquidityCategoryKind",
+          "description": "Kind for this normalized liquidity result."
+        },
+        "periodKind": {
+          "$ref": "#/$defs/CategoryPeriodKind",
+          "description": "Period kind for this normalized liquidity result."
+        },
+        "availability": {
+          "$ref": "#/$defs/Money",
+          "description": "Current authoritative balance, or independent future additional assignment."
+        },
+        "evidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Evidence for this normalized liquidity result."
+        }
+      }
+    },
+    "UnsettledFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "economicObligationId",
+        "direction",
+        "amount",
+        "includedInBalance",
+        "matchedTransactionIds",
+        "scheduleId",
+        "transferTransactionId",
+        "importedId",
+        "reconciled",
+        "provenance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "economicObligationId": {
+          "type": "string",
+          "description": "Stable economic identity linking schedule, transaction, card and claim effects for single attribution."
+        },
+        "direction": {
+          "$ref": "#/$defs/FlowDirection",
+          "description": "Direction for this normalized liquidity result."
+        },
+        "amount": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "includedInBalance": {
+          "type": "boolean",
+          "description": "Whether this exact effect is already reflected in the recorded balance."
+        },
+        "matchedTransactionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Reliable normalized links to matching ledger transactions."
+        },
+        "scheduleId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Preserved source schedule link, if explicitly supplied."
+        },
+        "transferTransactionId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Preserved source transfer-counterpart link, if explicitly supplied."
+        },
+        "importedId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Independent source import identifier; an ID alone is not trusted provenance."
+        },
+        "reconciled": {
+          "type": "boolean",
+          "description": "Whether authoritative Actual evidence records reconciliation."
+        },
+        "provenance": {
+          "$ref": "#/$defs/SettlementProvenance",
+          "description": "Normalized trust classification; manual ledger rows cannot prove settlement."
+        }
+      }
+    },
+    "CashObligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "economicObligationId",
+        "categoryId",
+        "amount",
+        "dueAt",
+        "paid",
+        "includedInBalance",
+        "matchedTransactionIds"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "economicObligationId": {
+          "type": "string",
+          "description": "Stable economic identity linking schedule, transaction, card and claim effects for single attribution."
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stable category resource identifier."
+        },
+        "amount": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "dueAt": {
+          "anyOf": [
+            {
+              "$ref": "financial-snapshot-v1.json#/$defs/CanonicalDate"
+            },
+            {
+              "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+            }
+          ]
+        },
+        "paid": {
+          "type": "boolean",
+          "description": "Whether authoritative evidence marks this obligation already paid."
+        },
+        "includedInBalance": {
+          "type": "boolean",
+          "description": "Whether this exact effect is already reflected in the recorded balance."
+        },
+        "matchedTransactionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Reliable normalized links to matching ledger transactions."
+        }
+      }
+    },
+    "CreditLiquidityFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizationAvailable",
+        "pendingIncludedInAuthorization",
+        "paymentAccountId",
+        "paymentCategoryId",
+        "dueAt",
+        "reservedCash",
+        "economicObligationId",
+        "evidence"
+      ],
+      "properties": {
+        "authorizationAvailable": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "pendingIncludedInAuthorization": {
+          "type": "boolean",
+          "description": "Whether authorization availability already deducts pending card outflows."
+        },
+        "paymentAccountId": {
+          "type": "string",
+          "description": "Explicit cash account expected to settle the card payment."
+        },
+        "paymentCategoryId": {
+          "type": "string",
+          "description": "Explicit credit-payment category receiving transformed purchase backing."
+        },
+        "dueAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "reservedCash": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "economicObligationId": {
+          "type": "string",
+          "description": "Stable economic identity linking schedule, transaction, card and claim effects for single attribution."
+        },
+        "evidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Evidence for this normalized liquidity result."
+        }
+      }
+    },
+    "AccountLiquidityFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "currency",
+        "currencyEvidence",
+        "kind",
+        "kindEvidence",
+        "onBudget",
+        "closed",
+        "owned",
+        "ownershipEvidence",
+        "recordedBalance",
+        "balanceEvidence",
+        "activityEvidence",
+        "scheduleEvidence",
+        "baselineTransactionIds",
+        "unsettledFlows",
+        "holds",
+        "holdsEvidence",
+        "obligations",
+        "credit",
+        "ambiguityReasons",
+        "freshnessEvidence"
+      ],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "currency": {
+          "type": "string",
+          "description": "Explicit observed ISO currency; never inferred from a legacy fallback."
+        },
+        "currencyEvidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Coverage and provenance of the account currency observation."
+        },
+        "kind": {
+          "$ref": "#/$defs/LiquidityAccountKind",
+          "description": "Kind for this normalized liquidity result."
+        },
+        "kindEvidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Coverage and provenance of the account-kind observation."
+        },
+        "onBudget": {
+          "type": "boolean",
+          "description": "On budget for this normalized liquidity result."
+        },
+        "closed": {
+          "type": "boolean",
+          "description": "Closed for this normalized liquidity result."
+        },
+        "owned": {
+          "type": "boolean",
+          "description": "Owned for this normalized liquidity result."
+        },
+        "ownershipEvidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Evidence for ownership, on-budget and closure eligibility."
+        },
+        "recordedBalance": {
+          "$ref": "#/$defs/Money",
+          "description": "Signed ledger balance, including exactly the activity marked included."
+        },
+        "balanceEvidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Balance evidence for this normalized liquidity result."
+        },
+        "activityEvidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Activity evidence for this normalized liquidity result."
+        },
+        "scheduleEvidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Schedule evidence for this normalized liquidity result."
+        },
+        "baselineTransactionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "All preexisting ledger/import identities that cannot prove a new transfer settled."
+        },
+        "unsettledFlows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UnsettledFlow"
+          },
+          "description": "Unsettled flows for this normalized liquidity result."
+        },
+        "holds": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "holdsEvidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Evidence that the reported hold amount is complete."
+        },
+        "obligations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CashObligation"
+          },
+          "description": "Obligations for this normalized liquidity result."
+        },
+        "credit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CreditLiquidityFact"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Credit for this normalized liquidity result."
+        },
+        "ambiguityReasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Ambiguity reasons for this normalized liquidity result."
+        },
+        "freshnessEvidence": {
+          "$ref": "#/$defs/FactEvidence"
+        }
+      }
+    },
+    "LiquidityFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "ledgerContentHash",
+        "asOfMonth",
+        "categories",
+        "accounts",
+        "schedules"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version of this immutable domain contract or policy."
+        },
+        "ledgerContentHash": {
+          "type": "string",
+          "description": "Original ledger hash retained when supplemental facts form a composite snapshot."
+        },
+        "asOfMonth": {
+          "type": "string",
+          "description": "Authoritative YYYY-MM period of the balance.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CategoryLiquidityFact"
+          },
+          "description": "Categories for this normalized liquidity result."
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccountLiquidityFact"
+          },
+          "description": "Accounts for this normalized liquidity result."
+        },
+        "schedules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScheduleLiquidityFact"
+          }
+        }
+      }
+    },
+    "AccountLiquidityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "role",
+        "protectedBuffer",
+        "paymentEligible",
+        "sourceEligible",
+        "backingEligible",
+        "eligibleCategoryIds",
+        "restrictedCashBucketIds",
+        "automationAllowed",
+        "resourceScope"
+      ],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "role": {
+          "$ref": "#/$defs/AccountRole",
+          "description": "Explicit user policy role, not an inferred institution account type."
+        },
+        "protectedBuffer": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "paymentEligible": {
+          "type": "boolean",
+          "description": "Whether policy permits this account for payment."
+        },
+        "sourceEligible": {
+          "type": "boolean",
+          "description": "Whether policy permits this account as a transfer source."
+        },
+        "backingEligible": {
+          "type": "boolean",
+          "description": "Whether policy permits this account to back category demand."
+        },
+        "eligibleCategoryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowlisted category IDs; empty means all otherwise eligible categories."
+        },
+        "restrictedCashBucketIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit cash buckets permitted for restricted-account category backing only."
+        },
+        "automationAllowed": {
+          "type": "boolean",
+          "description": "Policy permission metadata; this engine never initiates bank actions."
+        },
+        "resourceScope": {
+          "type": "string",
+          "description": "Trusted authorized resource scope supplied by the server."
+        }
+      }
+    },
+    "TransferTimingRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sourceAccountId",
+        "destinationAccountId",
+        "providerArrivalAt",
+        "calendarMode",
+        "delayDays",
+        "utcOffsetMinutes",
+        "cutoffMinute",
+        "weekendsAvailable",
+        "holidaysComplete",
+        "holidays",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "sourceAccountId": {
+          "type": "string",
+          "description": "Stable transfer source account identifier."
+        },
+        "destinationAccountId": {
+          "type": "string",
+          "description": "Stable transfer destination account identifier."
+        },
+        "providerArrivalAt": {
+          "anyOf": [
+            {
+              "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calendarMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CalendarMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit policy calendar interpretation, null when timing is unknown."
+        },
+        "delayDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Known transfer delay in the selected calendar, never inferred."
+        },
+        "utcOffsetMinutes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit fixed timezone offset for cutoff/calendar computation."
+        },
+        "cutoffMinute": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Known local cutoff minute after midnight, from 0 through 1439."
+        },
+        "weekendsAvailable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit weekend availability; null means unknown."
+        },
+        "holidaysComplete": {
+          "type": "boolean",
+          "description": "Whether the holiday list fully covers the business-day calculation."
+        },
+        "holidays": {
+          "type": "array",
+          "items": {
+            "$ref": "financial-snapshot-v1.json#/$defs/CanonicalDate"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/FactEvidence",
+          "description": "Evidence for this normalized liquidity result."
+        }
+      }
+    },
+    "LiquidityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "policyHash", "expiresAt", "accounts", "transferRoutes"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version of this immutable domain contract or policy."
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "Exact policy content identity supplied by the trusted policy owner."
+        },
+        "expiresAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccountLiquidityPolicy"
+          },
+          "description": "Accounts for this normalized liquidity result."
+        },
+        "transferRoutes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TransferTimingRoute"
+          },
+          "description": "Transfer routes for this normalized liquidity result."
+        }
+      }
+    },
+    "LiquidityClaimEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "resourceId",
+        "amount",
+        "economicObligationId",
+        "categoryId",
+        "includedInBalance",
+        "matchedTransactionIds"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ClaimEffectKind",
+          "description": "Kind for this normalized liquidity result."
+        },
+        "resourceId": {
+          "type": "string",
+          "description": "Resource id for this normalized liquidity result."
+        },
+        "amount": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "economicObligationId": {
+          "type": "string",
+          "description": "Stable economic identity linking schedule, transaction, card and claim effects for single attribution."
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stable category resource identifier."
+        },
+        "includedInBalance": {
+          "type": "boolean",
+          "description": "Whether this exact effect is already reflected in the recorded balance."
+        },
+        "matchedTransactionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Reliable normalized links to matching ledger transactions."
+        }
+      }
+    },
+    "LiquidityClaimBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "creationSnapshotId",
+        "creationPolicyVersion",
+        "state",
+        "expiresAt",
+        "initiated",
+        "effects"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "creationSnapshotId": {
+          "type": "string",
+          "description": "Creation provenance only; a new snapshot never erases an active claim."
+        },
+        "creationPolicyVersion": {
+          "type": "string",
+          "description": "Creation provenance only; lifecycle governs whether this claim stays active."
+        },
+        "state": {
+          "$ref": "#/$defs/LiquidityClaimState",
+          "description": "Explicit evidence or lifecycle state; unknown is never coerced complete."
+        },
+        "expiresAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "initiated": {
+          "type": "boolean",
+          "description": "True once money movement is reported or observed; expiry cannot silently release it."
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LiquidityClaimEffect"
+          },
+          "description": "Atomic category/account effects admitted together under the shared claim-set revision."
+        }
+      }
+    },
+    "LiquidityClaimSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "bundles"],
+      "properties": {
+        "revision": {
+          "type": "string",
+          "description": "Independent persisted revision for serialized claim admission."
+        },
+        "bundles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LiquidityClaimBundle"
+          },
+          "description": "Persisted atomic claim bundles supplied by the trusted server."
+        }
+      }
+    },
+    "TrustedRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "referenceId"],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "referenceId": {
+          "type": "string",
+          "description": "Stable approved-preference or historical-evidence provenance reference."
+        }
+      }
+    },
+    "RouteSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "explicitAccountId",
+        "sessionAccountId",
+        "approvedPreference",
+        "historicalRoute"
+      ],
+      "properties": {
+        "explicitAccountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit selected account, if supplied; never silently replaced."
+        },
+        "sessionAccountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Persisted Spend Session payment selection, subordinate to explicit choice."
+        },
+        "approvedPreference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustedRoute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Server-assembled approved route with stable provenance."
+        },
+        "historicalRoute": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustedRoute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Server-assembled deterministic historical route with stable provenance."
+        }
+      }
+    },
+    "LiquidityPurchaseItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "categoryId", "amount", "purchaseAt", "requiredBy", "routeSelection"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "categoryId": {
+          "type": "string",
+          "description": "Stable category resource identifier."
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "purchaseAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "requiredBy": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "routeSelection": {
+          "$ref": "#/$defs/RouteSelection",
+          "description": "Trusted explicit/session/preference/history selection in documented precedence."
+        }
+      }
+    },
+    "CategoryReallocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sourceCategoryId", "destinationCategoryId", "amount"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "sourceCategoryId": {
+          "type": "string",
+          "description": "Source category id for this normalized liquidity result."
+        },
+        "destinationCategoryId": {
+          "type": "string",
+          "description": "Destination category id for this normalized liquidity result."
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        }
+      }
+    },
+    "LiquidityHorizon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startsAt", "endsAt"],
+      "properties": {
+        "startsAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "endsAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        }
+      }
+    },
+    "BackingLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "categoryId", "cashBucketId", "amount"],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "categoryId": {
+          "type": "string",
+          "description": "Stable category resource identifier."
+        },
+        "cashBucketId": {
+          "type": "string",
+          "description": "Disjoint authoritative cash bucket identifying the category's temporal allocation."
+        },
+        "amount": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        }
+      }
+    },
+    "BackingAllocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "snapshotId",
+        "contentHash",
+        "policyVersion",
+        "policyHash",
+        "claimSetRevision",
+        "feasible",
+        "lines",
+        "reasons"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version of this immutable domain contract or policy."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "Canonical snapshot identity bound to the evaluation."
+        },
+        "contentHash": {
+          "type": "string",
+          "description": "Canonical composite snapshot content identity."
+        },
+        "policyVersion": {
+          "type": "string",
+          "description": "Exact policy version bound to this result."
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "Exact policy content identity supplied by the trusted policy owner."
+        },
+        "claimSetRevision": {
+          "type": "string",
+          "description": "Independent persisted claim-set revision; not the snapshot revision."
+        },
+        "feasible": {
+          "type": "boolean",
+          "description": "Whether every positive category demand is exactly backed on eligible edges."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BackingLine"
+          },
+          "description": "Nonnegative constrained category-to-account allocation edges."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        }
+      }
+    },
+    "LiquidityInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceCoverageComplete",
+        "snapshotId",
+        "contentHash",
+        "evaluatedAt",
+        "horizon",
+        "facts",
+        "liquidityPolicy",
+        "claimSet",
+        "priorAllocation",
+        "scenario",
+        "validUntil",
+        "maxBudgetSnapshotAgeMinutes"
+      ],
+      "properties": {
+        "sourceCoverageComplete": {
+          "type": "boolean",
+          "description": "Complete account/category/budget source enumeration, including requested future months."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "Canonical snapshot identity bound to the evaluation."
+        },
+        "contentHash": {
+          "type": "string",
+          "description": "Canonical composite snapshot content identity."
+        },
+        "evaluatedAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "horizon": {
+          "$ref": "#/$defs/LiquidityHorizon",
+          "description": "Fixed inclusive start and exclusive end for this evaluation."
+        },
+        "facts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiquidityFacts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Normalized liquidity evidence; null returns explicit unavailable conclusions."
+        },
+        "liquidityPolicy": {
+          "$ref": "#/$defs/LiquidityPolicy",
+          "description": "Effective trusted account and timing policy, separate from institution facts."
+        },
+        "claimSet": {
+          "$ref": "#/$defs/LiquidityClaimSet",
+          "description": "Trusted persisted active claims and independent revision."
+        },
+        "priorAllocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackingAllocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional immutable prior allocation; mismatched identities do not create trusted prior edges."
+        },
+        "scenario": {
+          "$ref": "#/$defs/LiquidityScenario",
+          "description": "Complete joint hypothetical effects included in the immutable plan hash."
+        },
+        "validUntil": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "maxBudgetSnapshotAgeMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "CapacityDeduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "evidenceId", "amount", "affectsBacking"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Reason for this normalized liquidity result."
+        },
+        "evidenceId": {
+          "type": "string",
+          "description": "Evidence id for this normalized liquidity result."
+        },
+        "amount": {
+          "$ref": "#/$defs/Money",
+          "description": "Exact monetary effect in integer minor units and explicit currency."
+        },
+        "affectsBacking": {
+          "type": "boolean",
+          "description": "Whether the deduction reduces backing as well as spending capacity."
+        }
+      }
+    },
+    "AccountCapacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "recordedBalance",
+        "adjustedCash",
+        "signedHeadroom",
+        "existingShortfall",
+        "safeSpendingCapacity",
+        "safeTransferCapacity",
+        "backingCapacity",
+        "deductions",
+        "reasons"
+      ],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "recordedBalance": {
+          "$ref": "#/$defs/Money",
+          "description": "Signed ledger balance, including exactly the activity marked included."
+        },
+        "adjustedCash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Recorded cash less included unsettled inflows and excluded unsettled outflows."
+        },
+        "signedHeadroom": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Signed additional spending headroom after distinct reserves; may be negative."
+        },
+        "existingShortfall": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nonnegative amount required to restore existing protected reserves."
+        },
+        "safeSpendingCapacity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nonnegative eligible additional payment capacity; null means unresolved evidence."
+        },
+        "safeTransferCapacity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Nonnegative source excess before scenario-specific constrained backing checks."
+        },
+        "backingCapacity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cash capacity for category backing without double-deducting funded obligations."
+        },
+        "deductions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapacityDeduction"
+          },
+          "description": "Every reserve or unsettled adjustment with identity and amount."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        }
+      }
+    },
+    "CategoryCapacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "categoryId",
+        "cashBucketId",
+        "authoritativeAvailability",
+        "remainingAvailability",
+        "reasons"
+      ],
+      "properties": {
+        "categoryId": {
+          "type": "string",
+          "description": "Stable category resource identifier."
+        },
+        "cashBucketId": {
+          "type": "string",
+          "description": "Disjoint authoritative cash bucket; temporal labels come from the matching fact."
+        },
+        "authoritativeAvailability": {
+          "$ref": "#/$defs/Money",
+          "description": "Unmodified authoritative category balance before scenario effects."
+        },
+        "remainingAvailability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Authoritative availability after active claims and joint scenario effects."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        }
+      }
+    },
+    "PaymentAlternative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "status", "capacity"],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "status": {
+          "$ref": "#/$defs/PaymentLiquidityStatus",
+          "description": "Status for this normalized liquidity result."
+        },
+        "capacity": {
+          "$ref": "#/$defs/Money",
+          "description": "Capacity for this normalized liquidity result."
+        }
+      }
+    },
+    "AccountPlanPrecondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "recordedBalance",
+        "signedHeadroom",
+        "backingCapacity",
+        "baselineTransactionIds"
+      ],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "recordedBalance": {
+          "$ref": "#/$defs/Money",
+          "description": "Signed ledger balance, including exactly the activity marked included."
+        },
+        "signedHeadroom": {
+          "$ref": "#/$defs/Money",
+          "description": "Signed additional spending headroom after distinct reserves; may be negative."
+        },
+        "backingCapacity": {
+          "$ref": "#/$defs/Money",
+          "description": "Cash capacity for category backing without double-deducting funded obligations."
+        },
+        "baselineTransactionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "All preexisting ledger/import identities that cannot prove a new transfer settled."
+        }
+      }
+    },
+    "TransferLeg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sourceAccountId",
+        "destinationAccountId",
+        "amount",
+        "requiredBy",
+        "estimatedArrival",
+        "timingRouteId",
+        "sourceBefore",
+        "destinationBefore",
+        "sourceAfter",
+        "destinationAfter"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "sourceAccountId": {
+          "type": "string",
+          "description": "Stable transfer source account identifier."
+        },
+        "destinationAccountId": {
+          "type": "string",
+          "description": "Stable transfer destination account identifier."
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "requiredBy": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "estimatedArrival": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "timingRouteId": {
+          "type": "string",
+          "description": "Timing route id for this normalized liquidity result."
+        },
+        "sourceBefore": {
+          "$ref": "#/$defs/AccountPlanPrecondition",
+          "description": "Exact source financial state required before this leg."
+        },
+        "destinationBefore": {
+          "$ref": "#/$defs/AccountPlanPrecondition",
+          "description": "Exact destination financial state required before this leg."
+        },
+        "sourceAfter": {
+          "$ref": "#/$defs/Money",
+          "description": "Signed source headroom after this leg."
+        },
+        "destinationAfter": {
+          "$ref": "#/$defs/Money",
+          "description": "Signed destination headroom after this leg."
+        }
+      }
+    },
+    "TransferPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "snapshotId",
+        "contentHash",
+        "policyVersion",
+        "policyHash",
+        "claimSetRevision",
+        "evaluatedAt",
+        "expiresAt",
+        "minimumAmount",
+        "legs",
+        "reservations",
+        "backingAfter",
+        "scenario",
+        "preconditionsHash",
+        "payloadHash"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version of this immutable domain contract or policy."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "Canonical snapshot identity bound to the evaluation."
+        },
+        "contentHash": {
+          "type": "string",
+          "description": "Canonical composite snapshot content identity."
+        },
+        "policyVersion": {
+          "type": "string",
+          "description": "Exact policy version bound to this result."
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "Exact policy content identity supplied by the trusted policy owner."
+        },
+        "claimSetRevision": {
+          "type": "string",
+          "description": "Independent persisted claim-set revision; not the snapshot revision."
+        },
+        "evaluatedAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "expiresAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "minimumAmount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "legs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TransferLeg"
+          },
+          "description": "Ordered bank steps for this cumulative same-currency prefix; distinct steps require exclusive settlement evidence."
+        },
+        "reservations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LiquidityClaimEffect"
+          },
+          "description": "Exact source claim effects that must be admitted atomically with this plan."
+        },
+        "backingAfter": {
+          "$ref": "#/$defs/BackingAllocation",
+          "description": "Complete constrained backing following this hypothetical scenario or plan."
+        },
+        "scenario": {
+          "$ref": "#/$defs/LiquidityScenario",
+          "description": "Complete joint hypothetical effects included in the immutable plan hash."
+        },
+        "preconditionsHash": {
+          "type": "string",
+          "description": "Native hash of financial facts, policy, claim effects and scenario excluding capture identity."
+        },
+        "payloadHash": {
+          "type": "string",
+          "description": "Domain-separated SHA256 of sorted-key canonical plan JSON excluding this field only."
+        }
+      }
+    },
+    "CreditPaymentResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "authorizationAvailable",
+        "authorizationAfter",
+        "paymentAccountId",
+        "paymentCategoryId",
+        "dueAt",
+        "additionalPaymentCash",
+        "paymentCashReady"
+      ],
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "authorizationAvailable": {
+          "$ref": "#/$defs/Money",
+          "description": "Observed available card authorization, never cash backing."
+        },
+        "authorizationAfter": {
+          "$ref": "#/$defs/Money",
+          "description": "Authorization remaining after joint pending and prospective card activity."
+        },
+        "paymentAccountId": {
+          "type": "string",
+          "description": "Explicit cash account expected to settle the card payment."
+        },
+        "paymentCategoryId": {
+          "type": "string",
+          "description": "Explicit credit-payment category receiving transformed purchase backing."
+        },
+        "dueAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "additionalPaymentCash": {
+          "$ref": "#/$defs/Money",
+          "description": "New card-payment cash demand replacing purchase category backing once."
+        },
+        "paymentCashReady": {
+          "type": "boolean",
+          "description": "Whether the explicit payment cash account covers this purchase by the due date."
+        }
+      }
+    },
+    "PurchaseLiquidityResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "itemId",
+        "categoryId",
+        "budgetFundingStatus",
+        "paymentLiquidityStatus",
+        "selectedAccountId",
+        "selectionSource",
+        "selectedBefore",
+        "selectedAfter",
+        "alternatives",
+        "transferPlan",
+        "credit",
+        "reasons"
+      ],
+      "properties": {
+        "itemId": {
+          "type": "string",
+          "description": "Item id for this normalized liquidity result."
+        },
+        "categoryId": {
+          "type": "string",
+          "description": "Stable category resource identifier."
+        },
+        "budgetFundingStatus": {
+          "$ref": "#/$defs/BudgetFundingStatus",
+          "description": "Category funding independent from account settlement readiness."
+        },
+        "paymentLiquidityStatus": {
+          "$ref": "#/$defs/PaymentLiquidityStatus",
+          "description": "Payment route readiness independent from category funding."
+        },
+        "selectedAccountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Resolved selection or null; alternatives never imply automatic selection."
+        },
+        "selectionSource": {
+          "type": "string",
+          "description": "Explicit, session, approved preference, historical, or none."
+        },
+        "selectedBefore": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccountCapacity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selected before for this normalized liquidity result."
+        },
+        "selectedAfter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccountCapacity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selected after for this normalized liquidity result."
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PaymentAlternative"
+          },
+          "description": "Alternatives for this normalized liquidity result."
+        },
+        "transferPlan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransferPlan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Transfer plan for this normalized liquidity result."
+        },
+        "credit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CreditPaymentResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Credit for this normalized liquidity result."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        }
+      }
+    },
+    "AccountAwareSpendabilityResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "snapshotId",
+        "contentHash",
+        "policyVersion",
+        "policyHash",
+        "claimSetRevision",
+        "budgetFundingStatus",
+        "paymentLiquidityStatus",
+        "accountsBefore",
+        "accountsAfter",
+        "categories",
+        "backingBefore",
+        "backingAfter",
+        "purchases",
+        "horizon",
+        "expiresAt",
+        "assumptions",
+        "reasons"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Version of this immutable domain contract or policy."
+        },
+        "snapshotId": {
+          "type": "string",
+          "description": "Canonical snapshot identity bound to the evaluation."
+        },
+        "contentHash": {
+          "type": "string",
+          "description": "Canonical composite snapshot content identity."
+        },
+        "policyVersion": {
+          "type": "string",
+          "description": "Exact policy version bound to this result."
+        },
+        "policyHash": {
+          "type": "string",
+          "description": "Exact policy content identity supplied by the trusted policy owner."
+        },
+        "claimSetRevision": {
+          "type": "string",
+          "description": "Independent persisted claim-set revision; not the snapshot revision."
+        },
+        "budgetFundingStatus": {
+          "$ref": "#/$defs/BudgetFundingStatus",
+          "description": "Category funding independent from account settlement readiness."
+        },
+        "paymentLiquidityStatus": {
+          "$ref": "#/$defs/PaymentLiquidityStatus",
+          "description": "Payment route readiness independent from category funding."
+        },
+        "accountsBefore": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccountCapacity"
+          },
+          "description": "Accounts before for this normalized liquidity result."
+        },
+        "accountsAfter": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccountCapacity"
+          },
+          "description": "Accounts after for this normalized liquidity result."
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CategoryCapacity"
+          },
+          "description": "Categories for this normalized liquidity result."
+        },
+        "backingBefore": {
+          "$ref": "#/$defs/BackingAllocation",
+          "description": "Backing before for this normalized liquidity result."
+        },
+        "backingAfter": {
+          "$ref": "#/$defs/BackingAllocation",
+          "description": "Complete constrained backing following this hypothetical scenario or plan."
+        },
+        "purchases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PurchaseLiquidityResult"
+          },
+          "description": "Purchases for this normalized liquidity result."
+        },
+        "horizon": {
+          "$ref": "#/$defs/LiquidityHorizon",
+          "description": "Fixed inclusive start and exclusive end for this evaluation."
+        },
+        "expiresAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Assumptions for this normalized liquidity result."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        }
+      }
+    },
+    "TransferSettlementRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "accountId",
+        "amount",
+        "observedAt",
+        "occurredAt",
+        "importedId",
+        "providerReference",
+        "pairId",
+        "reconciled",
+        "reversed",
+        "provenance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "accountId": {
+          "type": "string",
+          "description": "Stable account resource identifier."
+        },
+        "amount": {
+          "$ref": "#/$defs/Money",
+          "description": "Exact monetary effect in integer minor units and explicit currency."
+        },
+        "observedAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "occurredAt": {
+          "anyOf": [
+            { "$ref": "financial-snapshot-v1.json#/$defs/CanonicalDate" },
+            { "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp" }
+          ]
+        },
+        "importedId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Independent source import identifier; an ID alone is not trusted provenance."
+        },
+        "providerReference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Provider transfer confirmation reference that must agree with Actual evidence."
+        },
+        "pairId": {
+          "type": "string",
+          "description": "Trusted shared transfer pairing identity, not amount-only matching."
+        },
+        "reconciled": {
+          "type": "boolean",
+          "description": "Whether authoritative Actual evidence records reconciliation."
+        },
+        "reversed": {
+          "type": "boolean",
+          "description": "Whether this evidence represents a reversed transaction."
+        },
+        "provenance": {
+          "$ref": "#/$defs/SettlementProvenance",
+          "description": "Normalized trust classification; manual ledger rows cannot prove settlement."
+        }
+      }
+    },
+    "TransferSettlementRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan", "evaluatedAt", "records", "consumedEvidenceIds"],
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/TransferPlan",
+          "description": "Plan for this normalized liquidity result."
+        },
+        "evaluatedAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TransferSettlementRecord"
+          },
+          "description": "Records for this normalized liquidity result."
+        },
+        "consumedEvidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Evidence identities already consumed by other proposals."
+        }
+      }
+    },
+    "TransferSettlementResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "confirmed",
+        "sourceObserved",
+        "destinationObserved",
+        "reconciled",
+        "evidenceIds",
+        "reasons",
+        "claimEffects"
+      ],
+      "properties": {
+        "confirmed": {
+          "type": "boolean",
+          "description": "True only when every immutable leg has independent reconciled matching sides."
+        },
+        "sourceObserved": {
+          "type": "boolean",
+          "description": "Whether every required source side has independent matching evidence."
+        },
+        "destinationObserved": {
+          "type": "boolean",
+          "description": "Whether every required destination side has independent matching evidence."
+        },
+        "reconciled": {
+          "type": "boolean",
+          "description": "Whether authoritative Actual evidence records reconciliation."
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Independent evidence identities to consume exclusively upon successful verification."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        },
+        "claimEffects": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/LiquidityClaimEffect"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "TransferPreconditionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan", "currentInput", "ownClaimId"],
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/TransferPlan",
+          "description": "Plan for this normalized liquidity result."
+        },
+        "currentInput": {
+          "$ref": "#/$defs/LiquidityInput",
+          "description": "Fresh trusted normalized input used for pre-initiation revalidation."
+        },
+        "ownClaimId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Trusted own reservation to exclude only after exact effect verification."
+        }
+      }
+    },
+    "TransferPreconditionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valid", "reasons"],
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "Whether the original immutable plan remains actionable before initiation."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Stable scoped reason codes preserving unavailable or ambiguous evidence."
+        }
+      }
+    },
+    "LiquidityScenario": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "const": "none"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "items"],
+          "properties": {
+            "kind": {
+              "const": "purchases"
+            },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/LiquidityPurchaseItem"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "moves"],
+          "properties": {
+            "kind": {
+              "const": "reallocation"
+            },
+            "moves": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/CategoryReallocation"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AccountAwareSpendabilityRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "financialSnapshot",
+        "context",
+        "liquidityPolicy",
+        "claimSet",
+        "priorAllocation",
+        "scenario",
+        "validUntil"
+      ],
+      "properties": {
+        "financialSnapshot": {
+          "$ref": "financial-snapshot-v1.json"
+        },
+        "context": {
+          "$ref": "prospective-decision-v1.json#/$defs/DecisionContext"
+        },
+        "liquidityPolicy": {
+          "$ref": "#/$defs/LiquidityPolicy"
+        },
+        "claimSet": {
+          "$ref": "#/$defs/LiquidityClaimSet"
+        },
+        "priorAllocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackingAllocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scenario": {
+          "$ref": "#/$defs/LiquidityScenario"
+        },
+        "validUntil": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        }
+      }
+    },
+    "PurchaseLiquidityContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "liquidityPolicy",
+        "claimSet",
+        "priorAllocation",
+        "routeSelection",
+        "purchaseAt",
+        "requiredBy"
+      ],
+      "properties": {
+        "liquidityPolicy": {
+          "$ref": "#/$defs/LiquidityPolicy"
+        },
+        "claimSet": {
+          "$ref": "#/$defs/LiquidityClaimSet"
+        },
+        "priorAllocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackingAllocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "routeSelection": {
+          "$ref": "#/$defs/RouteSelection"
+        },
+        "purchaseAt": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        },
+        "requiredBy": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        }
+      }
+    },
+    "VerifyTransferPreconditionsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan", "currentInput", "ownClaimId"],
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/TransferPlan"
+        },
+        "currentInput": {
+          "$ref": "#/$defs/AccountAwareSpendabilityRequest"
+        },
+        "ownClaimId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ScheduleLiquidityFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "accountId",
+        "categoryId",
+        "ruleId",
+        "dueDate",
+        "certainty",
+        "amount",
+        "minimum",
+        "maximum",
+        "recurrence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable normalized identity; never a display label."
+        },
+        "accountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stable account resource identifier."
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stable category resource identifier."
+        },
+        "ruleId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rule id for this normalized liquidity result."
+        },
+        "dueDate": {
+          "anyOf": [
+            {
+              "$ref": "financial-snapshot-v1.json#/$defs/CanonicalDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "certainty": {
+          "$ref": "#/$defs/ScheduleAmountCertainty",
+          "description": "Certainty for this normalized liquidity result."
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact monetary effect in integer minor units and explicit currency."
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Minimum for this normalized liquidity result."
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum for this normalized liquidity result."
+        },
+        "recurrence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduleRecurrence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Recurrence for this normalized liquidity result."
+        }
+      }
+    },
+    "ScheduleRecurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frequency",
+        "interval",
+        "patterns",
+        "start",
+        "endMode",
+        "endOccurrences",
+        "endDate",
+        "skipWeekend",
+        "weekendSolveMode"
+      ],
+      "properties": {
+        "frequency": {
+          "$ref": "#/$defs/ScheduleFrequency",
+          "description": "Frequency for this normalized liquidity result."
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Interval for this normalized liquidity result."
+        },
+        "patterns": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ScheduleRecurrencePattern"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Patterns for this normalized liquidity result."
+        },
+        "start": {
+          "$ref": "financial-snapshot-v1.json#/$defs/CanonicalDate"
+        },
+        "endMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduleEndMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "End mode for this normalized liquidity result."
+        },
+        "endOccurrences": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "End occurrences for this normalized liquidity result."
+        },
+        "endDate": {
+          "anyOf": [
+            {
+              "$ref": "financial-snapshot-v1.json#/$defs/CanonicalDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skipWeekend": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Skip weekend for this normalized liquidity result."
+        },
+        "weekendSolveMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduleWeekendSolveMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Weekend solve mode for this normalized liquidity result."
+        }
+      }
+    },
+    "ScheduleRecurrencePattern": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SchedulePatternKind",
+          "description": "Kind for this normalized liquidity result."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647,
+          "description": "Value for this normalized liquidity result."
+        }
+      }
+    },
+    "ScheduleAmountCertainty": {
+      "type": "string",
+      "enum": ["exact", "approximate", "range", "unknown"]
+    },
+    "ScheduleFrequency": {
+      "type": "string",
+      "enum": ["daily", "weekly", "monthly", "yearly"]
+    },
+    "ScheduleEndMode": {
+      "type": "string",
+      "enum": ["never", "after_n_occurrences", "on_date"]
+    },
+    "ScheduleWeekendSolveMode": {
+      "type": "string",
+      "enum": ["before", "after"]
+    },
+    "SchedulePatternKind": {
+      "type": "string",
+      "enum": ["su", "mo", "tu", "we", "th", "fr", "sa", "day"]
+    },
+    "PositiveMoney": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minorUnits", "currency"],
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    },
+    "NonnegativeMoney": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minorUnits", "currency"],
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^(?:0|(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807))$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    }
+  }
+}

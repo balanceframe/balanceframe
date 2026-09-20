@@ -145,7 +145,7 @@ pub fn analyze_transactions(
         categories.iter().map(|c| c.id.as_str()).collect();
 
     let mut uncategorized_count: usize = 0;
-    let mut uncategorized_total: i64 = 0;
+    let mut uncategorized_total = Some(0_i64);
 
     for tx in transactions {
         // Base (non-sub) transactions
@@ -171,29 +171,34 @@ pub fn analyze_transactions(
         // --- Uncategorized ---
         if is_uncategorized {
             uncategorized_count += 1;
-            match tx.amount.minor_units().checked_abs() {
-                Some(abs) => uncategorized_total += abs,
-                None => issues.push(QualityIssue::new(
+            let previous_total = uncategorized_total;
+            uncategorized_total = uncategorized_total.and_then(|total| {
+                tx.amount
+                    .minor_units()
+                    .checked_abs()
+                    .and_then(|amount| total.checked_add(amount))
+            });
+            if previous_total.is_some() && uncategorized_total.is_none() {
+                issues.push(QualityIssue::new(
                     Severity::Blocker,
                     "AMOUNT_OVERFLOW",
-                    format!(
-                        "Transaction {} has an unrepresentable absolute amount",
-                        tx.id
-                    ),
+                    "Uncategorized transaction total exceeds the supported amount range",
                     "Transaction",
                     &tx.id,
-                )),
+                ));
             }
         }
 
         // --- Split coverage ---
         if !tx.subtransactions.is_empty() {
-            let sub_sum: i64 = tx
+            let sub_sum = tx
                 .subtransactions
                 .iter()
-                .map(|st| st.amount.minor_units())
-                .sum();
-            if sub_sum != tx.amount.minor_units() {
+                .try_fold(0_i128, |total, child| {
+                    total.checked_add(i128::from(child.amount.minor_units()))
+                })
+                .and_then(|total| i64::try_from(total).ok());
+            if let Some(sub_sum) = sub_sum.filter(|sum| *sum != tx.amount.minor_units()) {
                 issues.push(QualityIssue::new(
                     Severity::Warning,
                     "SPLIT_MISMATCH",
@@ -206,6 +211,14 @@ pub fn analyze_transactions(
                     "Transaction",
                     &tx.id,
                 ));
+            } else if sub_sum.is_none() {
+                issues.push(QualityIssue::new(
+                    Severity::Blocker,
+                    "AMOUNT_OVERFLOW",
+                    "Split transaction total exceeds the supported amount range",
+                    "Transaction",
+                    &tx.id,
+                ));
             }
         }
     }
@@ -215,10 +228,16 @@ pub fn analyze_transactions(
         issues.push(QualityIssue::new(
             Severity::Warning,
             "UNCATEGORIZED_TRANSACTIONS",
-            format!(
-                "{} uncategorized transactions totalling {} minor units",
-                uncategorized_count, uncategorized_total
-            ),
+            match uncategorized_total {
+                Some(total) => format!(
+                    "{} uncategorized transactions totalling {} minor units",
+                    uncategorized_count, total
+                ),
+                None => format!(
+                    "{} uncategorized transactions; total unavailable due to amount overflow",
+                    uncategorized_count
+                ),
+            },
             "Transaction",
             "_summary",
         ));
@@ -427,112 +446,5 @@ fn is_stale(date: &str, reference_date: &str, max_days: u32) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::money::Money;
-
-    #[test]
-    fn test_quality_summary_counts() {
-        let issues = vec![
-            QualityIssue::new(Severity::Blocker, "B1", "blocker", "T", "1"),
-            QualityIssue::new(Severity::Warning, "W1", "warn", "T", "2"),
-            QualityIssue::new(Severity::Info, "I1", "info", "T", "3"),
-        ];
-        let report = DataQualityReport {
-            summary: QualitySummary {
-                total_issues: issues.len(),
-                blockers: issues
-                    .iter()
-                    .filter(|i| i.severity == Severity::Blocker)
-                    .count(),
-                warnings: issues
-                    .iter()
-                    .filter(|i| i.severity == Severity::Warning)
-                    .count(),
-                info: issues
-                    .iter()
-                    .filter(|i| i.severity == Severity::Info)
-                    .count(),
-            },
-            issues,
-        };
-        assert_eq!(report.summary.total_issues, 3);
-        assert_eq!(report.summary.blockers, 1);
-        assert_eq!(report.summary.warnings, 1);
-        assert_eq!(report.summary.info, 1);
-    }
-
-    #[test]
-    fn test_analyze_accounts_stale() {
-        let accounts = vec![Account {
-            id: "acct1".into(),
-            name: "Checking".into(),
-            account_type: "checking".into(),
-            off_budget: false,
-            is_closed: false,
-            cleared_balance: Money::new(1000, "USD"),
-            imported_balance: Money::new(1000, "USD"),
-            mtid: None,
-        }];
-
-        let tx = Transaction {
-            id: "tx1".into(),
-            account_id: "acct1".into(),
-            date: "2025-01-01".into(),
-            payee_id: None,
-            payee_name: Some("Test".into()),
-            category_id: Some("cat1".into()),
-            category_name: Some("TestCat".into()),
-            amount: Money::new(100, "USD"),
-            cleared: true,
-            reconciled: false,
-            imported_id: None,
-            imported_payee: None,
-            notes: None,
-            tags: vec![],
-            transfer_account_id: None,
-            subtransactions: vec![],
-        };
-
-        let issues = analyze_accounts(&accounts, &[tx], "2026-07-17");
-        assert!(issues.iter().any(|i| i.code == "STALE_BALANCE"));
-    }
-
-    #[test]
-    fn test_overflow_i64_min_uncategorized() {
-        // i64::MIN has no representable absolute value; the analyzer must
-        // emit an AMOUNT_OVERFLOW blocker instead of panicking.
-        let tx = Transaction {
-            id: "overflow_tx".into(),
-            account_id: "acct1".into(),
-            date: "2026-07-17".into(),
-            payee_id: None,
-            payee_name: Some("Overflow".into()),
-            category_id: None,
-            category_name: None,
-            amount: Money::new(i64::MIN, "USD"),
-            cleared: true,
-            reconciled: false,
-            imported_id: None,
-            imported_payee: None,
-            notes: None,
-            tags: vec![],
-            transfer_account_id: None,
-            subtransactions: vec![],
-        };
-
-        let report = analyze_readiness(&[], &[tx], &[], "2026-07-17");
-        assert!(
-            report.issues.iter().any(|i| i.code == "AMOUNT_OVERFLOW"),
-            "expected AMOUNT_OVERFLOW blocker, got issues: {:?}",
-            report.issues,
-        );
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|i| i.severity == Severity::Blocker),
-            "expected at least one blocker",
-        );
-    }
-}
+#[cfg(test)]
+mod tests;

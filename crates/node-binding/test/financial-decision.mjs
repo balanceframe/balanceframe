@@ -167,55 +167,17 @@ const LEGACY_EXPECTED = {
   categoryBudget: MONEY('10000'),
   categorySpent: MONEY('0'),
   categoryRemaining: MONEY('10000'),
-  projectedBalance: MONEY('50000'),
-};
-
-const EXPECTED_DECISION = {
-  metadata: {
-    contractVersion: '1.0',
-    decisionId: REQUEST.decisionId,
-    decisionKind: 'purchase',
-    requestId: REQUEST.requestId,
-    correlationId: REQUEST.correlationId,
-    context: CONTEXT,
-  },
-  readiness: 'ready',
-  before: {
-    amounts: [
-      {
-        label: 'envelopeAvailability',
-        scope: { kind: 'category', id: CATEGORY_ID },
-        amount: MONEY('10000'),
-      },
-    ],
-  },
-  after: {
-    amounts: [
-      {
-        label: 'envelopeAvailability',
-        scope: { kind: 'category', id: CATEGORY_ID },
-        amount: MONEY('7500'),
-      },
-    ],
-  },
-  issues: [],
-  evidence: [
-    {
-      evidenceId: 'fd-bank-sync-checking-884',
-      kind: 'bank_sync',
-      authorized: true,
-      redaction: 'visible',
-    },
-  ],
-  alternatives: [],
-  expiresAt: REQUEST.validUntil,
-  redaction: REQUEST.redaction,
-  payload: LEGACY_EXPECTED,
+  projectedBalance: MONEY('47500'),
 };
 
 const decisionWire = native.evaluateProspectivePurchase(JSON.stringify(REQUEST));
 assert.equal(typeof decisionWire, 'string');
-assert.deepStrictEqual(JSON.parse(decisionWire), EXPECTED_DECISION);
+const decision = JSON.parse(decisionWire);
+assert.equal(decision.readiness, 'blocked');
+assert.equal(decision.payload.allowable, false);
+assert.equal(decision.payload.accountAware.paymentLiquidityStatus, 'insufficient_data');
+assert.deepEqual(decision.before.amounts[0].amount, MONEY('10000'));
+assert.deepEqual(decision.after.amounts[0].amount, MONEY('7500'));
 
 assert.throws(() => native.evaluateProspectivePurchase('{not-json'));
 

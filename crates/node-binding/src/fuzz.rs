@@ -440,16 +440,101 @@ fn test_napi_omitted_policy_fails_closed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_napi_panic_containment() {
-    // Even deeply invalid input must not crash the Node process.
-    // The binding catches panics and returns Err.
-    let result = analyze_snapshot(r#"{{{{"#.into());
-    assert!(result.is_err(), "panicked JSON must return Err, not crash");
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("deserialize") || err.contains("Panic"),
-        "error must mention deserialization failure or panic containment: {err}"
-    );
+fn guarded_run_contains_deserializer_panic_before_operation() {
+    struct PanickingInput;
+    impl<'de> serde::Deserialize<'de> for PanickingInput {
+        fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            std::panic::panic_any("deserializer-failure-42");
+        }
+    }
+
+    let operation_called = std::cell::Cell::new(false);
+    let error = run::<PanickingInput, ()>("null".into(), |_| {
+        operation_called.set(true);
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.status, napi::Status::GenericFailure);
+    assert!(error.reason.contains("deserializer-failure-42"));
+    assert!(!operation_called.get());
+}
+
+#[test]
+fn guarded_run_preserves_borrowed_operation_panic_payload() {
+    let error = run::<(), ()>("null".into(), |_| {
+        std::panic::panic_any("operation-failure-73");
+    })
+    .unwrap_err();
+    assert_eq!(error.status, napi::Status::GenericFailure);
+    assert!(error.reason.contains("operation-failure-73"));
+}
+
+#[test]
+fn guarded_run_preserves_owned_operation_panic_payload() {
+    let payload = String::from("owned-operation-failure-91");
+    let expected = payload.clone();
+    let error = run::<(), ()>("null".into(), |_| {
+        std::panic::panic_any(payload);
+    })
+    .unwrap_err();
+    assert_eq!(error.status, napi::Status::GenericFailure);
+    assert!(error.reason.contains(&expected));
+}
+
+#[test]
+fn guarded_run_contains_non_string_operation_panic() {
+    let error = run::<(), ()>("null".into(), |_| {
+        std::panic::panic_any(17_u32);
+    })
+    .unwrap_err();
+    assert_eq!(error.status, napi::Status::GenericFailure);
+}
+
+#[test]
+fn guarded_run_contains_serializer_panic() {
+    struct PanickingOutput;
+    impl serde::Serialize for PanickingOutput {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            std::panic::panic_any(String::from("serializer-panic-56"));
+        }
+    }
+
+    let error = run::<(), PanickingOutput>("null".into(), |_| Ok(PanickingOutput)).unwrap_err();
+    assert_eq!(error.status, napi::Status::GenericFailure);
+    assert!(error.reason.contains("serializer-panic-56"));
+}
+
+#[test]
+fn guarded_run_preserves_serializer_error_without_returning_partial_json() {
+    struct FailingOutput;
+    impl serde::Serialize for FailingOutput {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            use serde::ser::SerializeSeq;
+            let mut sequence = serializer.serialize_seq(Some(2))?;
+            sequence.serialize_element(&"first")?;
+            Err(serde::ser::Error::custom("serializer-error-84"))
+        }
+    }
+
+    let error = run::<(), FailingOutput>("null".into(), |_| Ok(FailingOutput)).unwrap_err();
+    assert_eq!(error.status, napi::Status::GenericFailure);
+    assert!(error.reason.contains("serializer-error-84"));
+}
+
+#[test]
+fn guarded_run_preserves_operation_failure_without_serializing_a_success() {
+    let error = run::<(), ()>("null".into(), |_| Err("operation-error-28".into())).unwrap_err();
+    assert_eq!(error.status, napi::Status::GenericFailure);
+    assert_eq!(error.reason, "operation-error-28");
 }
 
 #[test]

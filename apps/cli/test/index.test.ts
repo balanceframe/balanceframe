@@ -1067,6 +1067,46 @@ describe('parseArgs — purchase evaluate', () => {
     expect(result.cmd.options!.currency).toBe('EUR');
   });
 
+  it('parses distinct purchase and settlement timing values', () => {
+    const result = parseArgs([
+      'purchase',
+      'evaluate',
+      '--category-id',
+      'cat-food',
+      '--amount',
+      '5000',
+      '--purchase-at',
+      '2026-09-07T10:00:00Z',
+      '--required-by',
+      '2026-09-08T17:00:00Z',
+    ]);
+    expect(result).toMatchObject({
+      ok: true,
+      cmd: {
+        command: 'purchase.evaluate',
+        options: {
+          'purchase-at': '2026-09-07T10:00:00Z',
+          'required-by': '2026-09-08T17:00:00Z',
+        },
+      },
+    });
+  });
+
+  it('rejects a missing purchase timing value before another flag', () => {
+    const result = parseArgs([
+      'purchase',
+      'evaluate',
+      '--category-id',
+      'cat-food',
+      '--amount',
+      '5000',
+      '--purchase-at',
+      '--required-by',
+      '2026-09-08T17:00:00Z',
+    ]);
+    expect(result).toMatchObject({ ok: false, error: { code: 'missing_flag_value' } });
+  });
+
   it('rejects purchase evaluate without --category-id', () => {
     const result = parseArgs(['purchase', 'evaluate', '--amount', '5000', '--json']);
     expect(result.ok).toBe(false);

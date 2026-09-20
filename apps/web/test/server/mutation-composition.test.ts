@@ -170,24 +170,36 @@ describe('createDefaultExecutorFactory', () => {
     expect(manager.withConnection).toHaveBeenCalledWith(expect.any(Function), { dispose: true });
   });
 
-  it('creates a proposal and approval in the store before executing', async () => {
+  it('persists and consumes an exact approval for a scoped authorized reviewer', async () => {
     const store = new SqliteWorkflowStore(':memory:');
+    await store.upsertActorMembership(
+      TEST_ACTOR,
+      'active',
+      ['categorization:execute'],
+      'budget:budget-1',
+    );
     const { manager } = fakeConnectionManager();
     const factory = createDefaultExecutorFactory(manager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev)!;
-
-    const createProposalSpy = vi.spyOn(store, 'createProposal');
+    const executor = factory(mockEvent({ reviewAndApply: true }))!;
     const createApprovalSpy = vi.spyOn(store, 'createApproval');
-
-    await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-2' },
-      store,
-      fakeReviewItem(),
-    );
-
-    expect(createProposalSpy).toHaveBeenCalledTimes(1);
-    expect(createApprovalSpy).toHaveBeenCalledTimes(1);
+    try {
+      await executor(
+        { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-2' },
+        store,
+        fakeReviewItem(),
+      );
+      const proposal = await store.findActiveProposal('budget-1', TEST_TX_ID, 'set_category');
+      expect(proposal).not.toBeNull();
+      const issued = await createApprovalSpy.mock.results[0].value;
+      expect(await store.getApproval(issued.id)).toMatchObject({
+        proposalId: proposal!.id,
+        payloadHash: proposal!.payloadHash,
+        actorId: TEST_ACTOR,
+        status: 'consumed',
+      });
+    } finally {
+      store.close();
+    }
   });
 
   it('rethrows a missing-selection connection error for the route recovery layer', async () => {

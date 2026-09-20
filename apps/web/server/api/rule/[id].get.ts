@@ -1,3 +1,4 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * GET /api/rule/[id] — show a single automation rule by ID.
  *
@@ -20,12 +21,13 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   classifyConnectionError,
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
 
   const wf = getWorkflowStore(event);
@@ -37,7 +39,8 @@ export default defineEventHandler(async (event) => {
   try {
     const manager = createMutationConnectionManager();
     return await manager.withConnection(
-      async ({ connector }) => {
+      async ({ connector, budget }) => {
+        if (budget.id !== fullRead.budgetId) throw new Error('Selected budget changed');
         const ledger = connector as unknown as LedgerHandle;
 
         const allRules = (await ledger.listRules()) as RuleShowResult[];

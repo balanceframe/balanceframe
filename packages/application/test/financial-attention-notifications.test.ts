@@ -412,6 +412,33 @@ function outbox(id: string, eventId: string) {
 }
 
 describe('canonical financial observations on the existing attention home result', () => {
+  it('keeps complete account enumeration quiet while unresolved enumeration still blocks', async () => {
+    const protocol = await createNativeAnalysisProtocol(async () => nativeShim());
+    const snapshot = financialSnapshot();
+    snapshot.observations = [
+      {
+        kind: 'account_collection_coverage',
+        scope: { kind: 'global' },
+        state: 'complete',
+        observedAt: CAPTURED_AT,
+        evidence: [],
+      },
+    ];
+    const complete = await protocol.attentionHome!(ledgerWithFinancialSnapshot(snapshot), {});
+    expect(complete.blockers).toEqual([]);
+    expect(complete.alerts).toEqual([]);
+    snapshot.observations[0] = { ...snapshot.observations[0]!, state: 'unknown', observedAt: null };
+    const unknown = await protocol.attentionHome!(ledgerWithFinancialSnapshot(snapshot), {});
+    expect(unknown.blockers).toEqual([
+      expect.objectContaining({
+        code: 'account_freshness_coverage',
+        classification: 'unresolved_material_evidence',
+        severity: 'warning',
+        issue: expect.objectContaining({ effect: 'blocks', scope: { kind: 'global' } }),
+      }),
+    ]);
+  });
+
   it('classifies actionable observations and carries one shared issue plus finding metadata', async () => {
     const protocol = await createNativeAnalysisProtocol(async () => nativeShim());
     const result = await protocol.attentionHome!(ledgerWithFinancialSnapshot(), {});

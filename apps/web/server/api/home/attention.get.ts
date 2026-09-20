@@ -12,8 +12,10 @@ import {
   createDefaultConnectionManager,
   createNativeAnalysisProtocol,
   attentionHomeAnalysis,
+  createLiquidityService,
 } from '@balanceframe/application';
 import type { CommandInput, AttentionHomeParams } from '@balanceframe/application';
+import { hasLegacyFullRead } from '../../utils/legacy-financial-read';
 import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
@@ -138,6 +140,30 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 503);
       return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
     }
+    if (!(await hasLegacyFullRead(wf.store, getActorId(event), config.budgetId))) {
+      const liquidity = await createLiquidityService({
+        connectionManager: manager,
+        store: wf.store,
+      });
+      const transfers = await liquidity.attention({
+        actorId: getActorId(event),
+        budgetId: config.budgetId,
+      });
+      return okEnvelope(
+        {
+          blockers: transfers.map((transfer) => ({
+            ...transfer,
+            code: 'transfer_needs_attention',
+          })),
+          alerts: [],
+          recurrences: [],
+          categoryRisks: [],
+          scopeLimited: true,
+        },
+        authInfo,
+        requestId,
+      );
+    }
 
     const context: AttentionHomeParams['context'] = {};
     if (categoryGroup !== undefined) context.categoryGroup = categoryGroup;
@@ -162,7 +188,15 @@ export default defineEventHandler(async (event) => {
       return attentionHomeAnalysis(input, params);
     });
 
+    const liquidity = await createLiquidityService({ connectionManager: manager, store: wf.store });
+    const transfers = await liquidity.attention({
+      actorId: getActorId(event),
+      budgetId: config.budgetId,
+    });
     if (envelope.status === 'ok') {
+      envelope.result.blockers.push(
+        ...transfers.map((transfer) => ({ ...transfer, code: 'transfer_needs_attention' })),
+      );
       return okEnvelope(
         sanitizeCanonicalEvidence(envelope.result) as typeof envelope.result,
         authInfo,

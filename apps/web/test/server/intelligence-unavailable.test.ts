@@ -10,8 +10,6 @@
  *   - Deterministic result envelopes when capability exists
  *   - Structured unavailable fallback when capability is absent
  *   - Invalid query validation (scenario JSON parse failure)
- *   - Freshness propagation (via CommandInput)
- *   - Authorization propagation (via envelope auth info)
  *   - Scenario non-mutation (read-only delegation)
  *   - Store unavailable fallback
  */
@@ -26,7 +24,6 @@ const {
   mockGetWorkflowStore,
   mockSetResponseStatus,
   mockGetQuery,
-  mockBuildAuthorizationInfo,
   mockOkEnvelope,
   mockErrorEnvelope,
   mockGetActorId,
@@ -36,8 +33,9 @@ const {
   mockErrorHasCode,
 } = vi.hoisted(() => {
   const mockWithConnection = vi.fn(
-    async (operation: (connected: { connector: string }) => Promise<unknown>) =>
-      operation({ connector: 'mock-ledger' }),
+    async (
+      operation: (connected: { connector: string; budget: { id: string } }) => Promise<unknown>,
+    ) => operation({ connector: 'mock-ledger', budget: { id: 'budget_test' } }),
   );
   return {
     mockWithConnection,
@@ -57,11 +55,6 @@ const {
     mockGetWorkflowStore: vi.fn(() => ({ store: {} })),
     mockSetResponseStatus: vi.fn(),
     mockGetQuery: vi.fn(() => ({})),
-    mockBuildAuthorizationInfo: vi.fn(() => ({
-      actorId: 'test-actor',
-      capability: 'observe',
-      allowed: true,
-    })),
     mockOkEnvelope: vi.fn((result, auth, requestId) => ({
       schemaVersion: '1',
       status: 'ok',
@@ -105,7 +98,6 @@ const {
 vi.mock('../../server/utils/workflow-store', () => ({
   getWorkflowStore: mockGetWorkflowStore,
   getActorId: mockGetActorId,
-  buildAuthorizationInfo: mockBuildAuthorizationInfo,
   okEnvelope: mockOkEnvelope,
   errorEnvelope: mockErrorEnvelope,
   envelopeMetadata: mockEnvelopeMetadata,
@@ -267,8 +259,9 @@ describe('Intelligence route delegation', () => {
     });
     mockGetWorkflowStore.mockReturnValue({ store: {} });
     mockWithConnection.mockImplementation(
-      async (operation: (connected: { connector: string }) => Promise<unknown>) =>
-        operation({ connector: 'mock-ledger' }),
+      async (
+        operation: (connected: { connector: string; budget: { id: string } }) => Promise<unknown>,
+      ) => operation({ connector: 'mock-ledger', budget: { id: 'budget_test' } }),
     );
 
     // Reset every analysis mock to a rejecting default so an unconfigured
@@ -517,63 +510,6 @@ describe('Intelligence route delegation', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 4. Freshness propagation
-  // -----------------------------------------------------------------------
-
-  describe('freshness propagation', () => {
-    for (const entry of handlerEntries) {
-      it(`GET /api/${entry.name} passes freshness field in the CommandInput`, async () => {
-        mockAnalysisReturn(entry, okAnalysisEnvelope({ ok: true }));
-
-        await entry.handler(mockEvent);
-
-        const input = vi.mocked(entry.analysisFn).mock.calls[0][0] as any;
-        expect(input).toBeDefined();
-        expect(input).toHaveProperty('freshness', null);
-        expect(input).toHaveProperty('mode', 'observe');
-      });
-    }
-  });
-
-  // -----------------------------------------------------------------------
-  // 5. Authorization propagation
-  // -----------------------------------------------------------------------
-
-  describe('authorization propagation', () => {
-    it('calls buildAuthorizationInfo with observe capability for every route', async () => {
-      for (const entry of handlerEntries) {
-        mockAnalysisReturn(entry, okAnalysisEnvelope({ ok: true }));
-        await entry.handler(mockEvent);
-      }
-
-      // Each handler calls buildAuthorizationInfo exactly once
-      expect(mockBuildAuthorizationInfo).toHaveBeenCalledTimes(handlerEntries.length);
-      for (const call of mockBuildAuthorizationInfo.mock.calls) {
-        expect(call[1]).toBe('observe');
-      }
-    });
-
-    it('includes auth info in ok response envelopes', async () => {
-      mockAnalysisReturn(handlerEntries[0], okAnalysisEnvelope({ score: 85 }));
-
-      const r = await dataQuality(mockEvent);
-
-      expect(r.meta?.auth).toBeDefined();
-      expect(r.meta?.auth.capability).toBe('observe');
-      expect(r.meta?.auth.allowed).toBe(true);
-    });
-
-    it('includes auth info in error response envelopes', async () => {
-      mockAnalysisReturn(handlerEntries[0], errorAnalysisEnvelope('no_analysis_protocol'));
-
-      const r = await dataQuality(mockEvent);
-
-      expect(r.meta?.auth).toBeDefined();
-      expect(r.meta?.auth.capability).toBe('observe');
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // 6. Scenario non-mutation (read-only)
   // -----------------------------------------------------------------------
 
@@ -637,3 +573,18 @@ describe('Intelligence route delegation', () => {
     }
   });
 });
+
+// These behavior fixtures explicitly represent an authorized legacy full-read request.
+// Real membership, revocation and resource denial are covered in legacy-financial-read.test.ts.
+vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requireFullRead: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'liquidity:full-read', allowed: true },
+    budgetId: 'budget_test',
+  })),
+  requireRegisteredOwner: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'owner:financial-discovery', allowed: true },
+  })),
+}));

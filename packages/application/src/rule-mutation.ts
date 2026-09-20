@@ -25,7 +25,7 @@
 
 import type {
   WorkflowStore,
-  CategorizationProposal,
+  ActionProposal,
   IdempotencyClaim,
   IdempotencyRecord,
   AuditRecord,
@@ -836,7 +836,7 @@ export class RuleMutationService {
    * Supports both flat format ({ name }) and nativeRule-nested ({ nativeRule: { name } }).
    * Throws when the name is missing or empty.
    */
-  private extractRuleName(proposal: CategorizationProposal): string {
+  private extractRuleName(proposal: ActionProposal): string {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
@@ -862,7 +862,7 @@ export class RuleMutationService {
    * format ({ nativeRule: { name, conditions, actions } }).
    * Throws when required fields are missing or degenerate.
    */
-  private extractRuleInput(proposal: CategorizationProposal): RuleProposalInput {
+  private extractRuleInput(proposal: ActionProposal): RuleProposalInput {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
@@ -947,7 +947,7 @@ export class RuleMutationService {
    */
   private async auditFailure(
     input: ExecuteRuleInput,
-    proposal: CategorizationProposal,
+    proposal: ActionProposal,
     auth: AuthorizationResult,
     err: unknown,
   ): Promise<void> {
@@ -977,7 +977,7 @@ export class RuleMutationService {
    */
   private async appendFailureAudit(
     input: ExecuteRuleInput,
-    proposal: CategorizationProposal | null,
+    proposal: ActionProposal | null,
     auth: AuthorizationResult | null,
     result: string,
   ): Promise<void> {
@@ -1036,7 +1036,7 @@ export class RuleMutationService {
    * Throws when required fields are missing or degenerate, ensuring no
    * default/unnamed rule reaches the ledger.
    */
-  private buildRuleProposal(proposal: CategorizationProposal): RuleProposal {
+  private buildRuleProposal(proposal: ActionProposal): RuleProposal {
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;

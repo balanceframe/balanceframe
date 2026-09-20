@@ -17,6 +17,7 @@ import type {
   BudgetMonth,
   Money,
   FinancialSnapshot,
+  TransferSettlementRecord,
 } from '@balanceframe/protocol-generated';
 export type { Money } from '@balanceframe/protocol-generated';
 
@@ -415,6 +416,8 @@ export interface LedgerSnapshotResult {
   };
   /** Canonical, source-qualified snapshot produced from the same synchronization. */
   financialSnapshot: FinancialSnapshot;
+  /** Trusted normalized source records. Omission means unavailable; completeness follows financialSnapshot coverage. */
+  transferSettlementRecords?: TransferSettlementRecord[];
   health: HealthReport;
   watermark: SyncWatermark;
 }

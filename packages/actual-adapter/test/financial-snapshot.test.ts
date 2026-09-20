@@ -13,6 +13,13 @@ import { ActualConnector } from '../src/connector';
 import type { ActualClient } from '../src/connector';
 import { NullCredentialStore } from '../src/credentials';
 import type { LedgerSnapshotResult } from '../src/types';
+import {
+  mergeUserAttestedLiquidityObservations,
+  normalizeActualScheduleLiquiditySource,
+  normalizeActualTransferSettlementRecords,
+  withLiquidityFacts,
+} from '../src/liquidity-normalizer';
+import * as liquidityNormalizer from '../src/liquidity-normalizer';
 
 const CAPTURED_AT = '2026-08-23T12:00:00.000Z';
 const SERVER_URL = 'http://actual.test:5006';
@@ -201,6 +208,932 @@ afterEach(() => {
 });
 
 describe('ActualConnector FinancialSnapshot synchronization', () => {
+  it('records successful account enumeration independently from unavailable per-account facts', async () => {
+    const result = await synchronize(
+      createActualClient({
+        getAccounts: vi
+          .fn()
+          .mockResolvedValue([
+            account('known-balance', 'Known balance', 12000),
+            account('missing-balance', 'Missing balance', null),
+          ]),
+        getAccountBalance: vi.fn().mockRejectedValue(new Error('balance unavailable')),
+      }),
+    );
+    expect(result.financialSnapshot.coverage.accounts).toBe('partial');
+    expect(
+      result.financialSnapshot.observations.filter(
+        (item) => item.kind === 'account_collection_coverage',
+      ),
+    ).toEqual([
+      {
+        kind: 'account_collection_coverage',
+        scope: { kind: 'global' },
+        state: 'complete',
+        observedAt: CAPTURED_AT,
+        evidence: [],
+      },
+    ]);
+    expect(
+      result.financialSnapshot.observations
+        .filter((item) => item.kind === 'account_type')
+        .map((item) => item.state),
+    ).toEqual(['unknown', 'unknown']);
+    expect(
+      result.financialSnapshot.observations.find(
+        (item) =>
+          item.kind === 'account_balance' &&
+          item.scope.kind === 'account' &&
+          item.scope.id === 'missing-balance',
+      )?.state,
+    ).toBe('unavailable');
+    expect(result.financialSnapshot.liquidity?.accounts[1]?.balanceEvidence.state).toBe(
+      'unavailable',
+    );
+  });
+
+  it('distinguishes confirmed empty account enumeration from an unavailable collection', async () => {
+    const empty = (await synchronize(createActualClient())).financialSnapshot;
+    expect(empty.coverage.accounts).toBe('empty');
+    expect(
+      empty.observations.filter((item) => item.kind === 'account_collection_coverage'),
+    ).toEqual([
+      {
+        kind: 'account_collection_coverage',
+        scope: { kind: 'global' },
+        state: 'complete',
+        observedAt: CAPTURED_AT,
+        evidence: [],
+      },
+    ]);
+    const failed = await synchronize(
+      createActualClient({
+        getAccounts: vi.fn().mockRejectedValue(new Error('account collection unavailable')),
+      }),
+    );
+    expect(failed.financialSnapshot.coverage.accounts).toBe('unknown');
+    expect(failed.snapshot.accounts).toEqual([]);
+    expect(
+      failed.financialSnapshot.observations.filter(
+        (item) => item.kind === 'account_collection_coverage',
+      ),
+    ).toEqual([
+      {
+        kind: 'account_collection_coverage',
+        scope: { kind: 'global' },
+        state: 'unknown',
+        observedAt: null,
+        evidence: [],
+      },
+    ]);
+  });
+
+  it('returns trusted normalized Actual settlement sides before source transfer links are discarded', async () => {
+    const source = [
+      transaction({
+        id: 'source-import',
+        account: 'cash',
+        date: '2026-08-23',
+        amount: -2300,
+        transfer_id: 'destination-import',
+        imported_id: 'bank-debit',
+        reconciled: true,
+      }),
+      transaction({
+        id: 'destination-import',
+        account: 'savings',
+        date: '2026-08-23',
+        amount: 2300,
+        transfer_id: 'source-import',
+        imported_id: 'bank-credit',
+        reconciled: true,
+      }),
+      transaction({
+        id: 'manual-source',
+        account: 'cash',
+        date: '2026-08-23',
+        amount: -100,
+        transfer_id: 'manual-destination',
+        reconciled: true,
+      }),
+      transaction({
+        id: 'manual-destination',
+        account: 'savings',
+        date: '2026-08-23',
+        amount: 100,
+        transfer_id: 'manual-source',
+        reconciled: true,
+      }),
+    ];
+    const result = await synchronize(
+      createActualClient({
+        getAccounts: vi
+          .fn()
+          .mockResolvedValue([
+            account('cash', 'Cash', 15000),
+            account('savings', 'Savings', 20000),
+          ]),
+        getTransactions: vi
+          .fn()
+          .mockImplementation(async (accountId: string) =>
+            source.filter((item) => item.account === accountId),
+          ),
+      }),
+    );
+    expect(result.transferSettlementRecords).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'source-import',
+          accountId: 'cash',
+          pairId: 'destination-import:source-import',
+          amount: { minorUnits: '-2300', currency: 'USD' },
+          importedId: 'bank-debit',
+          reconciled: true,
+          provenance: 'actual_import',
+          occurredAt: '2026-08-23',
+          observedAt: CAPTURED_AT,
+        }),
+        expect.objectContaining({
+          id: 'destination-import',
+          accountId: 'savings',
+          pairId: 'destination-import:source-import',
+          amount: { minorUnits: '2300', currency: 'USD' },
+          importedId: 'bank-credit',
+          reconciled: true,
+          provenance: 'actual_import',
+          occurredAt: '2026-08-23',
+          observedAt: CAPTURED_AT,
+        }),
+        expect.objectContaining({
+          id: 'manual-source',
+          importedId: null,
+          provenance: 'manual_ledger',
+        }),
+        expect.objectContaining({
+          id: 'manual-destination',
+          importedId: null,
+          provenance: 'manual_ledger',
+        }),
+      ]),
+    );
+    expect(result.transferSettlementRecords).toHaveLength(4);
+    expect(result.financialSnapshot.coverage.transactions).toBe('complete');
+  });
+
+  it('retains unverified linked transfer credits despite manual clearing and current-ledger confirmation', async () => {
+    const original = (
+      await synchronize(
+        createActualClient({
+          getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 15000)]),
+          getTransactions: vi.fn().mockResolvedValue([
+            transaction({
+              id: 'manual-credit',
+              account: 'cash',
+              date: '2026-08-23',
+              amount: 1000,
+              transfer_id: 'manual-debit',
+              cleared: true,
+              reconciled: true,
+            }),
+            transaction({
+              id: 'imported-credit',
+              account: 'cash',
+              date: '2026-08-23',
+              amount: 2000,
+              transfer_id: 'imported-debit',
+              imported_id: 'bank-import',
+              cleared: true,
+              reconciled: true,
+            }),
+            transaction({
+              id: 'unreconciled-credit',
+              account: 'cash',
+              date: '2026-08-23',
+              amount: 3000,
+              transfer_id: 'unreconciled-debit',
+              imported_id: 'unreconciled-import',
+              cleared: true,
+              reconciled: false,
+            }),
+            transaction({
+              id: 'ordinary-manual-income',
+              account: 'cash',
+              date: '2026-08-23',
+              amount: 4000,
+              cleared: true,
+              reconciled: true,
+            }),
+          ]),
+        }),
+      )
+    ).financialSnapshot;
+    expect(original.liquidity?.accounts[0]?.unsettledFlows).toEqual([
+      expect.objectContaining({
+        id: 'manual-credit',
+        direction: 'inflow',
+        includedInBalance: true,
+        amount: { minorUnits: '1000', currency: 'USD' },
+        provenance: 'manual_ledger',
+      }),
+      expect.objectContaining({
+        id: 'unreconciled-credit',
+        direction: 'inflow',
+        includedInBalance: true,
+        amount: { minorUnits: '3000', currency: 'USD' },
+        provenance: 'actual_import',
+      }),
+    ]);
+    expect(original.liquidity?.accounts[0]?.activityEvidence.reasons).toContain(
+      'manual_transfer_credit_unverified',
+    );
+    const bound = liquidityNormalizer.bindUserAttestedLiquidityObservations(original, [
+      {
+        accountId: 'cash',
+        observedAt: CAPTURED_AT,
+        expiresAt: '2026-08-23T12:15:00Z',
+        currentLedgerConfirmed: true,
+        unsettledFlows: [],
+      },
+    ]);
+    const merged = mergeUserAttestedLiquidityObservations(original, bound);
+    expect(merged.liquidity?.accounts[0]?.unsettledFlows).toEqual(
+      original.liquidity?.accounts[0]?.unsettledFlows,
+    );
+    expect(merged.liquidity?.accounts[0]?.activityEvidence.reasons).toContain(
+      'manual_transfer_credit_unverified',
+    );
+  });
+
+  it('keeps plain Actual freshness unknown and confirms current ledger freshness without replacing authoritative money', async () => {
+    const original = (
+      await synchronize(
+        createActualClient({
+          getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 15000)]),
+        }),
+      )
+    ).financialSnapshot;
+    expect(original.liquidity?.accounts[0]?.freshnessEvidence).toMatchObject({
+      state: 'unknown',
+      source: 'actual_ledger',
+      observedAt: null,
+    });
+    const merged = mergeUserAttestedLiquidityObservations(
+      original,
+      liquidityNormalizer.bindUserAttestedLiquidityObservations(original, [
+        {
+          accountId: 'cash',
+          observedAt: CAPTURED_AT,
+          expiresAt: '2026-08-23T12:15:00Z',
+          currentLedgerConfirmed: true,
+          kind: 'cash',
+          currency: 'USD',
+          owned: true,
+          holds: { minorUnits: '0', currency: 'USD' },
+        },
+      ]),
+    );
+    expect(merged.liquidity?.accounts[0]?.freshnessEvidence).toMatchObject({
+      state: 'known',
+      source: 'user_attested',
+      observedAt: CAPTURED_AT,
+      expiresAt: '2026-08-23T12:15:00Z',
+    });
+    expect(merged.liquidity?.accounts[0]?.recordedBalance).toEqual(
+      original.liquidity?.accounts[0]?.recordedBalance,
+    );
+    expect(merged.liquidity?.accounts[0]?.balanceEvidence).toEqual(
+      original.liquidity?.accounts[0]?.balanceEvidence,
+    );
+    expect(merged.liquidity?.accounts[0]?.balanceEvidence.source).toBe('actual_ledger');
+    expect(merged.liquidity?.accounts[0]?.balanceEvidence.reasons).toContain(
+      'ledger_balance_not_institution_freshness',
+    );
+  });
+
+  it('binds ledger confirmation to account material, not capture time or caller-supplied hashes', async () => {
+    const snapshot = async (balance: number, pending = false) =>
+      (
+        await synchronize(
+          createActualClient({
+            getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', balance)]),
+            getTransactions: vi.fn().mockResolvedValue(
+              pending
+                ? [
+                    transaction({
+                      id: 'new-pending',
+                      account: 'cash',
+                      date: '2026-08-23',
+                      amount: -100,
+                      cleared: false,
+                    }),
+                  ]
+                : [],
+            ),
+          }),
+        )
+      ).financialSnapshot;
+    const original = await snapshot(15000);
+    const input = {
+      accountId: 'cash',
+      observedAt: CAPTURED_AT,
+      expiresAt: '2026-08-23T12:15:00Z',
+      currentLedgerConfirmed: true as const,
+    };
+    const bound = liquidityNormalizer.bindUserAttestedLiquidityObservations(original, [input]);
+    expect(
+      liquidityNormalizer.userAttestedLiquidityObservationSchema.safeParse(bound[0]).success,
+    ).toBe(false);
+    expect(() => mergeUserAttestedLiquidityObservations(original, [input])).toThrow();
+    expect(
+      mergeUserAttestedLiquidityObservations(original, bound).liquidity?.accounts[0]
+        ?.freshnessEvidence.state,
+    ).toBe('known');
+    vi.setSystemTime(new Date('2026-08-23T12:01:00Z'));
+    const recaptured = await snapshot(15000);
+    expect(
+      mergeUserAttestedLiquidityObservations(recaptured, bound).liquidity?.accounts[0]
+        ?.freshnessEvidence,
+    ).toMatchObject({
+      source: 'user_attested',
+      observedAt: CAPTURED_AT,
+      expiresAt: input.expiresAt,
+    });
+    const changedBalance = await snapshot(15001);
+    const changedActivity = await snapshot(15000, true);
+    expect(() => mergeUserAttestedLiquidityObservations(changedBalance, bound)).toThrow();
+    expect(() => mergeUserAttestedLiquidityObservations(changedActivity, bound)).toThrow();
+  });
+
+  it('does not let user attestations overwrite ledger balances or erase ledger flow and schedule evidence', async () => {
+    const original = (
+      await synchronize(
+        createActualClient({
+          getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 12000)]),
+          getTransactions: vi.fn().mockResolvedValue([
+            transaction({
+              id: 'debit',
+              account: 'cash',
+              date: '2026-08-23',
+              amount: -2000,
+              cleared: false,
+            }),
+          ]),
+          getSchedules: vi.fn().mockResolvedValue([
+            schedule({
+              id: 'bill',
+              name: 'Bill',
+              account: 'cash',
+              amount: -3000,
+              next_date: '2026-08-25',
+            }),
+          ]),
+        }),
+      )
+    ).financialSnapshot;
+    const attestation = {
+      accountId: 'cash',
+      observedAt: CAPTURED_AT,
+      expiresAt: '2026-08-24T12:00:00Z',
+    };
+    expect(() =>
+      mergeUserAttestedLiquidityObservations(original, [
+        {
+          ...attestation,
+          recordedBalance: { minorUnits: '999999', currency: 'USD' },
+        } as never,
+      ]),
+    ).toThrow();
+    expect(() =>
+      mergeUserAttestedLiquidityObservations(original, [
+        {
+          ...attestation,
+          source: 'institution_provider',
+        } as never,
+      ]),
+    ).toThrow();
+    const merged = mergeUserAttestedLiquidityObservations(original, [
+      {
+        ...attestation,
+        kind: 'cash',
+        currency: 'USD',
+        unsettledFlows: [],
+        obligations: [],
+      },
+    ]);
+    expect(merged.liquidity?.accounts[0]?.recordedBalance).toEqual(
+      original.liquidity?.accounts[0]?.recordedBalance,
+    );
+    expect(merged.liquidity?.accounts[0]?.unsettledFlows).toEqual(
+      original.liquidity?.accounts[0]?.unsettledFlows,
+    );
+    expect(merged.liquidity?.accounts[0]?.obligations).toEqual(
+      original.liquidity?.accounts[0]?.obligations,
+    );
+    expect(merged.liquidity?.accounts[0]?.scheduleEvidence.state).toBe('unknown');
+    expect(merged.liquidity?.accounts[0]?.kindEvidence).toMatchObject({
+      source: 'user_attested',
+      expiresAt: attestation.expiresAt,
+    });
+    expect(merged.contentHash).not.toBe(original.contentHash);
+    expect(merged.liquidity?.ledgerContentHash).toBe(original.liquidity?.ledgerContentHash);
+    expect(original.liquidity?.accounts[0]?.kind).toBe('unknown');
+  });
+
+  it('preserves signed Actual schedule ranges without claiming exact coverage', () => {
+    expect(
+      normalizeActualScheduleLiquiditySource(
+        schedule({
+          id: 'variable-bill',
+          name: 'Variable',
+          account: 'cash',
+          amountOp: 'isbetween',
+          amount: { num1: -4000, num2: -2000 },
+          next_date: '2026-08-25',
+        }),
+        'USD',
+      ),
+    ).toMatchObject({
+      id: 'variable-bill',
+      certainty: 'range',
+      amount: null,
+      minimum: { minorUnits: '-4000', currency: 'USD' },
+      maximum: { minorUnits: '-2000', currency: 'USD' },
+    });
+    const records = normalizeActualTransferSettlementRecords(
+      [
+        transaction({
+          id: 'debit',
+          account: 'cash',
+          date: '2026-08-23',
+          amount: -2000,
+          transfer_id: 'credit',
+          imported_id: 'user-set-id',
+          reconciled: true,
+        }),
+      ],
+      CAPTURED_AT,
+      'USD',
+    );
+    expect(records[0]).toMatchObject({
+      importedId: 'user-set-id',
+      reconciled: true,
+      provenance: 'actual_import',
+    });
+  });
+
+  it('does not turn a manual linked transfer into imported evidence without independent import IDs', () => {
+    const records = normalizeActualTransferSettlementRecords(
+      [
+        transaction({
+          id: 'manual-debit',
+          account: 'cash',
+          date: '2026-08-23',
+          amount: -2000,
+          transfer_id: 'manual-credit',
+          reconciled: true,
+        }),
+        transaction({
+          id: 'manual-credit',
+          account: 'savings',
+          date: '2026-08-23',
+          amount: 2000,
+          transfer_id: 'manual-debit',
+          reconciled: true,
+        }),
+      ],
+      CAPTURED_AT,
+      'USD',
+    );
+    expect(records.map((record) => record.provenance)).toEqual(['manual_ledger', 'manual_ledger']);
+  });
+
+  it('keeps uncertain schedule amounts in typed facts, never in public reason codes', async () => {
+    const result = await synchronize(
+      createActualClient({
+        getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 12000)]),
+        getSchedules: vi.fn().mockResolvedValue([
+          schedule({
+            id: 'private-variable-bill',
+            name: 'Variable',
+            account: 'cash',
+            rule: 'private-rule',
+            amountOp: 'isbetween',
+            amount: { num1: -4321, num2: -2345 },
+            date: '2026-08-25',
+            next_date: '2026-08-25',
+          }),
+        ]),
+      }),
+    );
+    expect(result.financialSnapshot.liquidity?.schedules).toEqual([
+      {
+        id: 'private-variable-bill',
+        accountId: 'cash',
+        categoryId: null,
+        ruleId: 'private-rule',
+        dueDate: '2026-08-25',
+        certainty: 'range',
+        amount: null,
+        recurrence: null,
+        minimum: { minorUnits: '-4321', currency: 'USD' },
+        maximum: { minorUnits: '-2345', currency: 'USD' },
+      },
+    ]);
+    expect(result.financialSnapshot.liquidity?.accounts[0]?.scheduleEvidence).toMatchObject({
+      state: 'unknown',
+      reasons: ['schedule_uncertain'],
+    });
+    const changedAmount = structuredClone(result.financialSnapshot.liquidity!);
+    changedAmount.schedules[0]!.minimum!.minorUnits = '-4322';
+    expect(withLiquidityFacts(result.financialSnapshot, changedAmount).contentHash).not.toBe(
+      result.financialSnapshot.contentHash,
+    );
+  });
+
+  it('keeps an exact one-time Actual bill usable while preserving recurring configuration as unsupported coverage', async () => {
+    const result = await synchronize(
+      createActualClient({
+        getAccounts: vi
+          .fn()
+          .mockResolvedValue([
+            account('cash', 'Cash', 12000),
+            account('recurring', 'Recurring', 12000),
+          ]),
+        getSchedules: vi.fn().mockResolvedValue([
+          schedule({
+            id: 'once',
+            name: 'One-time bill',
+            account: 'cash',
+            amount: -3456,
+            date: '2026-08-25',
+            next_date: '2026-08-25',
+          }),
+          schedule({
+            id: 'monthly',
+            name: 'Monthly bill',
+            account: 'recurring',
+            amount: -2000,
+            date: {
+              frequency: 'monthly',
+              interval: 2,
+              patterns: [{ type: 'day', value: 15 }],
+              start: '2026-08-15',
+              endMode: 'on_date',
+              endDate: '2027-08-15',
+              skipWeekend: true,
+              weekendSolveMode: 'before',
+            },
+            next_date: '2026-10-15',
+          }),
+        ]),
+      }),
+    );
+    expect(result.financialSnapshot.liquidity?.accounts[0]).toMatchObject({
+      scheduleEvidence: { state: 'known', reasons: [] },
+      obligations: [
+        { id: 'once', amount: { minorUnits: '3456', currency: 'USD' }, dueAt: '2026-08-25' },
+      ],
+    });
+    expect(result.financialSnapshot.liquidity?.accounts[1]?.scheduleEvidence).toMatchObject({
+      state: 'unknown',
+      reasons: ['schedule_recurrence_unsupported'],
+    });
+    expect(result.financialSnapshot.liquidity?.schedules[1]?.recurrence).toMatchObject({
+      frequency: 'monthly',
+      interval: 2,
+      patterns: [{ kind: 'day', value: 15 }],
+      start: '2026-08-15',
+      endMode: 'on_date',
+      endDate: '2027-08-15',
+      skipWeekend: true,
+      weekendSolveMode: 'before',
+    });
+  });
+
+  it.each([
+    { label: 'partial posted amount', parts: [{ id: 'part', amount: -400, cleared: true }] },
+    { label: 'overpayment', parts: [{ id: 'over', amount: -1200, cleared: true }] },
+    { label: 'wrong-sign linked amount', parts: [{ id: 'refund', amount: 1000, cleared: true }] },
+    {
+      label: 'offsetting wrong-sign links',
+      parts: [
+        { id: 'over', amount: -1200, cleared: true },
+        { id: 'refund', amount: 200, cleared: true },
+      ],
+    },
+    {
+      label: 'duplicate row identity',
+      parts: [
+        { id: 'duplicate', amount: -500, cleared: true },
+        { id: 'duplicate', amount: -500, cleared: true },
+      ],
+    },
+    {
+      label: 'duplicate imported identity',
+      parts: [
+        { id: 'row-a', imported_id: 'same-import', amount: -500, cleared: true },
+        { id: 'row-b', imported_id: 'same-import', amount: -500, cleared: true },
+      ],
+    },
+  ])('fails closed rather than discharging a scheduled bill from $label', async ({ parts }) => {
+    const result = await synchronize(
+      createActualClient({
+        getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 9000)]),
+        getSchedules: vi.fn().mockResolvedValue([
+          schedule({
+            id: 'bill',
+            name: 'Bill',
+            account: 'cash',
+            date: '2026-08-25',
+            next_date: '2026-08-25',
+            amount: -1000,
+          }),
+        ]),
+        getTransactions: vi
+          .fn()
+          .mockResolvedValue(
+            parts.map((part) =>
+              transaction({ account: 'cash', date: '2026-08-25', schedule: 'bill', ...part }),
+            ),
+          ),
+      }),
+    );
+    expect(result.financialSnapshot.liquidity?.accounts[0]).toMatchObject({
+      scheduleEvidence: { state: 'unknown', reasons: ['schedule_linked_amount_ambiguous'] },
+      obligations: [
+        {
+          id: 'bill',
+          amount: { minorUnits: '1000', currency: 'USD' },
+          paid: false,
+          includedInBalance: false,
+        },
+      ],
+    });
+  });
+
+  it('requires the full exact cleared total for payment, independently of exact total ledger inclusion', async () => {
+    const result = async (secondCleared: boolean) =>
+      synchronize(
+        createActualClient({
+          getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 9000)]),
+          getSchedules: vi.fn().mockResolvedValue([
+            schedule({
+              id: 'bill',
+              name: 'Bill',
+              account: 'cash',
+              date: '2026-08-25',
+              next_date: '2026-08-25',
+              amount: -1000,
+            }),
+          ]),
+          getTransactions: vi.fn().mockResolvedValue([
+            transaction({
+              id: 'first',
+              account: 'cash',
+              date: '2026-08-25',
+              schedule: 'bill',
+              amount: -600,
+              cleared: true,
+            }),
+            transaction({
+              id: 'second',
+              account: 'cash',
+              date: '2026-08-25',
+              schedule: 'bill',
+              amount: -400,
+              cleared: secondCleared,
+            }),
+          ]),
+        }),
+      );
+    expect((await result(false)).financialSnapshot.liquidity?.accounts[0]).toMatchObject({
+      scheduleEvidence: { state: 'known' },
+      obligations: [{ includedInBalance: true, paid: false }],
+    });
+    expect((await result(true)).financialSnapshot.liquidity?.accounts[0]).toMatchObject({
+      scheduleEvidence: { state: 'known' },
+      obligations: [{ includedInBalance: true, paid: true }],
+    });
+  });
+
+  it('excludes source-declared income from cash buckets without hiding missing expense availability', async () => {
+    const result = await synchronize(
+      createActualClient({
+        getCategories: vi.fn().mockResolvedValue([
+          { id: 'food', name: 'Food', is_income: false },
+          { id: 'missing-expense', name: 'Missing expense', is_income: false },
+          { id: 'starting-balances', name: 'Starting balances', is_income: true },
+          { id: 'income-row', name: 'Income row', is_income: true },
+        ]),
+        getBudgetMonths: vi.fn().mockResolvedValue(['2026-08']),
+        getBudgetMonth: vi.fn().mockResolvedValue({
+          month: '2026-08',
+          categoryGroups: [
+            {
+              id: 'all',
+              categories: [
+                { id: 'food', budgeted: 1000, spent: -100, balance: 3000 },
+                {
+                  id: 'income-row',
+                  is_income: true,
+                  budgeted: 10000,
+                  received: 10000,
+                  balance: 10000,
+                },
+              ],
+            },
+          ],
+        }),
+      }),
+    );
+    expect(result.financialSnapshot.liquidity?.categories).toEqual([
+      expect.objectContaining({
+        categoryId: 'food',
+        availability: { minorUnits: '3000', currency: 'USD' },
+        evidence: expect.objectContaining({ state: 'known' }),
+      }),
+      expect.objectContaining({
+        categoryId: 'missing-expense',
+        evidence: expect.objectContaining({ state: 'unavailable' }),
+      }),
+    ]);
+    expect(
+      result.snapshot.categories
+        .filter((category) => category.isIncome)
+        .map((category) => category.id),
+    ).toEqual(['starting-balances', 'income-row']);
+  });
+
+  it('keeps current authoritative balance separate from future additional assignments, excluding rolled carryover', async () => {
+    const result = await synchronize(
+      createActualClient({
+        getCategories: vi.fn().mockResolvedValue([{ id: 'food', name: 'Food', is_income: false }]),
+        getBudgetMonths: vi.fn().mockResolvedValue(['2026-08', '2026-09', '2026-10']),
+        getBudgetMonth: vi.fn().mockImplementation(async (month: string) => ({
+          month,
+          categoryGroups: [
+            {
+              id: 'living',
+              categories: [
+                {
+                  id: 'food',
+                  ...(month !== '2026-10' ? { budgeted: 1000 } : {}),
+                  spent: 0,
+                  balance: month === '2026-08' ? 3000 : 4000,
+                  carryover: false,
+                },
+              ],
+            },
+          ],
+        })),
+      }),
+    );
+    expect(result.financialSnapshot.liquidity?.categories).toEqual([
+      expect.objectContaining({
+        categoryId: 'food',
+        cashBucketId: 'actual:category:food:2026-08',
+        periodKind: 'current',
+        availability: { minorUnits: '3000', currency: 'USD' },
+        evidence: expect.objectContaining({ state: 'known' }),
+      }),
+      expect.objectContaining({
+        categoryId: 'food',
+        cashBucketId: 'actual:category:food:2026-09',
+        periodKind: 'future',
+        availability: { minorUnits: '1000', currency: 'USD' },
+        evidence: expect.objectContaining({ state: 'known' }),
+      }),
+      expect.objectContaining({
+        categoryId: 'food',
+        cashBucketId: 'actual:category:food:2026-10',
+        periodKind: 'future',
+        evidence: expect.objectContaining({ state: 'unavailable' }),
+      }),
+    ]);
+  });
+
+  it('preserves authoritative Actual category balance independently of assigned budget and month', async () => {
+    const result = await synchronize(
+      createActualClient({
+        getCategories: vi.fn().mockResolvedValue([{ id: 'food', name: 'Food', is_income: false }]),
+        getBudgetMonths: vi.fn().mockResolvedValue(['2026-08', '2026-09']),
+        getBudgetMonth: vi.fn().mockImplementation(async (month: string) => ({
+          month,
+          categoryGroups: [
+            {
+              id: 'essentials',
+              categories: [
+                {
+                  id: 'food',
+                  budgeted: month === '2026-08' ? 10000 : 0,
+                  spent: month === '2026-08' ? -2000 : 0,
+                  balance: 13700,
+                },
+              ],
+            },
+          ],
+        })),
+      }),
+    );
+    expect(result.financialSnapshot).toHaveProperty('liquidity');
+    expect(result.financialSnapshot.liquidity?.categories).toEqual([
+      expect.objectContaining({
+        categoryId: 'food',
+        asOfMonth: '2026-08',
+        kind: 'ordinary',
+        periodKind: 'current',
+        cashBucketId: 'actual:category:food:2026-08',
+        availability: { minorUnits: '13700', currency: 'USD' },
+        evidence: expect.objectContaining({ state: 'known', source: 'actual_ledger' }),
+      }),
+      expect.objectContaining({
+        categoryId: 'food',
+        asOfMonth: '2026-09',
+        kind: 'ordinary',
+        periodKind: 'future',
+        cashBucketId: 'actual:category:food:2026-09',
+        availability: { minorUnits: '0', currency: 'USD' },
+      }),
+    ]);
+  });
+
+  it('retains signed unsettled inclusion and source links with Actual import provenance distinct from bank confirmation', async () => {
+    const result = await synchronize(
+      createActualClient({
+        getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 12000)]),
+        getTransactions: vi.fn().mockResolvedValue([
+          transaction({
+            id: 'incoming',
+            account: 'cash',
+            date: '2026-08-23',
+            amount: 5000,
+            cleared: false,
+          }),
+          transaction({
+            id: 'outgoing',
+            account: 'cash',
+            date: '2026-08-23',
+            amount: -2000,
+            cleared: false,
+            schedule: 'bill',
+            transfer_id: 'other-side',
+            imported_id: 'user-set-id',
+          }),
+        ]),
+      }),
+    );
+    const facts = result.financialSnapshot.liquidity?.accounts[0];
+    expect(facts?.unsettledFlows).toEqual([
+      expect.objectContaining({
+        id: 'incoming',
+        direction: 'inflow',
+        amount: { minorUnits: '5000', currency: 'USD' },
+        includedInBalance: true,
+      }),
+      expect.objectContaining({
+        id: 'outgoing',
+        direction: 'outflow',
+        amount: { minorUnits: '2000', currency: 'USD' },
+        includedInBalance: true,
+        scheduleId: 'bill',
+        transferTransactionId: 'other-side',
+        importedId: 'user-set-id',
+        provenance: 'actual_import',
+      }),
+    ]);
+    expect(facts).toMatchObject({
+      kind: 'unknown',
+      balanceEvidence: { source: 'actual_ledger' },
+      currencyEvidence: { state: 'unknown' },
+      holdsEvidence: { state: 'unknown' },
+    });
+  });
+
+  it('distinguishes unavailable balance and activity from explicit ledger zero and known empty activity', async () => {
+    const missing = await synchronize(
+      createActualClient({
+        getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', null)]),
+        getAccountBalance: vi.fn().mockRejectedValue(new Error('unavailable')),
+        getTransactions: vi.fn().mockRejectedValue(new Error('unavailable')),
+      }),
+    );
+    const empty = await synchronize(
+      createActualClient({
+        getAccounts: vi.fn().mockResolvedValue([account('cash', 'Cash', 0)]),
+      }),
+    );
+    expect(missing.financialSnapshot.liquidity?.accounts[0]).toMatchObject({
+      balanceEvidence: { state: 'unavailable' },
+      activityEvidence: { state: 'unavailable' },
+    });
+    expect(empty.financialSnapshot.liquidity?.accounts[0]).toMatchObject({
+      recordedBalance: { minorUnits: '0', currency: 'USD' },
+      balanceEvidence: { state: 'known' },
+      activityEvidence: { state: 'known' },
+      unsettledFlows: [],
+    });
+  });
+
   it('additively returns a source-namespaced canonical snapshot and retains the legacy snapshot', async () => {
     const client = createActualClient({
       getAccounts: vi.fn().mockResolvedValue([account('account-checking', 'Checking', 125_000)]),

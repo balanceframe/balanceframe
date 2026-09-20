@@ -72,18 +72,16 @@ describe('GET /api/reports/views', () => {
   });
 
   it('lists persisted views without restoring the external ledger', async () => {
-    const listSavedViews = vi
-      .fn()
-      .mockResolvedValue([
-        {
-          viewId: 'v1',
-          name: 'Monthly',
-          viewType: 'pending_review',
-          scope: {},
-          sort: null,
-          createdAt: '2026-07-01T00:00:00Z',
-        },
-      ]);
+    const listSavedViews = vi.fn().mockResolvedValue([
+      {
+        viewId: 'v1',
+        name: 'Monthly',
+        viewType: 'pending_review',
+        scope: {},
+        sort: null,
+        createdAt: '2026-07-01T00:00:00Z',
+      },
+    ]);
     vi.mocked(getWorkflowStore).mockReturnValue({
       store: { listSavedViews } as unknown as SqliteWorkflowStore,
     });
@@ -116,3 +114,18 @@ describe('GET /api/reports/views', () => {
     expect(r.error.retryable).toBe(true);
   });
 });
+
+// These behavior fixtures explicitly represent an authorized legacy full-read request.
+// Real membership, revocation and resource denial are covered in legacy-financial-read.test.ts.
+vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requireFullRead: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'liquidity:full-read', allowed: true },
+    budgetId: 'budget_test',
+  })),
+  requireRegisteredOwner: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'owner:financial-discovery', allowed: true },
+  })),
+}));

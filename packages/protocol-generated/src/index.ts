@@ -1,5 +1,6 @@
 // Generated TypeScript declarations for the Rust-owned BalanceFrame protocol.
 // The JSON wire format is camelCase, matching Rust's serde(rename_all = "camelCase").
+import type { AccountAwareSpendabilityResult, LiquidityFacts } from './liquidity.js';
 
 export interface Money {
   minorUnits: string;
@@ -254,6 +255,8 @@ export interface PurchaseEvaluation {
   categoryRemaining: Money;
   /** Projected account balance after purchase (null if account not tracked). */
   projectedBalance: Money | null;
+  /** Independent funding and account settlement result; absent on legacy evaluations. */
+  accountAware?: AccountAwareSpendabilityResult | null;
 }
 
 /** Request to project future cash flow based on schedules and budgets. */
@@ -405,6 +408,8 @@ export interface FinancialSnapshot {
   coverage: SnapshotCoverage;
   inclusionScope: InclusionScope;
   observations: SourceObservation[];
+  /** Source-qualified liquidity facts; absence never asserts account readiness. */
+  liquidity?: LiquidityFacts | null;
 }
 
 export interface SnapshotSource {
@@ -448,6 +453,7 @@ export interface SourceObservation {
 export type ObservationKind =
   | 'account_freshness'
   | 'account_coverage'
+  | 'account_collection_coverage'
   | 'account_type'
   | 'account_balance'
   | 'pending_activity'
@@ -570,3 +576,5 @@ export interface ProspectiveDecisionEnvelope<T> {
   redaction: RedactionState;
   payload: T;
 }
+
+export type * from './liquidity.js';

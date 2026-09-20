@@ -59,6 +59,7 @@ import lastUsedHandler from '../../server/api/reports/views/[id]/last-used.patch
 
 const SAMPLE_VIEW = {
   viewId: 'view_001',
+  actorId: 'test-actor',
   name: 'My View',
   viewType: 'attention',
   scope: {},
@@ -104,6 +105,7 @@ describe('POST /api/reports/views/[id]/duplicate', () => {
   it('must duplicate a saved view', async () => {
     mockGetRouterParam.mockReturnValue('view_001');
     mockReadBody.mockResolvedValue({ name: 'Duplicated View' });
+    mockStore.getSavedView.mockResolvedValue(SAMPLE_VIEW);
     mockStore.duplicateSavedView.mockResolvedValue({
       ...SAMPLE_VIEW,
       viewId: 'view_002',
@@ -148,3 +150,18 @@ describe('PATCH /api/reports/views/[id]/last-used', () => {
     expect(r.error?.code).toBe('VIEW_NOT_FOUND');
   });
 });
+
+// These behavior fixtures explicitly represent an authorized legacy full-read request.
+// Real membership, revocation and resource denial are covered in legacy-financial-read.test.ts.
+vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requireFullRead: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'liquidity:full-read', allowed: true },
+    budgetId: 'budget_test',
+  })),
+  requireRegisteredOwner: vi.fn(async () => ({
+    ok: true,
+    info: { actorId: 'test-actor', capability: 'owner:financial-discovery', allowed: true },
+  })),
+}));

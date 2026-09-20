@@ -22,6 +22,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
+import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 
 // ---------------------------------------------------------------------------
 // Import service under test
@@ -37,7 +38,7 @@ import {
 // ---------------------------------------------------------------------------
 import type {
   WorkflowStore,
-  CategorizationProposal,
+  ActionProposal,
   ProposalApproval,
   IdempotencyRecord,
   AuditRecord,
@@ -127,13 +128,23 @@ function mockProtocolSnapshot(overrides: Partial<ProtocolSnapshot> = {}): Protoc
   };
 }
 
-function mockProposal(overrides: Partial<CategorizationProposal> = {}): CategorizationProposal {
+function mockProposal(
+  overrides: Partial<ActionProposal> = {},
+): Extract<ActionProposal, { operation: 'set_category' }> {
   return {
     id: TEST_PROPOSAL_ID,
+    version: 1,
+    state: {
+      phase: 'proposed',
+      sourceObserved: false,
+      destinationObserved: false,
+      reconciled: false,
+      outcome: null,
+    },
     operation: 'set_category',
     budgetId: TEST_BUDGET_ID,
-    transactionId: TEST_TX_ID,
-    categoryId: TEST_CATEGORY_ID,
+    payload: { kind: 'set_category', transactionId: TEST_TX_ID, categoryId: TEST_CATEGORY_ID },
+
     payloadHash: TEST_PAYLOAD_HASH,
     policyVersion: '1.0',
     preconditions: JSON.stringify({ currentCategoryId: null }),
@@ -145,7 +156,7 @@ function mockProposal(overrides: Partial<CategorizationProposal> = {}): Categori
     supersededAt: null,
     createdAt: '2026-07-20T10:00:00Z',
     ...overrides,
-  };
+  } as Extract<ActionProposal, { operation: 'set_category' }>;
 }
 
 function mockApproval(overrides: Partial<ProposalApproval> = {}): ProposalApproval {
@@ -456,6 +467,47 @@ describe('CategorizationMutationService', () => {
       result: 'completed',
       isError: false,
     } as AuditRecord);
+  });
+
+  it('never writes with an approval whose separate issuer has been revoked', async () => {
+    const realStore = new SqliteWorkflowStore(':memory:');
+    try {
+      await realStore.upsertActorMembership(
+        TEST_ACTOR,
+        'active',
+        ['categorization:execute'],
+        `budget:${TEST_BUDGET_ID}`,
+      );
+      await realStore.upsertActorMembership(
+        'separate-approver',
+        'active',
+        ['categorization:execute'],
+        `budget:${TEST_BUDGET_ID}`,
+      );
+      const proposal = await realStore.createProposal(mockProposal());
+      const approval = await realStore.createApproval({
+        proposalId: proposal.id,
+        payloadHash: proposal.payloadHash,
+        actorId: 'separate-approver',
+        expiresAt: proposal.expiresAt,
+      });
+      await realStore.upsertActorMembership(
+        'separate-approver',
+        'inactive',
+        ['categorization:execute'],
+        `budget:${TEST_BUDGET_ID}`,
+      );
+      const guardedService = new CategorizationMutationService(realStore, ledger, rust);
+      const result = await guardedService.execute(
+        makeInput({ proposalId: proposal.id, approvalId: approval.id }),
+      );
+      expect(result.success).toBe(false);
+      expect(result.verified).toBe(false);
+      expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+      expect((await realStore.getApproval(approval.id))?.status).toBe('active');
+    } finally {
+      realStore.close();
+    }
   });
 
   // =========================================================================

@@ -1,8 +1,8 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * GET /api/reports/views — list saved views.
  *
  * Read-only deterministic — no model or cloud invocation.
- * Skips authorization gates — results are always observable.
  *
  * Response envelope: SavedViewsListOutput
  */
@@ -14,7 +14,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   getActorId,
   sanitizeError,
 } from '../../utils/workflow-store';
@@ -36,7 +35,9 @@ function httpStatusForCode(code: string): number {
 }
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
 
   const wf = getWorkflowStore(event);

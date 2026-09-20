@@ -1,8 +1,8 @@
+import { requireFullRead } from '../../utils/legacy-financial-read';
 /**
  * GET /api/home/budget-summary — get budget summary for the current month.
  *
  * Read-only deterministic analysis — no model or cloud invocation.
- * Skips authorization gates — results are always observable.
  *
  * Query params: month (optional YYYY-MM)
  * Response envelope: BudgetSummaryOutput
@@ -19,7 +19,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   getActorId,
   sanitizeError,
   envelopeMetadata,
@@ -40,7 +39,9 @@ function httpStatusForCode(code: string): number {
 }
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  const fullRead = await requireFullRead(event);
+  if (!fullRead.ok) return fullRead.response;
+  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
   const query = getQuery(event);
 
@@ -67,6 +68,7 @@ export default defineEventHandler(async (event) => {
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,
     });
     return await manager.withConnection(async (connected) => {
+      if (connected.budget.id !== fullRead.budgetId) throw new Error('Selected budget changed');
       const protocol = await createNativeAnalysisProtocol();
 
       const input: CommandInput = {

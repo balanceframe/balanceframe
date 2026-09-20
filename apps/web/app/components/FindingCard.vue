@@ -60,6 +60,12 @@
     <p v-if="finding.detail" class="mt-3 text-xs text-gray-500 dark:text-gray-400">
       {{ finding.detail }}
     </p>
+    <NuxtLink
+      v-if="finding.transferId"
+      :to="`/transfer/${encodeURIComponent(finding.transferId)}`"
+      class="mt-3 inline-block text-sm font-medium underline"
+      >Review transfer status and next steps</NuxtLink
+    >
 
     <div v-if="finding.issue" class="mt-3 border-t border-gray-200 pt-2 dark:border-gray-700">
       <EvidenceDrawer
@@ -162,6 +168,7 @@ interface Finding {
   reasonCodes?: string[];
   detail?: string;
   classification?: string;
+  transferId?: string;
   status?: string;
   issue?: DecisionIssue;
   snapshotId?: string;
