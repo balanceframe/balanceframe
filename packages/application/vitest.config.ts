@@ -4,6 +4,9 @@ import { resolve } from 'path';
 export default defineConfig({
   test: {
     environment: 'node',
+    // Native integration tests need process isolation; worker threads can
+    // segfault during addon teardown on macOS ARM64.
+    pool: 'forks',
     include: ['test/**/*.test.ts'],
     testTimeout: 10_000,
     bail: 1,
