@@ -1,0 +1,30 @@
+{
+  "name": "@balanceframe/scenario-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed feature scenarios and isolated Actual seed inputs",
+  "main": "dist/scenario-kit/src/index.js",
+  "types": "dist/scenario-kit/src/index.d.ts",
+  "exports": {
+    ".": "./dist/scenario-kit/src/index.js",
+    "./catalog": "./dist/scenario-kit/src/catalog.js",
+    "./actual-seed": "./dist/scenario-kit/src/actual-seed.js"
+  },
+  "scripts": {
+    "build": "tsc && mkdir -p dist/protocol/fixtures/scenarios && cp ../../protocol/fixtures/scenarios/household.json dist/protocol/fixtures/scenarios/household.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@actual-app/api": "^26.7.0",
+    "@balanceframe/application": "workspace:*",
+    "@balanceframe/protocol-generated": "workspace:*",
+    "@balanceframe/workflow-store": "workspace:*",
+    "zod": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "vitest": "^1.0.0"
+  }
+}

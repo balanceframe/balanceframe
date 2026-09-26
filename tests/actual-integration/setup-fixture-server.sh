@@ -180,96 +180,20 @@ FIXTURE_DIR="$SCRIPT_DIR/../../protocol/fixtures"
 FIXTURE_DATA_FILE="$FIXTURE_DIR/representative.json"
 
 ensure_fixture_data() {
-  info "Ensuring fixture data exists..."
+  info "Checking canonical fixture data..."
 
   if [ ! -f "$FIXTURE_DATA_FILE" ]; then
-    warn "Fixture data file not found at $FIXTURE_DATA_FILE"
-    info "Creating minimal representative fixture data..."
-
-    if [ "$DRY_RUN" = "1" ]; then
-      info "[DRY_RUN] Would create $FIXTURE_DATA_FILE"
-      return
-    fi
-
-    mkdir -p "$FIXTURE_DIR"
-
-    # Generate representative fixture data using the canonical protocol shape
-    cat > "$FIXTURE_DATA_FILE" << 'FIXX'
-{
-  "schemaVersion": "1",
-  "actualVersion": "25.1.0",
-  "snapshotDate": "2026-07-15T00:00:00Z",
-  "accounts": [
-    { "id": "a_1", "name": "Checking Account", "accountType": "checking", "offBudget": false, "isClosed": false },
-    { "id": "a_2", "name": "Savings Account", "accountType": "savings", "offBudget": false, "isClosed": false },
-    { "id": "a_3", "name": "Credit Card", "accountType": "creditCard", "offBudget": false, "isClosed": false },
-    { "id": "a_4", "name": "Cash Wallet", "accountType": "cash", "offBudget": true, "isClosed": false },
-    { "id": "a_5", "name": "Investment Portfolio", "accountType": "investment", "offBudget": true, "isClosed": false },
-    { "id": "a_6", "name": "Car Loan", "accountType": "loan", "offBudget": false, "isClosed": false }
-  ],
-  "categories": [
-    { "id": "cat_1", "name": "Rent / Mortgage", "groupName": "Housing", "isIncome": false },
-    { "id": "cat_2", "name": "Groceries", "groupName": "Food", "isIncome": false },
-    { "id": "cat_3", "name": "Dining Out", "groupName": "Food", "isIncome": false },
-    { "id": "cat_4", "name": "Gas / Fuel", "groupName": "Transportation", "isIncome": false },
-    { "id": "cat_5", "name": "Public Transit", "groupName": "Transportation", "isIncome": false },
-    { "id": "cat_6", "name": "Electric Bill", "groupName": "Utilities", "isIncome": false },
-    { "id": "cat_7", "name": "Water Bill", "groupName": "Utilities", "isIncome": false },
-    { "id": "cat_8", "name": "Internet", "groupName": "Utilities", "isIncome": false },
-    { "id": "cat_9", "name": "Streaming Services", "groupName": "Entertainment", "isIncome": false },
-    { "id": "cat_10", "name": "Movie / Events", "groupName": "Entertainment", "isIncome": false },
-    { "id": "cat_11", "name": "Pharmacy", "groupName": "Healthcare", "isIncome": false },
-    { "id": "cat_12", "name": "Doctor Visit", "groupName": "Healthcare", "isIncome": false },
-    { "id": "cat_13", "name": "Emergency Savings", "groupName": "Savings", "isIncome": false },
-    { "id": "cat_deleted", "name": "Old Category", "groupName": "Savings", "isIncome": false, "deleted": true },
-    { "id": "cat_15", "name": "Business Travel", "groupName": "Transportation", "isIncome": false },
-    { "id": "cat_16", "name": "Gifts", "groupName": "Entertainment", "isIncome": false }
-  ],
-  "payees": [
-    { "id": "pay_1", "name": "AMAZON MKTPLACE", "transferAccountId": null },
-    { "id": "pay_2", "name": "Amazon Marketplace", "transferAccountId": null },
-    { "id": "pay_3", "name": "Whole Foods", "transferAccountId": null },
-    { "id": "pay_4", "name": "Shell Gas Station", "transferAccountId": null },
-    { "id": "pay_5", "name": "City Electric Co", "transferAccountId": null },
-    { "id": "pay_6", "name": "Netflix", "transferAccountId": null },
-    { "id": "pay_7", "name": "Spotify", "transferAccountId": null },
-    { "id": "pay_8", "name": "Landlord Property Mgmt", "transferAccountId": null },
-    { "id": "pay_9", "name": "Starbucks", "transferAccountId": null },
-    { "id": "pay_10", "name": "Target", "transferAccountId": null },
-    { "id": "pay_11", "name": "CVS Pharmacy", "transferAccountId": null },
-    { "id": "pay_12", "name": "Uber", "transferAccountId": null },
-    { "id": "pay_13", "name": "Home Depot", "transferAccountId": null },
-    { "id": "pay_14", "name": "Costco Wholesale", "transferAccountId": null },
-    { "id": "pay_15", "name": "Best Buy", "transferAccountId": null },
-    { "id": "pay_16", "name": "ATM Withdrawal", "transferAccountId": null },
-    { "id": "pay_17", "name": "Direct Deposit - Employer", "transferAccountId": null },
-    { "id": "pay_18", "name": "Checking <> Credit Card", "transferAccountId": "a_3" },
-    { "id": "pay_19", "name": "Checking <> Savings", "transferAccountId": "a_2" },
-    { "id": "pay_20", "name": "Checking <> Loan", "transferAccountId": "a_6" },
-    { "id": "pay_21", "name": "Comcast Cable", "transferAccountId": null },
-    { "id": "pay_22", "name": "City Water Dept", "transferAccountId": null }
-  ],
-  "transactions": [
-    { "id": "tx_000", "accountId": "a_1", "date": "2026-07-09", "payeeName": "Whole Foods", "categoryName": "Groceries", "amount": { "minorUnits": "-1500", "currency": "USD" }, "cleared": true, "notes": "Weekly groceries" },
-    { "id": "tx_001", "accountId": "a_2", "date": "2026-07-08", "payeeName": "Shell Gas Station", "categoryName": "Gas / Fuel", "amount": { "minorUnits": "-2300", "currency": "USD" }, "cleared": true, "notes": null },
-    { "id": "tx_002", "accountId": "a_3", "date": "2026-07-12", "payeeName": "City Electric Co", "categoryName": "Utilities", "amount": { "minorUnits": "-3500", "currency": "USD" }, "cleared": true, "notes": null },
-    { "id": "tx_003", "accountId": "a_1", "date": "2026-07-11", "payeeName": "Netflix", "categoryName": "Entertainment", "amount": { "minorUnits": "-4200", "currency": "USD" }, "cleared": true, "notes": null },
-    { "id": "tx_004", "accountId": "a_1", "date": "2026-07-15", "payeeName": "Direct Deposit - Employer", "categoryName": null, "amount": { "minorUnits": "500000", "currency": "USD" }, "cleared": true, "notes": "Monthly salary" },
-    { "id": "tx_005", "accountId": "a_1", "date": "2026-07-10", "payeeName": "Starbucks", "categoryName": "Dining Out", "amount": { "minorUnits": "-750", "currency": "USD" }, "cleared": true, "notes": null },
-    { "id": "tx_006", "accountId": "a_4", "date": "2026-07-14", "payeeName": "ATM Withdrawal", "categoryName": null, "amount": { "minorUnits": "-20000", "currency": "USD" }, "cleared": true, "notes": null },
-    { "id": "tx_007", "accountId": "a_1", "date": "2026-07-12", "payeeName": "Checking <> Credit Card", "categoryName": null, "amount": { "minorUnits": "-150000", "currency": "USD" }, "cleared": true, "notes": "Credit card payment" },
-    { "id": "tx_008", "accountId": "a_6", "date": "2026-07-15", "payeeName": "Checking <> Loan", "categoryName": null, "amount": { "minorUnits": "-50000", "currency": "USD" }, "cleared": true, "notes": "Loan installment" }
-  ],
-  "rules": [],
-  "schedules": [],
-  "budgets": [],
-  "tags": []
-}
-FIXX
-    ok "Fixture data created at $FIXTURE_DATA_FILE"
-  else
-    ok "Fixture data found at $FIXTURE_DATA_FILE"
+    error "Canonical fixture data file is required before starting Actual: $FIXTURE_DATA_FILE"
+    error "Refusing to generate a legacy or partial fixture."
+    return 1
   fi
+
+  if [ ! -r "$FIXTURE_DATA_FILE" ]; then
+    error "Canonical fixture data file is not readable: $FIXTURE_DATA_FILE"
+    return 1
+  fi
+
+  ok "Canonical fixture data found at $FIXTURE_DATA_FILE"
 }
 
 # ---- Step 4: Start Actual server -------------------------------------------
@@ -394,8 +318,8 @@ seed_budget() {
     return
   fi
 
+
   rm -rf "$SEED_DATA_DIR"
-  mkdir -p "$SEED_DATA_DIR"
 
   local seed_output
   seed_output=$(

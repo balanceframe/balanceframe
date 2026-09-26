@@ -116,6 +116,30 @@ function snapshot(
   );
 }
 
+function connectorSourceObservations(accountIds: readonly string[]) {
+  return [
+    {
+      kind: 'account_collection_coverage' as const,
+      scope: { kind: 'global' as const },
+      state: 'complete' as const,
+      observedAt: '2026-09-06T10:00:00.000Z',
+      evidence: [],
+    },
+    ...accountIds.flatMap((accountId) => {
+      const scope = { kind: 'account' as const, id: accountId };
+      const evidence = [{
+        evidenceId: accountId, kind: 'account', authorized: true, redaction: 'visible' as const,
+      }];
+      return [
+        { kind: 'account_freshness' as const, scope, state: 'unknown' as const, observedAt: null, evidence },
+        { kind: 'account_coverage' as const, scope, state: 'complete' as const, observedAt: now, evidence },
+        { kind: 'account_type' as const, scope, state: 'unknown' as const, observedAt: null, evidence },
+        { kind: 'account_balance' as const, scope, state: 'complete' as const, observedAt: now, evidence },
+      ];
+    }),
+  ];
+}
+
 describe('authoritative application liquidity service', () => {
   let store: SqliteWorkflowStore;
   let directory: string;
@@ -269,6 +293,46 @@ describe('authoritative application liquidity service', () => {
     });
     expect(result.card).not.toHaveProperty('planHash');
     expect(store.liquidity.getClaimSet({ ...actor, now }).bundles).toEqual([]);
+  });
+
+  it('turns Actual partial account metadata into a funded ready Card only after dated attestations', async () => {
+    current = snapshot(20000, '2026-09-06T10:00:00.000Z', false, 15000);
+    current.coverage = { ...current.coverage, accounts: 'partial' };
+    current.observations = connectorSourceObservations(['checking', 'savings']);
+    await service.saveObservations(actor, {
+      expectedVersion: 1,
+      expiresAt,
+      observations: ['checking', 'savings'].map((accountId) => ({
+        accountId, currentLedgerConfirmed: true, kind: 'cash',
+        currency: 'USD', owned: true, holds: money('0'),
+      })),
+    });
+
+    const result = await service.evaluatePurchase(actor, {
+      ...purchase, purchaseAt: now, requiredBy: now,
+    });
+
+    expect(result.card).toMatchObject({
+      outcome: 'funded_now',
+      budgetFundingStatus: 'funded',
+      paymentLiquidityStatus: 'ready',
+      before: {
+        categories: expect.arrayContaining([
+          expect.objectContaining({ categoryId: 'food', availability: money('2000') }),
+        ]),
+        accounts: expect.arrayContaining([
+          expect.objectContaining({ accountId: 'checking', safeSpendingCapacity: money('5000') }),
+        ]),
+      },
+      after: {
+        categories: expect.arrayContaining([
+          expect.objectContaining({ categoryId: 'food', availability: money('0') }),
+        ]),
+        accounts: expect.arrayContaining([
+          expect.objectContaining({ accountId: 'checking', safeSpendingCapacity: money('3000') }),
+        ]),
+      },
+    });
   });
 
   it('reserves exact native cart charges and restores availability on authorized release', async () => {

@@ -171,6 +171,343 @@ fn set_item_amount(value: &mut Value, index: usize, minor_units: i64, currency: 
     value["items"][index]["amount"] = money(minor_units, currency);
 }
 
+fn fact_evidence(
+    state: &str,
+    source: &str,
+    observed_at: Option<&str>,
+    expires_at: Option<&str>,
+    reasons: &[&str],
+) -> Value {
+    json!({
+        "state": state,
+        "source": source,
+        "observedAt": observed_at,
+        "expiresAt": expires_at,
+        "reasons": reasons,
+    })
+}
+
+fn actual_partial_account_request() -> Value {
+    let mut input = base_request();
+    input["financialSnapshot"]["coverage"]["accounts"] = json!("partial");
+
+    // The Actual connector can return a usable balance while leaving account
+    // type, ownership, currency, holds, and institution freshness unknown.
+    let checking = account_mut(&mut input, "checking").clone();
+    input["financialSnapshot"]["liquidity"]["accounts"] = json!([checking]);
+    let checking_policy = input["liquidityPolicy"]["accounts"]
+        .as_array()
+        .expect("liquidity policy accounts must be an array")
+        .iter()
+        .find(|account| account["accountId"] == "checking")
+        .cloned()
+        .expect("liquidity policy must contain checking");
+    input["liquidityPolicy"]["accounts"] = json!([checking_policy]);
+    input["liquidityPolicy"]["transferRoutes"] = json!([]);
+
+    set_account_balance(&mut input, "checking", 15_000);
+    set_category_availability(&mut input, "food", 2_000);
+    let account = account_mut(&mut input, "checking");
+    account["currency"] = json!("USD");
+    account["kind"] = json!("unknown");
+    account["owned"] = json!(false);
+    account["holds"] = money(0, "USD");
+    account["currencyEvidence"] = fact_evidence(
+        "unknown",
+        "actual_ledger",
+        None,
+        None,
+        &["account_currency_not_exposed"],
+    );
+    account["kindEvidence"] = fact_evidence(
+        "unknown",
+        "actual_ledger",
+        None,
+        None,
+        &["account_type_not_exposed"],
+    );
+    account["ownershipEvidence"] = fact_evidence(
+        "unknown",
+        "actual_ledger",
+        None,
+        None,
+        &["account_ownership_not_exposed"],
+    );
+    account["freshnessEvidence"] = fact_evidence(
+        "unknown",
+        "actual_ledger",
+        None,
+        None,
+        &["institution_freshness_not_exposed"],
+    );
+    account["holdsEvidence"] = fact_evidence(
+        "unknown",
+        "actual_ledger",
+        None,
+        None,
+        &["institution_holds_not_exposed"],
+    );
+    account["balanceEvidence"] = fact_evidence(
+        "known",
+        "actual_ledger",
+        Some(EVALUATED_AT),
+        None,
+        &["ledger_balance_not_institution_freshness"],
+    );
+    account["activityEvidence"] =
+        fact_evidence("known", "actual_ledger", Some(EVALUATED_AT), None, &[]);
+    account["scheduleEvidence"] =
+        fact_evidence("known", "actual_ledger", Some(EVALUATED_AT), None, &[]);
+
+    input["financialSnapshot"]["observations"] = json!([
+        {
+            "kind": "account_collection_coverage",
+            "scope": { "kind": "global" },
+            "state": "complete",
+            "observedAt": EVALUATED_AT,
+            "evidence": []
+        },
+        {
+            "kind": "account_freshness",
+            "scope": { "kind": "account", "id": "checking" },
+            "state": "unknown",
+            "observedAt": null,
+            "evidence": [{
+                "evidenceId": "checking",
+                "kind": "account",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "account_coverage",
+            "scope": { "kind": "account", "id": "checking" },
+            "state": "complete",
+            "observedAt": EVALUATED_AT,
+            "evidence": [{
+                "evidenceId": "checking",
+                "kind": "account",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "account_type",
+            "scope": { "kind": "account", "id": "checking" },
+            "state": "unknown",
+            "observedAt": null,
+            "evidence": [{
+                "evidenceId": "checking",
+                "kind": "account",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        },
+        {
+            "kind": "account_balance",
+            "scope": { "kind": "account", "id": "checking" },
+            "state": "complete",
+            "observedAt": EVALUATED_AT,
+            "evidence": [{
+                "evidenceId": "checking",
+                "kind": "account",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        }
+    ]);
+
+    // This models the server-bound observation saved from the same ledger
+    // capture: it supplies effective dated facts but does not rewrite source
+    // observations or collection coverage.
+    let account = account_mut(&mut input, "checking");
+    let attested = fact_evidence(
+        "known",
+        "user_attested",
+        Some("2026-09-06T09:59:00Z"),
+        Some("2026-09-06T10:15:00Z"),
+        &["explicit_user_attestation_not_bank_sync"],
+    );
+    account["currency"] = json!("USD");
+    account["kind"] = json!("cash");
+    account["owned"] = json!(true);
+    account["holds"] = money(0, "USD");
+    account["currencyEvidence"] = attested.clone();
+    account["kindEvidence"] = attested.clone();
+    account["ownershipEvidence"] = attested.clone();
+    account["freshnessEvidence"] = attested;
+    account["holdsEvidence"] = fact_evidence(
+        "known",
+        "user_attested",
+        Some("2026-09-06T09:59:00Z"),
+        Some("2026-09-06T10:15:00Z"),
+        &["explicit_user_attestation_not_bank_sync"],
+    );
+    input
+}
+
+fn collection_receipt(input: &Value) -> &Value {
+    input["financialSnapshot"]["observations"]
+        .as_array()
+        .expect("source observations must be an array")
+        .first()
+        .expect("partial Actual fixture must start with a collection receipt")
+}
+fn assert_collection_rejected(input: Value, label: &str) {
+    let card = evaluate(input);
+    assert_eq!(outcome(&card), "insufficient_data", "{label}");
+    assert!(
+        card["after"].is_null(),
+        "{label} must not expose an after-state"
+    );
+    assert!(
+        has_text(&card["blockers"], "incomplete_accounts_coverage"),
+        "{label} must retain the account coverage blocker: {}",
+        card["blockers"]
+    );
+}
+
+#[test]
+fn actual_partial_accounts_with_matching_attestation_are_funded_and_ready() {
+    let card = evaluate(actual_partial_account_request());
+
+    assert_eq!(outcome(&card), "funded_now");
+    assert_eq!(card["items"][0]["outcome"], "funded_now");
+    assert_eq!(card["budgetFundingStatus"], "funded");
+    assert_eq!(card["paymentLiquidityStatus"], "ready");
+    assert_eq!(
+        minor_units(&category_state(&card, "before", "food")["availability"]),
+        "2000"
+    );
+    assert_eq!(
+        minor_units(&category_state(&card, "after", "food")["availability"]),
+        "0"
+    );
+
+    let before_account = card["before"]["accounts"]
+        .as_array()
+        .expect("before state must expose account capacities")
+        .iter()
+        .find(|account| account["accountId"] == "checking")
+        .expect("before state must contain checking");
+    let after_account = card["after"]["accounts"]
+        .as_array()
+        .expect("after state must expose account capacities")
+        .iter()
+        .find(|account| account["accountId"] == "checking")
+        .expect("after state must contain checking");
+    assert_eq!(minor_units(&before_account["safeSpendingCapacity"]), "5000");
+    assert_eq!(minor_units(&after_account["safeSpendingCapacity"]), "3000");
+}
+
+#[test]
+fn cash_account_ignores_inapplicable_credit_obligation_coverage() {
+    let mut input = actual_partial_account_request();
+    input["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .expect("source observations must be an array")
+        .push(json!({
+            "kind": "credit_card_obligation_coverage",
+            "scope": { "kind": "account", "id": "checking" },
+            "state": "unavailable",
+            "observedAt": Value::Null,
+            "evidence": [{
+                "evidenceId": "checking",
+                "kind": "account",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        }));
+
+    let card = evaluate(input);
+    assert_eq!(outcome(&card), "funded_now");
+    assert_eq!(card["budgetFundingStatus"], "funded");
+    assert_eq!(card["paymentLiquidityStatus"], "ready");
+}
+
+#[test]
+fn actual_partial_accounts_reject_missing_invalid_or_duplicate_collection_receipts() {
+    let mut missing = actual_partial_account_request();
+    missing["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .expect("source observations must be an array")
+        .remove(0);
+    assert_collection_rejected(missing, "missing collection receipt");
+
+    let mut stale = actual_partial_account_request();
+    stale["financialSnapshot"]["observations"][0]["state"] = json!("stale");
+    stale["financialSnapshot"]["observations"][0]["observedAt"] = json!("2026-09-06T08:00:00Z");
+    assert_collection_rejected(stale, "stale collection receipt");
+
+    let mut future = actual_partial_account_request();
+    future["financialSnapshot"]["observations"][0]["observedAt"] = json!("2026-09-06T10:01:00Z");
+    assert_collection_rejected(future, "future collection receipt");
+
+    let mut mismatched_scope = actual_partial_account_request();
+    mismatched_scope["financialSnapshot"]["observations"][0]["scope"] =
+        json!({ "kind": "account", "id": "checking" });
+    assert_collection_rejected(mismatched_scope, "account-scoped collection receipt");
+
+    let mut duplicate = actual_partial_account_request();
+    let duplicate_receipt = collection_receipt(&duplicate).clone();
+    duplicate["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .expect("source observations must be an array")
+        .push(duplicate_receipt);
+    assert_collection_rejected(duplicate, "duplicate collection receipts");
+}
+
+#[test]
+fn partial_account_attestations_require_dated_replacements_and_exact_account_sets() {
+    let mut missing_attestation_time = actual_partial_account_request();
+    account_mut(&mut missing_attestation_time, "checking")["freshnessEvidence"]["observedAt"] =
+        Value::Null;
+    assert_collection_rejected(
+        missing_attestation_time,
+        "missing effective freshness observation time",
+    );
+
+    let mut mismatched_source_accounts = actual_partial_account_request();
+    mismatched_source_accounts["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .expect("source observations must be an array")
+        .iter_mut()
+        .find(|observation| observation["kind"] == "account_balance")
+        .expect("partial fixture must contain account balance coverage")["scope"] =
+        json!({ "kind": "account", "id": "savings" });
+    assert_collection_rejected(
+        mismatched_source_accounts,
+        "source and effective account sets must match",
+    );
+}
+
+#[test]
+fn actual_partial_account_fix_does_not_clear_unrelated_transfer_ambiguity() {
+    let mut input = actual_partial_account_request();
+    input["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .expect("source observations must be an array")
+        .push(json!({
+            "kind": "transfer_ambiguity",
+            "scope": { "kind": "transaction", "id": "unrelated-transfer" },
+            "state": "ambiguous",
+            "observedAt": EVALUATED_AT,
+            "evidence": [{
+                "evidenceId": "unrelated-transfer",
+                "kind": "transaction",
+                "authorized": true,
+                "redaction": "visible"
+            }]
+        }));
+
+    let card = evaluate(input);
+    assert_eq!(outcome(&card), "insufficient_data");
+    assert!(card["after"].is_null());
+    assert!(has_text(
+        &card["blockers"],
+        "material_observation_transferambiguity"
+    ));
+}
 fn add_category(value: &mut Value, category_id: &str, minor_units: i64) {
     let category = value["financialSnapshot"]["liquidity"]["categories"][0].clone();
     let mut category = category;

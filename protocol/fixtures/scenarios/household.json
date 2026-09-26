@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "1",
+  "actualVersion": "26.7.0",
+  "snapshotDate": "2026-09-06T12:00:00.000Z",
+  "accounts": [
+    {
+      "id": "acct-checking",
+      "name": "Household Checking",
+      "accountType": "checking",
+      "offBudget": false,
+      "isClosed": false,
+      "clearedBalance": {
+        "minorUnits": "15000",
+        "currency": "USD"
+      },
+      "importedBalance": {
+        "minorUnits": "15000",
+        "currency": "USD"
+      },
+      "mtid": null
+    }
+  ],
+  "transactions": [],
+  "categories": [
+    {
+      "id": "cat-groceries",
+      "name": "Groceries",
+      "groupName": "Food",
+      "isIncome": false,
+      "mtid": null,
+      "deleted": false
+    }
+  ],
+  "payees": [
+    {
+      "id": "pay-market",
+      "name": "Market Basket",
+      "transferAccountId": null,
+      "mtid": null
+    }
+  ],
+  "rules": [],
+  "schedules": [],
+  "budgets": [
+    {
+      "id": "budget-2026-09",
+      "month": "2026-09",
+      "categories": {
+        "cat-groceries": {
+          "categoryId": "cat-groceries",
+          "amount": {
+            "minorUnits": "2000",
+            "currency": "USD"
+          },
+          "carryover": {
+            "minorUnits": "0",
+            "currency": "USD"
+          },
+          "carryoverFromPrevious": {
+            "minorUnits": "0",
+            "currency": "USD"
+          },
+          "carriesOver": false
+        }
+      }
+    }
+  ],
+  "tags": []
+}

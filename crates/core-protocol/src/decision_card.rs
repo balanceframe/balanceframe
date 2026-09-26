@@ -12,7 +12,7 @@ use crate::{
 use crate::{CoverageState, ObservationKind, ObservationState};
 use balanceframe_financial_core::liquidity::{
     AccountAwareSpendabilityResult, BackingAllocation, BudgetFundingStatus, CategoryLiquidityFact,
-    CategoryPeriodKind, ClaimEffectKind, FactEvidence, FactSource, FactState,
+    CategoryPeriodKind, ClaimEffectKind, FactEvidence, FactSource, FactState, LiquidityAccountKind,
     LiquidityCategoryKind, LiquidityClaimBundle, LiquidityClaimSet, LiquidityClaimState,
     LiquidityFacts, LiquidityPolicy, LiquidityPurchaseItem, LiquidityScenario,
     PaymentLiquidityStatus, PurchaseLiquidityResult, RouteSelection, ScheduleAmountCertainty,
@@ -1881,6 +1881,291 @@ fn fact_evidence_blocker(
         blockers.push(format!("{scope}_evidence_future"));
     }
 }
+fn current_fact_evidence(evidence: &FactEvidence, evaluated_at: &str) -> bool {
+    if evidence.state != FactState::Known || evidence.source == FactSource::PolicyAssumption {
+        return false;
+    }
+    let Ok(evaluated_at) = canonical_timestamp(evaluated_at) else {
+        return false;
+    };
+    let Some(observed_at) = evidence
+        .observed_at
+        .as_deref()
+        .and_then(|value| canonical_timestamp(value).ok())
+    else {
+        return false;
+    };
+    if observed_at > evaluated_at {
+        return false;
+    }
+    match evidence.expires_at.as_deref() {
+        Some(expires_at) => canonical_timestamp(expires_at)
+            .ok()
+            .is_some_and(|expires_at| observed_at < expires_at && evaluated_at < expires_at),
+        None => evidence.source == FactSource::ActualLedger,
+    }
+}
+
+/// A source limitation may be replaced only by dated, still-effective
+/// non-ledger evidence.  In particular, an Actual balance read does not turn
+/// an unknown bank-sync freshness observation into bank-sync evidence.
+fn current_source_replacement(evidence: &FactEvidence, evaluated_at: &str) -> bool {
+    evidence.source != FactSource::ActualLedger
+        && evidence.expires_at.is_some()
+        && current_fact_evidence(evidence, evaluated_at)
+}
+
+fn effective_source_limitation(
+    snapshot: &FinancialSnapshot,
+    observation: &crate::SourceObservation,
+    evaluated_at: &str,
+) -> bool {
+    let balanceframe_financial_core::DecisionScope::Account(account_id) = &observation.scope else {
+        return false;
+    };
+    // A duplicate or contradictory source observation must remain visible as a
+    // blocker; selecting one occurrence would silently erase source history.
+    if snapshot
+        .observations
+        .iter()
+        .filter(|candidate| {
+            candidate.kind == observation.kind && candidate.scope == observation.scope
+        })
+        .count()
+        != 1
+    {
+        return false;
+    }
+    let Some(evaluated_at_value) = canonical_timestamp(evaluated_at).ok() else {
+        return false;
+    };
+    if observation
+        .observed_at
+        .as_deref()
+        .and_then(|value| canonical_timestamp(value).ok())
+        .is_some_and(|observed_at| observed_at > evaluated_at_value)
+    {
+        return false;
+    }
+    let Some(account) = snapshot.liquidity.as_ref().and_then(|facts| {
+        facts
+            .accounts
+            .iter()
+            .find(|fact| fact.account_id.as_str() == account_id.as_str())
+    }) else {
+        return false;
+    };
+    match observation.kind {
+        ObservationKind::AccountFreshness => {
+            current_source_replacement(&account.freshness_evidence, evaluated_at)
+        }
+        ObservationKind::AccountType => {
+            account.kind != LiquidityAccountKind::Unknown
+                && current_source_replacement(&account.kind_evidence, evaluated_at)
+        }
+        _ => false,
+    }
+}
+
+fn partial_account_coverage_resolved(snapshot: &FinancialSnapshot, evaluated_at: &str) -> bool {
+    if snapshot.coverage.accounts != CoverageState::Partial {
+        return false;
+    }
+    let Ok(evaluated_at_value) = canonical_timestamp(evaluated_at) else {
+        return false;
+    };
+    let collection_receipts: Vec<_> = snapshot
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation.kind == ObservationKind::AccountCollectionCoverage
+                && observation.scope == balanceframe_financial_core::DecisionScope::Global
+        })
+        .collect();
+    let Some(collection_receipt) = collection_receipts.first() else {
+        return false;
+    };
+    if collection_receipts.len() != 1
+        || collection_receipt.state != ObservationState::Complete
+        || collection_receipt
+            .observed_at
+            .as_deref()
+            .and_then(|value| canonical_timestamp(value).ok())
+            .is_none_or(|observed_at| observed_at > evaluated_at_value)
+    {
+        return false;
+    }
+
+    let Some(facts) = snapshot.liquidity.as_ref() else {
+        return false;
+    };
+    if facts.accounts.is_empty() {
+        return false;
+    }
+    let fact_account_ids: BTreeSet<String> = facts
+        .accounts
+        .iter()
+        .map(|account| account.account_id.clone())
+        .collect();
+    if fact_account_ids.len() != facts.accounts.len()
+        || fact_account_ids
+            .iter()
+            .any(|account_id| account_id.is_empty())
+    {
+        return false;
+    }
+
+    let mut source_account_ids = BTreeSet::new();
+    let mut coverage_account_ids = BTreeSet::new();
+    let mut balance_account_ids = BTreeSet::new();
+    let mut freshness_account_ids = BTreeSet::new();
+    let mut type_account_ids = BTreeSet::new();
+    for observation in &snapshot.observations {
+        let balanceframe_financial_core::DecisionScope::Account(account_id) = &observation.scope
+        else {
+            continue;
+        };
+        if account_id.is_empty() {
+            return false;
+        }
+        source_account_ids.insert(account_id.clone());
+        if !matches!(
+            observation.kind,
+            ObservationKind::AccountFreshness
+                | ObservationKind::AccountCoverage
+                | ObservationKind::AccountType
+                | ObservationKind::AccountBalance
+        ) {
+            continue;
+        }
+        let observed_at = observation
+            .observed_at
+            .as_deref()
+            .and_then(|value| canonical_timestamp(value).ok());
+        match observation.kind {
+            ObservationKind::AccountCoverage => {
+                if !coverage_account_ids.insert(account_id.clone())
+                    || observation.state != ObservationState::Complete
+                    || observed_at.is_none_or(|observed_at| observed_at > evaluated_at_value)
+                    || observation.observed_at.is_none()
+                {
+                    return false;
+                }
+            }
+            ObservationKind::AccountBalance => {
+                if !balance_account_ids.insert(account_id.clone())
+                    || observation.state != ObservationState::Complete
+                    || observed_at.is_none_or(|observed_at| observed_at > evaluated_at_value)
+                    || observation.observed_at.is_none()
+                {
+                    return false;
+                }
+            }
+            ObservationKind::AccountFreshness => {
+                if !freshness_account_ids.insert(account_id.clone())
+                    || observed_at.is_some_and(|observed_at| observed_at > evaluated_at_value)
+                {
+                    return false;
+                }
+            }
+            ObservationKind::AccountType => {
+                if !type_account_ids.insert(account_id.clone())
+                    || observed_at.is_some_and(|observed_at| observed_at > evaluated_at_value)
+                {
+                    return false;
+                }
+            }
+            _ => unreachable!("account observation kinds are filtered above"),
+        }
+    }
+    if source_account_ids != fact_account_ids
+        || coverage_account_ids != fact_account_ids
+        || balance_account_ids != fact_account_ids
+    {
+        return false;
+    }
+
+    for account in &facts.accounts {
+        if account.kind == LiquidityAccountKind::Unknown
+            || !current_fact_evidence(&account.kind_evidence, evaluated_at)
+            || account.balance_evidence.source != FactSource::ActualLedger
+            || !current_fact_evidence(&account.balance_evidence, evaluated_at)
+        {
+            return false;
+        }
+    }
+    for observation in &snapshot.observations {
+        if matches!(
+            observation.kind,
+            ObservationKind::AccountFreshness | ObservationKind::AccountType
+        ) && matches!(
+            observation.state,
+            ObservationState::Unknown | ObservationState::Unavailable
+        ) && !effective_source_limitation(snapshot, observation, evaluated_at)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn source_limitation_is_replaced(
+    snapshot: &FinancialSnapshot,
+    observation: &crate::SourceObservation,
+    evaluated_at: &str,
+) -> bool {
+    matches!(
+        observation.kind,
+        ObservationKind::AccountFreshness | ObservationKind::AccountType
+    ) && matches!(
+        observation.state,
+        ObservationState::Unknown | ObservationState::Unavailable
+    ) && effective_source_limitation(snapshot, observation, evaluated_at)
+}
+
+fn cash_account_credit_coverage_resolved(
+    snapshot: &FinancialSnapshot,
+    observation: &crate::SourceObservation,
+    evaluated_at: &str,
+    account_coverage_resolved: bool,
+) -> bool {
+    if !account_coverage_resolved
+        || observation.kind != ObservationKind::CreditCardObligationCoverage
+        || observation.state != ObservationState::Unavailable
+    {
+        return false;
+    }
+    let balanceframe_financial_core::DecisionScope::Account(account_id) = &observation.scope else {
+        return false;
+    };
+    if snapshot
+        .observations
+        .iter()
+        .filter(|candidate| {
+            candidate.kind == observation.kind && candidate.scope == observation.scope
+        })
+        .count()
+        != 1
+        || !observation.evidence.iter().any(|evidence| {
+            evidence.authorized && evidence.evidence_id.as_str() == account_id.as_str()
+        })
+    {
+        return false;
+    }
+    snapshot
+        .liquidity
+        .as_ref()
+        .and_then(|facts| {
+            facts
+                .accounts
+                .iter()
+                .find(|account| account.account_id.as_str() == account_id.as_str())
+        })
+        .is_some_and(|account| {
+            account.kind == LiquidityAccountKind::Cash
+                && current_fact_evidence(&account.kind_evidence, evaluated_at)
+        })
+}
 
 fn snapshot_scope_reasons(request: &DecisionCardRequest) -> Vec<String> {
     let snapshot = &request.financial_snapshot;
@@ -1916,11 +2201,17 @@ fn snapshot_scope_reasons(request: &DecisionCardRequest) -> Vec<String> {
 
 fn material_snapshot_blockers(request: &DecisionCardRequest) -> Vec<String> {
     let snapshot = &request.financial_snapshot;
+    let account_coverage_resolved = snapshot.coverage.accounts == CoverageState::Complete
+        || partial_account_coverage_resolved(snapshot, &request.context.evaluated_at);
     let mut blockers = Vec::new();
     let coverage = [
         (
             "accounts",
-            snapshot.coverage.accounts,
+            if account_coverage_resolved {
+                CoverageState::Complete
+            } else {
+                snapshot.coverage.accounts
+            },
             snapshot.legacy_snapshot.accounts.is_empty()
                 && snapshot
                     .liquidity
@@ -1963,6 +2254,16 @@ fn material_snapshot_blockers(request: &DecisionCardRequest) -> Vec<String> {
         }
     }
     for observation in &snapshot.observations {
+        if source_limitation_is_replaced(snapshot, observation, &request.context.evaluated_at)
+            || cash_account_credit_coverage_resolved(
+                snapshot,
+                observation,
+                &request.context.evaluated_at,
+                account_coverage_resolved,
+            )
+        {
+            continue;
+        }
         let ambiguous_material_observation = matches!(
             observation.kind,
             ObservationKind::DuplicateCandidate
