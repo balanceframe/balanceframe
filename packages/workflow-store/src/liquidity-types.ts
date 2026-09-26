@@ -6,6 +6,7 @@ import type {
   LiquidityFacts,
   LiquidityPolicy,
   LiquidityPurchaseItem,
+  ProspectiveClaim,
   TransferPlan,
   TransferSettlementResult,
   TrustedRoute,
@@ -63,9 +64,15 @@ export interface TransferApprovalPolicy {
   minimumApprovers: number;
   thresholds?: Array<{ minimumMinorUnits: string; currency: string; minimumApprovers: number }>;
 }
+export type ProspectiveClaimMode = 'inform' | 'block';
+/** Workflow policy may govern whether reservations inform or block competing decisions. */
+export type GovernedLiquidityPolicy = LiquidityPolicy & {
+  reservationMode?: ProspectiveClaimMode;
+};
+
 export interface LiquidityPolicyRecord {
   budgetId: string;
-  policy: LiquidityPolicy;
+  policy: GovernedLiquidityPolicy;
   approvalPolicy: TransferApprovalPolicy;
   createdAt: string;
   actorId: string;
@@ -79,13 +86,65 @@ export interface SpendSession extends LiquidityActor {
   createdAt: string;
   updatedAt: string;
 }
+export type ProspectiveClaimLifecycle = 'active' | 'released' | 'consumed' | 'expired';
+export type ValidatedClaimBundle = LiquidityClaimBundle & {
+  mode?: ProspectiveClaimMode;
+};
+export type VisibleStoredProspectiveClaim = ProspectiveClaim & {
+  mode: ProspectiveClaimMode;
+  lifecycleState: ProspectiveClaimLifecycle;
+};
+export type RedactedProspectiveScope =
+  { kind: 'category'; id: null } | { kind: 'account'; id: null };
+export type RedactedStoredProspectiveClaim = Omit<
+  ProspectiveClaim,
+  'claimId' | 'sourceId' | 'scope' | 'amount' | 'visibility' | 'policyVersion' | 'snapshotId'
+> & {
+  claimId: null;
+  sourceId: null;
+  scope: RedactedProspectiveScope;
+  amount: null;
+  visibility: 'redacted';
+  policyVersion: null;
+  snapshotId: null;
+  mode: ProspectiveClaimMode;
+  lifecycleState: ProspectiveClaimLifecycle;
+};
+export type StoredProspectiveClaim = VisibleStoredProspectiveClaim | RedactedStoredProspectiveClaim;
+export interface SaveProspectiveClaimInput extends LiquidityActor {
+  claim: ProspectiveClaim & { mode?: ProspectiveClaimMode };
+  expectedClaimSetRevision: string;
+  idempotencyKey: string;
+  now: string;
+}
+export interface TransitionProspectiveClaimInput extends LiquidityActor {
+  claimId: string;
+  transition: 'release' | 'consume';
+  expectedClaimSetRevision: string;
+  idempotencyKey: string;
+  now: string;
+  /** Opaque evidence identity supplied only after trusted native verification. */
+  consumptionEvidenceId?: string;
+}
+export interface ProspectiveClaimConsumptionContext extends LiquidityActor {
+  claim: ProspectiveClaim;
+  evidenceId: string;
+  /** Previously consumed canonical evidence identities in this budget. */
+  consumedEvidenceIds: string[];
+  now: string;
+}
+/** Trusted synchronous service verifier for a verified ledger postcondition. */
+export type ProspectiveClaimConsumptionVerifier = (context: ProspectiveClaimConsumptionContext) => {
+  valid: boolean;
+  reason?: string;
+};
 export interface ClaimValidationContext {
   ownClaimId: string | null;
   budgetId: string;
   claimSet: LiquidityClaimSet;
   plan: TransferPlan | null;
   session: SpendSession | null;
-  proposedClaim: LiquidityClaimBundle | null;
+  proposedClaim: ValidatedClaimBundle | null;
   policy: LiquidityPolicyRecord;
   now: string;
 }
@@ -139,7 +198,7 @@ export interface SaveSpendSessionInput extends LiquidityActor {
 export interface SavePolicyInput extends LiquidityActor {
   expectedVersion: string | null;
   now: string;
-  policy: LiquidityPolicy;
+  policy: GovernedLiquidityPolicy;
   approvalPolicy: TransferApprovalPolicy;
 }
 export type UserAttestedLiquidityObservation = Pick<AccountLiquidityFact, 'accountId'> &
@@ -178,6 +237,7 @@ export type {
   LiquidityFacts,
   LiquidityPolicy,
   LiquidityPurchaseItem,
+  ProspectiveClaim,
   TransferPlan,
   TransferSettlementResult,
   TrustedRoute,

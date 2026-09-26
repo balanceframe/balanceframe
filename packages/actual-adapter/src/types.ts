@@ -194,6 +194,83 @@ export interface TransactionQuery {
 }
 
 // ---------------------------------------------------------------------------
+// Manual transaction write
+// ---------------------------------------------------------------------------
+
+/**
+ * One child of a bounded manual split transaction.
+ *
+ * Amounts are Actual minor units. They must be negative integer values within
+ * the signed i64 range and exactly representable by the Actual JavaScript
+ * numeric API. For a split, they must conserve the parent amount.
+ */
+export interface ManualTransactionSplit {
+  amount: number;
+  accountId: LedgerId;
+  date: string;
+  categoryId: LedgerId;
+}
+
+/**
+ * A caller-authorized manual transaction request.
+ *
+ * `parentId` is the stable caller-owned identity used for post-write
+ * verification and safe replay detection. This API deliberately does not
+ * accept an imported/bank identity: manual writes must not manufacture
+ * `imported_id` provenance.
+ */
+export interface ManualTransactionInput {
+  parentId: LedgerId;
+  correlationId: string;
+  accountId: LedgerId;
+  amount: number;
+  date: string;
+  categoryId?: LedgerId | null;
+  payeeName?: string;
+  notes?: string;
+  splits?: ManualTransactionSplit[];
+}
+
+export type ManualTransactionErrorCode =
+  | 'INVALID_INPUT'
+  | 'AMOUNT_OUT_OF_RANGE'
+  | 'SPLIT_CONSERVATION_FAILED'
+  | 'BUDGET_NOT_SELECTED'
+  | 'ACCOUNT_PRECONDITION_FAILED'
+  | 'CATEGORY_PRECONDITION_FAILED'
+  | 'PRECONDITION_READ_FAILED'
+  | 'IMPORTED_CANDIDATE_REVIEW'
+  | 'AMBIGUOUS_IMPORTED_CANDIDATE'
+  | 'DUPLICATE_PARENT_REVIEW'
+  | 'WRITE_UNCERTAIN'
+  | 'VERIFICATION_FAILED'
+  | 'SPLIT_VERIFICATION_FAILED';
+
+export interface ManualTransactionSuccess {
+  success: true;
+  parentId: LedgerId;
+  transactionId: LedgerId;
+  correlationId: string;
+  /** Actual re-read confirmed the exact requested parent and children. */
+  verified: true;
+  /** True when an already-verified parent made the request idempotent. */
+  alreadyPresent?: true;
+}
+
+export interface ManualTransactionFailure {
+  success: false;
+  parentId: LedgerId;
+  correlationId: string;
+  error: string;
+  code: ManualTransactionErrorCode;
+  /** A human/application review is required before any further action. */
+  reviewRequired?: true;
+  verified?: false;
+}
+
+export type ManualTransactionResult = ManualTransactionSuccess | ManualTransactionFailure;
+
+// ---------------------------------------------------------------------------
 // Mutation types (for future phases; rejected in Observe mode)
 // ---------------------------------------------------------------------------
 
@@ -236,7 +313,6 @@ export interface MutationPrecondition {
 
 export type MutationResult =
   { success: true; id: LedgerId } | { success: false; error: string; code: string };
-
 /**
  * Result of a setTransactionCategory call.
  * Includes verification of the post-write state and idempotency tracking.

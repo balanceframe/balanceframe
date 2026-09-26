@@ -13,6 +13,16 @@ inside SQLite IMMEDIATE transactions against the current independent claim revis
 Native verification owns financial effects; `claimEffects:null` retains existing holds
 and only confirmed settlement may release them.
 
+Prospective commitments and reservations use the same `liquidity_claims` rows
+and revision as transfers. `saveProspectiveClaim` applies the versioned policy's
+`reservationMode` (`block` by default, `inform` only when governed), not a
+claimant-selected mode. Effective dates and expiry change financial inclusion
+without deleting audit history; category/account effects of one obligation may
+share an economic identity, but duplicate effects within a scope are rejected.
+`transitionProspectiveClaim` requires current scope authority and verified,
+budget-unique consumption evidence before releasing a consumed hold. Uncertain or
+initiated effects are not released merely because a session is edited or expires.
+
 `loadEvaluationState({actorId,budgetId,now})` returns sensitive server-only evaluation
 inputs. It requires current effective conclusion membership and a granted resource,
 not merely `observe`; application callers must separately authorize requested resources

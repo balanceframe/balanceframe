@@ -19,6 +19,6 @@
   },
   "scripts": {
     "build": "napi build --release",
-    "test": "node test/smoke.mjs && node test/financial-decision.mjs && node test/boundary.mjs"
+    "test": "node test/smoke.mjs && node test/financial-decision.mjs && node test/boundary.mjs && node test/decision-card.mjs ../../protocol/fixtures/account-aware-liquidity.json ../../protocol/fixtures/financial-decision-foundation.json"
   }
 }

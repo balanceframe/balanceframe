@@ -11,12 +11,20 @@ import type {
   LiquidityClaimSet,
   LiquidityPolicyRecord,
   PaymentPreferenceRecord,
+  ProspectiveClaim,
+  ProspectiveClaimConsumptionVerifier,
+  ProspectiveClaimLifecycle,
+  ProspectiveClaimMode,
+  RedactedProspectiveScope,
   RecheckTransferCommand,
   ResourceCapability,
   ResourceGrant,
   ResourceRef,
+  SaveProspectiveClaimInput,
   SaveTransferPreviewInput,
+  StoredProspectiveClaim,
   TransferPreview,
+  VisibleStoredProspectiveClaim,
   SavePolicyInput,
   SaveSpendSessionInput,
   SettlementVerifier,
@@ -26,6 +34,7 @@ import type {
   TransferPlan,
   TransferProposal,
   TransferState,
+  TransitionProspectiveClaimInput,
 } from './liquidity-types.js';
 
 function canonical(value: unknown): string {
@@ -69,6 +78,14 @@ function positiveMoney(value: { minorUnits: string; currency: string }): void {
     !/^[A-Z]{3}$/.test(value.currency)
   )
     throw new Error('Invalid positive Money');
+}
+function governedReservationMode(
+  policy: LiquidityPolicyRecord['policy'],
+): ProspectiveClaimMode {
+  const mode = policy.reservationMode ?? 'block';
+  if (mode !== 'inform' && mode !== 'block')
+    throw new Error('Invalid reservation policy mode');
+  return mode;
 }
 const initialState = (): TransferState => ({
   phase: 'proposed',
@@ -277,7 +294,7 @@ export class LiquidityWorkflow {
                 createdAt: facts.created_at,
               }
             : null,
-          claimSet: this.claimSet(input.budgetId, input.now),
+          claimSet: this.claimSet(input.budgetId, input.now, input.actorId),
           priorAllocation: allocation
             ? {
                 sequence: allocation.sequence,
@@ -494,7 +511,9 @@ export class LiquidityWorkflow {
   }
   savePolicy(input: SavePolicyInput): LiquidityPolicyRecord {
     if (!this.isOwner(input)) this.budget(input, 'policy');
-    future(input.policy.expiresAt, input.now);
+    const reservationMode = governedReservationMode(input.policy);
+    const governedPolicy = { ...input.policy, reservationMode };
+    future(governedPolicy.expiresAt, input.now);
     const counts = [
       input.approvalPolicy.minimumApprovers,
       ...(input.approvalPolicy.thresholds ?? []).map((t) => t.minimumApprovers),
@@ -514,8 +533,8 @@ export class LiquidityWorkflow {
           .prepare('INSERT INTO liquidity_policy_versions VALUES (?,?,?,?,?,?)')
           .run(
             input.budgetId,
-            input.policy.version,
-            JSON.stringify(input.policy),
+            governedPolicy.version,
+            JSON.stringify(governedPolicy),
             JSON.stringify(input.approvalPolicy),
             input.actorId,
             input.now,
@@ -524,41 +543,100 @@ export class LiquidityWorkflow {
           .prepare(
             'INSERT INTO liquidity_current_policy VALUES (?,?) ON CONFLICT(budget_id) DO UPDATE SET version=excluded.version',
           )
-          .run(input.budgetId, input.policy.version);
+          .run(input.budgetId, governedPolicy.version);
         this.invalidateProposals(input.budgetId, input.now);
         this.audit(input, 'liquidity_policy_changed', null, input.now, null);
         return this.currentPolicy(input.budgetId);
       })
       .immediate();
   }
-  private claimSet(budgetId: string, now: string): LiquidityClaimSet {
+  private claimSet(budgetId: string, now: string, actorId: string): LiquidityClaimSet {
     time(now);
+    const nowTime = Date.parse(now);
     return this.db
       .transaction(() => {
         const rows = this.db
-          .prepare('SELECT id,bundle FROM liquidity_claims WHERE budget_id=? ORDER BY id')
-          .all(budgetId) as { id: string; bundle: string }[];
+          .prepare(
+            'SELECT c.id,c.bundle,m.mode,m.policy_version,m.claim,m.updated_at FROM liquidity_claims c LEFT JOIN liquidity_claim_metadata m ON m.budget_id=c.budget_id AND m.claim_id=c.id WHERE c.budget_id=? ORDER BY c.id',
+          )
+          .all(budgetId) as {
+          id: string;
+          bundle: string;
+          mode: ProspectiveClaimMode | null;
+          policy_version: string | null;
+          claim: string | null;
+          updated_at: string | null;
+        }[];
         const bundles: LiquidityClaimBundle[] = [];
-        let expired = false;
+        let changed = false;
         for (const row of rows) {
           const bundle = JSON.parse(row.bundle) as LiquidityClaimBundle;
+          const claim = row.claim ? (JSON.parse(row.claim) as ProspectiveClaim) : null;
+          const effectiveAt = claim ? Date.parse(claim.effectiveFrom) : NaN;
           if (
             bundle.state === 'active' &&
             !bundle.initiated &&
-            Date.parse(bundle.expiresAt) <= Date.parse(now)
+            Date.parse(bundle.expiresAt) <= nowTime
           ) {
             this.db
               .prepare('UPDATE liquidity_claims SET bundle=? WHERE budget_id=? AND id=?')
               .run(JSON.stringify({ ...bundle, state: 'expired' }), budgetId, row.id);
-            expired = true;
-          } else if (
-            bundle.state === 'active' ||
-            bundle.state === 'initiated' ||
-            (bundle.initiated && bundle.state !== 'settled')
+            this.db
+              .prepare(
+                "UPDATE liquidity_claim_metadata SET lifecycle_state='expired',updated_at=? WHERE budget_id=? AND claim_id=? AND lifecycle_state='active'",
+              )
+              .run(now, budgetId, row.id);
+            if (row.mode && row.policy_version)
+              this.auditProspective(
+                { actorId, budgetId },
+                'prospective_claim:expire',
+                row.id,
+                now,
+                row.policy_version,
+              );
+            changed = true;
+            continue;
+          }
+          if (
+            claim &&
+            bundle.state === 'active' &&
+            !bundle.initiated &&
+            Number.isFinite(effectiveAt) &&
+            effectiveAt > nowTime
+          )
+            continue;
+          if (
+            claim &&
+            bundle.state === 'active' &&
+            !bundle.initiated &&
+            Number.isFinite(effectiveAt) &&
+            Date.parse(row.updated_at ?? '') < effectiveAt
+          ) {
+            this.db
+              .prepare(
+                "UPDATE liquidity_claim_metadata SET updated_at=? WHERE budget_id=? AND claim_id=? AND lifecycle_state='active'",
+              )
+              .run(now, budgetId, row.id);
+            if (row.mode && row.policy_version)
+              this.auditProspective(
+                { actorId, budgetId },
+                'prospective_claim:activate',
+                row.id,
+                now,
+                row.policy_version,
+                'active',
+              );
+            changed = true;
+          }
+          if (
+            (row.mode !== 'inform' || bundle.state !== 'active' || bundle.initiated) &&
+            (bundle.state === 'active' ||
+              bundle.state === 'initiated' ||
+              (bundle.initiated && bundle.state !== 'settled'))
           )
             bundles.push(bundle);
         }
-        if (expired) this.bump(budgetId);
+        if (changed) this.bump(budgetId);
         const row = this.db
           .prepare('SELECT revision FROM liquidity_claim_revisions WHERE budget_id=?')
           .get(budgetId) as { revision: number } | undefined;
@@ -568,7 +646,7 @@ export class LiquidityWorkflow {
   }
   getClaimSet(input: LiquidityActor & { now: string }): LiquidityClaimSet {
     this.budget(input, 'liquidity');
-    const set = this.claimSet(input.budgetId, input.now);
+    const set = this.claimSet(input.budgetId, input.now, input.actorId);
     for (const bundle of set.bundles)
       for (const effect of bundle.effects)
         this.requireResource({
@@ -596,7 +674,7 @@ export class LiquidityWorkflow {
     ownClaimId: string | null = null,
     rejectInvalid = true,
   ): ReturnType<ClaimValidator> {
-    const claimSet = this.claimSet(input.budgetId, input.now);
+    const claimSet = this.claimSet(input.budgetId, input.now, input.actorId);
     if (claimSet.revision !== expected) throw new Error('Claim-set revision conflict');
     const policy = this.currentPolicy(input.budgetId);
     future(policy.policy.expiresAt, input.now);
@@ -697,6 +775,483 @@ export class LiquidityWorkflow {
       )
       .run(budgetId, bundle.id, ownerKind, ownerId, JSON.stringify(bundle));
     this.bump(budgetId);
+  }
+  private assertNoDuplicateEconomicEffect(
+    budgetId: string,
+    effect: LiquidityClaimBundle['effects'][number],
+  ): void {
+    const rows = this.db
+      .prepare('SELECT bundle FROM liquidity_claims WHERE budget_id=?')
+      .all(budgetId) as { bundle: string }[];
+    for (const row of rows) {
+      const bundle = JSON.parse(row.bundle) as LiquidityClaimBundle;
+      if (bundle.state !== 'active' && bundle.state !== 'initiated') continue;
+      if (
+        bundle.effects.some(
+          (existing) =>
+            existing.kind === effect.kind &&
+            existing.resourceId === effect.resourceId &&
+            existing.economicObligationId === effect.economicObligationId,
+        )
+      )
+        throw new Error('Duplicate economic obligation');
+    }
+  }
+  private prospectiveScope(scope: ProspectiveClaim['scope']): ResourceRef {
+    if (scope.kind === 'category' || scope.kind === 'account') {
+      if (!scope.id.trim()) throw new Error('Unsupported claim scope');
+      return {
+        resourceKind: scope.kind,
+        resourceId: scope.id,
+      };
+    }
+    throw new Error('Unsupported claim scope');
+  }
+  private prospectiveInput(
+    claim: SaveProspectiveClaimInput['claim'],
+    policy: LiquidityPolicyRecord,
+    now: string,
+  ): {
+    mode: ProspectiveClaimMode;
+    expiresAt: string;
+    effect: LiquidityClaimBundle['effects'][number];
+  } {
+    if (!claim.claimId.trim()) throw new Error('Invalid claim ID');
+    if (claim.kind !== 'reservation' && claim.kind !== 'commitment')
+      throw new Error('Invalid claim kind');
+    if (claim.status !== 'active') throw new Error('Only active claims may be saved');
+    if (!claim.sourceId.trim()) throw new Error('Missing economic obligation source');
+    if (!claim.snapshotId.trim()) throw new Error('Missing snapshot identity');
+    if (claim.policyVersion !== policy.policy.version) throw new Error('Policy version mismatch');
+    const scope = this.prospectiveScope(claim.scope);
+    positiveMoney(claim.amount);
+    time(claim.effectiveFrom);
+    const expiresAt = claim.expiresAt ?? policy.policy.expiresAt;
+    future(expiresAt, now);
+    if (Date.parse(expiresAt) > Date.parse(policy.policy.expiresAt))
+      throw new Error('Claim exceeds policy expiry');
+    if (Date.parse(claim.effectiveFrom) >= Date.parse(expiresAt))
+      throw new Error('Invalid claim time range');
+    if (claim.mode !== undefined && claim.mode !== 'inform' && claim.mode !== 'block')
+      throw new Error('Invalid claim mode');
+    const mode = governedReservationMode(policy.policy);
+    return {
+      mode,
+      expiresAt,
+      effect: {
+        kind: scope.resourceKind === 'category' ? 'category' : 'account_debit',
+        resourceId: scope.resourceId,
+        amount: structuredClone(claim.amount),
+        economicObligationId: claim.sourceId,
+        categoryId: scope.resourceKind === 'category' ? scope.resourceId : null,
+        includedInBalance: false,
+        matchedTransactionIds: [],
+      },
+    };
+  }
+  private storedProspectiveClaim(
+    claim: ProspectiveClaim,
+    mode: ProspectiveClaimMode,
+    lifecycleState: ProspectiveClaimLifecycle,
+  ): VisibleStoredProspectiveClaim {
+    return {
+      ...structuredClone(claim),
+      status: lifecycleState === 'active' ? 'active' : 'released',
+      mode,
+      lifecycleState,
+    };
+  }
+  private recordProspective<T>(
+    input: LiquidityActor & { idempotencyKey: string; now: string },
+    operation: string,
+    claimId: string,
+    request: unknown,
+    result: T,
+    policyVersion: string,
+  ): void {
+    this.db
+      .prepare(
+        "INSERT INTO idempotency_records (idempotency_key,proposal_id,operation,executed_at,completed,idempotency_status,lease_expires_at,serialised_effect,error_message,updated_at,request_identity) VALUES (?, ?, ?, ?, 1, 'succeeded', NULL, ?, NULL, ?, ?)",
+      )
+      .run(
+        input.idempotencyKey,
+        claimId,
+        operation,
+        input.now,
+        JSON.stringify(result),
+        input.now,
+        identity(request),
+      );
+    const lifecycleState =
+      typeof result === 'object' &&
+      result !== null &&
+      'lifecycleState' in result &&
+      typeof result.lifecycleState === 'string'
+        ? result.lifecycleState
+        : operation;
+    this.db
+      .prepare(
+        'INSERT INTO audit_records (id,classification,timestamp,actor_id,operation,proposal_id,budget_id,policy_version,result,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        randomUUID(),
+        'workflow_transition',
+        input.now,
+        input.actorId,
+        operation,
+        claimId,
+        input.budgetId,
+        policyVersion,
+        JSON.stringify({ claimId, lifecycleState }),
+        input.idempotencyKey,
+      );
+  }
+  private auditProspective(
+    input: LiquidityActor,
+    operation: string,
+    claimId: string,
+    now: string,
+    policyVersion: string,
+    result = 'expired',
+  ): void {
+    this.db
+      .prepare(
+        'INSERT INTO audit_records (id,classification,timestamp,actor_id,operation,proposal_id,budget_id,policy_version,result,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,NULL)',
+      )
+      .run(
+        randomUUID(),
+        'workflow_transition',
+        now,
+        input.actorId,
+        operation,
+        claimId,
+        input.budgetId,
+        policyVersion,
+        result,
+      );
+  }
+  private projectProspectiveClaim(
+    row: {
+      actor_id: string;
+      mode: ProspectiveClaimMode;
+      lifecycle_state: ProspectiveClaimLifecycle;
+      claim: string;
+    },
+    input: LiquidityActor,
+  ): StoredProspectiveClaim {
+    const claim = JSON.parse(row.claim) as ProspectiveClaim;
+    const scope = this.prospectiveScope(claim.scope);
+    const visible =
+      claim.visibility === 'visible' &&
+      this.isAuthorized({
+        ...input,
+        capability: 'liquidity',
+        resourceKind: scope.resourceKind,
+        resourceId: scope.resourceId,
+      });
+    const lifecycleState = row.lifecycle_state;
+    const projected = this.storedProspectiveClaim(claim, row.mode, lifecycleState);
+    if (visible) return projected;
+    const redactedScope: RedactedProspectiveScope =
+      claim.scope.kind === 'category'
+        ? { kind: 'category', id: null }
+        : { kind: 'account', id: null };
+    return {
+      claimId: null,
+      kind: claim.kind,
+      sourceId: null,
+      scope: redactedScope,
+      amount: null,
+      status: projected.status,
+      effectiveFrom: projected.effectiveFrom,
+      expiresAt: projected.expiresAt,
+      visibility: 'redacted',
+      policyVersion: null,
+      snapshotId: null,
+      mode: projected.mode,
+      lifecycleState: projected.lifecycleState,
+    };
+  }
+  /** Atomically admits a prospective claim into the shared liquidity claim revision. */
+  saveProspectiveClaim(
+    input: SaveProspectiveClaimInput,
+    validator: ClaimValidator,
+  ): StoredProspectiveClaim {
+    this.budget(input, 'liquidity');
+    const scope = this.prospectiveScope(input.claim.scope);
+    this.requireResource({
+      ...input,
+      capability: 'liquidity',
+      resourceKind: scope.resourceKind,
+      resourceId: scope.resourceId,
+    });
+    time(input.now);
+    return this.db
+      .transaction(() => {
+        this.budget(input, 'liquidity');
+        const replay = this.replay<StoredProspectiveClaim>(input, 'prospective_claim:save', input);
+        if (replay) return replay;
+        const policy = this.currentPolicy(input.budgetId);
+        future(policy.policy.expiresAt, input.now);
+        const { mode, expiresAt, effect } = this.prospectiveInput(input.claim, policy, input.now);
+        this.requireResource({
+          ...input,
+          capability: 'liquidity',
+          resourceKind: scope.resourceKind,
+          resourceId: scope.resourceId,
+        });
+        const existing = this.db
+          .prepare('SELECT owner_kind FROM liquidity_claims WHERE budget_id=? AND id=?')
+          .get(input.budgetId, input.claim.claimId) as { owner_kind: string } | undefined;
+        if (existing) throw new Error('Claim ID already exists');
+        this.claimSet(input.budgetId, input.now, input.actorId);
+        this.assertNoDuplicateEconomicEffect(input.budgetId, effect);
+        const bundle: LiquidityClaimBundle = {
+          id: input.claim.claimId,
+          creationSnapshotId: input.claim.snapshotId,
+          creationPolicyVersion: input.claim.policyVersion,
+          state: 'active',
+          expiresAt,
+          initiated: false,
+          effects: [effect],
+        };
+        const storedClaim: ProspectiveClaim = {
+          ...input.claim,
+          expiresAt,
+        };
+        const candidate = { ...bundle, mode };
+        this.validate(
+          input,
+          input.expectedClaimSetRevision,
+          validator,
+          null,
+          null,
+          candidate,
+          null,
+          mode === 'block',
+        );
+        this.persistClaim(input.budgetId, 'prospective', input.claim.claimId, bundle);
+        this.db
+          .prepare(
+            'INSERT INTO liquidity_claim_metadata (budget_id,claim_id,actor_id,mode,lifecycle_state,source_id,policy_version,snapshot_id,claim,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+          )
+          .run(
+            input.budgetId,
+            input.claim.claimId,
+            input.actorId,
+            mode,
+            'active',
+            input.claim.sourceId,
+            input.claim.policyVersion,
+            input.claim.snapshotId,
+            JSON.stringify(storedClaim),
+            input.now,
+            input.now,
+          );
+        const result = this.projectProspectiveClaim(
+          {
+            actor_id: input.actorId,
+            mode,
+            lifecycle_state: 'active',
+            claim: JSON.stringify(storedClaim),
+          },
+          input,
+        );
+        this.recordProspective(
+          input,
+          'prospective_claim:save',
+          input.claim.claimId,
+          input,
+          result,
+          input.claim.policyVersion,
+        );
+        return result;
+      })
+      .immediate();
+  }
+  /** Releases or consumes an uninitiated claim under the shared revision CAS. */
+  transitionProspectiveClaim(
+    input: TransitionProspectiveClaimInput,
+    consumptionVerifier?: ProspectiveClaimConsumptionVerifier,
+  ): StoredProspectiveClaim {
+    this.budget(input, 'liquidity');
+    time(input.now);
+    if (!input.claimId.trim()) throw new Error('Invalid claim ID');
+    if (input.transition !== 'release' && input.transition !== 'consume')
+      throw new Error('Invalid claim transition');
+    return this.db
+      .transaction(() => {
+        const replayAuthorization = this.db
+          .prepare(
+            'SELECT actor_id,claim FROM liquidity_claim_metadata WHERE budget_id=? AND claim_id=?',
+          )
+          .get(input.budgetId, input.claimId) as
+          | { actor_id: string; claim: string }
+          | undefined;
+        if (!replayAuthorization) throw new Error('Prospective claim unavailable');
+        const replayClaim = JSON.parse(replayAuthorization.claim) as ProspectiveClaim;
+        const replayScope = this.prospectiveScope(replayClaim.scope);
+        this.requireResource({
+          ...input,
+          capability: 'liquidity',
+          resourceKind: replayScope.resourceKind,
+          resourceId: replayScope.resourceId,
+        });
+        const replayConfirmationAuthorized = this.isAuthorized({
+          ...input,
+          capability: 'confirmation',
+          resourceKind: replayScope.resourceKind,
+          resourceId: replayScope.resourceId,
+        });
+        if (
+          replayAuthorization.actor_id !== input.actorId &&
+          !replayConfirmationAuthorized
+        )
+          throw new Error('Claim transition authorization denied');
+        const replay = this.replay<StoredProspectiveClaim>(
+          input,
+          'prospective_claim:transition',
+          input,
+        );
+        if (replay) return replay;
+        const set = this.claimSet(input.budgetId, input.now, input.actorId);
+        if (set.revision !== input.expectedClaimSetRevision)
+          throw new Error('Claim-set revision conflict');
+        const row = this.db
+          .prepare(
+            'SELECT actor_id,mode,lifecycle_state,source_id,policy_version,snapshot_id,claim FROM liquidity_claim_metadata WHERE budget_id=? AND claim_id=?',
+          )
+          .get(input.budgetId, input.claimId) as
+          | {
+              actor_id: string;
+              mode: ProspectiveClaimMode;
+              lifecycle_state: ProspectiveClaimLifecycle;
+              source_id: string;
+              policy_version: string;
+              snapshot_id: string;
+              claim: string;
+            }
+          | undefined;
+        if (!row) throw new Error('Prospective claim unavailable');
+        const claim = JSON.parse(row.claim) as ProspectiveClaim;
+        const scope = this.prospectiveScope(claim.scope);
+        this.requireResource({
+          ...input,
+          capability: 'liquidity',
+          resourceKind: scope.resourceKind,
+          resourceId: scope.resourceId,
+        });
+        const confirmationAuthorized = this.isAuthorized({
+          ...input,
+          capability: 'confirmation',
+          resourceKind: scope.resourceKind,
+          resourceId: scope.resourceId,
+        });
+        const owner = row.actor_id === input.actorId;
+        if (!owner && !confirmationAuthorized)
+          throw new Error('Claim transition authorization denied');
+        const evidenceId = input.consumptionEvidenceId?.trim() || null;
+        if (input.transition === 'consume' && !evidenceId)
+          throw new Error('Verified evidence required');
+        if (row.lifecycle_state !== 'active') throw new Error('Claim is not active');
+        const bundleRow = this.db
+          .prepare(
+            "SELECT bundle FROM liquidity_claims WHERE budget_id=? AND owner_kind='prospective' AND owner_id=?",
+          )
+          .get(input.budgetId, input.claimId) as { bundle: string } | undefined;
+        if (!bundleRow) throw new Error('Prospective claim unavailable');
+        const bundle = JSON.parse(bundleRow.bundle) as LiquidityClaimBundle;
+        if (bundle.initiated || bundle.state === 'initiated')
+          throw new Error('Initiated claim cannot be released or consumed');
+        if (bundle.state !== 'active') throw new Error('Claim is not active');
+        if (input.transition === 'consume') {
+          const consumedEvidenceIds = (
+            this.db
+              .prepare(
+                'SELECT consumption_evidence_id FROM liquidity_claim_metadata WHERE budget_id=? AND consumption_evidence_id IS NOT NULL',
+              )
+              .all(input.budgetId) as { consumption_evidence_id: string }[]
+          ).map(({ consumption_evidence_id }) => consumption_evidence_id);
+          if (evidenceId && consumedEvidenceIds.includes(evidenceId))
+            throw new Error('Consumption evidence already consumed');
+          if (!consumptionVerifier) throw new Error('Trusted consumption verifier required');
+          if (!evidenceId) throw new Error('Verified evidence required');
+          const verified = consumptionVerifier(
+            structuredClone({
+              actorId: input.actorId,
+              budgetId: input.budgetId,
+              claim,
+              claimSet: set,
+              evidenceId,
+              consumedEvidenceIds,
+              now: input.now,
+            }),
+          );
+          if (
+            !verified ||
+            ('then' in verified && typeof verified.then === 'function') ||
+            typeof verified.valid !== 'boolean'
+          )
+            throw new Error('Invalid trusted consumption verification result');
+          if (!verified.valid)
+            throw new Error(verified.reason ?? 'Trusted consumption verification failed');
+        }
+        const nextState = input.transition === 'release' ? 'cancelled' : 'settled';
+        const lifecycleState: ProspectiveClaimLifecycle =
+          input.transition === 'release' ? 'released' : 'consumed';
+        this.persistClaim(input.budgetId, 'prospective', input.claimId, {
+          ...bundle,
+          state: nextState,
+        });
+        this.db
+          .prepare(
+            'UPDATE liquidity_claim_metadata SET lifecycle_state=?,updated_at=?,consumption_evidence_id=? WHERE budget_id=? AND claim_id=? AND lifecycle_state=?',
+          )
+          .run(
+            lifecycleState,
+            input.now,
+            evidenceId ?? null,
+            input.budgetId,
+            input.claimId,
+            'active',
+          );
+        const result = this.projectProspectiveClaim(
+          {
+            actor_id: row.actor_id,
+            mode: row.mode,
+            lifecycle_state: lifecycleState,
+            claim: row.claim,
+          },
+          input,
+        );
+        this.recordProspective(
+          input,
+          'prospective_claim:transition',
+          input.claimId,
+          input,
+          result,
+          row.policy_version,
+        );
+        return result;
+      })
+      .immediate();
+  }
+  /** Lists lifecycle history with scope-aware redaction and informative claims included. */
+  listProspectiveClaims(input: LiquidityActor & { now: string }): StoredProspectiveClaim[] {
+    this.budget(input, 'liquidity');
+    time(input.now);
+    this.claimSet(input.budgetId, input.now, input.actorId);
+    const rows = this.db
+      .prepare(
+        'SELECT actor_id,mode,lifecycle_state,claim FROM liquidity_claim_metadata WHERE budget_id=? ORDER BY created_at,claim_id',
+      )
+      .all(input.budgetId) as {
+      actor_id: string;
+      mode: ProspectiveClaimMode;
+      lifecycle_state: ProspectiveClaimLifecycle;
+      claim: string;
+    }[];
+    return rows.map((row) => this.projectProspectiveClaim(row, input));
   }
   admitTransferProposal(input: AdmitTransferInput, validator: ClaimValidator): TransferProposal {
     this.authorizePlan(input, input.plan, 'proposal');
@@ -1253,7 +1808,8 @@ export class LiquidityWorkflow {
         };
         this.validate(
           input,
-          input.expectedClaimSetRevision ?? this.claimSet(input.budgetId, input.now).revision,
+          input.expectedClaimSetRevision ??
+            this.claimSet(input.budgetId, input.now, input.actorId).revision,
           validator,
           null,
           session,

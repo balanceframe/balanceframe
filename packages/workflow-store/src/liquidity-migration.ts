@@ -23,6 +23,25 @@ export function migrateLiquidityWorkflow(db: Database): void {
     CREATE TABLE liquidity_current_policy (budget_id TEXT PRIMARY KEY, version TEXT NOT NULL);
     CREATE TABLE liquidity_claim_revisions (budget_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE liquidity_claims (budget_id TEXT NOT NULL, id TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, bundle TEXT NOT NULL, PRIMARY KEY(budget_id,id), UNIQUE(budget_id,owner_kind,owner_id));
+    CREATE TABLE liquidity_claim_metadata (
+      budget_id TEXT NOT NULL,
+      claim_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK(mode IN ('inform','block')),
+      lifecycle_state TEXT NOT NULL CHECK(lifecycle_state IN ('active','released','consumed','expired')),
+      source_id TEXT NOT NULL,
+      policy_version TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      claim TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      consumption_evidence_id TEXT,
+      PRIMARY KEY(budget_id,claim_id),
+      FOREIGN KEY(budget_id,claim_id) REFERENCES liquidity_claims(budget_id,id)
+    );
+    CREATE UNIQUE INDEX liquidity_claim_consumption_evidence_unique
+      ON liquidity_claim_metadata (budget_id, consumption_evidence_id)
+      WHERE consumption_evidence_id IS NOT NULL;
     CREATE TABLE liquidity_allocations (budget_id TEXT NOT NULL, sequence INTEGER NOT NULL, allocation TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(budget_id,sequence));
     CREATE TABLE liquidity_supplemental_facts (budget_id TEXT NOT NULL, version INTEGER NOT NULL, facts TEXT NOT NULL, actor_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(budget_id,version));
     CREATE TABLE payment_preferences (budget_id TEXT NOT NULL, id TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(budget_id,id));

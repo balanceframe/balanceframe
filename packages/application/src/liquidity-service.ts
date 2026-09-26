@@ -325,7 +325,9 @@ export class LiquidityService {
     horizonAnchor = capture.now,
   ): AccountAwareSpendabilityRequest | null {
     if (!capture.state.policy) return null;
-    const policy = liquidityPolicySchema.parse(capture.state.policy.policy);
+    const nativePolicy = { ...capture.state.policy.policy };
+    delete nativePolicy.reservationMode;
+    const policy = liquidityPolicySchema.parse(nativePolicy);
     const dates = [
       horizonAnchor,
       new Date(Date.parse(horizonAnchor) + 30 * 86400000).toISOString(),
