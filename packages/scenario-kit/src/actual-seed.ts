@@ -1216,7 +1216,12 @@ export async function seedActualBudget(
       throw new Error(`Created budget ${JSON.stringify(options.budgetName)} has no remote id`);
 
     const ids = await populatePrepared(prepared);
-    await actualApi.sync();
+    // Initial create-budget uploads an empty archive. Publish the populated
+    // SQLite snapshot before another Actual client downloads the new budget.
+    const publication = await client.send('upload-budget');
+    if (publication && typeof publication === 'object' && 'error' in publication && publication.error) {
+      throw new Error('Actual rejected the seeded budget publication');
+    }
     return {
       ...ids,
       budgetId,

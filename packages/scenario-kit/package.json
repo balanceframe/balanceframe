@@ -9,7 +9,8 @@
   "exports": {
     ".": "./dist/scenario-kit/src/index.js",
     "./catalog": "./dist/scenario-kit/src/catalog.js",
-    "./actual-seed": "./dist/scenario-kit/src/actual-seed.js"
+    "./actual-seed": "./dist/scenario-kit/src/actual-seed.js",
+    "./loader": "./dist/scenario-kit/src/loader.js"
   },
   "scripts": {
     "build": "tsc && mkdir -p dist/protocol/fixtures/scenarios && cp ../../protocol/fixtures/scenarios/household.json dist/protocol/fixtures/scenarios/household.json",

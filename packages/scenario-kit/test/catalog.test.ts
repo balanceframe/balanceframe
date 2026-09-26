@@ -839,6 +839,24 @@ describe('scenario catalog contract', () => {
     }
   });
 
+  it('keeps saved carts within attested evidence and completion on the current budget date', () => {
+    const richCart = materializeScenario('rich-cart', REFERENCE_ANCHOR);
+    for (const session of Object.values(richCart.sessions)) {
+      for (const item of session.items) {
+        expect(Date.parse(item.purchaseAt)).toBeLessThan(Date.parse(richCart.observations.expiresAt));
+        expect(Date.parse(item.requiredBy)).toBeLessThan(Date.parse(session.expiresAt));
+      }
+    }
+    const completion = materializeScenario('split-completion', REFERENCE_ANCHOR);
+    for (const item of completion.sessions.cart!.items) {
+      expect(item.purchaseAt.slice(0, 10)).toBe(REFERENCE_ANCHOR.toISOString().slice(0, 10));
+    }
+    const transfer = materializeScenario('account-transfer', REFERENCE_ANCHOR);
+    expect(transfer.entry.kind).toBe('purchase');
+    if (transfer.entry.kind !== 'purchase') throw new Error('Expected transfer purchase entry');
+    expect(transfer.entry.input.requiredBy).toBe(addMilliseconds(REFERENCE_ANCHOR, 2 * HOUR_MS));
+  });
+
   it('rejects invalid anchors and non-catalog IDs instead of manufacturing a fixture', () => {
     expect(() => materializeScenario('funded-purchase', new Date(Number.NaN))).toThrow(
       /date|anchor|invalid/i,

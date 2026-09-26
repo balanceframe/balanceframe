@@ -559,8 +559,12 @@ function makePurchase(
     categoryId,
     amount: positiveMoney(amount, options.currency ?? 'USD'),
     ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
-    purchaseAt: context.instant(options.purchaseOffsetMs ?? 0),
-    requiredBy: context.instant(options.requiredByOffsetMs ?? 0),
+    ...(options.purchaseOffsetMs === undefined
+      ? {}
+      : { purchaseAt: context.instant(options.purchaseOffsetMs) }),
+    ...(options.requiredByOffsetMs === undefined
+      ? {}
+      : { requiredBy: context.instant(options.requiredByOffsetMs) }),
   });
   return input;
 }
@@ -739,17 +743,28 @@ function coapproverPersona(): ScenarioPersona {
     displayName: 'Jordan Household',
     membership: {
       status: 'active',
-      capabilities: ['existence', 'name', 'balance', 'session', 'approval'],
+      capabilities: ['existence', 'balance', 'liquidity', 'category', 'conclusion', 'session', 'proposal', 'approval'],
     },
     grants: [
-      { resourceKind: 'session', resourceId: 'cart', capability: 'session', granted: true },
-      { resourceKind: 'session', resourceId: 'cart', capability: 'approval', granted: true },
-      {
-        resourceKind: 'category',
-        resourceId: 'cat-groceries',
-        capability: 'balance',
+      ...(['session', 'proposal', 'approval', 'conclusion'] as const).map((capability) => ({
+        resourceKind: 'budget' as const,
+        resourceId: HOUSEHOLD_BUDGET_ID,
+        capability,
         granted: true,
-      },
+      })),
+      ...(['existence', 'balance', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
+        resourceKind: 'account' as const,
+        resourceId: 'acct-checking',
+        capability,
+        granted: true,
+      })),
+      ...(['cat-groceries', 'cat-entertainment'] as const).flatMap((resourceId) =>
+        (['existence', 'category', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
+          resourceKind: 'category' as const,
+          resourceId,
+          capability,
+          granted: true,
+        }))),
     ],
   };
 }
@@ -1193,6 +1208,9 @@ function completionCart(context: BuildContext, id: ScenarioId, split = true): Mu
     isIncome: false,
   });
   addBudgetCategory(scenario, context.month(), 'cat-household', '10000');
+  addPolicyAccount(scenario, 'acct-checking', '10000', {
+    eligibleCategoryIds: ['cat-groceries', 'cat-entertainment', 'cat-household'],
+  });
   const items = richCartItems(context, { splitRequired: split });
   scenario.sessions.cart = makeSession(context, items, {
     adjustments: richCartAdjustments(),

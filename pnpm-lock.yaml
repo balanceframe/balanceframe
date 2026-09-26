@@ -58,6 +58,9 @@ importers:
       '@balanceframe/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@balanceframe/native':
+        specifier: workspace:*
+        version: link:../../crates/node-binding
       '@balanceframe/protocol-generated':
         specifier: workspace:*
         version: link:../../packages/protocol-generated

@@ -1,17 +1,16 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-
+import { fileURLToPath } from 'node:url';
+import { downloadBudget, getAccounts as freshAccounts, getTransactions as freshTransactions, init, shutdown } from '@actual-app/api';
 import type { ProtocolSnapshot } from '@balanceframe/protocol-generated';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import { populateActualBudget, seedActualBudget } from '../src/actual-seed.js';
+import { materializeScenario } from '../src/catalog.js';
+import { createOwnedScenarioRoot, discardOwnedScenarioRoot, startScenarioActual, startScenarioShell, stopScenarioProcesses, type ScenarioProcesses } from '../src/process-runtime.js';
 import {
-  cleanupBudget,
-  createTestBudget,
-  withActualClient,
-} from '../../../tests/actual-integration/helpers.js';
-import {
+  createBudget,
   getAccountBalance,
   getAccounts,
   getBudgetMonth,
@@ -26,6 +25,7 @@ const REPRESENTATIVE_FIXTURE = new URL(
   import.meta.url,
 );
 const fixtureRoot = mkdtempSync(join(tmpdir(), 'balanceframe-scenario-seed-contract-'));
+let fixtureRuntime: ScenarioProcesses | undefined;
 let budgetSequence = 0;
 
 type ActualRow = Record<string, unknown>;
@@ -142,22 +142,21 @@ async function readActualState(): Promise<{
   };
 }
 
-async function withFreshActualBudget<T>(
-  callback: (budgetId: string, groupId: string) => Promise<T>,
-): Promise<T> {
-  return withActualClient(async () => {
-    const budgetName = `Scenario Seeder Contract ${++budgetSequence}`;
-    const budget = await createTestBudget(budgetName);
-    try {
-      return await callback(budget.budgetId, budget.groupId);
-    } finally {
-      // Actual's sync schedules a mutator on the next event-loop turn. Let
-      // that work finish while the budget is still open before cleanup closes
-      // its database; otherwise upstream shutdown can race a queued query.
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      await cleanupBudget(budget.budgetId, budget.groupId).catch(() => {});
-    }
+async function withFreshActualBudget<T>(callback: () => Promise<T>): Promise<T> {
+  if (!fixtureRuntime) throw new Error('Disposable Actual server is not running');
+  const dataDir = mkdtempSync(join(fixtureRuntime.root, 'seed-contract-client-'));
+  await init({
+    serverURL: fixtureRuntime.actualUrl,
+    password: fixtureRuntime.actualSecretKey,
+    dataDir,
   });
+  try {
+    await createBudget({ name: `Scenario Seeder Contract ${++budgetSequence}` });
+    return await callback();
+  } finally {
+    await shutdown();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 }
 
 afterAll(() => {
@@ -165,6 +164,28 @@ afterAll(() => {
 });
 
 describe('shared ProtocolSnapshot Actual seeder', () => {
+  beforeAll(async () => {
+    const root = createOwnedScenarioRoot();
+    try {
+      fixtureRuntime = await startScenarioShell({
+        root,
+        publicOrigin: 'http://127.0.0.1:43125',
+        webEntry: fileURLToPath(new URL('../../../apps/web/.output/server/index.mjs', import.meta.url)),
+      });
+      await startScenarioActual(fixtureRuntime);
+    } catch (error) {
+      if (fixtureRuntime) await stopScenarioProcesses(fixtureRuntime);
+      else await discardOwnedScenarioRoot(root);
+      fixtureRuntime = undefined;
+      throw error;
+    }
+  }, 120_000);
+
+  afterAll(async () => {
+    if (fixtureRuntime) await stopScenarioProcesses(fixtureRuntime);
+    fixtureRuntime = undefined;
+  }, 120_000);
+
   it('reads back exact starting/final balances, budget assignments, split identities, and import identities', async () => {
     await withFreshActualBudget(async () => {
       const ledger = seedLedger();
@@ -327,4 +348,46 @@ describe('seedActualBudget lifecycle trust boundary', () => {
     expect(existsSync(sentinel)).toBe(true);
     expect(readFileSync(sentinel, 'utf8')).toBe('must survive trust rejection');
   });
+});
+
+describe('seedActualBudget cross-client publication', () => {
+  it('publishes seeded ledger transactions to a fresh Actual client before returning', async () => {
+    const root = createOwnedScenarioRoot();
+    let handle: ScenarioProcesses | undefined;
+    let clientOpen = false;
+    try {
+      handle = await startScenarioShell({
+        root,
+        publicOrigin: 'http://127.0.0.1:43124',
+        webEntry: fileURLToPath(new URL('../../../apps/web/.output/server/index.mjs', import.meta.url)),
+      });
+      await startScenarioActual(handle);
+      const scenario = materializeScenario('uncategorized-debit', new Date());
+      const seeded = await seedActualBudget({
+        serverUrl: handle.actualUrl,
+        secretKey: handle.actualSecretKey,
+        clientDir: handle.seedClientDir,
+        budgetName: 'Cross-client publication',
+        ledger: scenario.ledger,
+      });
+      const freshDir = mkdtempSync(join(root, 'readback-client-'));
+      await init({ serverURL: handle.actualUrl, password: handle.actualSecretKey, dataDir: freshDir });
+      clientOpen = true;
+      await downloadBudget(seeded.groupId);
+      const accountId = seeded.accountIds['acct-checking'];
+      const downloadedAccounts = await freshAccounts();
+      expect(downloadedAccounts.map((row) => ({ id: row.id, name: row.name }))).toContainEqual({
+        id: accountId,
+        name: 'Household Checking',
+      });
+      const rows = await freshTransactions(accountId!, '1900-01-01', '2999-12-31');
+      expect(rows.find((row) => row.id === seeded.transactionIds['tx-uncategorized-debit'])).toMatchObject({
+        amount: -1000,
+      });
+    } finally {
+      if (clientOpen) await shutdown();
+      if (handle) await stopScenarioProcesses(handle);
+      else await discardOwnedScenarioRoot(root);
+    }
+  }, 120_000);
 });
