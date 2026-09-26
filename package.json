@@ -1,6 +1,6 @@
 {
   "name": "balanceframe",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Monorepo for BalanceFrame — financial categorization using Actual Budget",
