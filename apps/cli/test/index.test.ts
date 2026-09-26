@@ -1,35 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import type {
-  DecisionContext,
-  FinancialSnapshot,
-  ProspectiveClaim,
-  ProspectiveDecisionEnvelope,
-  PurchaseEvaluation,
-} from '@balanceframe/protocol-generated';
 import { describe, it, expect } from 'vitest';
 import { parseArgs, main, CliCommand, ParseResult } from '../src/index';
 
-type FinancialDecisionFixture = {
-  full: FinancialSnapshot;
-  claims: {
-    context: DecisionContext;
-    items: ProspectiveClaim[];
-  };
-  decisions: {
-    blocked: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
-  };
-};
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FINANCIAL_DECISION_FIXTURE = JSON.parse(
-  fs.readFileSync(
-    path.resolve(__dirname, '../../../protocol/fixtures/financial-decision-foundation.json'),
-    'utf8',
-  ),
-) as FinancialDecisionFixture;
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing
@@ -1500,17 +1471,6 @@ const mockAnalysisProtocol = {
       categories: [],
     };
   },
-  async purchaseEvaluation() {
-    return {
-      allowable: true,
-      reasonCodes: ['sufficient_budget'],
-      categoryBudget: { minorUnits: '0', currency: 'USD' },
-      categorySpent: { minorUnits: '0', currency: 'USD' },
-      categoryRemaining: { minorUnits: '0', currency: 'USD' },
-      projectedBalance: null,
-      hasEnvelope: true,
-    };
-  },
   async cashFlowProjection() {
     return { projectionMonths: 3, monthlyProjections: [], sufficientData: true, dataWarning: null };
   },
@@ -1572,7 +1532,7 @@ const mockAnalysisProtocol = {
 describe('main — budget intelligence routing', () => {
   const testLedger = { mockLedger: true };
 
-  it('routes purchase evaluate and returns ok envelope', async () => {
+  it('does not claim an affordability verdict without a selected Actual budget', async () => {
     const result = await main(
       ['purchase', 'evaluate', '--category-id', 'cat-food', '--amount', '5000', '--json'],
       {
@@ -1584,10 +1544,10 @@ describe('main — budget intelligence routing', () => {
       },
     );
     const parsed = JSON.parse(result);
-    expect(parsed.schemaVersion).toBe('1');
     expect(parsed.requestId).toBe('req_purch');
-    expect(parsed.status).toBe('ok');
-    expect(parsed.result.allowable).toBe(true);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error.code).toBe('not_connected');
+    expect(result).not.toContain('allowable');
   });
 
   it('routes cash-flow project and returns ok envelope', async () => {
@@ -1790,199 +1750,6 @@ describe('main — budget intelligence routing', () => {
   });
 });
 
-describe('main — financial decision JSON parity', () => {
-  it('preserves canonical snapshot, policy, semantic states, blockers, remediation, redaction, expiry, and unknown codes on purchase evaluate', async () => {
-    const decision = structuredClone(FINANCIAL_DECISION_FIXTURE.decisions.blocked);
-    const futureIssue = decision.issues.find(({ code }) => code === 'fd_future_safety_code');
-    expect(futureIssue).toBeDefined();
-    futureIssue!.remediation = {
-      code: 'review_future_safety',
-      action: 'Review the qualified future-safety finding before purchase.',
-    };
-    const purchaseResult = {
-      ...decision.payload,
-      hasEnvelope: true,
-      decision,
-    };
-
-    const output = await main(
-      [
-        'purchase',
-        'evaluate',
-        '--category-id',
-        'fd-category-groceries',
-        '--account-id',
-        'fd-account-checking',
-        '--amount',
-        '5500',
-        '--currency',
-        'USD',
-        '--json',
-      ],
-      {
-        actorId: 'usr_financial_decision',
-        requestId: 'fd-request-cli-2026-08-23',
-        mode: 'observe',
-        ledger: { canonical: true },
-        freshness: {
-          actualDownloadedAt: '2026-08-23T12:00:00Z',
-          bankSyncedAt: '2026-08-23T11:58:00Z',
-          pendingTransactionsIncluded: true,
-          stalenessDays: 0,
-          isStale: false,
-        },
-        analysisProtocol: {
-          ...mockAnalysisProtocol,
-          async purchaseEvaluation() {
-            return purchaseResult;
-          },
-        },
-      },
-    );
-    const parsed = JSON.parse(output);
-
-    expect(parsed.status).toBe('ok');
-    expect(parsed.result).toEqual(purchaseResult);
-    expect(parsed.result.decision.metadata.context).toEqual(
-      FINANCIAL_DECISION_FIXTURE.claims.context,
-    );
-    expect(parsed.result.decision.metadata.context).toMatchObject({
-      snapshotId: FINANCIAL_DECISION_FIXTURE.full.snapshotId,
-      contentHash: FINANCIAL_DECISION_FIXTURE.full.contentHash,
-      policy: FINANCIAL_DECISION_FIXTURE.claims.context.policy,
-      policyVersion: 'fd-policy-v1',
-      policyHash: 'sha256:fd-policy-v1',
-    });
-    expect(parsed.result.decision.readiness).toBe('blocked');
-    expect(parsed.result.decision.before).toEqual(decision.before);
-    expect(parsed.result.decision.after).toEqual(decision.after);
-    expect(parsed.result.decision.issues).toContainEqual(
-      expect.objectContaining({
-        code: 'reservation_conflict',
-        effect: 'blocks',
-      }),
-    );
-    expect(parsed.result.decision.issues).toContainEqual(
-      expect.objectContaining({
-        code: 'fd_future_safety_code',
-        remediation: {
-          code: 'review_future_safety',
-          action: 'Review the qualified future-safety finding before purchase.',
-        },
-      }),
-    );
-    expect(parsed.result.decision.redaction).toBe('visible');
-    expect(parsed.result.decision.expiresAt).toBe('2026-08-23T12:05:00Z');
-    expect(parsed.result.reasonCodes).toContain('fd_future_reason_code');
-  });
-
-  it('preserves typed finding classifications and lifecycle metadata on the existing home attention command', async () => {
-    const classifications = [
-      'account_readiness_blocker',
-      'transfer_needs_attention',
-      'reservation_conflict',
-      'commitment_conflict',
-      'evidence_connector_degradation',
-      'unresolved_material_evidence',
-    ];
-    const blockers = classifications.map((classification, index) => ({
-      findingId: `fd-finding-${index + 1}`,
-      code: index === classifications.length - 1 ? 'fd_future_safety_code' : classification,
-      classification,
-      message: `Fixture finding ${index + 1}`,
-      severity: index === 0 ? 'critical' : 'warning',
-      scope: {
-        kind: index === 0 ? 'account' : 'global',
-        ...(index === 0 ? { id: 'fd-account-card' } : {}),
-      },
-      blocksConclusion: index === 0,
-      snapshotId: FINANCIAL_DECISION_FIXTURE.full.snapshotId,
-      policyVersion: FINANCIAL_DECISION_FIXTURE.claims.context.policyVersion,
-      remediation: {
-        code: 'refresh_evidence',
-        action: 'Refresh authorized evidence and evaluate again.',
-      },
-      evidence: [
-        {
-          evidenceId: 'fd-bank-sync-card-119',
-          kind: 'bank_sync',
-          authorized: true,
-          redaction: 'redacted',
-        },
-      ],
-      redaction: 'redacted',
-      firstObservedAt: '2026-08-23T11:58:00Z',
-      lastObservedAt: '2026-08-23T12:00:00Z',
-      expiresAt: '2026-08-23T12:05:00Z',
-    }));
-    const homeResult = {
-      blockers,
-      alerts: [],
-      recurrences: [],
-      categoryRisks: [],
-      targetProgress: {
-        overallLabel: 'blocked',
-        healthyCount: 0,
-        atRiskCount: 1,
-        sinkingFundsOnTrack: 0,
-        totalSinkingFunds: 0,
-      },
-    };
-
-    const output = await main(['home', 'attention', '--detailed', '--json'], {
-      actorId: 'usr_financial_decision',
-      requestId: 'fd-request-home-2026-08-23',
-      mode: 'observe',
-      ledger: { canonical: true },
-      freshness: {
-        actualDownloadedAt: '2026-08-23T12:00:00Z',
-        bankSyncedAt: '2026-08-23T11:58:00Z',
-        pendingTransactionsIncluded: true,
-        stalenessDays: 0,
-        isStale: false,
-      },
-      analysisProtocol: {
-        ...mockAnalysisProtocol,
-        async attentionHome() {
-          return homeResult as never;
-        },
-      },
-    });
-    const parsed = JSON.parse(output);
-
-    expect(parsed.status).toBe('ok');
-    expect(parsed.result).toEqual(homeResult);
-    expect(
-      parsed.result.blockers.map(
-        ({ classification }: { classification: string }) => classification,
-      ),
-    ).toEqual(classifications);
-    expect(parsed.result.blockers[0]).toMatchObject({
-      findingId: 'fd-finding-1',
-      classification: 'account_readiness_blocker',
-      scope: { kind: 'account', id: 'fd-account-card' },
-      blocksConclusion: true,
-      snapshotId: 'fd-snapshot-2026-08-23',
-      policyVersion: 'fd-policy-v1',
-      remediation: {
-        code: 'refresh_evidence',
-        action: 'Refresh authorized evidence and evaluate again.',
-      },
-      evidence: [
-        expect.objectContaining({
-          evidenceId: 'fd-bank-sync-card-119',
-          authorized: true,
-          redaction: 'redacted',
-        }),
-      ],
-      redaction: 'redacted',
-      firstObservedAt: '2026-08-23T11:58:00Z',
-      lastObservedAt: '2026-08-23T12:00:00Z',
-      expiresAt: '2026-08-23T12:05:00Z',
-    });
-    expect(parsed.result.blockers.at(-1).code).toBe('fd_future_safety_code');
-  });
-});
 
 describe('main — composition integration', () => {
   it('dispatches pending-review when composition-aligned opts provided', async () => {

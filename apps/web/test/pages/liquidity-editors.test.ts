@@ -324,6 +324,23 @@ describe('account policy and transfer timing', () => {
     expect(wrapper.get('[role="status"]').text()).toMatch(/saved.*reevaluate/i);
   });
 
+  it('saves an explicit blocking reservation policy without changing the source configuration', async () => {
+    const value = configured();
+    value.policy!.reservationMode = 'inform';
+    const wrapper = remember(
+      mount(LiquidityPolicyEditor, { props: { configuration: value }, global }),
+    );
+    await field(wrapper, 'Reservation conflict policy').setValue('block');
+    expect(value.policy!.reservationMode).toBe('inform');
+    fetchMock.mockResolvedValueOnce(ok(configured()));
+    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await flushPromises();
+    const request = fetchMock.mock.calls[0]?.[1] as {
+      body: { reservationMode: string };
+    };
+    expect(request.body.reservationMode).toBe('block');
+  });
+
   it('validates and removes explicit timing and approval rules before saving', async () => {
     const wrapper = remember(
       mount(LiquidityPolicyEditor, { props: { configuration: configuration() }, global }),
@@ -364,6 +381,159 @@ describe('account policy and transfer timing', () => {
       wrapper.findAll('[role="status"]').some((status) => /policy saved/i.test(status.text())),
     ).toBe(true);
   });
+  it('edits discretionary cooldown while preserving protected, guilt-free, and donor category policies', async () => {
+    const value = configured();
+    value.categories = [
+      { id: 'payment', name: 'Card payment', feasible: null, backing: [], reasons: [] },
+      { id: 'other', name: 'Guilt-free extras', feasible: null, backing: [], reasons: [] },
+      { id: 'celebration', name: 'Celebration', feasible: null, backing: [], reasons: [] },
+    ];
+    const categoryPolicies = [
+      {
+        categoryId: 'payment',
+        kind: 'protected',
+        donorEligible: false,
+        minimumRetained: money('750'),
+        projectedRemainingNeed: money('1200'),
+      },
+      {
+        categoryId: 'other',
+        kind: 'guilt_free',
+        donorEligible: true,
+        minimumRetained: money('0'),
+        projectedRemainingNeed: money('0'),
+      },
+      {
+        categoryId: 'celebration',
+        kind: 'discretionary',
+        donorEligible: true,
+        minimumRetained: money('500'),
+        projectedRemainingNeed: money('2500'),
+        cooldownMinutes: 30,
+      },
+    ];
+    value.policy = { ...value.policy!, categoryPolicies };
+    const wrapper = remember(
+      mount(LiquidityPolicyEditor, { props: { configuration: value }, global }),
+    );
+    const category = wrapper
+      .findAll('fieldset')
+      .find((item) => item.find('legend').text() === 'Celebration');
+    if (!category) throw new Error('Missing Celebration category policy fieldset');
+    const kind = field(category, 'Category kind');
+    expect(
+      Array.from((kind.element as HTMLSelectElement).options)
+        .map((option) => option.value)
+        .sort(),
+    ).toEqual(['discretionary', 'goal', 'guilt_free', 'ordinary', 'protected']);
+    expect(field(category, 'Minimum retained')).toBeDefined();
+    expect(field(category, 'Projected remaining need')).toBeDefined();
+    expect((field(category, 'Donor eligible').element as HTMLInputElement).checked).toBe(true);
+    const cooldown = field(category, 'Cooldown');
+    expect((cooldown.element as HTMLInputElement).value).toBe('30');
+    expect(cooldown.attributes('min')).toBe('0');
+    expect(cooldown.attributes('max')).toBe('10080');
+    expect(category.text()).toMatch(/re-?evaluat/i);
+    await kind.setValue('guilt_free');
+    expect(
+      category.findAll('label').some((label) => label.text().startsWith('Cooldown')),
+    ).toBe(false);
+    await kind.setValue('discretionary');
+    expect((field(category, 'Cooldown').element as HTMLInputElement).value).toBe('30');
+    await field(category, 'Cooldown').setValue('45');
+
+    fetchMock.mockResolvedValueOnce(ok(value));
+    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await flushPromises();
+
+    const request = fetchMock.mock.calls[0]?.[1] as { body: { categoryPolicies: unknown } };
+    expect(request.body.categoryPolicies).toEqual([
+      categoryPolicies[0],
+      categoryPolicies[1],
+      { ...categoryPolicies[2], cooldownMinutes: 45 },
+    ]);
+  });
+  it('adds a first category policy from the public category catalog and removes unsaved additions', async () => {
+    const value = configured();
+    value.categories = [
+      {
+        id: 'payment',
+        name: 'Card payment',
+        availabilityBefore: money('6000'),
+        feasible: null,
+        backing: [],
+        reasons: [],
+      },
+      {
+        id: 'celebration',
+        name: 'Celebration',
+        availabilityBefore: money('4200'),
+        feasible: null,
+        backing: [],
+        reasons: [],
+      },
+    ];
+    const savedPolicy = {
+      categoryId: 'payment',
+      kind: 'protected',
+      donorEligible: false,
+      minimumRetained: money('750'),
+      projectedRemainingNeed: money('1200'),
+    };
+    value.policy = { ...value.policy!, categoryPolicies: [savedPolicy] };
+    const wrapper = remember(
+      mount(LiquidityPolicyEditor, { props: { configuration: value }, global }),
+    );
+    const add = field(wrapper, 'Add category policy');
+    expect(
+      Array.from((add.element as HTMLSelectElement).options).map((option) => option.value),
+    ).toContain('celebration');
+    await add.setValue('celebration');
+    let category = wrapper
+      .findAll('fieldset')
+      .find((item) => item.find('legend').text() === 'Celebration');
+    if (!category) throw new Error('Missing added Celebration category policy fieldset');
+    expect((field(category, 'Category kind').element as HTMLSelectElement).value).toBe('ordinary');
+    expect((field(category, 'Minimum retained').element as HTMLInputElement).value).toBe('0');
+    expect((field(category, 'Projected remaining need').element as HTMLInputElement).value).toBe(
+      '0',
+    );
+    expect((field(category, 'Retained currency').element as HTMLInputElement).value).toBe('USD');
+    expect((field(category, 'Need currency').element as HTMLInputElement).value).toBe('USD');
+    expect((field(category, 'Donor eligible').element as HTMLInputElement).checked).toBe(false);
+    await button(category, 'Remove category policy').trigger('click');
+    expect(
+      wrapper
+        .findAll('fieldset')
+        .some((item) => item.find('legend').text() === 'Celebration'),
+    ).toBe(false);
+
+    await add.setValue('celebration');
+    category = wrapper
+      .findAll('fieldset')
+      .find((item) => item.find('legend').text() === 'Celebration');
+    if (!category) throw new Error('Missing re-added Celebration category policy fieldset');
+    await field(category, 'Category kind').setValue('discretionary');
+    await field(category, 'Cooldown').setValue('15');
+    fetchMock.mockResolvedValueOnce(ok(value));
+    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await flushPromises();
+
+    const request = fetchMock.mock.calls[0]?.[1] as { body: { categoryPolicies: unknown } };
+    expect(request.body.categoryPolicies).toEqual([
+      savedPolicy,
+      {
+        categoryId: 'celebration',
+        kind: 'discretionary',
+        donorEligible: false,
+        minimumRetained: money('0'),
+        projectedRemainingNeed: money('0'),
+        cooldownMinutes: 15,
+      },
+    ]);
+  });
+
+
 
   it('prevents concurrent policy writes and re-enables editing after a rejected save', async () => {
     const { promise, reject } = Promise.withResolvers<unknown>();

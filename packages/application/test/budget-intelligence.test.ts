@@ -28,7 +28,6 @@ import {
 import type {
   CommandInput,
   AnalysisProtocol,
-  PurchaseEvaluationResult,
   CashFlowProjectionResult,
   TargetHealthResult,
   ReportGenerationResult,
@@ -37,7 +36,6 @@ import type {
   AttentionHomeResult,
 } from '../src/commands';
 import { ReasonCodes } from '../src/errors';
-import { AuthorizationContext, ErrorInfo } from '../src/envelope';
 import type {
   DataQualityResult,
   LiquidityCoverageResult,
@@ -69,20 +67,6 @@ function createMockProtocol(): {
       throw new Error('not implemented');
     },
 
-    async purchaseEvaluation(
-      _ledger: unknown,
-      _params: Record<string, unknown>,
-    ): Promise<PurchaseEvaluationResult> {
-      return {
-        allowable: true,
-        reasonCodes: ['sufficient_budget'],
-        categoryBudget: { minorUnits: '50000', currency: 'USD' },
-        categorySpent: { minorUnits: '15000', currency: 'USD' },
-        categoryRemaining: { minorUnits: '35000', currency: 'USD' },
-        projectedBalance: { minorUnits: '120000', currency: 'USD' },
-        hasEnvelope: true,
-      };
-    },
 
     async cashFlowProjection(): Promise<CashFlowProjectionResult> {
       return {
@@ -205,77 +189,23 @@ function baseInput(overrides: Partial<CommandInput> = {}): CommandInput {
 }
 
 // ---------------------------------------------------------------------------
-// Stale / Insufficient Data Tests
+// Purchase Card connection boundary
 // ---------------------------------------------------------------------------
 
-describe('purchaseEvaluationAnalysis — stale/insufficient data guards', () => {
-  it('fails with stale_snapshot when freshness.isStale is true', async () => {
+describe('purchaseEvaluationAnalysis — selected budget boundary', () => {
+  it('returns not_connected even when a mock ledger and protocol are supplied', async () => {
     const { protocol } = createMockProtocol();
-    const input = baseInput({
-      analysisProtocol: protocol,
-      freshness: {
-        actualDownloadedAt: null,
-        bankSyncedAt: null,
-        pendingTransactionsIncluded: false,
-        stalenessDays: 0,
-        isStale: true,
+    const envelope = await purchaseEvaluationAnalysis(
+      baseInput({ ledger: { mockLedger: true }, analysisProtocol: protocol }),
+      {
+        categoryId: 'cat_food',
+        amount: { minorUnits: '5000', currency: 'USD' },
       },
-    });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: 'cat_food',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
-
-    expect(envelope.status).toBe('error');
-    expect(envelope.error!.code).toBe('stale_budget_intelligence');
-    expect(envelope.error!.reasonCodes).toContain(ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA);
-  });
-
-  it('fails when categoryId is empty', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ analysisProtocol: protocol });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: '',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
-
-    expect(envelope.status).toBe('error');
-    expect(envelope.error!.code).toBe('purchase_category_required');
-  });
-
-  it('fails when amount is zero', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ analysisProtocol: protocol });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: 'cat_food',
-      amount: { minorUnits: '0', currency: 'USD' },
-    });
-
-    expect(envelope.status).toBe('error');
-    expect(envelope.error!.code).toBe('purchase_amount_required');
-  });
-
-  it('fails when ledger is null', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ ledger: null, analysisProtocol: protocol });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: 'cat_food',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
+    );
 
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('not_connected');
-  });
-
-  it('fails when protocol is missing', async () => {
-    const input = baseInput({ analysisProtocol: undefined });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: 'cat_food',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
-
-    expect(envelope.status).toBe('error');
-    expect(envelope.error!.code).toBe('no_analysis_protocol');
+    expect(envelope.result).toBeNull();
   });
 });
 
@@ -592,26 +522,6 @@ describe('QualityDimension — Rust field alignment', () => {
 // ---------------------------------------------------------------------------
 
 describe('analysis — envelope freshness propagation', () => {
-  it('purchaseEvaluationAnalysis carries freshness on success', async () => {
-    const { protocol } = createMockProtocol();
-    const freshness = {
-      actualDownloadedAt: '2026-07-27T12:00:00Z',
-      bankSyncedAt: '2026-07-27T11:00:00Z',
-      pendingTransactionsIncluded: true,
-      stalenessDays: 0,
-      isStale: false,
-    };
-    const input = baseInput({ analysisProtocol: protocol, freshness });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: 'cat_food',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
-
-    expect(envelope.status).toBe('ok');
-    expect(envelope.dataFreshness).not.toBeNull();
-    expect(envelope.dataFreshness!.isStale).toBe(false);
-    expect(envelope.dataFreshness!.stalenessDays).toBe(0);
-  });
 
   it('dataQualityAnalysis carries freshness on success', async () => {
     const { protocol } = createMockProtocol();
@@ -630,17 +540,6 @@ describe('analysis — envelope freshness propagation', () => {
     expect(envelope.dataFreshness!.isStale).toBe(false);
   });
 
-  it('does NOT fabricate freshness when input freshness is null', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ analysisProtocol: protocol, freshness: null });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: 'cat_food',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
-
-    expect(envelope.status).toBe('ok');
-    expect(envelope.dataFreshness).toBeNull();
-  });
 });
 
 describe('analysis — envelope metadata on error paths', () => {
@@ -673,18 +572,6 @@ describe('analysis — envelope metadata on error paths', () => {
 });
 
 describe('budget intelligence — authorization context is observe', () => {
-  it('purchaseEvaluationAnalysis uses AuthorizationContext.observe', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ analysisProtocol: protocol });
-    const envelope = await purchaseEvaluationAnalysis(input, {
-      categoryId: 'cat_food',
-      amount: { minorUnits: '5000', currency: 'USD' },
-    });
-
-    expect(envelope.status).toBe('ok');
-    expect(envelope.authorization!.capability).toBe('observe');
-    expect(envelope.authorization!.allowed).toBe(true);
-  });
 
   it('cashFlowProjectionAnalysis uses AuthorizationContext.observe', async () => {
     const { protocol } = createMockProtocol();

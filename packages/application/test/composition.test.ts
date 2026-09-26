@@ -39,7 +39,6 @@ import type {
   RuleListResult,
   RuleShowResult,
   RuleUpdateResult,
-  PurchaseEvaluationResult,
   CashFlowProjectionResult,
   TargetHealthResult,
   SinkingFundHealthResult,
@@ -71,19 +70,6 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
       return JSON.stringify([]);
     },
 
-    // Phase 8 — Budget Intelligence N-API methods
-    evaluatePurchase(input: string): string {
-      calls.push('evaluatePurchase');
-      return JSON.stringify({
-        allowable: true,
-        reasonCodes: ['sufficient_budget'],
-        categoryBudget: { minorUnits: '50000', currency: 'USD' },
-        categorySpent: { minorUnits: '15000', currency: 'USD' },
-        categoryRemaining: { minorUnits: '35000', currency: 'USD' },
-        projectedBalance: { minorUnits: '120000', currency: 'USD' },
-        hasEnvelope: true,
-      });
-    },
     projectCashFlow(input: string): string {
       calls.push('projectCashFlow');
       return JSON.stringify({
@@ -1214,40 +1200,6 @@ describe('composition + pendingReviewAnalysis (integration)', () => {
 // ---------------------------------------------------------------------------
 
 describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
-  it('purchaseEvaluation calls evaluatePurchase and returns non-zero fixture data', async () => {
-    const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
-    const ledger = mockLedger();
-
-    const result = await protocol.purchaseEvaluation!(ledger, {
-      categoryId: 'cat_1',
-      amount: { minorUnits: '5000', currency: 'USD' },
-      accountId: 'acct_1',
-    });
-
-    expect(calls).toContain('evaluatePurchase');
-    expect(result.allowable).toBe(true);
-    expect(result.categoryBudget.minorUnits).toBe('50000');
-    expect(result.categorySpent.minorUnits).toBe('15000');
-    expect(result.categoryRemaining.minorUnits).toBe('35000');
-    expect(result.projectedBalance).not.toBeNull();
-    expect(result.projectedBalance!.minorUnits).toBe('120000');
-    expect(result.hasEnvelope).toBe(true);
-  });
-
-  it('purchaseEvaluation rejects when ledger is null', async () => {
-    const { shim, calls } = stubNativeBindings();
-    const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
-
-    await expect(
-      protocol.purchaseEvaluation!(null, {
-        categoryId: 'cat_1',
-        amount: { minorUnits: '5000', currency: 'USD' },
-      }),
-    ).rejects.toThrow('Ledger synchronization returned no snapshot.');
-
-    expect(calls).not.toContain('evaluatePurchase');
-  });
 
   it('cashFlowProjection calls projectCashFlow and returns non-zero fixture data', async () => {
     const { shim, calls } = stubNativeBindings();
@@ -1436,7 +1388,6 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     expect(protocol).toBeDefined();
     // Verify all Phase 8 methods exist and are functions
-    expect(typeof protocol.purchaseEvaluation).toBe('function');
     expect(typeof protocol.cashFlowProjection).toBe('function');
     expect(typeof protocol.targetHealth).toBe('function');
     expect(typeof protocol.financialState).toBe('function');

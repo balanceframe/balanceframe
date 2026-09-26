@@ -16,6 +16,8 @@ import {
 } from './workflow-store';
 
 import { hasLegacyFullRead } from './legacy-financial-read';
+import { createMutationConnectionManager } from './mutation-executor';
+import { reviewAndApplyEnabled } from './workflow-store';
 
 /** Linked financial evidence uses source/audit grants; other whole-budget findings require full-read. */
 export async function canReadFinancialFinding(
@@ -53,11 +55,20 @@ export async function canReadFinancialNotification(
 export function liquidityRoute<T>(
   operation: (event: H3Event, service: LiquidityService, actor: LiquidityActor) => Promise<T>,
   purchaseQuery = false,
+  mutation = false,
 ) {
   return defineEventHandler(async (event) => {
     if (!event.context.auth?.authenticated) {
       setResponseStatus(event, 403);
       return errorEnvelope('AUTHORIZATION_REQUIRED', 'Authentication is required.', null);
+    }
+    if (mutation && !reviewAndApplyEnabled(event)) {
+      setResponseStatus(event, 403);
+      return errorEnvelope(
+        'MUTATION_MODE_DISABLED',
+        'Ledger writes require review-and-apply mode.',
+        null,
+      );
     }
     let authInfo: Parameters<typeof errorEnvelope>[2] = null;
     const requestId = crypto.randomUUID();
@@ -91,7 +102,17 @@ export function liquidityRoute<T>(
       const auth = await requireAuthorization(event, 'observe', `budget:${config.budgetId}`);
       if (!auth.ok) return auth.response;
       authInfo = auth.info;
-      const service = await createLiquidityService({ connectionManager, store: workflow.store });
+      const service = await createLiquidityService({
+        connectionManager,
+        store: workflow.store,
+        ...(mutation
+          ? {
+              mutationConnectionManager: createMutationConnectionManager({
+                configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+              }),
+            }
+          : {}),
+      });
       return okEnvelope(
         await operation(event, service, { actorId: getActorId(event), budgetId: config.budgetId }),
         auth.info,

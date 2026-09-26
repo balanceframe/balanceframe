@@ -52,8 +52,6 @@ import type {
   RuleUpdateResult,
   RuleUpdateOutput,
   PurchaseEvaluationParams,
-  PurchaseEvaluationResult,
-  PurchaseEvaluationOutput,
   CashFlowProjectionParams,
   CashFlowProjectionResult,
   CashFlowProjectionOutput,
@@ -88,12 +86,13 @@ import type {
   IncomeReliabilityOutput,
   ForecastCalibrationResult,
   ForecastCalibrationOutput,
-  ScenarioComparisonParams,
   ScenarioComparisonResult,
   ScenarioComparisonOutput,
+  ScenarioComparisonParams,
   MultidimensionalHealthResult,
   MultidimensionalHealthOutput,
 } from './commands.js';
+import type { PublicDecisionCard } from './liquidity-public.js';
 
 // ---------------------------------------------------------------------------
 // Manual/no-model analysis path
@@ -1362,116 +1361,64 @@ export async function ruleUpdateAnalysis(
 }
 
 // ---------------------------------------------------------------------------
-// Budget Intelligence — Purchase Evaluation
+// Budget Intelligence — Purchase Card
 // ---------------------------------------------------------------------------
 
 /**
- * Evaluate a proposed purchase against budget limits.
- * Read-only deterministic analysis — no model or cloud invocation.
- * Skips auth gates — results are always observable.
+ * Evaluate a proposed purchase through the selected budget's immutable
+ * Decision Card.
+ *
+ * Purchase evaluation has no protocol or disconnected-ledger fallback:
+ * callers must provide the authorized LiquidityService bound to an explicitly
+ * selected Actual budget.
  */
 export async function purchaseEvaluationAnalysis(
   input: CommandInput,
   params: PurchaseEvaluationParams,
-): Promise<PurchaseEvaluationOutput['envelope']> {
-  const { requestId, actorId, ledger, freshness, analysisProtocol } = input;
+): Promise<ResponseEnvelope<{ card: PublicDecisionCard }>> {
+  const { requestId, actorId, freshness } = input;
   const auth = AuthorizationContext.observe(actorId);
-  if (input.liquidity) {
-    try {
-      const result = await input.liquidity.service.evaluatePurchase(
-        { actorId, budgetId: input.liquidity.budgetId },
-        {
-          kind: 'purchase',
-          categoryId: params.categoryId,
-          amount: params.amount,
-          ...(params.accountId ? { accountId: params.accountId } : {}),
-          purchaseAt: params.purchaseAt,
-          requiredBy: params.requiredBy,
-        },
-      );
-      return okResponse(requestId, freshness, auth, result);
-    } catch {
-      return errorResponse(
-        requestId,
-        new ErrorInfo({
-          code: 'liquidity_unavailable',
-          message:
-            'The purchase cannot be evaluated with current authorization and evidence. Refresh the account setup and retry.',
-          retryable: true,
-          reasonCodes: ['liquidity_refresh_required'],
-        }),
-        undefined,
-        auth,
-      );
-    }
-  }
 
-  if (!ledger) {
-    const err = new ErrorInfo({
-      code: 'not_connected',
-      message: 'No ledger connected. Use a connect command first.',
-      retryable: true,
-      reasonCodes: ['missing_ledger_config'],
-    });
-    return errorResponse(requestId, err, undefined, auth);
-  }
-
-  if (freshness && freshness.isStale) {
-    const err = new ErrorInfo({
-      code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before evaluating a purchase.',
-      retryable: true,
-      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
-    });
-    return errorResponse(requestId, err, undefined, auth);
-  }
-
-  if (!analysisProtocol || !analysisProtocol.purchaseEvaluation) {
-    const err = new ErrorInfo({
-      code: 'no_analysis_protocol',
-      message:
-        'Purchase evaluation is not available. Ensure the Rust protocol bindings are loaded.',
-      retryable: true,
-      reasonCodes: ['missing_analysis_protocol'],
-    });
-    return errorResponse(requestId, err, undefined, auth);
-  }
-
-  if (!params.categoryId) {
-    const err = new ErrorInfo({
-      code: 'purchase_category_required',
-      message: 'A category ID is required to evaluate a purchase.',
-      retryable: false,
-      reasonCodes: [ReasonCodes.PURCHASE_CATEGORY_REQUIRED],
-    });
-    return errorResponse(requestId, err, undefined, auth);
-  }
-
-  if (!params.amount || params.amount.minorUnits === '0') {
-    const err = new ErrorInfo({
-      code: 'purchase_amount_required',
-      message: 'A non-zero purchase amount is required.',
-      retryable: false,
-      reasonCodes: [ReasonCodes.PURCHASE_AMOUNT_REQUIRED],
-    });
-    return errorResponse(requestId, err, undefined, auth);
+  if (!input.liquidity) {
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
+        code: 'not_connected',
+        message: 'No Actual budget selected. Use a connect command first.',
+        retryable: true,
+        reasonCodes: ['missing_ledger_config'],
+      }),
+      undefined,
+      auth,
+    );
   }
 
   try {
-    const result: PurchaseEvaluationResult = await analysisProtocol.purchaseEvaluation(
-      ledger,
-      params,
+    const result = await input.liquidity.service.evaluatePurchase(
+      { actorId, budgetId: input.liquidity.budgetId },
+      {
+        kind: 'purchase',
+        categoryId: params.categoryId,
+        amount: params.amount,
+        ...(params.accountId ? { accountId: params.accountId } : {}),
+        ...(params.purchaseAt ? { purchaseAt: params.purchaseAt } : {}),
+        ...(params.requiredBy ? { requiredBy: params.requiredBy } : {}),
+      },
     );
     return okResponse(requestId, freshness, auth, result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const errInfo = new ErrorInfo({
-      code: 'analysis_failed',
-      message,
-      retryable: true,
-      reasonCodes: ['analysis_error'],
-    });
-    return errorResponse(requestId, errInfo, undefined, auth);
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
+        code: 'liquidity_unavailable',
+        message,
+        retryable: true,
+        reasonCodes: ['liquidity_refresh_required'],
+      }),
+      undefined,
+      auth,
+    );
   }
 }
 

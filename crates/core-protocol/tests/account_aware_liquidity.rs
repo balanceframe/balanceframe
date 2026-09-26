@@ -192,6 +192,7 @@ fn duplicate_legacy_and_liquidity_claim_id_is_attributed_once() {
                 resource_id: "food".into(),
                 amount,
                 economic_obligation_id: "economic".into(),
+                source_economic_obligation_id: None,
                 category_id: None,
                 included_in_balance: false,
                 matched_transaction_ids: vec![],

@@ -3,13 +3,10 @@ import { flushPromises, mount } from '@vue/test-utils';
 import type {
   PublicLiquidityView,
   PublicPurchaseLiquidity,
-  PublicSpendSession,
   PublicTransferDetail,
 } from '@balanceframe/application';
 import LiquidityResult from '../../app/components/LiquidityResult.vue';
-import SpendSessionEditor from '../../app/components/SpendSessionEditor.vue';
 import TransferWorkflow from '../../app/components/TransferWorkflow.vue';
-import PurchaseCheck from '../../app/pages/purchase-check.vue';
 import SemanticAmount from '../../app/components/SemanticAmount.vue';
 
 const fetchMock = vi.fn();
@@ -125,81 +122,6 @@ describe('account-aware spendability surfaces', () => {
     expect(lines().find((line) => line.includes('2099-10'))).toContain('20.00 USD');
   });
 
-  it('offers only catalog categories/accounts and reevaluates an explicitly selected alternative', async () => {
-    fetchMock.mockImplementation((url: string) =>
-      Promise.resolve(
-        ok(
-          url === '/api/liquidity/spendability'
-            ? view()
-            : {
-                liquidity: view(),
-                reasonCodes: [],
-                allowable: false,
-                verdict: 'not_safe',
-                proposals: [],
-                donors: [],
-              },
-        ),
-      ),
-    );
-    const wrapper = mount(PurchaseCheck, { global });
-    await flushPromises();
-    expect(
-      wrapper
-        .get('select#purchase-category')
-        .findAll('option')
-        .map((o) => o.attributes('value')),
-    ).toEqual(['', 'food']);
-    await wrapper.get('select#purchase-category').setValue('food');
-    await wrapper.get('#purchase-amount').setValue('2000');
-    await wrapper.get('select#purchase-account').setValue('checking');
-    await wrapper
-      .findAll('button')
-      .find((b) => b.text() === 'Evaluate')!
-      .trigger('click');
-    await flushPromises();
-    await wrapper.get('[data-testid="route-other"]').trigger('click');
-    await flushPromises();
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      '/api/purchase/evaluate',
-      expect.objectContaining({
-        query: expect.objectContaining({ categoryId: 'food', amount: '2000', accountId: 'other' }),
-      }),
-    );
-  });
-
-  it('evaluates an immediate purchase when optional timing fields are cleared', async () => {
-    fetchMock.mockImplementation((url: string) =>
-      Promise.resolve(
-        ok(
-          url === '/api/liquidity/spendability'
-            ? view()
-            : {
-                liquidity: view(),
-                reasonCodes: [],
-                allowable: false,
-                verdict: 'not_safe',
-                proposals: [],
-                donors: [],
-              },
-        ),
-      ),
-    );
-    const wrapper = mount(PurchaseCheck, { global });
-    await flushPromises();
-    await wrapper.get('select#purchase-category').setValue('food');
-    await wrapper.get('#purchase-amount').setValue('2000');
-    await wrapper.get('#purchase-at').setValue('');
-    await wrapper.get('#purchase-required').setValue('');
-    await wrapper
-      .findAll('button')
-      .find((button) => button.text() === 'Evaluate')!
-      .trigger('click');
-    await flushPromises();
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
-    expect(wrapper.get('[data-testid="funding-item-1"]').text()).toContain('Funded');
-    expect(wrapper.get('[data-testid="payment-item-1"]').text()).toContain('Transfer required');
-  });
 
   it('renders a source-redacted conclusion without a planning token or consequential controls', () => {
     const data = view();
@@ -218,35 +140,6 @@ describe('account-aware spendability surfaces', () => {
     expect(wrapper.html()).not.toMatch(/previewId|payloadHash|sourceAccount|Other checking/);
   });
 
-  it('invalidates the displayed joint evaluation immediately when a session item changes', async () => {
-    const session: PublicSpendSession = {
-      id: 'session-1',
-      version: 2,
-      accountId: 'checking',
-      createdAt: '2099-09-06T12:00:00Z',
-      expiresAt: '2099-09-06T18:00:00Z',
-      items: [
-        {
-          id: 'item-1',
-          categoryId: 'food',
-          amount: money('2000'),
-          purchaseAt: '2099-09-06T12:00:00Z',
-          requiredBy: '2099-09-06T17:00:00Z',
-          accountId: null,
-        },
-      ],
-      evaluation: view(),
-      canEdit: true,
-      linkedTransfers: [],
-    };
-    const wrapper = mount(SpendSessionEditor, { props: { session, catalog: view() }, global });
-    expect(wrapper.text()).toContain('UNRESERVED');
-    expect(wrapper.find('[data-testid="funding-item-1"]').exists()).toBe(true);
-    await wrapper.get('[data-testid="session-amount-item-1"]').setValue('4000');
-    expect(wrapper.find('[data-testid="funding-item-1"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain('Evaluate changes');
-    expect(wrapper.find('[data-testid="plan-transfer-item-1"]').exists()).toBe(false);
-  });
 
   it('reports initiation using exact version/hash without presenting acknowledgement as settlement', async () => {
     const detail: PublicTransferDetail = {

@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3';
+import type { LiquidityClaimBundle } from '@balanceframe/protocol-generated';
 
 /** One migration, retaining row IDs, exact legacy hashes, approvals and audit references. */
 export function migrateLiquidityWorkflow(db: Database): void {
@@ -55,4 +56,76 @@ export function migrateTransferPreviews(db: Database): void {
   db.exec(
     'CREATE TABLE transfer_previews (id TEXT PRIMARY KEY, budget_id TEXT NOT NULL, actor_id TEXT NOT NULL, record TEXT NOT NULL)',
   );
+}
+
+/** Durable one-shot completion write intent and trusted reconciliation evidence. */
+export function migrateSessionCompletion(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_completion_writes (
+      budget_id TEXT NOT NULL,
+      proposal_id TEXT NOT NULL REFERENCES action_proposals(id),
+      intent_id TEXT NOT NULL UNIQUE,
+      payload_hash TEXT NOT NULL,
+      parent_id TEXT NOT NULL,
+      correlation_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('write_intent','verified','review_required')),
+      result TEXT,
+      evidence_id TEXT,
+      initiated_at TEXT NOT NULL,
+      finished_at TEXT,
+      PRIMARY KEY(budget_id,proposal_id),
+      UNIQUE(budget_id,parent_id)
+    );
+    CREATE TABLE IF NOT EXISTS session_completion_evidence (
+      budget_id TEXT NOT NULL,
+      evidence_id TEXT NOT NULL,
+      proposal_id TEXT NOT NULL REFERENCES action_proposals(id),
+      payload_hash TEXT NOT NULL,
+      evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('manual_parent','imported_link','ambiguous')),
+      parent_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      transaction_id TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(budget_id,evidence_id)
+    );
+  `);
+}
+
+/** Upgrades previously persisted prospective scopes to distinct economic identities. */
+export function migrateScopedProspectiveEffects(db: Database): void {
+  const rows = db.prepare(
+    "SELECT c.budget_id,c.id,c.bundle,m.source_id FROM liquidity_claims c JOIN liquidity_claim_metadata m ON m.budget_id=c.budget_id AND m.claim_id=c.id WHERE c.owner_kind='prospective'",
+  ).all() as { budget_id: string; id: string; bundle: string; source_id: string }[];
+  const changedBudgets = new Set<string>();
+  const update = db.prepare('UPDATE liquidity_claims SET bundle=? WHERE budget_id=? AND id=?');
+  for (const row of rows) {
+    const bundle = JSON.parse(row.bundle) as LiquidityClaimBundle;
+    let changed = false;
+    for (const effect of bundle.effects) {
+      if (effect.kind !== 'category' && effect.kind !== 'account_debit') {
+        if (effect.economicObligationId === row.source_id)
+          throw new Error('Invalid historical prospective scope');
+        continue;
+      }
+      const scopeKind = effect.kind === 'category' ? 'category' : 'account';
+      const scopedId = `${row.source_id}:${scopeKind}:${effect.resourceId}`;
+      if (effect.economicObligationId !== row.source_id
+        && effect.economicObligationId !== scopedId) continue;
+      if (effect.economicObligationId === row.source_id) {
+        effect.economicObligationId = scopedId;
+        changed = true;
+      }
+      if (effect.sourceEconomicObligationId !== row.source_id) {
+        effect.sourceEconomicObligationId = row.source_id;
+        changed = true;
+      }
+    }
+    if (!changed) continue;
+    update.run(JSON.stringify(bundle), row.budget_id, row.id);
+    changedBudgets.add(row.budget_id);
+  }
+  const bump = db.prepare(
+    'INSERT INTO liquidity_claim_revisions (budget_id,revision) VALUES (?,1) ON CONFLICT(budget_id) DO UPDATE SET revision=revision+1',
+  );
+  for (const budgetId of changedBudgets) bump.run(budgetId);
 }

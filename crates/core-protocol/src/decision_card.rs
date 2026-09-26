@@ -23,6 +23,34 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A checked line-total allocation for one proposed item.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecisionCardCategoryAllocation {
+    /// Category receiving this line-total amount.
+    pub category_id: String,
+    /// Positive line-total amount, never a per-unit amount.
+    pub amount: Money,
+}
+
+/// Price provenance attached to a proposed item when supplied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecisionCardPriceProvenance {
+    /// `current_session_manual` or `outside_price`.
+    pub kind: String,
+    /// Source/provider for an outside price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Store or merchant context for an outside price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
+    /// Canonical UTC observation instant.
+    pub observed_at: String,
+    /// Whether the supplied price is estimated.
+    pub estimate: bool,
+}
+
 /// A proposed item evaluated as part of a decision card.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,7 +72,43 @@ pub struct DecisionCardItem {
     /// Optional positive quantity.  The amount sent to the Rust liquidity
     /// engine is checked `amount * quantity`.
     #[serde(default)]
-    pub quantity: Option<u32>,
+    pub quantity: Option<u64>,
+    /// Optional positive line-total category allocations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_allocations: Option<Vec<DecisionCardCategoryAllocation>>,
+    /// Optional product identifier; never treated as a price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barcode: Option<String>,
+    /// Optional source-backed price provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_provenance: Option<DecisionCardPriceProvenance>,
+}
+
+/// A fixed cart-wide tax, fee, or discount.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecisionCardAdjustment {
+    /// `tax`, `fee`, or `discount`.
+    pub kind: String,
+    /// Category receiving the signed adjustment effect.
+    pub category_id: String,
+    /// Positive input amount; discounts are subtracted by the projection.
+    pub amount: Money,
+}
+
+/// A user-configurable cart warning threshold.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecisionCardWarningThreshold {
+    /// Stable threshold identity.
+    pub id: String,
+    /// `cart_total` or `category_charge`.
+    pub basis: String,
+    /// Required for a category-charge threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
+    /// Positive maximum amount.
+    pub maximum: Money,
 }
 
 /// Policy controlling whether a category can fund a proposed purchase or act
@@ -82,6 +146,12 @@ pub struct DecisionCardRequest {
     pub prior_allocation: Option<BackingAllocation>,
     /// One or more proposed purchases evaluated jointly.
     pub items: Vec<DecisionCardItem>,
+    /// Optional fixed cart-wide tax, fee, and discount inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjustments: Option<Vec<DecisionCardAdjustment>>,
+    /// Optional cart warning thresholds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_thresholds: Option<Vec<DecisionCardWarningThreshold>>,
     /// Category-level protected/goal/donor policy.
     pub category_policies: Vec<DecisionCardCategoryPolicy>,
     /// Trusted maximum lifetime of this card.
@@ -98,6 +168,8 @@ pub struct DecisionCardRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionCardCategoryState {
+    /// Authoritative YYYY-MM period of this category state.
+    pub as_of_month: String,
     /// Stable category identity.
     pub category_id: String,
     /// Authoritative category availability, before claims and policy effects.
@@ -186,6 +258,8 @@ pub struct DecisionCard {
     pub claim_set_revision: String,
     /// Domain-separated SHA-256 hash of the canonical request/cart plan.
     pub plan_hash: String,
+    /// Domain-separated hash of the editable cart intent.
+    pub intent_hash: String,
     /// One of the seven deterministic decision outcomes.
     pub outcome: String,
     /// Aggregate category funding status.
@@ -222,6 +296,12 @@ pub struct DecisionCard {
     pub earliest_expiry: String,
     /// Exclusive card expiry.
     pub expires_at: String,
+    /// Exact normalized line, category, and account cart totals.
+    pub cart: Value,
+    /// Threshold warnings with checked excess amounts.
+    pub warnings: Vec<Value>,
+    /// Candidate item-removal projections, never automatic mutations.
+    pub trim_alternatives: Vec<Value>,
     /// Readiness projection shared by UI/API consumers.
     pub readiness: Value,
     /// Per-item outcomes in request order.
@@ -233,6 +313,61 @@ struct CategoryTotals {
     availability: i64,
     reservations: i64,
     commitments: i64,
+}
+
+type CategoryKey = (String, String);
+#[derive(Debug, Clone)]
+struct CartProjection {
+    engine_items: Vec<LiquidityPurchaseItem>,
+    engine_item_groups: Vec<Vec<String>>,
+    category_totals: BTreeMap<CategoryKey, i64>,
+    category_allocations: Vec<Vec<(CategoryKey, i64)>>,
+    subtotal: i64,
+    tax: i64,
+    fee: i64,
+    discount: i64,
+    total: i64,
+    currency: String,
+    has_adjustments: bool,
+    thresholds: Vec<DecisionCardWarningThreshold>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct CanonicalTimestamp {
+    year: u32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    nanosecond: u32,
+}
+
+impl CanonicalTimestamp {
+    fn date(self) -> (u32, u8, u8) {
+        (self.year, self.month, self.day)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct CanonicalDate {
+    year: u32,
+    month: u8,
+    day: u8,
+}
+
+impl CanonicalDate {
+    fn timestamp(self) -> CanonicalTimestamp {
+        CanonicalTimestamp {
+            year: self.year,
+            month: self.month,
+            day: self.day,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            nanosecond: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +386,186 @@ struct ObligationMeta {
     currency: String,
     category_id: Option<String>,
     account_id: Option<String>,
+}
+
+fn decimal(bytes: &[u8], start: usize, length: usize) -> Option<u32> {
+    bytes
+        .get(start..start + length)?
+        .iter()
+        .try_fold(0_u32, |value, byte| {
+            byte.is_ascii_digit().then_some(())?;
+            value.checked_mul(10)?.checked_add(u32::from(*byte - b'0'))
+        })
+}
+
+fn leap_year(year: u32) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+fn days_in_month(year: u32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn canonical_date(value: &str) -> Result<CanonicalDate, &'static str> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return Err("invalid_canonical_timestamp");
+    }
+    let year = decimal(bytes, 0, 4).ok_or("invalid_canonical_timestamp")?;
+    let month = decimal(bytes, 5, 2).ok_or("invalid_canonical_timestamp")? as u8;
+    let day = decimal(bytes, 8, 2).ok_or("invalid_canonical_timestamp")? as u8;
+    if month == 0 || day == 0 || day > days_in_month(year, month) {
+        return Err("invalid_canonical_timestamp");
+    }
+    Ok(CanonicalDate { year, month, day })
+}
+
+fn canonical_timestamp(value: &str) -> Result<CanonicalTimestamp, &'static str> {
+    let bytes = value.as_bytes();
+    let fractional = (22..=30).contains(&bytes.len())
+        && bytes.get(19) == Some(&b'.')
+        && bytes
+            .get(20..bytes.len().saturating_sub(1))
+            .is_some_and(|digits| digits.iter().all(u8::is_ascii_digit));
+    if !(bytes.len() == 20 || fractional)
+        || bytes.last() != Some(&b'Z')
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || bytes.get(10) != Some(&b'T')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+    {
+        return Err("invalid_canonical_timestamp");
+    }
+    let year = decimal(bytes, 0, 4).ok_or("invalid_canonical_timestamp")?;
+    let month = decimal(bytes, 5, 2).ok_or("invalid_canonical_timestamp")? as u8;
+    let day = decimal(bytes, 8, 2).ok_or("invalid_canonical_timestamp")? as u8;
+    let hour = decimal(bytes, 11, 2).ok_or("invalid_canonical_timestamp")? as u8;
+    let minute = decimal(bytes, 14, 2).ok_or("invalid_canonical_timestamp")? as u8;
+    let second = decimal(bytes, 17, 2).ok_or("invalid_canonical_timestamp")? as u8;
+    if month == 0
+        || day == 0
+        || day > days_in_month(year, month)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return Err("invalid_canonical_timestamp");
+    }
+    let nanosecond = if bytes.len() == 20 {
+        0
+    } else {
+        let digits = &bytes[20..bytes.len() - 1];
+        let mut value = 0_u32;
+        for &byte in digits {
+            value = value
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(u32::from(byte - b'0')))
+                .ok_or("invalid_canonical_timestamp")?;
+        }
+        value
+            .checked_mul(10_u32.pow((9 - digits.len()) as u32))
+            .ok_or("invalid_canonical_timestamp")?
+    };
+    Ok(CanonicalTimestamp {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        nanosecond,
+    })
+}
+
+fn validate_date_or_timestamp(value: &str) -> Result<(), &'static str> {
+    if value.len() == 10 {
+        canonical_date(value).map(|_| ())
+    } else {
+        canonical_timestamp(value).map(|_| ())
+    }
+}
+
+fn validate_evidence_timestamps(evidence: &FactEvidence) -> Result<(), &'static str> {
+    if let Some(observed_at) = evidence.observed_at.as_deref() {
+        canonical_timestamp(observed_at)?;
+    }
+    if let Some(expires_at) = evidence.expires_at.as_deref() {
+        canonical_timestamp(expires_at)?;
+    }
+    Ok(())
+}
+
+fn validate_request_timestamps(request: &DecisionCardRequest) -> Result<(), &'static str> {
+    canonical_timestamp(&request.financial_snapshot.captured_at)?;
+    for observation in &request.financial_snapshot.observations {
+        if let Some(observed_at) = observation.observed_at.as_deref() {
+            canonical_timestamp(observed_at)?;
+        }
+    }
+    canonical_timestamp(&request.context.evaluated_at)?;
+    canonical_timestamp(&request.context.horizon.starts_at)?;
+    canonical_timestamp(&request.context.horizon.ends_at)?;
+    canonical_timestamp(&request.valid_until)?;
+    canonical_timestamp(&request.liquidity_policy.expires_at)?;
+    for item in &request.items {
+        canonical_timestamp(&item.purchase_at)?;
+        canonical_timestamp(&item.required_by)?;
+        if let Some(provenance) = &item.price_provenance {
+            canonical_timestamp(&provenance.observed_at)?;
+        }
+    }
+    for route in &request.liquidity_policy.transfer_routes {
+        if let Some(provider_arrival_at) = route.provider_arrival_at.as_deref() {
+            canonical_timestamp(provider_arrival_at)?;
+        }
+        validate_evidence_timestamps(&route.evidence)?;
+        for holiday in &route.holidays {
+            canonical_date(holiday)?;
+        }
+    }
+    for bundle in &request.claim_set.bundles {
+        canonical_timestamp(&bundle.expires_at)?;
+    }
+    let Some(facts) = request.financial_snapshot.liquidity.as_ref() else {
+        return Ok(());
+    };
+    for category in &facts.categories {
+        validate_evidence_timestamps(&category.evidence)?;
+    }
+    for account in &facts.accounts {
+        for evidence in [
+            &account.balance_evidence,
+            &account.activity_evidence,
+            &account.schedule_evidence,
+            &account.freshness_evidence,
+            &account.currency_evidence,
+            &account.kind_evidence,
+            &account.ownership_evidence,
+            &account.holds_evidence,
+        ] {
+            validate_evidence_timestamps(evidence)?;
+        }
+        for obligation in &account.obligations {
+            validate_date_or_timestamp(&obligation.due_at)?;
+        }
+        if let Some(credit) = &account.credit {
+            validate_date_or_timestamp(&credit.due_at)?;
+            validate_evidence_timestamps(&credit.evidence)?;
+        }
+    }
+    for schedule in &facts.schedules {
+        if let Some(due_date) = schedule.due_date.as_deref() {
+            validate_date_or_timestamp(due_date)?;
+        }
+    }
+    Ok(())
 }
 
 fn budget_status(status: BudgetFundingStatus) -> &'static str {
@@ -289,8 +604,9 @@ fn expanded_amount(item: &DecisionCardItem) -> Result<Money, &'static str> {
     if quantity == 0 {
         return Err("nonpositive_purchase");
     }
+    let quantity = usize::try_from(quantity).map_err(|_| "money_arithmetic_overflow")?;
     item.amount
-        .mul_by_usize(quantity as usize)
+        .mul_by_usize(quantity)
         .map_err(|error| match error {
             balanceframe_financial_core::MoneyError::Overflow => "money_arithmetic_overflow",
             balanceframe_financial_core::MoneyError::CurrencyMismatch(_, _) => "currency_mismatch",
@@ -314,6 +630,551 @@ fn engine_items(request: &DecisionCardRequest) -> Result<Vec<LiquidityPurchaseIt
             })
         })
         .collect()
+}
+fn validate_price_provenance(item: &DecisionCardItem) -> Result<(), &'static str> {
+    if let Some(barcode) = item.barcode.as_deref() {
+        if barcode.trim().is_empty() {
+            return Err("invalid_barcode");
+        }
+    }
+    let Some(provenance) = item.price_provenance.as_ref() else {
+        return Ok(());
+    };
+    match provenance.kind.as_str() {
+        "current_session_manual" => {}
+        "outside_price" => {
+            if provenance
+                .source
+                .as_deref()
+                .is_none_or(|source| source.trim().is_empty())
+            {
+                return Err("missing_price_provenance_source");
+            }
+        }
+        _ => return Err("invalid_price_provenance_kind"),
+    }
+    Ok(())
+}
+
+fn category_period_key(
+    request: &DecisionCardRequest,
+    category_id: &str,
+    purchase_at: &str,
+) -> Result<CategoryKey, &'static str> {
+    let as_of_month = purchase_at
+        .get(..7)
+        .ok_or("invalid_canonical_timestamp")?
+        .to_owned();
+    let facts = request
+        .financial_snapshot
+        .liquidity
+        .as_ref()
+        .ok_or("liquidity_unavailable")?;
+    let Some(category) = category_fact_for_period(facts, category_id, &as_of_month) else {
+        return Err("category_missing");
+    };
+    Ok((category.category_id.clone(), category.as_of_month.clone()))
+}
+
+fn current_category_key(
+    request: &DecisionCardRequest,
+    category_id: &str,
+) -> Result<CategoryKey, &'static str> {
+    let facts = request
+        .financial_snapshot
+        .liquidity
+        .as_ref()
+        .ok_or("liquidity_unavailable")?;
+    let Some(category) = category_fact_for_period(facts, category_id, &facts.as_of_month) else {
+        return Err("category_missing");
+    };
+    if category.period_kind != CategoryPeriodKind::Current {
+        return Err("category_period_mismatch");
+    }
+    Ok((category.category_id.clone(), category.as_of_month.clone()))
+}
+
+fn cart_projection(
+    request: &DecisionCardRequest,
+    base_items: &[LiquidityPurchaseItem],
+) -> Result<CartProjection, &'static str> {
+    if base_items.len() != request.items.len() || base_items.is_empty() {
+        return Err("empty_purchase_scenario");
+    }
+    let mut currency: Option<String> = None;
+    let mut subtotal = 0_i64;
+    let mut category_totals = BTreeMap::<CategoryKey, i64>::new();
+    let mut category_allocations = Vec::with_capacity(base_items.len());
+    for (item, base_item) in request.items.iter().zip(base_items) {
+        validate_price_provenance(item)?;
+        let line_amount = base_item.amount.minor_units();
+        if line_amount <= 0 {
+            return Err("nonpositive_purchase");
+        }
+        let line_currency = base_item.amount.currency().to_owned();
+        if let Some(existing) = &currency {
+            if existing != &line_currency {
+                return Err("currency_mismatch");
+            }
+        } else {
+            currency = Some(line_currency.clone());
+        }
+        subtotal = checked_add(subtotal, line_amount)?;
+        let allocations = if let Some(raw_allocations) = &item.category_allocations {
+            if raw_allocations.is_empty() {
+                return Err("invalid_category_allocation");
+            }
+            let mut seen = BTreeSet::new();
+            let mut sum = 0_i64;
+            let mut normalized = Vec::with_capacity(raw_allocations.len());
+            for allocation in raw_allocations {
+                if allocation.category_id.trim().is_empty()
+                    || !seen.insert(allocation.category_id.clone())
+                    || allocation.amount.currency() != line_currency
+                    || allocation.amount.minor_units() <= 0
+                {
+                    return Err("invalid_category_allocation");
+                }
+                let key = category_period_key(request, &allocation.category_id, &item.purchase_at)?;
+                sum = checked_add(sum, allocation.amount.minor_units())?;
+                normalized.push((key, allocation.amount.minor_units()));
+            }
+            if sum != line_amount {
+                return Err("category_allocation_mismatch");
+            }
+            normalized
+        } else {
+            let key = category_period_key(request, &item.category_id, &item.purchase_at)?;
+            vec![(key, line_amount)]
+        };
+        for (key, _) in &allocations {
+            let facts = request
+                .financial_snapshot
+                .liquidity
+                .as_ref()
+                .ok_or("liquidity_unavailable")?;
+            let category =
+                category_fact_for_period(facts, &key.0, &key.1).ok_or("category_missing")?;
+            if category.availability.currency() != line_currency {
+                return Err("currency_mismatch");
+            }
+        }
+        for (key, amount) in &allocations {
+            let entry = category_totals.entry(key.clone()).or_insert(0);
+            *entry = checked_add(*entry, *amount)?;
+        }
+        category_allocations.push(allocations);
+    }
+    let currency = currency.ok_or("currency_mismatch")?;
+    let mut tax = 0_i64;
+    let mut fee = 0_i64;
+    let mut discount = 0_i64;
+    let mut signed_adjustments = Vec::<(CategoryKey, i64)>::new();
+    let adjustments = request.adjustments.as_deref().unwrap_or(&[]);
+    for adjustment in adjustments {
+        if adjustment.category_id.trim().is_empty()
+            || adjustment.amount.currency() != currency
+            || adjustment.amount.minor_units() <= 0
+        {
+            return Err("invalid_cart_adjustment");
+        }
+        let key = current_category_key(request, &adjustment.category_id)?;
+        let facts = request
+            .financial_snapshot
+            .liquidity
+            .as_ref()
+            .ok_or("liquidity_unavailable")?;
+        let category = category_fact_for_period(facts, &key.0, &key.1).ok_or("category_missing")?;
+        if category.availability.currency() != currency {
+            return Err("currency_mismatch");
+        }
+        if !category_allocations
+            .iter()
+            .any(|allocations| allocations.iter().any(|(candidate, _)| candidate == &key))
+        {
+            return Err("adjustment_category_missing_from_cart");
+        }
+        let amount = adjustment.amount.minor_units();
+        let signed = match adjustment.kind.as_str() {
+            "tax" => {
+                tax = checked_add(tax, amount)?;
+                amount
+            }
+            "fee" => {
+                fee = checked_add(fee, amount)?;
+                amount
+            }
+            "discount" => {
+                discount = checked_add(discount, amount)?;
+                amount.checked_neg().ok_or("money_arithmetic_overflow")?
+            }
+            _ => return Err("invalid_cart_adjustment_kind"),
+        };
+        signed_adjustments.push((key, signed));
+    }
+    let mut adjustment_totals = BTreeMap::<CategoryKey, i64>::new();
+    for (key, amount) in &signed_adjustments {
+        let entry = adjustment_totals.entry(key.clone()).or_insert(0);
+        *entry = checked_add(*entry, *amount)?;
+    }
+    for (key, adjustment) in adjustment_totals {
+        let base = category_totals.get(&key).copied().unwrap_or(0);
+        let after = checked_add(base, adjustment)?;
+        if after <= 0 {
+            return Err("nonpositive_category_charge");
+        }
+        category_totals.insert(key, after);
+    }
+    let total = checked_add(checked_add(subtotal, tax)?, checked_sub(fee, discount)?)?;
+    if total <= 0 {
+        return Err("nonpositive_cart_total");
+    }
+    let category_sum = category_totals
+        .values()
+        .try_fold(0_i64, |sum, amount| checked_add(sum, *amount))?;
+    if category_sum != total {
+        return Err("cart_charge_conservation");
+    }
+    let mut adjustment_by_category = BTreeMap::<CategoryKey, i64>::new();
+    for (key, amount) in &signed_adjustments {
+        let entry = adjustment_by_category.entry(key.clone()).or_insert(0);
+        *entry = checked_add(*entry, *amount)?;
+    }
+    let mut engine_items = Vec::new();
+    let mut engine_item_groups = Vec::with_capacity(base_items.len());
+    for ((request_item, base_item), allocations) in request
+        .items
+        .iter()
+        .zip(base_items)
+        .zip(&category_allocations)
+    {
+        let mut group = Vec::with_capacity(allocations.len());
+        for (allocation_index, (category_key, line_amount)) in allocations.iter().enumerate() {
+            let remaining = adjustment_by_category
+                .entry(category_key.clone())
+                .or_insert(0);
+            // A fixed adjustment belongs to the cart, not every matching item.
+            // Keep each engine line positive while distributing a large discount.
+            let adjustment = if *remaining < 0 {
+                (*remaining).max(1 - *line_amount)
+            } else {
+                *remaining
+            };
+            *remaining = checked_sub(*remaining, adjustment)?;
+            let adjusted = checked_add(*line_amount, adjustment)?;
+            if adjusted <= 0 {
+                return Err("nonpositive_purchase");
+            }
+            let id = if allocations.len() == 1 {
+                request_item.id.clone()
+            } else {
+                format!("{}::category-{}", request_item.id, allocation_index)
+            };
+            group.push(id.clone());
+            engine_items.push(LiquidityPurchaseItem {
+                id,
+                category_id: category_key.0.clone(),
+                amount: money(adjusted, base_item.amount.currency()),
+                purchase_at: request_item.purchase_at.clone(),
+                required_by: request_item.required_by.clone(),
+                route_selection: request_item.route_selection.clone(),
+            });
+        }
+        engine_item_groups.push(group);
+    }
+    if adjustment_by_category
+        .values()
+        .any(|remaining| *remaining != 0)
+    {
+        return Err("nonpositive_purchase");
+    }
+    let mut thresholds = Vec::new();
+    let mut threshold_ids = BTreeSet::new();
+    for threshold in request.warning_thresholds.as_deref().unwrap_or(&[]) {
+        if threshold.id.trim().is_empty()
+            || !threshold_ids.insert(threshold.id.clone())
+            || threshold.maximum.currency() != currency
+            || threshold.maximum.minor_units() <= 0
+        {
+            return Err("invalid_warning_threshold");
+        }
+        match threshold.basis.as_str() {
+            "cart_total" if threshold.category_id.is_none() => {}
+            "category_charge" => {
+                let category_id = threshold
+                    .category_id
+                    .as_deref()
+                    .filter(|category_id| !category_id.trim().is_empty())
+                    .ok_or("invalid_warning_threshold")?;
+                if !category_totals.keys().any(|key| key.0 == category_id) {
+                    return Err("category_missing");
+                }
+            }
+            _ => return Err("invalid_warning_threshold"),
+        }
+        thresholds.push(threshold.clone());
+    }
+    Ok(CartProjection {
+        engine_items,
+        engine_item_groups,
+        category_totals,
+        category_allocations,
+        subtotal,
+        tax,
+        fee,
+        discount,
+        total,
+        currency,
+        has_adjustments: !adjustments.is_empty(),
+        thresholds,
+    })
+}
+fn fixed_adjustment_account(request: &DecisionCardRequest) -> Option<String> {
+    let mut account_id: Option<String> = None;
+    for item in &request.items {
+        let route = &item.route_selection;
+        let selected = route
+            .explicit_account_id
+            .clone()
+            .or_else(|| route.session_account_id.clone())
+            .or_else(|| {
+                route
+                    .approved_preference
+                    .as_ref()
+                    .map(|route| route.account_id.clone())
+            })
+            .or_else(|| {
+                route
+                    .historical_route
+                    .as_ref()
+                    .map(|route| route.account_id.clone())
+            })?;
+        if let Some(existing) = &account_id {
+            if existing != &selected {
+                return None;
+            }
+        } else {
+            account_id = Some(selected);
+        }
+    }
+    account_id
+}
+
+fn aggregate_cart_categories(cart: &CartProjection) -> BTreeMap<String, i64> {
+    let mut categories = BTreeMap::<String, i64>::new();
+    for ((category_id, _), amount) in &cart.category_totals {
+        let entry = categories.entry(category_id.clone()).or_insert(0);
+        *entry = entry
+            .checked_add(*amount)
+            .expect("validated cart total bounds category charges");
+    }
+    categories
+}
+
+fn cart_value(
+    cart: &CartProjection,
+    request: &DecisionCardRequest,
+    engine_map: &BTreeMap<String, PurchaseLiquidityResult>,
+    raw_engine_map: &BTreeMap<String, PurchaseLiquidityResult>,
+) -> Value {
+    let category_charges = aggregate_cart_categories(cart)
+        .into_iter()
+        .map(|(category_id, amount)| {
+            json!({
+                "categoryId": category_id,
+                "amount": money(amount, &cart.currency),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut account_charges = BTreeMap::<String, i64>::new();
+    for (item, group) in request.items.iter().zip(&cart.engine_item_groups) {
+        if !engine_map.contains_key(&item.id) {
+            continue;
+        }
+        for id in group {
+            let Some(result) = raw_engine_map.get(id) else {
+                continue;
+            };
+            let Some(account_id) = result.selected_account_id.as_ref() else {
+                continue;
+            };
+            let Some(amount) = cart
+                .engine_items
+                .iter()
+                .find(|engine_item| &engine_item.id == id)
+                .map(|engine_item| engine_item.amount.minor_units())
+            else {
+                continue;
+            };
+            let entry = account_charges.entry(account_id.clone()).or_insert(0);
+            *entry = entry
+                .checked_add(amount)
+                .expect("validated cart total bounds account charges");
+        }
+    }
+    let account_charges = account_charges
+        .into_iter()
+        .map(|(account_id, amount)| {
+            json!({
+                "accountId": account_id,
+                "amount": money(amount, &cart.currency),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "subtotal": money(cart.subtotal, &cart.currency),
+        "tax": money(cart.tax, &cart.currency),
+        "fee": money(cart.fee, &cart.currency),
+        "discount": money(cart.discount, &cart.currency),
+        "total": money(cart.total, &cart.currency),
+        "categoryCharges": category_charges,
+        "accountCharges": account_charges,
+    })
+}
+
+fn threshold_warnings(cart: &CartProjection, alternatives: &[Value]) -> Vec<Value> {
+    let categories = aggregate_cart_categories(cart);
+    cart.thresholds
+        .iter()
+        .filter_map(|threshold| {
+            let actual = match threshold.basis.as_str() {
+                "cart_total" => cart.total,
+                "category_charge" => threshold
+                    .category_id
+                    .as_ref()
+                    .and_then(|category_id| categories.get(category_id).copied())
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            let maximum = threshold.maximum.minor_units();
+            let excess = actual.checked_sub(maximum)?;
+            if excess <= 0 {
+                return None;
+            }
+            Some(json!({
+                "thresholdId": threshold.id,
+                "threshold": threshold.maximum.clone(),
+                "actual": money(actual, &cart.currency),
+                "excess": money(excess, &cart.currency),
+                "reason": "threshold_exceeded",
+                "alternatives": alternatives,
+            }))
+        })
+        .collect()
+}
+
+fn candidate_outcome(engine: &AccountAwareSpendabilityResult) -> &'static str {
+    if engine.budget_funding_status == BudgetFundingStatus::InsufficientData
+        || engine.payment_liquidity_status == PaymentLiquidityStatus::InsufficientData
+    {
+        return "insufficient_data";
+    }
+    if matches!(
+        engine.payment_liquidity_status,
+        PaymentLiquidityStatus::NotLiquid
+            | PaymentLiquidityStatus::TransferTooLate
+            | PaymentLiquidityStatus::UseOtherAccount
+    ) {
+        return "not_safe";
+    }
+    if engine.budget_funding_status == BudgetFundingStatus::Funded
+        && engine.payment_liquidity_status == PaymentLiquidityStatus::Ready
+    {
+        "funded_now"
+    } else if engine.budget_funding_status == BudgetFundingStatus::Unfunded
+        && engine.payment_liquidity_status == PaymentLiquidityStatus::Ready
+    {
+        "cash_available_but_unfunded"
+    } else {
+        "not_safe"
+    }
+}
+
+fn trim_alternatives(
+    request: &DecisionCardRequest,
+    base_items: &[LiquidityPurchaseItem],
+    has_warnings: bool,
+) -> Vec<Value> {
+    if !has_warnings || request.items.iter().all(|item| item.priority == "required") {
+        return vec![];
+    }
+    let optional = request
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| (item.priority == "optional").then_some(index))
+        .collect::<Vec<_>>();
+    let planned = request
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| (item.priority == "planned").then_some(index))
+        .collect::<Vec<_>>();
+    let mut removals = Vec::<Vec<usize>>::new();
+    for count in 1..=optional.len() {
+        removals.push(optional[..count].to_vec());
+    }
+    if !optional.is_empty() {
+        for count in 1..=planned.len() {
+            let mut removal = optional.clone();
+            removal.extend_from_slice(&planned[..count]);
+            removals.push(removal);
+        }
+    } else {
+        for count in 1..=planned.len() {
+            removals.push(planned[..count].to_vec());
+        }
+    }
+    let mut alternatives = Vec::new();
+    for removal in removals {
+        let removed = removal.iter().copied().collect::<BTreeSet<_>>();
+        let retained_indices = (0..request.items.len())
+            .filter(|index| !removed.contains(index))
+            .collect::<Vec<_>>();
+        if retained_indices.is_empty() {
+            continue;
+        }
+        let mut candidate_request = request.clone();
+        candidate_request.items = retained_indices
+            .iter()
+            .map(|index| request.items[*index].clone())
+            .collect();
+        let candidate_base = retained_indices
+            .iter()
+            .map(|index| base_items[*index].clone())
+            .collect::<Vec<_>>();
+        let Ok(candidate_cart) = cart_projection(&candidate_request, &candidate_base) else {
+            continue;
+        };
+        let engine = evaluate_account_aware_spendability(engine_request(
+            &candidate_request,
+            candidate_cart.engine_items.clone(),
+            candidate_request.financial_snapshot.liquidity.clone(),
+        ));
+        let category_charges = aggregate_cart_categories(&candidate_cart)
+            .into_iter()
+            .map(|(category_id, amount)| {
+                json!({
+                    "categoryId": category_id,
+                    "amount": money(amount, &candidate_cart.currency),
+                })
+            })
+            .collect::<Vec<_>>();
+        alternatives.push(json!({
+            "removedItemIds": removal
+                .iter()
+                .map(|index| request.items[*index].id.clone())
+                .collect::<Vec<_>>(),
+            "retainedItemIds": retained_indices
+                .iter()
+                .map(|index| request.items[*index].id.clone())
+                .collect::<Vec<_>>(),
+            "total": money(candidate_cart.total, &candidate_cart.currency),
+            "outcome": candidate_outcome(&engine),
+            "categoryCharges": category_charges,
+        }));
+    }
+    alternatives
 }
 
 fn engine_request(
@@ -341,19 +1202,34 @@ fn active_claim(bundle: &LiquidityClaimBundle, evaluated_at: &str) -> bool {
         | LiquidityClaimState::Expired => false,
         LiquidityClaimState::Initiated => true,
         LiquidityClaimState::Active => {
-            bundle.initiated || bundle.expires_at.as_str() > evaluated_at
+            bundle.initiated
+                || canonical_timestamp(&bundle.expires_at)
+                    .ok()
+                    .zip(canonical_timestamp(evaluated_at).ok())
+                    .is_some_and(|(expires_at, evaluated_at)| expires_at > evaluated_at)
         }
     }
 }
 
-fn add_totals(
-    map: &mut BTreeMap<String, CategoryTotals>,
+fn category_fact_for_period<'a>(
+    facts: &'a LiquidityFacts,
     category_id: &str,
+    as_of_month: &str,
+) -> Option<&'a CategoryLiquidityFact> {
+    facts
+        .categories
+        .iter()
+        .find(|category| category.category_id == category_id && category.as_of_month == as_of_month)
+}
+
+fn add_totals(
+    map: &mut BTreeMap<CategoryKey, CategoryTotals>,
+    key: &CategoryKey,
     amount: i64,
     kind: &str,
-    currency: &str,
+    _currency: &str,
 ) -> Result<(), &'static str> {
-    let entry = map.entry(category_id.to_owned()).or_insert(CategoryTotals {
+    let entry = map.entry(key.clone()).or_insert(CategoryTotals {
         availability: 0,
         reservations: 0,
         commitments: 0,
@@ -364,31 +1240,59 @@ fn add_totals(
         "commitments" => entry.commitments = checked_add(entry.commitments, amount)?,
         _ => return Err("invalid_category_total"),
     }
-    let _ = currency;
     Ok(())
 }
 
 fn obligation_in_horizon(due_at: &str, horizon_end: &str) -> bool {
+    let Some(end) = canonical_timestamp(horizon_end).ok() else {
+        return false;
+    };
     if due_at.len() == 10 {
-        horizon_end
-            .get(..10)
-            .is_some_and(|end_date| due_at <= end_date)
+        canonical_date(due_at)
+            .ok()
+            .is_some_and(|date| date.timestamp().date() <= end.date())
     } else {
-        due_at < horizon_end
+        canonical_timestamp(due_at)
+            .ok()
+            .is_some_and(|due| due < end)
     }
+}
+
+fn category_month(value: &str) -> Result<(u32, u8), &'static str> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 7 || bytes[4] != b'-' {
+        return Err("invalid_as_of_month");
+    }
+    let year = decimal(bytes, 0, 4).ok_or("invalid_as_of_month")?;
+    let month = decimal(bytes, 5, 2).ok_or("invalid_as_of_month")? as u8;
+    if month == 0 || month > 12 {
+        return Err("invalid_as_of_month");
+    }
+    Ok((year, month))
 }
 
 fn category_totals(
     request: &DecisionCardRequest,
-) -> Result<BTreeMap<String, CategoryTotals>, &'static str> {
+) -> Result<BTreeMap<CategoryKey, CategoryTotals>, &'static str> {
     let facts = request
         .financial_snapshot
         .liquidity
         .as_ref()
         .ok_or("liquidity_unavailable")?;
+    category_month(&facts.as_of_month)?;
     let mut totals = BTreeMap::new();
     let mut category_currencies = BTreeMap::<String, String>::new();
+    let mut periods = BTreeSet::<CategoryKey>::new();
+    let mut cash_buckets = BTreeSet::new();
     for category in &facts.categories {
+        category_month(&category.as_of_month)?;
+        if category.category_id.trim().is_empty()
+            || category.cash_bucket_id.trim().is_empty()
+            || !periods.insert((category.category_id.clone(), category.as_of_month.clone()))
+            || !cash_buckets.insert(category.cash_bucket_id.clone())
+        {
+            return Err("duplicate_or_invalid_category_identity");
+        }
         if category.availability.is_negative() {
             return Err("negative_category_availability");
         }
@@ -396,11 +1300,21 @@ fn category_totals(
             category.category_id.clone(),
             category.availability.currency().to_owned(),
         ) {
-            if previous.as_str() != category.availability.currency() {}
+            if previous.as_str() != category.availability.currency() {
+                return Err("currency_mismatch");
+            }
         }
+        let fact_month = category_month(&category.as_of_month)?;
+        let snapshot_month = category_month(&facts.as_of_month)?;
+        if (category.period_kind == CategoryPeriodKind::Current && fact_month != snapshot_month)
+            || (category.period_kind == CategoryPeriodKind::Future && fact_month <= snapshot_month)
+        {
+            return Err("category_period_mismatch");
+        }
+        let key = (category.category_id.clone(), category.as_of_month.clone());
         add_totals(
             &mut totals,
-            &category.category_id,
+            &key,
             category.availability.minor_units(),
             "availability",
             category.availability.currency(),
@@ -408,12 +1322,12 @@ fn category_totals(
     }
 
     // A schedule, account obligation, and claim can describe one economic
-    // obligation.  Keep one commitment classification when an account
+    // obligation. Keep one commitment classification when an account
     // obligation is present; only an otherwise-unmatched category claim is a
-    // reservation.  Conflicting identities fail closed rather than summing
-    // the same money twice.
+    // reservation. Conflicting identities fail closed rather than summing the
+    // same money twice.
     let mut obligations = BTreeMap::<String, ObligationMeta>::new();
-    let mut commitment_categories = BTreeSet::new();
+    let mut commitment_categories = BTreeSet::<(String, CategoryKey)>::new();
     for account in &facts.accounts {
         for obligation in &account.obligations {
             if obligation.paid
@@ -439,12 +1353,8 @@ fn category_totals(
             if let Some(previous) = obligations.get(&obligation.economic_obligation_id) {
                 if previous.amount != candidate.amount
                     || previous.currency != candidate.currency
-                    || (previous.category_id.is_some()
-                        && candidate.category_id.is_some()
-                        && previous.category_id != candidate.category_id)
-                    || (previous.account_id.is_some()
-                        && candidate.account_id.is_some()
-                        && previous.account_id != candidate.account_id)
+                    || previous.category_id != candidate.category_id
+                    || previous.account_id != candidate.account_id
                 {
                     return Err("ambiguous_obligation_match");
                 }
@@ -454,23 +1364,20 @@ fn category_totals(
             let Some(category_id) = category_id else {
                 continue;
             };
-            let Some(category) = facts
-                .categories
-                .iter()
-                .find(|category| category.category_id == category_id)
+            let Some(category) = category_fact_for_period(facts, &category_id, &facts.as_of_month)
             else {
                 return Err("category_missing");
             };
             if category.availability.currency() != obligation.amount.currency() {
                 return Err("currency_mismatch");
             }
-            if commitment_categories.insert((
-                obligation.economic_obligation_id.clone(),
-                category_id.clone(),
-            )) {
+            let key = (category_id.clone(), category.as_of_month.clone());
+            if commitment_categories
+                .insert((obligation.economic_obligation_id.clone(), key.clone()))
+            {
                 add_totals(
                     &mut totals,
-                    &category_id,
+                    &key,
                     amount,
                     "commitments",
                     obligation.amount.currency(),
@@ -479,7 +1386,7 @@ fn category_totals(
         }
     }
 
-    let mut category_claims = BTreeMap::<String, (String, i64, String)>::new();
+    let mut category_claims = BTreeMap::<String, (CategoryKey, i64, String)>::new();
     for bundle in &request.claim_set.bundles {
         if !active_claim(bundle, &request.context.evaluated_at) {
             continue;
@@ -503,10 +1410,7 @@ fn category_totals(
                 .as_deref()
                 .unwrap_or(effect.resource_id.as_str())
                 .to_owned();
-            let Some(category) = facts
-                .categories
-                .iter()
-                .find(|category| category.category_id == category_id)
+            let Some(category) = category_fact_for_period(facts, &category_id, &facts.as_of_month)
             else {
                 return Err("category_missing");
             };
@@ -518,42 +1422,36 @@ fn category_totals(
                 return Err("negative_claim");
             }
             let identity = effect.economic_obligation_id.clone();
-            let first_claim = if let Some((old_category, old_amount, old_currency)) =
-                category_claims.get(&identity)
-            {
-                if old_category != &category_id
+            let matched_id = effect.matched_obligation_id()?;
+            let key = (category_id.clone(), category.as_of_month.clone());
+            if let Some((old_key, old_amount, old_currency)) = category_claims.get(&identity) {
+                if old_key != &key
                     || *old_amount != amount
                     || old_currency != effect.amount.currency()
                 {
                     return Err("ambiguous_claim_match");
                 }
-                false
-            } else {
-                category_claims.insert(
-                    identity.clone(),
-                    (
-                        category_id.clone(),
-                        amount,
-                        effect.amount.currency().to_owned(),
-                    ),
-                );
-                true
-            };
-            if !first_claim {
                 continue;
             }
-            // An account obligation with the same economic identity is the
-            // commitment classification.  Do not turn its claim mirror into
-            // a second reservation.
-            if obligations
-                .get(&identity)
-                .is_some_and(|obligation| obligation.category_id.is_some())
-            {
+            category_claims.insert(
+                identity.clone(),
+                (key.clone(), amount, effect.amount.currency().to_owned()),
+            );
+            // A category claim and account obligation with one economic
+            // identity must agree exactly before the claim is treated as a
+            // mirror rather than an additional reservation.
+            if let Some(obligation) = obligations.get(matched_id) {
+                if obligation.amount != amount
+                    || obligation.currency != effect.amount.currency()
+                    || obligation.category_id.as_deref() != Some(category_id.as_str())
+                {
+                    return Err("ambiguous_claim_match");
+                }
                 continue;
             }
             add_totals(
                 &mut totals,
-                &category_id,
+                &key,
                 amount,
                 "reservations",
                 effect.amount.currency(),
@@ -581,19 +1479,6 @@ fn policy_map(
     Ok(policies)
 }
 
-fn purchases_by_category(
-    request: &DecisionCardRequest,
-    items: &[LiquidityPurchaseItem],
-) -> Result<BTreeMap<String, i64>, &'static str> {
-    let mut totals = BTreeMap::new();
-    for item in items {
-        let entry = totals.entry(item.category_id.clone()).or_insert(0);
-        *entry = checked_add(*entry, item.amount.minor_units())?;
-    }
-    let _ = request;
-    Ok(totals)
-}
-
 fn policy_floor(policy: &DecisionCardCategoryPolicy) -> Result<i64, &'static str> {
     checked_add(
         policy.minimum_retained.minor_units(),
@@ -618,9 +1503,9 @@ fn policy_surplus(
 
 fn state_categories(
     request: &DecisionCardRequest,
-    totals: &BTreeMap<String, CategoryTotals>,
-    purchases: &BTreeMap<String, i64>,
-    reallocations: &BTreeMap<String, i64>,
+    totals: &BTreeMap<CategoryKey, CategoryTotals>,
+    purchases: &BTreeMap<CategoryKey, i64>,
+    reallocations: &BTreeMap<CategoryKey, i64>,
     after: bool,
 ) -> Result<Vec<DecisionCardCategoryState>, &'static str> {
     let policies = policy_map(request)?;
@@ -636,19 +1521,15 @@ fn state_categories(
     categories
         .into_iter()
         .map(|category| {
-            let total = totals
-                .get(&category.category_id)
-                .ok_or("category_total_missing")?;
+            let key = (category.category_id.clone(), category.as_of_month.clone());
+            let total = totals.get(&key).ok_or("category_total_missing")?;
             let purchase = if after {
-                purchases.get(&category.category_id).copied().unwrap_or(0)
+                purchases.get(&key).copied().unwrap_or(0)
             } else {
                 0
             };
             let redirected = if after {
-                reallocations
-                    .get(&category.category_id)
-                    .copied()
-                    .unwrap_or(0)
+                reallocations.get(&key).copied().unwrap_or(0)
             } else {
                 0
             };
@@ -674,6 +1555,7 @@ fn state_categories(
                 )?
             };
             Ok(DecisionCardCategoryState {
+                as_of_month: category.as_of_month.clone(),
                 category_id: category.category_id.clone(),
                 availability: money(availability, category.availability.currency()),
                 commitments: money(total.commitments, category.availability.currency()),
@@ -686,33 +1568,29 @@ fn state_categories(
         .collect()
 }
 
-fn current_category_fact<'a>(
-    request: &'a DecisionCardRequest,
-    category_id: &str,
-) -> Option<&'a CategoryLiquidityFact> {
-    let facts = request.financial_snapshot.liquidity.as_ref()?;
-    facts.categories.iter().find(|category| {
-        category.category_id == category_id
-            && category.period_kind == CategoryPeriodKind::Current
-            && category.as_of_month == facts.as_of_month
-    })
-}
-
 fn donor_paths(
     request: &DecisionCardRequest,
     engine_items: &[LiquidityPurchaseItem],
-    totals: &BTreeMap<String, CategoryTotals>,
-    purchases: &BTreeMap<String, i64>,
+    totals: &BTreeMap<CategoryKey, CategoryTotals>,
+    purchases: &BTreeMap<CategoryKey, i64>,
 ) -> Result<Vec<CandidatePath>, &'static str> {
     let policies = policy_map(request)?;
+    let Some(facts) = request.financial_snapshot.liquidity.as_ref() else {
+        return Ok(vec![]);
+    };
     let mut needs = BTreeMap::new();
-    for (category_id, amount) in purchases {
-        let Some(destination_fact) = current_category_fact(request, category_id) else {
-            // A future-period assignment is not current cash and cannot be
-            // rescued by a current-month category move.
+    for (key, amount) in purchases {
+        let (category_id, as_of_month) = key;
+        let Some(destination_fact) = category_fact_for_period(facts, category_id, as_of_month)
+        else {
+            // A missing or future-period assignment is not current cash and
+            // cannot be rescued by a current-month category move.
             continue;
         };
-        let total = totals.get(category_id).ok_or("category_total_missing")?;
+        if destination_fact.period_kind != CategoryPeriodKind::Current {
+            continue;
+        }
+        let total = totals.get(key).ok_or("category_total_missing")?;
         let uncommitted = checked_sub(
             checked_sub(total.availability, total.reservations)?,
             total.commitments,
@@ -720,26 +1598,26 @@ fn donor_paths(
         .max(0);
         let need = checked_sub(*amount, uncommitted)?.max(0);
         if need > 0 && destination_fact.kind == LiquidityCategoryKind::Ordinary {
-            needs.insert(category_id.clone(), need);
+            needs.insert(key.clone(), need);
         }
     }
     if needs.is_empty() {
         return Ok(vec![]);
     }
     let mut donors = BTreeMap::new();
-    for (category_id, total) in totals {
-        let Some(source_fact) = current_category_fact(request, category_id) else {
+    for (key, total) in totals {
+        let (category_id, as_of_month) = key;
+        let Some(source_fact) = category_fact_for_period(facts, category_id, as_of_month) else {
             continue;
         };
-        if source_fact.kind != LiquidityCategoryKind::Ordinary {
+        if source_fact.period_kind != CategoryPeriodKind::Current
+            || source_fact.kind != LiquidityCategoryKind::Ordinary
+        {
             continue;
         }
         let surplus = policy_surplus(total, policies.get(category_id).copied())?;
-        let own_purchase = purchases.get(category_id).copied().unwrap_or(0);
-        donors.insert(
-            category_id.clone(),
-            checked_sub(surplus, own_purchase)?.max(0),
-        );
+        let own_purchase = purchases.get(key).copied().unwrap_or(0);
+        donors.insert(key.clone(), checked_sub(surplus, own_purchase)?.max(0));
     }
     let mut paths = Vec::new();
     for (destination, mut need) in needs {
@@ -747,10 +1625,12 @@ fn donor_paths(
             if source == &destination || need == 0 || *available <= 0 {
                 continue;
             }
-            let Some(source_fact) = current_category_fact(request, source) else {
+            let Some(source_fact) = category_fact_for_period(facts, &source.0, &source.1) else {
                 continue;
             };
-            let Some(destination_fact) = current_category_fact(request, &destination) else {
+            let Some(destination_fact) =
+                category_fact_for_period(facts, &destination.0, &destination.1)
+            else {
                 return Err("category_missing");
             };
             if source_fact.availability.currency() != destination_fact.availability.currency() {
@@ -760,10 +1640,10 @@ fn donor_paths(
             *available = checked_sub(*available, amount)?;
             need = checked_sub(need, amount)?;
             paths.push(CandidatePath {
-                source_category_id: source.clone(),
-                source_as_of_month: source_fact.as_of_month.clone(),
-                destination_category_id: destination.clone(),
-                destination_as_of_month: destination_fact.as_of_month.clone(),
+                source_category_id: source.0.clone(),
+                source_as_of_month: source.1.clone(),
+                destination_category_id: destination.0.clone(),
+                destination_as_of_month: destination.1.clone(),
                 amount,
                 currency: destination_fact.availability.currency().to_owned(),
             });
@@ -773,7 +1653,7 @@ fn donor_paths(
         }
     }
     // Validate the exact category moves against the shared account-aware
-    // engine.  The engine receives a hypothetical fact set; it still owns
+    // engine. The engine receives a hypothetical fact set; it still owns
     // all account/cash, currency, claim, and backing arithmetic.
     let Some(mut facts) = request.financial_snapshot.liquidity.clone() else {
         return Ok(vec![]);
@@ -843,6 +1723,70 @@ fn canonical(value: Value) -> Value {
     }
 }
 
+fn intent_hash(request: &DecisionCardRequest) -> Result<String, &'static str> {
+    let mut items = request
+        .items
+        .iter()
+        .map(|item| serde_json::to_value(item).map_err(|_| "decision_card_serialization_error"))
+        .collect::<Result<Vec<_>, _>>()?;
+    for item in &mut items {
+        if let Value::Object(object) = item {
+            if let Some(Value::Array(allocations)) = object.get_mut("categoryAllocations") {
+                allocations.sort_by(|left, right| {
+                    left.get("categoryId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .cmp(
+                            right
+                                .get("categoryId")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                        )
+                });
+            }
+        }
+    }
+    let mut adjustments = request
+        .adjustments
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|adjustment| {
+            serde_json::to_value(adjustment).map_err(|_| "decision_card_serialization_error")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    adjustments.sort_by(|left, right| {
+        serde_json::to_string(&canonical(left.clone()))
+            .unwrap_or_default()
+            .cmp(&serde_json::to_string(&canonical(right.clone())).unwrap_or_default())
+    });
+    let mut thresholds = request
+        .warning_thresholds
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|threshold| {
+            serde_json::to_value(threshold).map_err(|_| "decision_card_serialization_error")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    thresholds.sort_by(|left, right| {
+        left.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(right.get("id").and_then(Value::as_str).unwrap_or_default())
+    });
+    let value = canonical(json!({
+        "items": items,
+        "adjustments": adjustments,
+        "warningThresholds": thresholds,
+    }));
+    let encoded = serde_json::to_string(&value).map_err(|_| "decision_card_serialization_error")?;
+    let mut hash = Sha256::new();
+    hash.update(b"balanceframe.decision-card.intent.v1\n");
+    hash.update(encoded.as_bytes());
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 fn plan_hash(request: &DecisionCardRequest) -> Result<String, &'static str> {
     let mut value =
         serde_json::to_value(request).map_err(|_| "decision_card_serialization_error")?;
@@ -886,9 +1830,11 @@ fn evidence(request: &DecisionCardRequest) -> Vec<EvidenceReference> {
     let mut references = Vec::new();
     for observation in &request.financial_snapshot.observations {
         for reference in &observation.evidence {
-            if !references
-                .iter()
-                .any(|old: &EvidenceReference| old == reference)
+            if reference.authorized
+                && reference.redaction == crate::RedactionState::Visible
+                && !references
+                    .iter()
+                    .any(|old: &EvidenceReference| old == reference)
             {
                 references.push(reference.clone());
             }
@@ -914,9 +1860,14 @@ fn fact_evidence_blocker(
     if evidence.state != FactState::Known || evidence.source == FactSource::PolicyAssumption {
         blockers.push(format!("{scope}_evidence_{:?}", evidence.state).to_ascii_lowercase());
     }
+    let Some(evaluated_at) = canonical_timestamp(evaluated_at).ok() else {
+        blockers.push("invalid_canonical_timestamp".into());
+        return;
+    };
     if evidence
         .expires_at
         .as_deref()
+        .and_then(|expires_at| canonical_timestamp(expires_at).ok())
         .is_some_and(|expires_at| expires_at <= evaluated_at)
     {
         blockers.push(format!("{scope}_evidence_stale"));
@@ -924,6 +1875,7 @@ fn fact_evidence_blocker(
     if evidence
         .observed_at
         .as_deref()
+        .and_then(|observed_at| canonical_timestamp(observed_at).ok())
         .is_some_and(|observed_at| observed_at > evaluated_at)
     {
         blockers.push(format!("{scope}_evidence_future"));
@@ -1038,6 +1990,33 @@ fn material_snapshot_blockers(request: &DecisionCardRequest) -> Vec<String> {
             blockers
                 .push(format!("material_observation_{:?}", observation.kind).to_ascii_lowercase());
         }
+    }
+    if request.context.policy.uncategorized_mode
+        == balanceframe_financial_core::UncategorizedMode::Block
+        && snapshot
+            .legacy_snapshot
+            .transactions
+            .iter()
+            .any(|transaction| {
+                transaction.amount.minor_units() < 0
+                    && transaction.transfer_account_id.is_none()
+                    && snapshot.liquidity.as_ref().is_some_and(|facts| {
+                        facts
+                            .accounts
+                            .iter()
+                            .any(|account| account.account_id == transaction.account_id)
+                    })
+                    && if transaction.subtransactions.is_empty() {
+                        transaction.category_id.as_deref().is_none_or(str::is_empty)
+                    } else {
+                        transaction
+                            .subtransactions
+                            .iter()
+                            .any(|child| child.category_id.as_deref().is_none_or(str::is_empty))
+                    }
+            })
+    {
+        blockers.push("uncategorized_transaction_activity".into());
     }
     if let Some(facts) = &snapshot.liquidity {
         for category in &facts.categories {
@@ -1178,6 +2157,98 @@ fn engine_item_map(
         .map(|item| (item.item_id.clone(), item))
         .collect()
 }
+fn aggregate_engine_map(
+    result: &AccountAwareSpendabilityResult,
+    cart: &CartProjection,
+    request: &DecisionCardRequest,
+) -> BTreeMap<String, PurchaseLiquidityResult> {
+    let raw = engine_item_map(result);
+    let mut aggregate = BTreeMap::new();
+    for (index, item) in request.items.iter().enumerate() {
+        let Some(group) = cart.engine_item_groups.get(index) else {
+            continue;
+        };
+        let purchases = group
+            .iter()
+            .filter_map(|id| raw.get(id))
+            .collect::<Vec<_>>();
+        let Some(first) = purchases.first() else {
+            continue;
+        };
+        let mut combined = (*first).clone();
+        combined.item_id = item.id.clone();
+        combined.category_id = item.category_id.clone();
+        combined.budget_funding_status = if purchases
+            .iter()
+            .any(|purchase| purchase.budget_funding_status == BudgetFundingStatus::InsufficientData)
+        {
+            BudgetFundingStatus::InsufficientData
+        } else if purchases
+            .iter()
+            .any(|purchase| purchase.budget_funding_status == BudgetFundingStatus::Unfunded)
+        {
+            BudgetFundingStatus::Unfunded
+        } else {
+            BudgetFundingStatus::Funded
+        };
+        combined.payment_liquidity_status = if purchases.iter().any(|purchase| {
+            purchase.payment_liquidity_status == PaymentLiquidityStatus::InsufficientData
+        }) {
+            PaymentLiquidityStatus::InsufficientData
+        } else if purchases
+            .iter()
+            .any(|purchase| purchase.payment_liquidity_status == PaymentLiquidityStatus::NotLiquid)
+        {
+            PaymentLiquidityStatus::NotLiquid
+        } else if purchases.iter().any(|purchase| {
+            purchase.payment_liquidity_status == PaymentLiquidityStatus::TransferTooLate
+        }) {
+            PaymentLiquidityStatus::TransferTooLate
+        } else if purchases.iter().any(|purchase| {
+            purchase.payment_liquidity_status == PaymentLiquidityStatus::UseOtherAccount
+        }) {
+            PaymentLiquidityStatus::UseOtherAccount
+        } else if purchases.iter().any(|purchase| {
+            purchase.payment_liquidity_status == PaymentLiquidityStatus::TransferRequired
+        }) {
+            PaymentLiquidityStatus::TransferRequired
+        } else {
+            PaymentLiquidityStatus::Ready
+        };
+        let selected = purchases
+            .iter()
+            .map(|purchase| purchase.selected_account_id.clone())
+            .collect::<BTreeSet<_>>();
+        combined.selected_account_id = if selected.len() == 1 {
+            selected.into_iter().next().flatten()
+        } else {
+            None
+        };
+        let sources = purchases
+            .iter()
+            .map(|purchase| purchase.selection_source.clone())
+            .collect::<BTreeSet<_>>();
+        combined.selection_source = if sources.len() == 1 {
+            sources.into_iter().next().unwrap_or_else(|| "none".into())
+        } else {
+            "none".into()
+        };
+        combined.selected_before = purchases
+            .first()
+            .and_then(|purchase| purchase.selected_before.clone());
+        combined.selected_after = purchases
+            .last()
+            .and_then(|purchase| purchase.selected_after.clone());
+        combined.reasons = unique_reasons(
+            purchases
+                .iter()
+                .flat_map(|purchase| purchase.reasons.clone())
+                .collect::<Vec<_>>(),
+        );
+        aggregate.insert(item.id.clone(), combined);
+    }
+    aggregate
+}
 
 fn item_outcome(
     item: &PurchaseLiquidityResult,
@@ -1274,64 +2345,72 @@ fn has_evidenced_transfer_path(result: &AccountAwareSpendabilityResult) -> bool 
     result.purchases.iter().any(|purchase| {
         purchase.transfer_plan.as_ref().is_some_and(|plan| {
             !plan.legs.is_empty()
-                && plan
-                    .legs
-                    .iter()
-                    .all(|leg| leg.estimated_arrival.as_str() <= leg.required_by.as_str())
+                && plan.legs.iter().all(|leg| {
+                    canonical_timestamp(&leg.estimated_arrival)
+                        .ok()
+                        .zip(canonical_timestamp(&leg.required_by).ok())
+                        .is_some_and(|(arrival, required_by)| arrival <= required_by)
+                })
         })
     })
 }
 
 fn category_reallocation_paths(
     paths: &[CandidatePath],
-    totals: &BTreeMap<String, CategoryTotals>,
-    purchases: &BTreeMap<String, i64>,
+    totals: &BTreeMap<CategoryKey, CategoryTotals>,
+    purchases: &BTreeMap<CategoryKey, i64>,
 ) -> Result<Vec<Value>, &'static str> {
     paths
         .iter()
         .map(|path| {
+            let source_key = (
+                path.source_category_id.clone(),
+                path.source_as_of_month.clone(),
+            );
+            let destination_key = (
+                path.destination_category_id.clone(),
+                path.destination_as_of_month.clone(),
+            );
             let source_before = totals
-                .get(&path.source_category_id)
+                .get(&source_key)
                 .ok_or("category_total_missing")?
                 .availability;
             let destination_before = totals
-                .get(&path.destination_category_id)
+                .get(&destination_key)
                 .ok_or("category_total_missing")?
                 .availability;
             let source_redirected = paths
                 .iter()
-                .filter(|other| other.source_category_id == path.source_category_id)
+                .filter(|other| {
+                    other.source_category_id == path.source_category_id
+                        && other.source_as_of_month == path.source_as_of_month
+                })
                 .try_fold(0_i64, |total, other| total.checked_add(other.amount))
                 .ok_or("money_arithmetic_overflow")?;
             let destination_redirected = paths
                 .iter()
-                .filter(|other| other.destination_category_id == path.destination_category_id)
+                .filter(|other| {
+                    other.destination_category_id == path.destination_category_id
+                        && other.destination_as_of_month == path.destination_as_of_month
+                })
                 .try_fold(0_i64, |total, other| total.checked_add(other.amount))
                 .ok_or("money_arithmetic_overflow")?;
             let source_after = source_before
                 .checked_sub(source_redirected)
                 .ok_or("money_arithmetic_overflow")?
-                .checked_sub(
-                    purchases
-                        .get(&path.source_category_id)
-                        .copied()
-                        .unwrap_or(0),
-                )
+                .checked_sub(purchases.get(&source_key).copied().unwrap_or(0))
                 .ok_or("money_arithmetic_overflow")?;
             let destination_after = destination_before
                 .checked_add(destination_redirected)
                 .ok_or("money_arithmetic_overflow")?
-                .checked_sub(
-                    purchases
-                        .get(&path.destination_category_id)
-                        .copied()
-                        .unwrap_or(0),
-                )
+                .checked_sub(purchases.get(&destination_key).copied().unwrap_or(0))
                 .ok_or("money_arithmetic_overflow")?;
             Ok(json!({
                 "kind": "category_reallocation",
                 "sourceCategoryId": path.source_category_id.clone(),
+                "sourceAsOfMonth": path.source_as_of_month.clone(),
                 "destinationCategoryId": path.destination_category_id.clone(),
+                "destinationAsOfMonth": path.destination_as_of_month.clone(),
                 "amount": {
                     "minorUnits": path.amount.to_string(),
                     "currency": path.currency.clone()
@@ -1365,26 +2444,39 @@ fn category_reallocation_paths(
 
 fn goal_impacts(
     request: &DecisionCardRequest,
-    totals: &BTreeMap<String, CategoryTotals>,
-    purchases: &BTreeMap<String, i64>,
-    reallocations: &BTreeMap<String, i64>,
+    totals: &BTreeMap<CategoryKey, CategoryTotals>,
+    purchases: &BTreeMap<CategoryKey, i64>,
+    reallocations: &BTreeMap<CategoryKey, i64>,
     after: bool,
 ) -> Result<Vec<Value>, &'static str> {
     let policies = policy_map(request)?;
+    let Some(facts) = request.financial_snapshot.liquidity.as_ref() else {
+        return Ok(vec![]);
+    };
+    let mut categories: Vec<_> = facts.categories.iter().collect();
+    categories.sort_by(|left, right| {
+        left.category_id
+            .cmp(&right.category_id)
+            .then_with(|| left.as_of_month.cmp(&right.as_of_month))
+    });
     let mut impacts = Vec::new();
-    for (category_id, policy) in policies {
+    for category in categories {
+        let Some(policy) = policies.get(&category.category_id).copied() else {
+            continue;
+        };
         let kind = policy.kind.to_ascii_lowercase();
         if kind != "goal" && kind != "protected" {
             continue;
         }
-        let total = totals.get(&category_id).ok_or("category_total_missing")?;
+        let key = (category.category_id.clone(), category.as_of_month.clone());
+        let total = totals.get(&key).ok_or("category_total_missing")?;
         let purchase = if after {
-            purchases.get(&category_id).copied().unwrap_or(0)
+            purchases.get(&key).copied().unwrap_or(0)
         } else {
             0
         };
         let redirected = if after {
-            reallocations.get(&category_id).copied().unwrap_or(0)
+            reallocations.get(&key).copied().unwrap_or(0)
         } else {
             0
         };
@@ -1396,20 +2488,10 @@ fn goal_impacts(
         .max(0);
         let required_retained = policy_floor(policy)?;
         let shortfall = checked_sub(required_retained, uncommitted)?.max(0);
-        let currency = request
-            .financial_snapshot
-            .liquidity
-            .as_ref()
-            .and_then(|facts| {
-                facts
-                    .categories
-                    .iter()
-                    .find(|category| category.category_id == category_id)
-            })
-            .map(|category| category.availability.currency())
-            .ok_or("category_missing")?;
+        let currency = category.availability.currency();
         impacts.push(json!({
-            "categoryId": category_id,
+            "categoryId": category.category_id,
+            "asOfMonth": category.as_of_month,
             "kind": kind,
             "state": if shortfall > 0 { "at_risk" } else { "on_track" },
             "shortfall": money(shortfall, currency),
@@ -1506,15 +2588,24 @@ fn obligation_values(request: &DecisionCardRequest) -> Result<Vec<Value>, &'stat
             } else {
                 Some(effect.resource_id.clone())
             };
+            let matched_id = effect.matched_obligation_id()?;
+            let identity = if values
+                .get(matched_id)
+                .is_some_and(|obligation| obligation["classification"] == "commitment")
+            {
+                matched_id
+            } else {
+                &effect.economic_obligation_id
+            };
             let value = json!({
-                "economicObligationId": effect.economic_obligation_id,
+                "economicObligationId": identity,
                 "classification": "reservation",
                 "accountId": account_id,
                 "categoryId": category_id,
                 "amount": effect.amount,
                 "state": "active",
             });
-            if let Some(previous) = values.get_mut(&effect.economic_obligation_id) {
+            if let Some(previous) = values.get_mut(identity) {
                 // A claim mirroring a known account obligation retains the
                 // commitment classification while preserving any account or
                 // category scope supplied by the claim.
@@ -1533,7 +2624,7 @@ fn obligation_values(request: &DecisionCardRequest) -> Result<Vec<Value>, &'stat
                 }
                 continue;
             }
-            values.insert(effect.economic_obligation_id.clone(), value);
+            values.insert(identity.to_owned(), value);
         }
     }
     // Schedules are retained even when their corresponding account
@@ -1616,16 +2707,22 @@ fn runway_value(
 
 fn opportunity_costs(
     paths: &[CandidatePath],
-    totals: &BTreeMap<String, CategoryTotals>,
-    purchases: &BTreeMap<String, i64>,
+    totals: &BTreeMap<CategoryKey, CategoryTotals>,
+    purchases: &BTreeMap<CategoryKey, i64>,
     request: &DecisionCardRequest,
 ) -> Result<Vec<Value>, &'static str> {
     let policies = policy_map(request)?;
-    let mut grouped = BTreeMap::<(String, String, String), i64>::new();
+    let mut grouped = BTreeMap::<(CategoryKey, CategoryKey, String), i64>::new();
     for path in paths {
         let key = (
-            path.source_category_id.clone(),
-            path.destination_category_id.clone(),
+            (
+                path.source_category_id.clone(),
+                path.source_as_of_month.clone(),
+            ),
+            (
+                path.destination_category_id.clone(),
+                path.destination_as_of_month.clone(),
+            ),
             path.currency.clone(),
         );
         let amount = grouped.entry(key).or_insert(0);
@@ -1633,27 +2730,32 @@ fn opportunity_costs(
     }
     grouped
         .into_iter()
-        .map(|((source, destination, currency), amount)| {
-            let total = totals.get(&source).ok_or("category_total_missing")?;
+        .map(|((source_key, destination_key, currency), amount)| {
+            let total = totals.get(&source_key).ok_or("category_total_missing")?;
             let redirected = paths
                 .iter()
-                .filter(|path| path.source_category_id == source)
+                .filter(|path| {
+                    path.source_category_id == source_key.0
+                        && path.source_as_of_month == source_key.1
+                })
                 .try_fold(0_i64, |sum, path| checked_add(sum, path.amount))?;
             let after_availability = checked_sub(
                 checked_sub(total.availability, redirected)?,
-                purchases.get(&source).copied().unwrap_or(0),
+                purchases.get(&source_key).copied().unwrap_or(0),
             )?;
             let after_total = CategoryTotals {
                 availability: after_availability,
                 reservations: total.reservations,
                 commitments: total.commitments,
             };
-            let before_safe = policy_surplus(total, policies.get(&source).copied())?;
-            let after_safe = policy_surplus(&after_total, policies.get(&source).copied())?;
+            let before_safe = policy_surplus(total, policies.get(&source_key.0).copied())?;
+            let after_safe = policy_surplus(&after_total, policies.get(&source_key.0).copied())?;
             Ok(json!({
                 "kind": "category_opportunity_cost",
-                "sourceCategoryId": source,
-                "destinationCategoryId": destination,
+                "sourceCategoryId": source_key.0,
+                "sourceAsOfMonth": source_key.1,
+                "destinationCategoryId": destination_key.0,
+                "destinationAsOfMonth": destination_key.1,
                 "amount": money(amount, &currency),
                 "beforeSafeToRedirect": money(before_safe, &currency),
                 "afterSafeToRedirect": money(after_safe, &currency),
@@ -1678,6 +2780,7 @@ fn empty_card(request: &DecisionCardRequest, hash: String, reasons: Vec<String>)
     all_reasons.extend(snapshot_scope_reasons(request));
     all_reasons.extend(material_snapshot_blockers(request));
     let reasons = unique_reasons(all_reasons);
+    let intent_hash = intent_hash(request).unwrap_or_default();
     DecisionCard {
         version: "1".into(),
         decision_id: request.decision_id.clone(),
@@ -1689,6 +2792,7 @@ fn empty_card(request: &DecisionCardRequest, hash: String, reasons: Vec<String>)
         policy_hash: request.liquidity_policy.policy_hash.clone(),
         claim_set_revision: request.claim_set.revision.clone(),
         plan_hash: hash,
+        intent_hash,
         outcome: "insufficient_data".into(),
         budget_funding_status: "insufficient_data".into(),
         payment_liquidity_status: "insufficient_data".into(),
@@ -1706,6 +2810,9 @@ fn empty_card(request: &DecisionCardRequest, hash: String, reasons: Vec<String>)
         assumptions: vec![],
         earliest_expiry: request.valid_until.clone(),
         expires_at: request.valid_until.clone(),
+        cart: Value::Null,
+        warnings: vec![],
+        trim_alternatives: vec![],
         readiness: json!({
             "outcome": "insufficient_data",
             "status": "blocked"
@@ -1771,11 +2878,35 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
             return empty_card(&request, String::new(), vec![reason.into()]);
         }
     };
-    let items = match engine_items(&request) {
+    if let Err(reason) = validate_request_timestamps(&request) {
+        return empty_card(&request, hash, vec![reason.into()]);
+    }
+    let mut seen_item_ids = BTreeSet::new();
+    for item in &request.items {
+        if item.id.trim().is_empty() || !seen_item_ids.insert(item.id.as_str()) {
+            return empty_card(
+                &request,
+                hash,
+                vec!["duplicate_or_invalid_cart_item_id".into()],
+            );
+        }
+        if !matches!(item.priority.as_str(), "required" | "planned" | "optional") {
+            return empty_card(&request, hash, vec!["invalid_cart_item_priority".into()]);
+        }
+    }
+    let base_items = match engine_items(&request) {
         Ok(items) if !items.is_empty() => items,
         Ok(_) => return empty_card(&request, hash, vec!["empty_purchase_scenario".into()]),
         Err(reason) => return empty_card(&request, hash, vec![reason.into()]),
     };
+    let cart = match cart_projection(&request, &base_items) {
+        Ok(cart) => cart,
+        Err(reason) => return empty_card(&request, hash, vec![reason.into()]),
+    };
+    if cart.has_adjustments && fixed_adjustment_account(&request).is_none() {
+        return empty_card(&request, hash, vec!["ambiguous_adjustment_route".into()]);
+    }
+    let items = cart.engine_items.clone();
     let totals = match category_totals(&request) {
         Ok(totals) => totals,
         Err(reason) => return empty_card(&request, hash, vec![reason.into()]),
@@ -1784,21 +2915,11 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         Ok(policies) => policies,
         Err(reason) => return empty_card(&request, hash, vec![reason.into()]),
     };
-    let purchase_totals = match purchases_by_category(&request, &items) {
-        Ok(totals) => totals,
-        Err(reason) => return empty_card(&request, hash, vec![reason.into()]),
-    };
+    let purchase_totals = cart.category_totals.clone();
 
     let mut category_shortfalls = BTreeSet::new();
-    for (category_id, amount) in &purchase_totals {
-        // Category reallocation is a current-period operation.  The shared
-        // engine remains authoritative for a future-dated purchase's own
-        // period, but future assignments never satisfy this current donor
-        // calculation.
-        if current_category_fact(&request, category_id).is_none() {
-            continue;
-        }
-        let Some(total) = totals.get(category_id) else {
+    for (key, amount) in &purchase_totals {
+        let Some(total) = totals.get(key) else {
             continue;
         };
         let spendable = match checked_sub(total.availability, total.reservations)
@@ -1808,7 +2929,7 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
             Err(reason) => return empty_card(&request, hash, vec![reason.into()]),
         };
         if *amount > spendable {
-            category_shortfalls.insert(category_id.clone());
+            category_shortfalls.insert(key.clone());
         }
     }
     let engine = evaluate_account_aware_spendability(engine_request(
@@ -1816,7 +2937,8 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         items.clone(),
         request.financial_snapshot.liquidity.clone(),
     ));
-    let engine_map = engine_item_map(&engine);
+    let raw_engine_map = engine_item_map(&engine);
+    let engine_map = aggregate_engine_map(&engine, &cart, &request);
     let mut reasons = engine.reasons.clone();
     reasons.extend(snapshot_scope_reasons(&request));
     let mut blockers = material_snapshot_blockers(&request);
@@ -1847,20 +2969,9 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         }
     }
 
-    for (index, item) in request.items.iter().enumerate() {
-        if category_shortfalls.contains(&item.category_id)
-            && base_item_outcomes
-                .get(index)
-                .is_some_and(|outcome| outcome == "funded_now" || outcome == "safe_after_date")
-        {
-            if let Some(outcome) = base_item_outcomes.get_mut(index) {
-                *outcome = "cash_available_but_unfunded".into();
-            }
-        }
-    }
-
-    let mut plan_breaking = false;
-    for (category_id, amount) in &purchase_totals {
+    let mut plan_breaking_periods = BTreeSet::new();
+    for (key, amount) in &purchase_totals {
+        let category_id = &key.0;
         let Some(policy) = policies.get(category_id).copied() else {
             blockers.push(format!("missing_category_policy:{category_id}"));
             continue;
@@ -1869,8 +2980,8 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         if kind != "protected" && kind != "goal" {
             continue;
         }
-        let Some(total) = totals.get(category_id) else {
-            blockers.push(format!("category_missing:{category_id}"));
+        let Some(total) = totals.get(key) else {
+            blockers.push(format!("category_missing:{category_id}:{}", key.1));
             continue;
         };
         let after = match checked_sub(total.availability, *amount)
@@ -1891,19 +3002,26 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
             }
         };
         if after < retained {
-            plan_breaking = true;
+            plan_breaking_periods.insert(key.clone());
             reasons.push(format!("{kind}_category_breach"));
         }
     }
+    let plan_breaking = !plan_breaking_periods.is_empty();
 
     if plan_breaking {
-        for (index, item) in request.items.iter().enumerate() {
-            if policies.get(&item.category_id).is_some_and(|policy| {
-                let kind = policy.kind.to_ascii_lowercase();
-                kind == "protected" || kind == "goal"
-            }) && base_item_outcomes
-                .get(index)
-                .is_some_and(|outcome| outcome != "insufficient_data")
+        for (index, _item) in request.items.iter().enumerate() {
+            let touches_breaking =
+                cart.category_allocations
+                    .get(index)
+                    .is_some_and(|allocations| {
+                        allocations
+                            .iter()
+                            .any(|(key, _)| plan_breaking_periods.contains(key))
+                    });
+            if touches_breaking
+                && base_item_outcomes
+                    .get(index)
+                    .is_some_and(|outcome| outcome != "insufficient_data")
             {
                 if let Some(outcome) = base_item_outcomes.get_mut(index) {
                     *outcome = "plan_breaking".into();
@@ -1925,10 +3043,18 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
     };
     let reallocation_totals = match paths.iter().try_fold(
         BTreeMap::new(),
-        |mut map: BTreeMap<String, i64>, path| -> Result<_, &'static str> {
-            let source = map.entry(path.source_category_id.clone()).or_insert(0);
+        |mut map: BTreeMap<CategoryKey, i64>, path| -> Result<_, &'static str> {
+            let source_key = (
+                path.source_category_id.clone(),
+                path.source_as_of_month.clone(),
+            );
+            let source = map.entry(source_key).or_insert(0);
             *source = checked_sub(*source, path.amount)?;
-            let destination = map.entry(path.destination_category_id.clone()).or_insert(0);
+            let destination_key = (
+                path.destination_category_id.clone(),
+                path.destination_as_of_month.clone(),
+            );
+            let destination = map.entry(destination_key).or_insert(0);
             *destination = checked_add(*destination, path.amount)?;
             Ok(map)
         },
@@ -1997,8 +3123,16 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
     };
 
     if !paths.is_empty() {
-        for (index, item) in request.items.iter().enumerate() {
-            if category_shortfalls.contains(&item.category_id)
+        for (index, _item) in request.items.iter().enumerate() {
+            let touches_shortfall =
+                cart.category_allocations
+                    .get(index)
+                    .is_some_and(|allocations| {
+                        allocations
+                            .iter()
+                            .any(|(key, _)| category_shortfalls.contains(key))
+                    });
+            if touches_shortfall
                 && base_item_outcomes
                     .get(index)
                     .is_some_and(|outcome| outcome == "cash_available_but_unfunded")
@@ -2009,14 +3143,12 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
             }
         }
     }
-    let selected_account_id = engine
-        .purchases
+    let first_result = request
+        .items
         .first()
-        .and_then(|purchase| purchase.selected_account_id.clone());
-    let selection_source = engine
-        .purchases
-        .first()
-        .map(|purchase| purchase.selection_source.clone());
+        .and_then(|item| engine_map.get(&item.id));
+    let selected_account_id = first_result.and_then(|item| item.selected_account_id.clone());
+    let selection_source = first_result.map(|item| item.selection_source.clone());
 
     // The shared engine evaluates the joint cart in deterministic item order
     // and carries account capacity forward.  Do not apply a second-item
@@ -2034,7 +3166,7 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         item_outcomes.push(DecisionCardItemOutcome {
             id: item.id.clone(),
             category_id: item.category_id.clone(),
-            amount: items
+            amount: base_items
                 .iter()
                 .find(|engine_item| engine_item.id == item.id)
                 .map(|engine_item| engine_item.amount.clone())
@@ -2257,11 +3389,8 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
     }
     if paths.is_empty() {
         let mut shortfall = false;
-        for (category_id, amount) in &purchase_totals {
-            if current_category_fact(&request, category_id).is_none() {
-                continue;
-            }
-            let Some(total) = totals.get(category_id) else {
+        for (key, amount) in &purchase_totals {
+            let Some(total) = totals.get(key) else {
                 continue;
             };
             let available = match checked_sub(total.availability, total.reservations)
@@ -2359,6 +3488,11 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         },
         candidate_engine,
     );
+    let cart_output = cart_value(&cart, &request, &engine_map, &raw_engine_map);
+    let warning_probe = threshold_warnings(&cart, &[]);
+    let trim_alternatives = trim_alternatives(&request, &base_items, !warning_probe.is_empty());
+    let warnings = threshold_warnings(&cart, &trim_alternatives);
+    let intent_hash = intent_hash(&request).unwrap_or_default();
     DecisionCard {
         version: "1".into(),
         decision_id: request.decision_id.clone(),
@@ -2370,6 +3504,7 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         policy_hash: request.liquidity_policy.policy_hash.clone(),
         claim_set_revision: request.claim_set.revision.clone(),
         plan_hash: hash,
+        intent_hash,
         outcome: outcome.into(),
         budget_funding_status: card_budget_status.into(),
         payment_liquidity_status: payment_status(candidate_payment).into(),
@@ -2387,6 +3522,9 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
         assumptions,
         earliest_expiry: expires_at.clone(),
         expires_at,
+        cart: cart_output,
+        warnings,
+        trim_alternatives,
         readiness: readiness_value,
         items: item_outcomes,
     }

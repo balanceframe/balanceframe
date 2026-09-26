@@ -1,6 +1,12 @@
 import type {
   AccountLiquidityFact,
   BackingAllocation,
+  DecisionCardAdjustment,
+  DecisionCardCategoryPolicy,
+  DecisionCardItem,
+  DecisionCardPriceProvenance,
+  DecisionCardPriority,
+  DecisionCardWarningThreshold,
   LiquidityClaimBundle,
   LiquidityClaimSet,
   LiquidityFacts,
@@ -11,7 +17,7 @@ import type {
   TransferSettlementResult,
   TrustedRoute,
 } from '@balanceframe/protocol-generated';
-import type { ActionProposal } from './types.js';
+import type { ActionProposal, SessionCompletionPayload, SessionCompletionProposal } from './types.js';
 
 export type ResourceCapability =
   | 'conclusion'
@@ -66,8 +72,12 @@ export interface TransferApprovalPolicy {
 }
 export type ProspectiveClaimMode = 'inform' | 'block';
 /** Workflow policy may govern whether reservations inform or block competing decisions. */
+export type GovernedCategoryPolicy = DecisionCardCategoryPolicy & {
+  cooldownMinutes?: number;
+};
 export type GovernedLiquidityPolicy = LiquidityPolicy & {
   reservationMode?: ProspectiveClaimMode;
+  categoryPolicies?: GovernedCategoryPolicy[];
 };
 
 export interface LiquidityPolicyRecord {
@@ -77,10 +87,27 @@ export interface LiquidityPolicyRecord {
   createdAt: string;
   actorId: string;
 }
+/**
+ * Editable session intent. Unlike the canonical DecisionCard item, this wire
+ * shape stores only user input and the selected account; route alternatives are
+ * resolved when a card is evaluated.
+ */
+export type SpendSessionItem = Omit<
+  DecisionCardItem,
+  'routeSelection' | 'priority' | 'priceProvenance'
+> & {
+  accountId: string | null;
+  priority?: DecisionCardPriority;
+  priceProvenance?: DecisionCardPriceProvenance | null;
+};
+/** Pre-8.6 normalized items remain accepted for replay and migration. */
+export type SpendSessionItemInput = SpendSessionItem | LiquidityPurchaseItem;
 export interface SpendSession extends LiquidityActor {
   id: string;
   version: number;
-  items: LiquidityPurchaseItem[];
+  items: SpendSessionItem[];
+  adjustments?: DecisionCardAdjustment[];
+  warningThresholds?: DecisionCardWarningThreshold[];
   accountId: string | null;
   expiresAt: string;
   createdAt: string;
@@ -174,6 +201,76 @@ export interface TransferCommand extends LiquidityActor {
 export interface RecheckTransferCommand extends TransferCommand {
   expectedClaimSetRevision: string;
 }
+export type SessionCompletionApprovalStatus =
+  | 'none'
+  | 'active'
+  | 'consumed'
+  | 'expired'
+  | 'superseded';
+export type SessionCompletionProposalView = SessionCompletionProposal & {
+  readonly approvalId: string | null;
+  readonly approvalCount: number;
+  readonly requiredApprovals: number;
+  readonly approvalStatus: SessionCompletionApprovalStatus;
+  readonly manualTransactionId: string | null;
+  readonly importedTransactionId: string | null;
+  readonly reconciliation: SessionCompletionReconciliation | null;
+};
+export interface AdmitSessionCompletionInput extends LiquidityActor {
+  sessionId: string;
+  expectedSessionVersion: number;
+  payload: SessionCompletionPayload;
+  payloadHash: string;
+  claim: LiquidityClaimBundle;
+  expectedClaimSetRevision: string;
+  idempotencyKey: string;
+  now: string;
+}
+export interface SessionCompletionCommand extends LiquidityActor {
+  proposalId: string;
+  payloadHash: string;
+  expectedVersion: number;
+  expectedClaimSetRevision: string;
+  idempotencyKey: string;
+  now: string;
+}
+export type ApproveSessionCompletionInput = SessionCompletionCommand;
+export type BeginSessionCompletionWriteInput = SessionCompletionCommand;
+export interface SessionCompletionWriteResult {
+  readonly success: boolean;
+  readonly verified: boolean;
+  readonly parentId: string;
+  readonly transactionId?: string;
+  readonly code?: string;
+  readonly reviewRequired?: boolean;
+  readonly evidenceId?: string;
+}
+export interface FinishSessionCompletionWriteInput extends LiquidityActor {
+  proposalId: string;
+  payloadHash: string;
+  expectedVersion: number;
+  idempotencyKey: string;
+  now: string;
+  result: SessionCompletionWriteResult;
+}
+export type SessionCompletionEvidenceKind = 'manual_parent' | 'imported_link' | 'ambiguous';
+export interface SessionCompletionReconciliation {
+  readonly evidenceId: string;
+  readonly kind: SessionCompletionEvidenceKind;
+  readonly parentId: string;
+  readonly accountId: string;
+  readonly transactionId?: string;
+  readonly verified: boolean;
+  readonly reason?: string;
+}
+export interface ReconcileSessionCompletionInput extends SessionCompletionCommand {
+  readonly evidence: SessionCompletionReconciliation;
+}
+export type SessionCompletionWriteIntentResult = {
+  readonly proposal: SessionCompletionProposalView;
+  readonly payload: SessionCompletionPayload | null;
+  readonly acquiredWriteIntent: boolean;
+};
 export interface SettlementVerificationContext {
   plan: TransferPlan;
   evaluatedAt: string;
@@ -191,7 +288,9 @@ export interface SaveSpendSessionInput extends LiquidityActor {
   now: string;
   expiresAt: string;
   accountId: string | null;
-  items: LiquidityPurchaseItem[];
+  items: SpendSessionItemInput[];
+  adjustments?: DecisionCardAdjustment[];
+  warningThresholds?: DecisionCardWarningThreshold[];
   claim?: LiquidityClaimBundle;
   expectedClaimSetRevision?: string;
 }

@@ -1,6 +1,8 @@
 import type {
   AccountAwareSpendabilityRequest,
   AccountAwareSpendabilityResult,
+  DecisionCard,
+  DecisionCardState,
   FinancialSnapshot,
   LiquidityPurchaseItem,
   TransferPlan,
@@ -15,6 +17,8 @@ import type {
 import type {
   PublicCategoryBacking,
   PublicLiquidityAccount,
+  PublicDecisionCard,
+  PublicDecisionCardState,
   PublicLiquidityView,
   PublicPurchaseLiquidity,
   PublicTransferConclusion,
@@ -159,6 +163,339 @@ export class LiquidityProjector {
       assumptions: ['manual_transfer_only', 'acknowledgement_is_not_settlement'],
     };
   }
+  /**
+   * Projects a native Decision Card only when every contributing financial scope
+   * is currently visible. An incomplete scope gets no financial inference.
+   */
+  card(card: DecisionCard): PublicDecisionCard {
+    const full = ['existence', 'balance', 'history', 'liquidity'] as const;
+    const stateVisible = (state: DecisionCardState | null) =>
+      state === null ||
+      (
+        state.categories.every(({ categoryId }) => this.allowed('category', categoryId, ...full)) &&
+        state.accounts.every(({ accountId }) => this.allowed('account', accountId, ...full)) &&
+        state.backing.lines.every(({ accountId, categoryId }) =>
+          this.allowed('account', accountId, ...full) && this.allowed('category', categoryId, ...full),
+        ) &&
+        state.goals.every(({ categoryId }) => this.allowed('category', categoryId, ...full)) &&
+        state.obligations.every(({ accountId, categoryId }) =>
+          (accountId === null || this.allowed('account', accountId, ...full)) &&
+          (categoryId === null || this.allowed('category', categoryId, ...full)),
+        ) &&
+        (state.runway?.accountId === undefined ||
+          this.allowed('account', state.runway.accountId, ...full))
+      );
+    const visible = this.allowed(
+      'budget',
+      this.actor.budgetId,
+      'conclusion',
+      'balance',
+      'history',
+      'liquidity',
+    ) &&
+      this.snapshot.legacySnapshot.accounts.every(({ id }) => this.allowed('account', id, ...full)) &&
+      this.snapshot.legacySnapshot.categories.every(({ id }) => this.allowed('category', id, ...full)) &&
+      (this.snapshot.liquidity?.accounts ?? []).every(({ accountId }) =>
+        this.allowed('account', accountId, ...full),
+      ) &&
+      (this.snapshot.liquidity?.categories ?? []).every(({ categoryId }) =>
+        this.allowed('category', categoryId, ...full),
+      ) &&
+      card.items.every(({ categoryId, selectedAccountId }) =>
+        this.allowed('category', categoryId, ...full) &&
+        (selectedAccountId === null || this.allowed('account', selectedAccountId, ...full)),
+      ) &&
+      card.fundingPaths.every((path) =>
+        path.kind === 'account_transfer'
+          ? this.planAuthorized(path)
+          : this.allowed('category', path.sourceCategoryId, ...full) &&
+            this.allowed('category', path.destinationCategoryId, ...full),
+      ) &&
+      stateVisible(card.before) &&
+      stateVisible(card.after) &&
+      (card.selectedAccountId === null || this.allowed('account', card.selectedAccountId, ...full)) &&
+      (card.cart === null ||
+        (
+          card.cart.categoryCharges.every(({ categoryId }) => this.allowed('category', categoryId, ...full)) &&
+          card.cart.accountCharges.every(({ accountId }) => this.allowed('account', accountId, ...full))
+        )) &&
+      card.trimAlternatives.every(({ categoryCharges }) =>
+        categoryCharges.every(({ categoryId }) => this.allowed('category', categoryId, ...full)),
+      );
+    if (!visible)
+      return {
+        outcome: 'insufficient_data',
+        budgetFundingStatus: 'insufficient_data',
+        paymentLiquidityStatus: 'insufficient_data',
+        selectedAccountId: null,
+        before: null,
+        after: null,
+        fundingPaths: [],
+        evidence: [],
+        blockers: ['restricted_financial_scope'],
+        cart: null,
+        warnings: [],
+        trimAlternatives: [],
+      };
+
+    const account = (entry: DecisionCardState['accounts'][number]) => ({
+      accountId: entry.accountId,
+      recordedBalance: entry.recordedBalance,
+      adjustedCash: entry.adjustedCash,
+      signedHeadroom: entry.signedHeadroom,
+      existingShortfall: entry.existingShortfall,
+      safeSpendingCapacity: entry.safeSpendingCapacity,
+      safeTransferCapacity: entry.safeTransferCapacity,
+      backingCapacity: entry.backingCapacity,
+      deductions: entry.deductions.map(({ reason, amount, affectsBacking }) => ({
+        reason,
+        amount,
+        affectsBacking,
+      })),
+      reasons: entry.reasons,
+    });
+    const state = (value: DecisionCardState | null): PublicDecisionCardState | null =>
+      value === null
+        ? null
+        : {
+            categories: value.categories.map((category) => ({
+              categoryId: category.categoryId,
+              asOfMonth: category.asOfMonth,
+              availability: category.availability,
+              commitments: category.commitments,
+              reservations: category.reservations,
+              uncommittedAvailability: category.uncommittedAvailability,
+              safeToRedirect: category.safeToRedirect,
+              policyKind: category.policyKind,
+            })),
+            accounts: value.accounts.map(account),
+            backing: {
+              feasible: value.backing.feasible,
+              lines: value.backing.lines.map(({ accountId, categoryId, cashBucketId, amount }) => ({
+                accountId,
+                categoryId,
+                cashBucketId,
+                amount,
+              })),
+              reasons: value.backing.reasons,
+            },
+            goals: value.goals.map((goal) => ({
+              categoryId: goal.categoryId,
+              asOfMonth: goal.asOfMonth,
+              kind: goal.kind,
+              state: goal.state,
+              shortfall: goal.shortfall,
+              minimumRetained: goal.minimumRetained,
+              projectedRemainingNeed: goal.projectedRemainingNeed,
+              requiredRetained: goal.requiredRetained,
+              targetState: goal.targetState,
+              availability: goal.availability,
+              uncommittedAvailability: goal.uncommittedAvailability,
+            })),
+            obligations: value.obligations.map((obligation) =>
+              obligation.amount === null
+                ? {
+                    scheduleId: obligation.scheduleId,
+                    classification: obligation.classification,
+                    accountId: obligation.accountId,
+                    categoryId: obligation.categoryId,
+                    dueAt: obligation.dueAt,
+                    state: obligation.state,
+                    recurring: obligation.recurring,
+                    amount: null,
+                    amountState: obligation.amountState,
+                    recurrence: obligation.recurrence,
+                  }
+                : {
+                    economicObligationId: obligation.economicObligationId,
+                    classification: obligation.classification,
+                    accountId: obligation.accountId,
+                    categoryId: obligation.categoryId,
+                    amount: obligation.amount,
+                    state: obligation.state,
+                    dueAt: obligation.dueAt,
+                    recurring: obligation.recurring,
+                    scheduleId: obligation.scheduleId,
+                    recurrence: obligation.recurrence,
+                    amountState: obligation.amountState,
+                  },
+            ),
+            runway: value.runway?.state === 'known'
+              ? {
+                  state: 'known',
+                  accountId: value.runway.accountId,
+                  remainingSafeCash: value.runway.remainingSafeCash,
+                  basis: value.runway.basis,
+                }
+              : value.runway?.state === 'unknown'
+                ? {
+                    state: 'unknown',
+                    accountId: value.runway.accountId,
+                    remainingSafeCash: null,
+                  }
+                : null,
+          };
+    const evidence = card.evidence.filter((reference) =>
+      reference.authorized &&
+      reference.redaction === 'visible' &&
+      this.snapshot.observations.some(
+        ({ scope, evidence: source }) =>
+          source.some(
+            ({ evidenceId, authorized, redaction }) =>
+              evidenceId === reference.evidenceId && authorized && redaction === 'visible',
+          ) &&
+          (scope.kind === 'global'
+            ? this.allowed('budget', this.actor.budgetId, 'history')
+            : (scope.kind === 'account' || scope.kind === 'category') &&
+              this.allowed(scope.kind, scope.id, 'history')),
+      ),
+    ).map(({ evidenceId, kind, authorized, redaction }) => ({
+      evidenceId,
+      kind,
+      authorized,
+      redaction,
+    }));
+    return {
+      outcome: card.outcome,
+      budgetFundingStatus: card.budgetFundingStatus,
+      paymentLiquidityStatus: card.paymentLiquidityStatus,
+      selectedAccountId: card.selectedAccountId,
+      selectionSource: card.selectionSource,
+      before: state(card.before),
+      after: state(card.after),
+      fundingPaths: card.fundingPaths.map((path) =>
+        path.kind === 'account_transfer'
+          ? {
+              kind: path.kind,
+              itemIds: path.itemIds,
+              minimumAmount: path.minimumAmount,
+              expiresAt: path.expiresAt,
+              legs: path.legs.map((leg) => ({
+                sourceAccountId: leg.sourceAccountId,
+                destinationAccountId: leg.destinationAccountId,
+                amount: leg.amount,
+                requiredBy: leg.requiredBy,
+                estimatedArrival: leg.estimatedArrival,
+                sourceBefore: leg.sourceBefore.signedHeadroom,
+                destinationBefore: leg.destinationBefore.signedHeadroom,
+                sourceAfter: leg.sourceAfter,
+                destinationAfter: leg.destinationAfter,
+              })),
+            }
+          : {
+              kind: path.kind,
+              sourceCategoryId: path.sourceCategoryId,
+              sourceAsOfMonth: path.sourceAsOfMonth,
+              destinationCategoryId: path.destinationCategoryId,
+              destinationAsOfMonth: path.destinationAsOfMonth,
+              amount: path.amount,
+              approvalRequired: path.approvalRequired,
+              tradeoffs: path.tradeoffs,
+              before: {
+                sourceAvailability: path.before.sourceAvailability,
+                destinationAvailability: path.before.destinationAvailability,
+              },
+              after: {
+                sourceAvailability: path.after.sourceAvailability,
+                destinationAvailability: path.after.destinationAvailability,
+              },
+            },
+      ),
+      opportunityCosts: card.opportunityCosts.map((cost) => ({
+        kind: cost.kind,
+        sourceCategoryId: cost.sourceCategoryId,
+        sourceAsOfMonth: cost.sourceAsOfMonth,
+        destinationCategoryId: cost.destinationCategoryId,
+        destinationAsOfMonth: cost.destinationAsOfMonth,
+        amount: cost.amount,
+        beforeSafeToRedirect: cost.beforeSafeToRedirect,
+        afterSafeToRedirect: cost.afterSafeToRedirect,
+        tradeoff: cost.tradeoff,
+      })),
+      conflicts: card.conflicts.map((conflict) => ({
+        kind: conflict.kind,
+        accountId: conflict.accountId,
+        itemId: conflict.itemId,
+        competingItemIds: conflict.competingItemIds,
+        reason: conflict.reason,
+        paymentLiquidityStatus: conflict.paymentLiquidityStatus,
+      })),
+      authorizationRequirements: card.authorizationRequirements,
+      evidence,
+      blockers: card.blockers,
+      reasons: card.reasons,
+      assumptions: card.assumptions,
+      earliestExpiry: card.earliestExpiry,
+      expiresAt: card.expiresAt,
+      intentHash: card.intentHash,
+      cart: card.cart === null
+        ? null
+        : {
+            subtotal: card.cart.subtotal,
+            tax: card.cart.tax,
+            fee: card.cart.fee,
+            discount: card.cart.discount,
+            total: card.cart.total,
+            categoryCharges: card.cart.categoryCharges.map(({ categoryId, amount }) => ({
+              categoryId,
+              amount,
+            })),
+            accountCharges: card.cart.accountCharges.map(({ accountId, amount }) => ({
+              accountId,
+              amount,
+            })),
+          },
+      trimAlternatives: card.trimAlternatives.map((alternative) => ({
+        removedItemIds: alternative.removedItemIds,
+        retainedItemIds: alternative.retainedItemIds,
+        total: alternative.total,
+        outcome: alternative.outcome,
+        categoryCharges: alternative.categoryCharges.map(({ categoryId, amount }) => ({
+          categoryId,
+          amount,
+        })),
+      })),
+      warnings: card.warnings.map((warning) => ({
+        thresholdId: warning.thresholdId,
+        threshold: warning.threshold,
+        actual: warning.actual,
+        excess: warning.excess,
+        reason: warning.reason,
+        alternatives: warning.alternatives.map((alternative) => ({
+          removedItemIds: alternative.removedItemIds,
+          retainedItemIds: alternative.retainedItemIds,
+          total: alternative.total,
+          outcome: alternative.outcome,
+          categoryCharges: alternative.categoryCharges.map(({ categoryId, amount }) => ({
+            categoryId,
+            amount,
+          })),
+        })),
+      })),
+      readiness: {
+        outcome: card.readiness.outcome,
+        status: card.readiness.status,
+        blockers: card.readiness.blockers,
+        budgetFundingStatus: card.readiness.budgetFundingStatus,
+        paymentLiquidityStatus: card.readiness.paymentLiquidityStatus,
+      },
+      items: card.items.map((item) => ({
+        id: item.id,
+        categoryId: item.categoryId,
+        amount: item.amount,
+        priority: item.priority,
+        outcome: item.outcome,
+        budgetFundingStatus: item.budgetFundingStatus,
+        paymentLiquidityStatus: item.paymentLiquidityStatus,
+        selectedAccountId: item.selectedAccountId,
+        selectionSource: item.selectionSource,
+        reasons: item.reasons,
+        before: item.before === null ? null : account(item.before),
+        after: item.after === null ? null : account(item.after),
+      })),
+    };
+  }
+
   view(
     input: AccountAwareSpendabilityRequest | null,
     result: AccountAwareSpendabilityResult | null,

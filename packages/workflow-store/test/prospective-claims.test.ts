@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { SqliteWorkflowStore } from '../src/store.js';
 import type { ClaimValidationContext } from '../src/liquidity-types.js';
 import type {
@@ -167,9 +171,11 @@ function transferPlan(hash = 'a'.repeat(64)): TransferPlan {
 
 describe('prospective commitment and reservation lifecycle', () => {
   let store: SqliteWorkflowStore;
+  let directory: string;
 
   beforeEach(async () => {
-    store = new SqliteWorkflowStore(':memory:');
+    directory = mkdtempSync(join(tmpdir(), 'prospective-claims-'));
+    store = new SqliteWorkflowStore(join(directory, 'workflow.sqlite'));
     await store.upsertActorMembership(
       actorId,
       'active',
@@ -205,6 +211,7 @@ describe('prospective commitment and reservation lifecycle', () => {
 
   afterEach(() => {
     store.close();
+    rmSync(directory, { recursive: true, force: true });
   });
 
   function save(
@@ -257,7 +264,7 @@ describe('prospective commitment and reservation lifecycle', () => {
           expect.objectContaining({
             kind: 'category',
             resourceId: categoryId,
-            economicObligationId: 'obligation:rent:2029-01',
+            economicObligationId: 'obligation:rent:2029-01:category:food',
             amount: money('30'),
           }),
         ],
@@ -277,7 +284,7 @@ describe('prospective commitment and reservation lifecycle', () => {
             expect.objectContaining({
               kind: 'category',
               resourceId: categoryId,
-              economicObligationId: 'obligation:rent:2029-01',
+              economicObligationId: 'obligation:rent:2029-01:category:food',
               amount: money('30'),
             }),
           ],
@@ -309,7 +316,7 @@ describe('prospective commitment and reservation lifecycle', () => {
             expect.objectContaining({
               kind: 'account_debit',
               resourceId: accountId,
-              economicObligationId: 'obligation:rent:2029-01',
+              economicObligationId: 'obligation:rent:2029-01:account:checking',
             }),
           ],
         }),
@@ -429,6 +436,56 @@ describe('prospective commitment and reservation lifecycle', () => {
     ).toThrow(/duplicate|obligation|claim|conflict/i);
     expect(currentClaims().revision).toBe('2');
   });
+  it('rejects a duplicate of a pre-upgrade prospective effect with an unsuffixed source ID', () => {
+    const sourceId = 'obligation:historical';
+    save(prospectiveClaim({ claimId: 'historical', sourceId, amount: money('30') }),
+      '0', 'legacy-create');
+    const db = new Database(join(directory, 'workflow.sqlite'));
+    const row = db.prepare('SELECT bundle FROM liquidity_claims WHERE budget_id=? AND id=?')
+      .get(budgetId, 'historical') as { bundle: string };
+    const bundle = JSON.parse(row.bundle) as { effects: Array<{ economicObligationId: string }> };
+    bundle.effects[0]!.economicObligationId = sourceId;
+    db.prepare('UPDATE liquidity_claims SET bundle=? WHERE budget_id=? AND id=?')
+      .run(JSON.stringify(bundle), budgetId, 'historical');
+    db.close();
+    expect(() => save(prospectiveClaim({
+      claimId: 'historical-duplicate', sourceId, amount: money('30'),
+    }), '1', 'legacy-duplicate', capacity(100n))).toThrow(/Duplicate economic obligation/);
+    expect(currentClaims().bundles.map((claim) => claim.id)).toEqual(['historical']);
+  });
+
+  it('normalizes legacy same-source scopes when upgrading a persisted workflow database', () => {
+    const sourceId = 'obligation:legacy-split';
+    save(prospectiveClaim({ claimId: 'old-category', sourceId,
+      scope: { kind: 'category', id: categoryId }, amount: money('30') }),
+    '0', 'old-category-save');
+    save(prospectiveClaim({ claimId: 'old-account', sourceId,
+      scope: { kind: 'account', id: accountId }, amount: money('30') }),
+    '1', 'old-account-save', capacity(100n));
+    store.close();
+    const db = new Database(join(directory, 'workflow.sqlite'));
+    for (const id of ['old-category', 'old-account']) {
+      const row = db.prepare('SELECT bundle FROM liquidity_claims WHERE budget_id=? AND id=?')
+        .get(budgetId, id) as { bundle: string };
+      const bundle = JSON.parse(row.bundle) as {
+        effects: Array<{ economicObligationId: string; sourceEconomicObligationId?: string }>;
+      };
+      if (id === 'old-category') bundle.effects[0]!.economicObligationId = sourceId;
+      delete bundle.effects[0]!.sourceEconomicObligationId;
+      db.prepare('UPDATE liquidity_claims SET bundle=? WHERE budget_id=? AND id=?')
+        .run(JSON.stringify(bundle), budgetId, id);
+    }
+    db.prepare('DELETE FROM schema_version WHERE version=(SELECT MAX(version) FROM schema_version)').run();
+    db.close();
+    store = new SqliteWorkflowStore(join(directory, 'workflow.sqlite'));
+    const claims = currentClaims();
+    expect(claims.bundles.map((bundle) => bundle.effects[0]?.economicObligationId).sort())
+      .toEqual([`${sourceId}:account:${accountId}`, `${sourceId}:category:${categoryId}`]);
+    expect(claims.bundles.map((bundle) => bundle.effects[0]?.sourceEconomicObligationId))
+      .toEqual([sourceId, sourceId]);
+    expect(claims.revision).toBe('3');
+  });
+
   it('keeps a future-effective reservation out of current capacity until its start revision', () => {
     const effectiveAt = '2098-06-01T00:00:00.000Z';
     save(
@@ -934,7 +991,7 @@ describe('prospective commitment and reservation lifecycle', () => {
     ).toThrow(/revision|conflict/i);
   });
 
-  it('authorizes by category/account scope and preserves redacted shared visibility for hidden claims', async () => {
+  it('lists shared authorized claims without revealing hidden claim existence or lifecycle', async () => {
     save(
       prospectiveClaim({
         claimId: 'shared-food',
@@ -983,31 +1040,26 @@ describe('prospective commitment and reservation lifecycle', () => {
       budgetId,
       now,
     });
-    expect(visible).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          claimId: 'shared-food',
-          visibility: 'visible',
-          amount: money('20'),
-          scope: { kind: 'category', id: categoryId },
-        }),
-        expect.objectContaining({
-          claimId: null,
-          visibility: 'redacted',
-          amount: null,
-          scope: { kind: 'account', id: null },
-          sourceId: null,
-          policyVersion: null,
-          snapshotId: null,
-        }),
-      ]),
+    expect(visible).toEqual([
+      expect.objectContaining({
+        claimId: 'shared-food',
+        visibility: 'visible',
+        amount: money('20'),
+        scope: { kind: 'category', id: categoryId },
+      }),
+    ]);
+    store.liquidity.transitionProspectiveClaim({
+      actorId,
+      budgetId,
+      claimId: 'private-account',
+      transition: 'release',
+      expectedClaimSetRevision: '2',
+      idempotencyKey: 'claim:private-release',
+      now,
+    });
+    expect(store.liquidity.listProspectiveClaims({ actorId: readerId, budgetId, now })).toEqual(
+      visible,
     );
-    const redacted = visible.find((claim) => claim.visibility === 'redacted');
-    expect(redacted).toBeDefined();
-    expect(JSON.stringify(redacted)).not.toContain('private-account');
-    expect(JSON.stringify(redacted)).not.toContain(privateAccountId);
-    expect(JSON.stringify(redacted)).not.toContain('private:source:777');
-    expect(JSON.stringify(redacted)).not.toContain('777');
 
     for (const capability of ['conclusion', 'liquidity', 'proposal'] as const)
       store.liquidity.setResourceGrant({
@@ -1022,7 +1074,7 @@ describe('prospective commitment and reservation lifecycle', () => {
     expect(() =>
       save(
         prospectiveClaim({ claimId: 'unauthorized-category', sourceId: 'obligation:denied' }),
-        '2',
+        '3',
         'claim:denied',
       ),
     ).toThrow(/authoriz|scope/i);

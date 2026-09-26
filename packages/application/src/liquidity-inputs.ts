@@ -4,6 +4,10 @@ import {
   transferTimingRouteSchema,
   moneySchema,
   factEvidenceSchema,
+  decisionCardItemSchema,
+  decisionCardAdjustmentSchema,
+  decisionCardWarningThresholdSchema,
+  decisionCardPriceProvenanceSchema,
 } from '@balanceframe/protocol-generated/validators';
 import { userAttestedLiquidityObservationSchema } from '@balanceframe/actual-adapter';
 
@@ -58,13 +62,11 @@ export const transferProposalInputSchema = z
 export const transferActionInputSchema = z
   .object({ payloadHash: hash, expectedVersion: version, idempotencyKey: key })
   .strict();
-const sessionItemSchema = z
-  .object({
-    id,
-    categoryId: id,
-    amount: positiveMoney,
-    purchaseAt: canonicalUtcTimestampSchema,
-    requiredBy: canonicalUtcTimestampSchema,
+const sessionItemSchema = decisionCardItemSchema
+  .omit({ routeSelection: true, priority: true, priceProvenance: true })
+  .extend({
+    priority: z.enum(['required', 'planned', 'optional']).optional(),
+    priceProvenance: decisionCardPriceProvenanceSchema.nullable().optional(),
     accountId: id.nullable(),
   })
   .strict();
@@ -73,6 +75,8 @@ export const spendSessionInputSchema = z
     accountId: id.nullable(),
     expiresAt: canonicalUtcTimestampSchema,
     items: z.array(sessionItemSchema).max(100),
+    adjustments: z.array(decisionCardAdjustmentSchema).max(100).optional(),
+    warningThresholds: z.array(decisionCardWarningThresholdSchema).max(100).optional(),
   })
   .strict();
 export const spendSessionUpdateInputSchema = spendSessionInputSchema
@@ -80,6 +84,30 @@ export const spendSessionUpdateInputSchema = spendSessionInputSchema
   .strict();
 export const spendSessionCancelInputSchema = z
   .object({ expectedVersion: version, idempotencyKey: key })
+  .strict();
+/** Only server-derived native Card amounts may enter the Actual completion payload. */
+export const sessionCompletionProposalInputSchema = z
+  .object({
+    expectedSessionVersion: version,
+    idempotencyKey: key,
+    payeeName: z.string().trim().max(256).optional(),
+    notes: z.string().max(2048).optional(),
+  })
+  .strict();
+export const prospectiveClaimInputSchema = z
+  .object({
+    sessionId: id,
+    expectedSessionVersion: version,
+    kind: z.enum(['reservation', 'commitment']),
+    scope: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('category'), id }).strict(),
+      z.object({ kind: z.literal('account'), id }).strict(),
+    ]),
+    idempotencyKey: key,
+  })
+  .strict();
+export const prospectiveClaimReleaseInputSchema = z
+  .object({ idempotencyKey: key })
   .strict();
 export const liquidityReallocationInputSchema = z
   .object({
@@ -131,6 +159,7 @@ export const liquidityPolicyInputSchema = z
   .object({
     expectedVersion: id.nullable(),
     expiresAt: canonicalUtcTimestampSchema,
+    reservationMode: z.enum(['inform', 'block']).optional(),
     accounts: z
       .array(
         accountLiquidityPolicySchema
@@ -153,6 +182,33 @@ export const liquidityPolicyInputSchema = z
       )
       .max(1000),
     approvalPolicy: approvalPolicySchema,
+    categoryPolicies: z
+      .array(
+        z
+          .object({
+            categoryId: id,
+            kind: z.enum(['ordinary', 'protected', 'goal', 'guilt_free', 'discretionary']),
+            cooldownMinutes: z.number().int().min(0).max(10080).optional(),
+            donorEligible: z.boolean(),
+            minimumRetained: moneySchema.strict().refine(
+              (amount) => !amount.minorUnits.startsWith('-'),
+              'Retained amount must be nonnegative',
+            ),
+            projectedRemainingNeed: moneySchema.strict().refine(
+              (amount) => !amount.minorUnits.startsWith('-'),
+              'Remaining need must be nonnegative',
+            ),
+          })
+          .superRefine((policy, context) => {
+            if (policy.kind !== 'discretionary' && policy.cooldownMinutes !== undefined)
+              context.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Cooldown is only available for discretionary categories',
+              });
+          }),
+      )
+      .max(1000)
+      .optional(),
   })
   .strict();
 export const liquidityCapabilities = [

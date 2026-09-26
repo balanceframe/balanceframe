@@ -111,4 +111,20 @@ describe('account-aware liquidity trust boundary', () => {
       validators.financialSnapshotSchema.parse({ ...fixture.full, liquidity: null }).liquidity,
     ).toBeNull();
   });
+  it('accepts an explicit source obligation on a scoped claim without accepting non-string links', () => {
+    const effect = {
+      kind: 'category',
+      resourceId: 'food',
+      amount: { minorUnits: '1000', currency: 'USD' },
+      economicObligationId: 'schedule:shared:category:food',
+      sourceEconomicObligationId: 'schedule:shared',
+      categoryId: 'food',
+      includedInBalance: false,
+      matchedTransactionIds: [],
+    };
+    expect(validators.liquidityClaimEffectSchema.parse(effect)).toEqual(effect);
+    expect(validators.liquidityClaimEffectSchema.safeParse({
+      ...effect, sourceEconomicObligationId: 1000,
+    }).success).toBe(false);
+  });
 });

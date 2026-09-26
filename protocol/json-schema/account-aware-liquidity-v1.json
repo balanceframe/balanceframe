@@ -778,6 +778,10 @@
           "type": "string",
           "description": "Stable economic identity linking schedule, transaction, card and claim effects for single attribution."
         },
+        "sourceEconomicObligationId": {
+          "type": "string",
+          "description": "Original economic obligation mirrored by this scoped effect when an authoritative matching fact exists."
+        },
         "categoryId": {
           "anyOf": [
             {

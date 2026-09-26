@@ -516,8 +516,9 @@ fn prepare_account(
                     continue;
                 }
                 let n = units(&e.amount, c, true)?;
+                let matched_id = e.matched_obligation_id().map_err(str::to_owned)?;
                 let matching_flow = f.unsettled_flows.iter().find(|flow| {
-                    flow.economic_obligation_id == e.economic_obligation_id
+                    flow.economic_obligation_id == matched_id
                         || e.matched_transaction_ids.iter().any(|id| {
                             id == &flow.id
                                 || flow.imported_id.as_ref() == Some(id)
@@ -539,13 +540,23 @@ fn prepare_account(
                     }
                     continue;
                 }
+                if let Some((old, _, _)) = economic.get(matched_id) {
+                    if *old != n {
+                        return Err("ambiguous_claim_match".into());
+                    }
+                }
                 if e.included_in_balance
-                    || economic.contains_key(&e.economic_obligation_id)
+                    || economic.contains_key(matched_id)
                     || matching_flow.is_some_and(|flow| flow.direction == FlowDirection::Outflow)
                 {
                     continue;
                 }
-                match reserves.get(&e.economic_obligation_id) {
+                // Match an authoritative obligation by source, or an earlier scoped
+                // effect by its own ID; unrelated scopes never become one reserve.
+                match reserves
+                    .get(matched_id)
+                    .or_else(|| reserves.get(&e.economic_obligation_id))
+                {
                     Some((old, cat, _)) if *old != n || cat != &e.category_id => {
                         return Err("ambiguous_claim_match".into())
                     }

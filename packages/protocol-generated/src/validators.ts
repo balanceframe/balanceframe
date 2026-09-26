@@ -506,6 +506,7 @@ export const liquidityClaimEffectSchema = z
     resourceId: z.string(),
     amount: moneySchema.strict(),
     economicObligationId: z.string(),
+    sourceEconomicObligationId: z.string().optional(),
     categoryId: z.string().nullable(),
     includedInBalance: z.boolean(),
     matchedTransactionIds: z.array(z.string()),
@@ -1260,3 +1261,586 @@ export const verifyTransferPreconditionsRequestSchema = z
     ownClaimId: z.string().nullable(),
   })
   .strict();
+// ---------------------------------------------------------------------------
+// Phase 8.6 — Canonical Rust Decision Cards
+// ---------------------------------------------------------------------------
+
+const nonEmptyDecisionCardStringSchema = z.string().min(1);
+const decisionCardMoneySchema = moneySchema.strict();
+const decisionCardPositiveMoneySchema = decisionCardMoneySchema.superRefine((value, context) => {
+  if (BigInt(value.minorUnits) <= BigInt(0)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Decision Card amounts must be positive',
+    });
+  }
+});
+const decisionCardMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+const decisionCardDateOrTimestampSchema = z.union([
+  canonicalDateSchema,
+  canonicalUtcTimestampSchema,
+]);
+const decisionCardOutcomeSchema = z.enum([
+  'funded_now',
+  'safe_after_date',
+  'safe_with_reallocation',
+  'cash_available_but_unfunded',
+  'not_safe',
+  'plan_breaking',
+  'insufficient_data',
+]);
+const decisionCardPrioritySchema = z.enum(['required', 'planned', 'optional']);
+const decisionCardNonnegativeMoneySchema = decisionCardMoneySchema.superRefine((value, context) => {
+  if (BigInt(value.minorUnits) < BigInt(0)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Decision Card amounts must be nonnegative',
+    });
+  }
+});
+const decisionCardHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+const decisionCardCategoryAllocationSchema = z
+  .object({
+    categoryId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardPositiveMoneySchema,
+  })
+  .strict();
+const decisionCardCategoryAllocationsSchema = z
+  .array(decisionCardCategoryAllocationSchema)
+  .min(1)
+  .superRefine((allocations, context) => {
+    const categoryIds = new Set<string>();
+    allocations.forEach((allocation, index) => {
+      if (categoryIds.has(allocation.categoryId)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Decision Card category allocation IDs must be unique',
+          path: [index, 'categoryId'],
+        });
+      }
+      categoryIds.add(allocation.categoryId);
+    });
+  });
+const decisionCardPriceProvenanceSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('current_session_manual'),
+      source: nonEmptyDecisionCardStringSchema.nullable().optional(),
+      store: nonEmptyDecisionCardStringSchema.nullable().optional(),
+      observedAt: canonicalUtcTimestampSchema,
+      estimate: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('outside_price'),
+      source: nonEmptyDecisionCardStringSchema,
+      store: nonEmptyDecisionCardStringSchema
+        .refine((value) => value.trim().length > 0)
+        .nullable()
+        .optional(),
+      observedAt: canonicalUtcTimestampSchema,
+      estimate: z.boolean(),
+    })
+    .strict(),
+]);
+
+const decisionCardAdjustmentSchema = z
+  .object({
+    kind: z.enum(['tax', 'fee', 'discount']),
+    categoryId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardPositiveMoneySchema,
+  })
+  .strict();
+
+const decisionCardWarningThresholdSchema = z.discriminatedUnion('basis', [
+  z
+    .object({
+      id: nonEmptyDecisionCardStringSchema,
+      basis: z.literal('cart_total'),
+      maximum: decisionCardPositiveMoneySchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: nonEmptyDecisionCardStringSchema,
+      basis: z.literal('category_charge'),
+      categoryId: nonEmptyDecisionCardStringSchema,
+      maximum: decisionCardPositiveMoneySchema,
+    })
+    .strict(),
+]);
+
+const decisionCardTrustedRouteSchema = trustedRouteSchema
+  .extend({
+    accountId: nonEmptyDecisionCardStringSchema,
+    referenceId: nonEmptyDecisionCardStringSchema,
+  })
+  .strict();
+
+const decisionCardRouteSelectionSchema = routeSelectionSchema
+  .extend({
+    explicitAccountId: nonEmptyDecisionCardStringSchema.nullable(),
+    sessionAccountId: nonEmptyDecisionCardStringSchema.nullable(),
+    approvedPreference: decisionCardTrustedRouteSchema.nullable(),
+    historicalRoute: decisionCardTrustedRouteSchema.nullable(),
+  })
+  .strict();
+
+const decisionCardItemSchema = z
+  .object({
+    id: nonEmptyDecisionCardStringSchema,
+    categoryId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardPositiveMoneySchema,
+    purchaseAt: canonicalUtcTimestampSchema,
+    requiredBy: canonicalUtcTimestampSchema,
+    routeSelection: decisionCardRouteSelectionSchema,
+    priority: decisionCardPrioritySchema,
+    quantity: z.number().int().min(1).max(4_294_967_295).optional(),
+    categoryAllocations: decisionCardCategoryAllocationsSchema.optional(),
+    barcode: nonEmptyDecisionCardStringSchema.optional(),
+    priceProvenance: decisionCardPriceProvenanceSchema.optional(),
+  })
+  .strict();
+/** Shared strict rich-cart inputs for session/API boundaries. */
+export {
+  decisionCardItemSchema,
+  decisionCardAdjustmentSchema,
+  decisionCardWarningThresholdSchema,
+  decisionCardPriceProvenanceSchema,
+};
+
+const decisionCardCategoryPolicySchema = z
+  .object({
+    categoryId: nonEmptyDecisionCardStringSchema,
+    kind: nonEmptyDecisionCardStringSchema,
+    donorEligible: z.boolean(),
+    minimumRetained: decisionCardMoneySchema,
+    projectedRemainingNeed: decisionCardMoneySchema,
+  })
+  .strict();
+
+function decisionCardTimestampKey(value: string): bigint {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/.exec(value);
+  if (!match) {
+    return BigInt(0);
+  }
+  const wholeSecond = BigInt(
+    `${match[1]}${match[2]}${match[3]}${match[4]}${match[5]}${match[6]}`,
+  );
+  const nanos = BigInt((match[7] ?? '').padEnd(9, '0') || '0');
+  return wholeSecond * BigInt(1_000_000_000) + nanos;
+}
+
+/** Trusted native Decision Card request boundary. */
+export const decisionCardRequestSchema = z
+  .object({
+    financialSnapshot: financialSnapshotSchema,
+    context: decisionContextSchema,
+    liquidityPolicy: liquidityPolicySchema,
+    claimSet: liquidityClaimSetSchema,
+    priorAllocation: backingAllocationSchema.nullable(),
+    items: z.array(decisionCardItemSchema),
+    adjustments: z.array(decisionCardAdjustmentSchema).optional(),
+    warningThresholds: z.array(decisionCardWarningThresholdSchema).optional(),
+    categoryPolicies: z.array(decisionCardCategoryPolicySchema),
+    validUntil: canonicalUtcTimestampSchema,
+    requestId: nonEmptyDecisionCardStringSchema,
+    correlationId: nonEmptyDecisionCardStringSchema,
+    decisionId: nonEmptyDecisionCardStringSchema,
+  })
+  .strict()
+  .superRefine((request, context) => {
+    const itemIds = new Set<string>();
+    request.items.forEach((item, index) => {
+      if (itemIds.has(item.id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Decision Card item IDs must be unique',
+          path: ['items', index, 'id'],
+        });
+      }
+      itemIds.add(item.id);
+    });
+    if (
+      decisionCardTimestampKey(request.validUntil) <=
+      decisionCardTimestampKey(request.context.evaluatedAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'validUntil must be later than context.evaluatedAt',
+        path: ['validUntil'],
+      });
+    }
+  });
+
+const decisionCardBackingLineSchema = backingLineSchema
+  .extend({
+    accountId: nonEmptyDecisionCardStringSchema,
+    categoryId: nonEmptyDecisionCardStringSchema,
+    cashBucketId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardMoneySchema,
+  })
+  .strict();
+
+const decisionCardBackingSchema = backingAllocationSchema
+  .extend({
+    version: nonEmptyDecisionCardStringSchema,
+    snapshotId: nonEmptyDecisionCardStringSchema,
+    contentHash: nonEmptyDecisionCardStringSchema,
+    policyVersion: nonEmptyDecisionCardStringSchema,
+    policyHash: nonEmptyDecisionCardStringSchema,
+    claimSetRevision: nonEmptyDecisionCardStringSchema,
+    lines: z.array(decisionCardBackingLineSchema),
+  })
+  .strict();
+
+const decisionCardAccountCapacitySchema = accountCapacitySchema
+  .extend({
+    accountId: nonEmptyDecisionCardStringSchema,
+  })
+  .strict();
+
+const decisionCardCategoryStateSchema = z
+  .object({
+    categoryId: nonEmptyDecisionCardStringSchema,
+    asOfMonth: decisionCardMonthSchema,
+    availability: decisionCardMoneySchema,
+    commitments: decisionCardMoneySchema,
+    reservations: decisionCardMoneySchema,
+    uncommittedAvailability: decisionCardMoneySchema,
+    safeToRedirect: decisionCardMoneySchema,
+    policyKind: nonEmptyDecisionCardStringSchema.nullable(),
+  })
+  .strict();
+
+const decisionCardGoalSchema = z
+  .object({
+    categoryId: nonEmptyDecisionCardStringSchema,
+    asOfMonth: decisionCardMonthSchema,
+    kind: nonEmptyDecisionCardStringSchema,
+    state: z.enum(['on_track', 'at_risk']),
+    shortfall: decisionCardMoneySchema,
+    minimumRetained: decisionCardMoneySchema,
+    projectedRemainingNeed: decisionCardMoneySchema,
+    requiredRetained: decisionCardMoneySchema,
+    targetState: z.literal('unknown'),
+    availability: decisionCardMoneySchema,
+    uncommittedAvailability: decisionCardMoneySchema,
+  })
+  .strict();
+
+const decisionCardKnownObligationSchema = z
+  .object({
+    economicObligationId: nonEmptyDecisionCardStringSchema,
+    classification: z.enum(['commitment', 'reservation']),
+    accountId: nonEmptyDecisionCardStringSchema.nullable(),
+    categoryId: nonEmptyDecisionCardStringSchema.nullable(),
+    amount: decisionCardMoneySchema,
+    dueAt: decisionCardDateOrTimestampSchema.optional(),
+    state: z.enum(['active', 'scheduled']),
+    recurring: z.boolean().optional(),
+    scheduleId: nonEmptyDecisionCardStringSchema.optional(),
+    recurrence: scheduleRecurrenceSchema.optional(),
+    amountState: z.literal('known').optional(),
+  })
+  .strict();
+
+const decisionCardUnknownObligationSchema = z
+  .object({
+    scheduleId: nonEmptyDecisionCardStringSchema,
+    classification: z.literal('commitment'),
+    accountId: nonEmptyDecisionCardStringSchema.nullable(),
+    categoryId: nonEmptyDecisionCardStringSchema.nullable(),
+    dueAt: decisionCardDateOrTimestampSchema,
+    state: z.literal('scheduled'),
+    recurring: z.boolean(),
+    amount: z.null(),
+    amountState: z.literal('unknown'),
+    recurrence: scheduleRecurrenceSchema.optional(),
+  })
+  .strict();
+
+const decisionCardObligationSchema = z.union([
+  decisionCardKnownObligationSchema,
+  decisionCardUnknownObligationSchema,
+]);
+
+const decisionCardRunwaySchema = z.union([
+  z
+    .object({
+      state: z.literal('known'),
+      accountId: nonEmptyDecisionCardStringSchema,
+      remainingSafeCash: decisionCardMoneySchema,
+      basis: nonEmptyDecisionCardStringSchema,
+    })
+    .strict(),
+  z
+    .object({
+      state: z.literal('unknown'),
+      accountId: nonEmptyDecisionCardStringSchema.optional(),
+      remainingSafeCash: z.null(),
+    })
+    .strict(),
+]);
+
+const decisionCardStateSchema = z
+  .object({
+    categories: z.array(decisionCardCategoryStateSchema),
+    accounts: z.array(decisionCardAccountCapacitySchema),
+    backing: decisionCardBackingSchema,
+    goals: z.array(decisionCardGoalSchema),
+    obligations: z.array(decisionCardObligationSchema),
+    runway: decisionCardRunwaySchema.nullable(),
+  })
+  .strict();
+
+const decisionCardAccountPlanPreconditionSchema = accountPlanPreconditionSchema
+  .extend({
+    accountId: nonEmptyDecisionCardStringSchema,
+  })
+  .strict();
+
+const decisionCardTransferLegSchema = transferLegSchema
+  .extend({
+    id: nonEmptyDecisionCardStringSchema,
+    sourceAccountId: nonEmptyDecisionCardStringSchema,
+    destinationAccountId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardPositiveMoneySchema,
+    timingRouteId: nonEmptyDecisionCardStringSchema,
+    sourceBefore: decisionCardAccountPlanPreconditionSchema,
+    destinationBefore: decisionCardAccountPlanPreconditionSchema,
+  })
+  .strict();
+
+const decisionCardTransferPlanSchema = transferPlanSchema
+  .extend({
+    version: nonEmptyDecisionCardStringSchema,
+    snapshotId: nonEmptyDecisionCardStringSchema,
+    contentHash: nonEmptyDecisionCardStringSchema,
+    policyVersion: nonEmptyDecisionCardStringSchema,
+    policyHash: nonEmptyDecisionCardStringSchema,
+    claimSetRevision: nonEmptyDecisionCardStringSchema,
+    minimumAmount: decisionCardPositiveMoneySchema,
+    legs: z.array(decisionCardTransferLegSchema),
+  })
+  .strict();
+
+const decisionCardAccountTransferPathSchema = decisionCardTransferPlanSchema
+  .extend({
+    kind: z.literal('account_transfer'),
+    itemId: nonEmptyDecisionCardStringSchema.optional(),
+    itemIds: z.array(nonEmptyDecisionCardStringSchema).min(1),
+  })
+  .strict();
+
+const decisionCardReallocationStateSchema = z
+  .object({
+    sourceAvailability: decisionCardMoneySchema,
+    destinationAvailability: decisionCardMoneySchema,
+  })
+  .strict();
+
+const decisionCardCategoryReallocationPathSchema = z
+  .object({
+    kind: z.literal('category_reallocation'),
+    sourceCategoryId: nonEmptyDecisionCardStringSchema,
+    sourceAsOfMonth: decisionCardMonthSchema,
+    destinationCategoryId: nonEmptyDecisionCardStringSchema,
+    destinationAsOfMonth: decisionCardMonthSchema,
+    amount: decisionCardPositiveMoneySchema,
+    approvalRequired: z.literal(true),
+    tradeoffs: z.array(nonEmptyDecisionCardStringSchema),
+    before: decisionCardReallocationStateSchema,
+    after: decisionCardReallocationStateSchema,
+  })
+  .strict();
+
+const decisionCardFundingPathSchema = z.union([
+  decisionCardAccountTransferPathSchema,
+  decisionCardCategoryReallocationPathSchema,
+]);
+const decisionCardCategoryChargeSchema = z
+  .object({
+    categoryId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardPositiveMoneySchema,
+  })
+  .strict();
+
+const decisionCardAccountChargeSchema = z
+  .object({
+    accountId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardPositiveMoneySchema,
+  })
+  .strict();
+
+const decisionCardCartSchema = z
+  .object({
+    subtotal: decisionCardPositiveMoneySchema,
+    tax: decisionCardNonnegativeMoneySchema,
+    fee: decisionCardNonnegativeMoneySchema,
+    discount: decisionCardNonnegativeMoneySchema,
+    total: decisionCardPositiveMoneySchema,
+    categoryCharges: z.array(decisionCardCategoryChargeSchema),
+    accountCharges: z.array(decisionCardAccountChargeSchema),
+  })
+  .strict();
+
+const decisionCardTrimAlternativeSchema = z
+  .object({
+    removedItemIds: z.array(nonEmptyDecisionCardStringSchema).min(1),
+    retainedItemIds: z.array(nonEmptyDecisionCardStringSchema).min(1),
+    total: decisionCardPositiveMoneySchema,
+    outcome: decisionCardOutcomeSchema,
+    categoryCharges: z.array(decisionCardCategoryChargeSchema),
+  })
+  .strict();
+
+const decisionCardWarningSchema = z
+  .object({
+    thresholdId: nonEmptyDecisionCardStringSchema,
+    threshold: decisionCardPositiveMoneySchema,
+    actual: decisionCardPositiveMoneySchema,
+    excess: decisionCardPositiveMoneySchema,
+    reason: z.literal('threshold_exceeded'),
+    alternatives: z.array(decisionCardTrimAlternativeSchema),
+  })
+  .strict();
+
+
+const decisionCardOpportunityCostSchema = z
+  .object({
+    kind: z.literal('category_opportunity_cost'),
+    sourceCategoryId: nonEmptyDecisionCardStringSchema,
+    sourceAsOfMonth: decisionCardMonthSchema,
+    destinationCategoryId: nonEmptyDecisionCardStringSchema,
+    destinationAsOfMonth: decisionCardMonthSchema,
+    amount: decisionCardPositiveMoneySchema,
+    beforeSafeToRedirect: decisionCardMoneySchema,
+    afterSafeToRedirect: decisionCardMoneySchema,
+    tradeoff: z.literal('donor_category_surplus_redirected'),
+  })
+  .strict();
+
+const decisionCardConflictSchema = z
+  .object({
+    kind: z.literal('competing_account_capacity'),
+    accountId: nonEmptyDecisionCardStringSchema,
+    itemId: nonEmptyDecisionCardStringSchema,
+    competingItemIds: z.array(nonEmptyDecisionCardStringSchema),
+    reason: z.literal('engine_cumulative_account_capacity'),
+    paymentLiquidityStatus: paymentLiquidityStatusSchema,
+  })
+  .strict();
+
+const decisionCardReadinessSchema = z
+  .object({
+    outcome: decisionCardOutcomeSchema,
+    status: z.enum(['evaluated', 'blocked']),
+    blockers: z.array(nonEmptyDecisionCardStringSchema).optional(),
+    budgetFundingStatus: budgetFundingStatusSchema.optional(),
+    paymentLiquidityStatus: paymentLiquidityStatusSchema.optional(),
+  })
+  .strict();
+
+const decisionCardEvidenceReferenceSchema = evidenceReferenceSchema
+  .extend({
+    evidenceId: nonEmptyDecisionCardStringSchema,
+    kind: nonEmptyDecisionCardStringSchema,
+  })
+  .strict();
+
+const decisionCardItemOutcomeSchema = z
+  .object({
+    id: nonEmptyDecisionCardStringSchema,
+    categoryId: nonEmptyDecisionCardStringSchema,
+    amount: decisionCardPositiveMoneySchema,
+    priority: decisionCardPrioritySchema,
+    outcome: decisionCardOutcomeSchema,
+    budgetFundingStatus: budgetFundingStatusSchema,
+    paymentLiquidityStatus: paymentLiquidityStatusSchema,
+    selectedAccountId: nonEmptyDecisionCardStringSchema.nullable(),
+    selectionSource: nonEmptyDecisionCardStringSchema,
+    reasons: z.array(nonEmptyDecisionCardStringSchema),
+    before: decisionCardAccountCapacitySchema.nullable(),
+    after: decisionCardAccountCapacitySchema.nullable(),
+  })
+  .strict();
+
+/** Canonical Decision Card response boundary. */
+export const decisionCardSchema = z
+  .object({
+    version: nonEmptyDecisionCardStringSchema,
+    decisionId: nonEmptyDecisionCardStringSchema,
+    requestId: nonEmptyDecisionCardStringSchema,
+    correlationId: nonEmptyDecisionCardStringSchema,
+    snapshotId: nonEmptyDecisionCardStringSchema,
+    contentHash: nonEmptyDecisionCardStringSchema,
+    policyVersion: nonEmptyDecisionCardStringSchema,
+    policyHash: nonEmptyDecisionCardStringSchema,
+    claimSetRevision: nonEmptyDecisionCardStringSchema,
+    planHash: decisionCardHashSchema,
+    intentHash: decisionCardHashSchema,
+    outcome: decisionCardOutcomeSchema,
+    budgetFundingStatus: budgetFundingStatusSchema,
+    paymentLiquidityStatus: paymentLiquidityStatusSchema,
+    selectedAccountId: nonEmptyDecisionCardStringSchema.nullable(),
+    selectionSource: nonEmptyDecisionCardStringSchema.nullable(),
+    before: decisionCardStateSchema.nullable(),
+    after: decisionCardStateSchema.nullable(),
+    fundingPaths: z.array(decisionCardFundingPathSchema),
+    opportunityCosts: z.array(decisionCardOpportunityCostSchema),
+    conflicts: z.array(decisionCardConflictSchema),
+    authorizationRequirements: z.array(nonEmptyDecisionCardStringSchema),
+    evidence: z.array(decisionCardEvidenceReferenceSchema),
+    blockers: z.array(nonEmptyDecisionCardStringSchema),
+    reasons: z.array(nonEmptyDecisionCardStringSchema),
+    assumptions: z.array(nonEmptyDecisionCardStringSchema),
+    earliestExpiry: canonicalUtcTimestampSchema,
+    expiresAt: canonicalUtcTimestampSchema,
+    cart: decisionCardCartSchema.nullable(),
+    warnings: z.array(decisionCardWarningSchema),
+    trimAlternatives: z.array(decisionCardTrimAlternativeSchema),
+    readiness: decisionCardReadinessSchema,
+    items: z.array(decisionCardItemOutcomeSchema),
+  })
+  .strict()
+  .superRefine((card, context) => {
+    const itemIds = new Set<string>();
+    card.items.forEach((item, index) => {
+      if (itemIds.has(item.id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Decision Card item IDs must be unique',
+          path: ['items', index, 'id'],
+        });
+      }
+      itemIds.add(item.id);
+    });
+    if (card.outcome === 'insufficient_data' && card.after !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Insufficient-data Decision Cards must have a null after state',
+        path: ['after'],
+      });
+    }
+    if (card.outcome !== 'insufficient_data' && card.after === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Evaluated Decision Cards must include an after state',
+        path: ['after'],
+      });
+    }
+    if (card.outcome !== 'insufficient_data' && card.cart === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Evaluated Decision Cards must include a cart projection',
+        path: ['cart'],
+      });
+    }
+  });
+
+export type DecisionCardRequest = z.infer<typeof decisionCardRequestSchema>;
+export type DecisionCard = z.infer<typeof decisionCardSchema>;

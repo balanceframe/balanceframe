@@ -1,0 +1,1610 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/decision-card-v1.json",
+  "title": "BalanceFrame Decision Card v1",
+  "description": "Canonical Rust-owned Decision Card request and response. JSON Schema cannot compare validUntil with evaluatedAt or enforce uniqueness by item id when two array entries have different payloads; the strict TypeScript boundary enforces those semantic invariants.",
+  "$ref": "#/$defs/DecisionCard",
+  "$defs": {
+    "NonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Month": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"
+    },
+    "Money": {
+      "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/Money"
+    },
+    "PositiveMoney": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/PositiveMoney"
+    },
+    "NonnegativeMoney": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/NonnegativeMoney"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "UtcTimestamp": {
+      "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+    },
+    "DateOrTimestamp": {
+      "anyOf": [
+        {
+          "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/CanonicalDate"
+        },
+        {
+          "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/CanonicalUtcTimestamp"
+        }
+      ]
+    },
+    "Outcome": {
+      "enum": [
+        "funded_now",
+        "safe_after_date",
+        "safe_with_reallocation",
+        "cash_available_but_unfunded",
+        "not_safe",
+        "plan_breaking",
+        "insufficient_data"
+      ]
+    },
+    "Priority": {
+      "enum": ["required", "planned", "optional"]
+    },
+    "BudgetFundingStatus": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/BudgetFundingStatus"
+    },
+    "PaymentLiquidityStatus": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/PaymentLiquidityStatus"
+    },
+    "TrustedRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "referenceId"],
+      "properties": {
+        "accountId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "referenceId": {
+          "$ref": "#/$defs/NonEmptyString"
+        }
+      }
+    },
+    "RouteSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "explicitAccountId",
+        "sessionAccountId",
+        "approvedPreference",
+        "historicalRoute"
+      ],
+      "properties": {
+        "explicitAccountId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "sessionAccountId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "approvedPreference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustedRoute"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "historicalRoute": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustedRoute"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "FinancialSnapshot": {
+      "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/FinancialSnapshot"
+    },
+    "DecisionContext": {
+      "$ref": "https://balanceframe.dev/schemas/prospective-decision-v1.json#/$defs/DecisionContext"
+    },
+    "LiquidityPolicy": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/LiquidityPolicy"
+    },
+    "LiquidityClaimSet": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/LiquidityClaimSet"
+    },
+    "BackingLine": {
+      "allOf": [
+        {
+          "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/BackingLine"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "accountId": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "categoryId": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "cashBucketId": {
+              "$ref": "#/$defs/NonEmptyString"
+            }
+          }
+        }
+      ]
+    },
+    "BackingAllocation": {
+      "allOf": [
+        {
+          "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/BackingAllocation"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "snapshotId": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "contentHash": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "policyVersion": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "policyHash": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "claimSetRevision": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "lines": {
+              "items": {
+                "$ref": "#/$defs/BackingLine"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AccountCapacity": {
+      "allOf": [
+        {
+          "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/AccountCapacity"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "accountId": {
+              "$ref": "#/$defs/NonEmptyString"
+            }
+          }
+        }
+      ]
+    },
+    "AccountPlanPrecondition": {
+      "allOf": [
+        {
+          "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/AccountPlanPrecondition"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "accountId": {
+              "$ref": "#/$defs/NonEmptyString"
+            }
+          }
+        }
+      ]
+    },
+    "TransferLeg": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/TransferLeg"
+    },
+    "LiquidityClaimEffect": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/LiquidityClaimEffect"
+    },
+    "LiquidityScenario": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/LiquidityScenario"
+    },
+    "ScheduleRecurrence": {
+      "$ref": "https://balanceframe.dev/schemas/account-aware-liquidity-v1.json#/$defs/ScheduleRecurrence"
+    },
+    "EvidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidenceId", "kind", "authorized", "redaction"],
+      "properties": {
+        "evidenceId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "kind": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "authorized": {
+          "type": "boolean"
+        },
+        "redaction": {
+          "enum": ["visible", "redacted"]
+        }
+      }
+    },
+    "DecisionCardCategoryAllocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["categoryId", "amount"],
+      "properties": {
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        }
+      }
+    },
+    "DecisionCardPriceProvenance": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "observedAt", "estimate"],
+          "properties": {
+            "kind": {
+              "const": "current_session_manual"
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "store": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NonEmptyString"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "observedAt": {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            "estimate": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "source", "observedAt", "estimate"],
+          "properties": {
+            "kind": {
+              "const": "outside_price"
+            },
+            "source": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "store": {
+              "anyOf": [
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/NonEmptyString"
+                    },
+                    {
+                      "pattern": "\\S"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "observedAt": {
+              "$ref": "#/$defs/UtcTimestamp"
+            },
+            "estimate": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "DecisionCardAdjustment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "categoryId", "amount"],
+      "properties": {
+        "kind": {
+          "enum": ["tax", "fee", "discount"]
+        },
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        }
+      }
+    },
+    "DecisionCardWarningThreshold": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "basis", "maximum"],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "basis": {
+              "const": "cart_total"
+            },
+            "maximum": {
+              "$ref": "#/$defs/PositiveMoney"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "basis", "categoryId", "maximum"],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "basis": {
+              "const": "category_charge"
+            },
+            "categoryId": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "maximum": {
+              "$ref": "#/$defs/PositiveMoney"
+            }
+          }
+        }
+      ]
+    },
+    "DecisionCardItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "categoryId",
+        "amount",
+        "purchaseAt",
+        "requiredBy",
+        "routeSelection",
+        "priority"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "purchaseAt": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "requiredBy": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "routeSelection": {
+          "$ref": "#/$defs/RouteSelection"
+        },
+        "priority": {
+          "$ref": "#/$defs/Priority"
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "categoryAllocations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/DecisionCardCategoryAllocation"
+          }
+        },
+        "barcode": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "priceProvenance": {
+          "$ref": "#/$defs/DecisionCardPriceProvenance"
+        }
+      }
+    },
+    "DecisionCardCategoryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "categoryId",
+        "kind",
+        "donorEligible",
+        "minimumRetained",
+        "projectedRemainingNeed"
+      ],
+      "properties": {
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "kind": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "donorEligible": {
+          "type": "boolean"
+        },
+        "minimumRetained": {
+          "$ref": "#/$defs/Money"
+        },
+        "projectedRemainingNeed": {
+          "$ref": "#/$defs/Money"
+        }
+      }
+    },
+    "DecisionCardRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "financialSnapshot",
+        "context",
+        "liquidityPolicy",
+        "claimSet",
+        "priorAllocation",
+        "items",
+        "categoryPolicies",
+        "validUntil",
+        "requestId",
+        "correlationId",
+        "decisionId"
+      ],
+      "properties": {
+        "financialSnapshot": {
+          "$ref": "#/$defs/FinancialSnapshot"
+        },
+        "context": {
+          "$ref": "#/$defs/DecisionContext"
+        },
+        "liquidityPolicy": {
+          "$ref": "#/$defs/LiquidityPolicy"
+        },
+        "claimSet": {
+          "$ref": "#/$defs/LiquidityClaimSet"
+        },
+        "priorAllocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackingAllocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardItem"
+          },
+          "uniqueItems": true,
+          "description": "uniqueItems rejects duplicate whole objects only; duplicate item ids with differing payloads require the strict TypeScript boundary."
+        },
+        "adjustments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardAdjustment"
+          }
+        },
+        "warningThresholds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardWarningThreshold"
+          }
+        },
+        "categoryPolicies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardCategoryPolicy"
+          }
+        },
+        "validUntil": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "requestId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "correlationId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "decisionId": {
+          "$ref": "#/$defs/NonEmptyString"
+        }
+      }
+    },
+    "DecisionCardCategoryState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "categoryId",
+        "asOfMonth",
+        "availability",
+        "commitments",
+        "reservations",
+        "uncommittedAvailability",
+        "safeToRedirect",
+        "policyKind"
+      ],
+      "properties": {
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "asOfMonth": {
+          "$ref": "#/$defs/Month",
+          "description": "Required period identity added by the Rust category-state audit; it distinguishes current and future category assignments."
+        },
+        "availability": {
+          "$ref": "#/$defs/Money"
+        },
+        "commitments": {
+          "$ref": "#/$defs/Money"
+        },
+        "reservations": {
+          "$ref": "#/$defs/Money"
+        },
+        "uncommittedAvailability": {
+          "$ref": "#/$defs/Money"
+        },
+        "safeToRedirect": {
+          "$ref": "#/$defs/Money"
+        },
+        "policyKind": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "DecisionCardGoal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "categoryId",
+        "asOfMonth",
+        "kind",
+        "state",
+        "shortfall",
+        "minimumRetained",
+        "projectedRemainingNeed",
+        "requiredRetained",
+        "targetState",
+        "availability",
+        "uncommittedAvailability"
+      ],
+      "properties": {
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "asOfMonth": {
+          "$ref": "#/$defs/Month"
+        },
+        "kind": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "state": {
+          "enum": ["on_track", "at_risk"]
+        },
+        "shortfall": {
+          "$ref": "#/$defs/Money"
+        },
+        "minimumRetained": {
+          "$ref": "#/$defs/Money"
+        },
+        "projectedRemainingNeed": {
+          "$ref": "#/$defs/Money"
+        },
+        "requiredRetained": {
+          "$ref": "#/$defs/Money"
+        },
+        "targetState": {
+          "const": "unknown"
+        },
+        "availability": {
+          "$ref": "#/$defs/Money"
+        },
+        "uncommittedAvailability": {
+          "$ref": "#/$defs/Money"
+        }
+      }
+    },
+    "DecisionCardKnownObligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "economicObligationId",
+        "classification",
+        "accountId",
+        "categoryId",
+        "amount",
+        "state"
+      ],
+      "properties": {
+        "economicObligationId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "classification": {
+          "enum": ["commitment", "reservation"]
+        },
+        "accountId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "categoryId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "dueAt": {
+          "$ref": "#/$defs/DateOrTimestamp"
+        },
+        "state": {
+          "enum": ["active", "scheduled"]
+        },
+        "recurring": {
+          "type": "boolean"
+        },
+        "scheduleId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "recurrence": {
+          "$ref": "#/$defs/ScheduleRecurrence"
+        },
+        "amountState": {
+          "const": "known"
+        }
+      }
+    },
+    "DecisionCardUnknownObligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheduleId",
+        "classification",
+        "accountId",
+        "categoryId",
+        "dueAt",
+        "state",
+        "recurring",
+        "amount",
+        "amountState"
+      ],
+      "properties": {
+        "scheduleId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "classification": {
+          "const": "commitment"
+        },
+        "accountId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "categoryId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "dueAt": {
+          "$ref": "#/$defs/DateOrTimestamp"
+        },
+        "state": {
+          "const": "scheduled"
+        },
+        "recurring": {
+          "type": "boolean"
+        },
+        "amount": {
+          "type": "null"
+        },
+        "amountState": {
+          "const": "unknown"
+        },
+        "recurrence": {
+          "$ref": "#/$defs/ScheduleRecurrence"
+        }
+      }
+    },
+    "DecisionCardObligation": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DecisionCardKnownObligation"
+        },
+        {
+          "$ref": "#/$defs/DecisionCardUnknownObligation"
+        }
+      ]
+    },
+    "DecisionCardRunway": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "accountId", "remainingSafeCash", "basis"],
+          "properties": {
+            "state": {
+              "const": "known"
+            },
+            "accountId": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "remainingSafeCash": {
+              "$ref": "#/$defs/Money"
+            },
+            "basis": {
+              "$ref": "#/$defs/NonEmptyString"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "remainingSafeCash"],
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "accountId": {
+              "$ref": "#/$defs/NonEmptyString"
+            },
+            "remainingSafeCash": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "DecisionCardState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["categories", "accounts", "backing", "goals", "obligations", "runway"],
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardCategoryState"
+          }
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccountCapacity"
+          }
+        },
+        "backing": {
+          "$ref": "#/$defs/BackingAllocation"
+        },
+        "goals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardGoal"
+          }
+        },
+        "obligations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardObligation"
+          }
+        },
+        "runway": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionCardRunway"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "DecisionCardAccountTransferPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "itemIds",
+        "version",
+        "snapshotId",
+        "contentHash",
+        "policyVersion",
+        "policyHash",
+        "claimSetRevision",
+        "evaluatedAt",
+        "expiresAt",
+        "minimumAmount",
+        "legs",
+        "reservations",
+        "backingAfter",
+        "scenario",
+        "preconditionsHash",
+        "payloadHash"
+      ],
+      "properties": {
+        "kind": {
+          "const": "account_transfer"
+        },
+        "itemId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "itemIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "version": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "contentHash": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "policyVersion": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "claimSetRevision": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "evaluatedAt": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "minimumAmount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "legs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardTransferLeg"
+          }
+        },
+        "reservations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LiquidityClaimEffect"
+          }
+        },
+        "backingAfter": {
+          "$ref": "#/$defs/BackingAllocation"
+        },
+        "scenario": {
+          "$ref": "#/$defs/LiquidityScenario"
+        },
+        "preconditionsHash": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "payloadHash": {
+          "$ref": "#/$defs/NonEmptyString"
+        }
+      }
+    },
+    "DecisionCardTransferLeg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sourceAccountId",
+        "destinationAccountId",
+        "amount",
+        "requiredBy",
+        "estimatedArrival",
+        "timingRouteId",
+        "sourceBefore",
+        "destinationBefore",
+        "sourceAfter",
+        "destinationAfter"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "sourceAccountId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "destinationAccountId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "requiredBy": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "estimatedArrival": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "timingRouteId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "sourceBefore": {
+          "$ref": "#/$defs/AccountPlanPrecondition"
+        },
+        "destinationBefore": {
+          "$ref": "#/$defs/AccountPlanPrecondition"
+        },
+        "sourceAfter": {
+          "$ref": "#/$defs/Money"
+        },
+        "destinationAfter": {
+          "$ref": "#/$defs/Money"
+        }
+      }
+    },
+    "DecisionCardReallocationState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceAvailability", "destinationAvailability"],
+      "properties": {
+        "sourceAvailability": {
+          "$ref": "#/$defs/Money"
+        },
+        "destinationAvailability": {
+          "$ref": "#/$defs/Money"
+        }
+      }
+    },
+    "DecisionCardCategoryReallocationPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sourceCategoryId",
+        "sourceAsOfMonth",
+        "destinationCategoryId",
+        "destinationAsOfMonth",
+        "approvalRequired",
+        "tradeoffs",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "kind": {
+          "const": "category_reallocation"
+        },
+        "sourceCategoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "sourceAsOfMonth": {
+          "$ref": "#/$defs/Month"
+        },
+        "destinationCategoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "destinationAsOfMonth": {
+          "$ref": "#/$defs/Month"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "approvalRequired": {
+          "const": true
+        },
+        "tradeoffs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "before": {
+          "$ref": "#/$defs/DecisionCardReallocationState"
+        },
+        "after": {
+          "$ref": "#/$defs/DecisionCardReallocationState"
+        }
+      }
+    },
+    "DecisionCardFundingPath": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DecisionCardAccountTransferPath"
+        },
+        {
+          "$ref": "#/$defs/DecisionCardCategoryReallocationPath"
+        }
+      ]
+    },
+    "DecisionCardOpportunityCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sourceCategoryId",
+        "sourceAsOfMonth",
+        "destinationCategoryId",
+        "destinationAsOfMonth",
+        "beforeSafeToRedirect",
+        "afterSafeToRedirect",
+        "tradeoff"
+      ],
+      "properties": {
+        "kind": {
+          "const": "category_opportunity_cost"
+        },
+        "sourceCategoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "sourceAsOfMonth": {
+          "$ref": "#/$defs/Month"
+        },
+        "destinationCategoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "destinationAsOfMonth": {
+          "$ref": "#/$defs/Month"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "beforeSafeToRedirect": {
+          "$ref": "#/$defs/Money"
+        },
+        "afterSafeToRedirect": {
+          "$ref": "#/$defs/Money"
+        },
+        "tradeoff": {
+          "const": "donor_category_surplus_redirected"
+        }
+      }
+    },
+    "DecisionCardConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "accountId",
+        "itemId",
+        "competingItemIds",
+        "reason",
+        "paymentLiquidityStatus"
+      ],
+      "properties": {
+        "kind": {
+          "const": "competing_account_capacity"
+        },
+        "accountId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "itemId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "competingItemIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "reason": {
+          "const": "engine_cumulative_account_capacity"
+        },
+        "paymentLiquidityStatus": {
+          "$ref": "#/$defs/PaymentLiquidityStatus"
+        }
+      }
+    },
+    "DecisionCardReadiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "status"],
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        },
+        "status": {
+          "enum": ["evaluated", "blocked"]
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "budgetFundingStatus": {
+          "$ref": "#/$defs/BudgetFundingStatus"
+        },
+        "paymentLiquidityStatus": {
+          "$ref": "#/$defs/PaymentLiquidityStatus"
+        }
+      }
+    },
+    "DecisionCardItemOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "categoryId",
+        "amount",
+        "priority",
+        "outcome",
+        "budgetFundingStatus",
+        "paymentLiquidityStatus",
+        "selectedAccountId",
+        "selectionSource",
+        "reasons",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "priority": {
+          "$ref": "#/$defs/Priority"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        },
+        "budgetFundingStatus": {
+          "$ref": "#/$defs/BudgetFundingStatus"
+        },
+        "paymentLiquidityStatus": {
+          "$ref": "#/$defs/PaymentLiquidityStatus"
+        },
+        "selectedAccountId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "selectionSource": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccountCapacity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccountCapacity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "DecisionCardCategoryCharge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["categoryId", "amount"],
+      "properties": {
+        "categoryId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        }
+      }
+    },
+    "DecisionCardAccountCharge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "amount"],
+      "properties": {
+        "accountId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "amount": {
+          "$ref": "#/$defs/PositiveMoney"
+        }
+      }
+    },
+    "DecisionCardCart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subtotal",
+        "tax",
+        "fee",
+        "discount",
+        "total",
+        "categoryCharges",
+        "accountCharges"
+      ],
+      "properties": {
+        "subtotal": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "tax": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "fee": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "discount": {
+          "$ref": "#/$defs/NonnegativeMoney"
+        },
+        "total": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "categoryCharges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardCategoryCharge"
+          }
+        },
+        "accountCharges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardAccountCharge"
+          }
+        }
+      }
+    },
+    "DecisionCardTrimAlternative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "removedItemIds",
+        "retainedItemIds",
+        "total",
+        "outcome",
+        "categoryCharges"
+      ],
+      "properties": {
+        "removedItemIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "retainedItemIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "total": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        },
+        "categoryCharges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardCategoryCharge"
+          }
+        }
+      }
+    },
+    "DecisionCardWarning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thresholdId",
+        "threshold",
+        "actual",
+        "excess",
+        "reason",
+        "alternatives"
+      ],
+      "properties": {
+        "thresholdId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "threshold": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "actual": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "excess": {
+          "$ref": "#/$defs/PositiveMoney"
+        },
+        "reason": {
+          "const": "threshold_exceeded"
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardTrimAlternative"
+          }
+        }
+      }
+    },
+    "DecisionCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "decisionId",
+        "requestId",
+        "correlationId",
+        "snapshotId",
+        "contentHash",
+        "policyVersion",
+        "policyHash",
+        "claimSetRevision",
+        "planHash",
+        "intentHash",
+        "outcome",
+        "budgetFundingStatus",
+        "paymentLiquidityStatus",
+        "selectedAccountId",
+        "selectionSource",
+        "before",
+        "after",
+        "fundingPaths",
+        "opportunityCosts",
+        "conflicts",
+        "authorizationRequirements",
+        "evidence",
+        "blockers",
+        "reasons",
+        "assumptions",
+        "earliestExpiry",
+        "expiresAt",
+        "cart",
+        "warnings",
+        "trimAlternatives",
+        "readiness",
+        "items"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "decisionId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "requestId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "correlationId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "contentHash": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "policyVersion": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "claimSetRevision": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "planHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "intentHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        },
+        "budgetFundingStatus": {
+          "$ref": "#/$defs/BudgetFundingStatus"
+        },
+        "paymentLiquidityStatus": {
+          "$ref": "#/$defs/PaymentLiquidityStatus"
+        },
+        "selectedAccountId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "selectionSource": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionCardState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionCardState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fundingPaths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardFundingPath"
+          }
+        },
+        "opportunityCosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardOpportunityCost"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardConflict"
+          }
+        },
+        "authorizationRequirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceReference"
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NonEmptyString"
+          }
+        },
+        "earliestExpiry": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/UtcTimestamp"
+        },
+        "cart": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionCardCart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardWarning"
+          }
+        },
+        "trimAlternatives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardTrimAlternative"
+          }
+        },
+        "readiness": {
+          "$ref": "#/$defs/DecisionCardReadiness"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionCardItemOutcome"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "insufficient_data"
+              }
+            },
+            "required": ["outcome"]
+          },
+          "then": {
+            "properties": {
+              "after": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "enum": [
+                  "funded_now",
+                  "safe_after_date",
+                  "safe_with_reallocation",
+                  "cash_available_but_unfunded",
+                  "not_safe",
+                  "plan_breaking"
+                ]
+              }
+            },
+            "required": ["outcome"]
+          },
+          "then": {
+            "properties": {
+              "after": {
+                "$ref": "#/$defs/DecisionCardState"
+              },
+              "cart": {
+                "$ref": "#/$defs/DecisionCardCart"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
