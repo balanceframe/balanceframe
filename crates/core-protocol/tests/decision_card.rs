@@ -136,7 +136,7 @@ fn account_mut<'a>(value: &'a mut Value, account_id: &str) -> &'a mut Value {
         .expect("liquidity fixture accounts must be an array")
         .iter_mut()
         .find(|account| account["accountId"] == account_id)
-        .unwrap_or_else(|| panic!("liquidity fixture must contain account {account_id}"))
+        .expect("liquidity fixture account must exist")
 }
 
 fn category_mut<'a>(value: &'a mut Value, category_id: &str) -> &'a mut Value {
