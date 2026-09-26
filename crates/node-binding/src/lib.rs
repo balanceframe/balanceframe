@@ -334,6 +334,17 @@ pub fn evaluate_account_aware_spendability(input: String) -> napi::Result<String
     )
 }
 
+/// Evaluate an immutable canonical decision card as JSON.
+///
+/// The request and response use the core protocol's DecisionCard contract;
+/// evaluation remains pure and does not authorize or perform mutations.
+#[napi]
+pub fn evaluate_decision_card(input: String) -> napi::Result<String> {
+    run::<cp::DecisionCardRequest, cp::DecisionCard>(input, |request| {
+        Ok(cp::evaluate_decision_card(request))
+    })
+}
+
 /// Verify independent imported and reconciled transfer evidence against its immutable plan.
 #[napi]
 pub fn verify_transfer_settlement(input: String) -> napi::Result<String> {

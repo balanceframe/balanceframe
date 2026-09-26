@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod account_aware_liquidity;
+mod decision_card;
 mod financial_snapshot;
 mod prospective_decision;
 
@@ -23,6 +24,10 @@ pub use balanceframe_financial_core::liquidity::{
     ScheduleWeekendSolveMode, SettlementProvenance, TransferLeg, TransferPlan,
     TransferPreconditionResult, TransferSettlementRecord, TransferSettlementRequest,
     TransferSettlementResult, TransferTimingRoute, TrustedRoute, UnsettledFlow,
+};
+pub use decision_card::{
+    evaluate_decision_card, DecisionCard, DecisionCardCategoryPolicy, DecisionCardCategoryState,
+    DecisionCardItem, DecisionCardItemOutcome, DecisionCardRequest, DecisionCardState,
 };
 
 pub use balanceframe_financial_core::{

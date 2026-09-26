@@ -246,6 +246,7 @@ export interface LiquidityClaimEffect {
   resourceId: string;
   amount: Money;
   economicObligationId: string;
+  sourceEconomicObligationId?: string;
   categoryId: string | null;
   includedInBalance: boolean;
   matchedTransactionIds: string[];

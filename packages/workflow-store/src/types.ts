@@ -1858,15 +1858,88 @@ export interface WorkflowStore {
 // ActionProposal — immutable proposal for a workflow action
 // ---------------------------------------------------------------------------
 
-/** Supported categorization proposal operations. */
-export type ProposalOperation = 'set_category' | 'create_rule' | 'transfer';
+/** Supported workflow action proposal operations. */
+export type ProposalOperation = 'set_category' | 'create_rule' | 'transfer' | 'session_completion';
+
+/** Exact signed amount accepted by the Actual manual-transaction boundary. */
+export interface SessionCompletionMoney {
+  readonly minorUnits: string;
+  readonly currency: string;
+}
+
+/** One exact split child in an immutable session-completion payload. */
+export interface SessionCompletionSplit {
+  readonly amount: number;
+  readonly accountId: string;
+  readonly date: string;
+  readonly categoryId: string;
+}
+
+/** Structurally compatible manual input; workflow-store does not depend on Actual adapter code. */
+export interface SessionCompletionManualInput {
+  readonly parentId: string;
+  readonly correlationId: string;
+  readonly accountId: string;
+  readonly amount: number;
+  readonly date: string;
+  readonly categoryId?: string | null;
+  readonly payeeName?: string;
+  readonly notes?: string;
+  readonly splits?: readonly SessionCompletionSplit[];
+}
+
+/** Exact native Card category charge copied into a completion payload. */
+export interface SessionCompletionCategoryCharge {
+  readonly categoryId: string;
+  readonly amount: SessionCompletionMoney;
+}
+
+/** Immutable server-constructed payload for one saved-session completion. */
+export interface SessionCompletionPayload {
+  readonly kind: 'session_completion';
+  readonly sessionId: string;
+  readonly sessionVersion: number;
+  readonly intentHash: string;
+  readonly materialHash: string;
+  readonly manualInput: SessionCompletionManualInput;
+  readonly categoryCharges: readonly SessionCompletionCategoryCharge[];
+  readonly cooldownUntil: string | null;
+}
+
+/** Durable lifecycle phase for a session-completion proposal. */
+export type SessionCompletionPhase =
+  | 'proposed'
+  | 'approved'
+  | 'write_intent'
+  | 'verified'
+  | 'review_required'
+  | 'closed';
+
+/** Durable terminal/diagnostic outcome for a session-completion proposal. */
+export type SessionCompletionOutcome =
+  | null
+  | 'expired'
+  | 'superseded'
+  | 'cancelled'
+  | 'reconciliation_required'
+  | 'ambiguous'
+  | 'policy_changed'
+  | 'session_changed'
+  | 'cooldown'
+  | 'revoked'
+  | (string & {});
+
+/** State machine stored separately from transfer state. */
+export interface SessionCompletionState {
+  readonly phase: SessionCompletionPhase;
+  readonly outcome: SessionCompletionOutcome;
+}
 
 /**
- * A categorized proposal for a transaction. Immutable once persisted.
- * The payload hash binds the proposal to exact content — any change
- * produces a distinct hash and thus a distinct proposal.
+ * Shared immutable proposal fields. The state parameter keeps transfer and
+ * session-completion state machines distinct while preserving the old default.
  */
-export interface ActionProposalBase {
+export interface ActionProposalBase<State = TransferState> {
   /** Stable unique identifier (UUID v4). */
   readonly id: string;
   /** Budget this proposal targets. */
@@ -1892,7 +1965,7 @@ export interface ActionProposalBase {
   /** ISO-8601 creation timestamp. */
   readonly createdAt: string;
   readonly version: number;
-  readonly state: TransferState;
+  readonly state: State;
 }
 
 export interface CategoryActionPayload {
@@ -1906,20 +1979,31 @@ export interface RuleActionPayload {
   readonly categoryId: string;
   readonly rule: Record<string, unknown>;
 }
-export type ActionProposal = ActionProposalBase &
-  (
-    | { readonly operation: 'set_category'; readonly payload: CategoryActionPayload }
-    | { readonly operation: 'create_rule'; readonly payload: RuleActionPayload }
-    | {
-        readonly operation: 'transfer';
-        readonly payload: {
-          readonly kind: 'transfer';
-          readonly plan: TransferPlan;
-          readonly sessionId: string | null;
-          readonly sessionVersion: number | null;
-        };
-      }
-  );
+/** All proposal variants, including the specialized completion operation. */
+export type ActionProposal =
+  | (
+      ActionProposalBase<TransferState> &
+        (
+          | { readonly operation: 'set_category'; readonly payload: CategoryActionPayload }
+          | { readonly operation: 'create_rule'; readonly payload: RuleActionPayload }
+          | {
+              readonly operation: 'transfer';
+              readonly payload: {
+                readonly kind: 'transfer';
+                readonly plan: TransferPlan;
+                readonly sessionId: string | null;
+                readonly sessionVersion: number | null;
+              };
+            }
+        )
+    )
+  | (ActionProposalBase<SessionCompletionState> & {
+      readonly operation: 'session_completion';
+      readonly payload: SessionCompletionPayload;
+    });
+
+/** Specialized completion proposal extracted from the shared action union. */
+export type SessionCompletionProposal = Extract<ActionProposal, { operation: 'session_completion' }>;
 
 /** Input to create a new categorization proposal. */
 export interface CreateProposalInput {

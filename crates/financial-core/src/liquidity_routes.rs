@@ -330,6 +330,7 @@ fn transfer_plan(
             resource_id: leg.source_account_id.clone(),
             amount: leg.amount.clone(),
             economic_obligation_id: format!("transfer:{}:{}", reservation_identity, leg.id),
+            source_economic_obligation_id: None,
             category_id: None,
             included_in_balance: false,
             matched_transaction_ids: vec![],

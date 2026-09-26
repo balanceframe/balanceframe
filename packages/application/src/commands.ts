@@ -10,16 +10,10 @@
 import type { ResponseEnvelope, DataFreshness } from './envelope.js';
 import { ApplicationError, ObserveWriteError, ReasonCodes } from './errors.js';
 import type {
-  DecisionContext,
   DecisionIssue,
   Money,
-  ProspectiveClaim,
-  ProspectiveDecisionEnvelope,
-  PurchaseEvaluation,
-  RedactionState,
 } from '@balanceframe/protocol-generated';
 import type { FindingStatus, WorkflowStore } from '@balanceframe/workflow-store';
-import type { PublicLiquidityView } from './liquidity-public.js';
 import type { LiquidityService } from './liquidity-service.js';
 
 // ---------------------------------------------------------------------------
@@ -170,11 +164,7 @@ export interface AnalysisProtocol {
   // Budget Intelligence — read-only deterministic analysis
   // -----------------------------------------------------------------------
 
-  /** Evaluate a proposed purchase against budget limits. */
-  purchaseEvaluation?(
-    ledger: unknown,
-    params: PurchaseEvaluationParams,
-  ): Promise<PurchaseEvaluationResult>;
+  // Purchase cards are evaluated through CommandInput.liquidity.
 
   /** Project future cash flow based on schedules and budgets. */
   cashFlowProjection?(
@@ -884,82 +874,26 @@ export interface AuditQueryOutput {
 }
 
 // ---------------------------------------------------------------------------
-// Budget Intelligence — Purchase Evaluation
+// Budget Intelligence — Purchase Card
 // ---------------------------------------------------------------------------
 
 /**
- * Parameters for evaluating a proposed purchase against budget limits.
- * Read-only deterministic analysis — no model or cloud invocation.
+ * Parameters for evaluating a proposed purchase through the selected budget.
+ *
+ * The LiquidityService owns the immutable Decision Card calculation and
+ * returns its allowlisted public projection.
  */
 export interface PurchaseEvaluationParams {
-  /** Category identifier to evaluate against. */
+  /** Category identifier for the proposed purchase. */
   categoryId: string;
-  /** Purchase amount to evaluate. */
+  /** Purchase amount. */
   amount: Money;
-  /** Optional account identifier for balance projection. */
+  /** Optional payment-account identifier. */
   accountId?: string;
+  /** Proposed purchase time in UTC. */
   purchaseAt?: string;
+  /** Deadline for the proposed purchase in UTC. */
   requiredBy?: string;
-  /** Canonical decision context. Required when using prospective evaluation. */
-  context?: DecisionContext;
-  /** Existing reservations and commitments considered by the decision. */
-  claims?: ProspectiveClaim[];
-  /** Caller-supplied request identity for deterministic provenance. */
-  requestId?: string;
-  /** Caller-supplied correlation identity for deterministic provenance. */
-  correlationId?: string;
-  /** Caller-supplied decision identity. */
-  decisionId?: string;
-  /** Caller-supplied expiry for the decision. */
-  validUntil?: string;
-  /** Visibility of the resulting decision. */
-  redaction?: RedactionState;
-}
-
-/**
- * User-facing verdict for a canonical purchase decision.
- */
-export type PurchaseVerdict =
-  'safe' | 'safe_with_qualifications' | 'not_safe' | 'insufficient_data';
-
-/** Whether the selected category has usable envelope funding. */
-export type EnvelopeFundingState = 'funded' | 'unfunded' | 'unavailable';
-
-/**
- * Result of evaluating a proposed purchase against budget constraints.
- * Every monetary value is labeled with its semantics.
- */
-export interface PurchaseEvaluationResult {
-  /** Whether the purchase is allowable within budget constraints. */
-  allowable: boolean;
-  /** Machine-readable reason codes supporting the evaluation. */
-  reasonCodes: string[];
-  /** How much is budgeted for this category, or null when money is incompatible. */
-  categoryBudget: Money | null;
-  /** How much has been spent, or null when money is incompatible. */
-  categorySpent: Money | null;
-  /** Remaining budget, or null when money is incompatible. */
-  categoryRemaining: Money | null;
-  /** Projected account balance after purchase (null if unavailable or incompatible). */
-  projectedBalance: Money | null;
-  /** Whether an envelope budget exists for the category (vs cash-flow-only). */
-  hasEnvelope: boolean;
-  /** Explicit canonical decision verdict. Present on prospective results. */
-  verdict?: PurchaseVerdict;
-  /** Human-readable summary of the verdict. Present on prospective results. */
-  explanation?: string;
-  /** Funding availability for the selected envelope. Present on prospective results. */
-  envelopeFundingState?: EnvelopeFundingState;
-  /** Canonical snapshot names keyed by their stable technical IDs. */
-  entityLabels?: Record<string, string>;
-  /** Full canonical decision, when evaluated by the prospective-decision path. */
-  decision?: ProspectiveDecisionEnvelope<PurchaseEvaluation>;
-  /** Allowlisted account-aware financial projection; canonical private results remain server-only. */
-  liquidity?: PublicLiquidityView;
-}
-
-export interface PurchaseEvaluationOutput {
-  envelope: ResponseEnvelope<PurchaseEvaluationResult>;
 }
 
 // ---------------------------------------------------------------------------

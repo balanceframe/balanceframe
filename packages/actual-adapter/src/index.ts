@@ -4,7 +4,8 @@
  * Provides typed contracts for BudgetLedger, Observe-only capability reports,
  * server/budget discovery, isolated cache lifecycle, sync watermarks,
  * entity normalization into the protocol snapshot shape, health/compatibility
- * reporting, encrypted credential storage, and disconnect cleanup.
+ * reporting, encrypted credential storage, bounded approved manual transaction
+ * writes in write-enabled modes, and disconnect cleanup.
  *
  * ## Usage
  *
@@ -36,6 +37,12 @@ export type {
   LedgerId,
   AccountQuery,
   TransactionQuery,
+  ManualTransactionSplit,
+  ManualTransactionInput,
+  ManualTransactionErrorCode,
+  ManualTransactionSuccess,
+  ManualTransactionFailure,
+  ManualTransactionResult,
   ImportTransaction,
   ImportOptions,
   ImportResult,

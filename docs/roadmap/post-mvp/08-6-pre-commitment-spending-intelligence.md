@@ -1,7 +1,7 @@
 # Phase 8.6 — Pre-Commitment Spending Intelligence
 
 **Depends on:** Phase 8 budget intelligence, Phase 8.5 web intelligence, Phase 8.8 financial decision and evidence foundation, Phase 7 governance, and the read-only portion of Phase 8.7 account-aware spendability  
-**Status:** Post-MVP
+**Status:** Implemented
 
 ## Objective
 
@@ -61,6 +61,14 @@ Support optional cooldowns for qualifying discretionary decisions. Re-evaluate t
 ### Completion and reconciliation
 
 A completed session may create an approved manual Actual transaction or split through the ordinary mutation pipeline. Preserve user-correctable item/split intent, then use Actual’s reconciliation for later imports. Link session, proposal, manual transaction, imported transaction, and ambiguous-match review without creating a competing ledger merge system or silently double-counting.
+
+## Implementation and operating boundaries
+
+- The purchase-check page and `purchase evaluate` CLI command expose the same Rust-owned Decision Card through the application service. The web Spend Session editor supports manual prices, quantities, priority, category splits, fixed tax/fee/discount assumptions, optional outside-price provenance, warning thresholds, and suggested trims. Trimming is advice: saving a changed cart requires user action.
+- Saved session reservations and commitments are shared workflow claims, not Actual transactions. The current Card and claims panel show their scope, lifecycle, policy mode, and impact where the member has grants. Different scopes of one saved session have distinct economic identities, retaining an explicit link to a matching authoritative obligation; an upgrade migrates existing unsuffixed identities and advances the claim revision. An active exact completion hold replaces the same originating charge in effective spendability until trusted evidence consumes the original. Releasing a prior saved-session version's active claim is explicit; editing the cart does not silently release a separately created commitment. A verified session is terminal: no further edits, completion admissions, or new holds are permitted.
+- A completion proposal requires a funded current Card and an exact immediate debit. The proposal links to a scoped review URL so a separately authorized coapprover can review and approve the debit without opening the owner's editable cart. Cooldown, changed material, revoked grants, and changed cart invalidate approval or execution readiness.
+- The execution action is separate from approval and requires a mutation-mode Actual connection. A durable one-shot write intent precedes the Actual write. Verified manual-parent and split evidence settles the completion and matching originating prospective holds; an uncertain outcome retains the initiated hold for review until complete account and transaction coverage can disambiguate candidates. An imported candidate detected before a write closes the attempt and releases its unused hold for review. A later import can link to an already verified manual parent, but is not itself a second completed debit.
+- The decision and workflow implementations have no model dependency; narrative generation cannot override a blocker or authorize a write. See [ADR 0001](../../adr/0001-precommitment-card-and-session-completion.md) for the write and evidence boundary.
 
 ## Tests
 

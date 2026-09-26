@@ -1,30 +1,40 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ConnectionManager } from './connection-manager.js';
+import type { ConnectionManager, ConnectedBudget } from './connection-manager.js';
 import type {
   WorkflowStore,
   LiquidityActor,
   ClaimValidationContext,
   SpendSession,
+  SessionCompletionPayload,
+  SessionCompletionProposalView,
+  SessionCompletionReconciliation,
   TransferProposal,
   ResourceCapability,
   ResourceKind,
   LiquidityPolicyRecord,
+  GovernedLiquidityPolicy,
   SupplementalFactsRecord,
   PaymentPreferenceRecord,
+  StoredProspectiveClaim,
 } from '@balanceframe/workflow-store';
 import type {
   AccountAwareSpendabilityRequest,
   AccountAwareSpendabilityResult,
   FinancialSnapshot,
-  LiquidityPolicy,
+  DecisionCard,
+  DecisionCardItem,
+  DecisionCardRequest,
   LiquidityPurchaseItem,
   LiquidityScenario,
   TransferPlan,
   TransferSettlementRecord,
   LiquidityClaimSet,
+  LiquidityClaimBundle,
   BackingAllocation,
 } from '@balanceframe/protocol-generated';
 import {
+  decisionCardRequestSchema,
+  decisionCardSchema,
   accountAwareSpendabilityResultSchema,
   financialSnapshotSchema,
   liquidityPolicySchema,
@@ -36,13 +46,15 @@ import {
   mergeUserAttestedLiquidityObservations,
   persistedUserAttestedLiquidityObservationSchema,
 } from '@balanceframe/actual-adapter';
-import type { PurchaseEvaluationResult } from './commands.js';
+import type { ManualTransactionInput, ManualTransactionResult } from '@balanceframe/actual-adapter';
 import type {
+  PublicDecisionCard,
   PublicLiquidityConfiguration,
   PublicLiquidityGrants,
   PublicLiquidityView,
   PublicSpendSession,
   PublicTransferDetail,
+  PublicSessionCompletion,
   PublicTransferPreview,
   PublicUserAttestedObservation,
 } from './liquidity-public.js';
@@ -56,6 +68,9 @@ import {
   liquidityReallocationInputSchema,
   spendSessionCancelInputSchema,
   spendSessionInputSchema,
+  prospectiveClaimInputSchema,
+  prospectiveClaimReleaseInputSchema,
+  sessionCompletionProposalInputSchema,
   spendSessionUpdateInputSchema,
   transferActionInputSchema,
   transferPreviewInputSchema,
@@ -73,12 +88,14 @@ import { liquidityPreferenceInputSchema } from './liquidity-inputs.js';
 import type { PublicLiquidityPreferences } from './liquidity-public.js';
 
 export interface LiquidityNative {
+  evaluateDecisionCard(input: string): string;
   evaluateAccountAwareSpendability(input: string): string;
   verifyTransferPreconditions(input: string): string;
   verifyTransferSettlement(input: string): string;
 }
 export interface LiquidityServiceOptions {
   connectionManager: ConnectionManager;
+  mutationConnectionManager?: ConnectionManager;
   store: WorkflowStore;
   native: LiquidityNative;
   clock?: () => Date;
@@ -139,10 +156,11 @@ export class LiquidityService {
   }
   private async capture<T>(
     actor: LiquidityActor,
-    operation: (capture: Capture) => Promise<T>,
+    operation: (capture: Capture, connected: ConnectedBudget) => Promise<T>,
     raw = false,
+    manager: ConnectionManager = this.options.connectionManager,
   ): Promise<T> {
-    const config = await this.options.connectionManager.loadConfig();
+    const config = await manager.loadConfig();
     if (!config || config.budgetId !== actor.budgetId)
       throw new Error('Selected budget unavailable');
     if (!this.options.store.liquidity.isOwner(actor))
@@ -150,7 +168,9 @@ export class LiquidityService {
         ...actor,
         now: this.clock().toISOString(),
       });
-    return this.options.connectionManager.withConnection(async (connected) => {
+    return manager.withConnection(async (connected) => {
+      if (connected.config.budgetId !== actor.budgetId)
+        throw new Error('Selected budget unavailable');
       const now = this.clock().toISOString();
       const synchronization = connected.synchronization as {
         financialSnapshot?: unknown;
@@ -253,8 +273,8 @@ export class LiquidityService {
         await this.reconcileCapture(actor, capture);
         capture.state = this.options.store.liquidity.loadEvaluationState({ ...actor, now });
       }
-      return operation(capture);
-    });
+      return operation(capture, connected);
+    }, { dispose: manager !== this.options.connectionManager });
   }
   private items(
     actor: LiquidityActor,
@@ -325,7 +345,10 @@ export class LiquidityService {
     horizonAnchor = capture.now,
   ): AccountAwareSpendabilityRequest | null {
     if (!capture.state.policy) return null;
-    const policy = liquidityPolicySchema.parse(capture.state.policy.policy);
+    const nativePolicy = { ...capture.state.policy.policy };
+    delete nativePolicy.reservationMode;
+    delete nativePolicy.categoryPolicies;
+    const policy = liquidityPolicySchema.parse(nativePolicy);
     const dates = [
       horizonAnchor,
       new Date(Date.parse(horizonAnchor) + 30 * 86400000).toISOString(),
@@ -478,14 +501,95 @@ export class LiquidityService {
       return evaluated.view;
     });
   }
+  private nativeDecisionCard(
+    capture: Capture,
+    items: DecisionCardItem[],
+    expiresAt?: string,
+    cart?: Pick<SpendSession, 'adjustments' | 'warningThresholds'>,
+  ): DecisionCard | null {
+    const input = this.input(capture, { kind: 'purchases', items }, expiresAt);
+    if (!input) return null;
+    const configured = new Map(
+      (capture.state.policy?.policy.categoryPolicies ?? []).map((policy) => [
+        policy.categoryId,
+        policy,
+      ]),
+    );
+    const seen = new Set<string>();
+    const categoryPolicies: DecisionCardRequest['categoryPolicies'] = [];
+    for (const category of capture.snapshot.liquidity?.categories ?? []) {
+      if (seen.has(category.categoryId)) continue;
+      seen.add(category.categoryId);
+      const configuredPolicy = configured.get(category.categoryId);
+      if (configuredPolicy) {
+        const { cooldownMinutes: _cooldown, ...nativePolicy } = configuredPolicy;
+        categoryPolicies.push(nativePolicy);
+      } else {
+        categoryPolicies.push({
+          categoryId: category.categoryId,
+          kind: 'ordinary',
+          donorEligible: false,
+          minimumRetained: { minorUnits: '0', currency: category.availability.currency },
+          projectedRemainingNeed: {
+            minorUnits: '0',
+            currency: category.availability.currency,
+          },
+        });
+      }
+    }
+    const request = decisionCardRequestSchema.parse({
+      financialSnapshot: input.financialSnapshot,
+      context: input.context,
+      liquidityPolicy: input.liquidityPolicy,
+      claimSet: input.claimSet,
+      priorAllocation: input.priorAllocation,
+      items,
+      ...(cart?.adjustments ? { adjustments: cart.adjustments } : {}),
+      ...(cart?.warningThresholds ? { warningThresholds: cart.warningThresholds } : {}),
+      categoryPolicies,
+      validUntil: input.validUntil,
+      requestId: randomUUID(),
+      correlationId: randomUUID(),
+      decisionId: randomUUID(),
+    } satisfies DecisionCardRequest);
+    return decisionCardSchema.parse(
+      JSON.parse(this.options.native.evaluateDecisionCard(JSON.stringify(request))) as unknown,
+    );
+  }
+  private decisionCard(
+    capture: Capture,
+    items: DecisionCardItem[],
+    expiresAt?: string,
+    cart?: Pick<SpendSession, 'adjustments' | 'warningThresholds'>,
+  ): PublicDecisionCard {
+    const card = this.nativeDecisionCard(capture, items, expiresAt, cart);
+    return card
+      ? capture.projector.card(card)
+      : {
+          outcome: 'insufficient_data',
+          budgetFundingStatus: 'insufficient_data',
+          paymentLiquidityStatus: 'insufficient_data',
+          selectedAccountId: null,
+          before: null,
+          after: null,
+          fundingPaths: [],
+          evidence: [],
+          blockers: ['policy_unavailable'],
+          cart: null,
+          warnings: [],
+          trimAlternatives: [],
+        };
+  }
+
+  /** Evaluates a quick purchase through the same immutable Card as an active cart. */
   async evaluatePurchase(
     actor: LiquidityActor,
     value: unknown,
-  ): Promise<PurchaseEvaluationResult & { liquidity: PublicLiquidityView }> {
+  ): Promise<{ card: PublicDecisionCard }> {
     const intent = liquidityPurchaseInputSchema.parse(value);
     this.authorizeIntent(actor, intent.categoryId, intent.accountId);
     return this.capture(actor, async (capture) => {
-      const items = this.items(
+      const [item] = this.items(
         actor,
         capture,
         [
@@ -500,36 +604,8 @@ export class LiquidityService {
         ],
         null,
       );
-      const { view } = this.evaluate(capture, { kind: 'purchases', items });
-      const purchase = view.purchases[0];
-      const funding = purchase?.fundingStatus;
-      const payment = purchase?.paymentStatus;
-      const allowable = funding === 'funded' && payment === 'ready';
-      const verdict =
-        funding === 'unfunded' || payment === 'not_liquid'
-          ? 'not_safe'
-          : funding !== 'funded' || payment === 'insufficient_data' || !purchase?.selectedAccountId
-            ? 'insufficient_data'
-            : allowable
-              ? 'safe'
-              : 'safe_with_qualifications';
-      const category = view.categories.find((item) => item.id === intent.categoryId);
-      return {
-        allowable,
-        reasonCodes: purchase?.reasons ?? [],
-        categoryBudget: category?.availabilityBefore ?? null,
-        categorySpent: null,
-        categoryRemaining: category?.availabilityAfter ?? null,
-        projectedBalance: null,
-        hasEnvelope: funding === 'funded' || funding === 'unfunded',
-        verdict,
-        explanation: allowable
-          ? 'The category is funded and the selected account is ready.'
-          : 'Budget funding and payment-account readiness are separate. Review the account result before spending.',
-        envelopeFundingState:
-          funding === 'funded' ? 'funded' : funding === 'unfunded' ? 'unfunded' : 'unavailable',
-        liquidity: view,
-      };
+      if (!item) throw new Error('Purchase item unavailable');
+      return { card: this.decisionCard(capture, [{ ...item, priority: 'planned' }]) };
     });
   }
   async previewReallocation(actor: LiquidityActor, value: unknown): Promise<PublicLiquidityView> {
@@ -701,6 +777,9 @@ export class LiquidityService {
       (capture.state.policy?.policy.transferRoutes ?? []).every(
         (route) =>
           accountReadable(route.sourceAccountId) && accountReadable(route.destinationAccountId),
+      ) &&
+      (capture.state.policy?.policy.categoryPolicies ?? []).every((policy) =>
+        categoryReadable(policy.categoryId),
       );
     return {
       policy: fullConfiguration ? (capture.state.policy?.policy ?? null) : null,
@@ -736,11 +815,39 @@ export class LiquidityService {
           this.require(actor, 'account', route.sourceAccountId, 'policy');
           this.require(actor, 'account', route.destinationAccountId, 'policy');
         }
+        const categoryPolicies =
+          intent.categoryPolicies ?? capture.state.policy?.policy.categoryPolicies ?? [];
+        const seen = new Set<string>();
+        for (const categoryPolicy of [
+          ...(capture.state.policy?.policy.categoryPolicies ?? []),
+          ...categoryPolicies,
+        ]) {
+          this.require(actor, 'category', categoryPolicy.categoryId, 'policy');
+          if (
+            !capture.snapshot.legacySnapshot.categories.some(
+              ({ id }) => id === categoryPolicy.categoryId,
+            )
+          ) throw new Error('Unknown policy category');
+        }
+        for (const categoryPolicy of categoryPolicies) {
+          if (seen.has(categoryPolicy.categoryId)) throw new Error('Duplicate policy category');
+          seen.add(categoryPolicy.categoryId);
+          const category = capture.snapshot.liquidity?.categories.find(
+            ({ categoryId }) => categoryId === categoryPolicy.categoryId,
+          );
+          if (
+            !category ||
+            categoryPolicy.minimumRetained.currency !== category.availability.currency ||
+            categoryPolicy.projectedRemainingNeed.currency !== category.availability.currency
+          ) throw new Error('Category policy currency or evidence unavailable');
+        }
         const version = randomUUID();
-        const policy: LiquidityPolicy = {
+        const policy: GovernedLiquidityPolicy = {
           version,
           policyHash: '',
           expiresAt: intent.expiresAt,
+          reservationMode: intent.reservationMode ??
+            capture.state.policy?.policy.reservationMode ?? 'inform',
           accounts: intent.accounts.map((account) => ({
             ...account,
             resourceScope: account.accountId,
@@ -755,6 +862,7 @@ export class LiquidityService {
               reasons: ['owner_attested_transfer_timing'],
             },
           })),
+          categoryPolicies,
         };
         policy.policyHash = `sha256:${createHash('sha256').update(canonical(policy)).digest('hex')}`;
         this.options.store.liquidity.savePolicy({
@@ -939,8 +1047,16 @@ export class LiquidityService {
       ? spendSessionUpdateInputSchema.parse(value)
       : { ...spendSessionInputSchema.parse(value), expectedVersion: 0 };
     this.require(actor, 'budget', actor.budgetId, 'session');
-    for (const item of intent.items)
+    for (const item of intent.items) {
       this.authorizeIntent(actor, item.categoryId, item.accountId ?? intent.accountId);
+      for (const allocation of item.categoryAllocations ?? [])
+        this.require(actor, 'category', allocation.categoryId, 'category');
+    }
+    for (const adjustment of intent.adjustments ?? [])
+      this.require(actor, 'category', adjustment.categoryId, 'category');
+    for (const threshold of intent.warningThresholds ?? [])
+      if (threshold.basis === 'category_charge')
+        this.require(actor, 'category', threshold.categoryId, 'category');
     return this.capture(actor, async (capture) => {
       this.future(intent.expiresAt, capture.now, 30 * 86400000);
       const items = this.items(actor, capture, intent.items, intent.accountId);
@@ -954,7 +1070,9 @@ export class LiquidityService {
           now: capture.now,
           expiresAt: intent.expiresAt,
           accountId: intent.accountId,
-          items,
+          items: intent.items,
+          ...(intent.adjustments ? { adjustments: intent.adjustments } : {}),
+          ...(intent.warningThresholds ? { warningThresholds: intent.warningThresholds } : {}),
         },
         this.validator(capture, scenario),
       );
@@ -973,25 +1091,32 @@ export class LiquidityService {
       return this.sessionProjection(actor, capture, session);
     });
   }
+  private sessionItems(actor: LiquidityActor, capture: Capture, session: SpendSession): DecisionCardItem[] {
+    const routes = this.items(actor, capture, session.items, session.accountId);
+    return session.items.map((item, index) => {
+      const route = routes[index];
+      if (!route) throw new Error('Session route unavailable');
+      const immediate = item.purchaseAt < capture.now &&
+        item.purchaseAt.slice(0, 10) === capture.now.slice(0, 10) &&
+        item.requiredBy <= item.purchaseAt;
+      return {
+        ...route,
+        ...(immediate ? { purchaseAt: capture.now, requiredBy: capture.now } : {}),
+        priority: item.priority ?? 'planned',
+        ...(item.quantity === undefined ? {} : { quantity: item.quantity }),
+        ...(item.categoryAllocations ? { categoryAllocations: item.categoryAllocations } : {}),
+        ...(item.priceProvenance ? { priceProvenance: item.priceProvenance } : {}),
+        ...(item.barcode ? { barcode: item.barcode } : {}),
+      };
+    });
+  }
   private sessionProjection(
     actor: LiquidityActor,
     capture: Capture,
     session: SpendSession,
   ): PublicSpendSession {
-    const items = this.items(
-      actor,
-      capture,
-      session.items.map((item) => ({
-        id: item.id,
-        categoryId: item.categoryId,
-        amount: item.amount,
-        purchaseAt: item.purchaseAt,
-        requiredBy: item.requiredBy,
-        accountId: item.routeSelection.explicitAccountId,
-      })),
-      session.accountId,
-    );
-    const evaluation = this.evaluate(capture, { kind: 'purchases', items }, session.expiresAt).view;
+    const items = this.sessionItems(actor, capture, session);
+    const card = this.decisionCard(capture, items, session.expiresAt, session);
     const linkedTransfers = capture.projector.allowed('budget', actor.budgetId, 'proposal')
       ? this.options.store.liquidity
           .listTransferProposals(actor)
@@ -1014,9 +1139,16 @@ export class LiquidityService {
         amount: item.amount,
         purchaseAt: item.purchaseAt,
         requiredBy: item.requiredBy,
-        accountId: item.routeSelection.explicitAccountId,
+        accountId: item.accountId,
+        ...(item.quantity === undefined ? {} : { quantity: item.quantity }),
+        ...(item.priority === undefined ? {} : { priority: item.priority }),
+        ...(item.categoryAllocations ? { categoryAllocations: item.categoryAllocations } : {}),
+        priceProvenance: item.priceProvenance ?? null,
+        ...(item.barcode ? { barcode: item.barcode } : {}),
       })),
-      evaluation,
+      adjustments: session.adjustments ?? [],
+      warningThresholds: session.warningThresholds ?? [],
+      card,
       canEdit:
         session.actorId === actor.actorId &&
         Date.parse(session.expiresAt) > Date.parse(capture.now),
@@ -1037,6 +1169,576 @@ export class LiquidityService {
     });
     return { id: session.id, version: session.version, cancelled: true };
   }
+  /** Admits a scoped commitment or reservation from a current native-funded cart charge. */
+  async createProspectiveClaim(
+    actor: LiquidityActor,
+    value: unknown,
+  ): Promise<StoredProspectiveClaim> {
+    const intent = prospectiveClaimInputSchema.parse(value);
+    this.require(actor, 'budget', actor.budgetId, 'liquidity');
+    this.require(actor, intent.scope.kind, intent.scope.id,
+      intent.scope.kind === 'category' ? 'category' : 'liquidity');
+    return this.capture(actor, async (capture) => {
+      const replay = this.options.store.liquidity.replayProspectiveClaim({
+        ...actor,
+        sourceId: `session:${intent.sessionId}:${intent.expectedSessionVersion}`,
+        kind: intent.kind, scope: intent.scope,
+        idempotencyKey: intent.idempotencyKey, now: capture.now,
+      });
+      if (replay) return replay;
+      const session = this.options.store.liquidity.getSpendSession({
+        ...actor, id: intent.sessionId, now: capture.now,
+      });
+      if (!session || session.version !== intent.expectedSessionVersion)
+        throw new Error('Session version conflict');
+      const current = this.withoutSessionProspectiveClaims(actor, capture, session);
+      const items = this.sessionItems(actor, current, session);
+      const card = this.nativeDecisionCard(current, items, session.expiresAt, session);
+      if (!card || card.outcome !== 'funded_now' || !card.cart)
+        throw new Error('Current funded Card required for a reservation or commitment');
+      const charge = intent.scope.kind === 'category'
+        ? card.cart.categoryCharges.find((entry) => entry.categoryId === intent.scope.id)
+        : card.cart.accountCharges.find((entry) => entry.accountId === intent.scope.id);
+      if (!charge) throw new Error('Claim scope is not charged by the current cart');
+      const policy = capture.state.policy;
+      if (!policy) throw new Error('Liquidity policy unavailable');
+      const claimId = randomUUID();
+      const sourceId = `session:${session.id}:${session.version}`;
+      return this.options.store.liquidity.saveProspectiveClaim({
+        ...actor,
+        claim: {
+          claimId,
+          kind: intent.kind,
+          sourceId,
+          scope: intent.scope,
+          amount: charge.amount,
+          status: 'active',
+          effectiveFrom: capture.now,
+          expiresAt: session.expiresAt,
+          visibility: 'visible',
+          policyVersion: policy.policy.version,
+          snapshotId: capture.snapshot.snapshotId,
+        },
+        expectedClaimSetRevision: capture.state.claimSet.revision,
+        idempotencyKey: intent.idempotencyKey,
+        now: capture.now,
+      }, (context) => {
+        const freshSession = this.options.store.liquidity.getSpendSession({
+          ...actor, id: session.id, now: context.now,
+        });
+        if (!freshSession || freshSession.version !== session.version ||
+            context.policy.policy.version !== policy.policy.version ||
+            context.proposedClaim?.effects[0]?.amount.minorUnits !== charge.amount.minorUnits)
+          return { valid: false, reason: 'Claim source or policy changed' };
+        const current = this.withoutSessionProspectiveClaims(actor, {
+          ...capture,
+          now: context.now,
+          state: { ...capture.state, policy: context.policy, claimSet: context.claimSet },
+        }, freshSession);
+        const reevaluated = this.nativeDecisionCard(
+          current, this.sessionItems(actor, current, session), session.expiresAt, session,
+        );
+        return reevaluated?.outcome === 'funded_now' &&
+          canonical(reevaluated.cart) === canonical(card.cart)
+          ? { valid: true }
+          : { valid: false, reason: 'Claim would reuse unavailable cart funds' };
+      });
+    });
+  }
+  /** Lists visible and redacted BalanceFrame-side claims without inventing ledger transactions. */
+  async prospectiveClaims(actor: LiquidityActor): Promise<StoredProspectiveClaim[]> {
+    this.require(actor, 'budget', actor.budgetId, 'liquidity');
+    return this.capture(actor, async (capture) =>
+      this.options.store.liquidity.listProspectiveClaims({ ...actor, now: capture.now }));
+  }
+  /** Releases only a still-active claim under the current shared claim-set revision. */
+  async releaseProspectiveClaim(
+    actor: LiquidityActor,
+    claimId: string,
+    value: unknown,
+  ): Promise<StoredProspectiveClaim> {
+    const intent = prospectiveClaimReleaseInputSchema.parse(value);
+    return this.capture(actor, async (capture) =>
+      this.options.store.liquidity.transitionProspectiveClaim({
+        ...actor,
+        claimId,
+        transition: 'release',
+        expectedClaimSetRevision: capture.state.claimSet.revision,
+        idempotencyKey: intent.idempotencyKey,
+        now: capture.now,
+      }));
+  }
+  private withoutSessionProspectiveClaims(
+    actor: LiquidityActor,
+    capture: Capture,
+    session: SpendSession,
+    ownClaimId: string | null = null,
+  ): Capture {
+    const sourceId = `session:${session.id}:${session.version}`;
+    const originatingClaims = new Set(this.options.store.liquidity
+      .listProspectiveClaims({ ...actor, now: capture.now })
+      .filter((claim) => claim.sourceId === sourceId && claim.lifecycleState === 'active')
+      .map((claim) => claim.claimId));
+    return {
+      ...capture,
+      state: {
+        ...capture.state,
+        claimSet: {
+          ...capture.state.claimSet,
+          bundles: capture.state.claimSet.bundles.filter(
+            (bundle) => bundle.id !== ownClaimId && !originatingClaims.has(bundle.id),
+          ),
+        },
+      },
+    };
+  }
+
+  private completionCard(
+    actor: LiquidityActor,
+    capture: Capture,
+    session: SpendSession,
+    ownClaimId: string | null = null,
+  ): { card: DecisionCard; intentHash: string; materialHash: string } {
+    const current = this.withoutSessionProspectiveClaims(actor, capture, session, ownClaimId);
+    const intentHash = createHash('sha256').update(canonical({
+      kind: 'session_completion_intent_v1',
+      id: session.id,
+      version: session.version,
+      accountId: session.accountId,
+      items: session.items,
+      adjustments: session.adjustments ?? [],
+      warningThresholds: session.warningThresholds ?? [],
+    })).digest('hex');
+    const items = this.sessionItems(actor, current, session).map((item) => {
+      if (Date.parse(item.requiredBy) > Date.parse(item.purchaseAt))
+        throw new Error('Session completion requires a valid purchase deadline');
+      if (item.purchaseAt >= current.now) return item;
+      if (item.purchaseAt.slice(0, 7) !== current.now.slice(0, 7))
+        throw new Error('Session completion requires the current budget month');
+      return { ...item, purchaseAt: current.now, requiredBy: current.now };
+    });
+    const card = this.nativeDecisionCard(current, items, session.expiresAt, session);
+    if (!card || card.outcome !== 'funded_now' || card.readiness.status !== 'evaluated' ||
+        !card.cart || card.cart.accountCharges.length !== 1)
+      throw new Error('Session completion unavailable: current Card is not funded now');
+    const material = {
+      snapshot: stableLedgerMaterial(current.snapshot),
+      policy: current.state.policy?.policy ?? null,
+      supplementalVersion: current.state.supplemental?.version ?? null,
+      supplementalExpiry: current.state.supplemental?.expiresAt ?? null,
+      claims: current.state.claimSet.bundles,
+      sessionId: session.id,
+      sessionVersion: session.version,
+      sessionExpiresAt: session.expiresAt,
+      intentHash,
+      outcome: card.outcome,
+      selectedAccountId: card.selectedAccountId,
+      cart: card.cart,
+      fundingPaths: card.fundingPaths.map(stableLedgerMaterial),
+    };
+    return {
+      card,
+      intentHash,
+      materialHash: createHash('sha256').update(canonical(material)).digest('hex'),
+    };
+  }
+  private completionValidator(
+    actor: LiquidityActor,
+    capture: Capture,
+    payload: SessionCompletionPayload,
+  ) {
+    return (context: ClaimValidationContext): { valid: boolean; reason?: string } => {
+      if (!context.session || context.session.id !== payload.sessionId ||
+          context.session.version !== payload.sessionVersion)
+        return { valid: false, reason: 'Session version changed' };
+      try {
+        const owner = { actorId: context.session.actorId, budgetId: actor.budgetId };
+        const freshCapture: Capture = {
+          ...capture,
+          projector: new LiquidityProjector(this.options.store, owner, capture.snapshot),
+          now: context.now,
+          state: { ...capture.state, policy: context.policy, claimSet: context.claimSet },
+        };
+        const { card, intentHash, materialHash } = this.completionCard(
+          owner, freshCapture, context.session, context.ownClaimId,
+        );
+        if (intentHash !== payload.intentHash || materialHash !== payload.materialHash ||
+            canonical(card.cart?.categoryCharges) !== canonical(payload.categoryCharges) ||
+            card.cart?.accountCharges[0]?.accountId !== payload.manualInput.accountId ||
+            card.cart?.total.minorUnits !== String(-payload.manualInput.amount))
+          return { valid: false, reason: 'Session completion Card or ledger changed' };
+        return { valid: true };
+      } catch {
+        return { valid: false, reason: 'Current funded Card unavailable' };
+      }
+    };
+  }
+  /** Admits a saved cart only when the current native Card proves its exact immediate funding. */
+  async proposeSessionCompletion(
+    actor: LiquidityActor,
+    sessionId: string,
+    value: unknown,
+  ): Promise<PublicSessionCompletion> {
+    const intent = sessionCompletionProposalInputSchema.parse(value);
+    this.require(actor, 'budget', actor.budgetId, 'proposal');
+    return this.capture(actor, async (capture) => {
+      const replay = this.options.store.liquidity.replaySessionCompletion({
+        ...actor, sessionId, expectedSessionVersion: intent.expectedSessionVersion,
+        payeeName: intent.payeeName, notes: intent.notes,
+        idempotencyKey: intent.idempotencyKey, now: capture.now,
+      });
+      if (replay) return this.completionProjection(actor, capture, replay);
+      const session = this.options.store.liquidity.getSpendSession({
+        ...actor, id: sessionId, now: capture.now,
+      });
+      if (!session || session.version !== intent.expectedSessionVersion)
+        throw new Error('Session version conflict');
+      const { card, intentHash, materialHash } = this.completionCard(actor, capture, session);
+      const cart = card.cart!;
+      const date = session.items[0]?.purchaseAt.slice(0, 10);
+      if (!date || date > capture.now.slice(0, 10) ||
+          session.items.some((item) => item.purchaseAt.slice(0, 10) !== date))
+        throw new Error('Session completion requires one present or past purchase date');
+      const account = cart.accountCharges[0]!;
+      if (account.amount.minorUnits !== cart.total.minorUnits ||
+          account.amount.currency !== cart.total.currency)
+        throw new Error('Session completion requires one payment account');
+      const amount = Number(cart.total.minorUnits);
+      if (!Number.isSafeInteger(amount) || amount <= 0)
+        throw new Error('Session completion amount exceeds exact Actual integer range');
+      let splitTotal = 0n;
+      const splits = cart.categoryCharges.map((charge) => {
+        if (charge.amount.currency !== cart.total!.currency)
+          throw new Error('Session completion category currency mismatch');
+        const minorUnits = Number(charge.amount.minorUnits);
+        if (!Number.isSafeInteger(minorUnits) || minorUnits <= 0)
+          throw new Error('Session completion split exceeds exact Actual integer range');
+        splitTotal += BigInt(charge.amount.minorUnits);
+        this.require(actor, 'category', charge.categoryId, 'proposal');
+        return { categoryId: charge.categoryId, accountId: account.accountId,
+          date, amount: -minorUnits };
+      });
+      if (splitTotal !== BigInt(cart.total.minorUnits))
+        throw new Error('Session completion split does not conserve native total');
+      this.require(actor, 'account', account.accountId, 'proposal');
+      const policy = capture.state.policy;
+      if (!policy) throw new Error('Session completion policy unavailable');
+      const minutes = Math.max(0, ...cart.categoryCharges.map((charge) => {
+        const rule = policy.policy.categoryPolicies?.find(
+          (candidate) => candidate.categoryId === charge.categoryId,
+        );
+        return rule?.kind === 'discretionary' ? rule.cooldownMinutes ?? 0 : 0;
+      }));
+      const cooldownUntil = minutes > 0
+        ? new Date(Date.parse(capture.now) + minutes * 60_000).toISOString() : null;
+      if (cooldownUntil && cooldownUntil >= session.expiresAt)
+        throw new Error('Session expires before discretionary cooldown ends');
+      const parentId = randomUUID();
+      const payload: SessionCompletionPayload = {
+        kind: 'session_completion',
+        sessionId: session.id,
+        sessionVersion: session.version,
+        intentHash,
+        materialHash,
+        manualInput: {
+          parentId,
+          correlationId: randomUUID(),
+          accountId: account.accountId,
+          amount: -amount,
+          date,
+          ...(splits.length === 1 ? { categoryId: splits[0]!.categoryId } : { splits }),
+          ...(intent.payeeName ? { payeeName: intent.payeeName } : {}),
+          ...(intent.notes ? { notes: intent.notes } : {}),
+        },
+        categoryCharges: cart.categoryCharges,
+        cooldownUntil,
+      };
+      const expiresAt = [session.expiresAt, policy.policy.expiresAt].sort()[0]!;
+      const obligationId = `completion:${session.id}`;
+      const claim: LiquidityClaimBundle = {
+        id: `completion:${randomUUID()}`,
+        creationSnapshotId: capture.snapshot.snapshotId,
+        creationPolicyVersion: policy.policy.version,
+        state: 'active',
+        expiresAt,
+        initiated: false,
+        effects: [
+          ...cart.categoryCharges.map((charge) => ({
+            kind: 'category' as const,
+            resourceId: charge.categoryId,
+            amount: charge.amount,
+            economicObligationId: `${obligationId}:category:${charge.categoryId}`,
+            categoryId: charge.categoryId,
+            includedInBalance: false,
+            matchedTransactionIds: [],
+          })),
+          { kind: 'account_debit', resourceId: account.accountId, amount: cart.total,
+            economicObligationId: `${obligationId}:account:${account.accountId}`, categoryId: null,
+            includedInBalance: false, matchedTransactionIds: [] },
+        ],
+      };
+      const proposal = this.options.store.liquidity.admitSessionCompletion({
+        ...actor, sessionId, expectedSessionVersion: session.version,
+        payload, payloadHash: createHash('sha256').update(canonical(payload)).digest('hex'),
+        claim, expectedClaimSetRevision: capture.state.claimSet.revision,
+        idempotencyKey: intent.idempotencyKey, now: capture.now,
+      }, this.completionValidator(actor, capture, payload));
+      return this.completionProjection(actor, capture, proposal);
+    });
+  }
+  private completionProjection(
+    actor: LiquidityActor,
+    capture: Capture,
+    proposal: SessionCompletionProposalView,
+  ): PublicSessionCompletion {
+    const { payload } = proposal;
+    const accountId = payload.manualInput.accountId;
+    const categories = payload.categoryCharges.map((charge) => charge.categoryId);
+    const visible =
+      capture.projector.allowed('budget', actor.budgetId, 'proposal') &&
+      capture.projector.allowed('budget', actor.budgetId, 'session') &&
+      capture.projector.allowed('account', accountId, 'existence', 'balance', 'liquidity', 'proposal') &&
+      categories.every((id) =>
+        capture.projector.allowed('category', id, 'existence', 'liquidity', 'proposal'));
+    const authorized = (capability: ResourceCapability) =>
+      visible &&
+      capture.projector.allowed('budget', actor.budgetId, capability) &&
+      capture.projector.allowed('account', accountId, capability) &&
+      categories.every((id) => capture.projector.allowed('category', id, capability));
+    return {
+      id: proposal.id,
+      version: proposal.version,
+      phase: proposal.state.phase,
+      outcome: proposal.state.outcome,
+      expiresAt: proposal.expiresAt,
+      cooldownUntil: visible ? payload.cooldownUntil : null,
+      payloadHash: visible ? proposal.payloadHash : null,
+      requiredApprovals: proposal.requiredApprovals,
+      approvalCount: proposal.approvalCount,
+      canApprove: authorized('approval') && proposal.state.phase === 'proposed' &&
+        (!payload.cooldownUntil || payload.cooldownUntil <= capture.now),
+      canExecute: authorized('initiation-report') && authorized('confirmation') &&
+        proposal.state.phase === 'approved' &&
+        (!payload.cooldownUntil || payload.cooldownUntil <= capture.now),
+      debit: visible ? {
+        accountId,
+        amount: payload.manualInput.amount,
+        date: payload.manualInput.date,
+        payeeName: payload.manualInput.payeeName ?? null,
+        notes: payload.manualInput.notes ?? null,
+        categoryCharges: payload.categoryCharges.map((charge) => ({
+          categoryId: charge.categoryId,
+          amount: charge.amount,
+        })),
+        splits: payload.manualInput.splits?.map((split) => ({
+          categoryId: split.categoryId,
+          amount: split.amount,
+        })) ?? [],
+      } : null,
+      manualTransactionId: visible ? proposal.manualTransactionId : null,
+      importedTransactionId: visible ? proposal.importedTransactionId : null,
+      reviewRequired: proposal.state.phase === 'review_required' ||
+        proposal.state.phase === 'write_intent',
+    };
+  }
+  /** Re-evaluates the same immutable Card before accepting a human completion approval. */
+  async approveSessionCompletion(
+    actor: LiquidityActor,
+    proposalId: string,
+    value: unknown,
+  ): Promise<PublicSessionCompletion> {
+    const intent = transferActionInputSchema.parse(value);
+    return this.capture(actor, async (capture) => {
+      const original = this.options.store.liquidity.getSessionCompletionProposal({
+        ...actor, proposalId, now: capture.now,
+      });
+      const approved = this.options.store.liquidity.approveSessionCompletion({
+        ...actor, proposalId, ...intent, now: capture.now,
+        expectedClaimSetRevision: capture.state.claimSet.revision,
+      }, this.completionValidator(actor, capture, original.payload));
+      return this.completionProjection(actor, capture, approved);
+    });
+  }
+  /** Reads one scoped completion and its current verified/review status. */
+  async sessionCompletion(
+    actor: LiquidityActor,
+    proposalId: string,
+  ): Promise<PublicSessionCompletion> {
+    return this.capture(actor, async (capture) =>
+      this.completionProjection(actor, capture,
+        this.options.store.liquidity.getSessionCompletionProposal({
+          ...actor, proposalId, now: capture.now,
+        })),
+    );
+  }
+  /** Lists only currently authorized session-completion proposals. */
+  async sessionCompletions(
+    actor: LiquidityActor,
+    sessionId: string,
+  ): Promise<PublicSessionCompletion[]> {
+    return this.capture(actor, async (capture) =>
+      this.options.store.liquidity.listSessionCompletionProposals({
+        ...actor, sessionId, now: capture.now,
+      }).map((proposal) => this.completionProjection(actor, capture, proposal)),
+    );
+  }
+  /**
+   * Persists a one-shot write intent before invoking the mutation-mode Actual connector.
+   * A crash or uncertain response leaves the initiated claim held for manual review.
+   */
+  async executeSessionCompletion(
+    actor: LiquidityActor,
+    proposalId: string,
+    value: unknown,
+  ): Promise<PublicSessionCompletion> {
+    const manager = this.options.mutationConnectionManager;
+    if (!manager) throw new Error('Mutation connection unavailable');
+    const intent = transferActionInputSchema.parse(value);
+    return this.capture(actor, async (capture, connected) => {
+      const writable = connected.connector as typeof connected.connector & {
+        createManualTransaction?: (input: ManualTransactionInput) => Promise<ManualTransactionResult>;
+      };
+      if (typeof writable.createManualTransaction !== 'function')
+        throw new Error('Mutation connection unavailable');
+      const original = this.options.store.liquidity.getSessionCompletionProposal({
+        ...actor, proposalId, now: capture.now,
+      });
+      if (['verified', 'review_required', 'write_intent'].includes(original.state.phase))
+        return this.completionProjection(actor, capture, original);
+      const started = this.options.store.liquidity.beginSessionCompletionWrite({
+        ...actor, proposalId, ...intent, now: capture.now,
+        expectedClaimSetRevision: capture.state.claimSet.revision,
+      }, this.completionValidator(actor, capture, original.payload));
+      if (!started.acquiredWriteIntent || !started.payload)
+        return this.completionProjection(actor, capture, started.proposal);
+      const input = started.payload.manualInput;
+      let result: ManualTransactionResult;
+      try {
+        const { splits, ...parentInput } = input;
+        result = await writable.createManualTransaction({
+          ...parentInput,
+          ...(splits ? { splits: splits.map((split) => ({ ...split })) } : {}),
+        });
+      } catch {
+        result = {
+          success: false, verified: false, parentId: input.parentId,
+          correlationId: input.correlationId, code: 'WRITE_UNCERTAIN',
+          error: 'Actual write outcome could not be verified.', reviewRequired: true,
+        };
+      }
+      const finished = this.options.store.liquidity.finishSessionCompletionWrite({
+        ...actor, proposalId, payloadHash: intent.payloadHash,
+        expectedVersion: started.proposal.version,
+        idempotencyKey: `finish:${intent.idempotencyKey}`, now: capture.now,
+        result: result.success
+          ? { success: true, verified: true, parentId: result.parentId,
+              transactionId: result.transactionId }
+          : { success: false, verified: false, parentId: result.parentId,
+              code: result.code, reviewRequired: true },
+      });
+      return this.completionProjection(actor, capture, finished);
+    }, false, manager);
+  }
+  private exactCompletionParent(
+    transaction: FinancialSnapshot['legacySnapshot']['transactions'][number],
+    input: SessionCompletionPayload['manualInput'],
+    currency: string,
+  ): boolean {
+    if (transaction.id !== input.parentId ||
+        transaction.accountId !== input.accountId ||
+        transaction.date !== input.date ||
+        transaction.amount.minorUnits !== String(input.amount) ||
+        transaction.amount.currency !== currency ||
+        transaction.transferAccountId !== null ||
+        (input.payeeName && transaction.payeeName !== input.payeeName) ||
+        (input.notes && transaction.notes !== input.notes))
+      return false;
+    if (!input.splits)
+      return transaction.subtransactions.length === 0 &&
+        transaction.categoryId === input.categoryId;
+    if (transaction.categoryId !== null ||
+        transaction.subtransactions.length !== input.splits.length ||
+        new Set(transaction.subtransactions.map((child) => child.id)).size !== input.splits.length)
+      return false;
+    const observed = transaction.subtransactions.map((child) => ({
+      accountId: child.accountId, date: child.date, categoryId: child.categoryId,
+      amount: child.amount.minorUnits, currency: child.amount.currency,
+      transferAccountId: child.transferAccountId,
+    }));
+    const expected = input.splits.map((split) => ({
+      accountId: split.accountId, date: split.date, categoryId: split.categoryId,
+      amount: String(split.amount), currency, transferAccountId: null,
+    }));
+    return canonical(observed.map(canonical).sort()) === canonical(expected.map(canonical).sort());
+  }
+  /**
+   * Re-reads Actual to reconcile a durable manual parent or a later account-scoped bank import.
+   * No caller can nominate or manufacture a bank ID or trigger a second ledger write.
+   */
+  async reconcileSessionCompletion(
+    actor: LiquidityActor,
+    proposalId: string,
+    value: unknown,
+  ): Promise<PublicSessionCompletion> {
+    const intent = transferActionInputSchema.parse(value);
+    return this.capture(actor, async (capture) => {
+      const proposal = this.options.store.liquidity.getSessionCompletionProposal({
+        ...actor, proposalId, now: capture.now,
+      });
+      if (proposal.payloadHash !== intent.payloadHash) throw new Error('Payload hash mismatch');
+      if (proposal.version !== intent.expectedVersion) throw new Error('Proposal version conflict');
+      const input = proposal.payload.manualInput;
+      const currency = proposal.payload.categoryCharges[0]?.amount.currency;
+      if (!currency) throw new Error('Completion currency unavailable');
+      if (capture.snapshot.coverage.accounts !== 'complete' ||
+          capture.snapshot.coverage.transactions !== 'complete')
+        throw new Error('Complete account and transaction coverage required for reconciliation');
+      const rows = capture.snapshot.legacySnapshot.transactions;
+      const parents = rows.filter((row) => row.id === input.parentId);
+      const candidates = rows.filter((row) =>
+        row.id !== input.parentId &&
+        row.accountId === input.accountId &&
+        row.date === input.date &&
+        row.amount.minorUnits === String(input.amount) &&
+        row.amount.currency === currency &&
+        row.importedId !== null,
+      );
+      const parent = parents.length === 1 ? parents[0] : undefined;
+      const exact = parent && this.exactCompletionParent(parent, input, currency);
+      let evidence: SessionCompletionReconciliation;
+      if (!exact || candidates.length) {
+        if (proposal.state.phase === 'verified')
+          throw new Error('Ambiguous Actual reconciliation requires human review');
+        const candidateIds = candidates.map((row) => `${row.accountId}:${row.id}`).sort();
+        evidence = {
+          evidenceId: `ambiguous:${input.accountId}:${input.parentId}:${createHash('sha256').update(canonical(candidateIds)).digest('hex')}`,
+          kind: 'ambiguous', parentId: input.parentId, accountId: input.accountId,
+          verified: false, reason: 'Manual parent missing, changed, or competing with an imported row',
+        };
+      } else if (proposal.state.phase === 'verified') {
+        if (!parent.importedId || !parent.reconciled)
+          return this.completionProjection(actor, capture, proposal);
+        evidence = {
+          evidenceId: `import:${input.accountId}:${parent.importedId}`,
+          kind: 'imported_link', parentId: input.parentId,
+          accountId: input.accountId, transactionId: parent.id, verified: true,
+        };
+      } else {
+        evidence = {
+          evidenceId: `manual:${input.accountId}:${input.parentId}`,
+          kind: 'manual_parent', parentId: input.parentId,
+          accountId: input.accountId, transactionId: parent.id, verified: true,
+        };
+      }
+      if (proposal.reconciliation?.evidenceId === evidence.evidenceId)
+        return this.completionProjection(actor, capture, proposal);
+      const reconciled = this.options.store.liquidity.reconcileSessionCompletion({
+        ...actor, proposalId, ...intent, now: capture.now,
+        expectedClaimSetRevision: capture.state.claimSet.revision, evidence,
+      });
+      return this.completionProjection(actor, capture, reconciled);
+    });
+  }
   async previewTransfer(actor: LiquidityActor, value: unknown): Promise<PublicTransferPreview> {
     const intent = transferPreviewInputSchema.parse(value);
     if (intent.kind === 'purchase')
@@ -1044,8 +1746,7 @@ export class LiquidityService {
     else this.require(actor, 'budget', actor.budgetId, 'session');
     return this.capture(actor, async (capture) => {
       let session: SpendSession | null = null;
-      let items: LiquidityPurchaseItem[];
-      let itemId = 'purchase';
+      let plan: TransferPlan | undefined;
       if (intent.kind === 'session') {
         session = this.options.store.liquidity.getSpendSession({
           ...actor,
@@ -1054,22 +1755,31 @@ export class LiquidityService {
         });
         if (!session || session.version !== intent.expectedSessionVersion)
           throw new Error('Session version conflict');
-        items = this.items(
-          actor,
-          capture,
-          session.items.map((item) => ({
-            id: item.id,
-            categoryId: item.categoryId,
-            amount: item.amount,
-            purchaseAt: item.purchaseAt,
-            requiredBy: item.requiredBy,
-            accountId: item.routeSelection.explicitAccountId,
-          })),
-          session.accountId,
-        );
-        itemId = intent.purchaseItemId;
-      } else
-        items = this.items(
+        const items = this.sessionItems(actor, capture, session);
+        if (
+          !items.some((item) => item.id === intent.purchaseItemId) ||
+          items.some((item) => Date.parse(item.purchaseAt) <= Date.parse(capture.now))
+        )
+          throw new Error('Invalid input: schedule a known session item strictly in the future');
+        const card = this.nativeDecisionCard(capture, items, session.expiresAt, session);
+        const path = card?.outcome === 'safe_after_date'
+          ? card.fundingPaths.find(
+              (candidate) =>
+                candidate.kind === 'account_transfer' &&
+                candidate.itemIds.some(
+                  (id) =>
+                    id === intent.purchaseItemId ||
+                    id.startsWith(`${intent.purchaseItemId}::category-`),
+                ),
+            )
+          : undefined;
+        if (path?.kind === 'account_transfer') {
+          const { kind: _kind, itemId: _itemId, itemIds: _itemIds, ...exactPlan } = path;
+          plan = exactPlan;
+        }
+      } else {
+        const itemId = 'purchase';
+        const items = this.items(
           actor,
           capture,
           [
@@ -1084,15 +1794,14 @@ export class LiquidityService {
           ],
           null,
         );
-      const evaluatedAt = Date.parse(capture.now);
-      if (items.some((item) => Date.parse(item.purchaseAt) <= evaluatedAt))
-        throw new Error(
-          'Invalid input: schedule every transfer-backed purchase strictly in the future',
-        );
-      const evaluated = this.evaluate(capture, { kind: 'purchases', items }, session?.expiresAt);
-      const plan = evaluated.result?.purchases.find(
-        (purchase) => purchase.itemId === itemId,
-      )?.transferPlan;
+        if (items.some((item) => Date.parse(item.purchaseAt) <= Date.parse(capture.now)))
+          throw new Error(
+            'Invalid input: schedule every transfer-backed purchase strictly in the future',
+          );
+        plan = this.evaluate(capture, { kind: 'purchases', items }).result?.purchases.find(
+          (purchase) => purchase.itemId === itemId,
+        )?.transferPlan ?? undefined;
+      }
       if (!plan)
         throw new Error('Transfer unavailable; refresh payment readiness and required evidence');
       const projected = capture.projector.transferPlan(plan);
@@ -1458,7 +2167,7 @@ export class LiquidityService {
   }
 }
 
-/** Canonical configuration identity only; financial/plan identities are exclusively native. */
+/** Stable object-key ordering for workflow identities; native Rust owns financial plan hashes. */
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value !== null && typeof value === 'object')
@@ -1469,12 +2178,29 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Ignore observation-clock metadata without ignoring ledger values or provenance state. */
+const observationOnlyFields = new Set([
+  'snapshotId', 'contentHash', 'capturedAt', 'snapshotDate', 'ledgerContentHash',
+  'actualDownloadedAt', 'bankSyncedAt', 'observedAt', 'expiresAt',
+]);
+function stableLedgerMaterial(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableLedgerMaterial);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key, item]) => !observationOnlyFields.has(key) && item !== undefined)
+        .map(([key, item]) => [key, stableLedgerMaterial(item)]),
+    );
+  return value;
+}
+
 /** Production composition reuses the existing lazy native loader and caller's connection/store. */
 export async function createLiquidityService(
   options: Omit<LiquidityServiceOptions, 'native'>,
 ): Promise<LiquidityService> {
   const native = await loadNativeBindings();
   if (
+    !native.evaluateDecisionCard ||
     !native.evaluateAccountAwareSpendability ||
     !native.verifyTransferPreconditions ||
     !native.verifyTransferSettlement
@@ -1483,6 +2209,7 @@ export async function createLiquidityService(
   return new LiquidityService({
     ...options,
     native: {
+      evaluateDecisionCard: native.evaluateDecisionCard,
       evaluateAccountAwareSpendability: native.evaluateAccountAwareSpendability,
       verifyTransferPreconditions: native.verifyTransferPreconditions,
       verifyTransferSettlement: native.verifyTransferSettlement,

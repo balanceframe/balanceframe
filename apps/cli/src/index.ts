@@ -1918,7 +1918,19 @@ export async function main(
         };
         if (connectionManager) {
           const config = await connectionManager.loadConfig();
-          if (!config) throw new Error('Configure an Actual budget first.');
+          if (!config) {
+            const info = new ErrorInfo({
+              code: 'not_connected',
+              message: 'No Actual budget selected. Use a connect command first.',
+              retryable: true,
+              reasonCodes: ['missing_ledger_config'],
+            });
+            return JSON.stringify(
+              errorResponse(requestId, info, undefined, AuthorizationContext.observe(actorId)),
+              null,
+              2,
+            );
+          }
           const path = process.env.BALANCEFRAME_WORKFLOW_DB_PATH ?? './data/workflow.db';
           mkdirSync(dirname(path), { recursive: true });
           const store = new SqliteWorkflowStore(path);

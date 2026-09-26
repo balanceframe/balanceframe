@@ -1315,6 +1315,175 @@ fn category_claims_deduplicate_economic_identity_but_not_conflicting_amounts_or_
 }
 
 #[test]
+fn obligation_with_same_economic_id_as_pending_outflow_does_not_reserve_twice() {
+    let mut v = fixture();
+    v["scenario"] = json!({"kind":"none"});
+    v["facts"]["accounts"][0]["unsettledFlows"] =
+        json!([flow("pending-1", "charge-shared", "outflow", 1000, false)]);
+    let pending_only = run(v.clone());
+    v["facts"]["accounts"][0]["obligations"] =
+        json!([obligation("bill", "charge-shared", Some("food"), 1000)]);
+    assert_eq!(
+        head(&run(v.clone()), "checking"),
+        head(&pending_only, "checking")
+    );
+    v["facts"]["accounts"][0]["obligations"][0]["amount"] = m(999);
+    let ambiguous = run(v);
+    assert!(ambiguous.accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "ambiguous_obligation_match"));
+}
+
+#[test]
+fn scoped_account_claim_matching_an_obligation_reserves_cash_once_and_rejects_mismatch() {
+    let mut v = fixture();
+    v["scenario"] = json!({"kind":"none"});
+    v["facts"]["accounts"][0]["obligations"] = json!([obligation(
+        "scheduled",
+        "schedule:shared",
+        Some("food"),
+        1000
+    )]);
+    let baseline = run(v.clone());
+    v["claimSet"]["bundles"] = json!([{
+        "id":"scheduled-claim",
+        "creationSnapshotId":"old",
+        "creationPolicyVersion":"old",
+        "state":"active",
+        "expiresAt":"2026-09-06T17:00:00Z",
+        "initiated":false,
+        "effects":[{
+            "kind":"account_debit",
+            "resourceId":"checking",
+            "amount":m(1000),
+            "economicObligationId":"schedule:shared:account:checking",
+            "sourceEconomicObligationId":"schedule:shared",
+            "categoryId":"food",
+            "includedInBalance":false,
+            "matchedTransactionIds":[]
+        }]
+    }]);
+    assert_eq!(
+        head(&run(v.clone()), "checking"),
+        head(&baseline, "checking")
+    );
+    v["claimSet"]["bundles"][0]["effects"][0]["categoryId"] = Value::Null;
+    let wrong_category = run(v.clone());
+    assert!(wrong_category.accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "ambiguous_claim_match"));
+    v["claimSet"]["bundles"][0]["effects"][0]["categoryId"] = json!("food");
+    v["claimSet"]["bundles"][0]["effects"][0]["amount"] = m(2000);
+    let conflict = run(v.clone());
+    assert!(conflict.accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "ambiguous_claim_match"));
+    v["claimSet"]["bundles"][0]["effects"][0]["amount"] = m(1000);
+    v["claimSet"]["bundles"][0]["effects"][0]["sourceEconomicObligationId"] =
+        json!("different-obligation");
+    let forged = run(v.clone());
+    assert!(forged.accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "ambiguous_claim_match"));
+    v["claimSet"]["bundles"][0]["effects"][0]["sourceEconomicObligationId"] =
+        json!("schedule:shared");
+    v["facts"]["accounts"][0]["obligations"] = json!([]);
+    let without_claims = {
+        let mut bare = v.clone();
+        bare["claimSet"]["bundles"] = json!([]);
+        run(bare)
+    };
+    let mut other = v["claimSet"]["bundles"][0].clone();
+    other["id"] = json!("savings-claim");
+    other["effects"][0]["resourceId"] = json!("savings");
+    other["effects"][0]["economicObligationId"] = json!("schedule:shared:account:savings");
+    v["claimSet"]["bundles"].as_array_mut().unwrap().push(other);
+    let distinct = run(v.clone());
+    for account in ["checking", "savings"] {
+        assert_eq!(
+            head(&distinct, account),
+            head(&without_claims, account) - 1000
+        );
+    }
+    v["claimSet"]["bundles"][1]["effects"][0]["resourceId"] = json!("checking");
+    v["claimSet"]["bundles"][1]["effects"][0]["economicObligationId"] =
+        json!("schedule:shared:account:checking");
+    v["claimSet"]["bundles"][1]["effects"][0]["amount"] = m(2000);
+    let conflicting_scopes = run(v);
+    assert!(conflicting_scopes.accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "ambiguous_claim_match"));
+}
+
+#[test]
+fn scoped_claim_mirrors_exact_unsettled_flow_without_doubling_or_forging_evidence() {
+    let mut v = fixture();
+    v["scenario"] = json!({"kind":"none"});
+    v["facts"]["accounts"][0]["unsettledFlows"] =
+        json!([flow("pending-1", "bank-charge", "outflow", 1000, false)]);
+    let flow_only = run(v.clone());
+    v["claimSet"]["bundles"] = json!([{
+        "id":"pending-claim",
+        "creationSnapshotId":"old",
+        "creationPolicyVersion":"old",
+        "state":"active",
+        "expiresAt":"2026-09-06T17:00:00Z",
+        "initiated":false,
+        "effects":[{
+            "kind":"account_debit",
+            "resourceId":"checking",
+            "amount":m(1000),
+            "economicObligationId":"bank-charge:account:checking",
+            "sourceEconomicObligationId":"bank-charge",
+            "categoryId":null,
+            "includedInBalance":false,
+            "matchedTransactionIds":[]
+        }]
+    }]);
+    assert_eq!(
+        head(&run(v.clone()), "checking"),
+        head(&flow_only, "checking")
+    );
+    v["claimSet"]["bundles"][0]["effects"][0]["amount"] = m(1200);
+    assert!(run(v.clone()).accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "claim_flow_amount_mismatch"));
+
+    v["claimSet"]["bundles"][0]["effects"][0]["amount"] = m(1000);
+    v["claimSet"]["bundles"][0]["effects"][0]["sourceEconomicObligationId"] = json!("");
+    assert!(run(v.clone()).accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "ambiguous_claim_match"));
+    v["claimSet"]["bundles"][0]["effects"][0]["sourceEconomicObligationId"] = json!("bank-charge");
+    v["claimSet"]["bundles"][0]["effects"][0]["kind"] = json!("destination_hold");
+    assert!(run(v.clone()).accounts_before[0]
+        .reasons
+        .iter()
+        .any(|reason| reason == "ambiguous_claim_match"));
+
+    v["claimSet"]["bundles"][0]["effects"][0]["kind"] = json!("account_debit");
+    v["claimSet"]["bundles"][0]["effects"][0]["economicObligationId"] =
+        json!("linked-purchase:account:checking");
+    v["claimSet"]["bundles"][0]["effects"][0]["sourceEconomicObligationId"] =
+        json!("linked-purchase");
+    v["claimSet"]["bundles"][0]["effects"][0]["matchedTransactionIds"] = json!(["pending-1"]);
+    assert_eq!(
+        head(&run(v.clone()), "checking"),
+        head(&flow_only, "checking")
+    );
+    v["facts"]["accounts"][0]["unsettledFlows"][0]["importedId"] = json!("import-1");
+    v["claimSet"]["bundles"][0]["effects"][0]["matchedTransactionIds"] = json!(["import-1"]);
+    assert_eq!(head(&run(v), "checking"), head(&flow_only, "checking"));
+}
+
+#[test]
 fn invalid_transfer_calendars_remain_unknown_instead_of_becoming_safe_or_certainly_late() {
     for (path, value) in [
         ("/providerArrivalAt", json!("2026-09-04T15:00:00Z")),

@@ -24,6 +24,7 @@ dependencies = [
  "balanceframe-financial-core",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

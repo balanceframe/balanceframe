@@ -81,6 +81,126 @@
               "
           /></label>
         </fieldset>
+        <label class="grid gap-1 text-sm">
+          Reservation conflict policy
+          <select v-model="reservationMode" class="rounded border bg-transparent p-2">
+            <option value="inform">Inform about competing plans</option>
+            <option value="block">Block plans that would reuse reserved funds</option>
+          </select>
+        </label>
+        <p class="text-xs text-gray-600 dark:text-gray-400">
+          Reservations are BalanceFrame workflow records, not Actual transactions or protected bank balances.
+        </p>
+        <h3 v-if="configuration.categories.length" class="font-semibold">
+          Category spending policy
+        </h3>
+        <p v-if="configuration.categories.length" class="text-sm">
+          Protected, goal, guilt-free, and discretionary categories keep their saved policy
+          controls. A discretionary cooldown delays completion until the purchase is re-evaluated;
+          it never promises that funds are held or reserved.
+        </p>
+        <label v-if="configuration.categories.length" class="grid gap-1 text-sm"
+          >Add category policy<select
+            v-model="categoryToAdd"
+            class="rounded border bg-transparent p-2"
+            @change="addCategoryPolicy"
+          >
+            <option value="">Choose an authorized category</option>
+            <option
+              v-for="category in availableCategoryPolicies"
+              :key="category.id"
+              :value="category.id"
+            >
+              {{ category.name ?? 'Authorized category' }}
+            </option>
+          </select></label
+        >
+        <fieldset
+          v-for="categoryPolicy in categoryPolicies"
+          :key="categoryPolicy.categoryId"
+          class="rounded border p-3"
+        >
+          <legend class="px-1 font-semibold">{{ categoryName(categoryPolicy.categoryId) }}</legend>
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label class="grid gap-1 text-sm"
+              >Category kind<select
+                v-model="categoryPolicy.kind"
+                class="rounded border bg-transparent p-2"
+              >
+                <option v-for="kind in categoryKinds" :key="kind.value" :value="kind.value">
+                  {{ kind.label }}
+                </option>
+              </select></label
+            ><label class="grid gap-1 text-sm"
+              >Minimum retained (minor units)<input
+                v-model="categoryPolicy.minimumRetained.minorUnits"
+                pattern="[0-9]+"
+                inputmode="numeric"
+                required
+                class="rounded border bg-transparent p-2"
+            /></label>
+            <label class="grid gap-1 text-sm"
+              >Retained currency<input
+                v-model="categoryPolicy.minimumRetained.currency"
+                pattern="[A-Z]{3}"
+                maxlength="3"
+                required
+                class="rounded border bg-transparent p-2"
+            /></label>
+            <label class="grid gap-1 text-sm"
+              >Projected remaining need (minor units)<input
+                v-model="categoryPolicy.projectedRemainingNeed.minorUnits"
+                pattern="[0-9]+"
+                inputmode="numeric"
+                required
+                class="rounded border bg-transparent p-2"
+            /></label>
+            <label class="grid gap-1 text-sm"
+              >Need currency<input
+                v-model="categoryPolicy.projectedRemainingNeed.currency"
+                pattern="[A-Z]{3}"
+                maxlength="3"
+                required
+                class="rounded border bg-transparent p-2"
+            /></label>
+          </div>
+          <label class="my-3 block text-sm"
+            ><input v-model="categoryPolicy.donorEligible" type="checkbox" /> Donor eligible</label
+          >
+          <label v-if="categoryPolicy.kind === 'discretionary'" class="grid gap-1 text-sm"
+            >Cooldown before completion (minutes, 0–10080)<input
+              :value="categoryPolicy.cooldownMinutes ?? ''"
+              type="number"
+              min="0"
+              max="10080"
+              step="1"
+              inputmode="numeric"
+              :aria-describedby="cooldownHintId(categoryPolicy.categoryId)"
+              class="rounded border bg-transparent p-2"
+              @input="
+                categoryPolicy.cooldownMinutes = optionalInteger(
+                  ($event.target as HTMLInputElement).value,
+                )
+              "
+          /></label>
+          <p
+            v-if="categoryPolicy.kind === 'discretionary'"
+            :id="cooldownHintId(categoryPolicy.categoryId)"
+            class="text-xs text-gray-500"
+          >
+            Completion waits this many minutes, then re-evaluates the same purchase. This delay
+            does not hold or reserve funds.
+          </p>
+          <button
+            v-if="newCategoryIds.includes(categoryPolicy.categoryId)"
+            type="button"
+            class="mt-3 text-sm text-red-600 underline"
+            @click="removeCategoryPolicy(categoryPolicy.categoryId)"
+          >
+            Remove category policy
+          </button>
+        </fieldset>
+
         <h3 class="font-semibold">Transfer timing routes</h3>
         <p class="text-sm">
           No route timing is inferred. Supply either a known arrival instant or a complete calendar
@@ -274,6 +394,15 @@ const roles: AccountRole[] = [
   'cash',
   'excluded',
 ];
+type CategoryPolicy = NonNullable<PublicLiquidityPolicyInput['categoryPolicies']>[number];
+const categoryKinds = [
+  { value: 'ordinary', label: 'Ordinary' },
+  { value: 'protected', label: 'Protected' },
+  { value: 'goal', label: 'Goal' },
+  { value: 'guilt_free', label: 'Guilt-free' },
+  { value: 'discretionary', label: 'Discretionary' },
+] as const;
+
 const accounts = ref<PublicLiquidityPolicyInput['accounts']>(
   props.configuration.accounts.map((account) => {
     const existing = props.configuration.policy?.accounts.find(
@@ -301,6 +430,30 @@ const accounts = ref<PublicLiquidityPolicyInput['accounts']>(
     };
   }),
 );
+const visibleCategoryIds = new Set(props.configuration.categories.map((category) => category.id));
+const reservationMode = ref<'inform' | 'block'>(
+  props.configuration.policy?.reservationMode ?? 'inform',
+);
+const categoryPolicies = ref<CategoryPolicy[]>(
+  (props.configuration.policy?.categoryPolicies ?? [])
+    .filter((policy) => visibleCategoryIds.has(policy.categoryId))
+    .map((policy) => ({
+      ...policy,
+      minimumRetained: { ...policy.minimumRetained },
+      projectedRemainingNeed: { ...policy.projectedRemainingNeed },
+    })),
+);
+const newCategoryIds = ref<string[]>([]);
+const categoryToAdd = ref('');
+const availableCategoryPolicies = computed(() =>
+  props.configuration.categories.filter(
+    (category) =>
+      !categoryPolicies.value.some((policy) => policy.categoryId === category.id) &&
+      categoryCurrency(category.id) !== null,
+  ),
+);
+
+
 const routes = ref<PublicLiquidityPolicyInput['transferRoutes']>(
   (props.configuration.policy?.transferRoutes ?? []).map(({ evidence: _evidence, ...route }) => ({
     ...route,
@@ -326,6 +479,60 @@ function accountName(id: string) {
     props.configuration.accounts.find((account) => account.id === id)?.name ?? 'Authorized account'
   );
 }
+function categoryName(id: string) {
+  return (
+    props.configuration.categories.find((category) => category.id === id)?.name ??
+    'Authorized category'
+  );
+}
+function categoryCurrency(id: string) {
+  const category = props.configuration.categories.find((item) => item.id === id);
+  return (
+    category?.availabilityBefore?.currency ??
+    category?.availabilityAfter?.currency ??
+    category?.backing[0]?.amount.currency ??
+    null
+  );
+}
+
+function addCategoryPolicy() {
+  const categoryId = categoryToAdd.value;
+  const currency = categoryCurrency(categoryId);
+  if (
+    !categoryId ||
+    !currency ||
+    categoryPolicies.value.some((policy) => policy.categoryId === categoryId)
+  ) {
+    categoryToAdd.value = '';
+    return;
+  }
+  categoryPolicies.value.push({
+    categoryId,
+    kind: 'ordinary',
+    donorEligible: false,
+    minimumRetained: { minorUnits: '0', currency },
+    projectedRemainingNeed: { minorUnits: '0', currency },
+  });
+  newCategoryIds.value = [...newCategoryIds.value, categoryId];
+  categoryToAdd.value = '';
+}
+
+function removeCategoryPolicy(categoryId: string) {
+  if (!newCategoryIds.value.includes(categoryId)) return;
+  const index = categoryPolicies.value.findIndex((policy) => policy.categoryId === categoryId);
+  if (index >= 0) categoryPolicies.value.splice(index, 1);
+  newCategoryIds.value = newCategoryIds.value.filter((id) => id !== categoryId);
+}
+
+
+function optionalInteger(value: string) {
+  return value === '' ? undefined : Number(value);
+}
+
+function cooldownHintId(categoryId: string) {
+  return `category-cooldown-${categoryId}`;
+}
+
 function split(value: string) {
   return value
     .split(',')
@@ -360,6 +567,17 @@ function addThreshold() {
     minimumApprovers: 1,
   });
 }
+function categoryPolicyForSave(policy: CategoryPolicy): CategoryPolicy {
+  const copy = {
+    ...policy,
+    minimumRetained: { ...policy.minimumRetained },
+    projectedRemainingNeed: { ...policy.projectedRemainingNeed },
+  };
+  if (copy.kind === 'discretionary' && copy.cooldownMinutes !== undefined) return copy;
+  const { cooldownMinutes: _cooldown, ...withoutCooldown } = copy;
+  return withoutCooldown;
+}
+
 async function save() {
   if (busy.value || !props.configuration.canConfigure) return;
   busy.value = true;
@@ -369,8 +587,12 @@ async function save() {
     const input: PublicLiquidityPolicyInput = {
       expectedVersion: props.configuration.policy?.version ?? null,
       expiresAt: new Date(`${expiresAt.value}Z`).toISOString(),
+      reservationMode: reservationMode.value,
       accounts: accounts.value,
       transferRoutes: routes.value,
+      ...(props.configuration.policy?.categoryPolicies !== undefined || categoryPolicies.value.length
+        ? { categoryPolicies: categoryPolicies.value.map(categoryPolicyForSave) }
+        : {}),
       approvalPolicy: approval.value,
     };
     const configuration = await liquidityRequest<PublicLiquidityConfiguration>(
@@ -378,6 +600,7 @@ async function save() {
       'PUT',
       { ...input },
     );
+    newCategoryIds.value = [];
     saved.value = true;
     emit('saved', configuration);
   } catch (e) {

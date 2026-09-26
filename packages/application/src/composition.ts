@@ -51,8 +51,6 @@ import type {
   DisconnectResult,
   RemovalResult,
   DeletionResult,
-  PurchaseEvaluationResult,
-  PurchaseEvaluationParams,
   CashFlowProjectionResult,
   CashFlowProjectionParams,
   TargetHealthResult,
@@ -108,7 +106,6 @@ import type {
   FinancialSnapshot,
   SourceObservation,
 } from '@balanceframe/protocol-generated';
-import { purchaseProspectiveDecisionEnvelopeSchema } from '@balanceframe/protocol-generated/validators';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile, rename, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -352,10 +349,8 @@ export interface NativeBindingShim {
   findCategorizationCandidates(input: string): string;
 
   // Phase 8 — Budget Intelligence N-API methods
-  /** Evaluate a proposed purchase against budget limits. */
-  evaluatePurchase(input: string): string;
-  /** Evaluate a purchase through the canonical prospective-decision contract. */
-  evaluateProspectivePurchase?(input: string): string;
+  /** Evaluate the immutable pre-commitment Decision Card. */
+  evaluateDecisionCard?(input: string): string;
   /** Account-aware scenarios and transfer verification share the native singleton. */
   evaluateAccountAwareSpendability?(input: string): string;
   verifyTransferPreconditions?(input: string): string;
@@ -473,21 +468,6 @@ function snapshotFromSynchronization(value: unknown): unknown | null {
     return asFinancialSnapshot(record.snapshot)?.legacySnapshot ?? record.snapshot;
   }
   return financialSnapshotFromSynchronization(value)?.legacySnapshot ?? null;
-}
-
-function canonicalJsonStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, currentValue: unknown) => {
-    if (currentValue === null || typeof currentValue !== 'object' || Array.isArray(currentValue)) {
-      return currentValue;
-    }
-
-    const record = currentValue as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .map((key) => [key, record[key]]),
-    );
-  });
 }
 
 function snapshotEntityLabels(snapshot: FinancialSnapshot): Record<string, string> {
@@ -758,44 +738,6 @@ export async function createNativeAnalysisProtocol(
     return typeof v.minorUnits === 'string' && typeof v.currency === 'string'
       ? { minorUnits: v.minorUnits, currency: v.currency }
       : null;
-  };
-
-  const parsePurchaseResponse = (raw: string): PurchaseEvaluationResult => {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      throw new Error('Native evaluatePurchase returned invalid JSON.');
-    }
-    const categoryBudget = asMoney(parsed.categoryBudget);
-    const categorySpent = asMoney(parsed.categorySpent);
-    const categoryRemaining = asMoney(parsed.categoryRemaining);
-    if (!categoryBudget || !categorySpent || !categoryRemaining) {
-      throw new Error('Native evaluatePurchase returned missing or invalid required money.');
-    }
-    if (typeof parsed.allowable !== 'boolean') {
-      throw new Error('Native evaluatePurchase returned an invalid allowable value.');
-    }
-    if (
-      !Array.isArray(parsed.reasonCodes) ||
-      !parsed.reasonCodes.every((value) => typeof value === 'string')
-    ) {
-      throw new Error('Native evaluatePurchase returned invalid reason codes.');
-    }
-    const projectedBalance =
-      parsed.projectedBalance === null ? null : asMoney(parsed.projectedBalance);
-    if (parsed.projectedBalance !== null && !projectedBalance) {
-      throw new Error('Native evaluatePurchase returned invalid projected balance money.');
-    }
-    return {
-      allowable: parsed.allowable,
-      reasonCodes: parsed.reasonCodes,
-      categoryBudget,
-      categorySpent,
-      categoryRemaining,
-      projectedBalance,
-      hasEnvelope: parsed.hasEnvelope === true,
-    };
   };
 
   const parseCashFlowResponse = (
@@ -1432,205 +1374,6 @@ export async function createNativeAnalysisProtocol(
     // -----------------------------------------------------------------------
     // Budget Intelligence — native-backed analytics
     // -----------------------------------------------------------------------
-
-    // purchaseEvaluation
-    // ------------------------------------------------------------------
-
-    async purchaseEvaluation(
-      ledger: unknown,
-      params: PurchaseEvaluationParams,
-    ): Promise<PurchaseEvaluationResult> {
-      const synchronization = await obtainSynchronization(ledger);
-      if (!synchronization) {
-        throw new Error('Ledger synchronization returned no snapshot.');
-      }
-
-      const rawSnapshot = snapshotFromSynchronization(synchronization);
-      const financialSnapshot = financialSnapshotFromSynchronization(synchronization);
-      const snapshotRecord =
-        rawSnapshot !== null && typeof rawSnapshot === 'object'
-          ? (rawSnapshot as Record<string, unknown>)
-          : null;
-      const capturedAt = financialSnapshot?.capturedAt ?? snapshotRecord?.snapshotDate;
-      if (typeof capturedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(capturedAt)) {
-        throw new Error('Ledger snapshot is missing a valid capture date.');
-      }
-      if (!asMoney(params.amount)) {
-        throw new Error('Purchase evaluation requires valid amount money.');
-      }
-
-      const proposedTransaction = {
-        id: '',
-        accountId: params.accountId ?? '',
-        date: capturedAt.slice(0, 10),
-        amount: params.amount,
-        payeeId: null,
-        payeeName: null,
-        categoryId: params.categoryId,
-        categoryName: null,
-        cleared: false,
-        reconciled: false,
-        importedId: null,
-        importedPayee: null,
-        notes: null,
-        tags: [],
-        transferAccountId: null,
-        subtransactions: [],
-      };
-
-      if (typeof native.evaluateProspectivePurchase === 'function' && financialSnapshot !== null) {
-        if (!params.accountId || !params.categoryId) {
-          throw new Error(
-            'Prospective purchase evaluation requires account and category identity.',
-          );
-        }
-        if (!financialSnapshot.snapshotId.trim() || !financialSnapshot.contentHash.trim()) {
-          throw new Error('Canonical financial snapshot is missing required identity.');
-        }
-
-        if (!/^(?:0|-[1-9]\d*|[1-9]\d*)$/.test(params.amount.minorUnits)) {
-          throw new Error('Prospective purchase amount must be a signed decimal string.');
-        }
-        const suppliedMinorUnits = BigInt(params.amount.minorUnits);
-        const zeroMinorUnits = BigInt('0');
-        const signedI64Min = BigInt('-9223372036854775808');
-        const signedI64Max = BigInt('9223372036854775807');
-        if (suppliedMinorUnits < signedI64Min || suppliedMinorUnits > signedI64Max) {
-          throw new Error('Prospective purchase amount exceeds signed 64-bit range.');
-        }
-        const outflowMinorUnits =
-          suppliedMinorUnits === zeroMinorUnits
-            ? '0'
-            : (suppliedMinorUnits < zeroMinorUnits
-                ? suppliedMinorUnits
-                : -suppliedMinorUnits
-              ).toString();
-        const canonicalAmount = {
-          minorUnits: outflowMinorUnits,
-          currency: params.amount.currency,
-        };
-        const canonicalProposedTransaction = {
-          ...proposedTransaction,
-          amount: canonicalAmount,
-        };
-
-        const policy = {
-          pendingMode: 'includeConservatively',
-          uncategorizedMode: 'reserveFullAmount',
-          unclearedMode: 'include',
-          maxBankSyncAgeMinutes: null,
-          maxBudgetSnapshotAgeMinutes: null,
-          accountOverrides: {
-            includeOnly: null,
-            exclude: [],
-          },
-        };
-        const policyVersion = 'purchase-default-v1';
-        const policyHash = `sha256:${createHash('sha256')
-          .update(JSON.stringify(policy))
-          .digest('hex')}`;
-        const validUntil =
-          params.validUntil ??
-          new Date(Date.parse(capturedAt) + 30 * 24 * 60 * 60 * 1000)
-            .toISOString()
-            .replace('.000Z', 'Z');
-        const context = params.context ?? {
-          evaluatedAt: capturedAt,
-          horizon: {
-            startsAt: capturedAt,
-            endsAt: validUntil,
-          },
-          policy,
-          policyVersion,
-          policyHash,
-          snapshotId: financialSnapshot.snapshotId,
-          contentHash: financialSnapshot.contentHash,
-        };
-        const claims = params.claims ?? [];
-        const redaction = params.redaction ?? 'visible';
-        const identitySeed = canonicalJsonStringify({
-          snapshotId: financialSnapshot.snapshotId,
-          contentHash: financialSnapshot.contentHash,
-          categoryId: params.categoryId,
-          accountId: params.accountId,
-          amount: canonicalAmount,
-          context,
-          claims,
-          validUntil,
-          redaction,
-        });
-        const identityHash = createHash('sha256').update(identitySeed).digest('hex');
-        const input = JSON.stringify({
-          financialSnapshot,
-          context,
-          claims,
-          proposedTransaction: canonicalProposedTransaction,
-          categoryId: params.categoryId,
-          requestId: params.requestId ?? `request:${identityHash}`,
-          correlationId: params.correlationId ?? `correlation:${identityHash}`,
-          decisionId: params.decisionId ?? `decision:${identityHash}`,
-          validUntil,
-          redaction,
-        });
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(native.evaluateProspectivePurchase(input));
-        } catch {
-          throw new Error('Native evaluateProspectivePurchase returned invalid JSON.');
-        }
-        const decision = purchaseProspectiveDecisionEnvelopeSchema.parse(parsed);
-        const hasEnvelope = decision.before.amounts.some(
-          ({ label }) => label === 'envelopeAvailability',
-        );
-        const currencyMismatch = decision.issues.some(({ code }) => code === 'currency_mismatch');
-        const envelopeFundingState: NonNullable<PurchaseEvaluationResult['envelopeFundingState']> =
-          currencyMismatch || !hasEnvelope
-            ? 'unavailable'
-            : BigInt(decision.payload.categoryBudget.minorUnits) <= BigInt(0)
-              ? 'unfunded'
-              : 'funded';
-        const verdict: NonNullable<PurchaseEvaluationResult['verdict']> =
-          decision.readiness === 'blocked'
-            ? 'insufficient_data'
-            : !decision.payload.allowable
-              ? 'not_safe'
-              : decision.readiness === 'qualified'
-                ? 'safe_with_qualifications'
-                : 'safe';
-        const explanation =
-          verdict === 'insufficient_data'
-            ? 'A safe purchase verdict is unavailable because required financial data is insufficient or conflicting.'
-            : verdict === 'not_safe'
-              ? 'The purchase is not allowable under the evaluated budget and account constraints.'
-              : verdict === 'safe_with_qualifications'
-                ? 'The purchase is allowable with qualifications that should be reviewed.'
-                : 'The purchase is within the evaluated budget and account constraints.';
-        return {
-          ...decision.payload,
-          categoryBudget: currencyMismatch ? null : decision.payload.categoryBudget,
-          categorySpent: currencyMismatch ? null : decision.payload.categorySpent,
-          categoryRemaining: currencyMismatch ? null : decision.payload.categoryRemaining,
-          projectedBalance: currencyMismatch ? null : decision.payload.projectedBalance,
-          hasEnvelope,
-          verdict,
-          explanation,
-          envelopeFundingState,
-          entityLabels: snapshotEntityLabels(financialSnapshot),
-          decision,
-        };
-      }
-
-      if (rawSnapshot === null) {
-        throw new Error('Ledger synchronization returned no legacy snapshot.');
-      }
-      const input = JSON.stringify({
-        snapshot: rawSnapshot,
-        proposedTransaction,
-        categoryId: params.categoryId,
-      });
-      const raw = native.evaluatePurchase(input);
-      return parsePurchaseResponse(raw);
-    },
 
     // ------------------------------------------------------------------
     // cashFlowProjection

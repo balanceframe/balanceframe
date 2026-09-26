@@ -56,6 +56,11 @@ import type {
   LedgerId,
   AccountQuery,
   TransactionQuery,
+  ManualTransactionInput,
+  ManualTransactionResult,
+  ManualTransactionFailure,
+  ManualTransactionSuccess,
+  ManualTransactionErrorCode,
   ImportTransaction,
   ImportOptions,
   ImportResult,
@@ -151,6 +156,186 @@ type SourceAccountFacts = APIAccountEntity & {
 
 function hasNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+const MANUAL_I64_MIN = -(1n << 63n);
+const MANUAL_I64_MAX = (1n << 63n) - 1n;
+
+function manualInteger(value: unknown): bigint | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value)) {
+    return null;
+  }
+  try {
+    const integer = BigInt(value);
+    return integer >= MANUAL_I64_MIN && integer <= MANUAL_I64_MAX ? integer : null;
+  } catch {
+    return null;
+  }
+}
+
+function manualNegativeInteger(value: unknown): bigint | null {
+  const integer = manualInteger(value);
+  return integer !== null && integer < 0n ? integer : null;
+}
+
+function isManualDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    Number.isFinite(parsed.getTime()) &&
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
+
+function nullableTransactionCategory(transaction: TransactionEntity): string | null {
+  return typeof transaction.category === 'string' ? transaction.category : null;
+}
+
+function collectManualChildren(
+  parent: TransactionEntity,
+  transactions: TransactionEntity[],
+  parentId: string,
+): TransactionEntity[] {
+  const children: TransactionEntity[] = [];
+  const seenIds = new Set<string>();
+  const add = (candidate: TransactionEntity): void => {
+    if (candidate.parent_id !== parentId || candidate.is_child !== true) return;
+    if (hasNonBlankString(candidate.id)) {
+      if (seenIds.has(candidate.id)) return;
+      seenIds.add(candidate.id);
+    }
+    children.push(candidate);
+  };
+
+  for (const child of parent.subtransactions ?? []) add(child);
+  for (const transaction of transactions) add(transaction);
+  return children;
+}
+
+interface ManualVerification {
+  verified: boolean;
+  reason: string;
+}
+
+function verifyManualTransaction(
+  parent: TransactionEntity | undefined,
+  transactions: TransactionEntity[],
+  input: ManualTransactionInput,
+  payees?: APIPayeeEntity[],
+): ManualVerification {
+  if (!parent)
+    return { verified: false, reason: 'requested parent was not found after synchronization' };
+  if (parent.id !== input.parentId) {
+    return {
+      verified: false,
+      reason: 're-read parent identity did not match the requested parent ID',
+    };
+  }
+  if (parent.is_child === true) {
+    return { verified: false, reason: 're-read requested parent was marked as a child' };
+  }
+  if (parent.account !== input.accountId) {
+    return {
+      verified: false,
+      reason: 're-read parent account did not match the requested account',
+    };
+  }
+  if (parent.date !== input.date || parent.amount !== input.amount) {
+    return { verified: false, reason: 're-read parent date or amount did not match the request' };
+  }
+  if (nullableTransactionCategory(parent) !== (input.categoryId ?? null)) {
+    return { verified: false, reason: 're-read parent category did not match the request' };
+  }
+  if (input.notes !== undefined && parent.notes !== input.notes) {
+    return { verified: false, reason: 're-read parent notes did not match the request' };
+  }
+  if (input.payeeName !== undefined) {
+    const requestedPayeeName = input.payeeName.trim();
+    if (requestedPayeeName.length === 0) {
+      if (parent.payee != null) {
+        return { verified: false, reason: 're-read parent unexpectedly had a payee' };
+      }
+    } else {
+      const payeeId = hasNonBlankString(parent.payee) ? parent.payee : null;
+      const payee = payeeId ? payees?.find((candidate) => candidate.id === payeeId) : undefined;
+      const payeeMeta = payee as (APIPayeeEntity & { tombstone?: boolean }) | undefined;
+      if (
+        !payeeMeta ||
+        payeeMeta.tombstone === true ||
+        !hasNonBlankString(payeeMeta.name) ||
+        payeeMeta.name.trim() !== requestedPayeeName
+      ) {
+        return { verified: false, reason: 're-read parent payee did not match the request' };
+      }
+    }
+  }
+  if (parent.imported_id != null || parent.error != null) {
+    return {
+      verified: false,
+      reason: 're-read parent contained imported provenance or an Actual error',
+    };
+  }
+
+  const children = collectManualChildren(parent, transactions, input.parentId);
+  if (!input.splits) {
+    if (parent.is_parent === true || children.length > 0) {
+      return { verified: false, reason: 'single transaction re-read as a split' };
+    }
+    return { verified: true, reason: '' };
+  }
+
+  if (parent.is_parent !== true) {
+    return { verified: false, reason: 're-read split parent was not marked is_parent=true' };
+  }
+  if (parent.error != null) {
+    return { verified: false, reason: 're-read split parent contained a SplitTransactionError' };
+  }
+  if (children.length !== input.splits.length) {
+    return {
+      verified: false,
+      reason: 're-read split child count did not match the requested split',
+    };
+  }
+
+  const unmatched = [...children];
+  let childTotal = 0n;
+  for (const expected of input.splits) {
+    const index = unmatched.findIndex(
+      (child) =>
+        child.amount === expected.amount &&
+        child.account === expected.accountId &&
+        child.date === expected.date &&
+        nullableTransactionCategory(child) === expected.categoryId &&
+        child.parent_id === input.parentId &&
+        child.is_child === true &&
+        child.is_parent === false &&
+        child.imported_id == null &&
+        child.error == null,
+    );
+    if (index < 0) {
+      return { verified: false, reason: 're-read split child fields did not match the request' };
+    }
+    const matchedChild = unmatched[index]!;
+    const matchedAmount = manualNegativeInteger(matchedChild.amount);
+    if (matchedAmount === null) {
+      return {
+        verified: false,
+        reason: 're-read split child amount was not a safe negative integer',
+      };
+    }
+    childTotal += matchedAmount;
+    unmatched.splice(index, 1);
+  }
+  const parentAmount = manualNegativeInteger(parent.amount);
+  if (parentAmount === null || childTotal !== parentAmount) {
+    return { verified: false, reason: 're-read split amounts did not conserve the parent amount' };
+  }
+  return { verified: true, reason: '' };
 }
 
 function hasReliableAccountType(account: APIAccountEntity): boolean {
@@ -561,6 +746,398 @@ export class ActualConnector implements BudgetLedger {
   async listSchedules(): Promise<Schedule[]> {
     this.assertInitialized();
     return normalizeSchedules(await this.client.getSchedules(), this.currency);
+  }
+
+  /**
+   * Create one approved manual transaction or a checked split in Actual.
+   *
+   * This is intentionally narrower than Actual's import/reconciliation APIs:
+   * it never supplies `imported_id`, never enables category learning or
+   * automatic transfers, and treats `addTransactions()` as an attempted write
+   * with no usable returned identity. A success is returned only after sync and
+   * an exact re-read of the caller-owned parent ID and requested fields.
+   *
+   * The application owns approval. The adapter owns current Actual
+   * preconditions, duplicate/import review, synchronization, and verification.
+   */
+  async createManualTransaction(input: ManualTransactionInput): Promise<ManualTransactionResult> {
+    this.assertMutationAllowed('createManualTransaction');
+
+    const failure = (
+      code: ManualTransactionErrorCode,
+      error: string,
+      reviewRequired = false,
+    ): ManualTransactionFailure => ({
+      success: false,
+      parentId: input.parentId,
+      correlationId: input.correlationId,
+      error,
+      code,
+      ...(reviewRequired ? { reviewRequired: true } : {}),
+    });
+
+    if (!this._budgetInfo) {
+      return failure(
+        'BUDGET_NOT_SELECTED',
+        'No budget selected. Call selectBudget() before creating a manual transaction.',
+      );
+    }
+
+    if (
+      !hasNonBlankString(input.parentId) ||
+      !hasNonBlankString(input.correlationId) ||
+      !hasNonBlankString(input.accountId) ||
+      !isManualDate(input.date)
+    ) {
+      return failure(
+        'INVALID_INPUT',
+        'Manual transaction parentId, correlationId, accountId, and date are required.',
+      );
+    }
+    if (input.categoryId !== undefined && input.categoryId !== null) {
+      if (!hasNonBlankString(input.categoryId)) {
+        return failure('CATEGORY_PRECONDITION_FAILED', 'Manual transaction categoryId is invalid.');
+      }
+    }
+    if (input.payeeName !== undefined && typeof input.payeeName !== 'string') {
+      return failure('INVALID_INPUT', 'Manual transaction payeeName must be a string.');
+    }
+    if (input.notes !== undefined && typeof input.notes !== 'string') {
+      return failure('INVALID_INPUT', 'Manual transaction notes must be a string.');
+    }
+
+    const parentAmount = manualNegativeInteger(input.amount);
+    if (parentAmount === null) {
+      return failure(
+        'AMOUNT_OUT_OF_RANGE',
+        'Manual transaction amount must be a negative integer within the signed i64 range.',
+      );
+    }
+
+    const splits = input.splits;
+    if (splits !== undefined) {
+      if (!Array.isArray(splits) || splits.length === 0) {
+        return failure(
+          'SPLIT_CONSERVATION_FAILED',
+          'A split transaction must contain at least one child.',
+        );
+      }
+
+      let splitTotal = 0n;
+      for (const split of splits) {
+        if (
+          !split ||
+          !hasNonBlankString(split.accountId) ||
+          !isManualDate(split.date) ||
+          !hasNonBlankString(split.categoryId)
+        ) {
+          return failure(
+            'INVALID_INPUT',
+            'Each split child requires an accountId, date, and categoryId.',
+          );
+        }
+        if (split.accountId !== input.accountId) {
+          return failure(
+            'ACCOUNT_PRECONDITION_FAILED',
+            'Split child accountId must match the selected transaction account.',
+          );
+        }
+        if (split.date !== input.date) {
+          return failure(
+            'INVALID_INPUT',
+            'Split child date must match the selected transaction date.',
+          );
+        }
+        const splitAmount = manualNegativeInteger(split.amount);
+        if (splitAmount === null) {
+          return failure(
+            'AMOUNT_OUT_OF_RANGE',
+            'Each split amount must be a negative integer within the signed i64 range.',
+          );
+        }
+        splitTotal += splitAmount;
+      }
+      if (splitTotal !== parentAmount) {
+        return failure(
+          'SPLIT_CONSERVATION_FAILED',
+          'Split child amounts must conserve the negative parent amount.',
+        );
+      }
+    }
+
+    const budgetId = this._budgetInfo.id;
+    return this.withCacheLock(budgetId, async (): Promise<ManualTransactionResult> => {
+      try {
+        await this.client.sync();
+      } catch (err) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          `Unable to synchronize current Actual data before the manual write: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          true,
+        );
+      }
+
+      let accounts: APIAccountEntity[];
+      try {
+        accounts = await this.client.getAccounts();
+      } catch (err) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          `Unable to read current Actual accounts: ${err instanceof Error ? err.message : String(err)}`,
+          true,
+        );
+      }
+      const account = accounts.find((candidate) => candidate.id === input.accountId);
+      if (!account || account.closed === true) {
+        return failure(
+          'ACCOUNT_PRECONDITION_FAILED',
+          `Selected account ${input.accountId} is missing or closed in the current budget.`,
+        );
+      }
+
+      const requestedCategoryIds: string[] = [];
+      if (input.categoryId !== undefined && input.categoryId !== null) {
+        requestedCategoryIds.push(input.categoryId);
+      }
+      if (splits) {
+        requestedCategoryIds.push(...splits.map((split) => split.categoryId));
+      }
+
+      if (requestedCategoryIds.length > 0) {
+        let categories: (APICategoryEntity | APICategoryGroupEntity)[];
+        try {
+          categories = await this.client.getCategories();
+        } catch (err) {
+          return failure(
+            'PRECONDITION_READ_FAILED',
+            `Unable to read current Actual categories: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            true,
+          );
+        }
+        for (const categoryId of requestedCategoryIds) {
+          const category = categories.find((candidate) => candidate.id === categoryId);
+          const categoryMeta = category as
+            (APICategoryEntity & { tombstone?: boolean }) | undefined;
+          if (!categoryMeta || categoryMeta.tombstone === true) {
+            return failure(
+              'CATEGORY_PRECONDITION_FAILED',
+              `Selected category ${categoryId} is missing or deleted in the current budget.`,
+            );
+          }
+        }
+      }
+
+      let preWritePayees: APIPayeeEntity[] | undefined;
+      if (input.payeeName !== undefined && input.payeeName.trim().length > 0) {
+        try {
+          preWritePayees = await this.client.getPayees();
+        } catch (err) {
+          return failure(
+            'PRECONDITION_READ_FAILED',
+            `Unable to read current Actual payees: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            true,
+          );
+        }
+      }
+
+      let transactions: TransactionEntity[];
+      try {
+        transactions = await this.client.getTransactions(
+          input.accountId,
+          '0001-01-01',
+          '9999-12-31',
+        );
+      } catch (err) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          `Unable to read current Actual transactions: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          true,
+        );
+      }
+
+      const knownTransactions = transactions.filter(
+        (transaction) => transaction.id === input.parentId,
+      );
+      if (knownTransactions.length > 0) {
+        if (
+          knownTransactions.length !== 1 ||
+          knownTransactions[0]!.is_child === true ||
+          knownTransactions[0]!.imported_id != null
+        ) {
+          return failure(
+            'DUPLICATE_PARENT_REVIEW',
+            'The requested parent ID already exists and cannot be safely reused.',
+            true,
+          );
+        }
+        const knownVerification = verifyManualTransaction(
+          knownTransactions[0],
+          transactions,
+          input,
+          preWritePayees,
+        );
+        if (knownVerification.verified) {
+          const result: ManualTransactionSuccess = {
+            success: true,
+            parentId: input.parentId,
+            transactionId: input.parentId,
+            correlationId: input.correlationId,
+            verified: true,
+            alreadyPresent: true,
+          };
+          return result;
+        }
+        return failure(
+          'DUPLICATE_PARENT_REVIEW',
+          `The requested parent ID already exists but does not match this request: ${knownVerification.reason}`,
+          true,
+        );
+      }
+
+      const importedCandidates = transactions.filter(
+        (transaction) =>
+          transaction.is_child !== true &&
+          hasNonBlankString(transaction.imported_id) &&
+          transaction.account === input.accountId &&
+          transaction.date === input.date &&
+          transaction.amount === input.amount,
+      );
+      if (importedCandidates.length > 1) {
+        return failure(
+          'AMBIGUOUS_IMPORTED_CANDIDATE',
+          'Multiple imported Actual transactions could match this manual transaction; review is required.',
+          true,
+        );
+      }
+      if (importedCandidates.length === 1) {
+        return failure(
+          'IMPORTED_CANDIDATE_REVIEW',
+          'An imported Actual transaction could match this manual transaction; review is required before writing.',
+          true,
+        );
+      }
+
+      const parent: Record<string, unknown> = {
+        id: input.parentId,
+        account: input.accountId,
+        amount: input.amount,
+        date: input.date,
+      };
+      if (input.categoryId !== undefined && input.categoryId !== null) {
+        parent.category = input.categoryId;
+      }
+      if (input.payeeName !== undefined) parent.payee_name = input.payeeName;
+      if (input.notes !== undefined) parent.notes = input.notes;
+
+      if (splits) {
+        parent.is_parent = true;
+        parent.subtransactions = splits.map((split) => ({
+          amount: split.amount,
+          account: split.accountId,
+          date: split.date,
+          category: split.categoryId,
+          parent_id: input.parentId,
+          is_child: true,
+          is_parent: false,
+        }));
+      }
+
+      try {
+        const addResult = await this.client.addTransactions(input.accountId, [parent], {
+          learnCategories: false,
+          runTransfers: false,
+        });
+        if (addResult !== 'ok') {
+          return failure(
+            'WRITE_UNCERTAIN',
+            'Actual did not confirm the manual transaction write result; review is required and no retry was attempted.',
+            true,
+          );
+        }
+      } catch (err) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Manual transaction write was attempted but its result is uncertain: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          true,
+        );
+      }
+
+      try {
+        await this.client.sync();
+      } catch (err) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Manual transaction write may have persisted but synchronization failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          true,
+        );
+      }
+
+      let reread: TransactionEntity[];
+      try {
+        reread = await this.client.getTransactions(input.accountId, '0001-01-01', '9999-12-31');
+      } catch (err) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Manual transaction write was attempted but post-write re-read failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          true,
+        );
+      }
+
+      let postWritePayees: APIPayeeEntity[] | undefined;
+      if (input.payeeName !== undefined && input.payeeName.trim().length > 0) {
+        try {
+          postWritePayees = await this.client.getPayees();
+        } catch (err) {
+          return failure(
+            'WRITE_UNCERTAIN',
+            `Manual transaction write was attempted but post-write payee re-read failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            true,
+          );
+        }
+      }
+
+      const rereadParents = reread.filter(
+        (transaction) => transaction.id === input.parentId && transaction.is_child !== true,
+      );
+      const verification = verifyManualTransaction(
+        rereadParents.length === 1 ? rereadParents[0] : undefined,
+        reread,
+        input,
+        postWritePayees,
+      );
+      if (!verification.verified) {
+        return failure(
+          splits ? 'SPLIT_VERIFICATION_FAILED' : 'VERIFICATION_FAILED',
+          `Post-write verification failed: ${verification.reason}`,
+          true,
+        );
+      }
+
+      const result: ManualTransactionSuccess = {
+        success: true,
+        parentId: input.parentId,
+        transactionId: input.parentId,
+        correlationId: input.correlationId,
+        verified: true,
+      };
+      return result;
+    });
   }
 
   // -------------------------------------------------------------------------

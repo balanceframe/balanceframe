@@ -316,6 +316,7 @@ pub(super) fn settlement(request: &TransferSettlementRequest) -> TransferSettlem
                     resource_id: leg.destination_account_id.clone(),
                     amount: leg.amount.clone(),
                     economic_obligation_id: debit.economic_obligation_id,
+                    source_economic_obligation_id: None,
                     category_id: None,
                     included_in_balance: true,
                     matched_transaction_ids: vec![

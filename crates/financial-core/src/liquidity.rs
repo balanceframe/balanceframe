@@ -441,12 +441,39 @@ pub struct LiquidityClaimEffect {
     pub amount: Money,
     /// Stable economic identity linking schedule, transaction, card and claim effects for single attribution.
     pub economic_obligation_id: String,
+    /// Original source obligation this scoped effect mirrors, when backed by a matching fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_economic_obligation_id: Option<String>,
     /// Stable category resource identifier.
     pub category_id: Option<String>,
     /// Whether this exact effect is already reflected in the recorded balance.
     pub included_in_balance: bool,
     /// Reliable normalized links to matching ledger transactions.
     pub matched_transaction_ids: Vec<String>,
+}
+
+impl LiquidityClaimEffect {
+    /// Resolves the original economic identity only when the scoped identity authenticates its source.
+    pub fn matched_obligation_id(&self) -> Result<&str, &'static str> {
+        let Some(source) = self.source_economic_obligation_id.as_deref() else {
+            return Ok(&self.economic_obligation_id);
+        };
+        let kind = match self.kind {
+            ClaimEffectKind::Category => ":category:",
+            ClaimEffectKind::AccountDebit => ":account:",
+            ClaimEffectKind::DestinationHold => return Err("ambiguous_claim_match"),
+        };
+        if source.is_empty()
+            || self
+                .economic_obligation_id
+                .strip_prefix(source)
+                .and_then(|suffix| suffix.strip_prefix(kind))
+                != Some(self.resource_id.as_str())
+        {
+            return Err("ambiguous_claim_match");
+        }
+        Ok(source)
+    }
 }
 
 /// Liquidity Claim Bundle: immutable normalized domain contract.

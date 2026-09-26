@@ -12,7 +12,12 @@
 
 import Database from 'better-sqlite3';
 import { LiquidityWorkflow } from './liquidity.js';
-import { migrateLiquidityWorkflow, migrateTransferPreviews } from './liquidity-migration.js';
+import {
+  migrateLiquidityWorkflow,
+  migrateTransferPreviews,
+  migrateSessionCompletion,
+  migrateScopedProspectiveEffects,
+} from './liquidity-migration.js';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 
@@ -1685,6 +1690,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     },
     migrateLiquidityWorkflow,
     migrateTransferPreviews,
+    migrateSessionCompletion,
+    migrateScopedProspectiveEffects,
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -4030,8 +4037,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async supersedeProposal(id: string): Promise<ActionProposal> {
     const existing = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
     if (!existing) throw new Error(`Proposal ${id} not found`);
-    if (existing.operation === 'transfer')
-      throw new Error('Transfer requires resource-scoped transition');
+    if (existing.operation === 'transfer' || existing.operation === 'session_completion')
+      throw new Error('Specialized workflow transition required');
     if (existing.superseded_at) {
       // Already superseded — idempotent
       return rowToProposal(existing);
@@ -4165,8 +4172,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
       // Validate proposal exists and is not superseded
       const proposalRow = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
       if (!proposalRow) throw new Error(`Proposal ${input.proposalId} not found`);
-      if (proposalRow.operation === 'transfer')
-        throw new Error('Transfer approval requires trusted transactional validation');
+      if (proposalRow.operation === 'transfer' || proposalRow.operation === 'session_completion')
+        throw new Error('Specialized workflow transition required');
       if (!this.approvalIssuerAuthorized(input.actorId, proposalRow)) {
         throw new Error('Approval authorization denied');
       }
@@ -4261,6 +4268,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
       const proposalRow = this.stmt.selectProposal.get(existing.proposal_id) as
         ProposalRow | undefined;
       if (!proposalRow) throw new Error(`Proposal ${existing.proposal_id} not found`);
+      if (proposalRow.operation === 'transfer' || proposalRow.operation === 'session_completion')
+        throw new Error('Specialized workflow transition required');
       if (!this.approvalIssuerAuthorized(existing.actor_id, proposalRow)) {
         throw new Error('Approval authorization denied');
       }

@@ -4,6 +4,15 @@ Actual Budget API adapter.
 
 Provides a typed interface to the Actual Budget server API for reading transactions, budgets, and categories.
 
+`ActualConnector.createManualTransaction` is a bounded write port for a separately
+approved manual debit or conserved split. It rejects Observe mode, synchronizes
+before checking current accounts/categories and imported candidates, uses a
+caller-owned stable parent ID, and writes through Actual `addTransactions` once
+without inventing a bank `imported_id`. Success requires post-sync re-read of the
+exact parent and split children, including category, payee, notes, and absence of
+split errors. Ambiguous existing imports and uncertain writes require review;
+the adapter never retries an uncertain write or claims that Actual reconciled it.
+
 ## Account-aware liquidity
 
 `ActualConnector.synchronize()` adds normalized `FinancialSnapshot.liquidity`. Current

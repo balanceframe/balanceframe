@@ -848,6 +848,7 @@ pub fn evaluate_prospective_purchase(
             resource_id,
             amount: claim.amount.clone(),
             economic_obligation_id: claim.source_id.clone(),
+            source_economic_obligation_id: None,
             category_id: if kind == crate::ClaimEffectKind::AccountDebit {
                 linked_categories.into_iter().next()
             } else {
