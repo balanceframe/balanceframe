@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -24,6 +24,8 @@ import {
   stopScenarioProcesses,
   type ScenarioProcesses,
 } from '../src/process-runtime.js';
+import { materializeScenario } from '../src/catalog.js';
+import { initializeScenarioShell } from '../src/loader.js';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const WEB_ENTRY = resolve(REPOSITORY_ROOT, 'apps/web/.output/server/index.mjs');
@@ -275,7 +277,6 @@ describe('scenario process runtime ownership and lifecycle', () => {
     await rm(parent, { recursive: true, force: true });
   });
 
-
   it('refuses cleanup after an allocated root is replaced by another inode', async () => {
     const root = createOwnedScenarioRoot();
     const parent = dirname(root);
@@ -405,6 +406,51 @@ describe('scenario process runtime ownership and lifecycle', () => {
           await stopScenarioProcesses(handle);
         }
       });
+    },
+  );
+
+  it(
+    'refuses scenario readiness when the production web child has no native addon despite a healthy HTTP shell',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      const root = createOwnedScenarioRoot();
+      const entryParent = await temporaryDirectory('balanceframe-native-unavailable-');
+      const entry = join(entryParent, 'web-no-native.mjs');
+      let handle: ScenarioProcesses | undefined;
+      try {
+        await writeFile(
+          entry,
+          [
+            "import Module from 'node:module';",
+            'const original = Module._load;',
+            'Module._load = function (id, ...args) {',
+            "  if (id === '@balanceframe/native') throw new Error('Native addon unavailable');",
+            '  return original.call(this, id, ...args);',
+            '};',
+            `await import(${JSON.stringify(pathToFileURL(WEB_ENTRY).href)});`,
+          ].join('\n'),
+          { mode: 0o600 },
+        );
+        handle = await startScenarioShell({
+          root,
+          publicOrigin: `http://127.0.0.1:${await availablePort()}`,
+          webEntry: entry,
+        });
+        activeProcesses.add(handle);
+        expect((await requestHealth(handle.webUrl)).status).toBe(200);
+        await expect(
+          initializeScenarioShell(handle, materializeScenario('funded-purchase', new Date())),
+        ).rejects.toThrow(/Scenario HTTP .+failed with status (409|503)/);
+      } finally {
+        if (handle) {
+          activeProcesses.delete(handle);
+          await stopScenarioProcesses(handle);
+        } else {
+          discardOwnedScenarioRoot(root);
+        }
+        await rm(entryParent, { recursive: true, force: true });
+      }
+      await assertMissing(root);
     },
   );
 

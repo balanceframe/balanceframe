@@ -58,6 +58,7 @@ interface RuntimeChild {
 
 interface InternalScenarioProcesses {
   readonly publicHandle: ScenarioProcesses;
+  readonly demoMode: boolean;
   readonly ownership: OwnedRoot;
   readonly directories: RuntimeDirectories;
   readonly actualPort: number;
@@ -289,7 +290,7 @@ function createActualEnvironment(
 }
 
 function createWebEnvironment(
-  state: Pick<InternalScenarioProcesses, 'directories' | 'actualPort' | 'webPort' | 'publicHandle'>,
+  state: Pick<InternalScenarioProcesses, 'directories' | 'actualPort' | 'webPort' | 'publicHandle' | 'demoMode'>,
 ): Record<string, string> {
   const handle = state.publicHandle;
   return buildChildEnvironment(state.directories, {
@@ -304,7 +305,7 @@ function createWebEnvironment(
     NUXT_WORKFLOW_DB_PATH: handle.workflowDbPath,
     BALANCEFRAME_WORKFLOW_DB_PATH: handle.workflowDbPath,
     BALANCEFRAME_CONFIG_PATH: handle.connectionPath,
-    NUXT_DEMO_MANIFEST_PATH: handle.manifestPath,
+    ...(state.demoMode ? { NUXT_DEMO_MANIFEST_PATH: handle.manifestPath } : {}),
     BETTER_AUTH_URL: handle.publicOrigin,
     BETTER_AUTH_SECRET: handle.internalSecret,
     NUXT_BETTER_AUTH_SECRET: handle.internalSecret,
@@ -313,7 +314,7 @@ function createWebEnvironment(
     ACTUAL_SECRET_KEY: handle.actualSecretKey,
     NUXT_DEV_BYPASS_AUTH: 'false',
     BALANCEFRAME_DEV_BYPASS_AUTH: 'false',
-    NUXT_PUBLIC_DEMO_MODE: 'true',
+    NUXT_PUBLIC_DEMO_MODE: state.demoMode ? 'true' : 'false',
     NUXT_REVIEW_AND_APPLY: 'true',
   });
 }
@@ -594,6 +595,7 @@ export async function startScenarioShell(options: {
   readonly root: string;
   readonly publicOrigin: string;
   readonly webEntry: string;
+  readonly demoMode?: boolean;
 }): Promise<ScenarioProcesses> {
   const ownership = validateOwnedRoot(options.root);
   const publicOrigin = assertPublicOrigin(options.publicOrigin);
@@ -620,6 +622,7 @@ export async function startScenarioShell(options: {
   const stateWithoutWeb = {
     publicHandle,
     ownership,
+    demoMode: options.demoMode === true,
     directories,
     actualPort,
     webPort,

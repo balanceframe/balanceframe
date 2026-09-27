@@ -163,6 +163,26 @@ nix flake check
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 
+### Disposable feature scenarios and demo
+
+After `nix develop`, install dependencies and build the workspace from source (`pnpm install && pnpm build`).
+The native addon, Actual server, and production Nuxt bundle must be available; a browser-only mock cannot run these financial flows.
+
+```bash
+pnpm scenarios list
+pnpm scenarios verify funded-purchase
+pnpm scenarios verify --all
+pnpm scenarios verify --faults
+pnpm scenarios run funded-purchase
+pnpm demo --scenario rich-cart
+```
+
+`run` and `demo` open the shared fictional workspace at `http://127.0.0.1:3003/demo` by default. Select a story, follow **Open active scenario** to its ordinary application screen, and use **Reset shared demo** to discard all changes and regenerate that scenario. The selector and banner identify the fictional persona and warn that anyone sharing this instance sees its changes. Stop the supervisor with Ctrl-C; it removes only its own disposable workspace. Never connect it to a personal or production Actual budget.
+
+`verify --all` runs the 29 independent authenticated Actual/Nuxt cases and then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with its catalog version, scenario ID, anchor, assertion count, and sanitized evidence mode. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, and interrupted completion writes without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
+
+Scenario account attestations are explicit, fictional source evidence, not bank imports; missing or expired attestations keep the Card at `insufficient_data`. Reset regenerates only the active instance's credentials, budget, sessions and attestations; another runner is independent.
+
 ### Release
 
 ```bash

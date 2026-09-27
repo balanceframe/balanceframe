@@ -26,7 +26,7 @@ export interface LoadedScenario {
   readonly initialized: ScenarioInitialized;
 }
 
-function builtWebEntry(): string {
+export function builtWebEntry(): string {
   const candidates = [
     new URL('../../../apps/web/.output/server/index.mjs', import.meta.url),
     new URL('../../../../../apps/web/.output/server/index.mjs', import.meta.url),
@@ -37,6 +37,31 @@ function builtWebEntry(): string {
   return fileURLToPath(built);
 }
 
+/** Initializes an unpublished owned shell through the same Actual and authenticated HTTP path as local loading. */
+export async function initializeScenarioShell(
+  processes: ScenarioProcesses,
+  scenario: MaterializedScenario,
+  internalSecret?: string,
+): Promise<LoadedScenario> {
+  await startScenarioActual(processes);
+  const seeded = await seedActualBudget({
+    serverUrl: processes.actualUrl,
+    secretKey: processes.actualSecretKey,
+    clientDir: processes.seedClientDir,
+    budgetName: `BalanceFrame ${scenario.id} ${scenario.anchor}`,
+    ledger: scenario.ledger,
+  });
+  const initialized = await initializeScenarioWorkflow({
+    scenario,
+    seeded,
+    webUrl: processes.webUrl,
+    publicOrigin: processes.publicOrigin,
+    bootstrapSecret: processes.bootstrapSecret,
+    workflowDbPath: processes.workflowDbPath,
+    ...(internalSecret ? { internalSecret } : {}),
+  });
+  return { scenario, seeded, processes, initialized };
+}
 /** Loads one checked fictional scenario into its owned Actual and authenticated web workspace. */
 export async function loadScenario(options: LoadScenarioOptions): Promise<LoadedScenario> {
   let scenario: MaterializedScenario;
@@ -61,23 +86,7 @@ export async function loadScenario(options: LoadScenarioOptions): Promise<Loaded
     throw error;
   }
   try {
-    await startScenarioActual(processes);
-    const seeded = await seedActualBudget({
-      serverUrl: processes.actualUrl,
-      secretKey: processes.actualSecretKey,
-      clientDir: processes.seedClientDir,
-      budgetName: `BalanceFrame ${scenario.id} ${options.anchor.toISOString()}`,
-      ledger: scenario.ledger,
-    });
-    const initialized = await initializeScenarioWorkflow({
-      scenario,
-      seeded,
-      webUrl: processes.webUrl,
-      publicOrigin: options.publicOrigin,
-      bootstrapSecret: processes.bootstrapSecret,
-      workflowDbPath: processes.workflowDbPath,
-    });
-    return { scenario, seeded, processes, initialized };
+    return await initializeScenarioShell(processes, scenario);
   } catch (error) {
     await stopScenarioProcesses(processes);
     throw error;

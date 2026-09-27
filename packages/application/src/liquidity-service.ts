@@ -1115,8 +1115,9 @@ export class LiquidityService {
     capture: Capture,
     session: SpendSession,
   ): PublicSpendSession {
-    const items = this.sessionItems(actor, capture, session);
-    const card = this.decisionCard(capture, items, session.expiresAt, session);
+    const current = this.withoutSessionProspectiveClaims(actor, capture, session);
+    const items = this.sessionItems(actor, current, session);
+    const card = this.decisionCard(current, items, session.expiresAt, session);
     const linkedTransfers = capture.projector.allowed('budget', actor.budgetId, 'proposal')
       ? this.options.store.liquidity
           .listTransferProposals(actor)
@@ -1346,11 +1347,19 @@ export class LiquidityService {
     actor: LiquidityActor,
     capture: Capture,
     payload: SessionCompletionPayload,
+    allowImportedCandidateReview = false,
   ) {
     return (context: ClaimValidationContext): { valid: boolean; reason?: string } => {
       if (!context.session || context.session.id !== payload.sessionId ||
           context.session.version !== payload.sessionVersion)
         return { valid: false, reason: 'Session version changed' };
+      const importedCandidateReview =
+        allowImportedCandidateReview &&
+        this.completionImportedCandidates(
+          capture.snapshot,
+          payload.manualInput,
+          payload.categoryCharges[0]?.amount.currency ?? '',
+        ).length > 0;
       try {
         const owner = { actorId: context.session.actorId, budgetId: actor.budgetId };
         const freshCapture: Capture = {
@@ -1366,10 +1375,14 @@ export class LiquidityService {
             canonical(card.cart?.categoryCharges) !== canonical(payload.categoryCharges) ||
             card.cart?.accountCharges[0]?.accountId !== payload.manualInput.accountId ||
             card.cart?.total.minorUnits !== String(-payload.manualInput.amount))
-          return { valid: false, reason: 'Session completion Card or ledger changed' };
+          return importedCandidateReview
+            ? { valid: true }
+            : { valid: false, reason: 'Session completion Card or ledger changed' };
         return { valid: true };
       } catch {
-        return { valid: false, reason: 'Current funded Card unavailable' };
+        return importedCandidateReview
+          ? { valid: true }
+          : { valid: false, reason: 'Current funded Card unavailable' };
       }
     };
   }
@@ -1608,23 +1621,43 @@ export class LiquidityService {
       const started = this.options.store.liquidity.beginSessionCompletionWrite({
         ...actor, proposalId, ...intent, now: capture.now,
         expectedClaimSetRevision: capture.state.claimSet.revision,
-      }, this.completionValidator(actor, capture, original.payload));
+      }, this.completionValidator(actor, capture, original.payload, true));
       if (!started.acquiredWriteIntent || !started.payload)
         return this.completionProjection(actor, capture, started.proposal);
       const input = started.payload.manualInput;
+      const importedCandidates = this.completionImportedCandidates(
+        capture.snapshot,
+        input,
+        started.payload.categoryCharges[0]?.amount.currency ?? '',
+      );
       let result: ManualTransactionResult;
-      try {
-        const { splits, ...parentInput } = input;
-        result = await writable.createManualTransaction({
-          ...parentInput,
-          ...(splits ? { splits: splits.map((split) => ({ ...split })) } : {}),
-        });
-      } catch {
+      if (importedCandidates.length > 0) {
+        const ambiguous = importedCandidates.length > 1;
         result = {
-          success: false, verified: false, parentId: input.parentId,
-          correlationId: input.correlationId, code: 'WRITE_UNCERTAIN',
-          error: 'Actual write outcome could not be verified.', reviewRequired: true,
+          success: false,
+          verified: false,
+          parentId: input.parentId,
+          correlationId: input.correlationId,
+          code: ambiguous ? 'AMBIGUOUS_IMPORTED_CANDIDATE' : 'IMPORTED_CANDIDATE_REVIEW',
+          error: ambiguous
+            ? 'Multiple imported Actual transactions could match this manual transaction; review is required.'
+            : 'An imported Actual transaction could match this manual transaction; review is required before writing.',
+          reviewRequired: true,
         };
+      } else {
+        try {
+          const { splits, ...parentInput } = input;
+          result = await writable.createManualTransaction({
+            ...parentInput,
+            ...(splits ? { splits: splits.map((split) => ({ ...split })) } : {}),
+          });
+        } catch {
+          result = {
+            success: false, verified: false, parentId: input.parentId,
+            correlationId: input.correlationId, code: 'WRITE_UNCERTAIN',
+            error: 'Actual write outcome could not be verified.', reviewRequired: true,
+          };
+        }
       }
       const finished = this.options.store.liquidity.finishSessionCompletionWrite({
         ...actor, proposalId, payloadHash: intent.payloadHash,
@@ -1639,6 +1672,36 @@ export class LiquidityService {
       return this.completionProjection(actor, capture, finished);
     }, false, manager);
   }
+  private completionImportedCandidates(
+    snapshot: FinancialSnapshot,
+    input: SessionCompletionPayload['manualInput'],
+    currency: string,
+  ): FinancialSnapshot['legacySnapshot']['transactions'] {
+    return snapshot.legacySnapshot.transactions.filter((transaction) =>
+      transaction.id !== input.parentId &&
+      transaction.accountId === input.accountId &&
+      transaction.date === input.date &&
+      transaction.amount.minorUnits === String(input.amount) &&
+      transaction.amount.currency === currency &&
+      transaction.importedId !== null,
+    );
+  }
+  private hasCompleteReconciliationCoverage(snapshot: FinancialSnapshot): boolean {
+    const collectionReceipts = snapshot.observations.filter(
+      (observation) =>
+        observation.kind === 'account_collection_coverage' &&
+        observation.scope.kind === 'global',
+    );
+    const accountsComplete =
+      snapshot.coverage.accounts === 'complete' ||
+      snapshot.coverage.accounts === 'empty' ||
+      (snapshot.coverage.accounts === 'partial' &&
+        collectionReceipts.length === 1 &&
+        collectionReceipts[0]?.state === 'complete');
+    return accountsComplete &&
+      (snapshot.coverage.transactions === 'complete' || snapshot.coverage.transactions === 'empty');
+  }
+
   private exactCompletionParent(
     transaction: FinancialSnapshot['legacySnapshot']['transactions'][number],
     input: SessionCompletionPayload['manualInput'],
@@ -1690,8 +1753,7 @@ export class LiquidityService {
       const input = proposal.payload.manualInput;
       const currency = proposal.payload.categoryCharges[0]?.amount.currency;
       if (!currency) throw new Error('Completion currency unavailable');
-      if (capture.snapshot.coverage.accounts !== 'complete' ||
-          capture.snapshot.coverage.transactions !== 'complete')
+      if (!this.hasCompleteReconciliationCoverage(capture.snapshot))
         throw new Error('Complete account and transaction coverage required for reconciliation');
       const rows = capture.snapshot.legacySnapshot.transactions;
       const parents = rows.filter((row) => row.id === input.parentId);
@@ -1708,7 +1770,7 @@ export class LiquidityService {
       let evidence: SessionCompletionReconciliation;
       if (!exact || candidates.length) {
         if (proposal.state.phase === 'verified')
-          throw new Error('Ambiguous Actual reconciliation requires human review');
+          throw new Error('Ambiguous Actual reconciliation evidence requires human review');
         const candidateIds = candidates.map((row) => `${row.accountId}:${row.id}`).sort();
         evidence = {
           evidenceId: `ambiguous:${input.accountId}:${input.parentId}:${createHash('sha256').update(canonical(candidateIds)).digest('hex')}`,
@@ -1716,7 +1778,9 @@ export class LiquidityService {
           verified: false, reason: 'Manual parent missing, changed, or competing with an imported row',
         };
       } else if (proposal.state.phase === 'verified') {
-        if (!parent.importedId || !parent.reconciled)
+        // Actual's imported_id is the import-reconciliation identity; its separate
+        // user-facing reconciled flag remains false until a bank reconciliation.
+        if (!parent.importedId)
           return this.completionProjection(actor, capture, proposal);
         evidence = {
           evidenceId: `import:${input.accountId}:${parent.importedId}`,

@@ -1,5 +1,6 @@
 <template>
-  <AnalysisPage title="Spend Session" :loading="loading" :error="error"
+  <NuxtPage v-if="route.params.proposalId" />
+  <AnalysisPage v-else title="Spend Session" :loading="loading" :error="error"
     ><template #error-actions
       ><button type="button" class="underline" @click="load">Retry loading</button></template
     ><template #content
@@ -54,5 +55,13 @@ async function load() {
     loading.value = false;
   }
 }
-onMounted(load);
+watch(
+  () => [route.params.id, route.params.proposalId],
+  ([, proposalId]) => {
+    if (!proposalId) void load();
+  },
+);
+onMounted(() => {
+  if (!route.params.proposalId) void load();
+});
 </script>

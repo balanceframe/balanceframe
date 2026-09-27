@@ -116,6 +116,16 @@ describe('mutation seam — pure functions', () => {
     expect(reviewAndApplyEnabled(ev)).toBe(true);
   });
 
+  it('honors Nitro runtime configuration when the request context has no injected copy', () => {
+    const previous = Reflect.get(globalThis, 'useRuntimeConfig');
+    vi.stubGlobal('useRuntimeConfig', () => ({ reviewAndApply: true }));
+    try {
+      expect(reviewAndApplyEnabled(mockEvent({ authenticated: true }))).toBe(true);
+    } finally {
+      vi.stubGlobal('useRuntimeConfig', previous);
+    }
+  });
+
   it('reviewAndApplyEnabled returns false when reviewAndApply is false in config', () => {
     const ev = mockEvent({ authenticated: true, config: { reviewAndApply: false } });
     expect(reviewAndApplyEnabled(ev)).toBe(false);

@@ -118,8 +118,8 @@ pub struct DecisionCardWarningThreshold {
 pub struct DecisionCardCategoryPolicy {
     /// Stable category identity to which this policy applies.
     pub category_id: String,
-    /// Policy kind such as `ordinary`, `protected`, `goal`, `joy`, or
-    /// `discretionary`.
+    /// Policy kind such as `ordinary`, `protected`, `goal`, `guilt_free`, `joy`,
+    /// or `discretionary`.
     pub kind: String,
     /// Whether safe surplus from this category may be redirected.
     pub donor_eligible: bool,
@@ -3422,6 +3422,9 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
             None
         }
     };
+    let donor_item_map = donor_engine
+        .as_ref()
+        .map(|candidate| aggregate_engine_map(candidate, &cart, &request));
 
     if !paths.is_empty() {
         for (index, _item) in request.items.iter().enumerate() {
@@ -3433,10 +3436,18 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
                             .iter()
                             .any(|(key, _)| category_shortfalls.contains(key))
                     });
+            let funded_after_reallocation = donor_item_map
+                .as_ref()
+                .and_then(|items| items.get(&request.items[index].id))
+                .is_some_and(|candidate| {
+                    candidate.budget_funding_status == BudgetFundingStatus::Funded
+                        && candidate.payment_liquidity_status == PaymentLiquidityStatus::Ready
+                });
             if touches_shortfall
-                && base_item_outcomes
-                    .get(index)
-                    .is_some_and(|outcome| outcome == "cash_available_but_unfunded")
+                && funded_after_reallocation
+                && base_item_outcomes.get(index).is_some_and(|outcome| {
+                    outcome == "cash_available_but_unfunded" || outcome == "not_safe"
+                })
             {
                 if let Some(outcome) = base_item_outcomes.get_mut(index) {
                     *outcome = "safe_with_reallocation".into();
@@ -3463,7 +3474,14 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
             .get(index)
             .cloned()
             .unwrap_or_else(|| "insufficient_data".into());
-        let result = engine_map.get(&item.id);
+        let result = if outcome == "safe_with_reallocation" {
+            donor_item_map
+                .as_ref()
+                .and_then(|items| items.get(&item.id))
+                .or_else(|| engine_map.get(&item.id))
+        } else {
+            engine_map.get(&item.id)
+        };
         item_outcomes.push(DecisionCardItemOutcome {
             id: item.id.clone(),
             category_id: item.category_id.clone(),
@@ -3679,6 +3697,8 @@ pub fn evaluate_decision_card(request: DecisionCardRequest) -> DecisionCard {
             if let Some(policy) = policies.get(&item.category_id) {
                 if policy.kind.eq_ignore_ascii_case("joy") {
                     reasons.push("joy_category_funded".into());
+                } else if policy.kind.eq_ignore_ascii_case("guilt_free") {
+                    reasons.push("guilt_free_category_funded".into());
                 } else if policy.kind.eq_ignore_ascii_case("discretionary") {
                     reasons.push("discretionary_category_funded".into());
                 }

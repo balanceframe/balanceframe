@@ -102,6 +102,27 @@ The `helpers.ts` module provides:
 - `expectRejection(fn, predicate?)` — asserts that an API call fails
 - `syncWithServer()` — synchronizes local changes to the fixture server
 
+## Independent feature scenarios
+
+The seven API proof files above use a single disposable fixture server. The separate [scenario catalog](../../packages/scenario-kit/src/catalog.ts) defines 29 isolated financial feature stories; it reuses the checked Actual seeder but also creates a fresh loopback server, budget, Better Auth users, workflow database, policies, scoped grants, observations, saved carts, and claims for **each** case. No `.env.test`, external Actual URL, personal budget, or model provider credential is used. From the repository root after a source build:
+
+```bash
+pnpm scenarios list
+pnpm scenarios verify --all
+pnpm scenarios verify --faults
+pnpm demo --scenario rich-cart
+```
+
+`verify --all` reports the 29 real authenticated Actual/Nuxt assertions and then the separately labeled four fault contracts (five cases including the two coverage-receipt variants). JSON result lines include catalog version, scenario/variant ID, anchor, assertion name/count, and sanitized backend evidence. An unsupported or failed seed is a failure, not a skipped story. The fault suite injects invalid source coverage and interrupted connector responses only at native/service seams; it does not write fictitious bank receipts to Actual. The demo uses the same real loader and resets its shared fictional state with a new generation. Stop it with Ctrl-C; the supervisor removes only the workspace it owns.
+
+The account attestations in a scenario are explicit fictional evidence with expiration times. Missing or expired attestations cannot make a purchase ready; loading another story or resetting replaces only that runner's budget and workflow state, never the separate Actual integration fixture.
+
+### Adding a feature scenario
+
+1. Add a distinct ID, typed materializer branch and selector summary in `packages/scenario-kit/src/catalog.ts`. Use logical fixture IDs and the existing household fixture; change `protocol/fixtures/scenarios/household.json` only when the shared base genuinely needs another entity. The seeder maps those IDs to a fresh Actual budget.
+2. Write a failing, literal behavior assertion in the relevant `packages/scenario-kit/test/acceptance/` suite using `withScenario` and `scenarioRequest` from `support.ts`. Check the real authenticated API and, for ledger writes, the Actual parent/children read-back. Do not derive expected outcomes from the seed builder.
+3. Implement only the materialized policy, observations, actors, sessions, claims or checked event recipe that the story needs. Verify `pnpm scenarios verify <id>`, then `pnpm scenarios verify --all`; finally load the ID through `pnpm demo --scenario <id>` and operate its ordinary application page in Chromium.
+
 ## CI Integration
 
 CI must create its own ephemeral loopback server and disposable data root in the

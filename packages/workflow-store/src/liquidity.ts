@@ -281,7 +281,7 @@ function validateCompletionCooldown(
     const expected = new Date(Date.parse(now) + maxMinutes * 60_000).toISOString();
     if (payload.cooldownUntil !== expected) throw new Error('Completion cooldown mismatch');
   } else if (Date.parse(payload.cooldownUntil) > Date.parse(now)) {
-    throw new Error('Completion cooldown active');
+    throw new Error('Completion cooldown active; approval precondition is not met');
   }
 }
 function time(value: string): void {
@@ -1782,6 +1782,7 @@ export class LiquidityWorkflow {
         }
         const bundles: LiquidityClaimBundle[] = [];
         let changed = false;
+        let currentReservationMode: ProspectiveClaimMode | null = null;
         for (const row of rows) {
           const bundle = JSON.parse(row.bundle) as LiquidityClaimBundle;
           const claim = row.claim ? (JSON.parse(row.claim) as ProspectiveClaim) : null;
@@ -1851,8 +1852,15 @@ export class LiquidityWorkflow {
               completionMoneyEquals(effect.amount, claim.amount)))
               continue;
           }
+          const informationalReservation =
+            row.mode !== null &&
+            claim?.kind === 'reservation' &&
+            bundle.state === 'active' &&
+            !bundle.initiated &&
+            (currentReservationMode ??=
+              governedReservationMode(this.currentPolicy(budgetId).policy)) === 'inform';
           if (
-            (row.mode !== 'inform' || bundle.state !== 'active' || bundle.initiated) &&
+            !informationalReservation &&
             (bundle.state === 'active' ||
               bundle.state === 'initiated' ||
               (bundle.initiated && bundle.state !== 'settled'))
@@ -2059,7 +2067,7 @@ export class LiquidityWorkflow {
       throw new Error('Invalid claim time range');
     if (claim.mode !== undefined && claim.mode !== 'inform' && claim.mode !== 'block')
       throw new Error('Invalid claim mode');
-    const mode = governedReservationMode(policy.policy);
+    const mode = claim.kind === 'commitment' ? 'block' : governedReservationMode(policy.policy);
     return {
       mode,
       expiresAt,
@@ -2164,6 +2172,7 @@ export class LiquidityWorkflow {
       claim: string;
     },
     input: LiquidityActor,
+    currentReservationMode?: ProspectiveClaimMode,
   ): StoredProspectiveClaim {
     const claim = JSON.parse(row.claim) as ProspectiveClaim;
     const scope = this.prospectiveScope(claim.scope);
@@ -2176,7 +2185,10 @@ export class LiquidityWorkflow {
         resourceId: scope.resourceId,
       });
     const lifecycleState = row.lifecycle_state;
-    const projected = this.storedProspectiveClaim(claim, row.mode, lifecycleState);
+    const mode = lifecycleState === 'active' && currentReservationMode
+      ? claim.kind === 'commitment' ? 'block' : currentReservationMode
+      : row.mode;
+    const projected = this.storedProspectiveClaim(claim, mode, lifecycleState);
     if (visible) return projected;
     const redactedScope: RedactedProspectiveScope =
       claim.scope.kind === 'category'
@@ -2505,8 +2517,11 @@ export class LiquidityWorkflow {
       lifecycle_state: ProspectiveClaimLifecycle;
       claim: string;
     }[];
+    const activeReservationMode = rows.some((row) => row.lifecycle_state === 'active')
+      ? governedReservationMode(this.currentPolicy(input.budgetId).policy)
+      : undefined;
     return rows.flatMap((row) => {
-      const claim = this.projectProspectiveClaim(row, input);
+      const claim = this.projectProspectiveClaim(row, input, activeReservationMode);
       return row.actor_id !== input.actorId && claim.visibility === 'redacted' ? [] : [claim];
     });
   }

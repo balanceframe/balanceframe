@@ -108,18 +108,26 @@ async function readRows(workspace: TestWorkspace): Promise<ActualRow[]> {
   });
 }
 
-async function seedMatchingManualTransaction(workspace: TestWorkspace): Promise<void> {
-  const event = workspace.scenario.events['import-match'];
-  if (!event || event.kind !== 'import-match') throw new Error('Expected import-match recipe');
+async function seedMatchingManualTransaction(
+  workspace: TestWorkspace,
+  eventId: 'import-match' | 'import-ambiguous' = 'import-match',
+): Promise<void> {
+  const recipe = workspace.scenario.events[eventId];
+  const candidate = recipe?.kind === 'import-match'
+    ? recipe.candidate
+    : recipe?.kind === 'import-ambiguous'
+      ? recipe.candidates[0]
+      : undefined;
+  if (!candidate) throw new Error(`Expected ${eventId} recipe`);
   await withActualClient(workspace, async () => {
     await downloadBudget(workspace.seeded.groupId);
-    const accountId = workspace.seeded.accountIds[event.candidate.accountId];
+    const accountId = workspace.seeded.accountIds[candidate.accountId];
     const categoryId = workspace.seeded.categoryIds['cat-groceries'];
     const payeeId = workspace.seeded.payeeIds['pay-market'];
     await addTransactions(accountId, [
       {
-        date: event.candidate.date,
-        amount: Number(BigInt(event.candidate.amount.minorUnits)),
+        date: candidate.date,
+        amount: Number(BigInt(candidate.amount.minorUnits)),
         payee: payeeId,
         category: categoryId,
         notes: 'fixture completion debit',
@@ -232,6 +240,7 @@ describe('scenario Actual events', () => {
     { timeout: TEST_TIMEOUT },
     async () => {
       const workspace = await createWorkspace('ambiguous-completion');
+      await seedMatchingManualTransaction(workspace, 'import-ambiguous');
       const event = workspace.scenario.events['import-ambiguous'];
       if (!event || event.kind !== 'import-ambiguous') throw new Error('Expected ambiguous recipe');
       const before = await readRows(workspace);

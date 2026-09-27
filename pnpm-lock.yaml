@@ -241,6 +241,9 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
+      '@vitest/coverage-v8':
+        specifier: ^1.0.0
+        version: 1.6.1(vitest@1.6.1(@types/node@20.19.43)(happy-dom@20.11.1)(lightningcss@1.33.0)(terser@5.49.0))
       vitest:
         specifier: ^1.0.0
         version: 1.6.1(@types/node@20.19.43)(happy-dom@20.11.1)(lightningcss@1.33.0)(terser@5.49.0)

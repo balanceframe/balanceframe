@@ -5,6 +5,7 @@ import { materializeScenario, type MaterializedScenario } from '../src/catalog.j
 import {
   seedActualBudget,
   type SeededActualBudget,
+  type SeededEntityIds,
 } from '../src/actual-seed.js';
 import {
   createOwnedScenarioRoot,
@@ -15,6 +16,8 @@ import {
 } from '../src/process-runtime.js';
 import {
   initializeScenarioWorkflow,
+  mapObservations,
+  mapSession,
   type ScenarioInitialized,
 } from '../src/workflow-setup.js';
 
@@ -117,6 +120,52 @@ async function load(id: MaterializedScenario['id']): Promise<RuntimeContext> {
     throw error;
   }
 }
+
+const TEMPORAL_IDS: SeededEntityIds = {
+  accountIds: { 'acct-checking': 'actual-checking' },
+  categoryGroupIds: {},
+  categoryIds: { 'cat-groceries': 'actual-groceries' },
+  payeeIds: {},
+  transactionIds: {},
+};
+
+describe('workflow submission temporal materialization', () => {
+  const anchor = new Date('2026-09-06T12:00:00.000Z');
+  const submittedAt = Date.parse('2026-09-06T18:30:00.000Z');
+
+  it('rebases account observations to preserve their expiry offset without changing the recipe', () => {
+    const scenario = materializeScenario('expired-account-evidence', anchor);
+    const source = structuredClone(scenario.observations);
+
+    const payload = mapObservations(
+      scenario.observations,
+      TEMPORAL_IDS,
+      scenario.anchor,
+      submittedAt,
+    );
+
+    expect(Date.parse(payload.expiresAt) - submittedAt).toBe(2_000);
+    expect(payload.observations[0]).toEqual({
+      ...source.observations[0],
+      accountId: 'actual-checking',
+    });
+    expect(scenario.observations).toEqual(source);
+  });
+
+  it('rebases a session expiry while preserving ordinary fixture timestamps', () => {
+    const scenario = materializeScenario('expired-session', anchor);
+    const source = structuredClone(scenario.sessions.expired);
+    if (!source) throw new Error('Expired session recipe is unavailable');
+
+    const payload = mapSession(source, TEMPORAL_IDS, scenario.anchor, submittedAt);
+
+    expect(Date.parse(payload.expiresAt) - submittedAt).toBe(2_000);
+    expect(payload.items[0]?.purchaseAt).toBe(source.items[0]?.purchaseAt);
+    expect(payload.items[0]?.requiredBy).toBe(source.items[0]?.requiredBy);
+    expect(scenario.sessions.expired).toEqual(source);
+  });
+});
+
 
 let funded: RuntimeContext;
 let coapproval: RuntimeContext;

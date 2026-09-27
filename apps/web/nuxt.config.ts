@@ -37,11 +37,25 @@ export default defineNuxtConfig({
     /** Path to the Better Auth SQLite database. */
     authDbPath: '',
 
+    /** Path to the runner-owned BalanceFrame connection configuration. */
+    connectionPath: '',
+
+    /** Runner-owned private demo manifest; absence leaves normal behavior unchanged. */
+    demoManifestPath: '',
+
+    /** Runner-owned Actual endpoint used by the demo boundary. */
+    actualServerUrl: '',
+
+    /** Runner-owned credential directory used by the demo child. */
+    credentialDir: '',
+
     /** Path or indicator that a bootstrap secret is configured (set by env). */
     bootstrapSecretPath: '',
 
     public: {
       apiBase: '',
+      /** Presentation flag only; server authorization uses the private manifest. */
+      demoMode: false,
     },
   },
 

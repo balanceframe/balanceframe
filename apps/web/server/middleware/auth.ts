@@ -29,6 +29,7 @@ import {
 import { fromNodeHeaders } from 'better-auth/node';
 import { timingSafeEqual, createHmac } from 'node:crypto';
 import { auth } from '../../lib/auth';
+import { enforceDemoBoundary } from '../utils/demo-boundary';
 import { authMigrationFailed, authMigrationMessage } from '../utils/auth-migration-status';
 import type { EventWithContext } from '../utils/workflow-store';
 
@@ -157,8 +158,9 @@ function validateSessionToken(token: string, apiToken: string): Record<string, u
 // ---------------------------------------------------------------------------
 
 export default defineEventHandler(async (event) => {
+  const demoBoundaryResponse = enforceDemoBoundary(event as unknown as EventWithContext);
+  if (demoBoundaryResponse) return demoBoundaryResponse;
   const path = getRequestPath(event);
-
   // 1. Public allowlist — always pass through without auth.
   const isPublic = PUBLIC_API_ALLOWLIST.some((p) => path === p || path.startsWith(p + '/'));
   if (isPublic) return;

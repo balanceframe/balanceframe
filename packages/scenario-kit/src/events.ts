@@ -45,13 +45,17 @@ interface ActualApi {
   getBudgets(): Promise<ActualBudgetRow[]>;
   updateTransaction(id: string, fields: Partial<ActualRow>): Promise<unknown[]>;
   getTransactions(accountId: string, startDate?: string, endDate?: string): Promise<unknown[]>;
+  addTransactions(
+    accountId: string,
+    transactions: Array<Record<string, unknown>>,
+    options?: { learnCategories?: boolean; runTransfers?: boolean },
+  ): Promise<unknown>;
   importTransactions(
     accountId: string,
     transactions: Array<Record<string, unknown>>,
     options?: { defaultCleared?: boolean; payeeNameNormalization?: string },
   ): Promise<unknown>;
 }
-
 const actualApi = actualApiModule as unknown as ActualApi;
 const CLIENT_DIRECTORY_PREFIX = '.balanceframe-scenario-event-';
 const SAFE_INTEGER_MAX = BigInt(Number.MAX_SAFE_INTEGER);
@@ -343,10 +347,29 @@ async function applyImport(
     imported_id: candidate.importedId,
     cleared: true,
   }));
-  await actualApi.importTransactions(accountId, payload, {
-    defaultCleared: true,
-    payeeNameNormalization: 'original',
-  });
+  if (recipe.kind === 'import-ambiguous') {
+    // Actual's import reconciliation intentionally auto-matches an existing
+    // manual parent. Add the checked-in candidates directly so both remain
+    // distinct imported evidence for the ambiguity scenario.
+    const existingIds = new Set(
+      (await readAccountRows(accountId))
+        .map((row) => rowImportedId(row))
+        .filter((id): id is string => id !== null),
+    );
+    const missing = payload.filter((candidate) => typeof candidate.imported_id === 'string' &&
+      !existingIds.has(candidate.imported_id));
+    if (missing.length > 0) {
+      await actualApi.addTransactions(accountId, missing, {
+        learnCategories: false,
+        runTransfers: false,
+      });
+    }
+  } else {
+    await actualApi.importTransactions(accountId, payload, {
+      defaultCleared: true,
+      payeeNameNormalization: 'original',
+    });
+  }
   await publishActualChanges(client);
 
   const rowsAfter = await readAccountRows(accountId);

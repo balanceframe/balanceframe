@@ -236,6 +236,7 @@
         </nav>
       </div>
     </header>
+    <DemoBanner />
     <div
       v-if="routePending"
       class="h-0.5 bg-primary-500"
@@ -260,6 +261,7 @@
 <script setup lang="ts">
 import { authClient } from '../../lib/auth-client';
 import FreshnessBanner from '../components/FreshnessBanner.vue';
+import DemoBanner from '../components/DemoBanner.vue';
 
 type NavigationGroupId = 'analysis' | 'planning' | 'system';
 

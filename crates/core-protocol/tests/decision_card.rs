@@ -14,6 +14,8 @@ const EVALUATED_AT: &str = "2026-09-06T10:00:00Z";
 const VALID_UNTIL: &str = "2026-09-06T18:00:00Z";
 const PURCHASE_AT: &str = "2026-09-06T12:00:00Z";
 
+type MutateRequest = fn(&mut Value);
+
 /*
 Expected request wire shape (camelCase; optional cart quantity may be omitted):
 {
@@ -353,6 +355,15 @@ fn collection_receipt(input: &Value) -> &Value {
         .first()
         .expect("partial Actual fixture must start with a collection receipt")
 }
+fn source_observation_mut<'a>(input: &'a mut Value, kind: &str) -> &'a mut Value {
+    input["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .expect("partial fixture observations must be an array")
+        .iter_mut()
+        .find(|observation| observation["kind"] == kind)
+        .expect("partial fixture must contain the selected observation")
+}
+
 fn assert_collection_rejected(input: Value, label: &str) {
     let card = evaluate(input);
     assert_eq!(outcome(&card), "insufficient_data", "{label}");
@@ -479,6 +490,101 @@ fn partial_account_attestations_require_dated_replacements_and_exact_account_set
         mismatched_source_accounts,
         "source and effective account sets must match",
     );
+}
+
+#[test]
+fn partial_account_coverage_requires_exact_current_account_receipts_and_ledger_facts() {
+    let cases: [(&str, MutateRequest); 13] = [
+        ("missing normalized liquidity", |input| {
+            input["financialSnapshot"]["liquidity"] = Value::Null;
+        }),
+        ("empty normalized accounts", |input| {
+            input["financialSnapshot"]["liquidity"]["accounts"] = json!([]);
+        }),
+        ("duplicate normalized account", |input| {
+            let account = account_mut(input, "checking").clone();
+            input["financialSnapshot"]["liquidity"]["accounts"]
+                .as_array_mut()
+                .expect("partial fixture accounts must be an array")
+                .push(account);
+        }),
+        ("unnamed normalized account", |input| {
+            account_mut(input, "checking")["accountId"] = json!("");
+        }),
+        ("unnamed source account", |input| {
+            source_observation_mut(input, "account_freshness")["scope"]["id"] = json!("");
+        }),
+        ("incomplete source account receipt", |input| {
+            source_observation_mut(input, "account_coverage")["state"] = json!("unknown");
+        }),
+        ("incomplete source balance receipt", |input| {
+            source_observation_mut(input, "account_balance")["state"] = json!("unknown");
+        }),
+        ("future source freshness receipt", |input| {
+            source_observation_mut(input, "account_freshness")["observedAt"] =
+                json!("2026-09-06T10:01:00Z");
+        }),
+        ("future source type receipt", |input| {
+            source_observation_mut(input, "account_type")["observedAt"] =
+                json!("2026-09-06T10:01:00Z");
+        }),
+        ("unknown normalized account kind", |input| {
+            account_mut(input, "checking")["kind"] = json!("unknown");
+        }),
+        ("expired normalized kind attestation", |input| {
+            account_mut(input, "checking")["kindEvidence"]["expiresAt"] = json!(EVALUATED_AT);
+        }),
+        ("non-ledger recorded balance", |input| {
+            account_mut(input, "checking")["balanceEvidence"]["source"] = json!("user_attested");
+        }),
+        ("undated recorded balance", |input| {
+            account_mut(input, "checking")["balanceEvidence"]["observedAt"] = Value::Null;
+        }),
+    ];
+    for (label, mutate) in cases {
+        let mut input = actual_partial_account_request();
+        mutate(&mut input);
+        assert_collection_rejected(input, label);
+    }
+}
+
+#[test]
+fn partial_account_attestations_cannot_override_duplicate_future_or_unmatched_source_history() {
+    let cases: [(&str, MutateRequest); 4] = [
+        ("duplicate unknown source freshness", |input| {
+            let source = source_observation_mut(input, "account_freshness").clone();
+            input["financialSnapshot"]["observations"]
+                .as_array_mut()
+                .expect("partial fixture observations must be an array")
+                .push(source);
+        }),
+        ("future unknown source freshness", |input| {
+            source_observation_mut(input, "account_freshness")["observedAt"] =
+                json!("2026-09-06T10:01:00Z");
+        }),
+        ("unknown source from a different account", |input| {
+            source_observation_mut(input, "account_freshness")["scope"]["id"] = json!("savings");
+        }),
+        (
+            "global source freshness cannot attest a checking account",
+            |input| {
+                source_observation_mut(input, "account_freshness")["scope"] =
+                    json!({"kind": "global"});
+            },
+        ),
+    ];
+    for (label, mutate) in cases {
+        let mut input = actual_partial_account_request();
+        mutate(&mut input);
+        let card = evaluate(input);
+        assert_eq!(outcome(&card), "insufficient_data", "{label}");
+        assert!(card["after"].is_null(), "{label}");
+        assert!(
+            has_text(&card["blockers"], "accountfreshness"),
+            "{label} must retain the source freshness limitation: {}",
+            card["blockers"]
+        );
+    }
 }
 
 #[test]
@@ -654,6 +760,43 @@ fn funded_joy_category_is_affirmed_and_has_no_guilt_penalty() {
 }
 
 #[test]
+fn funded_guilt_free_category_is_affirmed_distinct_from_discretionary() {
+    let mut guilt_free = base_request();
+    set_account_balance(&mut guilt_free, "checking", 13_000);
+    category_policy_mut(&mut guilt_free, "food")["kind"] = json!("guilt_free");
+
+    let guilt_free_card = evaluate(guilt_free);
+
+    assert_eq!(outcome(&guilt_free_card), "funded_now");
+    assert_eq!(guilt_free_card["budgetFundingStatus"], "funded");
+    assert_eq!(guilt_free_card["paymentLiquidityStatus"], "ready");
+    assert!(has_text(
+        &guilt_free_card["reasons"],
+        "guilt_free_category_funded"
+    ));
+    assert!(!has_text(
+        &guilt_free_card["reasons"],
+        "discretionary_category_funded"
+    ));
+    assert!(!has_text(&guilt_free_card["reasons"], "penalty"));
+
+    let mut discretionary = base_request();
+    set_account_balance(&mut discretionary, "checking", 13_000);
+    category_policy_mut(&mut discretionary, "food")["kind"] = json!("discretionary");
+
+    let discretionary_card = evaluate(discretionary);
+
+    assert!(has_text(
+        &discretionary_card["reasons"],
+        "discretionary_category_funded"
+    ));
+    assert!(!has_text(
+        &discretionary_card["reasons"],
+        "guilt_free_category_funded"
+    ));
+}
+
+#[test]
 fn category_claims_reduce_before_and_after_availability_exactly() {
     let mut input = base_request();
     set_account_balance(&mut input, "checking", 13_000);
@@ -689,6 +832,28 @@ fn category_claims_reduce_before_and_after_availability_exactly() {
 }
 
 #[test]
+fn expired_reservation_does_not_reduce_current_category_cash_or_create_a_hold() {
+    let mut input = base_request();
+    set_account_balance(&mut input, "checking", 13_000);
+    add_claim(&mut input, "old-food", "food", 500, EVALUATED_AT);
+
+    let card = evaluate(input);
+    assert_eq!(outcome(&card), "funded_now");
+    assert_eq!(
+        minor_units(&category_state(&card, "before", "food")["reservations"]),
+        "0"
+    );
+    assert_eq!(
+        minor_units(&category_state(&card, "after", "food")["availability"]),
+        "0"
+    );
+    assert!(!has_text(
+        &card["before"]["obligations"],
+        "obligation-old-food"
+    ));
+}
+
+#[test]
 fn evidenced_donor_reallocation_exposes_exact_before_after_path() {
     let mut input = base_request();
     set_account_balance(&mut input, "checking", 13_000);
@@ -717,6 +882,31 @@ fn evidenced_donor_reallocation_exposes_exact_before_after_path() {
     assert_eq!(minor_units(&donor_after["availability"]), "4000");
     assert_eq!(minor_units(&requested_before["availability"]), "0");
     assert_eq!(minor_units(&requested_after["availability"]), "0");
+}
+
+#[test]
+fn donor_reallocation_restores_payment_capacity_constrained_by_original_donor_backing() {
+    let mut input = base_request();
+    set_account_balance(&mut input, "checking", 15_000);
+    set_category_availability(&mut input, "food", 0);
+    add_category(&mut input, "reserve", 4_000);
+    add_category_policy(&mut input, "reserve", "ordinary", true, 1_000, 1_000);
+    input["liquidityPolicy"]["accounts"][1]["backingEligible"] = json!(false);
+    input["liquidityPolicy"]["transferRoutes"] = json!([]);
+
+    let card = evaluate(input);
+    assert_eq!(card["items"][0]["paymentLiquidityStatus"], "ready");
+    assert_eq!(card["paymentLiquidityStatus"], "ready");
+    assert_eq!(outcome(&card), "safe_with_reallocation");
+    assert_eq!(card["items"][0]["outcome"], "safe_with_reallocation");
+    assert_eq!(
+        minor_units(&category_state(&card, "after", "reserve")["availability"]),
+        "2000"
+    );
+    assert_eq!(
+        minor_units(&category_state(&card, "after", "food")["availability"]),
+        "0"
+    );
 }
 
 #[test]
@@ -1005,6 +1195,35 @@ fn protected_and_goal_policies_enforce_retained_floor_and_remaining_need_togethe
             "{kind} spending below floor plus future need must be plan-breaking"
         );
         assert_eq!(card["items"][0]["outcome"], "plan_breaking");
+    }
+}
+
+#[test]
+fn overflowing_goal_or_protected_retained_floor_never_exposes_a_safe_projection() {
+    for kind in ["goal", "protected"] {
+        let mut input = base_request();
+        set_account_balance(&mut input, "checking", 30_000);
+        set_category_availability(&mut input, "food", 5_000);
+        let policy = category_policy_mut(&mut input, "food");
+        policy["kind"] = json!(kind);
+        policy["donorEligible"] = json!(true);
+        policy["minimumRetained"] = money(i64::MAX, "USD");
+        policy["projectedRemainingNeed"] = money(1, "USD");
+
+        let card = evaluate(input);
+        assert_eq!(outcome(&card), "insufficient_data", "{kind}");
+        assert!(
+            card["before"].is_null(),
+            "{kind} must not publish overflowed availability"
+        );
+        assert!(
+            card["after"].is_null(),
+            "{kind} must not publish an unsafe after-state"
+        );
+        assert!(
+            has_text(&card["blockers"], "money_arithmetic_overflow"),
+            "{kind} must expose the exact checked-arithmetic blocker"
+        );
     }
 }
 
@@ -1924,6 +2143,62 @@ fn cart_trim_alternatives_drop_optional_before_planned_keep_fixed_fees_and_never
 }
 
 #[test]
+fn optional_cart_trim_never_labels_an_unfunded_unsafe_or_unproven_remainder_funded() {
+    let cases = [
+        (
+            "category shortfall",
+            30_000,
+            1_000,
+            false,
+            "cash_available_but_unfunded",
+        ),
+        ("cash shortfall", 10_000, 5_000, false, "not_safe"),
+        (
+            "missing account evidence",
+            30_000,
+            5_000,
+            true,
+            "insufficient_data",
+        ),
+    ];
+    for (label, balance, category, evidence_unknown, expected) in cases {
+        let mut input = base_request();
+        set_account_balance(&mut input, "checking", balance);
+        set_category_availability(&mut input, "food", category);
+        set_item_amount(&mut input, 0, 2_000, "USD");
+        input["items"][0]["priority"] = json!("required");
+        input["items"][0]["id"] = json!("required-food");
+        let mut optional = input["items"][0].clone();
+        optional["id"] = json!("optional-food");
+        optional["priority"] = json!("optional");
+        optional["amount"] = money(1_000, "USD");
+        input["items"].as_array_mut().unwrap().push(optional);
+        input["warningThresholds"] = json!([{
+            "id": "cart-limit", "basis": "cart_total", "maximum": money(2_000, "USD")
+        }]);
+        if evidence_unknown {
+            account_mut(&mut input, "checking")["freshnessEvidence"]["state"] = json!("unknown");
+        }
+
+        let card = evaluate(input);
+        let trim = card["trimAlternatives"]
+            .as_array()
+            .expect("an over-limit cart must show a candidate");
+        let remaining = trim
+            .iter()
+            .find(|candidate| candidate["removedItemIds"] == json!(["optional-food"]))
+            .expect("only the optional item should be removed");
+        assert_eq!(
+            remaining["retainedItemIds"],
+            json!(["required-food"]),
+            "{label}"
+        );
+        assert_eq!(minor_units(&remaining["total"]), "2000", "{label}");
+        assert_eq!(remaining["outcome"], expected, "{label}");
+    }
+}
+
+#[test]
 fn outside_price_requires_provenance_and_barcode_does_not_supply_an_amount() {
     let mut outside = base_request();
     set_account_balance(&mut outside, "checking", 30_000);
@@ -2184,6 +2459,56 @@ fn obligation_projection_retains_exact_unknown_and_recurring_schedule_facts() {
 }
 
 #[test]
+fn schedule_economic_identity_links_a_differently_named_account_obligation_once() {
+    let mut input = base_request();
+    set_account_balance(&mut input, "checking", 30_000);
+    set_category_availability(&mut input, "food", 5_000);
+    set_item_amount(&mut input, 0, 500, "USD");
+    input["financialSnapshot"]["liquidity"]["schedules"] = json!([{
+        "id": "monthly-rent",
+        "accountId": "checking",
+        "categoryId": "food",
+        "ruleId": null,
+        "dueDate": "2026-09-20",
+        "certainty": "exact",
+        "amount": money(-800, "USD"),
+        "minimum": null,
+        "maximum": null,
+        "recurrence": null
+    }]);
+    account_mut(&mut input, "checking")["obligations"] = json!([{
+        "id": "bank-row-1",
+        "economicObligationId": "schedule:monthly-rent:2026-09-20",
+        "categoryId": "food",
+        "amount": money(800, "USD"),
+        "dueAt": "2026-09-20",
+        "paid": false,
+        "includedInBalance": false,
+        "matchedTransactionIds": []
+    }]);
+
+    let card = evaluate(input);
+    assert_eq!(outcome(&card), "funded_now");
+    assert_eq!(
+        minor_units(&category_state(&card, "before", "food")["commitments"]),
+        "800"
+    );
+    let obligations = card["before"]["obligations"]
+        .as_array()
+        .expect("before state must retain linked obligations");
+    assert_eq!(
+        obligations.len(),
+        1,
+        "one economic identity must not debit twice"
+    );
+    assert_eq!(obligations[0]["scheduleId"], "monthly-rent");
+    assert_eq!(
+        obligations[0]["economicObligationId"],
+        "schedule:monthly-rent:2026-09-20"
+    );
+}
+
+#[test]
 fn account_debit_claim_matching_preserves_commitment_and_account_scope() {
     let mut input = base_request();
     set_account_balance(&mut input, "checking", 30_000);
@@ -2328,6 +2653,49 @@ fn conflicting_account_and_category_obligation_identities_fail_closed() {
     assert_eq!(outcome(&claim_card), "insufficient_data");
     assert!(claim_card["after"].is_null());
     assert!(has_text(&claim_card["blockers"], "ambiguous_claim_match"));
+}
+
+#[test]
+fn malformed_active_category_claims_never_erase_financial_identity_or_currency_blockers() {
+    let cases: [(&str, MutateRequest, &str); 3] = [
+        (
+            "missing economic obligation ID",
+            |input| {
+                input["claimSet"]["bundles"][0]["effects"][0]["economicObligationId"] = json!("");
+            },
+            "missing_economic_obligation_id",
+        ),
+        (
+            "unknown category",
+            |input| {
+                input["claimSet"]["bundles"][0]["effects"][0]["resourceId"] = json!("orphan");
+                input["claimSet"]["bundles"][0]["effects"][0]["categoryId"] = json!("orphan");
+            },
+            "category_missing",
+        ),
+        (
+            "currency incompatible with category",
+            |input| {
+                input["claimSet"]["bundles"][0]["effects"][0]["amount"] = money(500, "EUR");
+            },
+            "currency_mismatch",
+        ),
+    ];
+    for (label, mutate, reason) in cases {
+        let mut input = base_request();
+        set_account_balance(&mut input, "checking", 30_000);
+        set_category_availability(&mut input, "food", 5_000);
+        add_claim(&mut input, "reservation-food", "food", 500, VALID_UNTIL);
+        mutate(&mut input);
+        let card = evaluate(input);
+        assert_eq!(outcome(&card), "insufficient_data", "{label}");
+        assert!(card["after"].is_null(), "{label}");
+        assert!(
+            has_text(&card["blockers"], reason),
+            "{label} must retain {reason}: {}",
+            card["blockers"]
+        );
+    }
 }
 
 #[test]
@@ -2680,6 +3048,21 @@ fn duplicate_category_identity_policy_identity_and_period_errors_are_visible() {
     assert_eq!(outcome(&month_card), "insufficient_data");
     assert!(has_text(&month_card["blockers"], "invalid_as_of_month"));
 
+    let mut mixed_period_currency = base_request();
+    let mut future = category_mut(&mut mixed_period_currency, "food").clone();
+    future["asOfMonth"] = json!("2026-10");
+    future["periodKind"] = json!("future");
+    future["cashBucketId"] = json!("food-future");
+    future["availability"] = money(1_000, "EUR");
+    mixed_period_currency["financialSnapshot"]["liquidity"]["categories"]
+        .as_array_mut()
+        .unwrap()
+        .push(future);
+    let mixed_card = evaluate(mixed_period_currency);
+    assert_eq!(outcome(&mixed_card), "insufficient_data");
+    assert!(mixed_card["after"].is_null());
+    assert!(has_text(&mixed_card["blockers"], "currency_mismatch"));
+
     let mut negative_category = base_request();
     set_category_availability(&mut negative_category, "food", -1);
     let negative_card = evaluate(negative_category);
@@ -2910,6 +3293,50 @@ fn cart_projection_rejects_currency_allocations_adjustments_and_thresholds() {
         &missing_threshold_card["blockers"],
         "category_missing"
     ));
+}
+
+#[test]
+fn cart_requires_positive_adjustments_valid_thresholds_and_one_fixed_charge_route() {
+    let mut empty = base_request();
+    empty["items"] = json!([]);
+    let empty_card = evaluate(empty);
+    assert_eq!(outcome(&empty_card), "insufficient_data");
+    assert!(empty_card["after"].is_null());
+    assert!(has_text(&empty_card["blockers"], "empty_purchase_scenario"));
+
+    let mut zero_tax = base_request();
+    zero_tax["adjustments"] = json!([{
+        "kind": "tax", "categoryId": "food", "amount": money(0, "USD")
+    }]);
+    let zero_tax_card = evaluate(zero_tax);
+    assert_eq!(outcome(&zero_tax_card), "insufficient_data");
+    assert!(zero_tax_card["after"].is_null());
+    assert!(has_text(
+        &zero_tax_card["blockers"],
+        "invalid_cart_adjustment"
+    ));
+
+    let mut no_adjustment_route = base_request();
+    no_adjustment_route["items"][0]["routeSelection"]["explicitAccountId"] = Value::Null;
+    no_adjustment_route["adjustments"] = json!([{
+        "kind": "tax", "categoryId": "food", "amount": money(100, "USD")
+    }]);
+    let ambiguous = evaluate(no_adjustment_route);
+    assert_eq!(outcome(&ambiguous), "insufficient_data");
+    assert!(ambiguous["after"].is_null());
+    assert!(has_text(
+        &ambiguous["blockers"],
+        "ambiguous_adjustment_route"
+    ));
+
+    let mut unnamed_threshold = base_request();
+    unnamed_threshold["warningThresholds"] = json!([{
+        "id": "", "basis": "cart_total", "maximum": money(100, "USD")
+    }]);
+    let invalid = evaluate(unnamed_threshold);
+    assert_eq!(outcome(&invalid), "insufficient_data");
+    assert!(invalid["after"].is_null());
+    assert!(has_text(&invalid["blockers"], "invalid_warning_threshold"));
 }
 
 #[test]

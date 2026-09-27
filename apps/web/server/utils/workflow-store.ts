@@ -766,8 +766,12 @@ export function getReviewMutationExecutor(): ReviewMutationExecutor | null {
  * request based on runtime configuration.
  */
 export function reviewAndApplyEnabled(event: EventWithContext): boolean {
-  const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
-  return config?.reviewAndApply === true;
+  try {
+    return (useRuntimeConfig(event as H3Event) as Record<string, unknown>).reviewAndApply === true;
+  } catch {
+    // Unit tests and non-Nitro callers may provide the config on the event.
+    return event.context.runtimeConfig?.reviewAndApply === true;
+  }
 }
 
 // ---------------------------------------------------------------------------

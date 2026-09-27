@@ -198,11 +198,13 @@ function cookiePair(value: string): [string, string] | null {
 export class ScenarioHttpClient {
   private readonly webUrl: URL;
   private readonly publicOrigin: URL;
+  private readonly internalSecret: string | undefined;
   private readonly cookies = new Map<string, string>();
 
-  constructor(webUrl: string, publicOrigin: string) {
+  constructor(webUrl: string, publicOrigin: string, internalSecret?: string) {
     this.webUrl = assertLoopbackHttpUrl(webUrl, 'webUrl');
     this.publicOrigin = assertPublicOrigin(publicOrigin);
+    this.internalSecret = internalSecret;
   }
 
   get cookieHeader(): string {
@@ -240,6 +242,7 @@ export class ScenarioHttpClient {
       'x-forwarded-host': this.publicOrigin.host,
       'x-forwarded-proto': this.publicOrigin.protocol.slice(0, -1),
     };
+    if (this.internalSecret) headers['x-balanceframe-demo-internal'] = this.internalSecret;
     const cookie = this.cookieHeader;
     if (cookie) headers.cookie = cookie;
     if (body !== undefined) headers['content-type'] = 'application/json';
@@ -301,6 +304,77 @@ function mapPolicy(policy: ScenarioPolicy, ids: SeededEntityIds): ScenarioPolicy
   };
 }
 
+
+/**
+ * Rebase a catalog expiry at the HTTP submission boundary while preserving the
+ * recipe's duration from its materialization anchor.
+ */
+function materializeExpiryAtSubmission(
+  expiresAt: string,
+  anchor: string,
+  submittedAt = Date.now(),
+): string {
+  const anchorTime = Date.parse(anchor);
+  const expiryTime = Date.parse(expiresAt);
+  if (!Number.isFinite(anchorTime) || !Number.isFinite(expiryTime) || !Number.isFinite(submittedAt))
+    throw new Error('Scenario workflow expiry timestamps must be valid');
+  return new Date(submittedAt + expiryTime - anchorTime).toISOString();
+}
+
+/**
+ * Maps account observations immediately before submission without rewriting
+ * ordinary observation recipe timestamps.
+ */
+export function mapObservations(
+  observations: ScenarioObservations,
+  ids: SeededEntityIds,
+  anchor: string,
+  submittedAt = Date.now(),
+): ScenarioObservations {
+  return {
+    ...observations,
+    expiresAt: materializeExpiryAtSubmission(observations.expiresAt, anchor, submittedAt),
+    observations: observations.observations.map((observation) => mapObservation(observation, ids)),
+  };
+}
+
+/**
+ * Maps a saved session immediately before submission without shifting its item
+ * or price-provenance timestamps.
+ */
+export function mapSession(
+  session: SpendSessionIntent,
+  ids: SeededEntityIds,
+  anchor: string,
+  submittedAt = Date.now(),
+): SpendSessionIntent {
+  return {
+    ...session,
+    expiresAt: materializeExpiryAtSubmission(session.expiresAt, anchor, submittedAt),
+    accountId: mapNullableId(ids.accountIds, session.accountId, 'session account'),
+    items: session.items.map((item) => ({
+      ...item,
+      categoryId: mapId(ids.categoryIds, item.categoryId, 'session category'),
+      accountId: mapNullableId(ids.accountIds, item.accountId, 'session item account'),
+      categoryAllocations: item.categoryAllocations?.map((allocation) => ({
+        ...allocation,
+        categoryId: mapId(ids.categoryIds, allocation.categoryId, 'session allocation category'),
+      })),
+    })),
+    adjustments: session.adjustments?.map((adjustment) => ({
+      ...adjustment,
+      categoryId: mapId(ids.categoryIds, adjustment.categoryId, 'session adjustment category'),
+    })),
+    warningThresholds: session.warningThresholds?.map((threshold) =>
+      threshold.basis === 'category_charge'
+        ? {
+            ...threshold,
+            categoryId: mapId(ids.categoryIds, threshold.categoryId, 'session warning category'),
+          }
+        : threshold),
+  };
+}
+
 function mapObservation(
   observation: ScenarioObservations['observations'][number],
   ids: SeededEntityIds,
@@ -353,39 +427,6 @@ function mapObservation(
   };
 }
 
-function mapObservations(observations: ScenarioObservations, ids: SeededEntityIds): ScenarioObservations {
-  return {
-    ...observations,
-    observations: observations.observations.map((observation) => mapObservation(observation, ids)),
-  };
-}
-
-function mapSession(session: SpendSessionIntent, ids: SeededEntityIds): SpendSessionIntent {
-  return {
-    ...session,
-    accountId: mapNullableId(ids.accountIds, session.accountId, 'session account'),
-    items: session.items.map((item) => ({
-      ...item,
-      categoryId: mapId(ids.categoryIds, item.categoryId, 'session category'),
-      accountId: mapNullableId(ids.accountIds, item.accountId, 'session item account'),
-      categoryAllocations: item.categoryAllocations?.map((allocation) => ({
-        ...allocation,
-        categoryId: mapId(ids.categoryIds, allocation.categoryId, 'session allocation category'),
-      })),
-    })),
-    adjustments: session.adjustments?.map((adjustment) => ({
-      ...adjustment,
-      categoryId: mapId(ids.categoryIds, adjustment.categoryId, 'session adjustment category'),
-    })),
-    warningThresholds: session.warningThresholds?.map((threshold) =>
-      threshold.basis === 'category_charge'
-        ? {
-            ...threshold,
-            categoryId: mapId(ids.categoryIds, threshold.categoryId, 'session warning category'),
-          }
-        : threshold),
-  };
-}
 
 function mapPurchase(input: LiquidityPurchaseIntent, ids: SeededEntityIds): LiquidityPurchaseIntent {
   return {
@@ -565,6 +606,7 @@ async function initializePersonas(
   bootstrapSecret: string,
   publicOrigin: string,
   webUrl: string,
+  internalSecret?: string,
 ): Promise<{
   readonly ownerPersonaId: string;
   readonly clients: Readonly<Record<string, ScenarioHttpClient>>;
@@ -595,14 +637,14 @@ async function initializePersonas(
     const invited = await ownerClient.post('/api/invitations', {});
     const token = invitationToken(invited);
     const personaCredentials = credentialsFor(persona, scenario.id);
-    const anonymousClient = new ScenarioHttpClient(webUrl, publicOrigin);
+    const anonymousClient = new ScenarioHttpClient(webUrl, publicOrigin, internalSecret);
     await anonymousClient.post('/api/invitations/redeem', {
       token,
       name: persona.displayName,
       email: personaCredentials.email,
       password: personaCredentials.password,
     });
-    const client = new ScenarioHttpClient(webUrl, publicOrigin);
+    const client = new ScenarioHttpClient(webUrl, publicOrigin, internalSecret);
     const actorId = await client.signIn(personaCredentials.email, personaCredentials.password);
     clients[persona.id] = client;
     credentials[persona.id] = {
@@ -623,7 +665,10 @@ async function initializeSessions(
   const sessions: Record<string, string> = {};
   const versions: Record<string, number> = {};
   for (const [sessionKey, intent] of Object.entries(scenario.sessions)) {
-    const response = await client.post('/api/spend-sessions', mapSession(intent, ids));
+    const response = await client.post(
+      '/api/spend-sessions',
+      mapSession(intent, ids, scenario.anchor),
+    );
     const saved = assertSessionResponse(response, `session ${sessionKey}`);
     sessions[sessionKey] = saved.id;
     versions[sessionKey] = saved.version;
@@ -752,8 +797,9 @@ export async function initializeScenarioWorkflow(options: {
   readonly publicOrigin: string;
   readonly bootstrapSecret: string;
   readonly workflowDbPath: string;
+  readonly internalSecret?: string;
 }): Promise<ScenarioInitialized> {
-  const client = new ScenarioHttpClient(options.webUrl, options.publicOrigin);
+  const client = new ScenarioHttpClient(options.webUrl, options.publicOrigin, options.internalSecret);
   const { scenario, seeded } = options;
   const personas = await initializePersonas(
     client,
@@ -761,6 +807,7 @@ export async function initializeScenarioWorkflow(options: {
     options.bootstrapSecret,
     options.publicOrigin,
     options.webUrl,
+    options.internalSecret,
   );
   await provisionMemberships(
     options.workflowDbPath,
@@ -785,7 +832,6 @@ export async function initializeScenarioWorkflow(options: {
     await client.put('/api/liquidity/policy', { expectedVersion: null, ...policy }),
     'liquidity policy',
   );
-  const observations = mapObservations(scenario.observations, seeded);
   const observationVersion = number(
     policyResult.observationVersion,
     'liquidity policy observationVersion',
@@ -793,7 +839,7 @@ export async function initializeScenarioWorkflow(options: {
   assertConfiguration(
     await client.put('/api/liquidity/observations', {
       expectedVersion: observationVersion,
-      ...observations,
+      ...mapObservations(scenario.observations, seeded, scenario.anchor),
     }),
     'liquidity observations',
   );

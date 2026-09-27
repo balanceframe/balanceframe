@@ -43,6 +43,11 @@ export const auth = betterAuth({
     /** Disable public self-registration — accounts must be created by an admin. */
     disableSignUp: true,
   },
+  // Fixture setup signs in several fictional actors from one private loopback IP.
+  // Browser sign-in is blocked by the demo boundary; retain a finite limit.
+  ...(process.env.NUXT_DEMO_MANIFEST_PATH ? {
+    rateLimit: { customRules: { '/sign-in/email': { window: 10, max: 20 } } },
+  } : {}),
 
   plugins: [
     admin(),

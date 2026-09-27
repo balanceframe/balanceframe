@@ -857,6 +857,17 @@ describe('scenario catalog contract', () => {
     expect(transfer.entry.input.requiredBy).toBe(addMilliseconds(REFERENCE_ANCHOR, 2 * HOUR_MS));
   });
 
+  it('uses one originating economic obligation for category and account commitment scopes', () => {
+    const scenario = materializeScenario('commitment-overlap', REFERENCE_ANCHOR);
+    expect(scenario.claims.categoryCommitment).toMatchObject({
+      kind: 'commitment', sessionKey: 'origin', scope: { kind: 'category', id: 'cat-groceries' },
+    });
+    expect(scenario.claims.accountCommitment).toMatchObject({
+      kind: 'commitment', sessionKey: 'origin', scope: { kind: 'account', id: 'acct-checking' },
+    });
+    expect(Object.keys(scenario.sessions)).toEqual(['origin']);
+  });
+
   it('rejects invalid anchors and non-catalog IDs instead of manufacturing a fixture', () => {
     expect(() => materializeScenario('funded-purchase', new Date(Number.NaN))).toThrow(
       /date|anchor|invalid/i,

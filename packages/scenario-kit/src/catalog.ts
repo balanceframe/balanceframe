@@ -58,6 +58,9 @@ if (FIXTURE.snapshotDate !== REFERENCE_ANCHOR.toISOString()) {
   throw new Error('household scenario fixture must use the approved reference anchor');
 }
 
+/** Version of the checked scenario catalog and emitted verification records. */
+export const SCENARIO_CATALOG_VERSION = '1';
+
 export const SCENARIO_IDS = [
   'funded-purchase',
   'guilt-free-spending',
@@ -758,7 +761,7 @@ function coapproverPersona(): ScenarioPersona {
         capability,
         granted: true,
       })),
-      ...(['cat-groceries', 'cat-entertainment'] as const).flatMap((resourceId) =>
+      ...(['cat-groceries', 'cat-household', 'cat-entertainment'] as const).flatMap((resourceId) =>
         (['existence', 'category', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
           resourceKind: 'category' as const,
           resourceId,
@@ -845,9 +848,10 @@ function buildDonorReallocation(context: BuildContext): MutableScenario {
   addCategoryPolicy(scenario, 'cat-donor', 'ordinary', {
     donorEligible: true,
     minimumRetained: money('1000'),
-  });
-  addCategoryPolicy(scenario, 'cat-groceries', 'ordinary', {
     projectedRemainingNeed: money('1000'),
+  });
+  addPolicyAccount(scenario, 'acct-checking', '10000', {
+    eligibleCategoryIds: ['cat-groceries', 'cat-donor'],
   });
   basePurchase(context, scenario);
   return scenario;
@@ -892,6 +896,9 @@ function buildDonorCompetition(context: BuildContext): MutableScenario {
   addCategoryPolicy(scenario, 'cat-donor', 'ordinary', {
     donorEligible: true,
     minimumRetained: money('0'),
+  });
+  addPolicyAccount(scenario, 'acct-checking', '10000', {
+    eligibleCategoryIds: ['cat-groceries', 'cat-donor'],
   });
   const item = (id: string) =>
     makeSessionItem(context, {
@@ -944,6 +951,7 @@ function buildAccountTransfer(context: BuildContext, late: boolean): MutableScen
     kind: 'purchase',
     input: makePurchase(context, 'cat-groceries', '2000', {
       accountId: 'acct-checking',
+      purchaseOffsetMs: 2 * HOUR_MS,
       requiredByOffsetMs: 2 * HOUR_MS,
     }),
   };
@@ -967,6 +975,9 @@ function buildCreditCardPurchase(context: BuildContext): MutableScenario {
     isIncome: false,
   });
   addBudgetCategory(scenario, context.month(), 'cat-card-payment', '0');
+  addPolicyAccount(scenario, 'acct-checking', '10000', {
+    eligibleCategoryIds: ['cat-groceries', 'cat-card-payment'],
+  });
   addPolicyAccount(scenario, 'acct-credit', '0', {
     role: 'credit_payment',
     paymentEligible: true,
@@ -1096,15 +1107,6 @@ function buildCommitmentOverlap(context: BuildContext): MutableScenario {
       priority: 'required',
     }),
   ]);
-  scenario.sessions.accountScoped = makeSession(context, [
-    makeSessionItem(context, {
-      id: 'account-item',
-      categoryId: 'cat-groceries',
-      amount: '1500',
-      accountId: 'acct-checking',
-      priority: 'required',
-    }),
-  ]);
   scenario.claims.categoryCommitment = {
     kind: 'commitment',
     sessionKey: 'origin',
@@ -1113,7 +1115,7 @@ function buildCommitmentOverlap(context: BuildContext): MutableScenario {
   };
   scenario.claims.accountCommitment = {
     kind: 'commitment',
-    sessionKey: 'accountScoped',
+    sessionKey: 'origin',
     scope: { kind: 'account', id: 'acct-checking' },
     mode: 'block',
   };
@@ -1198,7 +1200,7 @@ function buildExpiredSession(context: BuildContext): MutableScenario {
   return scenario;
 }
 
-function completionCart(context: BuildContext, id: ScenarioId, split = true): MutableScenario {
+function completionCart(context: BuildContext, id: ScenarioId): MutableScenario {
   const scenario = baseScenario(context, id);
   richCartSessions(context, scenario);
   addCategory(scenario, {
@@ -1211,7 +1213,7 @@ function completionCart(context: BuildContext, id: ScenarioId, split = true): Mu
   addPolicyAccount(scenario, 'acct-checking', '10000', {
     eligibleCategoryIds: ['cat-groceries', 'cat-entertainment', 'cat-household'],
   });
-  const items = richCartItems(context, { splitRequired: split });
+  const items = richCartItems(context, { splitRequired: true });
   scenario.sessions.cart = makeSession(context, items, {
     adjustments: richCartAdjustments(),
     warningThresholds: richCartWarnings(),
@@ -1235,7 +1237,7 @@ function buildCooldownCompletion(context: BuildContext): MutableScenario {
 }
 
 function buildCoapprovalCompletion(context: BuildContext): MutableScenario {
-  const scenario = completionCart(context, 'coapproval-completion', false);
+  const scenario = completionCart(context, 'coapproval-completion');
   scenario.policy.approvalPolicy.minimumApprovers = 2;
   scenario.personas.push(coapproverPersona(), restrictedPersona());
   scenario.completions.purchase = simpleCompletion('cart', 'proposed', ['owner', 'coapprover']);
