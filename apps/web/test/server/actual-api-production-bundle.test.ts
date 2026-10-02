@@ -18,28 +18,24 @@ import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 
 const WEB_ROOT = resolve(import.meta.dirname, '../..');
 
-const SERVER_NODE_MODULES = resolve(WEB_ROOT, '.output/server/node_modules');
-
-async function expectTracedActualRuntime(): Promise<void> {
+async function expectTracedActualRuntime(serverNodeModules: string): Promise<void> {
   await Promise.all([
-    access(resolve(SERVER_NODE_MODULES, '@actual-app/api/package.json')),
-    access(resolve(SERVER_NODE_MODULES, '@actual-app/api/dist/index.js')),
-    access(resolve(SERVER_NODE_MODULES, '@actual-app/api/dist/default-db.sqlite')),
+    access(resolve(serverNodeModules, '@actual-app/api/package.json')),
+    access(resolve(serverNodeModules, '@actual-app/api/dist/index.js')),
+    access(resolve(serverNodeModules, '@actual-app/api/dist/default-db.sqlite')),
     access(
       resolve(
-        SERVER_NODE_MODULES,
+        serverNodeModules,
         '@actual-app/api/dist/migrations/1548957970627_remove-db-version.sql',
       ),
     ),
     access(
-      resolve(SERVER_NODE_MODULES, '@actual-app/api/dist/migrations/1632571489012_remove_cache.js'),
+      resolve(serverNodeModules, '@actual-app/api/dist/migrations/1632571489012_remove_cache.js'),
     ),
-    access(resolve(SERVER_NODE_MODULES, 'better-sqlite3/package.json')),
-    access(resolve(SERVER_NODE_MODULES, 'better-sqlite3/build/Release/better_sqlite3.node')),
+    access(resolve(serverNodeModules, 'better-sqlite3/package.json')),
+    access(resolve(serverNodeModules, 'better-sqlite3/build/Release/better_sqlite3.node')),
   ]);
 }
-
-const SERVER_ENTRY = resolve(WEB_ROOT, '.output/server/index.mjs');
 
 let activeChild: ChildProcessWithoutNullStreams | null = null;
 let activeDataDir: string | null = null;
@@ -133,15 +129,39 @@ describe('production Actual API bundle', () => {
     'loads the Actual client without CommonJS or module-resolution failures',
     { timeout: 180_000 },
     async () => {
-      execFileSync('pnpm', ['exec', 'nuxt', 'build'], {
-        cwd: WEB_ROOT,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
-      await expectTracedActualRuntime();
-
       const dataDir = await mkdtemp(resolve(tmpdir(), 'balanceframe-prod-bundle-'));
       activeDataDir = dataDir;
+      const outputDir = resolve(dataDir, '.output');
+      // Scenario tests use the workspace bundle concurrently; never rebuild their artifact.
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `
+          import { build, loadNuxt } from 'nuxt';
+          import { resolve } from 'node:path';
+          const root = process.argv[1];
+          const nuxt = await loadNuxt({
+            cwd: process.cwd(),
+            overrides: {
+              dev: false,
+              buildDir: resolve(root, '.nuxt'),
+              nitro: { output: { dir: resolve(root, '.output') } },
+            },
+          });
+          try { await build(nuxt); } finally { await nuxt.close(); }
+        `,
+          dataDir,
+        ],
+        {
+          cwd: WEB_ROOT,
+          env: { ...process.env, NODE_ENV: 'production' },
+          encoding: 'utf8',
+          stdio: 'pipe',
+        },
+      );
+      await expectTracedActualRuntime(resolve(outputDir, 'server/node_modules'));
       const workflow = new SqliteWorkflowStore(resolve(dataDir, 'workflow.db'));
       try {
         await workflow.claimBootstrap({
@@ -158,7 +178,7 @@ describe('production Actual API bundle', () => {
         workflow.close();
       }
       const port = await availablePort();
-      const child = spawn(process.execPath, [SERVER_ENTRY], {
+      const child = spawn(process.execPath, [resolve(outputDir, 'server/index.mjs')], {
         cwd: WEB_ROOT,
         env: {
           ...process.env,

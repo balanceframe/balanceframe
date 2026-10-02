@@ -161,6 +161,10 @@ pnpm test
 nix flake check
 ```
 
+Scenario tests consume the workspace's production Nuxt bundle. The production
+dependency regression builds its own disposable `.nuxt` and `.output` directories
+so parallel workspace tests never lose or replace that shared runtime.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 
 ### Disposable feature scenarios and demo
