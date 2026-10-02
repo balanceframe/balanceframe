@@ -13,7 +13,7 @@
     "./loader": "./dist/scenario-kit/src/loader.js"
   },
   "scripts": {
-    "build": "tsc && mkdir -p dist/protocol/fixtures/scenarios && cp ../../protocol/fixtures/scenarios/household.json dist/protocol/fixtures/scenarios/household.json",
+    "build": "tsc && node --input-type=module -e \"import { mkdirSync, copyFileSync } from 'node:fs'; mkdirSync('dist/protocol/fixtures/scenarios', { recursive: true }); copyFileSync('../../protocol/fixtures/scenarios/household.json', 'dist/protocol/fixtures/scenarios/household.json');\"",
     "coverage": "vitest run --coverage",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

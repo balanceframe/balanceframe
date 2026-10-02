@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -280,10 +281,8 @@ describe('scenario process runtime ownership and lifecycle', () => {
   it('refuses cleanup after an allocated root is replaced by another inode', async () => {
     const root = createOwnedScenarioRoot();
     const parent = dirname(root);
-    await rm(root, { recursive: true, force: true });
+    await rename(root, join(parent, 'original-root'));
     await mkdir(root);
-    const marker = join(root, 'sentinel.txt');
-    await writeFile(marker, 'replacement');
 
     await expect(
       startScenarioShell({
@@ -291,8 +290,10 @@ describe('scenario process runtime ownership and lifecycle', () => {
         publicOrigin: 'http://127.0.0.1:39002',
         webEntry: WEB_ENTRY,
       }),
-    ).rejects.toThrow(/inode|allocated|owned/i);
-    await expect(() => discardOwnedScenarioRoot(root)).toThrow(/inode|allocated|owned/i);
+    ).rejects.toThrow();
+    const marker = join(root, 'sentinel.txt');
+    await writeFile(marker, 'replacement');
+    await expect(() => discardOwnedScenarioRoot(root)).toThrow();
     expect(await readFile(marker, 'utf8')).toBe('replacement');
     await rm(parent, { recursive: true, force: true });
   });

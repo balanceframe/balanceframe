@@ -167,6 +167,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 
 After `nix develop`, install dependencies and build the workspace from source (`pnpm install && pnpm build`).
 The native addon, Actual server, and production Nuxt bundle must be available; a browser-only mock cannot run these financial flows.
+Scenario fixture packaging uses Node filesystem APIs, so the build does not require POSIX `mkdir` or `cp` commands on Windows.
 
 ```bash
 pnpm scenarios list
