@@ -46,6 +46,7 @@ describe('saved session lifecycle actions', () => {
         stubs: {
           AnalysisPage: { props: ['loading', 'error'], template: '<main><slot name="content" /></main>' },
           NuxtLink: { template: '<a><slot /></a>' },
+          NuxtPage: { template: '<main />' },
         },
       },
     });
@@ -63,5 +64,28 @@ describe('saved session lifecycle actions', () => {
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/spend-sessions/'))).toHaveLength(2);
     expect(wrapper.find('[data-testid="saved-claims"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="saved-completion"]').exists()).toBe(true);
+  });
+});
+
+describe('scoped completion route', () => {
+  it('renders the coapprover review without requesting the owner-only session or full-budget liquidity', async () => {
+    vi.stubGlobal('useRoute', () => ({
+      params: { id: 'fixture-session', proposalId: 'fixture-proposal' },
+    }));
+    fetchMock.mockRejectedValue(new Error('owner-only session denied'));
+    const wrapper = mount(SpendSessionPage, {
+      global: {
+        components: { SpendSessionEditor: editor, ProspectiveClaimPanel: claims, SessionCompletionPanel: completion },
+        stubs: {
+          AnalysisPage: { props: ['loading', 'error'], template: '<main><slot name="content" /></main>' },
+          NuxtPage: { template: '<main><h1>Completion approval</h1></main>' },
+          NuxtLink: { template: '<a><slot /></a>' },
+        },
+      },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain('Completion approval');
+    expect(fetchMock).not.toHaveBeenCalled();
+    wrapper.unmount();
   });
 });

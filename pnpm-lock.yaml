@@ -58,6 +58,9 @@ importers:
       '@balanceframe/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@balanceframe/native':
+        specifier: workspace:*
+        version: link:../../crates/node-binding
       '@balanceframe/protocol-generated':
         specifier: workspace:*
         version: link:../../packages/protocol-generated
@@ -210,6 +213,34 @@ importers:
         specifier: ^3.0.0
         version: 3.25.76
     devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^1.0.0
+        version: 1.6.1(vitest@1.6.1(@types/node@20.19.43)(happy-dom@20.11.1)(lightningcss@1.33.0)(terser@5.49.0))
+      vitest:
+        specifier: ^1.0.0
+        version: 1.6.1(@types/node@20.19.43)(happy-dom@20.11.1)(lightningcss@1.33.0)(terser@5.49.0)
+
+  packages/scenario-kit:
+    dependencies:
+      '@actual-app/api':
+        specifier: ^26.7.0
+        version: 26.7.0
+      '@balanceframe/application':
+        specifier: workspace:*
+        version: link:../application
+      '@balanceframe/protocol-generated':
+        specifier: workspace:*
+        version: link:../protocol-generated
+      '@balanceframe/workflow-store':
+        specifier: workspace:*
+        version: link:../workflow-store
+      zod:
+        specifier: ^3.0.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
       '@vitest/coverage-v8':
         specifier: ^1.0.0
         version: 1.6.1(vitest@1.6.1(@types/node@20.19.43)(happy-dom@20.11.1)(lightningcss@1.33.0)(terser@5.49.0))

@@ -79,7 +79,11 @@ describe('03 — Read Entities & Queries', () => {
       });
       expect(payeeNames).toContain('AMAZON MKTPLACE');
       expect(payeeNames).toContain('Whole Foods');
-      expect(payeeNames).toContain('Checking <> Credit Card');
+      const creditCard = accounts.find((account) => account.name === 'Credit Card');
+      expect(creditCard).toBeDefined();
+      expect(payees).toEqual(expect.arrayContaining([
+        expect.objectContaining({ transfer_acct: creditCard!.id }),
+      ]));
 
       // Verify transactions exist across accounts
       let totalTxns = 0;

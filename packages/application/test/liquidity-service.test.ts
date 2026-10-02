@@ -15,7 +15,7 @@ import {
 import { actualLiquidityRequest } from '../../../tests/contract/fixtures/actual-liquidity.js';
 import { ConnectionManager } from '../src/connection-manager.js';
 import type { ManualTransactionInput } from '@balanceframe/actual-adapter';
-import { LiquidityService } from '../src/liquidity-service.js';
+import { LiquidityService, createLiquidityService } from '../src/liquidity-service.js';
 import { LiquidityProjector } from '../src/liquidity-projector.js';
 
 const native = createRequire(import.meta.url)('@balanceframe/native');
@@ -114,6 +114,30 @@ function snapshot(
       schedules: { available: true, items: [] },
     }),
   );
+}
+
+function connectorSourceObservations(accountIds: readonly string[]) {
+  return [
+    {
+      kind: 'account_collection_coverage' as const,
+      scope: { kind: 'global' as const },
+      state: 'complete' as const,
+      observedAt: '2026-09-06T10:00:00.000Z',
+      evidence: [],
+    },
+    ...accountIds.flatMap((accountId) => {
+      const scope = { kind: 'account' as const, id: accountId };
+      const evidence = [{
+        evidenceId: accountId, kind: 'account', authorized: true, redaction: 'visible' as const,
+      }];
+      return [
+        { kind: 'account_freshness' as const, scope, state: 'unknown' as const, observedAt: null, evidence },
+        { kind: 'account_coverage' as const, scope, state: 'complete' as const, observedAt: now, evidence },
+        { kind: 'account_type' as const, scope, state: 'unknown' as const, observedAt: null, evidence },
+        { kind: 'account_balance' as const, scope, state: 'complete' as const, observedAt: now, evidence },
+      ];
+    }),
+  ];
 }
 
 describe('authoritative application liquidity service', () => {
@@ -219,7 +243,7 @@ describe('authoritative application liquidity service', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  async function saveFundedSession() {
+  async function saveFundedSession(amount = '1000') {
     current = snapshot(20000, '2026-09-06T10:00:00.000Z', false, 15000);
     await service.saveObservations(actor, {
       expectedVersion: 1,
@@ -232,7 +256,7 @@ describe('authoritative application liquidity service', () => {
     const session = await service.saveSession(actor, null, {
       accountId: 'checking',
       expiresAt,
-      items: [{ id: 'one', categoryId: 'food', accountId: 'checking', amount: money('1000'),
+      items: [{ id: 'one', categoryId: 'food', accountId: 'checking', amount: money(amount),
         purchaseAt: now, requiredBy: now }],
     });
     expect(session.card.outcome).toBe('funded_now');
@@ -269,6 +293,46 @@ describe('authoritative application liquidity service', () => {
     });
     expect(result.card).not.toHaveProperty('planHash');
     expect(store.liquidity.getClaimSet({ ...actor, now }).bundles).toEqual([]);
+  });
+
+  it('turns Actual partial account metadata into a funded ready Card only after dated attestations', async () => {
+    current = snapshot(20000, '2026-09-06T10:00:00.000Z', false, 15000);
+    current.coverage = { ...current.coverage, accounts: 'partial' };
+    current.observations = connectorSourceObservations(['checking', 'savings']);
+    await service.saveObservations(actor, {
+      expectedVersion: 1,
+      expiresAt,
+      observations: ['checking', 'savings'].map((accountId) => ({
+        accountId, currentLedgerConfirmed: true, kind: 'cash',
+        currency: 'USD', owned: true, holds: money('0'),
+      })),
+    });
+
+    const result = await service.evaluatePurchase(actor, {
+      ...purchase, purchaseAt: now, requiredBy: now,
+    });
+
+    expect(result.card).toMatchObject({
+      outcome: 'funded_now',
+      budgetFundingStatus: 'funded',
+      paymentLiquidityStatus: 'ready',
+      before: {
+        categories: expect.arrayContaining([
+          expect.objectContaining({ categoryId: 'food', availability: money('2000') }),
+        ]),
+        accounts: expect.arrayContaining([
+          expect.objectContaining({ accountId: 'checking', safeSpendingCapacity: money('5000') }),
+        ]),
+      },
+      after: {
+        categories: expect.arrayContaining([
+          expect.objectContaining({ categoryId: 'food', availability: money('0') }),
+        ]),
+        accounts: expect.arrayContaining([
+          expect.objectContaining({ accountId: 'checking', safeSpendingCapacity: money('3000') }),
+        ]),
+      },
+    });
   });
 
   it('reserves exact native cart charges and restores availability on authorized release', async () => {
@@ -309,6 +373,31 @@ describe('authoritative application liquidity service', () => {
     });
     expect(released).toMatchObject({ lifecycleState: 'released', status: 'released' });
     expect((await service.session(actor, competing.id)).card.outcome).toBe('funded_now');
+  });
+
+  it('does not charge a saved session twice for its own category and account commitments', async () => {
+    const session = await saveFundedSession('1500');
+    const category = await service.createProspectiveClaim(actor, {
+      sessionId: session.id, expectedSessionVersion: session.version,
+      kind: 'commitment', scope: { kind: 'category', id: 'food' },
+      idempotencyKey: 'own-category-commitment',
+    });
+    const account = await service.createProspectiveClaim(actor, {
+      sessionId: session.id, expectedSessionVersion: session.version,
+      kind: 'commitment', scope: { kind: 'account', id: 'checking' },
+      idempotencyKey: 'own-account-commitment',
+    });
+    expect(category).toMatchObject({ mode: 'block', amount: money('1500'), lifecycleState: 'active' });
+    expect(account).toMatchObject({ mode: 'block', amount: money('1500'), lifecycleState: 'active' });
+    expect((await service.session(actor, session.id)).card).toMatchObject({
+      outcome: 'funded_now',
+      before: { categories: expect.arrayContaining([
+        expect.objectContaining({ categoryId: 'food', availability: money('2000') }),
+      ]) },
+      after: { categories: expect.arrayContaining([
+        expect.objectContaining({ categoryId: 'food', availability: money('500') }),
+      ]) },
+    });
   });
 
   it('reevaluates a still-open same-day cart at the current instant before reserving its exact charge', async () => {
@@ -501,6 +590,33 @@ describe('authoritative application liquidity service', () => {
     ]);
   });
 
+  it('fails closed before a completion write when the native liquidity capability disappears', async () => {
+    const session = await saveFundedSession();
+    const proposed = await service.proposeSessionCompletion(actor, session.id, {
+      expectedSessionVersion: session.version,
+      idempotencyKey: 'native-unavailable-proposal',
+    });
+    const approved = await service.approveSessionCompletion(actor, proposed.id, {
+      payloadHash: proposed.payloadHash!,
+      expectedVersion: proposed.version,
+      idempotencyKey: 'native-unavailable-approval',
+    });
+    const holdsBefore = store.liquidity.getClaimSet({ ...actor, now }).bundles;
+
+    const evaluateDecisionCard = native.evaluateDecisionCard;
+    try {
+      native.evaluateDecisionCard = undefined;
+      await expect(createLiquidityService({
+        connectionManager: manager,
+        mutationConnectionManager: manager,
+        store,
+      })).rejects.toThrow('Native liquidity capabilities unavailable');
+    } finally {
+      native.evaluateDecisionCard = evaluateDecisionCard;
+    }
+    expect((await service.sessionCompletion(actor, approved.id)).phase).toBe('approved');
+    expect(store.liquidity.getClaimSet({ ...actor, now }).bundles).toEqual(holdsBefore);
+  });
 
   it('replays a lost completion proposal response without creating a second held debit', async () => {
     const session = await saveFundedSession();
@@ -900,7 +1016,14 @@ describe('authoritative application liquidity service', () => {
     const actualParent = writes[0]!;
     current = {
       ...current,
-      coverage: { ...current.coverage, accounts: 'complete', transactions: 'complete' },
+      coverage: { ...current.coverage, accounts: 'partial', transactions: 'complete' },
+      observations: [{
+        kind: 'account_collection_coverage',
+        scope: { kind: 'global' },
+        state: 'complete',
+        observedAt: clockNow,
+        evidence: [],
+      }],
       legacySnapshot: {
         ...current.legacySnapshot,
         transactions: [{
@@ -912,7 +1035,7 @@ describe('authoritative application liquidity service', () => {
           categoryId: actualParent.categoryId ?? null,
           payeeName: 'Fixture shop',
           importedId: 'bank-001',
-          reconciled: true,
+          reconciled: false,
           subtransactions: [],
         }],
       },
@@ -943,6 +1066,107 @@ describe('authoritative application liquidity service', () => {
       idempotencyKey: 'ambiguous-bank-candidate',
     })).rejects.toThrow(/Ambiguous Actual reconciliation/);
     expect(writes).toHaveLength(1);
+  });
+
+  it('closes for imported candidate review before invoking an Actual write', async () => {
+    const session = await saveFundedSession();
+    const proposed = await service.proposeSessionCompletion(actor, session.id, {
+      expectedSessionVersion: session.version,
+      idempotencyKey: 'imported-candidate-proposal',
+    });
+    const approved = await service.approveSessionCompletion(actor, proposed.id, {
+      payloadHash: proposed.payloadHash!,
+      expectedVersion: proposed.version,
+      idempotencyKey: 'imported-candidate-approval',
+    });
+
+    const refreshed = snapshot(20000, '2026-09-06T10:01:30.000Z', false, 15000);
+    const candidate: Transaction = {
+      ...importedRowFixture,
+      id: 'imported-candidate-001',
+      accountId: 'checking',
+      date: '2026-09-06',
+      payeeId: null,
+      payeeName: 'Fixture shop',
+      categoryId: 'food',
+      categoryName: 'Food',
+      amount: money('-1000'),
+      cleared: true,
+      reconciled: false,
+      importedId: 'bank-import-001',
+      importedPayee: 'Fixture shop',
+      notes: null,
+      tags: [],
+      transferAccountId: null,
+      subtransactions: [],
+    };
+    current = {
+      ...refreshed,
+      legacySnapshot: {
+        ...refreshed.legacySnapshot,
+        transactions: [candidate],
+      },
+    };
+
+    const attempts: ManualTransactionInput[] = [];
+    const mutationManager = new ConnectionManager({
+      readFile: async () => JSON.stringify({
+        version: 1,
+        serverUrl: 'http://actual',
+        budgetId: 'fixture',
+        budgetName: 'Fixture',
+        groupId: 'fixture',
+      }),
+      writeFile: async () => {},
+      credentialStore: {
+        load: async () => ({ serverUrl: 'http://actual', secretKey: 'fixture' }),
+        store: async () => {},
+      },
+      connectorFactory: async () => ({
+        connect: async () => [],
+        selectBudget: async () => ({
+          id: 'fixture',
+          groupId: 'fixture',
+          name: 'Fixture',
+          encrypted: false,
+        }),
+        synchronize: async () => ({ financialSnapshot: current, snapshot: current.legacySnapshot }),
+        createManualTransaction: async (input: ManualTransactionInput) => {
+          attempts.push(input);
+          return {
+            success: false as const,
+            verified: false as const,
+            parentId: input.parentId,
+            correlationId: input.correlationId,
+            code: 'IMPORTED_CANDIDATE_REVIEW' as const,
+            error: 'Fixture imported candidate requires review.',
+            reviewRequired: true as const,
+          };
+        },
+        disconnect: async () => {},
+      }),
+    });
+    const writable = new LiquidityService({
+      connectionManager: manager,
+      mutationConnectionManager: mutationManager,
+      store,
+      native,
+      clock: () => new Date(clockNow),
+    });
+
+    const result = await writable.executeSessionCompletion(actor, proposed.id, {
+      payloadHash: proposed.payloadHash!,
+      expectedVersion: approved.version,
+      idempotencyKey: 'imported-candidate-execute',
+    });
+    expect(result).toMatchObject({
+      phase: 'closed',
+      outcome: 'reconciliation_required',
+      manualTransactionId: null,
+      importedTransactionId: null,
+    });
+    expect(attempts).toHaveLength(0);
+    expect(store.liquidity.getClaimSet({ ...actor, now }).bundles).toEqual([]);
   });
 
   it.each([

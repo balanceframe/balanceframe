@@ -17,6 +17,10 @@
           {{ catalogError }}
           <button type="button" class="underline" @click="loadCatalog">Retry catalog</button>
         </p>
+        <p v-if="demoEntryError" role="alert" class="text-red-600">
+          {{ demoEntryError }}
+          <button type="button" class="underline" @click="loadCatalog">Retry demo entry</button>
+        </p>
         <form class="grid gap-3 sm:grid-cols-2" @submit.prevent="evaluate">
           <label for="purchase-category" class="grid gap-1 text-sm"
             >Category
@@ -143,9 +147,81 @@
 </template>
 
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted } from 'vue';
 import type { PublicDecisionCard, PublicLiquidityView, PublicTransferPreview } from '@balanceframe/application';
 import DecisionCardView from '../components/DecisionCardView.vue';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
+
+interface DemoState {
+  status: 'loading' | 'ready' | 'failed';
+  scenarioId: string;
+  generation: number;
+  anchor: string | null;
+  shared: true;
+  personaId: string | null;
+  csrfToken: string | null;
+  failureCode?: string;
+}
+
+interface DemoEntry {
+  generation: number;
+  path: string;
+  input?: {
+    categoryId: string;
+    accountId?: string;
+    amount: { minorUnits: string; currency: string };
+    purchaseAt?: string;
+    requiredBy?: string;
+  };
+}
+
+function demoModeConfigured() {
+  try {
+    return typeof useRuntimeConfig === 'function' && useRuntimeConfig()?.public?.demoMode === true;
+  } catch {
+    return false;
+  }
+}
+
+function parseDemoState(value: unknown): DemoState | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<DemoState>;
+  if (
+    (candidate.status !== 'loading' && candidate.status !== 'ready' && candidate.status !== 'failed') ||
+    typeof candidate.scenarioId !== 'string' ||
+    typeof candidate.generation !== 'number' ||
+    !Number.isSafeInteger(candidate.generation) ||
+    candidate.shared !== true
+  ) {
+    return null;
+  }
+  return {
+    status: candidate.status,
+    scenarioId: candidate.scenarioId,
+    generation: candidate.generation,
+    anchor: typeof candidate.anchor === 'string' ? candidate.anchor : null,
+    shared: true,
+    personaId: typeof candidate.personaId === 'string' ? candidate.personaId : null,
+    csrfToken: typeof candidate.csrfToken === 'string' ? candidate.csrfToken : null,
+    ...(typeof candidate.failureCode === 'string' ? { failureCode: candidate.failureCode } : {}),
+  };
+}
+
+function parseDemoEntry(value: unknown): DemoEntry | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<DemoEntry>;
+  if (
+    typeof candidate.generation !== 'number' ||
+    !Number.isSafeInteger(candidate.generation) ||
+    typeof candidate.path !== 'string' ||
+    !candidate.path.startsWith('/') ||
+    candidate.path.includes('?') ||
+    candidate.path.includes('#')
+  ) {
+    return null;
+  }
+  return candidate as DemoEntry;
+}
 
 definePageMeta({ layout: 'default' });
 
@@ -159,12 +235,16 @@ const card = ref<PublicDecisionCard | null>(null);
 const catalog = ref<PublicLiquidityView | null>(null);
 const catalogLoading = ref(true);
 const catalogError = ref('');
+const demoEntryError = ref('');
 const purchaseAt = ref('');
 const requiredBy = ref('');
 const transferPreview = ref<PublicTransferPreview | null>(null);
 const transferLoading = ref(false);
 const transferError = ref('');
+const demoMode = ref(demoModeConfigured());
 let evaluationRevision = 0;
+let catalogRequestRevision = 0;
+let demoEntryRetryTimer: ReturnType<typeof setTimeout> | undefined;
 
 watch(
   [categoryId, amountStr, currency, accountId, purchaseAt, requiredBy],
@@ -177,19 +257,149 @@ watch(
   { flush: 'sync' },
 );
 
-async function loadCatalog() {
-  catalogLoading.value = true;
-  catalogError.value = '';
+function authorizedPurchaseInput(
+  value: DemoEntry['input'] | undefined,
+  view: PublicLiquidityView,
+): DemoEntry['input'] | null {
+  if (!value || typeof value !== 'object') return null;
+  if (
+    typeof value.categoryId !== 'string' ||
+    !value.categoryId ||
+    !view.categories.some((category) => category.id === value.categoryId)
+  ) {
+    return null;
+  }
+  if (
+    value.accountId !== undefined &&
+    (typeof value.accountId !== 'string' ||
+      !value.accountId ||
+      !view.accounts.some((account) => account.id === value.accountId))
+  ) {
+    return null;
+  }
+  if (
+    !value.amount ||
+    typeof value.amount !== 'object' ||
+    typeof value.amount.minorUnits !== 'string' ||
+    !/^[1-9]\d*$/.test(value.amount.minorUnits) ||
+    typeof value.amount.currency !== 'string' ||
+    !/^[A-Z]{3}$/.test(value.amount.currency)
+  ) {
+    return null;
+  }
+  for (const timestamp of [value.purchaseAt, value.requiredBy]) {
+    if (timestamp !== undefined && (typeof timestamp !== 'string' || !Number.isFinite(Date.parse(timestamp)))) {
+      return null;
+    }
+  }
+  return value;
+}
+
+function datetimeLocalValue(value: string | undefined) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? '' : date.toISOString().slice(0, 16);
+}
+
+function allowedDemoEntryPath(path: string) {
+  return (
+    path === '/purchase-check' ||
+    /^\/spend-sessions\/[^/?#]+$/.test(path) ||
+    /^\/spend-sessions\/[^/?#]+\/completions\/[^/?#]+$/.test(path)
+  );
+}
+
+function queueDemoEntryRetry(view: PublicLiquidityView, requestRevision: number) {
+  if (demoEntryRetryTimer) clearTimeout(demoEntryRetryTimer);
+  demoEntryRetryTimer = setTimeout(() => {
+    demoEntryRetryTimer = undefined;
+    if (requestRevision === catalogRequestRevision) void loadDemoEntry(view, requestRevision);
+  }, 1500);
+}
+
+async function loadDemoEntry(view: PublicLiquidityView, requestRevision: number) {
+  if (!demoMode.value || requestRevision !== catalogRequestRevision) return;
+  demoEntryError.value = '';
   try {
-    catalog.value = await liquidityRequest<PublicLiquidityView>('/api/liquidity/spendability');
-  } catch (e) {
-    catalogError.value = liquidityError(e);
-  } finally {
-    catalogLoading.value = false;
+    const demoState = parseDemoState(
+      await $fetch<unknown>('/__demo/state', { credentials: 'same-origin' }),
+    );
+    if (!demoState || requestRevision !== catalogRequestRevision) return;
+    if (demoState.status === 'loading') {
+      demoEntryError.value = 'The shared demo is still loading. This page will retry automatically.';
+      queueDemoEntryRetry(view, requestRevision);
+      return;
+    }
+    if (demoState.status === 'failed') {
+      demoEntryError.value = 'The shared demo scenario is unavailable. Reset or retry the demo.';
+      return;
+    }
+    const entry = parseDemoEntry(
+      await $fetch<unknown>('/__demo/entry', {
+        credentials: 'same-origin',
+        query: { generation: demoState.generation },
+      }),
+    );
+    if (!entry || entry.generation !== demoState.generation || requestRevision !== catalogRequestRevision) {
+      demoEntryError.value = 'The demo entry changed before it could be opened. Retry the catalog.';
+      return;
+    }
+    if (!allowedDemoEntryPath(entry.path)) {
+      demoEntryError.value = 'The demo returned an unavailable entry. Retry the catalog.';
+      return;
+    }
+    if (entry.path !== '/purchase-check') {
+      if (typeof window !== 'undefined' && window.location.pathname !== entry.path) {
+        window.location.assign(entry.path);
+      }
+      return;
+    }
+    const input = authorizedPurchaseInput(entry.input, view);
+    if (!input) {
+      demoEntryError.value = 'The demo entry did not match the authorized purchase catalog.';
+      return;
+    }
+    categoryId.value = input.categoryId;
+    amountStr.value = input.amount.minorUnits;
+    currency.value = input.amount.currency;
+    accountId.value = input.accountId ?? '';
+    purchaseAt.value = datetimeLocalValue(input.purchaseAt);
+    requiredBy.value = datetimeLocalValue(input.requiredBy);
+  } catch {
+    if (requestRevision === catalogRequestRevision) {
+      demoEntryError.value = 'The demo entry is unavailable. Retry the catalog.';
+    }
   }
 }
 
-onMounted(loadCatalog);
+async function loadCatalog() {
+  if (demoEntryRetryTimer) {
+    clearTimeout(demoEntryRetryTimer);
+    demoEntryRetryTimer = undefined;
+  }
+  const requestRevision = ++catalogRequestRevision;
+  catalogLoading.value = true;
+  catalogError.value = '';
+  demoEntryError.value = '';
+  try {
+    const loadedCatalog = await liquidityRequest<PublicLiquidityView>('/api/liquidity/spendability');
+    if (requestRevision !== catalogRequestRevision) return;
+    catalog.value = loadedCatalog;
+    if (demoMode.value) void loadDemoEntry(loadedCatalog, requestRevision);
+  } catch (e) {
+    if (requestRevision === catalogRequestRevision) catalogError.value = liquidityError(e);
+  } finally {
+    if (requestRevision === catalogRequestRevision) catalogLoading.value = false;
+  }
+}
+
+onMounted(() => {
+  void loadCatalog();
+});
+
+onBeforeUnmount(() => {
+  if (demoEntryRetryTimer) clearTimeout(demoEntryRetryTimer);
+});
 
 async function previewTransfer(_purchaseItemId?: string) {
   if (!card.value) return;

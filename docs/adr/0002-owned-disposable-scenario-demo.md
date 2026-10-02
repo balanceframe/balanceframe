@@ -1,0 +1,20 @@
+# ADR 0002: Owned disposable feature-scenario demos
+
+**Status:** Accepted
+
+## Context
+
+BalanceFrame needs reproducible user stories and local verification for purchase Cards, account routing, Spend Sessions, claims, approval, and reconciliation. Those paths depend on the Rust native addon, Actual's server and budget state, SQLite workflow authorization, and Better Auth. Browser-only fixture playback or a static screenshot cannot exercise those boundaries. A long-lived shared budget would mix unrelated evidence and risk financial mutations outside the demo.
+
+## Decision
+
+- Maintain one checked, versioned catalog of 29 independently loadable fictional scenarios. The same materialization, Actual seeder, authenticated workflow initializer, and event recipes drive the CLI's live acceptance cases and the user-facing demo. Logical fixture IDs are mapped to the exact IDs returned by the freshly seeded Actual budget. A scenario is ready only after its authenticated financial read succeeds with the native addon present.
+- Each run owns a private parent root, an Actual process/data directory, a production Nuxt child, an isolated auth/workflow/config store, and generated credentials. The supervisor stages a replacement workspace before publishing a reset, drains in-flight financial and identity-bearing requests, increments a generation, invalidates old control sessions, and removes only registered owned paths. Loading failure leaves a visible fail-closed selector rather than a fabricated financial result.
+- A bounded HTTP supervisor exposes only catalog, state, generation-bound entry, and explicit load/reset/persona/event controls. Host and Origin are checked; POST controls require a signed, expiring cookie and CSRF proof. The private child accepts setup only with its protected manifest and internal header. Its demo boundary denies ordinary setup/auth/connection writes and disallowed financial operations, even if the proxy is bypassed. The demo never accepts an arbitrary URL, shell command, external Actual instance, bank connector, or model endpoint.
+- Demo-only Better Auth sign-in uses a finite higher limit (20 per 10 seconds) because startup signs in three fictional actors from one private loopback address; public sign-in remains denied by the child boundary. In-flight persona and `/demo` authentication join the reset drain, and late authentication responses cannot set cookies for a replaced generation.
+- Each persona is a real fictional Better Auth user with explicit workflow membership and resource capabilities. Entry into an ordinary application page is projected for that persona; private IDs and amounts are not sent to another persona. The selector and banner disclose that data are fictional and that resets affect a shared instance.
+- `scenarios verify --all` runs one isolated real Actual/Nuxt workspace per loadable scenario, with exact observable assertions and a sanitized JSON result. Four named native/service fault contracts are reported separately, because ambiguous bank receipts, duplicate source-coverage assertions, identity overlap, and interrupted connector responses cannot honestly be manufactured as ordinary Actual ledger events. The interrupted-write contract checks the initiated hold and no second connector attempt; it does not claim live bank proof.
+
+## Consequences
+
+A demo requires the source-built native addon, Nuxt bundle, and pinned local Actual runtime; it is not deployable as static browser files. A shared instance is intentionally mutable by its fictional users and must be reset between independent stories. By default the supervisor listens on loopback; non-loopback exposure requires an exact HTTPS public origin and a trusted TLS reverse proxy, plus disposable state and network restrictions. A verified completion writes only to that run's throwaway Actual budget. Secrets and manifests remain private and are removed on shutdown. Fixture readiness is evidence-based: missing or expired attestations remain insufficient data rather than becoming ready merely because a scenario was selected.

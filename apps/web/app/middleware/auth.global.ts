@@ -11,7 +11,22 @@
  */
 import { defineNuxtRouteMiddleware, useRequestHeaders, navigateTo } from '#app';
 
+function demoModeEnabled(): boolean {
+  try {
+    return (
+      typeof useRuntimeConfig === 'function' &&
+      useRuntimeConfig()?.public?.demoMode === true
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default defineNuxtRouteMiddleware(async (to) => {
+  // The demo selector is public only for an explicitly configured demo instance.
+  // Normal deployments keep the regular session gate and login redirect.
+  if (to.path === '/demo' && demoModeEnabled()) return;
+
   // Allow public registration routes, the login page, and auth API routes through without a session.
   if (
     to.path === '/login' ||

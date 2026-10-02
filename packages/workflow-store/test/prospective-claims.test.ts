@@ -609,11 +609,20 @@ describe('prospective commitment and reservation lifecycle', () => {
       policy: liquidityPolicy('block', blockPolicyVersion),
       approvalPolicy: { minimumApprovers: 1 },
     });
+    expect(currentClaims()).toMatchObject({
+      revision: '1',
+      bundles: [expect.objectContaining({ id: 'informing-food', state: 'active' })],
+    });
+    expect(store.liquidity.listProspectiveClaims({ actorId, budgetId, now })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ claimId: 'informing-food', mode: 'block', lifecycleState: 'active' }),
+      ]),
+    );
     save(
       prospectiveClaim({
         claimId: 'blocking-food',
         sourceId: 'obligation:blocking',
-        amount: money('100'),
+        amount: money('20'),
         policyVersion: blockPolicyVersion,
         mode: 'block',
       }),
@@ -623,7 +632,10 @@ describe('prospective commitment and reservation lifecycle', () => {
     );
     expect(currentClaims()).toMatchObject({
       revision: '2',
-      bundles: [expect.objectContaining({ id: 'blocking-food', state: 'active' })],
+      bundles: [
+        expect.objectContaining({ id: 'blocking-food', state: 'active' }),
+        expect.objectContaining({ id: 'informing-food', state: 'active' }),
+      ],
     });
 
     expect(() =>
@@ -641,6 +653,52 @@ describe('prospective commitment and reservation lifecycle', () => {
       ),
     ).toThrow(/capacity|insufficient|conflict/i);
     expect(currentClaims().revision).toBe('2');
+    store.liquidity.transitionProspectiveClaim({
+      actorId, budgetId, claimId: 'informing-food', transition: 'release',
+      expectedClaimSetRevision: '2', idempotencyKey: 'claim:release-informing', now,
+    });
+    expect(currentClaims()).toMatchObject({
+      revision: '3',
+      bundles: [expect.objectContaining({ id: 'blocking-food', state: 'active' })],
+    });
+  });
+  it('blocks commitments even when the reservation policy is informative', () => {
+    const informPolicyVersion = 'policy-inform';
+    store.liquidity.savePolicy({
+      actorId, budgetId, expectedVersion: policyVersion, now,
+      policy: liquidityPolicy('inform', informPolicyVersion),
+      approvalPolicy: { minimumApprovers: 1 },
+    });
+    const committed = save(
+      prospectiveClaim({
+        kind: 'commitment',
+        claimId: 'committed-food',
+        sourceId: 'obligation:committed',
+        amount: money('80'),
+        policyVersion: informPolicyVersion,
+      }),
+      '0',
+      'claim:commitment',
+      capacity(100n),
+    );
+    expect(committed.mode).toBe('block');
+    expect(currentClaims().bundles).toEqual([
+      expect.objectContaining({ id: 'committed-food', state: 'active' }),
+    ]);
+    expect(() =>
+      save(
+        prospectiveClaim({
+          kind: 'commitment',
+          claimId: 'competing-commitment',
+          sourceId: 'obligation:competing',
+          amount: money('21'),
+          policyVersion: informPolicyVersion,
+        }),
+        '1',
+        'claim:competing-commitment',
+        capacity(100n),
+      ),
+    ).toThrow(/capacity|insufficient|conflict/i);
   });
   it('does not let a claimant downgrade a policy-blocking reservation to informative', () => {
     expect(() =>

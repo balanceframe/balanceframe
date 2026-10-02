@@ -14,18 +14,11 @@ import {
   createBudget,
   deleteBudget,
   downloadBudget,
-  getAccounts,
-  getPayees,
-  getCategories,
-  addTransactions,
-  createAccount,
-  createPayee,
-  createCategory,
-  createCategoryGroup,
-  createRule,
-  createSchedule,
   sync as actualSync,
 } from './actual-client.js';
+import type { ProtocolSnapshot } from '@balanceframe/protocol-generated';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import { populateActualBudget } from '../../packages/scenario-kit/src/actual-seed.js';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -164,7 +157,7 @@ export async function withActualClient<T>(
   try {
     return await fn(cfg);
   } finally {
-    await shutdown().catch(() => {});
+    await shutdown();
   }
 }
 
@@ -265,222 +258,17 @@ export function loadFixtureData(): Record<string, unknown> {
 }
 
 /**
- * Seed a budget with representative fixture data.
+ * Seed a selected, initialized budget with the canonical protocol fixture.
  *
- * Creates category groups, categories, accounts, payees, transactions,
- * rules, and schedules as defined in the fixture JSON.
- * Adapts the canonical protocol snapshot shape (camelCase fields, Money objects,
- * flat categories with groupName, ID-based references) to Actual API calls.
- *
- * @param fixture — Optional fixture data; loaded from disk if omitted.
+ * The scenario-kit seeder owns all Actual entity mapping, checked money
+ * conversion, split/import handling, and read-back. This helper preserves the
+ * integration suite's existing optional fixture argument and sync behavior.
  */
 export async function seedFixtureData(fixture?: Record<string, unknown>): Promise<void> {
-  const data = fixture ?? loadFixtureData();
-
-  // ---- Extract canonical fixture entities ----
-  const fixtureAccounts = (data.accounts ?? []) as Array<{
-    id: string;
-    name: string;
-    accountType: string;
-    offBudget?: boolean;
-    isClosed?: boolean;
-    mtid?: string | null;
-  }>;
-  const fixtureCategories = (data.categories ?? []) as Array<{
-    id: string;
-    name: string;
-    groupName: string;
-    isIncome?: boolean;
-    deleted?: boolean;
-    mtid?: string | null;
-  }>;
-  const fixturePayees = (data.payees ?? []) as Array<{
-    id: string;
-    name: string;
-    transferAccountId?: string | null;
-    mtid?: string | null;
-  }>;
-
-  // Map fixture ID → display name (used to resolve references after Actual assigns new IDs)
-  const acctNameByFixId: Record<string, string> = {};
-  for (const a of fixtureAccounts) acctNameByFixId[a.id] = a.name;
-  const payeeNameByFixId: Record<string, string> = {};
-  for (const p of fixturePayees) payeeNameByFixId[p.id] = p.name;
-  const catNameByFixId: Record<string, string> = {};
-  for (const c of fixtureCategories) catNameByFixId[c.id] = c.name;
-
-  // ---- Category Groups & Categories (flat → grouped) ----
-  const groupByName: Record<string, string> = {};
-  const groupsSeen = new Set<string>();
-  for (const cat of fixtureCategories) {
-    if (cat.deleted) continue;
-    if (!groupsSeen.has(cat.groupName)) {
-      groupsSeen.add(cat.groupName);
-      const groupId = await createCategoryGroup({ name: cat.groupName });
-      if (!groupId) {
-        throw new Error(`Actual did not create category group "${cat.groupName}"`);
-      }
-      groupByName[cat.groupName] = groupId;
-    }
-    await createCategory({
-      name: cat.name,
-      groupId: groupByName[cat.groupName],
-      isIncome: cat.isIncome ?? false,
-      hidden: false,
-    });
-  }
-
-  // ---- Accounts (adapt accountType/offBudget/isClosed) ----
-  function mapAccountType(t: string): 'checking' | 'savings' | 'credit' | 'other' {
-    switch (t) {
-      case 'checking':
-        return 'checking';
-      case 'savings':
-        return 'savings';
-      case 'creditCard':
-        return 'credit';
-      default:
-        return 'other';
-    }
-  }
-  for (const acct of fixtureAccounts) {
-    await createAccount({
-      name: acct.name,
-      type: mapAccountType(acct.accountType),
-      offbudget: acct.offBudget ?? false,
-      closed: acct.isClosed ?? false,
-    });
-  }
-
-  // ---- Payees (resolve transferAccountId fixture refs) ----
-  const allAccounts = await getAccounts();
-  const acctIdByFixId: Record<string, string> = {};
-  for (const a of allAccounts) {
-    const aObj = a as { name?: string; id?: string };
-    if (aObj.name && aObj.id) {
-      // Find the fixture account with this name to build fixture-id → actual-id map
-      for (const fa of fixtureAccounts) {
-        if (fa.name === aObj.name) {
-          acctIdByFixId[fa.id] = aObj.id;
-          break;
-        }
-      }
-    }
-  }
-
-  for (const payee of fixturePayees) {
-    let transferAcct: string | null = null;
-    if (payee.transferAccountId) {
-      transferAcct = acctIdByFixId[payee.transferAccountId] ?? null;
-    }
-    await createPayee({
-      name: payee.name,
-      transferAcct,
-    });
-  }
-
-  // ---- Transactions (resolve ID references via name, parse Money amounts) ----
-  const allPayees = await getPayees();
-  const allCategories = await getCategories();
-
-  const payeeIdByName: Record<string, string> = {};
-  for (const p of allPayees) {
-    const pObj = p as { name?: string; id?: string };
-    if (pObj.name && pObj.id) payeeIdByName[pObj.name] = pObj.id;
-  }
-  const catIdByName: Record<string, string> = {};
-  for (const c of allCategories) {
-    const cObj = c as { name?: string; id?: string };
-    if (cObj.name && cObj.id) catIdByName[cObj.name] = cObj.id;
-  }
-
-  const transactions = (data.transactions ?? []) as Array<{
-    accountId: string;
-    date: string;
-    payeeId: string | null;
-    payeeName: string | null;
-    categoryId: string | null;
-    categoryName: string | null;
-    amount: { minorUnits: string; currency: string } | null;
-    cleared?: boolean;
-    notes?: string | null;
-    reconciled?: boolean;
-    importedId?: string | null;
-    importedPayee?: string | null;
-    transferAccountId?: string | null;
-    subtransactions?: unknown[];
-  }>;
-
-  for (const txn of transactions) {
-    const acctId = acctIdByFixId[txn.accountId];
-    if (!acctId) continue;
-
-    // Resolve payee by payeeName (or payeeId → fixture name → actual ID)
-    const payeeNameStr = txn.payeeName ?? (txn.payeeId ? payeeNameByFixId[txn.payeeId] : null);
-    const payee = payeeNameStr ? (payeeIdByName[payeeNameStr] ?? null) : null;
-
-    // Resolve category by categoryName (or categoryId → fixture name → actual ID)
-    const catNameStr = txn.categoryName ?? (txn.categoryId ? catNameByFixId[txn.categoryId] : null);
-    const cat = catNameStr ? (catIdByName[catNameStr] ?? null) : null;
-
-    // Parse Money amount: minorUnits is a string integer in the canonical shape
-    let amount = 0;
-    if (txn.amount != null && txn.amount.minorUnits != null) {
-      amount = parseInt(txn.amount.minorUnits, 10);
-      if (Number.isNaN(amount)) amount = 0;
-    }
-
-    await addTransactions(acctId, [
-      {
-        date: txn.date,
-        amount,
-        payee,
-        category: cat,
-        notes: txn.notes ?? '',
-        cleared: txn.cleared ?? true,
-      },
-    ]);
-  }
-
-  // ---- Rules ----
-  interface RuleData {
-    stage: string | null;
-    conditionsOp: string;
-    conditions: unknown[];
-    actions: unknown[];
-  }
-  const rules = (data.rules ?? []) as Array<Record<string, unknown>>;
-  for (const rule of rules) {
-    await createRule({
-      stage: (rule as RuleData).stage ?? null,
-      conditionsOp: (rule as RuleData).conditionsOp ?? 'and',
-      conditions: (rule as RuleData).conditions ?? [],
-      actions: (rule as RuleData).actions ?? [],
-    });
-  }
-
-  // ---- Schedules ----
-  interface ScheduleData {
-    name: string;
-    type: string;
-    amount: number;
-    startDate: string;
-    frequency: string;
-    payee: string;
-  }
-  const schedules = (data.schedules ?? []) as Array<Record<string, unknown>>;
-  for (const sched of schedules) {
-    await createSchedule({
-      name: (sched as ScheduleData).name,
-      type: (sched as ScheduleData).type ?? 'bill',
-      amount: (sched as ScheduleData).amount ?? 0,
-      startDate: (sched as ScheduleData).startDate,
-      frequency: (sched as ScheduleData).frequency ?? 'monthly',
-      payee: payeeIdByName[(sched as ScheduleData).payee] ?? (sched as ScheduleData).payee,
-    });
-  }
-
-  // Sync so data persists on the server.
+  const ledger: ProtocolSnapshot = canonicalProtocolSnapshotSchema.parse(
+    fixture ?? loadFixtureData(),
+  );
+  await populateActualBudget(ledger);
   await actualSync();
 }
 

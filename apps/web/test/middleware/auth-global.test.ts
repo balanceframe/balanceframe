@@ -62,12 +62,34 @@ describe('auth.global middleware — session check', () => {
     vi.stubGlobal('$fetch', fetchMock);
     mockUseRequestHeaders.mockReset();
     mockNavigateTo.mockReset();
+    vi.stubGlobal('useRuntimeConfig', () => ({ public: { demoMode: false } }));
 
     // Default: no incoming cookie (SPA / client-side context)
     mockUseRequestHeaders.mockReturnValue({});
   });
 
+  it('only bypasses authentication for /demo when the explicit demo capability is enabled', async () => {
+    vi.stubGlobal('useRuntimeConfig', () => ({ public: { demoMode: true } }));
+
+    const result = await authMiddleware(mockRoute({ path: '/demo' }));
+
+    expect(result).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   // ── Bypassed routes ──────────────────────────────────────────────
+
+  it('keeps /demo behind the normal session gate when demo mode is disabled', async () => {
+    fetchMock.mockResolvedValueOnce({ user: null });
+
+    await authMiddleware(mockRoute({ path: '/demo', fullPath: '/demo' }));
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/get-session', expect.anything());
+    expect(mockNavigateTo).toHaveBeenCalledWith({
+      path: '/login',
+      query: { redirect: '/demo' },
+    });
+  });
 
   it('bypasses session check for /login', async () => {
     const result = await authMiddleware(mockRoute({ path: '/login' }));

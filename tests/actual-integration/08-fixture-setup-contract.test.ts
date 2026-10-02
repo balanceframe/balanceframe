@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -16,11 +17,33 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse as parseEnv } from 'dotenv';
+import type { ProtocolSnapshot } from '@balanceframe/protocol-generated';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import { buildClientConfig } from './helpers';
 
 const integrationDir = dirname(fileURLToPath(import.meta.url));
 const setupScript = join(integrationDir, 'setup-fixture-server.sh');
 const seedScript = join(integrationDir, 'seed-budget.mjs');
+const canonicalFixturePath = join(integrationDir, '../../protocol/fixtures/representative.json');
+
+function canonicalFixture(): ProtocolSnapshot {
+  const source = canonicalProtocolSnapshotSchema.parse(
+    JSON.parse(readFileSync(canonicalFixturePath, 'utf8')),
+  );
+  return canonicalProtocolSnapshotSchema.parse({
+    ...source,
+    accounts: source.accounts.filter((account) => ['a_1', 'a_4'].includes(account.id)),
+    transactions: source.transactions.filter((transaction) =>
+      ['tx_000', 'tx_084'].includes(transaction.id),
+    ),
+    categories: source.categories.filter((category) => ['cat_1', 'cat_2'].includes(category.id)),
+    payees: source.payees.filter((payee) => payee.id === 'pay_1'),
+    rules: [],
+    schedules: [],
+    budgets: [],
+    tags: [],
+  });
+}
 
 interface SpawnResult {
   code: number | null;
@@ -99,6 +122,7 @@ interface SetupSandbox {
   readonly binDir: string;
   readonly dataDir: string;
   readonly envPath: string;
+  readonly fixturePath: string;
 }
 
 function writeExecutable(path: string, contents: string): void {
@@ -116,12 +140,13 @@ function createLiveSetupSandbox(): SetupSandbox {
   mkdirSync(binDir);
 
   const scriptPath = join(cwd, 'setup-fixture-server.sh');
+  const fixturePath = join(fixtureDir, 'representative.json');
   copyFileSync(setupScript, scriptPath);
   writeFileSync(
     join(cwd, 'seed-budget.mjs'),
     `process.stdout.write('{"status":"seeded","budgetId":"fixture-budget-id","groupId":"fixture-group-id"}\\n');\n`,
   );
-  writeFileSync(join(fixtureDir, 'representative.json'), '{}\n');
+  copyFileSync(canonicalFixturePath, fixturePath);
 
   writeExecutable(
     join(binDir, 'actual-server'),
@@ -137,6 +162,7 @@ function createLiveSetupSandbox(): SetupSandbox {
     binDir,
     dataDir: join(root, 'actual-data'),
     envPath: join(cwd, '.env.test'),
+    fixturePath,
   };
 }
 
@@ -221,19 +247,18 @@ function fixtureEnvironment(seedDataDir: string): Record<string, string> {
 let tempRoot: string;
 let shimBin: string;
 
-interface StubbedSeedRun {
+interface PreWriteValidationRun {
   result: SpawnResult;
-  jsonLines: Record<string, unknown>[];
-  budgetName: string;
-  serverUrl: string;
+  initPath: string;
 }
 
-async function runStubbedSeedFixture(
+async function runPreWriteValidationFixture(
   label: string,
-  fixture: Record<string, unknown>,
-): Promise<StubbedSeedRun> {
+  fixture: unknown,
+): Promise<PreWriteValidationRun> {
   const caseDir = join(tempRoot, `${label.replace(/[^a-zA-Z0-9_-]/g, '-')}-${randomUUID()}`);
   const fixturePath = join(caseDir, 'fixture.json');
+  const initPath = join(caseDir, 'actual-init');
   const stubPath = join(caseDir, 'actual-api-stub.mjs');
   const loaderPath = join(caseDir, 'actual-api-loader.mjs');
   mkdirSync(caseDir);
@@ -241,49 +266,11 @@ async function runStubbedSeedFixture(
   writeFileSync(
     stubPath,
     `
-const accounts = [];
-const categories = [];
-const payees = [];
+import { writeFileSync } from 'node:fs';
 export async function init() {
-  return { send: async (command) => {
-    if (command !== 'create-budget') throw new Error('Unexpected command: ' + command);
-  } };
+  writeFileSync(process.env.STUB_INIT_PATH, 'initialized');
+  return { send: async () => {} };
 }
-export async function getBudgets() {
-  return [{ name: process.env.ACTUAL_BUDGET_NAME, cloudFileId: 'actual-budget', groupId: 'actual-group' }];
-}
-export async function createCategoryGroup() { return 'actual-category-group'; }
-export async function getCategoryGroups() { return [{ id: 'actual-category-group', name: 'Fixture Living' }]; }
-export async function createCategory(input) {
-  const entity = { ...input, id: 'actual-category' };
-  categories.push(entity);
-  return entity.id;
-}
-export async function createAccount(input, initialBalance) {
-  const entity = { ...input, id: 'actual-account-' + (accounts.length + 1) };
-  accounts.push(entity);
-  process.stdout.write(JSON.stringify({ status: 'account_created', input, initialBalance }) + '\\n');
-  return entity.id;
-}
-export async function createPayee(input) {
-  const entity = { ...input, id: 'actual-payee-' + (payees.length + 1) };
-  payees.push(entity);
-  process.stdout.write(JSON.stringify({ status: 'payee_created', input }) + '\\n');
-  return entity.id;
-}
-export async function getAccounts() { return accounts; }
-export async function getCategories() { return categories; }
-export async function getPayees() {
-  return [...payees, { id: 'actual-transfer-payee-1', name: '', transfer_acct: 'actual-account-1' }];
-}
-export async function addTransactions(accountId, transactions) {
-  process.stdout.write(
-    JSON.stringify({ status: 'transactions_added', accountId, transactions }) + '\\n',
-  );
-}
-export async function createRule() {}
-export async function createSchedule() {}
-export async function sync() {}
 export async function shutdown() {}
 `,
   );
@@ -300,8 +287,6 @@ export async function resolve(specifier, context, nextResolve) {
 `,
   );
 
-  const serverUrl = 'http://127.0.0.1:1';
-  const budgetName = `Manifest Budget ${randomUUID()}`;
   const result = await run(process.execPath, [seedScript], {
     cwd: integrationDir,
     env: {
@@ -309,26 +294,16 @@ export async function resolve(specifier, context, nextResolve) {
       NODE_ENV: 'production',
       NODE_OPTIONS: `--experimental-loader=${loaderPath}`,
       ACTUAL_API_STUB_PATH: stubPath,
-      ACTUAL_SERVER_URL: serverUrl,
+      STUB_INIT_PATH: initPath,
+      ACTUAL_SERVER_URL: 'http://127.0.0.1:1',
       ACTUAL_SECRET_KEY: 'unused-stub-secret',
-      ACTUAL_BUDGET_NAME: budgetName,
+      ACTUAL_BUDGET_NAME: `Pre-write validation ${randomUUID()}`,
       FIXTURE_DATA_PATH: fixturePath,
       SEED_DATA_DIR: join(caseDir, 'seed-data'),
     },
   });
-  const jsonLines = result.stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((value): value is Record<string, unknown> => value !== undefined);
 
-  return { result, jsonLines, budgetName, serverUrl };
+  return { result, initPath };
 }
 
 beforeAll(() => {
@@ -517,9 +492,14 @@ describe('fixture setup contract', () => {
       diagnostic: /ENOENT|not found|missing|unable to read/i,
     },
     {
-      label: 'malformed',
+      label: 'malformed JSON',
       fixtureContents: '{ this is not valid JSON',
       diagnostic: /JSON|parse|syntax|malformed|unexpected token/i,
+    },
+    {
+      label: 'non-canonical',
+      fixtureContents: '{}',
+      diagnostic: /canonical ProtocolSnapshot|schema|schemaVersion|accounts/i,
     },
   ])(
     'rejects a $label fixture before connecting to Actual',
@@ -551,238 +531,80 @@ describe('fixture setup contract', () => {
       expect(output).toMatch(/fixture/i);
       expect(output).toMatch(diagnostic);
       expect(output).not.toMatch(/ECONNREFUSED|fetch failed|budget_created|create-budget/i);
+      expect(existsSync(dataDir)).toBe(false);
     },
   );
 
-  it('seeds canonical accounts from the initial balances required to reach their cleared balances', async () => {
-    const { result, jsonLines, budgetName, serverUrl } = await runStubbedSeedFixture('manifest', {
-      schemaVersion: '1',
-      actualVersion: '26.7.0',
-      snapshotDate: '2026-08-23T00:00:00Z',
-      accounts: [
-        {
-          id: 'fixture-checking',
-          name: 'Positive Checking',
-          accountType: 'checking',
-          offBudget: false,
-          isClosed: false,
-          clearedBalance: { minorUnits: '12500', currency: 'USD' },
-        },
-        {
-          id: 'fixture-credit',
-          name: 'Negative Credit Card',
-          accountType: 'creditCard',
-          offBudget: false,
-          isClosed: false,
-          clearedBalance: { minorUnits: '-8000', currency: 'USD' },
-        },
-        {
-          id: 'fixture-zero',
-          name: 'Zero Balance',
-          accountType: 'savings',
-          offBudget: false,
-          isClosed: false,
-          clearedBalance: { minorUnits: '0', currency: 'USD' },
-        },
-      ],
-      categories: [
-        {
-          id: 'fixture-category',
-          name: 'Fixture Groceries',
-          groupName: 'Fixture Living',
-          isIncome: false,
-        },
-      ],
-      payees: [
-        {
-          id: 'fixture-transfer-payee',
-          name: 'Transfer to Checking',
-          transferAccountId: 'fixture-checking',
-        },
-        {
-          id: 'fixture-payee',
-          name: 'Fixture Market',
-          transferAccountId: null,
-        },
-      ],
-      transactions: [
-        {
-          id: 'checking-debit',
-          accountId: 'fixture-checking',
-          date: '2026-08-20',
-          amount: { minorUnits: '-2500', currency: 'USD' },
-          payeeId: 'fixture-payee',
-          cleared: true,
-        },
-        {
-          id: 'checking-credit',
-          accountId: 'fixture-checking',
-          date: '2026-08-21',
-          amount: { minorUnits: '1000', currency: 'USD' },
-          cleared: true,
-        },
-        {
-          id: 'credit-purchase',
-          accountId: 'fixture-credit',
-          date: '2026-08-20',
-          amount: { minorUnits: '-2500', currency: 'USD' },
-          payeeId: 'fixture-transfer-payee',
-          cleared: true,
-        },
-        {
-          id: 'zero-credit',
-          accountId: 'fixture-zero',
-          date: '2026-08-20',
-          amount: { minorUnits: '100', currency: 'USD' },
-          cleared: true,
-        },
-        {
-          id: 'zero-debit',
-          accountId: 'fixture-zero',
-          date: '2026-08-21',
-          amount: { minorUnits: '-100', currency: 'USD' },
-          cleared: true,
-        },
-      ],
-      rules: [],
-      schedules: [],
-      budgets: [],
-      tags: [],
+  it('rejects a missing checked-in fixture before starting Actual', async () => {
+    const sandbox = createLiveSetupSandbox();
+    rmSync(sandbox.fixturePath);
+    const port = await unusedLocalPort();
+    const result = await run('bash', [sandbox.scriptPath], {
+      cwd: sandbox.cwd,
+      env: {
+        ...process.env,
+        PATH: `${sandbox.binDir}:${process.env.PATH ?? ''}`,
+        DRY_RUN: '0',
+        ACTUAL_SERVER_URL: `http://127.0.0.1:${port}`,
+        ACTUAL_SERVER_DATA_DIR: sandbox.dataDir,
+        ACTUAL_SERVER_PORT: String(port),
+        ACTUAL_BUDGET_NAME: `Missing Fixture ${randomUUID()}`,
+        ACTUAL_SECRET_KEY: `fixture-secret-${randomUUID()}`,
+      },
     });
-    const accountCreations = jsonLines
-      .filter((value) => value.status === 'account_created')
-      .map(({ input, initialBalance }) => ({ input, initialBalance }));
-    const payeeCreations = jsonLines
-      .filter((value) => value.status === 'payee_created')
-      .map((value) => value.input);
-    const transactionAdditions = jsonLines
-      .filter((value) => value.status === 'transactions_added')
-      .map(({ accountId, transactions }) => ({ accountId, transactions }));
-    const manifest = [...jsonLines].reverse().find((value) => value.status === 'seeded');
+    const output = `${result.stdout}\n${result.stderr}`;
 
-    expect(result.code, result.stderr).toBe(0);
-    expect(accountCreations).toEqual([
-      {
-        input: {
-          name: 'Positive Checking',
-          type: 'checking',
-          offbudget: false,
-          closed: false,
-        },
-        initialBalance: 14000,
-      },
-      {
-        input: {
-          name: 'Negative Credit Card',
-          type: 'credit',
-          offbudget: false,
-          closed: false,
-        },
-        initialBalance: -5500,
-      },
-      {
-        input: {
-          name: 'Zero Balance',
-          type: 'savings',
-          offbudget: false,
-          closed: false,
-        },
-        initialBalance: 0,
-      },
-    ]);
-    expect(payeeCreations).toHaveLength(1);
-    expect(payeeCreations[0]).toMatchObject({ name: 'Fixture Market' });
-    expect(transactionAdditions).toContainEqual({
-      accountId: 'actual-account-2',
-      transactions: [
-        {
-          date: '2026-08-20',
-          amount: -2500,
-          payee: 'actual-transfer-payee-1',
-          category: null,
-          notes: '',
-          cleared: true,
-        },
-      ],
-    });
-    expect(manifest).toMatchObject({
-      status: 'seeded',
-      budgetId: 'actual-budget',
-      groupId: 'actual-group',
-      budgetName,
-      serverUrl,
-      accountIds: {
-        'fixture-checking': 'actual-account-1',
-        'fixture-credit': 'actual-account-2',
-        'fixture-zero': 'actual-account-3',
-      },
-      categoryIds: { 'fixture-category': 'actual-category' },
-      payeeIds: {
-        'fixture-transfer-payee': 'actual-transfer-payee-1',
-        'fixture-payee': 'actual-payee-1',
-      },
-    });
+    expect(result.code, output).not.toBe(0);
+    expect(result.timedOut, output).toBe(false);
+    expect(output).toMatch(/canonical fixture data file is required|refusing to generate/i);
+    expect(existsSync(sandbox.dataDir)).toBe(false);
   });
 
   it.each([
     {
       label: 'checked signed 64-bit overflow',
-      clearedBalance: { minorUnits: '9223372036854775807', currency: 'USD' },
-      amount: { minorUnits: '-1', currency: 'USD' },
-      diagnostic: /overflow|signed 64-bit|i64|out of range/i,
+      diagnostic: /overflow|signed 64-bit|safe integer|out of range/i,
+      mutate: (draft: ProtocolSnapshot) => {
+        draft.accounts[0]!.clearedBalance.minorUnits = '9223372036854775807';
+      },
     },
     {
       label: 'malformed money',
-      clearedBalance: { minorUnits: '100', currency: 'USD' },
-      amount: { minorUnits: '1.5', currency: 'USD' },
-      diagnostic: /malformed|minorUnits|integer/i,
+      diagnostic: /malformed|minorUnits|integer|invalid/i,
+      mutate: (draft: ProtocolSnapshot) => {
+        draft.accounts[0]!.clearedBalance.minorUnits = '1.5';
+      },
     },
     {
       label: 'currency mismatch',
-      clearedBalance: { minorUnits: '100', currency: 'USD' },
-      amount: { minorUnits: '-25', currency: 'EUR' },
       diagnostic: /currency|USD|EUR/i,
+      mutate: (draft: ProtocolSnapshot) => {
+        draft.accounts[0]!.importedBalance.currency = 'EUR';
+      },
     },
-  ] as const)(
-    'rejects $label before creating an account',
-    async ({ label, clearedBalance, amount, diagnostic }) => {
-      const { result, jsonLines } = await runStubbedSeedFixture(`invalid-balance-${label}`, {
-        schemaVersion: '1',
-        actualVersion: '26.7.0',
-        snapshotDate: '2026-08-23T00:00:00Z',
-        accounts: [
-          {
-            id: 'fixture-account',
-            name: 'Must Not Be Created',
-            accountType: 'checking',
-            offBudget: false,
-            isClosed: false,
-            clearedBalance,
-          },
-        ],
-        categories: [],
-        payees: [],
-        transactions: [
-          {
-            id: 'invalid-balance-transaction',
-            accountId: 'fixture-account',
-            date: '2026-08-20',
-            amount,
-            cleared: true,
-          },
-        ],
-        rules: [],
-        schedules: [],
-        budgets: [],
-        tags: [],
-      });
+  ])(
+    'rejects $label before any Actual entity is written',
+    async ({
+      label,
+      diagnostic,
+      mutate,
+    }: {
+      label: string;
+      diagnostic: RegExp;
+      mutate: (draft: ProtocolSnapshot) => void;
+    }) => {
+      const fixture = structuredClone(canonicalFixture());
+      mutate(fixture);
+      const { result, initPath } = await runPreWriteValidationFixture(
+        `invalid-canonical-${label}`,
+        fixture,
+      );
       const output = `${result.stdout}\n${result.stderr}`;
-      const accountCreations = jsonLines.filter((value) => value.status === 'account_created');
 
       expect(result.timedOut, output).toBe(false);
       expect(result.code, output).not.toBe(0);
       expect(output).toMatch(diagnostic);
-      expect(accountCreations).toEqual([]);
+      expect(existsSync(initPath)).toBe(false);
     },
   );
 });
