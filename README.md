@@ -144,6 +144,8 @@ nix develop
 This drops you into a shell with Rust, Node.js, pnpm, and all native build
 dependencies. If you are not using Nix, see `nix/tooling.nix` for the
 required tool versions.
+Supported Node releases are **22.19+ within 22.x, 24.11+ within 24.x, or 26+**;
+Nix, CI, and Docker use Node 24. Node 20 is no longer supported.
 
 ### Build and Test
 
@@ -164,6 +166,29 @@ nix flake check
 Scenario tests consume the workspace's production Nuxt bundle. The production
 dependency regression builds its own disposable `.nuxt` and `.output` directories
 so parallel workspace tests never lose or replace that shared runtime.
+
+Dependency maintenance:
+
+- Vitest and its V8 coverage provider move together. Explicit coverage includes
+  retain unimported production files; the coverage gates are unchanged.
+  The scenario CLI streams raw test output so passing verification JSON remains
+  visible and parseable even when terminal colors are enabled.
+- The install-script allowlist includes `vue-demi`'s local Vue-version export
+  selector. Docker builds use source inputs, not host dependencies or build outputs.
+- `patches/` contains version-specific compatibility fixes for Nitro 2.13.4's
+  Archiver 8 ZIP API and Nuxt DevTools 3.4.2's Vite environment configuration.
+  Frozen installs and Docker builds require these patch files. Remove a patch
+  only after an upstream fix passes the real ZIP/RPC regressions in
+  `apps/web/test/server/`.
+- Icons use the installed Heroicons and Lucide datasets through Nuxt's local
+  server provider rather than fetching missing collections from a public API.
+- Typography uses the system font stack, so remote font-catalog discovery is disabled.
+- Nuxt UI consumers use `UFormField` and `UFieldGroup`. Resolve `useToast` during
+  component setup so asynchronous notifications retain the app's injected limits.
+- Better Auth's SQLite migrations finish before authentication initialization and
+  schema validation; migration failures keep protected/auth APIs unavailable.
+- Rolldown's callback/link-time profiling advisory is disabled; correctness,
+  security, import-protection, and deprecation diagnostics remain enabled.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 

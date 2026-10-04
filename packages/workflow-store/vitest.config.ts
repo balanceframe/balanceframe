@@ -9,7 +9,6 @@ export default defineConfig({
     bail: 1,
     coverage: {
       provider: 'v8',
-      all: true,
       reporter: ['text-summary', 'lcov', 'json'],
       reportsDirectory: '../../coverage/js/workflow-store',
       include: ['src/**'],

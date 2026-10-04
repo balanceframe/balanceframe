@@ -9,6 +9,22 @@ export default defineNuxtConfig({
   modules: ['@nuxt/ui'],
   compatibilityDate: '2026-07-20',
 
+  // Login/setup icons are public static data, not protected operational API data.
+  icon: {
+    provider: 'server',
+    localApiEndpoint: '/_nuxt_icon',
+    fallbackToApi: false,
+  },
+
+  vite: {
+    build: {
+      rolldownOptions: {
+        // Disable only the callback/link-time heuristic, not build diagnostics.
+        checks: { bundlerTimings: false },
+      },
+    },
+  },
+
   app: {
     head: {
       title: 'BalanceFrame — Transaction Review',
@@ -16,7 +32,8 @@ export default defineNuxtConfig({
     },
   },
 
-  ui: {/** Nuxt UI v4 global theme overrides — no-op until customised. */},
+  // The system font stack does not need remote font-catalog discovery.
+  ui: { fonts: false },
 
   runtimeConfig: {
     /** API Bearer token for operational routes (legacy migration fallback). */
@@ -61,6 +78,8 @@ export default defineNuxtConfig({
 
   nitro: {
     preset: 'node-server',
+    // Match the production runtime instead of Nitro's legacy es2019 default.
+    esbuild: { options: { target: 'node22' } },
     // Rollup evaluates `external` before Nitro's node-externals plugin. Keep
     // Actual's CommonJS filesystem code in its package context. `traceInclude`
     // is an input path for node-file-trace, so resolve the direct production

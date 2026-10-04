@@ -282,6 +282,7 @@ import type { CategorizationProposalListItem } from '../components/ProposedRules
 // Use the configured API base, falling back to the current origin for
 // same-origin SPA operation (the default with Better Auth on Nuxt).
 const config = useRuntimeConfig();
+const toast = useToast();
 const apiBase = config.public.apiBase || (import.meta.client ? window.location.origin : '');
 
 // Session auth is provided by Better Auth's HttpOnly session cookie, sent
@@ -437,7 +438,6 @@ async function promptProposeRule(): Promise<void> {
   if (merchant && categoryId) {
     const result = await adapter.proposeRule(current.reviewItem.id, merchant, categoryId);
     if (result.success) {
-      const toast = useToast();
       toast.add({
         title: 'Rule proposal created',
         description: `${merchant} → ${categoryId}`,
@@ -473,7 +473,6 @@ async function handleProposalDiscarded(proposalId: string) {
 }
 
 function handleProposalError(message: string, retryable: boolean): void {
-  const toast = useToast();
   toast.add({
     title: 'Proposal action failed',
     description: retryable ? `${message} Try again after fixing the connection.` : message,
@@ -489,14 +488,12 @@ async function handleSync() {
     const res = await fetch('/api/review/sync', { method: 'POST', credentials: 'same-origin' });
     const data = await res.json();
     if (data.status === 'ok') {
-      const toast = useToast();
       toast.add({ title: 'Sync complete', color: 'success', duration: 5000 });
       await adapter.refresh();
       const pendingCategoryLoad = categoryLoadPromise;
       if (pendingCategoryLoad) await pendingCategoryLoad;
       await loadReviewCategories();
     } else {
-      const toast = useToast();
       const error = data.error;
       toast.add({
         title: 'Sync failed',
@@ -516,7 +513,6 @@ async function handleSync() {
       });
     }
   } catch (e) {
-    const toast = useToast();
     toast.add({
       title: 'Sync failed',
       description: e instanceof Error ? e.message : 'Connection error',

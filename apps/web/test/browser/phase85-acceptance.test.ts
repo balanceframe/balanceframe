@@ -14,6 +14,7 @@ import IncomePage from '../../app/pages/income.vue';
 import ForecastPage from '../../app/pages/forecast-accuracy.vue';
 import ScenariosPage from '../../app/pages/scenarios.vue';
 import NotificationsPage from '../../app/pages/notifications/index.vue';
+import SavedViewPicker from '../../app/components/SavedViewPicker.vue';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('$fetch', fetchMock);
@@ -35,6 +36,16 @@ const envelope = (result: unknown = {}) => ({
   error: null,
 });
 const stubs = {
+  SavedViewPicker,
+  NuxtLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
+  // This legacy projection fixture does not exercise current-data workflows.
+  CurrentLiquidityPanel: true,
+  ScopeSummary: { props: ['scope'], template: '<div>{{ scope.label }}</div>' },
+  NotificationStatusBadge: { props: ['status'], template: '<span>{{ status }}</span>' },
+  UAlert: {
+    props: ['title', 'description', 'color', 'variant'],
+    template: '<div role="alert"><strong>{{ title }}</strong> {{ description }}</div>',
+  },
   AnalysisPage: {
     template:
       '<section><div v-if="error" role="alert">{{ error.code }} {{ error.message }}</div><div v-else-if="insufficientData">Insufficient data</div><slot name="error-actions" /><slot name="content" /></section>',
@@ -52,7 +63,7 @@ const stubs = {
       '<input :value="modelValue" @input="$emit(\'update:modelValue\',$event.target.value)"/>',
     props: ['modelValue'],
   },
-  UFormGroup: { template: '<label><span>{{ label }}</span><slot/></label>', props: ['label'] },
+  UFormField: { template: '<label><span>{{ label }}</span><slot/></label>', props: ['label'] },
   AnalysisTable: {
     template:
       '<table aria-label="Analysis results"><tbody><tr v-for="(row,i) in rows" :key="i"><td v-for="col in columns" :key="col.key">{{ row[col.key] }}</td></tr></tbody></table>',

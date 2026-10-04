@@ -13,6 +13,7 @@ vi.stubGlobal('$fetch', mockFetch);
 import NotificationsPage from '../../app/pages/notifications/index.vue';
 
 const stubs = {
+  NotificationStatusBadge: { props: ['status'], template: '<span>{{ status }}</span>' },
   AnalysisPage: {
     template:
       '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>',
@@ -27,7 +28,7 @@ const stubs = {
     template: '<button @click="$emit(\'click\')"><slot /></button>',
     props: ['size', 'variant', 'color'],
   },
-  UFormGroup: { template: '<div><slot /></div>', props: ['label'] },
+  UFormField: { template: '<div><slot /></div>', props: ['label'] },
   UInput: { template: '<input />', props: ['modelValue', 'placeholder'] },
 };
 

@@ -33,8 +33,8 @@ async function runVitest(path: string, selector?: string): Promise<number> {
     'forks',
     '--maxWorkers',
     '1',
-    '--minWorkers',
-    '1',
+    // Keep verification JSON visible and undecorated, including with FORCE_COLOR.
+    '--disableConsoleIntercept',
   ];
   if (selector) args.push('--testNamePattern', selector);
   const child = spawn('pnpm', args, { stdio: 'inherit' });

@@ -8,7 +8,7 @@ let
   nix-format =
     pkgs.runCommand "nix-format-check"
       {
-        nativeBuildInputs = [ pkgs.nixfmt-rfc-style ];
+        nativeBuildInputs = [ pkgs.nixfmt ];
       }
       ''
         cd ${root}

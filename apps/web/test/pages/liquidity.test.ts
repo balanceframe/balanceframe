@@ -12,6 +12,9 @@ vi.stubGlobal('$fetch', mockFetch);
 import LiquidityPage from '../../app/pages/liquidity.vue';
 
 const stubs = {
+  // Current-data workflows have their own liquidity-current-review integration tests.
+  CurrentLiquidityPanel: true,
+  UContainer: { template: '<div><slot /></div>' },
   AnalysisPage: {
     template:
       '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>',

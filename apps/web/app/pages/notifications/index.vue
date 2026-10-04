@@ -218,9 +218,9 @@
             This prevents future delivery attempts. The notification is suppressed independently of
             any findings.
           </p>
-          <UFormGroup label="Reason">
+          <UFormField label="Reason">
             <UInput v-model="supReason" placeholder="Why suppress this notification?" />
-          </UFormGroup>
+          </UFormField>
           <div class="flex gap-2 mt-2">
             <UButton size="xs" @click="suppressNotification">Suppress</UButton>
             <UButton size="xs" variant="outline" @click="showSuppressDialog = false"

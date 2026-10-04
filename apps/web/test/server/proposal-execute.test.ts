@@ -755,6 +755,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   setReviewMutationExecutorFactory(null);
   vi.unstubAllEnvs();
   vi.useRealTimers();

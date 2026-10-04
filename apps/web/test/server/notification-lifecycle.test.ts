@@ -100,9 +100,13 @@ vi.mock('../../server/utils/liquidity-service', () => ({
   canReadFinancialNotification: mockCanReadFinancialNotification,
 }));
 
+vi.mock('../../lib/auth', () => ({
+  auth: { api: { getSession: vi.fn().mockResolvedValue(null) } },
+}));
+
 vi.mock('@balanceframe/application', () => ({
-  NotificationRuntime: vi.fn(() => mockNotificationRuntime),
-  InAppChannelAdapter: vi.fn(() => ({ channelType: 'in_app' })),
+  NotificationRuntime: vi.fn(function () { return mockNotificationRuntime; }),
+  InAppChannelAdapter: vi.fn(function () { return { channelType: 'in_app' }; }),
   createDefaultConnectionManager: vi.fn(() => ({
     loadConfig: async () => ({ budgetId: 'selected' }),
   })),

@@ -32,6 +32,7 @@ WORKDIR /app
 
 # Copy dependency manifests first (layer caching)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ patches/
 COPY apps/web/package.json apps/web/package.json
 COPY apps/cli/package.json apps/cli/package.json
 COPY apps/server/package.json apps/server/package.json
@@ -40,6 +41,7 @@ COPY packages/application/package.json packages/application/package.json
 COPY packages/inference/package.json packages/inference/package.json
 COPY packages/protocol-generated/package.json packages/protocol-generated/package.json
 COPY packages/workflow-store/package.json packages/workflow-store/package.json
+COPY packages/scenario-kit/package.json packages/scenario-kit/package.json
 COPY crates/node-binding/package.json crates/node-binding/package.json
 
 # Install dependencies (frozen lockfile ensures reproducible builds)
@@ -53,7 +55,7 @@ COPY . .
 RUN cd crates/node-binding && pnpm build
 
 # Build all workspace packages (includes Nuxt/Nitro app build)
-RUN pnpm build
+RUN pnpm -r --workspace-concurrency=1 build
 
 # Ensure JS wrapper and type declarations exist (napi may not generate them
 # for all platforms).  Without this, the runtime COPY would fail when the
@@ -79,12 +81,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Copy built application from builder
 COPY --from=builder /app/apps/web/.output ./web-output
-COPY --from=builder /app/node_modules ./node_modules
 
-# Prune development-only dependencies for smaller attack surface
-RUN npm prune --omit=dev && rm -rf /tmp/*
-
-# Restore the N-API addon after pruning, which removes workspace-only packages.
+# Copy the native addon alongside Nitro's self-contained runtime.
 RUN mkdir -p /app/node_modules/@balanceframe/native
 COPY --from=builder /app/crates/node-binding/balanceframe.node ./node_modules/@balanceframe/native/balanceframe.node
 COPY --from=builder /app/crates/node-binding/index.js ./node_modules/@balanceframe/native/index.js

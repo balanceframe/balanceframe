@@ -11,15 +11,23 @@
     "crates/*"
   ],
   "engines": {
-    "node": ">=20",
+    "node": "^22.19.0 || ^24.11.0 || >=26.0.0",
     "pnpm": "10.x"
   },
   "packageManager": "pnpm@10.24.0",
   "pnpm": {
+    "overrides": {
+      "nitropack@2.13.4>archiver": "8.0.0"
+    },
     "onlyBuiltDependencies": [
       "better-sqlite3",
-      "esbuild"
-    ]
+      "esbuild",
+      "vue-demi"
+    ],
+    "patchedDependencies": {
+      "nitropack@2.13.4": "patches/nitropack@2.13.4.patch",
+      "@nuxt/devtools@3.4.2": "patches/@nuxt__devtools@3.4.2.patch"
+    }
   },
   "scripts": {
     "build": "pnpm -r build",
@@ -32,9 +40,11 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.0",
     "@types/node": "^20.0.0",
-    "@typescript-eslint/parser": "^6.0.0",
-    "eslint": "^8.0.0",
+    "@typescript-eslint/parser": "^8.71.0",
+    "eslint": "^10.0.0",
+    "globals": "^17.13.0",
     "prettier": "^3.0.0",
     "typescript": "^5.0.0"
   }

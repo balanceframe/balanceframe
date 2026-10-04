@@ -10,8 +10,10 @@ const mockFetch = vi.fn();
 vi.stubGlobal('$fetch', mockFetch);
 
 import ReportsPage from '../../app/pages/reports.vue';
+import SavedViewPicker from '../../app/components/SavedViewPicker.vue';
 
 const stubs = {
+  SavedViewPicker,
   AnalysisPage: {
     template:
       '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot name="content" /></div>',
@@ -26,8 +28,12 @@ const stubs = {
     template: '<button @click="$emit(\'click\')"><slot /></button>',
     props: ['variant', 'size'],
   },
-  UFormGroup: { template: '<div><slot /></div>', props: ['label'] },
-  UInput: { template: '<input />', props: ['modelValue', 'placeholder'] },
+  UFormField: { template: '<div><slot /></div>', props: ['label'] },
+  UInput: {
+    template:
+      '<input :value="modelValue" :placeholder="placeholder" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    props: ['modelValue', 'placeholder'],
+  },
   AnalysisTable: {
     template:
       '<table data-testid="analysis-table"><tr v-for="(r,i) in rows" :key="i"><td v-for="c in columns" :key="c.key">{{ r[c.key] }}</td></tr></table>',
@@ -159,6 +165,59 @@ describe('Reports page', () => {
     const wrapper = shallowMount(ReportsPage, { global: { stubs } });
     await flushPromises();
     expect(wrapper.find('[data-testid="error"]').text()).toContain('STORE_UNAVAILABLE');
+  });
+
+  it('generates the selected report using the edited month range', async () => {
+    mockFetch.mockImplementation((url: string) => {
+      if (url === '/api/reports/history') return Promise.resolve(okEnvelope(historyResult));
+      if (url === '/api/reports/views') return Promise.resolve(okEnvelope(viewsResult));
+      return Promise.resolve(
+        okEnvelope({
+          reportId: 'generated-report',
+          reportType: 'spending',
+          label: 'January through February',
+          transactionCount: 2,
+          totalAmount: { minorUnits: '2500', currency: 'USD' },
+          generatedAt: '2026-03-01T00:00:00Z',
+          tags: ['household'],
+        }),
+      );
+    });
+    const wrapper = shallowMount(ReportsPage, { global: { stubs } });
+    await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Spending')!.trigger('click');
+    const generate = wrapper.findAll('button').find((button) => button.text() === 'Generate')!;
+    await generate.trigger('click');
+    expect(mockFetch).not.toHaveBeenCalledWith('/api/reports/generate', expect.anything());
+    await wrapper.get('input[placeholder="YYYY-MM or YYYY-MM:YYYY-MM"]').setValue('2026-01:2026-02');
+    await generate.trigger('click');
+    await flushPromises();
+    expect(mockFetch).toHaveBeenCalledWith('/api/reports/generate', {
+      query: { reportType: 'spending', monthRange: '2026-01:2026-02' },
+    });
+    expect(wrapper.get('[data-testid="report-id"]').text()).toBe('Report ID: generated-report');
+    expect(wrapper.text()).toContain('January through February');
+    expect(wrapper.text()).toContain('household');
+  });
+
+  it.each(['api', 'network'])('shows %s generation failures without a report result', async (failure) => {
+    mockFetch.mockImplementation((url: string) => {
+      if (url === '/api/reports/history') return Promise.resolve(okEnvelope(historyResult));
+      if (url === '/api/reports/views') return Promise.resolve(okEnvelope(viewsResult));
+      return failure === 'api'
+        ? Promise.resolve(errorEnvelope('GENERATE_FAILED'))
+        : Promise.reject(new Error('Network unavailable'));
+    });
+    const wrapper = shallowMount(ReportsPage, { global: { stubs } });
+    await flushPromises();
+    await wrapper.findAll('button').find((button) => button.text() === 'Income')!.trigger('click');
+    await wrapper.get('input[placeholder="YYYY-MM or YYYY-MM:YYYY-MM"]').setValue('2026-02');
+    await wrapper.findAll('button').find((button) => button.text() === 'Generate')!.trigger('click');
+    await flushPromises();
+    expect(wrapper.get('[data-testid="error"]').text()).toBe(
+      failure === 'api' ? 'GENERATE_FAILED' : 'FETCH_ERROR',
+    );
+    expect(wrapper.find('[data-testid="report-id"]').exists()).toBe(false);
   });
 
   it('does not calculate financial conclusions', async () => {

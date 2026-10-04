@@ -123,6 +123,7 @@ const showProposalModal = ref(false);
 
 
 const config = useRuntimeConfig();
+const toast = useToast();
 const apiBase = config.public.apiBase || (import.meta.client ? window.location.origin : '');
 
 const rules = ref<RuleListResult | null>(null);
@@ -200,7 +201,6 @@ async function handleToggleRule(id: string, inactive: boolean) {
     });
     retainPendingProposal(res, id, 'update_rule', inactive);
   } catch (e) {
-    const toast = useToast();
     toast.add({
       title: 'Failed to propose BalanceFrame classification change',
       description: e instanceof Error ? e.message : 'Connection error',
@@ -226,7 +226,6 @@ async function handleDeleteRule(id: string) {
     });
     retainPendingProposal(res, id, 'delete_rule');
   } catch (e) {
-    const toast = useToast();
     toast.add({
       title: 'Failed to propose Actual rule deletion',
       description: e instanceof Error ? e.message : 'Connection error',

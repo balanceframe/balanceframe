@@ -8,7 +8,7 @@
  */
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -17,23 +17,39 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const WEB_ROOT = resolve(import.meta.dirname, '../..');
 
-async function expectTracedActualRuntime(serverNodeModules: string): Promise<void> {
-  await Promise.all([
-    access(resolve(serverNodeModules, '@actual-app/api/package.json')),
-    access(resolve(serverNodeModules, '@actual-app/api/dist/index.js')),
-    access(resolve(serverNodeModules, '@actual-app/api/dist/default-db.sqlite')),
-    access(
-      resolve(
-        serverNodeModules,
-        '@actual-app/api/dist/migrations/1548957970627_remove-db-version.sql',
-      ),
-    ),
-    access(
-      resolve(serverNodeModules, '@actual-app/api/dist/migrations/1632571489012_remove_cache.js'),
-    ),
-    access(resolve(serverNodeModules, 'better-sqlite3/package.json')),
-    access(resolve(serverNodeModules, 'better-sqlite3/build/Release/better_sqlite3.node')),
-  ]);
+function expectProductionSQLite(serverDir: string): void {
+  execFileSync(process.execPath, ['--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { resolve } from 'node:path';
+    import { mkdirSync, writeFileSync } from 'node:fs';
+    const require = createRequire(resolve(process.argv[1], 'index.mjs'));
+    const Database = require('better-sqlite3');
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE amounts (amount INTEGER NOT NULL)');
+      const values = [-9223372036854775808n, 0n, 9223372036854775807n];
+      const insert = db.prepare('INSERT INTO amounts VALUES (?)');
+      db.transaction(() => values.forEach(value => insert.run(value)))();
+      assert.deepEqual(db.prepare('SELECT amount FROM amounts ORDER BY amount').safeIntegers().all().map(row => row.amount), values);
+    } finally { db.close(); }
+    const dataDir = resolve(process.argv[1], '../actual-cache');
+    mkdirSync(dataDir, { recursive: true });
+    process.env.ACTUAL_CONFIG_PATH = resolve(dataDir, 'config.json');
+    writeFileSync(process.env.ACTUAL_CONFIG_PATH, '{}');
+    const actual = require('@actual-app/api');
+    await actual.init({ dataDir });
+    try {
+      await actual.internal.send('create-budget', {
+        budgetName: 'Production artifact fixture', avoidUpload: true,
+      });
+      assert.deepEqual(await actual.getAccounts(), []);
+    } finally { await actual.shutdown(); }
+  `, serverDir], {
+    cwd: serverDir,
+    env: { ...process.env, NODE_PATH: '' },
+    stdio: 'pipe',
+  });
 }
 
 let activeChild: ChildProcessWithoutNullStreams | null = null;
@@ -133,7 +149,7 @@ async function waitUntilListening(child: ChildProcessWithoutNullStreams): Promis
 
 describe('production Actual API bundle', () => {
   it(
-    'loads the Actual client without CommonJS or module-resolution failures',
+    'loads the Actual client and executes exact SQLite queries from the production artifact',
     { timeout: 180_000 },
     async () => {
       const dataDir = await mkdtemp(resolve(tmpdir(), 'balanceframe-prod-bundle-'));
@@ -168,7 +184,7 @@ describe('production Actual API bundle', () => {
           stdio: 'pipe',
         },
       );
-      await expectTracedActualRuntime(resolve(outputDir, 'server/node_modules'));
+      expectProductionSQLite(resolve(outputDir, 'server'));
       const port = await availablePort();
       const child = spawn(process.execPath, [resolve(outputDir, 'server/index.mjs')], {
         cwd: WEB_ROOT,
@@ -198,6 +214,14 @@ describe('production Actual API bundle', () => {
       try {
         const readServerOutput = await waitUntilListening(child);
         const baseUrl = `http://127.0.0.1:${port}`;
+        const icons = await requestJson(`${baseUrl}/_nuxt_icon/heroicons.json?icons=exclamation-circle`);
+        expect(icons.statusCode).toBe(200);
+        expect(icons.body).toMatchObject({
+          prefix: 'heroicons',
+          icons: { 'exclamation-circle': { body: expect.stringContaining('<path') } },
+        });
+        const protectedResponse = await requestJson(`${baseUrl}/api/home/attention`);
+        expect([401, 503]).toContain(protectedResponse.statusCode);
         const cookies = new Map<string, string>();
         const password = 'production-bundle-owner-password';
         const call = async (path: string, body?: Record<string, unknown>, spaceId?: string) => {

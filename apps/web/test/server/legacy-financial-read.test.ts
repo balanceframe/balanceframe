@@ -286,7 +286,7 @@ describe('legacy whole-budget financial read authorization', () => {
       };
     }
     mockCreateActualClient.mockResolvedValue({});
-    mockActualConnector.mockImplementation(() => sdkConnector);
+    mockActualConnector.mockImplementation(function () { return sdkConnector; });
     sdkConnector.connect.mockResolvedValue([
       { id: foreignBudgetId, groupId: 'group', name: secret, encrypted: false },
     ]);

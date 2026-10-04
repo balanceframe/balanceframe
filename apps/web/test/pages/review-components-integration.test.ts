@@ -17,7 +17,7 @@ const stubs = {
     template: '<button type="button" :disabled="disabled"><slot />{{ label }}</button>',
   },
   UBadge: { props: ['label'], template: '<span><slot />{{ label }}</span>' },
-  UButtonGroup: { template: '<div><slot /></div>' },
+  UFieldGroup: { template: '<div><slot /></div>' },
   USeparator: true,
   UAlert: {
     props: ['title', 'description'],

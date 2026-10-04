@@ -13,8 +13,8 @@
   },
   "devDependencies": {
     "ajv": "^8.0.0",
-    "@vitest/coverage-v8": "^1.0.0",
-    "vitest": "^1.0.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "vitest": "^4.1.11",
     "zod": "^3.0.0"
   }
 }

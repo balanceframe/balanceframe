@@ -1,0 +1,46 @@
+diff --git a/dist/chunks/module-main.mjs b/dist/chunks/module-main.mjs
+index a4a4f8f688d3235db4ba006f9920beb0d8887e1e..c9b48634de7ad8d053cf747e1237ace7428b9ab6 100644
+--- a/dist/chunks/module-main.mjs
++++ b/dist/chunks/module-main.mjs
+@@ -11141,8 +11141,10 @@ function setupServerDataRPC({
+   let nitro;
+   let viteServer;
+   let viteClient;
+-  function normalizeViteConfig(config) {
++  function normalizeViteConfig(environment) {
++    const config = environment.config;
+     return {
++      ...environment.getTopLevelConfig(),
+       ...config,
+       environments: Object.fromEntries(
+         Object.entries(config.env).map(([key, _]) => {
+@@ -11162,24 +11164,14 @@ function setupServerDataRPC({
+   });
+   addVitePlugin({
+     name: "nuxt:devtools:config",
+-    applyToEnvironment(environment) {
++    perEnvironmentStartEndDuringDev: true,
++    buildStart() {
++      const environment = this.environment;
+       if (environment.name === "ssr") {
+-        return {
+-          name: "nuxt:devtools:config-retriever",
+-          enforce: "post",
+-          configResolved(config) {
+-            viteServer = normalizeViteConfig(config);
+-          }
+-        };
++        viteServer = normalizeViteConfig(environment);
+       }
+       if (environment.name === "client") {
+-        return {
+-          name: "nuxt:devtools:config-retriever",
+-          enforce: "post",
+-          configResolved(config) {
+-            viteClient = normalizeViteConfig(config);
+-          }
+-        };
++        viteClient = normalizeViteConfig(environment);
+       }
+     }
+   });

@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { shallowMount, flushPromises } from '@vue/test-utils';
+import SavedViewPicker from '../../app/components/SavedViewPicker.vue';
 
 // ---------------------------------------------------------------------------
 // Global fetch mock
@@ -35,13 +36,15 @@ const AnalysisPageStub = {
 };
 
 const stubs = {
+  SavedViewPicker,
+  NuxtLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
   AnalysisPage: AnalysisPageStub,
   UCard: { template: '<div><slot name="header" /><slot /></div>' },
   UButton: {
     template: `<button :disabled="disabled" @click="$emit('click')"><slot /></button>`,
     props: ['variant', 'size', 'disabled', 'label'],
   },
-  UFormGroup: {
+  UFormField: {
     template: '<div data-testid="form-group"><span v-if="label">{{ label }}</span><slot /></div>',
     props: ['label'],
   },

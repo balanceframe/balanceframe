@@ -56,7 +56,7 @@
           v-if="error?.code === 'not_connected'"
           label="Configure Actual connection"
           to="/connection"
-          icon="i-heroicons-plug"
+          icon="i-heroicons-link"
         />
       </template>
       <template #content>

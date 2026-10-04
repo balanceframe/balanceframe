@@ -9,7 +9,6 @@ export default defineConfig({
     bail: 1,
     coverage: {
       provider: 'v8',
-      all: true,
       reporter: ['text-summary', 'lcov', 'json'],
       reportsDirectory: '../../coverage/js/cli',
       include: ['src/**', 'bin/**'],
@@ -28,22 +27,22 @@ export default defineConfig({
   resolve: {
     alias: {
       '@balanceframe/protocol-generated': resolve(
-        __dirname,
+        import.meta.dirname,
         '../../packages/protocol-generated/src',
       ),
       '@balanceframe/protocol-generated/validators': resolve(
-        __dirname,
+        import.meta.dirname,
         '../../packages/protocol-generated/src/validators.ts',
       ),
-      '@balanceframe/application': resolve(__dirname, '../../packages/application/src'),
-      '@balanceframe/application/*': resolve(__dirname, '../../packages/application/src/*'),
-      '@balanceframe/actual-adapter': resolve(__dirname, '../../packages/actual-adapter/src'),
+      '@balanceframe/application': resolve(import.meta.dirname, '../../packages/application/src'),
+      '@balanceframe/application/*': resolve(import.meta.dirname, '../../packages/application/src/*'),
+      '@balanceframe/actual-adapter': resolve(import.meta.dirname, '../../packages/actual-adapter/src'),
       '@balanceframe/actual-adapter/types': resolve(
-        __dirname,
+        import.meta.dirname,
         '../../packages/actual-adapter/src/types.ts',
       ),
       '@balanceframe/actual-adapter/credentials': resolve(
-        __dirname,
+        import.meta.dirname,
         '../../packages/actual-adapter/src/credentials.ts',
       ),
     },

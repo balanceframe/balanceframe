@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { onMounted, ref } from 'vue';
+import { useToast, toastMaxInjectionKey, type Toast } from '@nuxt/ui/composables/useToast';
 import RulesPage from '../../app/pages/rules.vue';
 import RuleList from '../../app/components/RuleList.vue';
 import RuleDetail from '../../app/components/RuleDetail.vue';
@@ -147,7 +148,8 @@ function httpResponse(body: unknown, status = 200): Response {
 }
 const api = vi.fn<(url: string, options?: RequestOptions) => Promise<unknown>>();
 const fetchMock = vi.fn<typeof fetch>();
-const toast = vi.fn();
+const toasts = ref<Toast[]>([]);
+vi.mock('#imports', () => ({ useState: () => toasts }));
 const navigate = vi.fn();
 let stored: Rule[];
 let pendingRuleProposal: RuleProposal | null;
@@ -173,6 +175,7 @@ function mountPage() {
     global: {
       components: { RuleList, RuleDetail, ProposedRulesModal },
       stubs,
+      provide: { [toastMaxInjectionKey]: ref(1) },
     },
   });
   pages.push(page);
@@ -181,6 +184,7 @@ function mountPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  toasts.value = [];
   stored = [rule('groceries'), rule('rent', true)];
   pendingRuleProposal = null;
   proposalPermissions = { canApprove: true, canExecute: true };
@@ -256,7 +260,7 @@ beforeEach(() => {
   vi.stubGlobal('ref', ref);
   vi.stubGlobal('onMounted', onMounted);
   vi.stubGlobal('useRuntimeConfig', () => ({ public: { apiBase: 'https://rules.test' } }));
-  vi.stubGlobal('useToast', () => ({ add: toast }));
+  vi.stubGlobal('useToast', useToast);
   vi.stubGlobal('navigateTo', navigate);
 });
 
@@ -392,7 +396,8 @@ describe('rules page with real list and detail controls', () => {
   });
 
   it('requires confirmation before proposing Actual deletion and removes the rule only after execution', async () => {
-    const confirmation = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const confirmation = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirmation);
     const page = mountPage();
     await flushPromises();
     await row(page, 'Weekly groceries').trigger('click');
@@ -475,17 +480,16 @@ describe('rules page with real list and detail controls', () => {
   ] as const)(
     'preserves the selected rule when %s has an %s failure',
     async (action, _kind, response, message) => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      vi.stubGlobal('confirm', vi.fn(() => true));
       const page = mountPage();
       await flushPromises();
       await row(page, 'Weekly groceries').trigger('click');
       await flushPromises();
+      toasts.value = [{ id: 'previous', title: 'Previous operation' }];
       api.mockImplementationOnce(response);
       await button(page, action).trigger('click');
       await flushPromises();
-      expect(toast).toHaveBeenLastCalledWith(
-        expect.objectContaining({ color: 'error', description: message }),
-      );
+      expect(toasts.value).toMatchObject([{ color: 'error', description: message }]);
       expect(page.findComponent(RuleDetail).text()).toContain('Weekly groceries');
       expect(button(page, action).exists()).toBe(true);
       expect(row(page, 'Weekly groceries').attributes('aria-current')).toBe('true');

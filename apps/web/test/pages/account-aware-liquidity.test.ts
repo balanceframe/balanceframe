@@ -105,7 +105,7 @@ const global = {
       template:
         '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
     },
-    UFormGroup: { template: '<div><slot /></div>' },
+    UFormField: { template: '<div><slot /></div>' },
     AnalysisPage: {
       props: ['error'],
       template:

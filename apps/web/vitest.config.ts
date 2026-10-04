@@ -2,8 +2,8 @@ import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
-const workflowStoreSrcDir = resolve(__dirname, '../../packages/workflow-store/src');
-const applicationSrcDir = resolve(__dirname, '../../packages/application/src');
+const workflowStoreSrcDir = resolve(import.meta.dirname, '../../packages/workflow-store/src');
+const applicationSrcDir = resolve(import.meta.dirname, '../../packages/application/src');
 
 export default defineConfig({
   plugins: [vue()],
@@ -13,14 +13,11 @@ export default defineConfig({
       '@balanceframe/workflow-store/*': resolve(workflowStoreSrcDir, '*'),
       '@balanceframe/application': applicationSrcDir,
       '@balanceframe/application/*': resolve(applicationSrcDir, '*'),
-      // Nuxt virtual module — resolved to a test shim so middleware tests
-      // can mock #app imports via vi.mock outside the Nuxt build pipeline.
-      '#app': resolve(__dirname, 'test/nuxt-app-shim.ts'),
+      // Nuxt virtual modules — tests supply their runtime exports with vi.mock.
+      '#app': resolve(import.meta.dirname, 'test/nuxt-app-shim.ts'),
+      '#imports': resolve(import.meta.dirname, 'test/nuxt-app-shim.ts'),
       // Match Nuxt's srcDir alias for components and pages imported directly by Vitest.
-      '@': resolve(__dirname, 'app'),
-      // Nuxt/Nitro server-utils path — `../../utils/` from server/api/* files
-      // resolves to server/utils/ via the alias.
-      '../../utils': resolve(__dirname, 'server/utils'),
+      '@': resolve(import.meta.dirname, 'app'),
     },
   },
   test: {
@@ -30,7 +27,6 @@ export default defineConfig({
     bail: 1,
     coverage: {
       provider: 'v8',
-      all: true,
       reporter: ['text-summary', 'lcov', 'json'],
       reportsDirectory: '../../coverage/js/web',
       include: [
@@ -59,11 +55,12 @@ export default defineConfig({
       BALANCEFRAME_AUTH_DB_PATH: ':memory:',
     },
     setupFiles: ['./vitest.setup.ts'],
-  },
-  server: {
-    deps: {
-      // better-sqlite3 is a native addon — must not be bundled by Vite.
-      external: ['better-sqlite3'],
+    server: {
+      deps: {
+        // better-sqlite3 is a native addon — must not be bundled by Vite.
+        external: ['better-sqlite3'],
+        inline: ['@nuxt/ui'],
+      },
     },
   },
 });
