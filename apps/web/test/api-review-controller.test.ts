@@ -495,6 +495,138 @@ describe('useApiReviewController', () => {
       expect(result.consumedCount).toBe(0);
     });
 
+    describe('rule proposals', () => {
+      const ruleProposal = Object.freeze({
+        ...proposalApproval,
+        id: 'rule-proposal-001',
+        operation: 'create_rule',
+        payload: Object.freeze({
+          kind: 'create_rule',
+          transactionId: 'transaction-001',
+          categoryId: 'cat-server',
+          rule: Object.freeze({
+            name: 'Server-normalized merchant',
+            conditions: Object.freeze([
+              Object.freeze({ field: 'payee', operation: 'contains', value: 'Server merchant' }),
+            ]),
+          }),
+        }),
+        preconditions: Object.freeze({ transactionVersion: 3, actualVersion: 'actual-7' }),
+        approvers: Object.freeze(proposalApproval.approvers.map((approver) => Object.freeze({ ...approver }))),
+      });
+
+      it('retains immutable server snapshots without deriving a rule from inputs or consuming the queue', async () => {
+        const adapter = await setupWithOneItem();
+        adapter.toggleSelection(0);
+        adapter.setError('PREVIOUS', 'Previous request failed');
+        const queue = adapter.state;
+        const originalProposal = JSON.stringify(ruleProposal);
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(okEnvelope({
+            proposal: ruleProposal,
+            simulationStatus: 'complete',
+          })),
+        });
+
+        const pending = adapter.proposeRule('item-001', 'Input merchant', 'cat-input');
+        expect(adapter.loading).toBe(true);
+        expect(adapter.error).toBeNull();
+        expect(adapter.state).toBe(queue);
+        const result = await pending;
+
+        expect(result).toEqual({
+          itemId: 'rule-proposal-001',
+          success: true,
+          error: null,
+          approvalRequired: true,
+          simulationStatus: 'complete',
+          simulationWarning: null,
+        });
+        expect(adapter.proposalApprovalViews).toEqual([{ reviewId: 'item-001', proposal: ruleProposal }]);
+        expect(adapter.proposalApprovalViews[0]?.proposal).toBe(ruleProposal);
+        expect(adapter.proposalApprovalViews[0]?.proposal.payload).toBe(ruleProposal.payload);
+        expect(JSON.stringify(ruleProposal)).toBe(originalProposal);
+        expect(adapter.state).toBe(queue);
+        expect(adapter.state.selectedIndices).toEqual([0]);
+        expect(adapter.state.metrics.resolvedCount).toBe(0);
+        expect(adapter.loading).toBe(false);
+        expect(adapter.error).toBeNull();
+        expect(JSON.parse(fetchMock.mock.calls[1]![1].body as string)).toEqual({
+          reviewId: 'item-001', merchant: 'Input merchant', categoryId: 'cat-input',
+        });
+
+        const previousViews = adapter.proposalApprovalViews;
+        const replacement = Object.freeze({ ...ruleProposal, id: 'rule-proposal-002', payloadHash: 'b'.repeat(64) });
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(okEnvelope({
+            proposal: replacement,
+            simulationStatus: 'unavailable',
+            simulationWarning: 'Simulation data is stale',
+          })),
+        });
+        const replacementResult = await adapter.proposeRule('item-001', 'Other input', 'cat-other');
+
+        expect(replacementResult).toMatchObject({
+          itemId: replacement.id,
+          success: true,
+          approvalRequired: true,
+          simulationStatus: 'unavailable',
+          simulationWarning: 'Simulation data is stale',
+        });
+        expect(adapter.proposalApprovalViews).toEqual([{ reviewId: 'item-001', proposal: replacement }]);
+        expect(adapter.proposalApprovalViews[0]?.proposal).toBe(replacement);
+        expect(previousViews).toEqual([{ reviewId: 'item-001', proposal: ruleProposal }]);
+        expect(adapter.state).toBe(queue);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      });
+
+      const invalidProposalError = 'The server did not return an exact rule proposal for review.';
+      const failures: { name: string; response?: unknown; rejection?: unknown; error: string }[] = [
+        { name: 'envelope denial', response: errorEnvelope('DENIED', 'Rule creation denied'), error: 'Rule creation denied' },
+        { name: 'missing result', response: okEnvelope(null), error: invalidProposalError },
+        { name: 'missing exact proposal', response: okEnvelope({ proposal: { id: 'rule-summary' } }), error: invalidProposalError },
+        { name: 'invalid payload hash', response: okEnvelope({ proposal: { ...ruleProposal, payloadHash: 'invalid' } }), error: invalidProposalError },
+        { name: 'category proposal instead of rule', response: okEnvelope({ proposal: proposalApproval }), error: invalidProposalError },
+        { name: 'denied rule proposal', response: okEnvelope({ proposal: { ...ruleProposal, disposition: 'denied' } }), error: invalidProposalError },
+        { name: 'transport rejection', rejection: new Error('Connection lost'), error: 'Connection lost' },
+      ];
+
+      it.each(failures)('preserves the queue and prior exact proposal after $name', async ({ response, rejection, error }) => {
+        const adapter = await setupWithOneItem();
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve(okEnvelope({ proposal: ruleProposal })),
+        });
+        await adapter.proposeRule('item-001', 'Merchant', 'cat-food');
+        const queue = adapter.state;
+        const retained = adapter.proposalApprovalViews;
+        if (rejection !== undefined) {
+          fetchMock.mockRejectedValueOnce(rejection);
+        } else {
+          fetchMock.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve(response),
+          });
+        }
+
+        const pending = adapter.proposeRule('item-001', 'Changed merchant', 'cat-new');
+        expect(adapter.loading).toBe(true);
+        expect(adapter.error).toBeNull();
+        const result = await pending;
+
+        expect(result).toEqual({ itemId: 'item-001', success: false, error });
+        expect(adapter.error).toBe(error);
+        expect(adapter.loading).toBe(false);
+        expect(adapter.state).toBe(queue);
+        expect(adapter.state.currentItem?.reviewItem.id).toBe('item-001');
+        expect(adapter.proposalApprovalViews).toBe(retained);
+        expect(adapter.proposalApprovalViews[0]?.proposal).toBe(ruleProposal);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      });
+    });
+
   });
 
 
@@ -596,6 +728,116 @@ describe('useApiReviewController', () => {
       expect(result.errorCount).toBe(0);
       expect(adapter.state.items).toEqual([]);
       expect(adapter.state.currentItem).toBeNull();
+    });
+  });
+
+  describe('undo state transitions', () => {
+    const failures: { name: string; response?: unknown; rejection?: unknown; error: string }[] = [
+      { name: 'envelope denial', response: errorEnvelope('DENIED', 'Undo denied'), error: 'Undo denied' },
+      { name: 'malformed result', response: okEnvelope(null), error: 'Invalid undo result envelope' },
+      { name: 'failed transition', response: okEnvelope(failureResult('item-001', 'Transition rejected')), error: 'Transition rejected' },
+      { name: 'failure without details', response: okEnvelope({ success: false }), error: 'Undo failed' },
+      { name: 'transport rejection', rejection: 'Offline', error: 'Offline' },
+    ];
+
+    it.each(failures)('preserves the remaining queue and permits retry after $name', async ({ response, rejection, error }) => {
+      const items = [makeItem(), makeItem({ id: 'item-002', transactionId: 'txn-002' })];
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items, total: 2 })),
+      });
+      const adapter = useApiReviewController('http://test.local');
+      await adapter.loadNextPage();
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
+      });
+      await adapter.reject();
+      const remaining = adapter.state;
+      expect(remaining.items.map((item) => item.reviewItem.id)).toEqual(['item-002']);
+      if (rejection !== undefined) {
+        fetchMock.mockRejectedValueOnce(rejection);
+      } else {
+        fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(response) });
+      }
+
+      const pending = adapter.undo();
+      expect(adapter.loading).toBe(true);
+      expect(adapter.error).toBeNull();
+      const failed = await pending;
+
+      expect(failed).toEqual({ itemId: 'item-001', success: false, error });
+      expect(adapter.error).toBe(error);
+      expect(adapter.loading).toBe(false);
+      expect(adapter.state).toBe(remaining);
+      expect(adapter.state.currentItem?.reviewItem.id).toBe('item-002');
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(JSON.parse(fetchMock.mock.calls[2]![1].body as string)).toEqual({ reviewId: 'item-001' });
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ itemId: null, success: true, error: null })),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items, total: 2 })),
+      });
+      const retry = adapter.undo();
+      expect(adapter.loading).toBe(true);
+      expect(adapter.error).toBeNull();
+      expect(adapter.state).toBe(remaining);
+      expect(await retry).toEqual({ itemId: 'item-001', success: true, error: null });
+      expect(adapter.state.items.map((item) => item.reviewItem.id)).toEqual(['item-001', 'item-002']);
+      expect(adapter.state.currentItem?.reviewItem.id).toBe('item-001');
+      expect(adapter.state.currentIndex).toBe(0);
+      expect(adapter.loading).toBe(false);
+      expect(adapter.error).toBeNull();
+      expect(fetchMock.mock.calls[4]![0]).toBe('http://test.local/api/review');
+
+      const restored = adapter.state;
+      expect(await adapter.undo()).toEqual({
+        itemId: 'item-001',
+        success: false,
+        error: 'No item to undo. Act on an item first.',
+      });
+      expect(adapter.state).toBe(restored);
+      expect(adapter.loading).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+
+    it('restores the last consumed item from an empty queue and cannot replay it', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items: [makeItem()], total: 1 })),
+      });
+      const adapter = useApiReviewController('http://test.local');
+      await adapter.loadNextPage();
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
+      });
+      await adapter.skip();
+      expect(adapter.state.items).toEqual([]);
+      expect(adapter.state.currentItem).toBeNull();
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items: [makeItem({ version: 5 })], total: 1 })),
+      });
+
+      expect(await adapter.undo()).toEqual({ itemId: 'item-001', success: true, error: null });
+      expect(adapter.state.currentItem?.reviewItem.version).toBe(5);
+      expect(adapter.state.currentIndex).toBe(0);
+      expect(adapter.state.items).toHaveLength(1);
+      expect(adapter.loading).toBe(false);
+      expect(adapter.error).toBeNull();
+      const restored = adapter.state;
+      expect((await adapter.undo()).success).toBe(false);
+      expect(adapter.state).toBe(restored);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     });
   });
 

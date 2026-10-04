@@ -311,6 +311,9 @@ individual tiny files):
 CI fetches history and supplies the pull-request base SHA. Local comparison uses
 the merge base with `HEAD`, plus working-tree and untracked sources. An unavailable
 base, malformed report, missing report/source, or threshold failure exits nonzero.
+Before pushing a pull request, use its base SHA (the CI job's `COVERAGE_BASE`)
+or a freshly fetched target branch. The default `HEAD` changed-file gate only
+covers uncommitted changes, not earlier PR commits.
 The checker and runner isolation/cancellation contracts have executable behavior tests:
 `pnpm test:coverage-gates`.
 
