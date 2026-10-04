@@ -9,7 +9,7 @@ import { requireFullRead } from '../../utils/legacy-financial-read';
 
 import { savedViewsListAnalysis } from '@balanceframe/application';
 import type { CommandInput } from '@balanceframe/application';
-import { defineEventHandler, setResponseStatus } from 'h3';
+import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -35,6 +35,7 @@ function httpStatusForCode(code: string): number {
 }
 
 export default defineEventHandler(async (event) => {
+  setHeader(event, 'Cache-Control', 'private, no-store');
   const fullRead = await requireFullRead(event);
   if (!fullRead.ok) return fullRead.response;
   const authInfo = fullRead.info;
@@ -46,6 +47,12 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
+  const authority = {
+    actorId: fullRead.info.actorId,
+    spaceId: fullRead.spaceId,
+    budgetId: fullRead.budgetId,
+    membershipId: fullRead.actor.membershipId!,
+  };
   try {
     const input: CommandInput = {
       args: [],
@@ -57,7 +64,7 @@ export default defineEventHandler(async (event) => {
       workflowStore: wf.store,
     };
 
-    const envelope = await savedViewsListAnalysis(input);
+    const envelope = await savedViewsListAnalysis(input, authority);
 
     if (envelope.status === 'ok') {
       return okEnvelope(envelope.result, authInfo, envelope.requestId);

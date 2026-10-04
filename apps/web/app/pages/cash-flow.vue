@@ -7,9 +7,9 @@
   >
     <template #content>
       <div class="mb-4">
-        <UFormGroup label="Months to project" class="mb-3">
+        <UFormField label="Months to project" class="mb-3">
           <UInput v-model.number="months" type="number" min="1" max="24" />
-        </UFormGroup>
+        </UFormField>
         <UButton :disabled="!months || months < 1" @click="project">Project</UButton>
       </div>
 

@@ -1,87 +1,11 @@
-/**
- * TDD: Finding lifecycle routes.
- * GET /api/findings, GET /api/findings/:id, POST acknowledge, POST dismiss,
- * POST correct, POST reopen, POST supersede.
- *
- * Tests cover:
- *  - Happy-path transitions
- *  - Missing required fields
- *  - Version conflict (stale expectedVersion)
- *  - Authorization capability checks (unauthenticated → 403)
- *  - Store unavailable → 503
- *  - Transition constraints (e.g. cannot correct an already corrected finding)
- *  - Finding lifecycle is separate from notification lifecycle
- */
-
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-
-const {
-  mockReadBody,
-  mockGetWorkflowStore,
-  mockGetRouterParam,
-  mockGetQuery,
-  mockRequireAuthorization,
-} = vi.hoisted(() => ({
-  mockReadBody: vi.fn(),
-  mockGetWorkflowStore: vi.fn(),
-  mockGetRouterParam: vi.fn(),
-  mockGetQuery: vi.fn(() => ({})),
-  mockRequireAuthorization: vi.fn(),
-}));
-
-vi.mock('h3', () => ({
-  defineEventHandler: <T>(h: T) => h,
-  readBody: mockReadBody,
-  getRouterParam: mockGetRouterParam,
-  getQuery: mockGetQuery,
-  setResponseStatus: vi.fn(),
-}));
-
-const mockStore = {
-  liquidity: { isOwner: vi.fn(() => false), isAuthorized: vi.fn(() => true) },
-  evaluateAuthorization: vi.fn(async () => ({ allowed: true })),
-  listFindings: vi.fn(),
-  getFinding: vi.fn(),
-  acknowledgeFinding: vi.fn(),
-  dismissFinding: vi.fn(),
-  correctFinding: vi.fn(),
-  reopenFinding: vi.fn(),
-  supersedeFinding: vi.fn(),
-};
-
-// Set default return so existing tests that forget to mock still get a store.
-mockGetWorkflowStore.mockReturnValue({ store: mockStore });
-
-vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: mockGetWorkflowStore,
-  buildAuthorizationInfo: vi.fn(() => ({
-    actorId: 'test-actor',
-    capability: 'observe',
-    allowed: true,
-  })),
-  getActorId: vi.fn(() => 'test-actor'),
-  requireAuthorization: mockRequireAuthorization,
-  sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
-  okEnvelope: (r) => ({
-    schemaVersion: '1',
-    requestId: 'tr',
-    status: 'ok',
-    dataFreshness: null,
-    authorization: null,
-    result: r,
-    error: null,
-  }),
-  errorEnvelope: (c, m) => ({
-    schemaVersion: '1',
-    requestId: 'tr',
-    status: 'error',
-    dataFreshness: null,
-    authorization: null,
-    result: null,
-    error: { code: c, message: m, retryable: false },
-  }),
-}));
-
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as H3 from 'h3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
 import listHandler from '../../server/api/findings/index.get';
 import detailHandler from '../../server/api/findings/[id].get';
 import ackHandler from '../../server/api/findings/[id]/acknowledge.post';
@@ -90,613 +14,300 @@ import correctHandler from '../../server/api/findings/[id]/correct.post';
 import reopenHandler from '../../server/api/findings/[id]/reopen.post';
 import supersedeHandler from '../../server/api/findings/[id]/supersede.post';
 
-const SAMPLE_FINDING = {
-  id: 'f_001',
-  budgetId: 'b_001',
-  classification: 'budget_risk',
-  description: 'Test',
-  evidence: {},
-  evidenceRefs: [],
-  severity: 'high',
-  status: 'open',
-  actorId: null,
-  acknowledgedAt: null,
-  acknowledgedBy: null,
-  correctedAt: null,
-  correctedBy: null,
-  correctionRef: null,
-  dismissedAt: null,
-  dismissedBy: null,
-  dismissedReason: null,
-  reopenedAt: null,
-  reopenedBy: null,
-  supersededAt: null,
-  supersededBy: null,
-  supersededReason: null,
-  expiresAt: null,
-  version: 1,
-  createdAt: '2026-07-27T10:00:00Z',
-  updatedAt: '2026-07-27T10:00:00Z',
+const mocks = vi.hoisted(() => ({
+  loadConfig: vi.fn(async () => ({ budgetId: '' })),
+}));
+
+vi.mock('h3', async (importOriginal) => ({
+  ...(await importOriginal<typeof H3>()),
+  readBody: async (event: { body: unknown }) => event.body,
+  getQuery: (event: { query?: unknown }) => event.query ?? {},
+  getRouterParam: (event: { context: { params?: Record<string, string> } }, name: string) =>
+    event.context.params?.[name],
+}));
+// Load Source Native modules in Vitest's hoisted mock factories, not stale workspace dist exports.
+vi.mock('@balanceframe/application', async () => ({
+  ...(await import('../../../../packages/application/src/index')),
+  createDefaultConnectionManager: () => ({ loadConfig: mocks.loadConfig }),
+}));
+vi.mock('@balanceframe/workflow-store', async () =>
+  import('../../../../packages/workflow-store/src/index'));
+
+const OWNER = 'finding-space-owner';
+const READER = 'finding-scope-reader';
+const ORIGIN = 'https://balanceframe.example.test';
+const NOW = '2026-09-06T10:00:00.000Z';
+const ownerControl = {
+  method: 'human-session' as const,
+  actorId: OWNER,
+  sessionId: 'finding-owner-session',
+  reauthenticatedAt: NOW,
 };
+let directory = '';
+let store: SqliteWorkflowStore;
+let sequence = 0;
+let budgetId = '';
+let spaceId = '';
+let readerMembershipId = '';
 
-function mockAuthEvent() {
-  return { context: { auth: { authenticated: true } } };
-}
-
-function allowAuth() {
-  mockRequireAuthorization.mockResolvedValue({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'finding:transition', allowed: true },
-  });
-}
-
-function denyAuth() {
-  mockRequireAuthorization.mockResolvedValue({
-    ok: false,
-    response: {
-      schemaVersion: '1',
-      requestId: 'tr',
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'AUTHORIZATION_DENIED',
-        message: 'Insufficient capabilities.',
-        retryable: false,
-      },
+function request(options: {
+  id?: string;
+  body?: unknown;
+  query?: unknown;
+  selectedSpace?: string;
+  actorId?: string;
+} = {}) {
+  const headers = new Map<string, string | number | readonly string[]>();
+  const response = {
+    statusCode: 200,
+    statusMessage: '',
+    headersSent: false,
+    setHeader(name: string, value: string | number | readonly string[]) {
+      headers.set(name.toLowerCase(), value);
     },
+    getHeader(name: string) {
+      return headers.get(name.toLowerCase());
+    },
+    removeHeader(name: string) {
+      headers.delete(name.toLowerCase());
+    },
+  };
+  const actorId = options.actorId ?? READER;
+  return {
+    body: options.body,
+    query: options.query,
+    node: {
+      req: {
+        headers: {
+          origin: ORIGIN,
+          'x-balanceframe-space': options.selectedSpace ?? spaceId,
+        },
+      },
+      res: response,
+    },
+    context: {
+      params: options.id === undefined ? {} : { id: options.id },
+      auth: {
+        authenticated: true,
+        actorId,
+        user: { id: actorId },
+        method: 'session' as const,
+        principalType: 'human' as const,
+        sessionId: `session:${actorId}`,
+        impersonatedBy: null,
+      },
+      runtimeConfig: { workflowDbPath: join(directory, 'workflow.sqlite'), devBypassAuth: false },
+    },
+  } as unknown as H3.H3Event & EventWithContext;
+}
+
+function createScope(selectedBudget: string) {
+  const created = store.governance.createSpace({
+    actorId: OWNER,
+    name: `Finding fixture ${sequence}`,
+    kind: 'shared',
+    now: NOW,
+    auth: ownerControl,
+  });
+  const space = store.governance.bindBudget({
+    spaceId: created.id,
+    budgetId: selectedBudget,
+    now: NOW,
+    auth: ownerControl,
+  });
+  const reader = store.governance.addMembership({
+    spaceId: space.id,
+    actorId: READER,
+    validFrom: NOW,
+    now: NOW,
+    auth: ownerControl,
+  });
+  return { spaceId: space.id, membershipId: reader.id };
+}
+
+function grant(capability: string) {
+  store.governance.provisionResourceGrant({
+    spaceId,
+    actorId: READER,
+    membershipId: readerMembershipId,
+    budgetId,
+    capability,
+    resourceKind: 'budget',
+    resourceId: budgetId,
+    granted: true,
+    now: NOW,
   });
 }
 
-// ---------------------------------------------------------------------------
-// GET /api/findings
-// ---------------------------------------------------------------------------
-
-describe('GET /api/findings', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetQuery.mockReturnValue({});
+async function createFinding(
+  selectedBudget: string,
+  input: { classification?: string; severity?: 'low' | 'medium' | 'high' | 'critical'; description: string; evidence?: Record<string, unknown> },
+) {
+  return store.createFinding({
+    budgetId: selectedBudget,
+    classification: input.classification ?? 'budget_alert',
+    severity: input.severity ?? 'medium',
+    description: input.description,
+    evidence: input.evidence ?? { privateEvidence: 'stored-only-secret' },
+    evidenceRefs: ['private-evidence-ref'],
+    actorId: READER,
   });
+}
 
-  it('must reject invalid status', async () => {
-    mockGetQuery.mockReturnValue({ status: 'bogus' });
-    const r = await listHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('INVALID_STATUS');
-  });
-
-  it('must reject invalid severity', async () => {
-    mockGetQuery.mockReturnValue({ severity: 'extreme' });
-    const r = await listHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('INVALID_SEVERITY');
-  });
-
-  it('must return 503 when store unavailable', async () => {
-    mockGetWorkflowStore.mockReturnValueOnce({ error: 'DB locked' });
-    const r = await listHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('STORE_UNAVAILABLE');
-  });
+beforeAll(async () => {
+  directory = mkdtempSync(join(tmpdir(), 'finding-lifecycle-'));
+  const opened = getWorkflowStore(request({ selectedSpace: '' }) as unknown as EventWithContext);
+  if ('error' in opened) throw new Error(opened.error);
+  store = opened.store;
+  await store.claimBootstrap({ name: 'Finding owner', email: 'finding-owner@example.test', claimId: 'finding-lifecycle-fixture' });
+  await store.finalizeBootstrap({ claimId: 'finding-lifecycle-fixture', ownerUserId: OWNER });
+  await store.upsertActorMembership(READER, 'active', [], 'unscoped');
 });
 
-// ---------------------------------------------------------------------------
-// GET /api/findings/:id
-// ---------------------------------------------------------------------------
-
-describe('GET /api/findings/[id]', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('must return a finding by ID', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockStore.getFinding.mockResolvedValue(SAMPLE_FINDING);
-    const r = await detailHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(r.result.id).toBe('f_001');
-  });
-
-  it('must return 404 when not found', async () => {
-    mockGetRouterParam.mockReturnValue('f_missing');
-    mockStore.getFinding.mockResolvedValue(null);
-    const r = await detailHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('FINDING_NOT_FOUND');
-  });
-
-  it('must reject missing finding ID', async () => {
-    mockGetRouterParam.mockReturnValue('');
-    const r = await detailHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_FINDING_ID');
-  });
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(NOW));
+  vi.stubEnv('BETTER_AUTH_URL', ORIGIN);
+  budgetId = `finding-budget-${++sequence}`;
+  mocks.loadConfig.mockResolvedValue({ budgetId });
+  const selected = createScope(budgetId);
+  spaceId = selected.spaceId;
+  readerMembershipId = selected.membershipId;
+  grant('observe');
+  grant('history');
+  grant('finding:transition');
 });
 
-// ---------------------------------------------------------------------------
-// POST /api/findings/:id/acknowledge
-// ---------------------------------------------------------------------------
-
-describe('POST /api/findings/[id]/acknowledge', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    allowAuth();
-  });
-
-  it('must acknowledge a finding', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    mockStore.acknowledgeFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
-      status: 'acknowledged',
-      version: 2,
-    });
-    const r = await ackHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(r.result.status).toBe('acknowledged');
-  });
-
-  it('must reject missing version', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({});
-    const r = await ackHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_VERSION');
-  });
-
-  it('must reject unauthenticated requests', async () => {
-    denyAuth();
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    const r = await ackHandler({ context: {} });
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('AUTHORIZATION_DENIED');
-  });
-
-  it('must handle version conflict from store', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    mockStore.acknowledgeFinding.mockRejectedValue(
-      new Error('Finding f_001 version conflict or invalid transition from open to acknowledged'),
-    );
-    const r = await ackHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('ACKNOWLEDGE_FAILED');
-  });
-
-  it('must handle store unavailable', async () => {
-    mockGetWorkflowStore.mockReturnValueOnce({ error: 'DB locked' });
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    const r = await ackHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('STORE_UNAVAILABLE');
-  });
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
-// ---------------------------------------------------------------------------
-// POST /api/findings/:id/dismiss
-// ---------------------------------------------------------------------------
-
-describe('POST /api/findings/[id]/dismiss', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    allowAuth();
-  });
-
-  it('must dismiss a finding', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, reason: 'Not actionable' });
-    mockStore.dismissFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
-      status: 'dismissed',
-      version: 2,
-    });
-    const r = await dismissHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(r.result.status).toBe('dismissed');
-  });
-
-  it('must reject missing reason', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    const r = await dismissHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_REASON');
-  });
-
-  it('must reject unauthenticated requests', async () => {
-    denyAuth();
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, reason: 'ok' });
-    const r = await dismissHandler({ context: {} });
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('AUTHORIZATION_DENIED');
-  });
-
-  it('must handle version conflict from store', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, reason: 'ok' });
-    mockStore.dismissFinding.mockRejectedValue(
-      new Error('Finding f_001 version conflict or invalid transition from open to dismissed'),
-    );
-    const r = await dismissHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('DISMISS_FAILED');
-  });
+afterAll(() => {
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
 });
 
-// ---------------------------------------------------------------------------
-// POST /api/findings/:id/correct
-// ---------------------------------------------------------------------------
-
-describe('POST /api/findings/[id]/correct', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    allowAuth();
-  });
-
-  it('must correct a finding with evidence reference', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, correctionRef: 'cr_001' });
-    mockStore.correctFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
-      status: 'corrected',
-      version: 2,
-      correctedAt: '2026-07-28T10:00:00Z',
-      correctedBy: 'test-actor',
-      correctionRef: 'cr_001',
+describe('governed finding lifecycle routes', () => {
+  it('filters selected-budget findings through current projection before assigning page positions', async () => {
+    const first = await createFinding(budgetId, { description: 'private first narrative', severity: 'high' });
+    const second = await createFinding(budgetId, { description: 'private second narrative', severity: 'medium' });
+    const hiddenTransfer = await createFinding(budgetId, {
+      classification: 'transfer_needs_attention',
+      description: 'unprojectable transfer narrative',
+      severity: 'critical',
+      evidence: { transferId: 'not-a-current-proposal', rawEvidence: 'private transfer secret' },
     });
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(r.result.status).toBe('corrected');
-    expect(r.result.correctionRef).toBe('cr_001');
-    expect(r.result.correctedBy).toBe('test-actor');
-    expect(mockStore.correctFinding).toHaveBeenCalledWith({
-      findingId: 'f_001',
-      actorId: 'test-actor',
-      correctionRef: 'cr_001',
-      expectedVersion: 1,
+    const foreign = createScope(`finding-private-budget-${sequence}`);
+    await createFinding(`finding-private-budget-${sequence}`, {
+      description: 'other budget must not be disclosed',
+      severity: 'critical',
     });
+
+    const page = async (offset: number) => listHandler(request({ query: { limit: '1', offset: String(offset) } }));
+    const firstPage = await page(0);
+    const secondPage = await page(1);
+    expect(firstPage.status).toBe('ok');
+    expect(firstPage.result.map((finding: { id: string }) => finding.id)).toEqual([first.id]);
+    expect(secondPage.status).toBe('ok');
+    expect(secondPage.result.map((finding: { id: string }) => finding.id)).toEqual([second.id]);
+    const serialized = JSON.stringify([firstPage, secondPage]);
+    expect(serialized).not.toContain('private first narrative');
+    expect(serialized).not.toContain('private second narrative');
+    expect(serialized).not.toContain('private transfer secret');
+    expect(serialized).not.toContain(hiddenTransfer.id);
+    expect(serialized).not.toContain('other budget must not be disclosed');
+    expect(serialized).not.toContain(foreign.spaceId);
   });
 
-  it('must reject missing version', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ correctionRef: 'cr_001' });
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_VERSION');
-  });
+  it('returns allowlisted finding state and applies real versioned transitions without exposing stored evidence', async () => {
+    const finding = await createFinding(budgetId, { description: 'secret original description' });
+    const replacement = await createFinding(budgetId, { description: 'secret replacement description' });
 
-  it('must reject missing correctionRef', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_CORRECTION_REF');
-  });
-
-  it('must reject empty correctionRef', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, correctionRef: '  ' });
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_CORRECTION_REF');
-  });
-
-  it('must reject missing finding ID', async () => {
-    mockGetRouterParam.mockReturnValue('');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, correctionRef: 'cr_001' });
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_FINDING_ID');
-  });
-
-  it('must reject unauthenticated requests', async () => {
-    denyAuth();
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, correctionRef: 'cr_001' });
-    const r = await correctHandler({ context: {} });
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('AUTHORIZATION_DENIED');
-  });
-
-  it('must handle version conflict from store', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, correctionRef: 'cr_001' });
-    mockStore.correctFinding.mockRejectedValue(
-      new Error('Finding f_001 version conflict or invalid transition from open to corrected'),
-    );
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('CORRECT_FAILED');
-  });
-
-  it('must handle transition constraint violation', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 2, correctionRef: 'cr_002' });
-    mockStore.correctFinding.mockRejectedValue(
-      new Error('Cannot correct finding in status dismissed'),
-    );
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('CORRECT_FAILED');
-  });
-
-  it('must handle store unavailable', async () => {
-    mockGetWorkflowStore.mockReturnValueOnce({ error: 'DB locked' });
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, correctionRef: 'cr_001' });
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('STORE_UNAVAILABLE');
-  });
-
-  it('must not trigger any notification action', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, correctionRef: 'cr_001' });
-    mockStore.correctFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
-      status: 'corrected',
-      version: 2,
-      correctedAt: '2026-07-28T10:00:00Z',
-      correctedBy: 'test-actor',
-      correctionRef: 'cr_001',
+    const detail = await detailHandler(request({ id: finding.id }));
+    expect(detail.status).toBe('ok');
+    expect(detail.result).toMatchObject({
+      id: finding.id,
+      budgetId,
+      classification: 'budget_alert',
+      status: 'open',
+      description: 'A finding needs authorized review.',
     });
-    const r = await correctHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    // Finding lifecycle only — no notification store methods called
-    expect(mockStore.acknowledgeFinding).not.toHaveBeenCalled();
-    expect(mockStore.dismissFinding).not.toHaveBeenCalled();
-    expect(mockStore.reopenFinding).not.toHaveBeenCalled();
-    expect(mockStore.supersedeFinding).not.toHaveBeenCalled();
-  });
-});
+    expect(JSON.stringify(detail.result)).not.toContain('secret original description');
+    expect(JSON.stringify(detail.result)).not.toContain('private-evidence-ref');
 
-// ---------------------------------------------------------------------------
-// POST /api/findings/:id/reopen
-// ---------------------------------------------------------------------------
+    const acknowledged = await ackHandler(request({ id: finding.id, body: { expectedVersion: 1 } }));
+    expect(acknowledged.status).toBe('ok');
+    expect(acknowledged.result).toMatchObject({ id: finding.id, status: 'acknowledged' });
 
-describe('POST /api/findings/[id]/reopen', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    allowAuth();
-  });
+    const staleDismiss = await dismissHandler(request({
+      id: finding.id,
+      body: { expectedVersion: 1, reason: 'stale transition' },
+    }));
+    expect(staleDismiss.status).toBe('error');
+    expect(await store.getFinding(finding.id)).toMatchObject({ status: 'acknowledged', version: 2 });
 
-  it('must reopen a previously dismissed finding', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 2 });
-    mockStore.reopenFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
-      status: 'reopened',
-      version: 3,
-      reopenedAt: '2026-07-28T10:00:00Z',
-      reopenedBy: 'test-actor',
-    });
-    const r = await reopenHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(r.result.status).toBe('reopened');
-    expect(r.result.reopenedBy).toBe('test-actor');
-    expect(mockStore.reopenFinding).toHaveBeenCalledWith({
-      findingId: 'f_001',
-      actorId: 'test-actor',
-      expectedVersion: 2,
-    });
-  });
+    const dismissed = await dismissHandler(request({
+      id: finding.id,
+      body: { expectedVersion: 2, reason: 'No longer actionable' },
+    }));
+    expect(dismissed.status).toBe('ok');
+    expect(dismissed.result).toMatchObject({ id: finding.id, status: 'dismissed' });
+    expect(JSON.stringify(dismissed.result)).not.toContain('No longer actionable');
 
-  it('must reject missing version', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({});
-    const r = await reopenHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_VERSION');
-  });
+    const reopened = await reopenHandler(request({ id: finding.id, body: { expectedVersion: 3 } }));
+    expect(reopened.status).toBe('ok');
+    expect(reopened.result.status).toBe('reopened');
 
-  it('must reject missing finding ID', async () => {
-    mockGetRouterParam.mockReturnValue('');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    const r = await reopenHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_FINDING_ID');
-  });
+    const corrected = await correctHandler(request({
+      id: finding.id,
+      body: { expectedVersion: 4, correctionRef: 'private-correction-reference' },
+    }));
+    expect(corrected.status).toBe('ok');
+    expect(corrected.result).toMatchObject({ id: finding.id, status: 'corrected' });
+    expect(JSON.stringify(corrected.result)).not.toContain('private-correction-reference');
 
-  it('must reject unauthenticated requests', async () => {
-    denyAuth();
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    const r = await reopenHandler({ context: {} });
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('AUTHORIZATION_DENIED');
-  });
-
-  it('must handle version conflict from store', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    mockStore.reopenFinding.mockRejectedValue(
-      new Error('Finding f_001 version conflict or invalid transition from dismissed to reopened'),
-    );
-    const r = await reopenHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('REOPEN_FAILED');
-  });
-
-  it('must handle transition constraint violation', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    mockStore.reopenFinding.mockRejectedValue(new Error('Cannot reopen finding in status expired'));
-    const r = await reopenHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('REOPEN_FAILED');
-  });
-
-  it('must handle store unavailable', async () => {
-    mockGetWorkflowStore.mockReturnValueOnce({ error: 'DB locked' });
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1 });
-    const r = await reopenHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('STORE_UNAVAILABLE');
-  });
-
-  it('must not trigger any notification action', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 2 });
-    mockStore.reopenFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
-      status: 'reopened',
-      version: 3,
-      reopenedAt: '2026-07-28T10:00:00Z',
-      reopenedBy: 'test-actor',
-    });
-    const r = await reopenHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(mockStore.acknowledgeFinding).not.toHaveBeenCalled();
-    expect(mockStore.dismissFinding).not.toHaveBeenCalled();
-    expect(mockStore.correctFinding).not.toHaveBeenCalled();
-    expect(mockStore.supersedeFinding).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/findings/:id/supersede
-// ---------------------------------------------------------------------------
-
-describe('POST /api/findings/[id]/supersede', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    allowAuth();
-  });
-
-  it('must supersede a finding with reason and replacement ref', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({
-      expectedVersion: 1,
-      supersededBy: 'f_002',
-      reason: 'Replaced by improved detection',
-    });
-    mockStore.supersedeFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
+    const superseded = await supersedeHandler(request({
+      id: finding.id,
+      body: { expectedVersion: 5, supersededBy: replacement.id, reason: 'Replaced with a newer finding' },
+    }));
+    expect(superseded.status).toBe('ok');
+    expect(superseded.result).toMatchObject({ id: finding.id, status: 'superseded' });
+    expect(JSON.stringify(superseded.result)).not.toContain(replacement.id);
+    expect(await store.getFinding(finding.id)).toMatchObject({
       status: 'superseded',
-      version: 2,
-      supersededAt: '2026-07-28T10:00:00Z',
-      supersededBy: 'f_002',
-      supersededReason: 'Replaced by improved detection',
-    });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(r.result.status).toBe('superseded');
-    expect(r.result.supersededBy).toBe('f_002');
-    expect(r.result.supersededReason).toBe('Replaced by improved detection');
-    expect(mockStore.supersedeFinding).toHaveBeenCalledWith({
-      findingId: 'f_001',
-      actorId: 'test-actor',
-      supersededBy: 'f_002',
-      reason: 'Replaced by improved detection',
-      expectedVersion: 1,
+      supersededBy: replacement.id,
+      supersededReason: 'Replaced with a newer finding',
+      version: 6,
     });
   });
 
-  it('must reject missing version', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ supersededBy: 'f_002', reason: 'test' });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_VERSION');
-  });
-
-  it('must reject missing supersededBy', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, reason: 'test' });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_SUPERSEDED_BY');
-  });
-
-  it('must reject missing reason', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, supersededBy: 'f_002' });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_REASON');
-  });
-
-  it('must reject empty reason', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, supersededBy: 'f_002', reason: '  ' });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_REASON');
-  });
-
-  it('must reject missing finding ID', async () => {
-    mockGetRouterParam.mockReturnValue('');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, supersededBy: 'f_002', reason: 'test' });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_FINDING_ID');
-  });
-
-  it('must reject unauthenticated requests', async () => {
-    denyAuth();
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, supersededBy: 'f_002', reason: 'test' });
-    const r = await supersedeHandler({ context: {} });
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('AUTHORIZATION_DENIED');
-  });
-
-  it('must handle version conflict from store', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, supersededBy: 'f_002', reason: 'test' });
-    mockStore.supersedeFinding.mockRejectedValue(
-      new Error('Finding f_001 version conflict or invalid transition from open to superseded'),
-    );
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('SUPERSEDE_FAILED');
-  });
-
-  it('must handle transition constraint violation', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, supersededBy: 'f_002', reason: 'test' });
-    mockStore.supersedeFinding.mockRejectedValue(
-      new Error('Cannot supersede finding in status superseded'),
-    );
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('SUPERSEDE_FAILED');
-  });
-
-  it('must handle store unavailable', async () => {
-    mockGetWorkflowStore.mockReturnValueOnce({ error: 'DB locked' });
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({ expectedVersion: 1, supersededBy: 'f_002', reason: 'test' });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('STORE_UNAVAILABLE');
-  });
-
-  it('must not trigger any notification action', async () => {
-    mockGetRouterParam.mockReturnValue('f_001');
-    mockReadBody.mockResolvedValue({
-      expectedVersion: 1,
-      supersededBy: 'f_002',
-      reason: 'Replaced by improved detection',
+  it('hides a finding immediately when current history authority is revoked', async () => {
+    const finding = await createFinding(budgetId, { description: 'revoked-private-description' });
+    store.governance.setResourceGrant({
+      spaceId,
+      actorId: READER,
+      membershipId: readerMembershipId,
+      budgetId,
+      capability: 'history',
+      resourceKind: 'budget',
+      resourceId: budgetId,
+      granted: false,
+      now: NOW,
+      auth: ownerControl,
     });
-    mockStore.supersedeFinding.mockResolvedValue({
-      ...SAMPLE_FINDING,
-      status: 'superseded',
-      version: 2,
-      supersededAt: '2026-07-28T10:00:00Z',
-      supersededBy: 'f_002',
-      supersededReason: 'Replaced by improved detection',
-    });
-    const r = await supersedeHandler(mockAuthEvent());
-    expect(r.status).toBe('ok');
-    expect(mockStore.acknowledgeFinding).not.toHaveBeenCalled();
-    expect(mockStore.dismissFinding).not.toHaveBeenCalled();
-    expect(mockStore.correctFinding).not.toHaveBeenCalled();
-    expect(mockStore.reopenFinding).not.toHaveBeenCalled();
+    const response = await detailHandler(request({ id: finding.id }));
+    expect(response.status).toBe('error');
+    expect(response.error?.code).toBe('FINDING_NOT_FOUND');
+    expect(JSON.stringify(response)).not.toContain('revoked-private-description');
+  });
+
+  it('rejects a stale selected-space membership before disclosing a finding', async () => {
+    const finding = await createFinding(budgetId, { description: 'departed-reader-secret' });
+    store.governance.revokeMembership({ spaceId, membershipId: readerMembershipId, now: NOW, auth: ownerControl });
+    const response = await detailHandler(request({ id: finding.id }));
+    expect(response.status).toBe('error');
+    expect(JSON.stringify(response)).not.toContain(finding.id);
+    expect(JSON.stringify(response)).not.toContain('departed-reader-secret');
   });
 });

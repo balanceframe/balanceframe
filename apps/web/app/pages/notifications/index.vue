@@ -218,9 +218,9 @@
             This prevents future delivery attempts. The notification is suppressed independently of
             any findings.
           </p>
-          <UFormGroup label="Reason">
+          <UFormField label="Reason">
             <UInput v-model="supReason" placeholder="Why suppress this notification?" />
-          </UFormGroup>
+          </UFormField>
           <div class="flex gap-2 mt-2">
             <UButton size="xs" @click="suppressNotification">Suppress</UButton>
             <UButton size="xs" variant="outline" @click="showSuppressDialog = false"
@@ -454,9 +454,7 @@ onMounted(async () => {
     const [statusRes, inboxRes, policyRes] = await Promise.all([
       $fetch<Envelope<RuntimeStatus>>('/api/notifications/status'),
       $fetch<Envelope<{ items: InboxItem[]; count: number }>>('/api/notifications/inbox'),
-      $fetch<Envelope<NotificationPolicy>>('/api/notifications/policy', {
-        query: { spaceId: 'default', policyKey: 'delivery' },
-      }).catch(() => null),
+      $fetch<Envelope<NotificationPolicy>>('/api/notifications/policy').catch(() => null),
     ]);
     if (statusRes.status === 'ok' && statusRes.result) {
       runtimeStatus.value = statusRes.result;

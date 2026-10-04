@@ -11,22 +11,22 @@
  *   const items = await wf.store.listReviewItems(...);
  */
 
-import { setResponseStatus } from 'h3';
+import { setHeader, setResponseStatus } from 'h3';
 import type { H3Event } from 'h3';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type {
   WorkflowStore,
   ReviewStatus,
   ReviewItem,
-  ReviewAction,
-  TransitionReviewInput,
+  AuthorizedReviewTransitionInput,
+  ReviewActionAuthorization,
   ReviewListOptions,
-  TransitionReviewResult,
-  CreateIdempotencyInput,
-  IdempotencyStatus,
+  GovernanceResourceKind,
+  OperationalAuth,
 } from '@balanceframe/workflow-store';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { requireSelectedSpace } from './space-context';
 
 /**
  * Server-side ReviewQueueItem type.
@@ -53,8 +53,27 @@ export interface RuleCandidate {
   readonly consistency: number;
 }
 
+
+export interface PublicReviewItem {
+  readonly id: string;
+  readonly budgetId: string;
+  readonly transactionId: string;
+  readonly categoryId: string;
+  readonly classifier: 'Review';
+  readonly promptVersion: '';
+  readonly transactionVersion: number;
+  readonly status: ReviewItem['status'];
+  readonly correlationId: null;
+  readonly reviewersRequired: number;
+  readonly priority: number;
+  readonly freshnessExpiresAt: string | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export interface ReviewQueueItem {
-  readonly reviewItem: ReviewItem;
+  readonly reviewItem: PublicReviewItem;
   readonly evidence: {
     readonly originalImportedName: string;
     readonly normalizedMerchant: string;
@@ -85,77 +104,66 @@ export interface ReviewQueueItem {
   readonly actionable: boolean;
 }
 
+export interface ProjectedReviewEvidence {
+  readonly originalImportedName: string;
+  readonly normalizedMerchant: string;
+  readonly account: string;
+  readonly amount: number;
+  readonly currentCategory: string;
+  readonly suggestedCategory: string;
+  readonly categoryNames: Record<string, string>;
+}
+
+
 /**
- * Build a complete ReviewQueueItem from persisted review data.
- *
- * Enriches the item with evidence derived from the classifier payload
- * (`item.evidence` Record) and deterministic safe defaults where the
- * persisted data lacks enrichment.  Mirrors the client-side
- * `extractEvidence()` logic in `src/review.ts` so that the API response
- * is immediately render-compatible without client-side re-derivation.
- *
- * @param item - a persisted ReviewItem (may carry classifier evidence)
+ * Build a public review DTO from persisted workflow state and current
+ * independently authorized transaction facts. Classifier evidence is opaque.
  */
-export function buildReviewQueueItem(item: ReviewItem): ReviewQueueItem {
-  const pay = item.evidence as Record<string, unknown> | undefined;
-
-  const originalImportedName: string =
-    typeof pay?.originalName === 'string' ? pay.originalName : item.transactionId;
-
-  const normalizedMerchant: string =
-    typeof pay?.normalizedMerchant === 'string' ? pay.normalizedMerchant : item.transactionId;
-
-  const account: string = typeof pay?.account === 'string' ? pay.account : '';
-
-  const amount: number = typeof pay?.amount === 'number' ? pay.amount : 0;
-
-  const alternativesList: readonly string[] = Array.isArray(pay?.alternatives)
-    ? (pay.alternatives as string[])
-    : [];
-
-  const historyList: readonly ClassificationHistoryEntry[] = Array.isArray(pay?.history)
-    ? (pay.history as ClassificationHistoryEntry[])
-    : [];
-
-  const totalCount = historyList.reduce((sum, h) => sum + h.count, 0);
-  const ruleCandidates: RuleCandidate[] =
-    totalCount > 0
-      ? historyList.map((h) => ({
-          merchant: normalizedMerchant,
-          currentCategory: h.categoryId,
-          matchCount: h.count,
-          consistency: h.count / totalCount,
-        }))
-      : [];
-
-  const fromCategory: string =
-    typeof pay?.currentCategory === 'string' && pay.currentCategory
-      ? pay.currentCategory
-      : item.categoryId || 'Uncategorized';
-  const toCategory: string = item.categoryId || '—';
+export function buildReviewQueueItem(
+  item: ReviewItem,
+  projected?: ProjectedReviewEvidence,
+): ReviewQueueItem {
+  const currentCategory = projected?.currentCategory ?? 'Restricted category';
+  const suggestedCategory = projected?.suggestedCategory ?? 'Restricted category';
 
   return {
-    reviewItem: item,
+    reviewItem: {
+      id: item.id,
+      budgetId: item.budgetId,
+      transactionId: item.transactionId,
+      categoryId: item.categoryId,
+      classifier: 'Review',
+      promptVersion: '',
+      transactionVersion: item.transactionVersion,
+      status: item.status,
+      correlationId: null,
+      reviewersRequired: item.reviewersRequired,
+      priority: item.priority,
+      freshnessExpiresAt: item.freshnessExpiresAt,
+      version: item.version,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+    },
     evidence: {
-      originalImportedName,
-      normalizedMerchant,
-      account,
-      amount,
-      currentCategory: fromCategory,
-      suggestedCategory: item.categoryId || '—',
-      alternatives: alternativesList,
-      history: historyList,
-      ruleCandidates,
-      provenance: item.provenance,
+      originalImportedName: projected?.originalImportedName ?? '',
+      normalizedMerchant: projected?.normalizedMerchant ?? '',
+      account: projected?.account ?? '',
+      amount: projected?.amount ?? 0,
+      currentCategory,
+      suggestedCategory,
+      alternatives: [],
+      history: [],
+      ruleCandidates: [],
+      provenance: '',
       freshness: item.freshnessExpiresAt,
       changePreview: {
-        fromCategory,
-        toCategory,
-        affectsEnvelope: fromCategory !== toCategory,
+        fromCategory: currentCategory,
+        toCategory: suggestedCategory,
+        affectsEnvelope: currentCategory !== suggestedCategory,
       },
-      correlationId: item.correlationId,
-      promptVersion: item.promptVersion,
-      categoryNames: (pay?.categoryNames as Record<string, string> | undefined) ?? undefined,
+      correlationId: null,
+      promptVersion: '',
+      ...(projected ? { categoryNames: projected.categoryNames } : {}),
     },
     homogeneity: {
       sameMerchant: false,
@@ -186,6 +194,14 @@ export interface EventWithContext {
     auth?: {
       authenticated: boolean;
       actorId?: string;
+      method?: 'session' | 'api-key' | 'legacy-token' | 'development';
+      principalType?: 'human' | 'agent';
+      sessionId?: string;
+      credentialId?: string;
+      credentialOwnerId?: string;
+      delegationId?: string;
+      delegationVersion?: string;
+      impersonatedBy?: string | null;
       user?: Record<string, unknown>;
     };
   };
@@ -258,14 +274,13 @@ export function getWorkflowStore(
  */
 export function getActorId(event: EventWithContext): string {
   const auth = event.context.auth;
-  if (!auth?.authenticated) return 'anonymous';
+  if (!auth?.authenticated || auth.impersonatedBy) return 'anonymous';
+  if (auth.principalType === 'agent') return auth.actorId || 'anonymous';
 
-  // Better Auth sessions carry the canonical member identity in user.id.
-  // Prefer it over a legacy actor fallback so notification re-authorization
-  // checks the same member that was bootstrapped for the authenticated user.
+  // Human sessions use Better Auth's canonical identity; an agent's issuer is not its principal.
   const userId = auth.user?.id;
   if (typeof userId === 'string' && userId.length > 0) return userId;
-  return auth.actorId || 'api-user';
+  return auth.actorId || 'anonymous';
 }
 
 // ---------------------------------------------------------------------------
@@ -305,25 +320,16 @@ export interface ActionOutcome {
   readonly status: ReviewStatus | null;
 }
 
-/**
- * Perform a single review-item action against the store.
- *
- * Pure business logic — does not touch HTTP request/response.
- * Testable with any WorkflowStore implementation.
- *
- * @param store   - an initialised WorkflowStore
- * @param reviewId - the review-item ID to act on
- * @param action  - one of 'approve', 'correct', 'reject', 'skip', 'undo'
- * @param actorId - the authenticated actor identifier
- * @param categoryId - optional category for 'correct' action
- */
+/** Performs human non-ledger triage with exact trusted facts; Native commits scope, status and audit atomically. */
 export async function performReviewAction(
   store: WorkflowStore,
   reviewId: string,
-  action: string,
+  action: 'reject' | 'skip' | 'undo',
   actorId: string,
-  categoryId?: string,
+  authorization: ReviewActionAuthorization,
 ): Promise<ActionOutcome> {
+  if (!authorization)
+    throw new Error('Review action authorization unavailable', { cause: 'authorization_denied' });
   // Verify the item exists and get its current version for optimistic locking.
   const item = await store.getReviewItem(reviewId);
   if (!item) {
@@ -332,9 +338,10 @@ export async function performReviewAction(
 
   if (action === 'undo') {
     try {
-      const result = await store.undoReviewTransition(reviewId, actorId, 'Reversed by reviewer');
+      const result = await store.undoReviewTransition(reviewId, actorId, 'Reversed by reviewer', item.version, authorization);
       return { itemId: result.id, success: true, error: null, status: result.status };
     } catch (e) {
+      if (e instanceof Error && e.cause === 'authorization_denied') throw e;
       return {
         itemId: reviewId,
         success: false,
@@ -343,25 +350,21 @@ export async function performReviewAction(
       };
     }
   }
-  const toStatus = statusForAction(action);
+  const toStatus = action === 'reject' ? 'rejected' : 'skipped';
 
   try {
-    const input: TransitionReviewInput = {
+    const input: AuthorizedReviewTransitionInput = {
       toStatus,
       actor: actorId,
       expectedVersion: item.version,
-      metadata: categoryId ? { categoryId } : undefined,
+      authorization,
     };
     const result = await store.transitionReviewItem(reviewId, input);
 
-    // After a correct action, also update the item's category_id so
-    // downstream display (change preview, queue) reflects the edit.
-    if (action === 'correct' && categoryId) {
-      await store.updateReviewItemCategory(reviewId, categoryId, result.version);
-    }
 
     return { itemId: result.id, success: true, error: null, status: result.status };
   } catch (e) {
+    if (e instanceof Error && e.cause === 'authorization_denied') throw e;
     return {
       itemId: reviewId,
       success: false,
@@ -522,64 +525,121 @@ export function buildAuthorizationInfo(
 export type AuthGuardResult =
   { ok: true; info: AuthorizationInfo } | { ok: false; response: ApiEnvelope<null> };
 
+const scopeKinds: Readonly<Record<string, GovernanceResourceKind>> = {
+  space: 'space', budget: 'budget', account: 'account', category: 'category',
+  transaction: 'transaction', rule: 'rule', evidence: 'evidence', wallet: 'wallet',
+  receipt: 'receipt', commitment: 'commitment', scenario: 'scenario',
+  reservation: 'reservation', purchase: 'purchase', transfer: 'transfer',
+  ledger_effect: 'ledger_effect', session: 'session', proposal: 'proposal',
+};
+
+/** Admits a named proposal scope; full-payload Native authorization remains mandatory before creating an intent. */
+export async function requireProposalAuthorization(
+  event: EventWithContext, capability: string, exactScope: string, operation: string,
+): Promise<AuthGuardResult> {
+  return authorizeSelectedResource(event, capability, exactScope, 'propose', operation);
+}
+
 /**
- * Require that the request is authenticated and has the given capability.
- * Pass an exact scope for scope-bound operations; legacy callers default to
- * the wildcard scope.
- *
- * Checks:
- *   1. Auth context exists on the event (set by middleware)
- *   2. Workflow store is available
- *   3. Actor's membership is active and covers the capability and requested scope
- *
- * On success returns `{ ok: true, info: AuthorizationInfo }`.
- * On failure sets the response status (403, 503, or 500) and returns
- * `{ ok: false, response: ApiEnvelope<null> }` — the caller MUST return early.
+ * Require a current scoped grant inside the explicitly selected space.
+ * This read-admission guard does not replace full-payload action authorization
+ * or the separately verified human control/approval proof.
  */
 export async function requireAuthorization(
   event: EventWithContext,
   capability: string,
-  exactScope: string = '*',
+  exactScope?: string,
 ): Promise<AuthGuardResult> {
-  const auth = event.context.auth as { authenticated: boolean; actorId?: string } | undefined;
-  if (!auth?.authenticated) {
-    setResponseStatus(event as unknown as H3Event, 403);
-    return {
-      ok: false,
-      response: errorEnvelope(
-        'AUTHORIZATION_REQUIRED',
-        'Authentication is required for this operation',
-        null,
-        false,
-      ),
-    };
-  }
+  return authorizeSelectedResource(event, capability, exactScope, 'read', capability);
+}
 
-  const actorId = getActorId(event);
+/** Admits aggregate-only conclusions without granting any resource-level visibility. */
+export async function requireAggregateAuthorization(
+  event: EventWithContext, capability: string, exactScope: string,
+): Promise<AuthGuardResult> {
+  return authorizeSelectedResource(event, capability, exactScope, 'read', capability, 'aggregate');
+}
+
+/** Persist admitted scope and verified identity without recording financial payloads or credentials. */
+export async function recordReadAdmission(
+  event: EventWithContext,
+  store: WorkflowStore,
+  input: {
+    readonly actorId: string; readonly spaceId: string; readonly membershipId: string;
+    readonly budgetId: string | null; readonly policyVersion: string | null;
+    readonly capability?: string; readonly resourceKind: GovernanceResourceKind; readonly resourceId: string;
+    readonly operation: string; readonly phase: 'read' | 'propose'; readonly auth: OperationalAuth;
+  },
+): Promise<void> {
+  const requestId = typeof event.context.requestId === 'string' ? event.context.requestId : crypto.randomUUID();
+  event.context.requestId = requestId;
+  setHeader(event as unknown as H3Event, 'X-BalanceFrame-Request-ID', requestId);
+  await store.appendAuditRecord({
+    classification: 'authorization_check', actorId: input.actorId,
+    operation: input.operation, budgetId: input.budgetId, policyVersion: input.policyVersion,
+    requestId, correlationId: requestId, authorizationDisposition: { kind: 'authorized_without_approval' },
+    result: JSON.stringify({
+      kind: input.phase === 'read' ? 'read_admission' : 'proposal_admission',
+      spaceId: input.spaceId, membershipId: input.membershipId, capability: input.capability,
+      resourceKind: input.resourceKind, resourceId: input.resourceId,
+      principalType: input.auth.method === 'api-key' ? input.auth.principalType ?? 'human' : 'human',
+      authenticationMethod: input.auth.method,
+      ...(input.auth.method === 'api-key' && input.auth.principalType === 'agent'
+        ? { delegationId: input.auth.delegationId, delegationVersion: input.auth.delegationVersion } : {}),
+    }),
+  });
+}
+
+async function authorizeSelectedResource(
+  event: EventWithContext,
+  capability: string,
+  exactScope: string | undefined,
+  phase: 'read' | 'propose',
+  operation: string,
+  visibility: 'resource' | 'aggregate' = 'resource',
+): Promise<AuthGuardResult> {
+  const selected = await requireSelectedSpace(event);
+  if (!selected.ok) return selected;
   const wf = getWorkflowStore(event);
   if ('error' in wf) {
     setResponseStatus(event as unknown as H3Event, 503);
-    return {
-      ok: false,
-      response: errorEnvelope('STORE_UNAVAILABLE', wf.error, null, false),
-    };
+    return { ok: false, response: errorEnvelope('STORE_UNAVAILABLE', wf.error, null) };
   }
-
-  let result: { allowed: boolean; reason: string };
-  try {
-    result = await wf.store.evaluateAuthorization(actorId, capability, exactScope, '1.0');
-  } catch {
-    setResponseStatus(event as unknown as H3Event, 500);
-    return {
-      ok: false,
-      response: errorEnvelope(
-        'AUTHORIZATION_CHECK_FAILED',
-        'Authorization check could not be completed',
-        null,
-        false,
-      ),
-    };
+  let resourceKind: GovernanceResourceKind = 'space';
+  let resourceId = selected.space.id;
+  if (exactScope !== undefined && exactScope !== selected.space.id) {
+    const separator = exactScope.indexOf(':');
+    const kind = exactScope.slice(0, separator);
+    resourceId = exactScope.slice(separator + 1);
+    if (separator < 1 || !Object.hasOwn(scopeKinds, kind) || !resourceId || resourceId === '*' ||
+        (kind === 'space' && resourceId !== selected.space.id) ||
+        (kind === 'budget' && resourceId !== selected.space.budgetId)) {
+      setResponseStatus(event as unknown as H3Event, 403);
+      return { ok: false, response: errorEnvelope('FORBIDDEN', 'Requested scope is unavailable', null) };
+    }
+    resourceKind = scopeKinds[kind]!;
   }
+  const policy = wf.store.governance.getPolicy({ spaceId: selected.space.id });
+  if (!policy) {
+    setResponseStatus(event as unknown as H3Event, 403);
+    return { ok: false, response: errorEnvelope('FORBIDDEN', 'Current space policy is unavailable', null) };
+  }
+  const auth = selected.auth;
+  const result = wf.store.governance.authorize({
+    actorId: auth.actorId,
+    spaceId: selected.space.id,
+    membershipId: selected.membership.id,
+    expectedPolicyVersion: policy.version,
+    phase,
+    operation,
+    required: [{ capability, resourceKind, resourceId, visibility }],
+    payload: { operations: [] },
+    now: new Date().toISOString(),
+    auth,
+    ...(auth.method === 'api-key' && auth.principalType === 'agent' ? {
+      agentId: auth.actorId, delegationId: auth.delegationId, delegationVersion: auth.delegationVersion,
+    } : {}),
+  });
 
   if (!result.allowed) {
     setResponseStatus(event as unknown as H3Event, 403);
@@ -588,10 +648,20 @@ export async function requireAuthorization(
       response: errorEnvelope('FORBIDDEN', result.reason, null, false),
     };
   }
+  try {
+    await recordReadAdmission(event, wf.store, {
+      actorId: auth.actorId, spaceId: selected.space.id, membershipId: selected.membership.id,
+      budgetId: selected.space.budgetId, policyVersion: policy.version,
+      capability, resourceKind, resourceId, operation, phase, auth,
+    });
+  } catch {
+    setResponseStatus(event as unknown as H3Event, 503);
+    return { ok: false, response: errorEnvelope('READ_AUDIT_UNAVAILABLE', 'Read admission could not be recorded.', null, true) };
+  }
 
   return {
     ok: true,
-    info: { actorId, capability, allowed: true },
+    info: { actorId: auth.actorId, capability, allowed: true },
   };
 }
 
@@ -697,18 +767,116 @@ export function sanitizeError(
 // ---------------------------------------------------------------------------
 
 /**
- * Status values for the mutation phase of a review action.
+ * Status values returned by the review proposal seam.
  *
- * - `noop`       — no mutation was attempted (Observe mode).
- * - `denied`     — reviewAndApply is configured but no executor is wired.
- * - `applying`   — mutation is in progress (async / deferred).
- * - `applied`    — mutation write succeeded (verification pending / not done).
- * - `apply_failed` — mutation write failed.
- * - `stale`      — mutation was not attempted because snapshot data is stale.
- * - `verified`   — mutation write succeeded AND postcondition verification passed.
+ * `approval_required` means an exact native proposal was persisted. It never
+ * means that the review item or ledger mutation was approved or executed.
  */
 export type MutationStatus =
-  'noop' | 'denied' | 'applying' | 'applied' | 'apply_failed' | 'stale' | 'verified';
+  | 'noop'
+  | 'denied'
+  | 'approval_required'
+  | 'applying'
+  | 'applied'
+  | 'apply_failed'
+  | 'stale'
+  | 'verified';
+
+export type ReviewMutationDisposition =
+  | 'approval_required'
+  | 'denied'
+  | 'native_unavailable'
+  | 'stale'
+  | 'failed';
+
+export interface PendingNativeProposal {
+  readonly proposalId: string;
+  readonly payloadHash: string;
+  readonly governancePolicyVersion: string;
+  readonly requiredApprovers: number;
+}
+
+export type ReviewMutationResult = {
+  readonly mutationStatus: MutationStatus;
+  readonly success: boolean;
+  readonly applied: boolean;
+  readonly verified: boolean;
+  readonly stale: boolean;
+  readonly transactionId: string | null;
+  readonly previousCategoryId: string | null;
+  readonly newCategoryId: string | null;
+  readonly error: string | null;
+} & (
+  | ({ readonly disposition: 'approval_required' } & PendingNativeProposal)
+  | {
+      readonly disposition?: Exclude<ReviewMutationDisposition, 'approval_required'>;
+      readonly proposalId?: null;
+      readonly payloadHash?: null;
+      readonly governancePolicyVersion?: null;
+      readonly requiredApprovers?: null;
+    }
+);
+
+export interface MutationTransitionResult {
+  readonly mutationResult: ReviewMutationResult;
+  readonly finalStatus: ReviewStatus;
+  readonly disposition: ReviewMutationDisposition;
+}
+
+export async function applyReviewMutationWithTransition(
+  store: WorkflowStore,
+  reviewId: string,
+  actorId: string,
+  executor: ReviewMutationExecutor,
+  requestId: string,
+  categoryId?: string,
+  executionId?: string,
+): Promise<MutationTransitionResult> {
+  const item = await store.getReviewItem(reviewId);
+  if (!item) throw new Error(`Review item ${reviewId} not found`);
+  if (item.status !== 'pending_review')
+    throw new Error('Only pending review items can create a native proposal');
+
+  const result = await executor(
+    { reviewId, actorId, requestId, categoryId, correlationId: executionId },
+    store,
+    item,
+  );
+  if (
+    result.disposition === 'approval_required' &&
+    (result.mutationStatus !== 'approval_required' ||
+      !result.proposalId ||
+      !/^[a-f0-9]{64}$/i.test(result.payloadHash) ||
+      !result.governancePolicyVersion ||
+      !Number.isInteger(result.requiredApprovers) ||
+      result.requiredApprovers < 1 ||
+      result.success ||
+      result.applied ||
+      result.verified)
+  ) {
+    throw new Error('Native proposal result is incomplete or claims financial success');
+  }
+  if (
+    result.disposition !== 'approval_required' &&
+    (result.proposalId != null ||
+      result.payloadHash != null ||
+      result.governancePolicyVersion != null ||
+      result.requiredApprovers != null ||
+      result.mutationStatus === 'verified' ||
+      result.mutationStatus === 'applied' ||
+      result.applied ||
+      result.verified ||
+      result.success)
+  ) {
+    throw new Error('Only an exact pending native proposal may be returned from review');
+  }
+
+  return {
+    mutationResult: result,
+    finalStatus: item.status,
+    disposition: result.disposition ?? 'failed',
+  };
+}
 
 /** Input to the review mutation executor. */
 export interface ReviewMutationInput {
@@ -719,47 +887,24 @@ export interface ReviewMutationInput {
   readonly correlationId?: string;
 }
 
-/** Result of a categorized mutation from the executor. */
-export interface ReviewMutationResult {
-  readonly mutationStatus: MutationStatus;
-  readonly success: boolean;
-  readonly applied: boolean;
-  readonly verified: boolean;
-  readonly stale: boolean;
-  readonly transactionId: string | null;
-  readonly previousCategoryId: string | null;
-  readonly newCategoryId: string | null;
-  readonly error: string | null;
-}
 
-/**
- * Typed callback that performs the actual ledger mutation for a review action.
- *
- * The composition root (@balanceframe/application's CategorizationMutationService)
- * wires this, so web routes never depend on application internals.
- */
+/** Produces a native proposal from the review item; it cannot mutate the ledger. */
 export type ReviewMutationExecutor = (
   input: ReviewMutationInput,
   store: WorkflowStore,
   item: ReviewItem,
 ) => Promise<ReviewMutationResult>;
-
-/** Module-level executor — set by the composition root at startup. */
 let _mutationExecutor: ReviewMutationExecutor | null = null;
 
-/**
- * Inject the mutation executor (called once by the composition root).
- */
+/** Test injection for the review proposal seam. */
 export function setReviewMutationExecutor(fn: ReviewMutationExecutor | null): void {
   _mutationExecutor = fn;
 }
 
-/**
- * Get the currently registered mutation executor, or null.
- */
 export function getReviewMutationExecutor(): ReviewMutationExecutor | null {
   return _mutationExecutor;
 }
+
 
 /**
  * Check whether reviewAndApply (mutation-enabled) mode is active for this
@@ -807,240 +952,18 @@ export function getReviewMutationExecutorFactory(): ReviewMutationExecutorFactor
 }
 
 /**
- * Resolve a mutation executor for the given event context.
- *
- * Priority:
- * 1. Factory-based executor (per-request, from event context)
- * 2. Module-level singleton (set via setReviewMutationExecutor)
- *
- * Returns null when no executor is available for this request.
+ * Resolve only the request-context factory; unscoped singleton executors are not admitted.
  */
 export function getReviewMutationExecutorFromEvent(
   event: EventWithContext,
 ): ReviewMutationExecutor | null {
-  if (_executorFactory) {
-    const fromFactory = _executorFactory(event);
-    if (fromFactory) return fromFactory;
-  }
-  return _mutationExecutor;
+  return _executorFactory?.(event) ?? _mutationExecutor;
 }
 
 // ---------------------------------------------------------------------------
 // Mutation transition orchestration
 // ---------------------------------------------------------------------------
 
-/**
- * Result of executing a review mutation with workflow-state transitions.
- */
-export interface MutationTransitionResult {
-  readonly mutationResult: ReviewMutationResult;
-  readonly finalStatus: ReviewStatus;
-}
-
-/**
- * Execute a mutation with durable applying-claim semantics.
- *
- * Flow:
- *   1. Create an idempotency record (`in_progress` with lease)
- *   2. Transition the review item from its current status (approved/correcting)
- *      to `applying` — this is the durable claim.  If the process crashes
- *      after this step, the stranded `applying` item can be recovered.
- *   3. Execute the mutation via the executor callback.
- *   4. Transition from `applying` to `applied` (success) or `apply_failed`
- *      (any failure).
- *   5. Complete the idempotency record (succeeded / retryable_failed).
- *
- * Maps stale and verification failures explicitly — a successful write
- * that fails verification lands in `apply_failed` with metadata.
- *
- * @param store        — the workflow store
- * @param reviewId     — the item to act on
- * @param actorId      — authenticated actor
- * @param executor     — the mutation executor callback
- * @param requestId    — tracking ID
- * @param categoryId   — optional category override (for 'correct')
- * @param executionId  — optional correlation/execution ID
- */
-export async function applyReviewMutationWithTransition(
-  store: WorkflowStore,
-  reviewId: string,
-  actorId: string,
-  executor: ReviewMutationExecutor,
-  requestId: string,
-  categoryId?: string,
-  executionId?: string,
-): Promise<MutationTransitionResult> {
-  const idempotencyKey = `review-apply:${reviewId}:${actorId}`;
-
-  // ===================================================================
-  // 1. Idempotency claim — create in_progress with lease
-  // ===================================================================
-  const idemInput: CreateIdempotencyInput = {
-    idempotencyKey,
-    proposalId: reviewId,
-    operation: 'review_apply',
-    serialisedEffect: JSON.stringify({ reviewId, actorId }),
-    leaseDurationMs: 60_000,
-  };
-
-  const idemClaim = await store.createIdempotencyRecord(idemInput);
-
-  if (!idemClaim.isOwner) {
-    // Already in a terminal state — return the cached outcome
-    if (idemClaim.record.status !== 'in_progress') {
-      const succeeded = idemClaim.record.status === 'succeeded';
-      return {
-        mutationResult: {
-          success: succeeded,
-          mutationStatus: succeeded ? 'applied' : 'apply_failed',
-          applied: succeeded,
-          verified: succeeded,
-          stale: false,
-          error: idemClaim.record.errorMessage ?? null,
-          transactionId: null,
-          previousCategoryId: null,
-          newCategoryId: null,
-        },
-        finalStatus: succeeded ? 'applied' : 'apply_failed',
-      };
-    }
-    // Lease still active — another worker is handling this item
-    throw new Error(
-      `Review apply ${reviewId} is already in progress (idempotency key ${idempotencyKey})`,
-    );
-  }
-
-  // ===================================================================
-  // 2. Durable applying claim — transition to `applying`
-  // ===================================================================
-  const itemBeforeApply = await store.getReviewItem(reviewId);
-  if (!itemBeforeApply) {
-    throw new Error(`Review item ${reviewId} not found before mutation`);
-  }
-
-  // Validate we can transition from current status to applying
-  await store.transitionReviewItem(reviewId, {
-    toStatus: 'applying',
-    actor: actorId,
-    expectedVersion: itemBeforeApply.version,
-    reason: 'Starting external mutation',
-  });
-
-  // ===================================================================
-  // 3. Execute the mutation
-  // ===================================================================
-  let mutationResult: ReviewMutationResult;
-  try {
-    mutationResult = await executor(
-      { reviewId, actorId, requestId, categoryId, correlationId: executionId },
-      store,
-      itemBeforeApply,
-    );
-  } catch (err) {
-    // Executor threw — transition to apply_failed and record as retryable
-    const applyingItem = await store.getReviewItem(reviewId);
-    if (applyingItem) {
-      await store.transitionReviewItem(reviewId, {
-        toStatus: 'apply_failed',
-        actor: actorId,
-        expectedVersion: applyingItem.version,
-        metadata: {
-          error: err instanceof Error ? err.message : String(err),
-          mutationStatus: 'executor_error',
-        },
-      });
-    }
-    await store.completeIdempotencyRecord(
-      idempotencyKey,
-      err instanceof Error ? err.message : String(err),
-      true,
-    );
-    return {
-      mutationResult: {
-        success: false,
-        mutationStatus: 'apply_failed',
-        applied: false,
-        verified: false,
-        stale: false,
-        error: err instanceof Error ? err.message : String(err),
-        transactionId: null,
-        previousCategoryId: null,
-        newCategoryId: null,
-      },
-      finalStatus: 'apply_failed',
-    };
-  }
-
-  // ===================================================================
-  // 4. Determine final status based on mutation result
-  // ===================================================================
-  let finalStatus: ReviewStatus;
-  const metadata: Record<string, unknown> = {
-    mutationStatus: mutationResult.mutationStatus,
-    stale: mutationResult.stale,
-    transactionId: mutationResult.transactionId,
-  };
-
-  if (mutationResult.mutationStatus === 'denied') {
-    // Executor declined — transition back from applying to previous status
-    finalStatus = itemBeforeApply.status;
-  } else if (mutationResult.verified) {
-    finalStatus = 'applied';
-    metadata.verified = true;
-  } else if (mutationResult.stale) {
-    finalStatus = 'apply_failed';
-    metadata.staleReason = 'snapshot_stale';
-    metadata.error = mutationResult.error;
-  } else if (mutationResult.applied && !mutationResult.verified) {
-    finalStatus = 'apply_failed';
-    metadata.verificationFailed = true;
-    metadata.error = mutationResult.error;
-  } else {
-    finalStatus = 'apply_failed';
-    metadata.error = mutationResult.error;
-  }
-
-  // ===================================================================
-  // 5. Transition from `applying` to final status
-  // ===================================================================
-  if (finalStatus !== itemBeforeApply.status) {
-    const applyingItem = await store.getReviewItem(reviewId);
-    if (!applyingItem) {
-      throw new Error(`Review item ${reviewId} not found for final transition`);
-    }
-    await store.transitionReviewItem(reviewId, {
-      toStatus: finalStatus,
-      actor: actorId,
-      expectedVersion: applyingItem.version,
-      metadata,
-    });
-  }
-  // If denied (stay in applying), we still need to revert
-  if (finalStatus === itemBeforeApply.status && finalStatus !== 'applying') {
-    // Revert from applying back to original status
-    const applyingItem = await store.getReviewItem(reviewId);
-    if (applyingItem) {
-      await store.transitionReviewItem(reviewId, {
-        toStatus: finalStatus as ReviewStatus,
-        actor: actorId,
-        expectedVersion: applyingItem.version,
-        reason: 'Mutation declined — reverting applying claim',
-      });
-    }
-  }
-
-  // ===================================================================
-  // 6. Complete idempotency record
-  // ===================================================================
-  const isRetryable = finalStatus === 'apply_failed';
-  await store.completeIdempotencyRecord(
-    idempotencyKey,
-    finalStatus === 'applied' ? null : (mutationResult.error ?? 'Unknown failure'),
-    isRetryable,
-  );
-
-  return { mutationResult, finalStatus };
-}
 
 /** Re-export ReviewStatus for route handler convenience. */
 export type { ReviewStatus } from '@balanceframe/workflow-store';

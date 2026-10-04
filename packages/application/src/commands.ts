@@ -13,7 +13,7 @@ import type {
   DecisionIssue,
   Money,
 } from '@balanceframe/protocol-generated';
-import type { FindingStatus, WorkflowStore } from '@balanceframe/workflow-store';
+import type { FindingStatus, RuleOverrideScope, WorkflowStore } from '@balanceframe/workflow-store';
 import type { LiquidityService } from './liquidity-service.js';
 
 // ---------------------------------------------------------------------------
@@ -57,9 +57,15 @@ export interface ReviewActionOptions {
   operation?: string;
 }
 
+/** Current selected-space override authority for request-local rule analysis. */
+export interface PendingReviewScope {
+  readonly store: Pick<WorkflowStore, 'getRuleOverrides'>;
+  readonly scope: RuleOverrideScope;
+}
+
 export interface AnalysisProtocol {
-  /** Analyze pending uncategorized transactions from the ledger snapshot. */
-  pendingReview(ledger: unknown, freshness: DataFreshness | null): Promise<PendingReviewResult>;
+  /** Analyze pending transactions, applying scoped overrides without changing Actual snapshots. */
+  pendingReview(ledger: unknown, freshness: DataFreshness | null, context?: PendingReviewScope): Promise<PendingReviewResult>;
   /** Show a specific review by ID. */
   reviewShow(ledger: unknown, reviewId: string): Promise<ReviewDetailResult>;
   /** Generate a budget summary from ledger data. */
@@ -181,11 +187,6 @@ export interface AnalysisProtocol {
   /** Generate a report with persisted scope/filters. */
   generateReport?(ledger: unknown, params: ReportGenerationParams): Promise<ReportGenerationResult>;
 
-  /** List saved views. */
-  listSavedViews?(ledger: unknown): Promise<SavedViewsListResult>;
-
-  /** Create a saved view. */
-  createSavedView?(ledger: unknown, params: CreateSavedViewParams): Promise<CreateSavedViewResult>;
 
   /** Get prioritized attention/home dashboard. */
   attentionHome?(ledger: unknown, params: AttentionHomeParams): Promise<AttentionHomeResult>;
@@ -514,6 +515,9 @@ export interface CategorizationCandidate {
   payeeName: string | null;
   date: string;
   reasons: Array<{ kind: string; details: string }>;
+  proposedCategoryId?: string;
+  proposedCategoryName?: string;
+  ruleIds?: string[];
 }
 
 export interface Blocker {
@@ -1082,6 +1086,9 @@ export interface SavedView {
   viewType: string;
   /** Scope/filter configuration. */
   scope: Record<string, unknown>;
+  /** Immutable originating space and budget metadata. */
+  spaceId: string;
+  budgetId: string;
   /** Optional user-defined sort. */
   sort?: string;
   /** Creation timestamp. */

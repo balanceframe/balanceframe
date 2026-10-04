@@ -21,7 +21,10 @@ function render(props: Partial<RuleDetailProps> = {}) {
       stubs: {
         UCard: { template: '<section><slot name="header" /><slot /></section>' },
         UBadge: { template: '<span><slot /></span>' },
-        UButton: { template: '<button type="button"><slot /></button>' },
+        UButton: {
+          emits: ['click'],
+          template: '<button type="button" @click="$emit(\'click\')"><slot /></button>',
+        },
         UAlert: {
           props: ['title', 'description'],
           template: '<aside role="alert">{{ title }} {{ description }}</aside>',
@@ -52,6 +55,28 @@ afterEach(() => {
   for (const wrapper of wrappers.splice(0)) wrapper.unmount();
 });
 
+
+describe('BalanceFrame rule controls', () => {
+  it('labels pause state as local-only and distinguishes deletion of the Actual rule', async () => {
+    const wrapper = render();
+
+    expect(wrapper.text()).toContain('Active in BalanceFrame');
+    expect(wrapper.text()).toContain('BalanceFrame classification only');
+    expect(wrapper.text()).toContain('Actual may still execute');
+    expect(wrapper.findAll('button').find((button) => button.text() === 'Delete Actual rule')).toBeDefined();
+
+    const pause = wrapper.findAll('button').find((button) => button.text() === 'Pause BalanceFrame classification');
+    expect(pause).toBeDefined();
+    await pause!.trigger('click');
+    expect(wrapper.emitted('toggle')).toEqual([[rule.id, true]]);
+
+    await wrapper.setProps({ rule: { ...rule, inactive: true } });
+    expect(wrapper.text()).toContain('Paused in BalanceFrame');
+    expect(
+      wrapper.findAll('button').find((button) => button.text() === 'Resume BalanceFrame classification'),
+    ).toBeDefined();
+  });
+});
 describe('rule evidence presentation', () => {
   it('distinguishes missing simulation from a successful simulation with no matches', async () => {
     const wrapper = render({ showSimulationMissing: true });

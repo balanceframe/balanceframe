@@ -43,7 +43,7 @@ const globalMountOptions = {
     UBadge: { template: '<span><slot /></span>' },
     UButton: UButtonStub,
     UCard: { template: '<section><header><slot name="header" /></header><slot /></section>' },
-    UFormGroup: { template: '<label><slot /></label>', props: ['label'] },
+    UFormField: { template: '<label><slot /></label>', props: ['label'] },
     UInput: {
       template:
         '<input :value="modelValue" :type="type" @input="$emit(\'update:modelValue\', $event.target.value)" />',

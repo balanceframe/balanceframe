@@ -657,8 +657,8 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
       expect(reviewItem.status).toBe('discovered');
       expect(reviewItem.transactionId).toBe(txId);
 
-      // ---- Transition to pending_review ----
-      const pendingItem = await store.transitionReviewItem(reviewItem.id, {
+      // Trusted fixture bookkeeping: this adapter-level proof does not grant user authority.
+      const pendingItem = await store.transitionInternalReviewItem(reviewItem.id, {
         toStatus: 'pending_review',
         actor: ACTOR,
         expectedVersion: reviewItem.version,
@@ -666,7 +666,7 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
       });
       expect(pendingItem.status).toBe('pending_review');
 
-      const approvedItem = await store.transitionReviewItem(reviewItem.id, {
+      const approvedItem = await store.transitionInternalReviewItem(reviewItem.id, {
         toStatus: 'approved',
         actor: ACTOR,
         expectedVersion: pendingItem.version,
@@ -675,7 +675,7 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
       expect(approvedItem.status).toBe('approved');
 
       // ---- Execute correction: transition to 'correcting' ----
-      const correctingItem = await store.transitionReviewItem(reviewItem.id, {
+      const correctingItem = await store.transitionInternalReviewItem(reviewItem.id, {
         toStatus: 'correcting',
         actor: ACTOR,
         expectedVersion: approvedItem.version,
@@ -703,7 +703,7 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
       expect(mutationResult.newCategoryId).toBe(groceriesId);
 
       // ---- Claim execution via 'applying' ----
-      const applyingItem = await store.transitionReviewItem(reviewItem.id, {
+      const applyingItem = await store.transitionInternalReviewItem(reviewItem.id, {
         toStatus: 'applying',
         actor: ACTOR,
         expectedVersion: correctingItem.version,
@@ -712,7 +712,7 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
       expect(applyingItem.status).toBe('applying');
 
       // ---- Transition to 'applied' ----
-      const appliedItem = await store.transitionReviewItem(reviewItem.id, {
+      const appliedItem = await store.transitionInternalReviewItem(reviewItem.id, {
         toStatus: 'applied',
         actor: ACTOR,
         expectedVersion: applyingItem.version,

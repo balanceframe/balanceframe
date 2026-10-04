@@ -868,6 +868,69 @@ describe('scenario catalog contract', () => {
     expect(Object.keys(scenario.sessions)).toEqual(['origin']);
   });
 
+  it('declares exact Native owner grants without broadening scoped coapprover or restricted rights', () => {
+    const scenario = materializeScenario('coapproval-completion', REFERENCE_ANCHOR);
+    const owner = scenario.personas.find(({ id }) => id === 'owner')!;
+    for (const account of scenario.ledger.accounts) {
+      expect(owner.grants).toContainEqual({
+        resourceKind: 'account', resourceId: account.id, capability: 'policy', granted: true,
+      });
+    }
+    expect(owner.grants).toContainEqual({
+      resourceKind: 'budget', resourceId: 'budget-2026-09', capability: 'session:execute', granted: true,
+    });
+    const peer = scenario.personas.find(({ id }) => id === 'coapprover')!;
+    expect(peer.grants).toContainEqual({
+      resourceKind: 'budget', resourceId: 'budget-2026-09', capability: 'session:approve', granted: true,
+    });
+    expect(peer.grants).toContainEqual({
+      resourceKind: 'budget', resourceId: 'budget-2026-09', capability: 'liquidity', granted: true,
+    });
+    expect(peer.grants.some(({ capability }) => [
+      'full-read', 'history', 'source', 'confirmation', 'initiation-report', 'session:execute',
+      'session:propose', 'grant:manage', 'policy:manage',
+    ].includes(capability))).toBe(false);
+    expect(scenario.personas.find(({ id }) => id === 'restricted')!.grants).toEqual([{
+      resourceKind: 'category', resourceId: 'cat-groceries', capability: 'existence', granted: true,
+    }]);
+    const independent = scenario.personas.find(({ id }) => id === 'approver')!;
+    expect(independent.role).toBe('coapprover');
+    expect(independent.grants).toContainEqual({
+      resourceKind: 'budget', resourceId: 'budget-2026-09', capability: 'liquidity', granted: true,
+    });
+    expect(independent.grants.some(({ capability }) =>
+      ['full-read', 'history', 'source', 'confirmation', 'session:execute'].includes(capability))).toBe(false);
+    for (const id of APPROVED_SCENARIO_IDS) {
+      const materialized = materializeScenario(id, REFERENCE_ANCHOR);
+      for (const completion of Object.values(materialized.completions)) {
+        expect(completion.approvers).not.toContain('owner');
+        expect(materialized.personas.some(({ id: personaId }) => personaId === 'approver')).toBe(true);
+      }
+    }
+  });
+
+  it.each(['split-completion', 'cooldown-completion', 'coapproval-completion'])(
+    'grants the independent approver every %s split category and only its exact payment accounts',
+    (id) => {
+      const scenario = materializeScenario(id, REFERENCE_ANCHOR);
+      const approver = scenario.personas.find(({ id }) => id === 'approver')!;
+      for (const capability of ['liquidity', 'proposal', 'approval']) {
+        expect(approver.grants.filter((grant) =>
+          grant.granted && grant.resourceKind === 'category' && grant.capability === capability,
+        ).map(({ resourceId }) => resourceId).sort()).toEqual([
+          'cat-entertainment', 'cat-groceries', 'cat-household',
+        ]);
+        expect(approver.grants.filter((grant) =>
+          grant.granted && grant.resourceKind === 'account' && grant.capability === capability,
+        ).map(({ resourceId }) => resourceId)).toEqual(['acct-checking']);
+      }
+      expect(approver.grants.some(({ capability }) => [
+        'full-read', 'history', 'source', 'confirmation', 'initiation-report',
+        'session:execute', 'session:propose', 'policy', 'policy:manage', 'grant:manage',
+      ].includes(capability))).toBe(false);
+    },
+  );
+
   it('rejects invalid anchors and non-catalog IDs instead of manufacturing a fixture', () => {
     expect(() => materializeScenario('funded-purchase', new Date(Number.NaN))).toThrow(
       /date|anchor|invalid/i,

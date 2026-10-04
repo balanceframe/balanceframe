@@ -38,9 +38,9 @@
         </div>
         <!-- Generate form -->
         <div v-if="reportType" class="mb-4">
-          <UFormGroup label="Month range">
+          <UFormField label="Month range">
             <UInput v-model="monthRange" placeholder="YYYY-MM or YYYY-MM:YYYY-MM" />
-          </UFormGroup>
+          </UFormField>
           <UButton class="mt-2" @click="generate">Generate</UButton>
         </div>
 

@@ -359,79 +359,24 @@ fn test_find_categorization_candidates() {
     assert!(candidates.iter().any(|c| c.transaction_id == "tx3"));
 }
 
-// ---------------------------------------------------------------------------
-// Verify mutation with valid data
-// ---------------------------------------------------------------------------
-
 #[test]
-fn test_verify_mutation_valid() {
-    let snapshot = ProtocolSnapshot {
-        schema_version: "1.0".into(),
-        actual_version: "2026.07.01".into(),
-        snapshot_date: "2026-07-17T00:00:00Z".into(),
-        accounts: vec![],
-        transactions: vec![sample_transaction("tx1", None, 5000)],
-        categories: vec![sample_category("cat1", "Food", false)],
-        payees: vec![],
-        rules: vec![],
-        schedules: vec![],
-        budgets: vec![],
-        tags: vec![],
-        actual_downloaded_at: None,
-        encrypted: None,
-        bank_synced_at: None,
-    };
+fn test_verify_mutation_requires_applied_target_category() {
+    let transaction = sample_transaction("tx1", Some("cat_old"), 5000);
+    let category = sample_category("cat_target", "Food", false);
+    let plan = plan_set_category(&transaction, &category);
+    let mut snapshot = empty_snapshot();
+    snapshot.categories = vec![category, sample_category("cat_other", "Other", false)];
+    snapshot.transactions = vec![transaction];
 
-    let plan = MutationPlan {
-        plan_id: "plan_test".into(),
-        transaction_id: "tx1".into(),
-        current_category_id: None,
-        proposed_category_id: "cat1".into(),
-        hash: "abc".into(),
-        postconditions: vec![],
-    };
-
-    let result = verify_mutation(&plan, &snapshot);
-    assert!(result.verified);
-}
-
-#[test]
-fn test_verify_mutation_emits_postcondition_verified() {
-    let snapshot = ProtocolSnapshot {
-        schema_version: "1.0".into(),
-        actual_version: "2026.07.01".into(),
-        snapshot_date: "2026-07-17T00:00:00Z".into(),
-        accounts: vec![],
-        transactions: vec![sample_transaction("tx1", None, 5000)],
-        categories: vec![sample_category("cat1", "Food", false)],
-        payees: vec![],
-        rules: vec![],
-        schedules: vec![],
-        budgets: vec![],
-        tags: vec![],
-        actual_downloaded_at: None,
-        encrypted: None,
-        bank_synced_at: None,
-    };
-
-    let plan = MutationPlan {
-        plan_id: "plan_test".into(),
-        transaction_id: "tx1".into(),
-        current_category_id: None,
-        proposed_category_id: "cat1".into(),
-        hash: "abc".into(),
-        postconditions: vec![],
-    };
-
-    let result = verify_mutation(&plan, &snapshot);
-    assert!(result.verified);
-    assert!(
-        result
-            .reason_codes
-            .contains(&"postcondition_verified".to_string()),
-        "Expected postcondition_verified in reason_codes: {:?}",
-        result.reason_codes
-    );
+    for (current_category, expected) in [
+        (Some("cat_old"), false),
+        (Some("cat_target"), true),
+        (Some("cat_other"), false),
+        (None, false),
+    ] {
+        snapshot.transactions[0].category_id = current_category.map(str::to_owned);
+        assert_eq!(verify_mutation(&plan, &snapshot).verified, expected);
+    }
 }
 
 #[test]
@@ -534,7 +479,7 @@ fn test_verify_mutation_missing_postcondition_category() {
         actual_version: "2026.07.01".into(),
         snapshot_date: "2026-07-17T00:00:00Z".into(),
         accounts: vec![],
-        transactions: vec![sample_transaction("tx1", None, 5000)],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), 5000)],
         categories: vec![sample_category("cat1", "Food", false)],
         payees: vec![],
         rules: vec![],
@@ -583,7 +528,7 @@ fn test_verify_mutation_zero_amount_transaction() {
         actual_version: "2026.07.01".into(),
         snapshot_date: "2026-07-17T00:00:00Z".into(),
         accounts: vec![],
-        transactions: vec![sample_transaction("tx1", None, 0)],
+        transactions: vec![sample_transaction("tx1", Some("cat1"), 0)],
         categories: vec![sample_category("cat1", "Food", false)],
         payees: vec![],
         rules: vec![],
@@ -1085,6 +1030,9 @@ fn sample_candidate(tx_id: &str, reasons: Vec<Evidence>) -> CategorizationCandid
         payee_name: Some("Test Store".into()),
         date: "2026-07-18".into(),
         reasons,
+        proposed_category_id: None,
+        proposed_category_name: None,
+        rule_ids: None,
     }
 }
 
@@ -2542,93 +2490,6 @@ fn test_plan_create_rule_no_conditions() {
 }
 
 // ---------------------------------------------------------------------------
-// Verify rule mutation — no existing rule
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_verify_rule_mutation_no_conflict() {
-    let snapshot = empty_snapshot(); // snapshot.rules is empty
-    let conditions = vec![PayeeCondition {
-        field: "payee".into(),
-        operation: "is".into(),
-        value: "Target".into(),
-    }];
-
-    let plan = plan_create_rule("Target Rule", &conditions, "c1", &snapshot);
-    let result = verify_rule_mutation(&plan, &snapshot);
-
-    assert!(result.verified);
-    assert!(result
-        .reason_codes
-        .contains(&"rule_creation_verified".into()));
-    assert!(result.message.is_none());
-}
-
-// ---------------------------------------------------------------------------
-// Verify rule mutation — rule already exists
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_verify_rule_mutation_already_exists() {
-    let conditions = vec![PayeeCondition {
-        field: "payee".into(),
-        operation: "is".into(),
-        value: "Walmart".into(),
-    }];
-
-    let plan = plan_create_rule("Walmart Rule", &conditions, "c2", &empty_snapshot());
-
-    // Create a snapshot that already has a rule matching the plan trigger/actions
-    let mut snapshot = empty_snapshot();
-    snapshot.rules.push(Rule {
-        id: "existing-rule-1".into(),
-        name: "Existing Walmart".into(),
-        order: 0,
-        trigger: plan.trigger.clone(),
-        actions: plan.actions.clone(),
-        inactive: false,
-    });
-
-    let result = verify_rule_mutation(&plan, &snapshot);
-
-    assert!(!result.verified);
-    assert!(result.reason_codes.contains(&"rule_already_exists".into()));
-    assert!(result.message.is_some());
-}
-
-// ---------------------------------------------------------------------------
-// Verify rule mutation — different trigger does not conflict
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_verify_rule_mutation_different_trigger_no_conflict() {
-    let conditions = vec![PayeeCondition {
-        field: "payee".into(),
-        operation: "is".into(),
-        value: "Costco".into(),
-    }];
-
-    let plan = plan_create_rule("Costco Rule", &conditions, "c3", &empty_snapshot());
-
-    let mut snapshot = empty_snapshot();
-    // Add a rule with a DIFFERENT trigger
-    snapshot.rules.push(Rule {
-        id: "existing-rule-2".into(),
-        name: "Different".into(),
-        order: 0,
-        trigger: serde_json::json!({"type":"payee_is","value":"something_else"}),
-        actions: plan.actions.clone(),
-        inactive: false,
-    });
-
-    let result = verify_rule_mutation(&plan, &snapshot);
-    assert!(result.verified);
-    assert!(result
-        .reason_codes
-        .contains(&"rule_creation_verified".into()));
-}
-
-// ---------------------------------------------------------------------------
 // Plan-create rule idempotency: same inputs produce identical plan
 // ---------------------------------------------------------------------------
 
@@ -3444,4 +3305,145 @@ fn readiness_preserves_deleted_category_and_accumulation_blockers() {
     assert!(result.findings.iter().any(
         |finding| finding.finding_type == "amount_overflow" && finding.entity_id == "overflow"
     ));
+}
+
+fn actual_rule_snapshot() -> ProtocolSnapshot {
+    serde_json::from_str(include_str!(
+        "../../../protocol/fixtures/representative.json"
+    ))
+    .expect("canonical rule snapshot")
+}
+
+fn actual_category_rule(payee: &str, category: &str) -> Rule {
+    Rule {
+        id: "created-actual-rule".into(),
+        name: payee.into(),
+        order: 0,
+        trigger: serde_json::json!({
+            "stage": "post",
+            "conditionsOp": "and",
+            "conditions": [{"field": "payee_name", "op": "is", "value": payee}]
+        }),
+        actions: serde_json::json!([{"op": "set", "field": "category", "value": category}]),
+        inactive: false,
+    }
+}
+
+#[test]
+fn actual_rule_postcondition_requires_complete_created_presence() {
+    let mut snapshot = actual_rule_snapshot();
+    snapshot.rules.clear();
+    let category_id = snapshot
+        .categories
+        .iter()
+        .find(|category| !category.deleted)
+        .unwrap()
+        .id
+        .clone();
+    let plan = plan_create_rule(
+        "Fixture rule",
+        &[PayeeCondition {
+            field: "payee".into(),
+            operation: "is".into(),
+            value: "Fixture Rule Merchant".into(),
+        }],
+        &category_id,
+        &snapshot,
+    );
+    assert!(!verify_rule_mutation(&plan, &snapshot).verified);
+    let expected = actual_category_rule("Fixture Rule Merchant", &category_id);
+    snapshot.rules.push(expected.clone());
+    assert!(verify_rule_mutation(&plan, &snapshot).verified);
+    for changed in [
+        serde_json::json!({"conditionsOp": "or"}),
+        serde_json::json!({"stage": "pre"}),
+        serde_json::json!({"conditions": [{"field": "payee_name", "op": "is", "value": "Other merchant"}]}),
+    ] {
+        let mut different = expected.clone();
+        for (key, value) in changed.as_object().unwrap() {
+            different.trigger[key] = value.clone();
+        }
+        snapshot.rules = vec![different];
+        assert!(!verify_rule_mutation(&plan, &snapshot).verified);
+    }
+    let mut different = expected.clone();
+    different.actions[0]["value"] = "different-category".into();
+    snapshot.rules = vec![different];
+    assert!(!verify_rule_mutation(&plan, &snapshot).verified);
+    let mut extra = expected.clone();
+    extra
+        .actions
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"op": "set", "field": "notes", "value": "unapproved"}));
+    snapshot.rules = vec![extra];
+    assert!(!verify_rule_mutation(&plan, &snapshot).verified);
+    let mut inactive = expected;
+    inactive.inactive = true;
+    snapshot.rules = vec![inactive];
+    assert!(!verify_rule_mutation(&plan, &snapshot).verified);
+}
+
+#[test]
+fn actual_rule_simulation_preserves_supported_conditions_and_null_stage() {
+    let snapshot = actual_rule_snapshot();
+    let mut transaction = snapshot.transactions[0].clone();
+    transaction.payee_name = Some("Fixture Rule Merchant".into());
+    transaction.category_id = None;
+    let mut rule = actual_category_rule("Fixture Rule Merchant", &snapshot.categories[0].id);
+    rule.trigger["stage"] = serde_json::Value::Null;
+    let result = simulate_rule(&rule, std::slice::from_ref(&transaction));
+    assert_eq!(result.transactions_affected, vec![transaction.id.clone()]);
+    assert_eq!(result.category_distribution[&snapshot.categories[0].id], 1);
+    assert!(result.examples[0].would_change);
+    rule.trigger["conditions"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "field": "unknown-condition", "op": "is", "value": "unsupported"
+        }));
+    rule.trigger["conditionsOp"] = "or".into();
+    assert!(simulate_rule(&rule, &[transaction])
+        .transactions_affected
+        .is_empty());
+}
+
+#[test]
+fn actual_rule_plan_preview_detects_same_and_conflicting_wrapped_rules() {
+    let mut snapshot = actual_rule_snapshot();
+    let mut transaction = snapshot.transactions[0].clone();
+    transaction.payee_name = Some("Fixture Rule Merchant".into());
+    transaction.category_id = None;
+    snapshot.transactions = vec![transaction];
+    let category_id = snapshot.categories[0].id.clone();
+    let plan = plan_create_rule(
+        "Fixture rule",
+        &[PayeeCondition {
+            field: "payee".into(),
+            operation: "is".into(),
+            value: "Fixture Rule Merchant".into(),
+        }],
+        &category_id,
+        &snapshot,
+    );
+    snapshot.rules = vec![
+        actual_category_rule("Fixture Rule Merchant", &category_id),
+        actual_category_rule("Fixture Rule Merchant", "other-category"),
+    ];
+    snapshot.rules[1].id = "conflicting-rule".into();
+    let unchanged = snapshot.clone();
+    let result = balanceframe_core_protocol::simulate_create_rule_plan(&plan, &snapshot);
+    assert_eq!(
+        result.transactions_affected,
+        vec![snapshot.transactions[0].id.clone()]
+    );
+    assert_eq!(result.conflicts.len(), 2);
+    assert_eq!(snapshot, unchanged);
+    snapshot.rules[1].inactive = true;
+    assert_eq!(
+        balanceframe_core_protocol::simulate_create_rule_plan(&plan, &snapshot)
+            .conflicts
+            .len(),
+        1
+    );
 }

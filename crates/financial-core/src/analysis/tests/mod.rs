@@ -1905,6 +1905,497 @@ fn analysis_absolute_sum_overflow_blocks_and_omits_repeated_merchant_total() {
         .any(|code| code == "amount_overflow"));
 }
 
+fn actual_category_rule(
+    id: &str,
+    inactive: bool,
+    stage: serde_json::Value,
+    conditions_op: &str,
+    conditions: serde_json::Value,
+    actions: serde_json::Value,
+) -> crate::snapshots::Rule {
+    crate::snapshots::Rule {
+        id: id.into(),
+        name: format!("Rule {id}"),
+        order: 1,
+        trigger: serde_json::json!({
+            "stage": stage,
+            "conditionsOp": conditions_op,
+            "conditions": conditions,
+        }),
+        actions,
+        inactive,
+    }
+}
+
+fn canonical_rule_tx(transaction_id: &str) -> Transaction {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../protocol/fixtures/financial-decision-foundation.json"
+    ))
+    .unwrap();
+    let mut tx: Transaction =
+        serde_json::from_value(fixture["full"]["legacySnapshot"]["transactions"][0].clone())
+            .unwrap();
+    tx.id = transaction_id.into();
+    tx.account_id = "fd-account-checking".into();
+    tx.payee_name = Some("Coffee".into());
+    tx.category_id = None;
+    tx.category_name = None;
+    tx.amount = Money::new(-500, "USD");
+    tx.date = "2026-07-01".into();
+    tx.cleared = true;
+    tx
+}
+
+fn category_rule_actions(category_id: &str) -> serde_json::Value {
+    serde_json::json!([{
+        "op": "set",
+        "field": "category",
+        "value": category_id,
+    }])
+}
+
+fn analyze_with_rules(
+    transactions: &[Transaction],
+    categories: &[Category],
+    payees: &[crate::snapshots::Payee],
+    rules: &[crate::snapshots::Rule],
+    scope: &InclusionScope,
+) -> DeterministicAnalysis {
+    run_deterministic_analysis(
+        &[sample_account("fd-account-checking", "Household Checking")],
+        transactions,
+        categories,
+        payees,
+        rules,
+        &[],
+        &[],
+        CompatibilityMetadata::new(false, true, "25.1.0".into()),
+        Some("2026-07-18T00:00:00Z".into()),
+        Some("2026-07-18T00:00:00Z".into()),
+        scope,
+        "2026-07-18",
+    )
+}
+
+fn classification_json(
+    result: &DeterministicAnalysis,
+    transaction_id: &str,
+) -> Option<serde_json::Value> {
+    result
+        .deterministic_classifications
+        .iter()
+        .find(|candidate| candidate.transaction_id == transaction_id)
+        .map(|candidate| serde_json::to_value(candidate).unwrap())
+}
+
+#[test]
+fn analysis_enabled_actual_category_rule_proposes_target_and_rule_ids() {
+    let tx = canonical_rule_tx("coffee");
+    let rules = [actual_category_rule(
+        "rule-coffee",
+        false,
+        serde_json::json!("pre"),
+        "and",
+        serde_json::json!([{
+            "op": "is",
+            "field": "payee_name",
+            "value": "Coffee",
+        }]),
+        category_rule_actions("food"),
+    )];
+
+    let result = analyze_with_rules(
+        &[tx],
+        &[sample_category("food", "Food", false)],
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+
+    let candidate = classification_json(&result, "coffee").unwrap();
+    assert_eq!(candidate["proposedCategoryId"], "food");
+    assert_eq!(candidate["proposedCategoryName"], "Food");
+    assert_eq!(candidate["ruleIds"], serde_json::json!(["rule-coffee"]));
+    assert_eq!(candidate["reasons"][0]["kind"], "AutomationRule");
+}
+
+#[test]
+fn analysis_paused_rule_keeps_history_and_resume_restores_rule_target() {
+    let mut history = canonical_rule_tx("history");
+    history.category_id = Some("old-food".into());
+    history.category_name = Some("Old Food".into());
+    history.date = "2026-06-01".into();
+    let txs = [history, canonical_rule_tx("coffee")];
+    let categories = [
+        sample_category("old-food", "Old Food", false),
+        sample_category("food", "Food", false),
+    ];
+    let paused = [actual_category_rule(
+        "rule-coffee",
+        true,
+        serde_json::json!(null),
+        "and",
+        serde_json::json!([{
+            "op": "is",
+            "field": "payee_name",
+            "value": "Coffee",
+        }]),
+        category_rule_actions("food"),
+    )];
+    let resumed = [actual_category_rule(
+        "rule-coffee",
+        false,
+        serde_json::json!(null),
+        "and",
+        serde_json::json!([{
+            "op": "is",
+            "field": "payee_name",
+            "value": "Coffee",
+        }]),
+        category_rule_actions("food"),
+    )];
+
+    let paused_result = analyze_with_rules(
+        &txs,
+        &categories,
+        &[],
+        &paused,
+        &InclusionScope::new(true, true),
+    );
+    let paused_candidate = classification_json(&paused_result, "coffee").unwrap();
+    assert!(paused_candidate.get("proposedCategoryId").is_none());
+    assert!(paused_candidate.get("ruleIds").is_none());
+    assert_eq!(paused_candidate["reasons"][0]["kind"], "Historical");
+
+    let resumed_result = analyze_with_rules(
+        &txs,
+        &categories,
+        &[],
+        &resumed,
+        &InclusionScope::new(true, true),
+    );
+    let resumed_candidate = classification_json(&resumed_result, "coffee").unwrap();
+    assert_eq!(resumed_candidate["proposedCategoryId"], "food");
+    assert_eq!(
+        resumed_candidate["ruleIds"],
+        serde_json::json!(["rule-coffee"])
+    );
+}
+
+#[test]
+fn analysis_actual_category_rule_rejects_deleted_or_missing_target() {
+    let tx = canonical_rule_tx("coffee");
+    let rules = [actual_category_rule(
+        "rule-coffee",
+        false,
+        serde_json::json!("post"),
+        "and",
+        serde_json::json!([{
+            "op": "is",
+            "field": "payee_name",
+            "value": "Coffee",
+        }]),
+        category_rule_actions("food"),
+    )];
+
+    for categories in [
+        vec![sample_category("food", "Food", true)],
+        vec![sample_category("other", "Other", false)],
+    ] {
+        let result = analyze_with_rules(
+            std::slice::from_ref(&tx),
+            &categories,
+            &[],
+            &rules,
+            &InclusionScope::new(true, true),
+        );
+        assert!(classification_json(&result, "coffee").is_none());
+    }
+}
+
+#[test]
+fn analysis_actual_category_rule_supports_null_stage_and_or_vs_and() {
+    let tx = canonical_rule_tx("coffee");
+    let conditions = serde_json::json!([
+        {"op": "is", "field": "payee_name", "value": "No Match"},
+        {"op": "is", "field": "account", "value": "fd-account-checking"},
+    ]);
+    let or_rule = [actual_category_rule(
+        "or-rule",
+        false,
+        serde_json::json!(null),
+        "or",
+        conditions.clone(),
+        category_rule_actions("food"),
+    )];
+    let and_rule = [actual_category_rule(
+        "and-rule",
+        false,
+        serde_json::json!(null),
+        "and",
+        conditions,
+        category_rule_actions("food"),
+    )];
+    let categories = [sample_category("food", "Food", false)];
+
+    let or_result = analyze_with_rules(
+        std::slice::from_ref(&tx),
+        &categories,
+        &[],
+        &or_rule,
+        &InclusionScope::new(true, true),
+    );
+    let or_candidate = classification_json(&or_result, "coffee").unwrap();
+    assert_eq!(or_candidate["proposedCategoryId"], "food");
+    assert_eq!(or_candidate["ruleIds"], serde_json::json!(["or-rule"]));
+
+    let and_result = analyze_with_rules(
+        &[tx],
+        &categories,
+        &[],
+        &and_rule,
+        &InclusionScope::new(true, true),
+    );
+    assert!(classification_json(&and_result, "coffee").is_none());
+}
+
+#[test]
+fn analysis_actual_category_rule_matches_payee_id_and_account_category_predicates() {
+    let mut tx = canonical_rule_tx("coffee");
+    tx.payee_id = Some("fd-payee-coffee".into());
+    let rule = [actual_category_rule(
+        "actual-identifiers",
+        false,
+        serde_json::json!("post"),
+        "and",
+        serde_json::json!([
+            {"op": "is", "field": "payee", "value": "fd-payee-coffee"},
+            {
+                "op": "oneOf",
+                "field": "account",
+                "value": ["fd-account-card", "fd-account-checking"],
+            },
+            {"op": "is", "field": "category", "value": null},
+        ]),
+        category_rule_actions("food"),
+    )];
+    let result = analyze_with_rules(
+        &[tx],
+        &[sample_category("food", "Food", false)],
+        &[],
+        &rule,
+        &InclusionScope::new(true, true),
+    );
+    let candidate = classification_json(&result, "coffee").unwrap();
+    assert_eq!(candidate["proposedCategoryId"], "food");
+    assert_eq!(
+        candidate["ruleIds"],
+        serde_json::json!(["actual-identifiers"])
+    );
+}
+
+#[test]
+fn analysis_actual_category_rule_respects_scope_and_skips_categorized_transactions() {
+    let mut transfer = canonical_rule_tx("transfer");
+    transfer.transfer_account_id = Some("fd-account-card".into());
+    let mut categorized = canonical_rule_tx("categorized");
+    categorized.category_id = Some("food".into());
+    categorized.category_name = Some("Food".into());
+    let rule = [actual_category_rule(
+        "rule-coffee",
+        false,
+        serde_json::json!("pre"),
+        "and",
+        serde_json::json!([{
+            "op": "is",
+            "field": "account",
+            "value": "fd-account-checking",
+        }]),
+        category_rule_actions("food"),
+    )];
+    let result = analyze_with_rules(
+        &[transfer, categorized],
+        &[sample_category("food", "Food", false)],
+        &[],
+        &rule,
+        &InclusionScope::new(true, true),
+    );
+    assert!(classification_json(&result, "transfer").is_none());
+    assert!(classification_json(&result, "categorized").is_none());
+}
+
+#[test]
+fn analysis_actual_category_rule_rejects_unsupported_branches_and_actions() {
+    let tx = canonical_rule_tx("coffee");
+    let categories = [sample_category("food", "Food", false)];
+    let scope = InclusionScope::new(true, true);
+    let matching_condition = serde_json::json!({
+        "op": "is",
+        "field": "payee_name",
+        "value": "Coffee",
+    });
+    let unsupported_branch = [actual_category_rule(
+        "regex-rule",
+        false,
+        serde_json::json!("pre"),
+        "or",
+        serde_json::json!([
+            matching_condition.clone(),
+            {"op": "matches", "field": "payee_name", "value": ".*"},
+        ]),
+        category_rule_actions("food"),
+    )];
+    let extra_action = [actual_category_rule(
+        "extra-action",
+        false,
+        serde_json::json!("pre"),
+        "and",
+        serde_json::json!([matching_condition.clone()]),
+        serde_json::json!([
+            {"op": "set", "field": "category", "value": "food"},
+            {"op": "set", "field": "payee_name", "value": "Changed"},
+        ]),
+    )];
+    let missing_stage = [actual_category_rule(
+        "missing-stage",
+        false,
+        serde_json::Value::Null,
+        "and",
+        serde_json::json!([matching_condition.clone()]),
+        category_rule_actions("food"),
+    )];
+    let mut missing_stage_rule = missing_stage[0].clone();
+    missing_stage_rule
+        .trigger
+        .as_object_mut()
+        .unwrap()
+        .remove("stage");
+    let missing_operator = [actual_category_rule(
+        "missing-operator",
+        false,
+        serde_json::json!("pre"),
+        "and",
+        serde_json::json!([matching_condition]),
+        category_rule_actions("food"),
+    )];
+    let mut missing_operator_rule = missing_operator[0].clone();
+    missing_operator_rule
+        .trigger
+        .as_object_mut()
+        .unwrap()
+        .remove("conditionsOp");
+    let legacy_trigger = [crate::snapshots::Rule {
+        id: "legacy".into(),
+        name: "Legacy".into(),
+        order: 1,
+        trigger: serde_json::json!([{"type": "payee", "value": "Coffee"}]),
+        actions: category_rule_actions("food"),
+        inactive: false,
+    }];
+    let malformed_action = [actual_category_rule(
+        "malformed-action",
+        false,
+        serde_json::json!("pre"),
+        "and",
+        serde_json::json!([{
+            "op": "is",
+            "field": "payee_name",
+            "value": "Coffee",
+        }]),
+        serde_json::json!([{
+            "op": "set",
+            "field": "category",
+            "value": null,
+        }]),
+    )];
+
+    for rules in [
+        unsupported_branch.as_slice(),
+        extra_action.as_slice(),
+        std::slice::from_ref(&missing_stage_rule),
+        std::slice::from_ref(&missing_operator_rule),
+        legacy_trigger.as_slice(),
+        malformed_action.as_slice(),
+    ] {
+        let result = analyze_with_rules(std::slice::from_ref(&tx), &categories, &[], rules, &scope);
+        assert!(classification_json(&result, "coffee").is_none());
+    }
+}
+
+#[test]
+fn analysis_conflicting_actual_category_rules_do_not_choose_arbitrary_target() {
+    let tx = canonical_rule_tx("coffee");
+    let rules = [
+        actual_category_rule(
+            "a-rule",
+            false,
+            serde_json::json!("pre"),
+            "and",
+            serde_json::json!([{
+                "op": "is",
+                "field": "payee_name",
+                "value": "Coffee",
+            }]),
+            category_rule_actions("food"),
+        ),
+        actual_category_rule(
+            "z-rule",
+            false,
+            serde_json::json!("pre"),
+            "and",
+            serde_json::json!([{
+                "op": "is",
+                "field": "payee_name",
+                "value": "Coffee",
+            }]),
+            category_rule_actions("coffee"),
+        ),
+    ];
+    let result = analyze_with_rules(
+        &[tx],
+        &[
+            sample_category("food", "Food", false),
+            sample_category("coffee", "Coffee", false),
+        ],
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    assert!(classification_json(&result, "coffee").is_none());
+}
+
+#[test]
+fn analysis_same_target_actual_rules_report_sorted_rule_ids() {
+    let tx = canonical_rule_tx("coffee");
+    let make_rule = |id| {
+        actual_category_rule(
+            id,
+            false,
+            serde_json::json!("post"),
+            "and",
+            serde_json::json!([{
+                "op": "is",
+                "field": "payee_name",
+                "value": "Coffee",
+            }]),
+            category_rule_actions("food"),
+        )
+    };
+    let result = analyze_with_rules(
+        &[tx],
+        &[sample_category("food", "Food", false)],
+        &[],
+        &[make_rule("z-rule"), make_rule("a-rule")],
+        &InclusionScope::new(true, true),
+    );
+    let candidate = classification_json(&result, "coffee").unwrap();
+    assert_eq!(candidate["proposedCategoryId"], "food");
+    assert_eq!(
+        candidate["ruleIds"],
+        serde_json::json!(["a-rule", "z-rule"])
+    );
+}
+
 #[test]
 fn rule_candidates_distinguish_income_from_refunded_spending_and_enrich_names() {
     let txs = [

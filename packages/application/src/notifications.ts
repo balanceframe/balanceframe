@@ -7,8 +7,8 @@
  *
  * - Events are persisted **before** outbox records (immutable-outbox-before-dispatch).
  * - Callbacks/replies are **untrusted**: acknowledgement only changes notification state.
- * - Redaction is based on the actor's capability set, not on who the actor is.
- * - Re-authorization is checked before every dispatch via an optional hook.
+ * - Dispatch requires active membership, the required capability, and exact event scope.
+ * - Optional re-authorization hooks may further restrict dispatch.
  * - Delivery is claim-based for crash recovery (lease + claim token pattern).
  * - Rate limits are in-process; they reset on process restart (acceptable for v1).
  * - Quiet hours are evaluated per recipient; suppressed notifications are recorded.
@@ -30,6 +30,7 @@ import type {
   OutboxStatus,
 } from '@balanceframe/workflow-store';
 import { createHash, randomUUID } from 'node:crypto';
+
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -248,9 +249,8 @@ export interface ChannelAdapter {
 // ---------------------------------------------------------------------------
 
 /**
- * Optional re-authorization hook.
- * Called before dispatch to verify the recipient still has the required
- * capability/scope. Returns true if authorized, false to suppress.
+ * Optional hook for recipient-bound creation and dispatch.
+ * Dispatch still requires active store membership, capability, and event scope.
  */
 export type ReAuthorizationHook = (
   actorId: string,
@@ -488,10 +488,12 @@ function generateDeliveryKey(
   channelType: string,
   recipientId: string | null,
   scope: string | null,
+  spaceId: string | null,
+  recipientMembershipId: string | null,
   dedupKey?: string,
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify([dedupKey ?? eventId, recipientId, scope, channelType]))
+    .update(JSON.stringify([dedupKey ?? eventId, recipientId, scope, spaceId, recipientMembershipId, channelType]))
     .digest('hex');
 }
 
@@ -515,7 +517,12 @@ export class NotificationRuntime {
   private reAuthHook: ReAuthorizationHook | null = null;
   private auditHook: AuditHook | null = null;
 
-  constructor(store: WorkflowStore, policy: NotificationPolicy, adapters: ChannelAdapter[]) {
+  constructor(
+    store: WorkflowStore,
+    policy: NotificationPolicy,
+    adapters: ChannelAdapter[],
+    private readonly now: () => string = () => new Date().toISOString(),
+  ) {
     this.store = store;
     this.policy = policy;
     this.adapters = new Map(adapters.map((a) => [a.channelType, a]));
@@ -563,32 +570,67 @@ export class NotificationRuntime {
     }
   }
 
+  private async authorizationAllows(
+    actorId: string,
+    capability: string,
+    scope: string | null,
+    budgetId: string,
+    event?: NotificationEvent,
+  ): Promise<boolean> {
+    if (typeof scope !== 'string') return false;
+    const resourceKind = scope === `budget:${budgetId}` ? 'budget'
+      : scope.startsWith('category:') ? 'category' : null;
+    if (!resourceKind) return false;
+    const resourceId = resourceKind === 'budget' ? budgetId : scope.slice('category:'.length);
+    if (!resourceId) return false;
+    try {
+      const space = this.store.governance.getSpaceForBudget({ budgetId });
+      const policy = space && this.store.governance.getPolicy({ spaceId: space.id });
+      if (!space || !policy) return false;
+      const now = this.now();
+      const membership = this.store.governance.getCurrentMembership({ spaceId: space.id, actorId, now });
+      if (!membership || (event && (
+        event.spaceId !== space.id || event.budgetId !== budgetId ||
+        !event.recipientMembershipId ||
+        (event.recipientId === actorId && event.recipientMembershipId !== membership.id)
+      ))) return false;
+      return this.store.governance.authorize({
+        actorId, spaceId: space.id, membershipId: membership.id, expectedPolicyVersion: policy.version, phase: 'read',
+        operation: capability, required: [{ capability, resourceKind, resourceId }],
+        payload: { operations: [] }, now,
+      }).allowed;
+    } catch {
+      return false;
+    }
+  }
+
+  private async reAuthorizationHookAllows(
+    actorId: string,
+    capability: string,
+    scope: string,
+  ): Promise<boolean> {
+    if (!this.reAuthHook) return true;
+    try {
+      return await this.reAuthHook(actorId, capability, scope);
+    } catch {
+      return false;
+    }
+  }
+
   /**
-   * Re-authorize a recipient against the store's current membership.
-   *
-   * When a re-authorization hook is registered, it takes precedence.
-   * Otherwise the store's getActorMembership is used to verify:
-   *   - actor membership exists and status is 'active'
-   *   - actor capabilities include the required capability
-   *   - membership scope exactly matches the requested scope or is wildcard
+   * Re-authorize explicit recipient-bound creation through the current
+   * store authorization and any additional producer hook.
    */
   private async storeBackedReAuth(
     actorId: string,
     requiredCapability: string,
-    scope: string = '',
+    scope: string,
+    budgetId: string,
   ): Promise<boolean> {
-    try {
-      if (this.reAuthHook) {
-        return await this.reAuthHook(actorId, requiredCapability, scope);
-      }
-      // Fallback: check store membership directly.
-      const membership = await this.store.getActorMembership(actorId);
-      if (!membership || membership.status !== 'active') return false;
-      if (!membership.capabilities.includes(requiredCapability)) return false;
-      return membership.scope === scope || membership.scope === '*';
-    } catch {
-      return false;
-    }
+    return (
+      (await this.authorizationAllows(actorId, requiredCapability, scope, budgetId)) &&
+      (await this.reAuthorizationHookAllows(actorId, requiredCapability, scope))
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -643,16 +685,22 @@ export class NotificationRuntime {
     }
 
     let recipientSpecs = this.resolveRecipients(input.classification, input.severity);
-    const hasBoundIdentity =
-      input.dedupKey !== undefined || input.recipientId !== undefined || input.scope !== undefined;
-
-    if (hasBoundIdentity) {
-      if (!input.recipientId) {
-        throw new NotificationRuntimeError(
-          'RECIPIENT_MISMATCH',
-          'A recipient-bound notification requires an explicit policy recipient',
-        );
+    const requiredScope = eligibilityRule.requiredScope || `budget:${input.budgetId}`;
+    if (!input.recipientId) {
+      if (input.scope !== undefined && input.scope !== requiredScope)
+        throw new NotificationRuntimeError('SCOPE_MISMATCH', 'Notification scope does not match its policy');
+      let firstEvent: NotificationEvent | undefined;
+      const outboxRecords: NotificationOutboxRecord[] = [];
+      for (const recipient of recipientSpecs) {
+        const capability = eligibilityRule.requiredCapability ?? 'notification:receive';
+        if (!(await this.storeBackedReAuth(recipient.actorId, capability, requiredScope, input.budgetId))) continue;
+        const result = await this.createNotification({ ...input, recipientId: recipient.actorId, scope: requiredScope });
+        firstEvent ??= result.event;
+        outboxRecords.push(...result.outboxRecords);
       }
+      if (!firstEvent) throw new NotificationRuntimeError('NOT_AUTHORIZED', 'No currently authorized notification recipient');
+      return { event: firstEvent, outboxRecords };
+    }
 
       const recipient = recipientSpecs.find(({ actorId }) => actorId === input.recipientId);
       if (!recipient) {
@@ -661,10 +709,10 @@ export class NotificationRuntime {
           `Notification recipient "${input.recipientId}" is not an active policy recipient`,
         );
       }
-      if (input.scope !== eligibilityRule.requiredScope) {
+      if (input.scope !== requiredScope) {
         throw new NotificationRuntimeError(
           'SCOPE_MISMATCH',
-          `Notification scope "${input.scope ?? ''}" does not match required policy scope "${eligibilityRule.requiredScope ?? ''}"`,
+          `Notification scope "${input.scope ?? ''}" does not match required policy scope "${requiredScope}"`,
         );
       }
 
@@ -673,6 +721,7 @@ export class NotificationRuntime {
         recipient.actorId,
         capability,
         input.scope ?? '',
+        input.budgetId,
       );
       if (!authorized) {
         throw new NotificationRuntimeError(
@@ -681,7 +730,6 @@ export class NotificationRuntime {
         );
       }
       recipientSpecs = [recipient];
-    }
 
     const redactionClass = input.redactionClass ?? this.policy.defaultRedactionClass;
     const eventInput: CreateNotificationEventInput = {
@@ -692,8 +740,8 @@ export class NotificationRuntime {
       recipientId: input.recipientId ?? null,
       scope: input.scope ?? null,
       redactionClass,
-      channelConfigVersion: null,
       correlationId: input.correlationId ?? input.dedupKey ?? null,
+      now: this.now(),
     };
     const event = input.dedupKey
       ? await this.store.createOrGetNotificationEvent({
@@ -704,22 +752,6 @@ export class NotificationRuntime {
 
     const outboxRecords: NotificationOutboxRecord[] = [];
     for (const recipient of recipientSpecs) {
-      if (!hasBoundIdentity) {
-        const capability = eligibilityRule.requiredCapability ?? 'notification:receive';
-        const authorized = await this.storeBackedReAuth(
-          recipient.actorId,
-          capability,
-          eligibilityRule.requiredScope ?? '',
-        );
-        if (!authorized) {
-          await this.recordAudit('notification_suppressed', {
-            eventId: event.id,
-            actorId: recipient.actorId,
-            reason: 're_authorization_failed',
-          });
-          continue;
-        }
-      }
 
       const inQuietHours = recipient.quietHours ? isInQuietHours(recipient.quietHours) : false;
       if (inQuietHours) {
@@ -751,6 +783,8 @@ export class NotificationRuntime {
           channelType,
           recipient.actorId,
           input.scope ?? null,
+          event.spaceId,
+          event.recipientMembershipId,
           input.dedupKey,
         );
         const enqueued = await this.store.enqueueNotification({
@@ -825,7 +859,7 @@ export class NotificationRuntime {
     const eligibilityRule = this.policy.eligibility.find(
       (rule) =>
         rule.classifications.includes(event.classification) &&
-        (rule.requiredScope ?? null) === event.scope,
+        (rule.requiredScope || `budget:${event.budgetId}`) === event.scope,
     );
     if (!eligibilityRule) {
       const reason = 'Notification classification is no longer eligible';
@@ -839,11 +873,13 @@ export class NotificationRuntime {
       };
     }
     const requiredCapability = eligibilityRule.requiredCapability ?? 'notification:receive';
-    const authorized = await this.storeBackedReAuth(
-      recipientId,
-      requiredCapability,
-      event.scope ?? '',
-    );
+    const authorized =
+      (await this.authorizationAllows(recipientId, requiredCapability, event.scope, event.budgetId, event)) &&
+      (await this.reAuthorizationHookAllows(
+        recipientId,
+        requiredCapability,
+        event.scope ?? '',
+      ));
     if (!authorized) {
       const reason = 'Recipient authorization revoked';
       await this.store.failNotificationDelivery(outboxId, claimToken, reason, false);
@@ -1090,9 +1126,9 @@ export class NotificationRuntime {
   /**
    * List notification outbox records for the given actor.
    *
-   * Returns records where the linked event's recipient matches the actor,
-   * with delivery state kept distinct from finding state.  Each record
-   * includes the redacted event payload and delivery attempts.
+   * Returns only events authorized for the recipient's active, scoped
+   * notification:receive capability. Each result includes a redacted payload
+   * and delivery attempts.
    *
    * @param actorId  Actor requesting the inbox.
    * @param options  Optional status/channel filter and pagination.
@@ -1125,6 +1161,7 @@ export class NotificationRuntime {
       redactedPayload: Record<string, unknown>;
       deliveryAttempts: DeliveryAttempt[];
     }> = [];
+    if (limit === 0) return results;
 
     for (let storeOffset = 0; results.length < limit; storeOffset += 500) {
       const records = await this.store.listOutboxRecords({
@@ -1141,11 +1178,17 @@ export class NotificationRuntime {
           (options?.budgetId !== undefined && event.budgetId !== options.budgetId)
         )
           continue;
+        if (!(await this.authorizationAllows(actorId, 'notification:receive', event.scope, event.budgetId, event)))
+          continue;
+        const redactionCapability =
+          (await this.authorizationAllows(actorId, 'notification:admin', event.scope, event.budgetId, event))
+            ? 'notification:admin'
+            : 'notification:receive';
         if (options?.canReadEvent && !(await options.canReadEvent(event))) continue;
         if (visibleIndex++ < offset) continue;
-        const redactedPayload = await this.redactForActor(event, actorId);
+        const redactedPayload = this.redactEventForCapability(event, redactionCapability);
         const deliveryAttempts = await this.store.getDeliveryAttempts(outbox.id);
-        results.push({ outbox, event, redactedPayload, deliveryAttempts });
+        results.push({ outbox, event: { ...event, payload: JSON.stringify(redactedPayload) }, redactedPayload, deliveryAttempts });
         if (results.length === limit) break;
       }
       if (records.length < 500) break;
@@ -1158,8 +1201,8 @@ export class NotificationRuntime {
    * Get a single notification outbox record with its event and delivery
    * history, redacted for the requesting actor.
    *
-   * Returns null if the outbox is not found or the actor is not the
-   * intended recipient.
+   * Returns null if the outbox is not found or the actor lacks current
+   * authorization for the event's scope.
    */
   async getOutboxDetail(
     outboxId: string,
@@ -1176,20 +1219,13 @@ export class NotificationRuntime {
     const event = await this.store.getNotificationEvent(outbox.eventId);
     if (!event) return null;
 
-    // Authorization: only the intended recipient can view
-    if (event.recipientId !== actorId) {
-      // Check if admin
-      const membership = await this.store.getActorMembership(actorId);
-      const capabilities = membership?.capabilities ?? [];
-      if (!capabilities.includes('notification:admin')) {
-        return null;
-      }
-    }
+    const capability = await this.eventReadCapability(actorId, event);
+    if (!capability) return null;
 
-    const redactedPayload = await this.redactForActor(event, actorId);
+    const redactedPayload = this.redactEventForCapability(event, capability);
     const deliveryAttempts = await this.store.getDeliveryAttempts(outbox.id);
 
-    return { outbox, event, redactedPayload, deliveryAttempts };
+    return { outbox, event: { ...event, payload: JSON.stringify(redactedPayload) }, redactedPayload, deliveryAttempts };
   }
 
   // -----------------------------------------------------------------------
@@ -1197,21 +1233,41 @@ export class NotificationRuntime {
   // -----------------------------------------------------------------------
 
   /**
-   * Redact a notification event's payload for a given actor based on
-   * the actor's capabilities and the event's redaction class.
-   *
-   * Looks up the actor's capabilities from the store, then applies
-   * the redaction policy.
+   * Redact a notification payload only after current authorization for its
+   * scope. Recipients need notification:receive; other actors need
+   * notification:admin. Returns an empty object when authorization fails.
    */
   async redactForActor(
     event: NotificationEvent,
     actorId: string,
   ): Promise<Record<string, unknown>> {
-    const membership = await this.store.getActorMembership(actorId);
-    const capabilities = membership?.capabilities ?? [];
+    const capability = await this.eventReadCapability(actorId, event);
+    if (!capability) return {};
+    return this.redactEventForCapability(event, capability);
+  }
+
+  private async eventReadCapability(
+    actorId: string,
+    event: NotificationEvent,
+  ): Promise<'notification:admin' | 'notification:receive' | null> {
+    if (await this.authorizationAllows(actorId, 'notification:admin', event.scope, event.budgetId, event))
+      return 'notification:admin';
+    if (
+      event.recipientId === actorId &&
+      (await this.authorizationAllows(actorId, 'notification:receive', event.scope, event.budgetId, event))
+    )
+      return 'notification:receive';
+    return null;
+  }
+
+  private redactEventForCapability(
+    event: NotificationEvent,
+    capability: 'notification:admin' | 'notification:receive',
+  ): Record<string, unknown> {
     const redactionClass = event.redactionClass ?? this.policy.defaultRedactionClass;
     const payload = JSON.parse(event.payload) as Record<string, unknown>;
-    return redactPayload(payload, redactionClass, capabilities, this.policy.redaction);
+    const actorCapabilities = capability === 'notification:admin' ? ['notification:admin'] : [];
+    return redactPayload(payload, redactionClass, actorCapabilities, this.policy.redaction);
   }
 
   // -----------------------------------------------------------------------
@@ -1226,9 +1282,7 @@ export class NotificationRuntime {
   }): Promise<RuntimeStatus> {
     let storeConnected = false;
     try {
-      await (scope
-        ? this.store.getActorMembership(scope.actorId)
-        : this.store.getPendingNotifications(1));
+      await this.store.getPendingNotifications(1);
       storeConnected = true;
     } catch {
       storeConnected = false;
@@ -1256,13 +1310,12 @@ export class NotificationRuntime {
     let failedCount = 0;
     try {
       if (scope) {
-        const authorization = await this.store.evaluateAuthorization(
+        if (await this.authorizationAllows(
           scope.actorId,
           'notification:receive',
           `budget:${scope.budgetId}`,
-          '1.0',
-        );
-        if (authorization.allowed) {
+          scope.budgetId,
+        )) {
           for (const status of ['pending', 'failed'] as const) {
             for (let offset = 0; ; offset += 500) {
               const records = await this.store.listOutboxRecords({ status, limit: 500, offset });
@@ -1272,6 +1325,13 @@ export class NotificationRuntime {
                   !event ||
                   event.budgetId !== scope.budgetId ||
                   event.recipientId !== scope.actorId ||
+                  !(await this.authorizationAllows(
+                    scope.actorId,
+                    'notification:receive',
+                    event.scope,
+                    event.budgetId,
+                    event,
+                  )) ||
                   !(await scope.canReadEvent(event))
                 )
                   continue;

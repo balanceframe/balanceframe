@@ -1,153 +1,78 @@
-/**
- * POST /api/invitations/:id/revoke — revoke an active invitation.
- *
- * Only the instance owner may revoke invitations.
- * The raw token is never stored server-side, so revocation only prevents
- * future claims; any leaked token is permanently invalidated.
- * The store writes the authoritative audit record with actor context.
- */
+import { defineEventHandler, getRouterParam, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
+import { getHumanControlAuth, type ReauthenticationEvent } from '../../../utils/reauthentication';
+import { requireSelectedSpace } from '../../../utils/space-context';
+import type { EventWithContext } from '../../../utils/workflow-store';
+import {
+  errorEnvelope,
+  getWorkflowStore,
+  okEnvelope,
+  requireAuthorization,
+} from '../../../utils/workflow-store';
 
-import { defineEventHandler, setResponseStatus } from 'h3';
-import { getWorkflowStore } from '../../../utils/workflow-store';
-import { requireOwner } from '../../../utils/registration';
+const InvitationId = z.string().trim().min(1).max(200);
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
+  setHeader(event, 'Cache-Control', 'private, no-store');
 
-  // 1. Resolve the invitation ID from the route parameter
-  const invitationId = event.context.params?.id;
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
 
-  if (!invitationId || typeof invitationId !== 'string') {
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'membership:manage',
+    `space:${selected.space.id}`,
+  );
+  if (!authorization.ok) return authorization.response;
+
+  const auth = await getHumanControlAuth(event as ReauthenticationEvent);
+  if (!auth || auth.actorId !== selected.auth.actorId) {
+    setResponseStatus(event, 403);
+    return errorEnvelope(
+      'HUMAN_CONTROL_REQUIRED',
+      'Recent human reauthentication is required.',
+      authorization.info,
+      false,
+      requestId,
+    );
+  }
+
+  const parsedId = InvitationId.safeParse(getRouterParam(event, 'id'));
+  if (!parsedId.success) {
     setResponseStatus(event, 400);
-    return {
-      schemaVersion: '1',
+    return errorEnvelope(
+      'INVALID_INVITATION_ID',
+      'Invitation ID is invalid.',
+      authorization.info,
+      false,
       requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'INVITATION_FAILED',
-        message: 'Invitation ID is required',
-        retryable: false,
-        reasonCodes: ['validation.missing_id'],
-      },
-    };
+    );
   }
 
-  // 2. Ensure session auth
-  const ctx = event.context.auth;
-  if (!ctx?.authenticated) {
-    setResponseStatus(event, 401);
-    return {
-      schemaVersion: '1',
-      requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Authentication required',
-        retryable: false,
-        reasonCodes: ['auth.missing_credentials'],
-      },
-    };
-  }
-
-  // 3. Access store
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return {
-      schemaVersion: '1',
-      requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Store unavailable',
-        retryable: true,
-        reasonCodes: ['store.unavailable'],
-      },
-    };
+    return errorEnvelope('STORE_UNAVAILABLE', workflow.error, authorization.info, false, requestId);
   }
 
-  // 4. Verify owner
-  let state;
   try {
-    state = await wf.store.getRegistrationState();
+    await workflow.store.revokeInvitation({
+      spaceId: selected.space.id,
+      invitationId: parsedId.data,
+      auth,
+      requestId,
+      correlationId: requestId,
+    });
+    return okEnvelope({ invitationId: parsedId.data, revoked: true }, authorization.info, requestId);
   } catch {
-    setResponseStatus(event, 503);
-    return {
-      schemaVersion: '1',
+    setResponseStatus(event, 409);
+    return errorEnvelope(
+      'INVITATION_REVOKE_FAILED',
+      'Invitation could not be revoked in the selected space.',
+      authorization.info,
+      false,
       requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Registration state unavailable',
-        retryable: false,
-        reasonCodes: ['store.missing_migration'],
-      },
-    };
+    );
   }
-
-  if (state.mode !== 'complete' || !state.ownerUserId) {
-    setResponseStatus(event, 400);
-    return {
-      schemaVersion: '1',
-      requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'INVITATION_FAILED',
-        message: 'Instance has not been bootstrapped',
-        retryable: false,
-        reasonCodes: ['bootstrap.not_completed'],
-      },
-    };
-  }
-
-  const ownerCheck = requireOwner(event, state.ownerUserId);
-  if (!ownerCheck.ok) return ownerCheck.response;
-
-  // 5. Revoke the invitation
-  try {
-    await wf.store.revokeInvitation(invitationId, ctx.actorId, requestId);
-  } catch {
-    setResponseStatus(event, 400);
-    return {
-      schemaVersion: '1',
-      requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'INVITATION_FAILED',
-        message: 'Could not revoke invitation',
-        retryable: false,
-        reasonCodes: ['invitation.revoke_failed'],
-      },
-    };
-  }
-
-  return {
-    schemaVersion: '1',
-    requestId,
-    status: 'ok',
-    dataFreshness: null,
-    authorization: null,
-    result: {
-      message: 'Invitation revoked',
-    },
-    error: null,
-  };
 });

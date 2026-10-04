@@ -32,6 +32,7 @@ import type {
   ConnectionMode,
   LifecycleCallbacks,
   PendingReviewResult,
+  PendingReviewScope,
   ReviewDetailResult,
   ReviewActionResult,
   ReviewBulkActionResult,
@@ -58,9 +59,6 @@ import type {
   FinancialStateResult,
   ReportGenerationResult,
   ReportGenerationParams,
-  SavedViewsListResult,
-  CreateSavedViewResult,
-  CreateSavedViewParams,
   AttentionHomeResult,
   AttentionHomeParams,
   CategoryHealthResult,
@@ -100,14 +98,15 @@ import {
   financialDecisionDedupKey,
 } from './notifications.js';
 import type { NotificationPolicy } from './notifications.js';
-import type { WorkflowStore } from '@balanceframe/workflow-store';
+import type { WorkflowStore, LifecycleScope } from '@balanceframe/workflow-store';
 import type {
   DecisionIssue,
   FinancialSnapshot,
   SourceObservation,
 } from '@balanceframe/protocol-generated';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, writeFile, rename, stat, readFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, rename, stat, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -161,35 +160,23 @@ export interface ObserveCompositionOptions {
    * Workflow store override for lifecycle and (optionally) notification
    * operations.
    *
-   * When provided, destructive lifecycle callbacks perform actual
-   * cancellation, credential revocation, and scoped deletion.
+   * When provided with an exact lifecycle scope, destructive callbacks cancel
+   * scoped jobs and delete only project data selected by that scope.
    *
    * If the store also exposes the notification-store methods defined by
    * {@link NotificationStoreMethods}, a {@link NotificationRuntime} is
    * constructed automatically and exposed via
    * {@link ObserveComposition.notificationRuntime}.
    */
-  workflowStore?: {
-    cancelPendingJobs(): Promise<number>;
-    deleteActorMembership(actorId: string): Promise<boolean>;
-    recordExport(input: {
-      budgetName: string;
-      exportPath: string;
-      accountCount: number;
-      transactionCount: number;
-    }): Promise<void>;
-    getLastExport(): Promise<{
-      exportedAt: string;
-      budgetName: string;
-      exportPath: string;
-      accountCount: number;
-      transactionCount: number;
-    } | null>;
-    deleteScopeData(
-      scope: string,
-      options?: { actorId?: string },
-    ): Promise<{ deleted: Record<string, number>; retained: { count: number; reasons: string[] } }>;
-  } & Partial<NotificationStoreMethods>;
+  workflowStore?: LifecycleStore & Partial<NotificationStoreMethods>;
+  /** Exact selected human, space, and budget for lifecycle persistence. */
+  scope?: LifecycleScope;
+  /** Actual selected budget name and synchronization already obtained under the connection lock. */
+  budgetName?: string;
+  synchronization?: unknown;
+  /** Lifecycle-safe manager operations supplied by Source routes. */
+  disconnectConnection?: () => Promise<void>;
+  removeConnection?: () => Promise<void>;
 
   /** Actor ID override (default: 'usr_cli'). */
   actorId?: string;
@@ -310,30 +297,15 @@ export type NotificationStoreMethods = Pick<
   | 'getDeliveryAttempts'
   | 'listOutboxRecords'
   | 'getNotificationPolicy'
-  | 'getActorMembership'
   | 'appendAuditRecord'
->;
-
-/**
- * Type guard: returns `true` when `store` satisfies
- * {@link NotificationStoreMethods} (i.e. it has all required notification
- * methods).  Used in {@link createObserveComposition} to decide whether
- * to construct a {@link NotificationRuntime} from a generic store.
- */
-function isNotificationStore(store: Record<string, unknown>): store is NotificationStoreMethods {
-  const required: Array<keyof NotificationStoreMethods> = [
-    'createNotificationEvent',
-    'enqueueNotification',
-    'getNotificationEvent',
-    'getPendingNotifications',
-    'getRetryableNotifications',
-    'listOutboxRecords',
-    'getNotificationPolicy',
-    'getActorMembership',
-    'appendAuditRecord',
-  ];
-  return required.every((method) => typeof store[method] === 'function');
-}
+> & {
+  evaluateAuthorization(
+    actorId: string,
+    capability: string,
+    scope: string,
+    expectedGovernanceVersion?: string,
+  ): ReturnType<WorkflowStore['evaluateAuthorization']>;
+};
 
 // ---------------------------------------------------------------------------
 // Native bindings types
@@ -1102,6 +1074,7 @@ export async function createNativeAnalysisProtocol(
     async pendingReview(
       ledger: unknown,
       _freshness: DataFreshness | null,
+      context?: PendingReviewScope,
     ): Promise<PendingReviewResult> {
       let snapshot: unknown = ledger;
       if (isSynchronizableLedger(ledger) || isLatestSynchronizationProvider(ledger)) {
@@ -1110,6 +1083,24 @@ export async function createNativeAnalysisProtocol(
           throw new Error('Ledger synchronization returned no snapshot.');
         }
         snapshot = synchronized;
+      }
+      if (context) {
+        const overrides = await context.store.getRuleOverrides(context.scope);
+        const source = asRecord(snapshot);
+        if (!source || !Array.isArray(source.rules))
+          throw new Error('Scoped rule analysis requires a complete snapshot.');
+        snapshot = {
+          ...source,
+          rules: source.rules.map((value: unknown) => {
+            const rule = asRecord(value);
+            if (!rule || typeof rule.id !== 'string')
+              throw new Error('Scoped rule analysis encountered an invalid rule.');
+            const inactive = overrides.get(rule.id)?.inactive;
+            return typeof inactive === 'boolean' && inactive !== rule.inactive
+              ? { ...rule, inactive }
+              : value;
+          }),
+        };
       }
       const input = JSON.stringify({
         snapshot,
@@ -1502,36 +1493,6 @@ export async function createNativeAnalysisProtocol(
       };
     },
 
-    // ------------------------------------------------------------------
-    // listSavedViews
-    // ------------------------------------------------------------------
-
-    async listSavedViews(_ledger: unknown): Promise<SavedViewsListResult> {
-      return { views: [], total: 0 };
-    },
-
-    // ------------------------------------------------------------------
-    // createSavedView
-    // ------------------------------------------------------------------
-
-    async createSavedView(
-      _ledger: unknown,
-      params: CreateSavedViewParams,
-    ): Promise<CreateSavedViewResult> {
-      const idInput = `view_${params.name}_${params.viewType}`;
-      const viewId = `view_${createHash('sha1').update(idInput).digest('hex').slice(0, 12)}`;
-
-      return {
-        view: {
-          viewId,
-          name: params.name,
-          viewType: params.viewType,
-          scope: params.scope,
-          sort: params.sort,
-          createdAt: new Date().toISOString(),
-        },
-      };
-    },
 
     // ------------------------------------------------------------------
     // financialState
@@ -2020,6 +1981,25 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
             : [];
         })
       : [];
+    const hasRuleTarget = item.proposedCategoryId !== undefined ||
+      item.proposedCategoryName !== undefined || item.ruleIds !== undefined;
+    let ruleTarget: {
+      proposedCategoryId: string;
+      proposedCategoryName: string;
+      ruleIds: string[];
+    } | undefined;
+    if (hasRuleTarget) {
+      if (typeof item.proposedCategoryId !== 'string' || !item.proposedCategoryId ||
+          typeof item.proposedCategoryName !== 'string' ||
+          !Array.isArray(item.ruleIds) || item.ruleIds.length === 0 ||
+          !item.ruleIds.every((id: unknown) => typeof id === 'string' && id.length > 0))
+        throw new Error('Native rule classification has incomplete target evidence.');
+      ruleTarget = {
+        proposedCategoryId: item.proposedCategoryId,
+        proposedCategoryName: item.proposedCategoryName,
+        ruleIds: item.ruleIds,
+      };
+    }
     return [
       {
         transactionId: item.transactionId,
@@ -2030,6 +2010,7 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
         payeeName: typeof item.payeeName === 'string' ? item.payeeName : null,
         date: item.date,
         reasons,
+        ...ruleTarget,
       },
     ];
   });
@@ -2065,24 +2046,27 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
  * Satisfied structurally by SqliteWorkflowStore.
  */
 export interface LifecycleStore {
-  cancelPendingJobs(): Promise<number>;
-  deleteActorMembership(actorId: string): Promise<boolean>;
-  recordExport(input: {
+  cancelPendingJobs(scope: LifecycleScope, options?: { actorOnly?: boolean }): Promise<number>;
+  recordExport(input: LifecycleScope & {
     budgetName: string;
     exportPath: string;
+    sha256Hash: string;
+    byteSize: number;
     accountCount: number;
     transactionCount: number;
   }): Promise<void>;
-  getLastExport(): Promise<{
+  getLastExport(scope: LifecycleScope): Promise<{
     exportedAt: string;
     budgetName: string;
     exportPath: string;
+    sha256Hash: string;
+    byteSize: number;
     accountCount: number;
     transactionCount: number;
   } | null>;
   deleteScopeData(
     scope: string,
-    options?: { actorId?: string },
+    lifecycleScope: LifecycleScope,
   ): Promise<{
     deleted: Record<string, number>;
     retained: { count: number; reasons: string[] };
@@ -2106,9 +2090,8 @@ const LIFECYCLE_SCOPES = [
  * ledger. If the ledger is null or lacks capability, the callbacks return
  * an error result rather than throwing.
  *
- * When a {@link LifecycleStore} is provided, destructive operations
- * perform actual cancellation, credential revocation, and scoped
- * deletion with full accounting.
+ * When a {@link LifecycleStore} is provided, destructive operations perform
+ * scoped job cancellation, export verification, and data deletion.
  *
  * @param getLedger A thunk that returns the current ledger (may be null).
  * @param options   Optional store and actor identity for concrete behavior.
@@ -2117,11 +2100,23 @@ export function createLifecycleCallbacks(
   getLedger: () => unknown,
   options?: {
     workflowStore?: LifecycleStore;
-    actorId?: string;
+    scope?: LifecycleScope;
+    budgetName?: string;
+    synchronization?: unknown;
+    disconnectConnection?: () => Promise<void>;
+    removeConnection?: () => Promise<void>;
   },
 ): LifecycleCallbacks {
   const store = options?.workflowStore;
-  const actorId = options?.actorId ?? 'usr_cli';
+  const requireScope = (): LifecycleScope => {
+    if (options?.scope) return options.scope;
+    throw new ApplicationError({
+      code: 'lifecycle_scope_required',
+      message: 'Lifecycle persistence requires an exact actor, space, and budget scope.',
+      reasonCodes: ['invalid_scope'],
+      retryable: false,
+    });
+  };
 
   return {
     async doExport(ledger: unknown) {
@@ -2134,18 +2129,20 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
-      // Ledger must support snapshot export — reject hardcoded placeholders
-      if (!isSynchronizableLedger(l)) {
-        throw new ApplicationError({
-          code: 'export_not_implemented',
-          message:
-            'The connected ledger cannot provide a full budget snapshot for export. Run "export" with a compatible ledger.',
-          reasonCodes: ['export_not_implemented'],
-          retryable: false,
-        });
+      const scope = store ? requireScope() : options?.scope;
+      let syncResult = options?.synchronization;
+      if (syncResult === undefined) {
+        if (!isSynchronizableLedger(l)) {
+          throw new ApplicationError({
+            code: 'export_not_implemented',
+            message:
+              'The connected ledger cannot provide a full budget snapshot for export. Run "export" with a compatible ledger.',
+            reasonCodes: ['export_not_implemented'],
+            retryable: false,
+          });
+        }
+        syncResult = await l.synchronize();
       }
-
-      const syncResult = await l.synchronize();
       if (!syncResult || typeof syncResult !== 'object' || !('snapshot' in syncResult)) {
         throw new ApplicationError({
           code: 'export_not_implemented',
@@ -2155,51 +2152,75 @@ export function createLifecycleCallbacks(
         });
       }
       const syncContainer = syncResult as Record<string, unknown>;
-      const snapshot = syncContainer.snapshot as Record<string, unknown>;
-
+      const snapshotValue = syncContainer.snapshot;
+      if (!snapshotValue || typeof snapshotValue !== 'object') {
+        throw new ApplicationError({
+          code: 'export_not_implemented',
+          message: 'Ledger synchronization returned no snapshot data.',
+          reasonCodes: ['export_not_implemented'],
+          retryable: false,
+        });
+      }
+      const snapshot = snapshotValue as Record<string, unknown>;
+      const ledgerRecord = l as Record<string, unknown>;
+      const budget = ledgerRecord.budget;
+      const budgetName =
+        options?.budgetName ??
+        (typeof ledgerRecord.budgetName === 'string'
+          ? ledgerRecord.budgetName
+          : budget !== null &&
+              typeof budget === 'object' &&
+              'name' in budget &&
+              typeof budget.name === 'string'
+            ? budget.name
+            : '');
+      if (!budgetName.trim()) {
+        throw new ApplicationError({
+          code: 'export_not_implemented',
+          message: 'The selected budget name is unavailable for export.',
+          reasonCodes: ['export_not_implemented'],
+          retryable: false,
+        });
+      }
       const now = new Date().toISOString();
-      const budgetName = 'Balanced Budget';
-
-      // Build export content from the connected budget snapshot
       const exportData = {
+        ...snapshot,
         version: 1,
         exportedAt: now,
         source: 'balanceframe-observe',
         budgetName,
-        accounts: Array.isArray(snapshot.accounts) ? snapshot.accounts : [],
-        transactions: Array.isArray(snapshot.transactions) ? snapshot.transactions : [],
-        categories: Array.isArray(snapshot.categories) ? snapshot.categories : [],
-        payees: Array.isArray(snapshot.payees) ? snapshot.payees : [],
       };
 
       const content = JSON.stringify(exportData, null, 2);
       const contentBytes = Buffer.byteLength(content, 'utf-8');
       const sha256Hash = createHash('sha256').update(content, 'utf-8').digest('hex');
-
-      // Determine export path — unique per call
-      const exportDir = '/tmp/balanceframe-export';
-      const timestamp = Date.now();
-      const rand = randomBytes(4).toString('hex');
-      const exportFilename = `budget-export-${timestamp}-${rand}.json`;
+      const exportDir = await mkdtemp(join(tmpdir(), 'balanceframe-export-'));
+      const exportFilename = `budget-export-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
       const exportPath = join(exportDir, exportFilename);
-
-      // Atomic write: temp file → rename (atomic on POSIX)
-      const tmpPath = exportPath + '.' + randomBytes(4).toString('hex');
-      await mkdir(exportDir, { recursive: true });
-      await writeFile(tmpPath, content, 'utf-8');
+      const tmpPath = `${exportPath}.${randomBytes(4).toString('hex')}`;
+      await writeFile(tmpPath, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
       await rename(tmpPath, exportPath);
+      const bfvPath = `${exportPath}.bfv`;
+      await writeFile(bfvPath, `${sha256Hash}\n${contentBytes}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      });
 
-      // Write verification sidecar (.bfv = balanceframe-verify)
-      const bfvPath = exportPath + '.bfv';
-      await writeFile(bfvPath, `${sha256Hash}\n${contentBytes}\n`, 'utf-8');
-
-      // Record export in store for export-before-delete tracking
       const accountCount = Array.isArray(snapshot.accounts) ? snapshot.accounts.length : 0;
       const transactionCount = Array.isArray(snapshot.transactions)
         ? snapshot.transactions.length
         : 0;
-      if (store) {
-        await store.recordExport({ budgetName, exportPath, accountCount, transactionCount });
+      if (store && scope) {
+        await store.recordExport({
+          ...scope,
+          budgetName,
+          exportPath,
+          sha256Hash,
+          byteSize: contentBytes,
+          accountCount,
+          transactionCount,
+        });
       }
 
       return {
@@ -2215,7 +2236,8 @@ export function createLifecycleCallbacks(
 
     async doDisconnect(ledger: unknown) {
       const l = ledger ?? getLedger();
-      if (!l) {
+      const scope = store ? requireScope() : options?.scope;
+      if (!l && !options?.disconnectConnection) {
         throw new ApplicationError({
           code: 'not_connected',
           message: 'No ledger connected. Use a connect command first.',
@@ -2223,34 +2245,34 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
-      let cancelledJobs = 0;
-      if (store) {
-        cancelledJobs = await store.cancelPendingJobs();
-        await store.deleteActorMembership(actorId);
-      }
 
       let cacheRemoved = false;
-      let credentialsRemoved = false;
-
-      if (isDisconnectableLedger(l)) {
+      if (options?.disconnectConnection) {
+        await options.disconnectConnection();
+        cacheRemoved = true;
+      } else if (isDisconnectableLedger(l)) {
         await l.disconnect();
         cacheRemoved = true;
-        credentialsRemoved = true;
       }
 
+      const cancelledJobs =
+        store && scope
+          ? await store.cancelPendingJobs(scope, { actorOnly: true })
+          : 0;
       return {
         disconnected: cacheRemoved,
         cacheRemoved,
-        credentialsRemoved,
+        credentialsRemoved: false,
         message: cacheRemoved
-          ? `Disconnected successfully. ${cancelledJobs} pending job(s) cancelled. Actual server was not modified.`
+          ? `Disconnected successfully. ${cancelledJobs} pending job(s) cancelled. Stored credentials were not removed. Actual server was not modified.`
           : 'The connected ledger does not support disconnect cleanup. No cache or credentials were removed.',
       };
     },
 
     async doRemoveConnection(ledger: unknown) {
       const l = ledger ?? getLedger();
-      if (!l) {
+      const scope = store ? requireScope() : options?.scope;
+      if (!l && !options?.removeConnection) {
         throw new ApplicationError({
           code: 'not_connected',
           message: 'No ledger connected. Use a connect command first.',
@@ -2258,45 +2280,33 @@ export function createLifecycleCallbacks(
           retryable: true,
         });
       }
-      if (store) {
-        await store.cancelPendingJobs();
-        await store.deleteScopeData('connection', { actorId });
-        await store.deleteActorMembership(actorId);
-      }
 
       let cacheRemoved = false;
-      let credentialsRemoved = false;
-
-      if (isDisconnectableLedger(l)) {
+      if (options?.removeConnection) {
+        await options.removeConnection();
+        cacheRemoved = true;
+      } else if (isDisconnectableLedger(l)) {
         await l.disconnect();
         cacheRemoved = true;
-        credentialsRemoved = true;
+      }
+      if (store && scope) {
+        await store.cancelPendingJobs(scope);
+        await store.deleteScopeData('connection', scope);
       }
 
       return {
         removed: cacheRemoved,
         cacheRemoved,
-        credentialsRemoved,
+        credentialsRemoved: false,
         broadAccessCaveat: cacheRemoved
           ? 'The BalanceFrame connector accesses all budget data including bank-sync credentials ' +
             'stored on the Actual server (which are not protected by Actual E2E encryption). ' +
             'Project-side filtering does not reduce the broad access held by the connector. ' +
-            'Ensure your Actual server and backups have appropriate security.'
+            'Ensure your Actual server and backups have appropriate security. Stored credentials were not removed.'
           : 'The connected ledger does not support disconnect cleanup. No cache or credentials were removed.',
       };
     },
-    async doDeleteData(ledger: unknown, scope: string) {
-      const l = ledger ?? getLedger();
-      if (!l) {
-        throw new ApplicationError({
-          code: 'not_connected',
-          message: 'No ledger connected. Use a connect command first.',
-          reasonCodes: ['missing_ledger_config'],
-          retryable: true,
-        });
-      }
-
-      // Validate scope
+    async doDeleteData(_ledger: unknown, scope: string) {
       if (!(LIFECYCLE_SCOPES as readonly string[]).includes(scope)) {
         throw new ApplicationError({
           code: 'invalid_scope',
@@ -2305,7 +2315,6 @@ export function createLifecycleCallbacks(
           retryable: false,
         });
       }
-
       // Export-before-delete enforcement — requires store AND valid artifact
       if (!store) {
         throw new ApplicationError({
@@ -2317,7 +2326,8 @@ export function createLifecycleCallbacks(
         });
       }
 
-      const lastExport = await store.getLastExport();
+      const lifecycleScope = requireScope();
+      const lastExport = await store.getLastExport(lifecycleScope);
       if (!lastExport) {
         throw new ApplicationError({
           code: 'export_required',
@@ -2389,22 +2399,28 @@ export function createLifecycleCallbacks(
         });
       }
 
-      // 5. Parse sidecar for expected hash
       const lines = bfvContent.trim().split('\n');
       const expectedHash = lines[0]?.trim();
-      if (!expectedHash || !/^[a-f0-9]{64}$/.test(expectedHash)) {
+      const expectedByteSize = Number(lines[1]?.trim());
+      if (
+        !expectedHash ||
+        !/^[a-f0-9]{64}$/i.test(expectedHash) ||
+        expectedHash !== lastExport.sha256Hash ||
+        !Number.isSafeInteger(expectedByteSize) ||
+        expectedByteSize !== lastExport.byteSize
+      ) {
         throw new ApplicationError({
           code: 'export_verification_corrupt',
-          message: 'Export verification metadata is corrupt. Run "export" first.',
+          message: 'Export verification metadata does not match the stored export provenance.',
           reasonCodes: ['export_before_delete', 'export_verification_corrupt'],
           retryable: false,
         });
       }
 
-      // 6. Readability + hash verification — read the actual export file
-      let actualContent: string;
+      // 6. Read and verify the exact artifact bytes against both records.
+      let actualContent: Buffer;
       try {
-        actualContent = await readFile(exportPath, 'utf-8');
+        actualContent = await readFile(exportPath);
       } catch {
         throw new ApplicationError({
           code: 'export_not_readable',
@@ -2414,36 +2430,34 @@ export function createLifecycleCallbacks(
           retryable: false,
         });
       }
-
-      const actualHash = createHash('sha256').update(actualContent, 'utf-8').digest('hex');
-      if (actualHash !== expectedHash) {
+      const actualHash = createHash('sha256').update(actualContent).digest('hex');
+      if (
+        actualContent.length !== expectedByteSize ||
+        actualContent.length !== lastExport.byteSize ||
+        actualHash !== expectedHash
+      ) {
         throw new ApplicationError({
           code: 'export_hash_mismatch',
           message:
-            'Export file content hash does not match the recorded verification. The export may have been modified. Run "export" first.',
+            'Export bytes do not match the stored hash and size provenance. The export may have been modified. Run "export" first.',
           reasonCodes: ['export_before_delete', 'export_hash_mismatch'],
           retryable: false,
         });
       }
 
-      // ── All checks passed — proceed with scoped deletion ───────
-      let cancelledJobs = 0;
-      let deleted: Record<string, number> = {};
-      let retained = { count: 0, reasons: [] as string[] };
       const correlationId = `del_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-
-      cancelledJobs = await store.cancelPendingJobs();
-      const result = await store.deleteScopeData(scope, { actorId });
-      deleted = result.deleted;
-      retained = result.retained;
+      const cancelledJobs = await store.cancelPendingJobs(lifecycleScope, {
+        actorOnly: scope === 'user',
+      });
+      const result = await store.deleteScopeData(scope, lifecycleScope);
 
       return {
-        actorId,
+        actorId: lifecycleScope.actorId,
         scope,
-        recordsDeleted: Object.values(deleted).reduce((a, b) => a + b, 0),
-        recordsRetained: retained.count,
-        retentionReasons: retained.reasons,
-        revokedCredentials: deleted.memberships ?? 0,
+        recordsDeleted: Object.values(result.deleted).reduce((a, b) => a + b, 0),
+        recordsRetained: result.retained.count,
+        retentionReasons: result.retained.reasons,
+        revokedCredentials: 0,
         revokedDelegations: 0,
         cancelledJobs,
         backupRetentionStatus: 'retained',
@@ -2452,6 +2466,7 @@ export function createLifecycleCallbacks(
         failures: [],
       };
     },
+
   };
 }
 
@@ -2505,7 +2520,11 @@ export async function createObserveComposition(
     options?.lifecycleCallbacks ??
     createLifecycleCallbacks(() => ledger, {
       workflowStore: options?.workflowStore,
-      actorId,
+      scope: options?.scope,
+      budgetName: options?.budgetName,
+      synchronization: options?.synchronization,
+      disconnectConnection: options?.disconnectConnection,
+      removeConnection: options?.removeConnection,
     });
 
   // Build notification runtime
@@ -2545,30 +2564,11 @@ export async function createObserveComposition(
       defaultRedactionClass: 'public',
     };
     const notificationPolicy = options.notificationPolicy ?? defaultPolicy;
-    const notificationCapableStore = options.workflowStore;
     notificationRuntime = new NotificationRuntime(
-      notificationCapableStore as unknown as WorkflowStore,
+      options.workflowStore as unknown as WorkflowStore,
       notificationPolicy,
       [new InAppChannelAdapter()],
     );
-
-    // Wire up persisted re-authorisation hook using store's membership data.
-    // The store satisfies NotificationStoreMethods structurally at runtime
-    // when it is a real WorkflowStore; we use the type guard to convince
-    // TypeScript so the hook can call getActorMembership.
-    if (isNotificationStore(notificationCapableStore as Record<string, unknown>)) {
-      const membershipStore = notificationCapableStore as NotificationStoreMethods;
-      notificationRuntime.setReAuthorizationHook(
-        async (actorId: string, capability: string, _scope: string) => {
-          try {
-            const membership = await membershipStore.getActorMembership(actorId);
-            return membership?.capabilities.includes(capability) ?? false;
-          } catch {
-            return false;
-          }
-        },
-      );
-    }
   }
 
   return {

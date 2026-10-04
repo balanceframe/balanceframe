@@ -4,11 +4,13 @@ import type {
   PublicLiquidityConfiguration,
   PublicLiquidityGrants,
 } from '@balanceframe/application';
+import { liquidityGrantInputSchema } from '@balanceframe/application';
 import LiquidityObservationEditor from '../../app/components/LiquidityObservationEditor.vue';
 import LiquidityPolicyEditor from '../../app/components/LiquidityPolicyEditor.vue';
 import LiquidityGrantEditor from '../../app/components/LiquidityGrantEditor.vue';
 
 const fetchMock = vi.fn();
+const proofFetch = vi.fn();
 const ok = (result: unknown) => ({ status: 'ok', result });
 const money = (minorUnits: string) => ({ minorUnits, currency: 'USD' });
 const global = {
@@ -32,6 +34,10 @@ function button(surface: Surface, label: string) {
   const match = surface.findAll('button').find((item) => item.text() === label);
   if (!match) throw new Error(`Missing button: ${label}`);
   return match;
+}
+async function saveWithPassword(surface: Surface, label: string) {
+  await field(surface, 'Account password').setValue('fixture-password');
+  await button(surface, label).trigger('click');
 }
 const wrappers: VueWrapper[] = [];
 function remember<T extends VueWrapper>(wrapper: T): T {
@@ -149,6 +155,9 @@ function configured(): PublicLiquidityConfiguration {
 }
 beforeEach(() => {
   fetchMock.mockReset();
+  proofFetch.mockReset().mockResolvedValue({ ok: true, json: async () => ({ status: 'success' }) });
+  vi.stubGlobal('fetch', proofFetch);
+  vi.stubGlobal('useRuntimeConfig', () => ({ public: { demoMode: false } }));
   vi.stubGlobal('$fetch', fetchMock);
 });
 afterEach(() => {
@@ -196,13 +205,13 @@ describe('supplemental observations', () => {
     await field(pending, 'Already included').setValue(true);
     expect(value).toEqual(original);
     fetchMock.mockRejectedValueOnce({ statusCode: 409 });
-    await button(wrapper, 'Save user-attested observations').trigger('click');
+    await saveWithPassword(wrapper, 'Save user-attested observations');
     await flushPromises();
     expect(wrapper.get('[role="alert"]').text()).toMatch(/changed|refresh/i);
     expect((field(card, 'Authorization available').element as HTMLInputElement).value).toBe('7500');
     expect(wrapper.find('[role="status"]').exists()).toBe(false);
     fetchMock.mockResolvedValueOnce(ok({ ...configuration(), observationVersion: 5 }));
-    await button(wrapper, 'Save user-attested observations').trigger('click');
+    await saveWithPassword(wrapper, 'Save user-attested observations');
     await flushPromises();
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
     expect(wrapper.get('[role="status"]').text()).toMatch(/saved.*reevaluated/i);
@@ -246,7 +255,7 @@ describe('supplemental observations', () => {
     await field(pending, 'Amount').setValue('500');
     expect(pending.text()).toContain('not settlement evidence');
     fetchMock.mockResolvedValueOnce(ok({ ...configuration(), observationVersion: 5 }));
-    await button(wrapper, 'Save user-attested observations').trigger('click');
+    await saveWithPassword(wrapper, 'Save user-attested observations');
     await flushPromises();
     expect(wrapper.get('[role="status"]').text()).toMatch(/saved/i);
     await button(card, 'Remove supplemental obligation').trigger('click');
@@ -263,8 +272,10 @@ describe('supplemental observations', () => {
     const wrapper = remember(
       mount(LiquidityObservationEditor, { props: { configuration: configuration() }, global }),
     );
+    await field(wrapper, 'Account password').setValue('fixture-password');
     await wrapper.get('form').trigger('submit');
     await wrapper.get('form').trigger('submit');
+    await flushPromises();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(wrapper.get('form > fieldset').attributes('disabled')).toBeDefined();
     reject({ status: 403 });
@@ -311,14 +322,14 @@ describe('account policy and transfer timing', () => {
     await field(route, 'Cutoff').setValue('');
     expect(value).toEqual(original);
     fetchMock.mockRejectedValueOnce({ status: 409 });
-    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await saveWithPassword(wrapper, 'Save account policy and timing');
     await flushPromises();
     expect(wrapper.get('[role="alert"]').text()).toMatch(/refresh/i);
     expect((field(account, 'Protected buffer').element as HTMLInputElement).value).toBe(
       '9007199254740995',
     );
     fetchMock.mockResolvedValueOnce(ok(configured()));
-    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await saveWithPassword(wrapper, 'Save account policy and timing');
     await flushPromises();
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
     expect(wrapper.get('[role="status"]').text()).toMatch(/saved.*reevaluate/i);
@@ -333,7 +344,7 @@ describe('account policy and transfer timing', () => {
     await field(wrapper, 'Reservation conflict policy').setValue('block');
     expect(value.policy!.reservationMode).toBe('inform');
     fetchMock.mockResolvedValueOnce(ok(configured()));
-    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await saveWithPassword(wrapper, 'Save account policy and timing');
     await flushPromises();
     const request = fetchMock.mock.calls[0]?.[1] as {
       body: { reservationMode: string };
@@ -375,7 +386,7 @@ describe('account policy and transfer timing', () => {
     await button(wrapper, 'Remove route 1').trigger('click');
     expect(wrapper.text()).not.toContain('Known arrival');
     fetchMock.mockResolvedValueOnce(ok(configured()));
-    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await saveWithPassword(wrapper, 'Save account policy and timing');
     await flushPromises();
     expect(
       wrapper.findAll('[role="status"]').some((status) => /policy saved/i.test(status.text())),
@@ -443,7 +454,7 @@ describe('account policy and transfer timing', () => {
     await field(category, 'Cooldown').setValue('45');
 
     fetchMock.mockResolvedValueOnce(ok(value));
-    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await saveWithPassword(wrapper, 'Save account policy and timing');
     await flushPromises();
 
     const request = fetchMock.mock.calls[0]?.[1] as { body: { categoryPolicies: unknown } };
@@ -516,7 +527,7 @@ describe('account policy and transfer timing', () => {
     await field(category, 'Category kind').setValue('discretionary');
     await field(category, 'Cooldown').setValue('15');
     fetchMock.mockResolvedValueOnce(ok(value));
-    await button(wrapper, 'Save account policy and timing').trigger('click');
+    await saveWithPassword(wrapper, 'Save account policy and timing');
     await flushPromises();
 
     const request = fetchMock.mock.calls[0]?.[1] as { body: { categoryPolicies: unknown } };
@@ -541,8 +552,10 @@ describe('account policy and transfer timing', () => {
     const wrapper = remember(
       mount(LiquidityPolicyEditor, { props: { configuration: configured() }, global }),
     );
+    await field(wrapper, 'Account password').setValue('fixture-password');
     await wrapper.get('form').trigger('submit');
     await wrapper.get('form').trigger('submit');
+    await flushPromises();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(wrapper.get('form > fieldset').attributes('disabled')).toBeDefined();
     reject(new Error('Policy store unavailable'));
@@ -591,13 +604,39 @@ describe('scoped resource access', () => {
       },
     ];
     fetchMock.mockResolvedValueOnce(ok(saved));
-    await button(wrapper, 'Save scoped resource grants').trigger('click');
+    await saveWithPassword(wrapper, 'Save scoped resource grants');
     await flushPromises();
     expect(wrapper.get('[role="status"]').text()).toMatch(/access updated/i);
     expect(button(wrapper, 'Save scoped resource grants').attributes('disabled')).toBeDefined();
     expect((field(wrapper, 'Conclusion only').element as HTMLInputElement).checked).toBe(true);
     await field(wrapper, 'Conclusion only').setValue(false);
     expect(wrapper.find('[role="status"]').exists()).toBe(false);
+  });
+
+  it('saves an edited liquidity grant without replaying untouched governance grants', async () => {
+    const value = catalog();
+    value.grants.push({ ...value.grants[0]!, capability: 'full-read' });
+    fetchMock.mockResolvedValueOnce(ok(value));
+    const wrapper = remember(mount(LiquidityGrantEditor, { global }));
+    await flushPromises();
+    await field(wrapper, 'Current member').setValue('holder');
+    await field(wrapper, 'Resource').setValue('account:checking');
+    await field(wrapper, 'balance').setValue(false);
+    fetchMock.mockImplementationOnce(async (_url: string, options: { body: unknown }) => {
+      const input = liquidityGrantInputSchema.parse(options.body);
+      expect(input.grants).toEqual([{
+        actorId: 'holder', resourceKind: 'account', resourceId: 'checking',
+        capability: 'balance', granted: false,
+      }]);
+      return ok({ ...value, grants: [
+        { ...value.grants[0]!, granted: false }, value.grants[1]!,
+      ] });
+    });
+    await saveWithPassword(wrapper, 'Save scoped resource grants');
+    await flushPromises();
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.get('[role="status"]').text()).toMatch(/access updated/i);
+    expect((field(wrapper, 'balance').element as HTMLInputElement).checked).toBe(false);
   });
 
   it('does not offer private grant editing on denial and supports retry with an empty membership catalog', async () => {
@@ -623,13 +662,45 @@ describe('scoped resource access', () => {
     await field(wrapper, 'balance').setValue(false);
     const { promise, reject } = Promise.withResolvers<unknown>();
     fetchMock.mockReturnValueOnce(promise);
-    await button(wrapper, 'Save scoped resource grants').trigger('click');
+    await saveWithPassword(wrapper, 'Save scoped resource grants');
+    await flushPromises();
     expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined();
     reject({ statusCode: 409 });
     await flushPromises();
     expect(wrapper.get('[role="alert"]').text()).toMatch(/changed/i);
     expect((field(wrapper, 'balance').element as HTMLInputElement).checked).toBe(false);
+    expect(button(wrapper, 'Save scoped resource grants').attributes('disabled')).toBeDefined();
+    await field(wrapper, 'Account password').setValue('fixture-password');
     expect(button(wrapper, 'Save scoped resource grants').attributes('disabled')).toBeUndefined();
     expect(wrapper.find('[role="status"]').exists()).toBe(false);
+  });
+});
+
+describe('settings password confirmation', () => {
+  it.each([
+    ['policy', () => mount(LiquidityPolicyEditor, { props: { configuration: configured() }, global }), 'Save account policy and timing'],
+    ['observations', () => mount(LiquidityObservationEditor, { props: { configuration: configured() }, global }), 'Save user-attested observations'],
+    ['grants', () => mount(LiquidityGrantEditor, { global }), 'Save scoped resource grants'],
+  ] as const)('does not persist %s when password confirmation fails', async (kind, create, label) => {
+    fetchMock.mockResolvedValue(ok(catalog()));
+    const wrapper = remember(create());
+    await flushPromises();
+    if (kind === 'grants') {
+      await field(wrapper, 'Current member').setValue('holder');
+      await field(wrapper, 'Resource').setValue('account:checking');
+      await field(wrapper, 'balance').setValue(false);
+    }
+    proofFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      json: async () => ({ status: 'error', error: { message: 'Password confirmation rejected.' } }),
+    });
+    fetchMock.mockClear();
+    await saveWithPassword(wrapper, label);
+    await flushPromises();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(wrapper.get('[role="alert"]').text()).toContain('Password confirmation rejected.');
+    expect((field(wrapper, 'Account password').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.emitted('saved')).toBeUndefined();
   });
 });

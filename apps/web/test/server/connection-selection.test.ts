@@ -1,188 +1,209 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createMutationConnectionManager } from '../../server/utils/mutation-executor';
+import type { H3Event } from 'h3';
+import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
+import { getHumanControlAuth, issueReauthentication } from '../../server/utils/reauthentication';
+import type { ReauthenticationEvent } from '../../server/utils/reauthentication';
 
-const {
-  mockReadBody,
-  mockSetResponseStatus,
-  mockConnect,
-  mockCreateDefaultConnectionManager,
-  mockBuildAuthorizationInfo,
-  mockOkEnvelope,
-  mockErrorEnvelope,
-  mockSanitizeError,
-  mockUpdateReviewCategoryCatalog,
-  connectedBudget,
-  connectedConfig,
-  connectedSynchronization,
-} = vi.hoisted(() => {
-  const connectedBudget = {
-    id: 'selected-budget-id',
-    groupId: 'selected-group-id',
-    name: 'Selected budget',
-    encrypted: false,
-  };
-  const connectedConfig = {
-    version: 1,
-    serverUrl: 'https://selected.actual.test',
-    budgetId: connectedBudget.id,
-    budgetName: connectedBudget.name,
-    groupId: connectedBudget.groupId,
-  };
-  const connectedSynchronization = {
-    snapshot: {
-      categories: [
-        {
-          id: 'category-1',
-          name: 'Groceries',
-          groupName: 'Living',
-          isIncome: false,
-          deleted: false,
-        },
-      ],
-    },
-  };
-  const authorization = {
-    actorId: 'test-actor',
-    capability: 'observe',
-    allowed: true,
-  };
-  const mockConnect = vi.fn();
-
-  return {
-    mockReadBody: vi.fn(),
-    mockSetResponseStatus: vi.fn(),
-    mockConnect,
-    mockCreateDefaultConnectionManager: vi.fn(() => ({ connect: mockConnect })),
-    mockBuildAuthorizationInfo: vi.fn(() => authorization),
-    mockOkEnvelope: vi.fn((result: unknown, auth: unknown, requestId: string) => ({
-      schemaVersion: '1',
-      requestId,
-      status: 'ok' as const,
-      dataFreshness: null,
-      authorization: auth,
-      result,
-      error: null,
-    })),
-    mockErrorEnvelope: vi.fn(
-      (code: string, message: string, auth: unknown, retryable: boolean, requestId: string) => ({
-        schemaVersion: '1',
-        requestId,
-        status: 'error' as const,
-        dataFreshness: null,
-        authorization: auth,
-        result: null,
-        error: { code, message, retryable },
-      }),
-    ),
-    mockSanitizeError: vi.fn(
-      (_error: unknown, _requestId: string, code: string, retryable: boolean) => ({
-        code,
-        message: 'connection failed',
-        retryable,
-      }),
-    ),
-    mockUpdateReviewCategoryCatalog: vi.fn(),
-    connectedBudget,
-    connectedConfig,
-    connectedSynchronization,
-  };
-});
-
-vi.mock('h3', () => ({
-  defineEventHandler: <T>(handler: T) => handler,
-  readBody: mockReadBody,
-  setResponseStatus: mockSetResponseStatus,
+const mocks = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  verifyPassword: vi.fn(),
+  connect: vi.fn(),
+  listBudgets: vi.fn(),
+  catalog: vi.fn(),
 }));
-
-vi.mock('@balanceframe/application', () => ({
-  createDefaultConnectionManager: mockCreateDefaultConnectionManager,
+vi.mock('h3', async (original) => ({
+  ...(await original<typeof import('h3')>()),
+  readBody: async (event: { body: unknown }) => event.body,
 }));
-
-vi.mock('../../server/utils/workflow-store', () => ({
-  buildAuthorizationInfo: mockBuildAuthorizationInfo,
-  okEnvelope: mockOkEnvelope,
-  errorEnvelope: mockErrorEnvelope,
-  sanitizeError: mockSanitizeError,
+vi.mock('../../lib/auth', () => ({
+  auth: { api: { getSession: mocks.getSession, verifyPassword: mocks.verifyPassword } },
 }));
-
+vi.mock('@balanceframe/application', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  createDefaultConnectionManager: () => ({ connect: mocks.connect, listBudgets: mocks.listBudgets }),
+}));
 vi.mock('../../server/utils/review-category-catalog', () => ({
-  updateReviewCategoryCatalog: mockUpdateReviewCategoryCatalog,
+  updateReviewCategoryCatalog: mocks.catalog,
 }));
-
 import handler from '../../server/api/connection/index.post';
 
-describe('POST /api/connection', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockReadBody.mockResolvedValue({ budgetId: `  ${connectedBudget.id}  ` });
-    mockConnect.mockResolvedValue({
-      connector: { name: 'selected-connector' },
-      budget: connectedBudget,
-      config: connectedConfig,
-      synchronization: connectedSynchronization,
-    });
-  });
+const actorId = 'connection-owner';
+const sessionId = 'connection-owner-session';
+let now = '2026-08-01T12:00:00.000Z';
+let store: SqliteWorkflowStore;
+let sequence = 0;
+let selectedSpaceId = '';
+let requestedBudgetId = '';
+let configuredBudgetId = 'previous-budget';
+let initialized = false;
+let proofCookie = '';
 
-  it('updates the review category catalog from the lifecycle-scoped connected budget', async () => {
-    const response = await handler({ context: { auth: { authenticated: true } } });
+function request(body: unknown = { budgetId: requestedBudgetId }) {
+  const responseHeaders = new Map<string, string | number | readonly string[]>();
+  return {
+    body,
+    node: {
+      req: { headers: {
+        origin: 'https://balanceframe.example.test',
+        'x-balanceframe-space': selectedSpaceId,
+        cookie: 'better-auth.session_token=connection-fixture',
+      } },
+      res: {
+        statusCode: 200,
+        statusMessage: '',
+        setHeader: (key: string, value: string | number | readonly string[]) => {
+          responseHeaders.set(key.toLowerCase(), value);
+        },
+        getHeader: (key: string) => responseHeaders.get(key.toLowerCase()),
+      },
+    },
+    context: {
+      auth: {
+        authenticated: true,
+        actorId,
+        user: { id: actorId },
+        method: 'session' as const,
+        principalType: 'human' as const,
+        sessionId,
+      },
+      runtimeConfig: { workflowDbPath: ':memory:', devBypassAuth: false },
+    },
+  };
+}
+async function confirmedRequest(body?: unknown) {
+  const event = request(body);
+  if (!proofCookie) {
+    const proof = await issueReauthentication(event as unknown as ReauthenticationEvent, 'fixture-password');
+    if (!proof) throw new Error('Fixture human reauthentication failed');
+    const setCookie = event.node.res.getHeader('set-cookie');
+    const cookies = Array.isArray(setCookie) ? setCookie : [String(setCookie)];
+    proofCookie = cookies.map((value) => value.split(';')[0]).join('; ');
+  }
+  event.node.req.headers.cookie += `; ${proofCookie}`;
+  return event;
+}
 
-    expect(mockConnect).toHaveBeenCalledTimes(1);
-    expect(mockConnect).toHaveBeenCalledWith({ budgetId: connectedBudget.id });
-    expect(mockUpdateReviewCategoryCatalog).toHaveBeenCalledTimes(1);
-    expect(mockUpdateReviewCategoryCatalog.mock.calls[0]?.[0]).toBe(connectedConfig);
-    expect(mockUpdateReviewCategoryCatalog.mock.calls[0]?.[1]).toBe(connectedSynchronization);
-    expect(mockUpdateReviewCategoryCatalog.mock.invocationCallOrder[0]).toBeLessThan(
-      mockOkEnvelope.mock.invocationCallOrder[0],
-    );
-    expect(response.status).toBe('ok');
-    expect(response.result).toEqual({
-      connected: true,
-      budget: connectedBudget,
-    });
-  });
-
-  it('does not update the catalog when the selection body is invalid', async () => {
-    mockReadBody.mockResolvedValue({ budgetId: '   ' });
-
-    const response = await handler({ context: { auth: { authenticated: true } } });
-
-    expect(mockCreateDefaultConnectionManager).not.toHaveBeenCalled();
-    expect(mockConnect).not.toHaveBeenCalled();
-    expect(mockUpdateReviewCategoryCatalog).not.toHaveBeenCalled();
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
-    expect(response.status).toBe('error');
-    expect(response.error?.code).toBe('BUDGET_ID_REQUIRED');
-  });
-
-  it('does not update the catalog when the selected budget cannot connect', async () => {
-    const failure = new Error('Actual is unavailable');
-    mockConnect.mockRejectedValueOnce(failure);
-
-    const response = await handler({ context: { auth: { authenticated: true } } });
-
-    expect(mockUpdateReviewCategoryCatalog).not.toHaveBeenCalled();
-    expect(mockSanitizeError).toHaveBeenCalledWith(
-      failure,
-      expect.any(String),
-      'ACTUAL_BUDGET_CONNECT_FAILED',
-      true,
-    );
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
-    expect(response.status).toBe('error');
-    expect(response.error?.code).toBe('ACTUAL_BUDGET_CONNECT_FAILED');
+beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  now = new Date(Date.parse('2026-08-01T12:00:00.000Z') + sequence * 360_000).toISOString();
+  vi.setSystemTime(now);
+  vi.clearAllMocks();
+  proofCookie = '';
+  vi.stubEnv('BETTER_AUTH_SECRET', 'connection-fixture-secret');
+  vi.stubEnv('BETTER_AUTH_URL', 'https://balanceframe.example.test');
+  vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'false');
+  mocks.getSession.mockResolvedValue({ user: { id: actorId }, session: { id: sessionId, userId: actorId } });
+  mocks.verifyPassword.mockResolvedValue({ status: true });
+  const workflow = getWorkflowStore(request() as unknown as EventWithContext);
+  if ('error' in workflow) throw new Error(workflow.error);
+  store = workflow.store;
+  if (!initialized) {
+    await store.claimBootstrap({ name: 'Connection owner', email: 'connection-owner@example.test', claimId: 'connection-fixture' });
+    await store.finalizeBootstrap({ claimId: 'connection-fixture', ownerUserId: actorId });
+    initialized = true;
+  }
+  const event = await confirmedRequest();
+  const auth = await getHumanControlAuth(event as unknown as ReauthenticationEvent);
+  if (!auth) throw new Error('Fixture signed proof is unavailable');
+  const space = store.governance.createSpace({ actorId, name: 'Connection fixture', kind: 'shared', now, auth });
+  selectedSpaceId = space.id;
+  requestedBudgetId = `connection-budget-${++sequence}`;
+  mocks.listBudgets.mockResolvedValue([{ id: requestedBudgetId, groupId: 'fixture-group', name: 'Fixture', encrypted: false }]);
+  configuredBudgetId = 'previous-budget';
+  mocks.connect.mockImplementation(async ({ budgetId }: { budgetId: string }) => {
+    configuredBudgetId = budgetId;
+    return {
+      config: { budgetId },
+      budget: { id: budgetId, name: 'Disposable fixture budget', groupId: 'fixture-group', encrypted: false },
+      synchronization: {},
+    };
   });
 });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+afterAll(() => store.close());
 
-// These behavior fixtures explicitly represent an authorized legacy full-read request.
-// Real membership, revocation and resource denial are covered in legacy-financial-read.test.ts.
-vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  requireFullRead: vi.fn(async () => ({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'liquidity:full-read', allowed: true },
-    budgetId: 'budget_test',
-  })),
-  requireRegisteredOwner: vi.fn(async () => ({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'owner:financial-discovery', allowed: true },
-  })),
-}));
+describe('governed Actual connection selection', () => {
+  it('rejects a budget bound to a different space before private selection or configuration changes', async () => {
+    const event = await confirmedRequest();
+    const auth = await getHumanControlAuth(event as unknown as ReauthenticationEvent);
+    if (!auth) throw new Error('Fixture signed proof is unavailable');
+    const foreign = store.governance.createSpace({ actorId, name: 'Other space', kind: 'shared', now, auth });
+    store.governance.bindBudget({ spaceId: foreign.id, budgetId: requestedBudgetId, now, auth });
+
+    const response = await handler(event as unknown as H3Event);
+
+    expect(response.status).toBe('error');
+    expect(response.result).toBeNull();
+    expect(configuredBudgetId).toBe('previous-budget');
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(store.governance.getSpace({ spaceId: selectedSpaceId })?.budgetId).toBeNull();
+  });
+
+  it('establishes the immutable authorized binding before restoring the private budget', async () => {
+    mocks.connect.mockImplementation(async ({ budgetId }: { budgetId: string }) => {
+      if (store.governance.getSpace({ spaceId: selectedSpaceId })?.budgetId !== budgetId)
+        throw new Error('Attempted private selection without a binding');
+      configuredBudgetId = budgetId;
+      return { config: { budgetId }, budget: { id: budgetId }, synchronization: {} };
+    });
+
+    const response = await handler(await confirmedRequest() as unknown as H3Event);
+
+    expect(response.status).toBe('ok');
+    expect(configuredBudgetId).toBe(requestedBudgetId);
+    expect(store.governance.getSpace({ spaceId: selectedSpaceId })?.budgetId).toBe(requestedBudgetId);
+  });
+
+  it('does not restore a budget without current human proof', async () => {
+    const response = await handler(request() as unknown as H3Event);
+    expect(response.status).toBe('error');
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(configuredBudgetId).toBe('previous-budget');
+  });
+
+  it('rejects a blank budget without binding or restoring private data', async () => {
+    const response = await handler(await confirmedRequest({ budgetId: ' ' }) as unknown as H3Event);
+    expect(response.status).toBe('error');
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(store.governance.getSpace({ spaceId: selectedSpaceId })?.budgetId).toBeNull();
+  });
+
+  it('does not seal an unbound space to a nonexistent Actual budget', async () => {
+    mocks.listBudgets.mockResolvedValue([]);
+    mocks.connect.mockRejectedValueOnce(new Error('Budget not found on server'));
+
+    const response = await handler(await confirmedRequest() as unknown as H3Event);
+
+    expect(response.status).toBe('error');
+    expect(store.governance.getSpace({ spaceId: selectedSpaceId })?.budgetId).toBeNull();
+    expect(configuredBudgetId).toBe('previous-budget');
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+  it('uses the configured Source connection instead of another home budget for review mutations', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'review-connection-config-'));
+    const config = (budgetId: string) => ({
+      version: 1, serverUrl: 'http://actual.invalid', budgetId,
+      budgetName: budgetId, groupId: `group-${budgetId}`,
+    });
+    try {
+      await mkdir(join(directory, '.balanceframe'));
+      await writeFile(join(directory, '.balanceframe/config.json'), JSON.stringify(config('other-budget')));
+      const selectedPath = join(directory, 'selected.json');
+      await writeFile(selectedPath, JSON.stringify(config('selected-budget')));
+      vi.stubEnv('HOME', directory);
+      vi.stubEnv('BALANCEFRAME_CONFIG_PATH', selectedPath);
+      expect((await createMutationConnectionManager().loadConfig())?.budgetId).toBe('selected-budget');
+      expect((await createMutationConnectionManager({
+        configPath: join(directory, '.balanceframe/config.json'),
+      }).loadConfig())?.budgetId).toBe('other-budget');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});

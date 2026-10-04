@@ -12,20 +12,23 @@ import {
   createDefaultConnectionManager,
   createNativeAnalysisProtocol,
   attentionHomeAnalysis,
-  createLiquidityService,
+  LiquidityProjector,
 } from '@balanceframe/application';
 import type { CommandInput, AttentionHomeParams } from '@balanceframe/application';
 import { hasLegacyFullRead } from '../../utils/legacy-financial-read';
-import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
+import { defineEventHandler, getQuery, setHeader, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  getActorId,
   requireAuthorization,
   sanitizeError,
   envelopeMetadata,
 } from '../../utils/workflow-store';
+import type { EventWithContext } from '../../utils/workflow-store';
+import { requireSelectedSpace } from '../../utils/space-context';
+import { selectedLiquidityActor } from '../../utils/liquidity-service';
+import { z } from 'zod';
 
 /** Map an analysis error code to an HTTP status. */
 function httpStatusForCode(code: string): number {
@@ -94,67 +97,108 @@ function sanitizeCanonicalEvidence(value: unknown): unknown {
   return sanitized;
 }
 
+const HomeQuery = z.object({
+  categoryGroup: z.string().trim().min(1).max(120).optional(),
+  detailed: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
+  month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+}).strict();
 export default defineEventHandler(async (event) => {
-  const auth = await requireAuthorization(event, 'observe');
-  if (!auth.ok) return auth.response;
-
-  const authInfo = auth.info;
+  setHeader(event, 'Cache-Control', 'private, no-store');
   const requestId = crypto.randomUUID();
-  const query = getQuery(event);
-
-  const categoryGroup =
-    typeof query.categoryGroup === 'string' ? query.categoryGroup.trim() : undefined;
-
-  const detailedRaw = typeof query.detailed === 'string' ? query.detailed : '';
-  const detailed = detailedRaw ? detailedRaw === 'true' : undefined;
-
-  const month = typeof query.month === 'string' ? query.month.trim() : undefined;
-  if (month !== undefined && !/^\d{4}-\d{2}$/.test(month)) {
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  const budgetId = selected.space.budgetId;
+  if (!budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget.', null, false, requestId);
+  }
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'observe',
+    `budget:${budgetId}`,
+  );
+  if (!authorization.ok) return authorization.response;
+  const authInfo = authorization.info;
+  const query = HomeQuery.safeParse(getQuery(event));
+  if (!query.success) {
     setResponseStatus(event, 400);
-    return errorEnvelope(
-      'INVALID_MONTH',
-      'month must be in YYYY-MM format.',
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope('INVALID_HOME_QUERY', 'Use supported attention filters.', authInfo, false, requestId);
   }
 
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
+    setResponseStatus(event, 503);
+    return errorEnvelope('STORE_UNAVAILABLE', workflow.error, authInfo, true, requestId);
+  }
+  const actor = selectedLiquidityActor(workflow.store, selected);
+  if (!actor) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'The selected space is unavailable.', authInfo, false, requestId);
+  }
+  const manager = createDefaultConnectionManager({
+    configPath: process.env.BALANCEFRAME_CONFIG_PATH,
+  });
+
   try {
-    const manager = createDefaultConnectionManager({
-      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
-    });
     const config = await manager.loadConfig();
-    if (!config) {
-      setResponseStatus(event, 503);
+    if (!config || config.budgetId !== budgetId) {
+      setResponseStatus(event, 409);
       return errorEnvelope(
-        'not_connected',
-        'No ledger connected. Configure an Actual budget first.',
+        'SPACE_CONNECTION_MISMATCH',
+        'The configured budget does not match the selected space.',
         authInfo,
-        true,
+        false,
         requestId,
       );
     }
-    const wf = getWorkflowStore(event);
-    if ('error' in wf) {
-      setResponseStatus(event, 503);
-      return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
-    }
-    if (!(await hasLegacyFullRead(wf.store, getActorId(event), config.budgetId))) {
-      const liquidity = await createLiquidityService({
-        connectionManager: manager,
-        store: wf.store,
-      });
-      const transfers = await liquidity.attention({
-        actorId: getActorId(event),
-        budgetId: config.budgetId,
-      });
+
+    const context: AttentionHomeParams['context'] = {};
+    if (query.data.categoryGroup !== undefined) context.categoryGroup = query.data.categoryGroup;
+    if (query.data.detailed !== undefined) context.detailed = query.data.detailed;
+    if (query.data.month !== undefined) context.month = query.data.month;
+    const params: AttentionHomeParams = {
+      ...(Object.keys(context).length > 0 ? { context } : {}),
+    };
+
+    const transferConclusionScope = {
+      ...actor,
+      resourceKind: 'budget' as const,
+      resourceId: budgetId,
+      capability: 'conclusion' as const,
+      operation: 'transfer',
+      phase: 'read' as const,
+    };
+    const activeTransfers = (
+      workflow.store.liquidity.isAuthorized({ ...transferConclusionScope, visibility: 'resource' }) ||
+      workflow.store.liquidity.isAuthorized({ ...transferConclusionScope, visibility: 'aggregate' })
+    )
+      ? workflow.store.liquidity
+          .listTransferProposalIntents({ ...actor, capability: 'conclusion' })
+          .filter((proposal) =>
+            proposal.state.outcome && !['confirmed', 'closed'].includes(proposal.state.phase),
+          )
+      : [];
+    const transferBlockers = activeTransfers.flatMap((proposal) => {
+      const transferConclusion = LiquidityProjector.transferConclusion(
+        workflow.store,
+        actor,
+        proposal.payload.plan,
+      );
+      return transferConclusion
+        ? [{
+            code: 'transfer_needs_attention',
+            classification: 'transfer_needs_attention',
+            severity: 'warning',
+            message: 'A transfer needs authorized review. Acknowledgement is not settlement.',
+            transferConclusion,
+          }]
+        : [];
+    });
+
+    if (!(await hasLegacyFullRead(workflow.store, actor))) {
       return okEnvelope(
         {
-          blockers: transfers.map((transfer) => ({
-            ...transfer,
-            code: 'transfer_needs_attention',
-          })),
+          blockers: transferBlockers,
           alerts: [],
           recurrences: [],
           categoryRisks: [],
@@ -165,40 +209,28 @@ export default defineEventHandler(async (event) => {
       );
     }
 
-    const context: AttentionHomeParams['context'] = {};
-    if (categoryGroup !== undefined) context.categoryGroup = categoryGroup;
-    if (detailed !== undefined) context.detailed = detailed;
-    if (month !== undefined) context.month = month;
-
-    const params: AttentionHomeParams = {
-      ...(Object.keys(context).length > 0 ? { context } : {}),
-    };
-
     const envelope = await manager.withConnection(async (connected) => {
+      if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId)
+        throw new Error('Selected budget changed');
       const protocol = await createNativeAnalysisProtocol();
       const input: CommandInput = {
         args: [],
         mode: 'observe',
-        actorId: getActorId(event),
+        actorId: selected.auth.actorId,
         requestId,
         ledger: connected.connector,
         freshness: null,
         analysisProtocol: protocol,
       };
       return attentionHomeAnalysis(input, params);
-    });
+    }, { expectedBudgetId: budgetId, dispose: true });
 
-    const liquidity = await createLiquidityService({ connectionManager: manager, store: wf.store });
-    const transfers = await liquidity.attention({
-      actorId: getActorId(event),
-      budgetId: config.budgetId,
-    });
     if (envelope.status === 'ok') {
-      envelope.result.blockers.push(
-        ...transfers.map((transfer) => ({ ...transfer, code: 'transfer_needs_attention' })),
+      const sanitized = z.object({ blockers: z.array(z.unknown()) }).passthrough().parse(
+        sanitizeCanonicalEvidence(envelope.result),
       );
       return okEnvelope(
-        sanitizeCanonicalEvidence(envelope.result) as typeof envelope.result,
+        { ...sanitized, blockers: [...sanitized.blockers, ...transferBlockers] },
         authInfo,
         envelope.requestId,
         envelopeMetadata(envelope),

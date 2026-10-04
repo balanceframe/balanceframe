@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils';
+import { useToast, toastMaxInjectionKey, type Toast } from '@nuxt/ui/composables/useToast';
 import {
   computed,
   nextTick,
@@ -19,21 +20,6 @@ import type {
   WebBulkActionResult,
 } from '../../types/review-client';
 import ReviewPage from '../../app/pages/review.vue';
-
-interface ToastAction {
-  readonly label: string;
-  readonly color?: string;
-  onClick: () => void | Promise<void>;
-}
-
-interface ToastMessage {
-  readonly title: string;
-  readonly description?: string;
-  readonly icon?: string;
-  readonly color: string;
-  readonly duration: number;
-  readonly actions?: readonly ToastAction[];
-}
 
 interface SyncError {
   readonly code: string;
@@ -68,7 +54,8 @@ const dollarFetchSpy =
   vi.fn<(url: string, options?: Record<string, unknown>) => Promise<unknown>>();
 const fetchSpy = vi.fn<typeof fetch>();
 const navigateToSpy = vi.fn<(path: string) => Promise<void>>();
-const toastAddSpy = vi.fn<(message: ToastMessage) => void>();
+const toasts = ref<Toast[]>([]);
+vi.mock('#imports', () => ({ useState: () => toasts }));
 
 const METRICS: ReviewMetricsSnapshot = {
   medianReviewTimeMs: 0,
@@ -343,7 +330,7 @@ function installGlobals(): void {
   vi.stubGlobal('$fetch', dollarFetchSpy);
   vi.stubGlobal('fetch', fetchSpy);
   vi.stubGlobal('useRuntimeConfig', () => ({ public: { apiBase: 'https://api.test' } }));
-  vi.stubGlobal('useToast', () => ({ add: toastAddSpy }));
+  vi.stubGlobal('useToast', useToast);
   vi.stubGlobal('navigateTo', navigateToSpy);
   vi.stubGlobal('ref', ref);
   vi.stubGlobal('computed', computed);
@@ -360,7 +347,7 @@ function installGlobals(): void {
 async function mountPage(): Promise<VueWrapper> {
   const page = shallowMount(ReviewPage as never, {
     attachTo: document.body,
-    global: { stubs },
+    global: { stubs, provide: { [toastMaxInjectionKey]: ref(1) } },
   }) as VueWrapper;
   mountedWrappers.push(page);
   await flushPromises();
@@ -397,6 +384,7 @@ function dispatchShortcutFromKeyboardInput(page: VueWrapper): KeyboardEvent {
 describe('review page recovery behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    toasts.value = [];
     composableDoubles.adapter = createAdapter();
     composableDoubles.handleKeyboard.mockReturnValue(false);
     correctSpy.mockResolvedValue(successfulAction());
@@ -455,6 +443,17 @@ describe('review page recovery behavior', () => {
       credentials: 'same-origin',
     });
     expect(correctionModal(page).props('categories')).toEqual(categoryCatalog);
+  });
+
+  it('keeps asynchronous Sync notifications within the app toast limit', async () => {
+    const page = await mountPage();
+    toasts.value = [{ id: 'previous', title: 'Previous operation' }];
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ status: 'ok', result: {}, error: null }));
+
+    await syncButton(page).trigger('click');
+    await flushPromises();
+
+    expect(toasts.value).toMatchObject([{ title: 'Sync complete', color: 'success' }]);
   });
 
   it('refetches categories after Sync when the initial catalog request is still pending', async () => {
@@ -651,14 +650,34 @@ describe('review page recovery behavior', () => {
     expect(modal.props('submitting')).toBe(false);
   });
 
+  it('keeps proposal notifications in the app toast limit and opens the proposal from its action', async () => {
+    const page = await mountPage();
+    toasts.value = [{ id: 'previous', title: 'Previous operation' }];
+    page.getComponent({ name: 'ReviewActions' }).vm.$emit('propose-rule');
+    await flushPromises();
+    expect(toasts.value).toHaveLength(1);
+    expect(toasts.value[0]).toMatchObject({
+      title: 'Rule proposal created',
+      description: 'Test Grocer → cat-groceries',
+      color: 'success',
+    });
+    expect(proposedRulesModal(page).props('open')).toBe(false);
+    const action = toasts.value[0]?.actions?.[0];
+    if (typeof action?.onClick !== 'function') throw new Error('Missing review proposal action.');
+    await action.onClick(new MouseEvent('click'));
+    await nextTick();
+    expect(proposedRulesModal(page).props('open')).toBe(true);
+  });
+
   it('offers connection setup for the canonical not_connected Sync failure', async () => {
     const page = await mountPage();
+    toasts.value = [{ id: 'previous', title: 'Previous operation' }];
 
     await syncButton(page).trigger('click');
     await flushPromises();
 
-    expect(toastAddSpy).toHaveBeenCalledOnce();
-    const toast = toastAddSpy.mock.calls[0]?.[0];
+    expect(toasts.value).toHaveLength(1);
+    const toast = toasts.value[0];
     if (!toast) throw new Error('Sync failure did not create a toast.');
     expect(toast).toMatchObject({
       title: 'Sync failed',
@@ -667,11 +686,11 @@ describe('review page recovery behavior', () => {
     });
     expect(toast.actions).toHaveLength(1);
     const connectionAction = toast.actions?.[0];
-    if (!connectionAction)
+    if (typeof connectionAction?.onClick !== 'function')
       throw new Error('not_connected Sync toast did not include a connection action.');
     expect(connectionAction.label).toBe('Configure connection');
 
-    await connectionAction.onClick();
+    await connectionAction.onClick(new MouseEvent('click'));
     expect(navigateToSpy).toHaveBeenCalledOnce();
     expect(navigateToSpy).toHaveBeenCalledWith('/connection');
   });
@@ -687,8 +706,8 @@ describe('review page recovery behavior', () => {
     await syncButton(page).trigger('click');
     await flushPromises();
 
-    expect(toastAddSpy).toHaveBeenCalledOnce();
-    const toast = toastAddSpy.mock.calls[0]?.[0];
+    expect(toasts.value).toHaveLength(1);
+    const toast = toasts.value[0];
     if (!toast) throw new Error('Sync failure did not create a toast.');
     expect(toast.actions).toBeUndefined();
     expect(navigateToSpy).not.toHaveBeenCalled();

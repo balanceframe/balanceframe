@@ -10,6 +10,9 @@ fn sample_candidate(tx_id: &str, reasons: Vec<Evidence>) -> CategorizationCandid
         payee_name: Some("Test Store".into()),
         date: "2026-07-18".into(),
         reasons,
+        proposed_category_id: None,
+        proposed_category_name: None,
+        rule_ids: None,
     }
 }
 

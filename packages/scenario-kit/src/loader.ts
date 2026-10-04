@@ -57,7 +57,6 @@ export async function initializeScenarioShell(
     webUrl: processes.webUrl,
     publicOrigin: processes.publicOrigin,
     bootstrapSecret: processes.bootstrapSecret,
-    workflowDbPath: processes.workflowDbPath,
     ...(internalSecret ? { internalSecret } : {}),
   });
   return { scenario, seeded, processes, initialized };

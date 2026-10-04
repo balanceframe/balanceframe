@@ -13,7 +13,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  getActorId,
   sanitizeError,
 } from '../../../utils/workflow-store';
 
@@ -49,9 +48,15 @@ export default defineEventHandler(async (event) => {
     );
   }
 
+  const authority = {
+    actorId: fullRead.info.actorId,
+    spaceId: fullRead.spaceId,
+    budgetId: fullRead.budgetId,
+    membershipId: fullRead.actor.membershipId!,
+  };
   try {
-    const existing = await wf.store.getSavedView(viewId);
-    if (!existing || existing.actorId !== fullRead.info.actorId) {
+    const existing = await wf.store.getSavedView(viewId, authority);
+    if (!existing) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'VIEW_NOT_FOUND',
@@ -74,7 +79,7 @@ export default defineEventHandler(async (event) => {
           : null
         : undefined;
 
-    const updated = await wf.store.updateSavedView(viewId, { name, scope, sort });
+    const updated = await wf.store.updateSavedView(viewId, { authority, name, scope, sort });
     return okEnvelope(updated, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'UPDATE_FAILED', false);

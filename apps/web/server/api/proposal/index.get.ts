@@ -1,31 +1,19 @@
-import { requireFullRead } from '../../utils/legacy-financial-read';
-/**
- * GET /api/proposal — list categorization proposals.
- *
- * Queries persisted proposals from the workflow store.
- * Returns non-superseded proposals ordered by creation time descending.
- * Each proposal includes a `simulationStatus` field computed from
- * stored preconditions.
- *
- * Response envelope:
- *   { proposals: ActionProposalListItem[], total: number }
- */
+import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
+import { ProposalAcquisitionError } from '@balanceframe/workflow-store';
+import type { ActionProposal, GenericProposalOperation } from '@balanceframe/workflow-store';
+import { buildProposalApprovalView } from '../../utils/proposal-approval-view';
+import type { ProposalApprovalView } from '../../utils/proposal-approval-view';
+import { requireSelectedSpace } from '../../utils/space-context';
+import type { EventWithContext } from '../../utils/workflow-store';
+import { errorEnvelope, getWorkflowStore, okEnvelope, sanitizeError } from '../../utils/workflow-store';
 
-import type { ActionProposal } from '@balanceframe/workflow-store';
-import { getWorkflowStore, okEnvelope, errorEnvelope } from '../../utils/workflow-store';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/** A proposal list item enriched with simulation status and preconditions. */
-export interface ActionProposalListItem {
+interface ActionProposalListItem {
   readonly id: string;
-  readonly operation: string;
+  readonly operation: GenericProposalOperation;
   readonly budgetId: string;
   readonly transactionId: string | null;
-  readonly categoryId: string;
-  /** JSON-encoded preconditions (includes merchant, source, reviewId, nativeRule, simulation). */
+  readonly categoryId: string | null;
+  readonly ruleId: string | null;
   readonly preconditions: string;
   readonly expiresAt: string;
   readonly actorId: string;
@@ -37,104 +25,90 @@ export interface ActionProposalListItem {
   readonly simulationStatus: 'present' | 'missing' | 'stale';
 }
 
-interface PreconditionsShape {
-  merchant?: string;
-  source?: string;
-  reviewId?: string;
-  nativeRule?: unknown;
-  simulation?: unknown;
-}
-
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-
 export default defineEventHandler(async (event) => {
-  const fullRead = await requireFullRead(event);
-  if (!fullRead.ok) return fullRead.response;
-  const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  if (!selected.space.budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget.', null, false, requestId);
+  }
 
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Proposals are unavailable.', null, true, requestId);
   }
 
   try {
-    const proposals = await wf.store.listProposals({
-      budgetId: fullRead.budgetId,
+    const proposals = await workflow.store.listProposals({
+      budgetId: selected.space.budgetId,
       superseded: false,
-      operations: ['set_category', 'create_rule'],
+      operations: ['set_category', 'create_rule', 'update_rule', 'delete_rule'],
+      limit: -1,
     });
-
-    const items: ActionProposalListItem[] = proposals
-      .filter((p) => p.operation === 'set_category' || p.operation === 'create_rule')
-      .map((p) => {
-        const simulationStatus = computeSimulationStatus(p);
-        return {
-          id: p.id,
-          operation: p.operation,
-          budgetId: p.budgetId,
-          transactionId: p.payload.transactionId,
-          categoryId: p.payload.categoryId,
-
-          preconditions: p.preconditions,
-          expiresAt: p.expiresAt,
-          actorId: p.actorId,
-          provenance: p.provenance,
-          providerModel: p.providerModel,
-          correlationId: p.correlationId,
-          supersededAt: p.supersededAt,
-          createdAt: p.createdAt,
-          simulationStatus,
-        };
+    const items: ActionProposalListItem[] = [];
+    const now = new Date().toISOString();
+    for (const proposal of proposals) {
+      if (proposal.spaceId !== selected.space.id ||
+          (proposal.operation !== 'set_category' && proposal.operation !== 'create_rule' &&
+           proposal.operation !== 'update_rule' && proposal.operation !== 'delete_rule')) continue;
+      let view: ProposalApprovalView | null;
+      try {
+        view = await buildProposalApprovalView({
+          store: workflow.store, proposal, actorId: selected.auth.actorId, auth: selected.auth, now,
+          requestId,
+        });
+      } catch (error) {
+        if (error instanceof ProposalAcquisitionError &&
+            (error.reasonCode === 'authorization_denied' ||
+             error.reasonCode === 'policy_version_mismatch' ||
+             error.reasonCode === 'payload_hash_mismatch')) continue;
+        throw error;
+      }
+      if (!view) continue;
+      const payload = view.payload;
+      items.push({
+        id: proposal.id,
+        operation: proposal.operation,
+        budgetId: proposal.budgetId,
+        transactionId: payload && 'transactionId' in payload ? payload.transactionId : null,
+        categoryId: payload && 'categoryId' in payload ? payload.categoryId : null,
+        ruleId: payload && 'ruleId' in payload ? payload.ruleId : null,
+        preconditions: JSON.stringify(view.preconditions),
+        expiresAt: proposal.expiresAt,
+        actorId: proposal.actorId,
+        provenance: proposal.provenance,
+        providerModel: proposal.providerModel,
+        correlationId: proposal.correlationId,
+        supersededAt: proposal.supersededAt,
+        createdAt: proposal.createdAt,
+        simulationStatus: computeSimulationStatus(proposal),
       });
-
-    // Independent total count for pagination
-    const total = await wf.store.countProposals({
-      budgetId: fullRead.budgetId,
-      superseded: false,
-      operations: ['set_category', 'create_rule'],
-    });
-
-    return okEnvelope({ proposals: items, total }, authInfo, requestId);
-  } catch (e) {
+    }
+    return okEnvelope({ proposals: items, total: items.length }, null, requestId);
+  } catch (error) {
+    const safe = sanitizeError(error, requestId, 'LIST_FAILED', false);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'LIST_FAILED',
-      e instanceof Error ? e.message : String(e),
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, null, false, requestId);
   }
 });
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function computeSimulationStatus(p: ActionProposal): 'present' | 'missing' | 'stale' {
-  let parsed: PreconditionsShape;
+function computeSimulationStatus(proposal: ActionProposal): 'present' | 'missing' | 'stale' {
+  let preconditions: unknown;
   try {
-    parsed = JSON.parse(p.preconditions);
+    preconditions = JSON.parse(proposal.preconditions) as unknown;
   } catch {
     return 'missing';
   }
-
-  if (!parsed.simulation) {
+  if (!preconditions || typeof preconditions !== 'object' || Array.isArray(preconditions))
     return 'missing';
-  }
-
-  // Stale if the proposal itself is expired
-  try {
-    if (new Date(p.expiresAt).getTime() <= Date.now()) {
-      return 'stale';
-    }
-  } catch {
-    return 'stale';
-  }
-
-  return 'present';
+  const simulation = Object.prototype.hasOwnProperty.call(preconditions, 'simulation')
+    ? (preconditions as Record<string, unknown>).simulation
+    : null;
+  if (!simulation || typeof simulation !== 'object' || Array.isArray(simulation))
+    return 'missing';
+  const expiry = Date.parse(proposal.expiresAt);
+  return !Number.isFinite(expiry) || expiry <= Date.now() ? 'stale' : 'present';
 }

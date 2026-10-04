@@ -66,7 +66,16 @@ function getNavigateToMock(): ReturnType<typeof vi.fn> {
 // Shared component stubs
 // ---------------------------------------------------------------------------
 
-const uiStubs: Record<string, Component> = {
+const uiStubs: Record<string, Component | boolean> = {
+  // Dashboard presentation is outside the registration/authentication boundary.
+  FindingCard: true,
+  SemanticAmount: true,
+  ReasonCodeList: true,
+  AnalysisTable: true,
+  AnalysisPage: {
+    props: ['title', 'loading', 'error', 'freshness', 'insufficientData'],
+    template: '<main><slot name="error-actions" /><slot name="content" /></main>',
+  },
   UContainer: { template: '<div class="ui-container"><slot /></div>' },
   UCard: {
     template: '<div class="ui-card"><slot name="header" /><slot /><slot name="footer" /></div>',

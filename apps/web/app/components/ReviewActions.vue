@@ -70,7 +70,7 @@
 
       <!-- Bulk actions (visible when selection active) -->
       <template v-if="hasSelection">
-        <UButtonGroup size="sm">
+        <UFieldGroup size="sm">
           <UButton
             label="Bulk approve"
             color="success"
@@ -92,7 +92,7 @@
             :disabled="loading"
             @click="$emit('bulk-skip')"
           />
-        </UButtonGroup>
+        </UFieldGroup>
       </template>
 
       <div class="flex-1" />

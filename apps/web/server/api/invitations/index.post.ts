@@ -1,137 +1,73 @@
-/**
- * POST /api/invitations — create a one-time invitation link.
- *
- * Only the instance owner (whose user ID matches registration_state.owner_user_id)
- * may create invitations.  The raw token is returned exclusively in this response;
- * the stored record contains only the sha256 digest.  Audit is handled by the store.
- */
-
-import { defineEventHandler, setResponseStatus } from 'h3';
-import { getWorkflowStore } from '../../utils/workflow-store';
-import { requireOwner } from '../../utils/registration';
+import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
+import { getHumanControlAuth, type ReauthenticationEvent } from '../../utils/reauthentication';
+import { requireSelectedSpace } from '../../utils/space-context';
+import type { EventWithContext } from '../../utils/workflow-store';
+import {
+  errorEnvelope,
+  getWorkflowStore,
+  okEnvelope,
+  requireAuthorization,
+} from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
+  setHeader(event, 'Cache-Control', 'private, no-store');
 
-  // 1. Ensure session auth
-  const ctx = event.context.auth;
-  if (!ctx?.authenticated) {
-    setResponseStatus(event, 401);
-    return {
-      schemaVersion: '1',
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'membership:manage',
+    `space:${selected.space.id}`,
+  );
+  if (!authorization.ok) return authorization.response;
+
+  const auth = await getHumanControlAuth(event as ReauthenticationEvent);
+  if (!auth || auth.actorId !== selected.auth.actorId) {
+    setResponseStatus(event, 403);
+    return errorEnvelope(
+      'HUMAN_CONTROL_REQUIRED',
+      'Recent human reauthentication is required.',
+      authorization.info,
+      false,
       requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Authentication required',
-        retryable: false,
-        reasonCodes: ['auth.missing_credentials'],
-      },
-    };
+    );
   }
 
-  // 2. Verify owner status
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return {
-      schemaVersion: '1',
-      requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Store unavailable',
-        retryable: true,
-        reasonCodes: ['store.unavailable'],
-      },
-    };
+    return errorEnvelope('STORE_UNAVAILABLE', workflow.error, authorization.info, false, requestId);
   }
 
-  let state;
   try {
-    state = await wf.store.getRegistrationState();
+    const result = await workflow.store.createInvitation({
+      spaceId: selected.space.id,
+      auth,
+      requestId,
+      correlationId: requestId,
+    });
+    return okEnvelope(
+      {
+        invitation: {
+          id: result.invitation.id,
+          status: result.invitation.status,
+          expiresAt: result.invitation.expiresAt,
+        },
+        inviteUrl: result.inviteUrl,
+      },
+      authorization.info,
+      requestId,
+    );
   } catch {
-    setResponseStatus(event, 503);
-    return {
-      schemaVersion: '1',
+    setResponseStatus(event, 409);
+    return errorEnvelope(
+      'INVITATION_CREATE_FAILED',
+      'Invitation could not be created for the selected space.',
+      authorization.info,
+      false,
       requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'SERVICE_UNAVAILABLE',
-        message: 'Registration state unavailable',
-        retryable: false,
-        reasonCodes: ['store.missing_migration'],
-      },
-    };
+    );
   }
-
-  if (state.mode !== 'complete' || !state.ownerUserId) {
-    setResponseStatus(event, 400);
-    return {
-      schemaVersion: '1',
-      requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'INVITATION_FAILED',
-        message: 'Instance has not been bootstrapped',
-        retryable: false,
-        reasonCodes: ['bootstrap.not_completed'],
-      },
-    };
-  }
-
-  const ownerCheck = requireOwner(event, state.ownerUserId);
-  if (!ownerCheck.ok) return ownerCheck.response;
-
-  // 3. Create invitation via store
-  // Store generates the raw token, computes the digest, persists, and appends audit.
-  let result;
-  try {
-    result = await wf.store.createInvitation(ctx.actorId);
-  } catch (err) {
-    setResponseStatus(event, 500);
-    return {
-      schemaVersion: '1',
-      requestId,
-      status: 'error',
-      dataFreshness: null,
-      authorization: null,
-      result: null,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: 'Failed to create invitation',
-        retryable: true,
-        reasonCodes: ['invitation.persist_failed'],
-      },
-    };
-  }
-
-  // 4. Return invitation metadata and copyable URL
-  return {
-    schemaVersion: '1',
-    requestId,
-    status: 'ok',
-    dataFreshness: null,
-    authorization: null,
-    result: {
-      invitation: {
-        id: result.invitation.id,
-        expiresAt: result.invitation.expiresAt,
-      },
-      inviteUrl: result.inviteUrl,
-    },
-    error: null,
-  };
 });

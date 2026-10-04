@@ -204,6 +204,215 @@ describe('ConnectionManager', () => {
     expect(refreshed.config).toBe(result.config);
   });
 
+  it('rejects a stale expected budget before refreshing a cached connection', async () => {
+    const connectedConfig = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-b',
+      budgetName: 'Budget B',
+      groupId: 'group-b',
+    } as const;
+    const budget = {
+      id: connectedConfig.budgetId,
+      groupId: connectedConfig.groupId,
+      name: connectedConfig.budgetName,
+      encrypted: false,
+    };
+    const loadCredentials = vi.fn(async () => ({ serverUrl: 'http://actual', secretKey: 'secret' }));
+    const synchronize = vi.fn(async () => ({
+      snapshot: { transactions: [], categories: [] },
+      health: { state: 'healthy' },
+      watermark: {},
+    }));
+    const selectBudget = vi.fn(async () => budget);
+    const connector = {
+      ...fakeConnector(),
+      connect: async () => [budget],
+      selectBudget,
+      synchronize,
+    };
+    const connectorFactory = vi.fn(async () => connector);
+    const callback = vi.fn(async () => undefined);
+    const manager = new ConnectionManager({
+      configPath: '/tmp/expected-budget-fast-path.json',
+      readFile: async () => JSON.stringify(connectedConfig),
+      writeFile: async () => {},
+      credentialStore: { load: loadCredentials, store: async () => {} },
+      connectorFactory,
+    });
+
+    await manager.restore();
+    await expect(
+      manager.withConnection(callback, { expectedBudgetId: 'budget-a' }),
+    ).rejects.toThrow();
+
+    expect(loadCredentials).toHaveBeenCalledTimes(1);
+    expect(connectorFactory).toHaveBeenCalledTimes(1);
+    expect(selectBudget).toHaveBeenCalledTimes(1);
+    expect(synchronize).toHaveBeenCalledTimes(1);
+    expect(callback).not.toHaveBeenCalled();
+
+    await manager.withConnection(callback, { expectedBudgetId: 'budget-b' });
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(synchronize).toHaveBeenCalledTimes(2);
+  });
+  it('pins disconnect and connection removal to the selected budget', async () => {
+    const configPath = '/tmp/lifecycle-budget.json';
+    const config = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-1',
+      budgetName: 'Test Budget',
+      groupId: 'group-1',
+    } as const;
+    const files = new Map([[configPath, JSON.stringify(config)]]);
+    const disconnect = vi.fn(async () => {});
+    const manager = new ConnectionManager({
+      configPath,
+      readFile: async (path) => files.get(path) ?? null,
+      writeFile: async () => {},
+      deleteFile: async (path) => {
+        files.delete(path);
+      },
+      credentialStore: {
+        load: async () => ({ serverUrl: 'http://actual', secretKey: 'secret' }),
+        store: async () => {},
+      },
+      connectorFactory: async () => ({ ...fakeConnector(), disconnect }),
+    });
+
+    await manager.restore();
+    await expect(manager.disconnect('budget-other')).rejects.toThrow('Selected budget changed');
+    await expect(manager.removeConnection('budget-other')).rejects.toThrow('Selected budget changed');
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(files.get(configPath)).toBeTruthy();
+
+    await manager.disconnect('budget-1');
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(files.get(configPath)).toBeTruthy();
+    await manager.removeConnection('budget-1');
+    expect(await manager.loadConfig()).toBeNull();
+  });
+
+
+  it('rejects queued use when another authorized connection switches the budget first', async () => {
+    const configPath = '/tmp/expected-budget-race.json';
+    const budgetA = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-a',
+      budgetName: 'Budget A',
+      groupId: 'group-a',
+    } as const;
+    const budgetB = {
+      version: 1,
+      serverUrl: 'http://actual',
+      budgetId: 'budget-b',
+      budgetName: 'Budget B',
+      groupId: 'group-b',
+    } as const;
+    let serializedConfig = JSON.stringify(budgetA);
+    let activeBudget: string | null = null;
+    const budgetInfo = (config: typeof budgetA | typeof budgetB) => ({
+      id: config.budgetId,
+      groupId: config.groupId,
+      name: config.budgetName,
+      encrypted: false,
+    });
+    const credentials = async () => ({ serverUrl: 'http://actual', secretKey: 'secret' });
+    const blocker = new ConnectionManager({
+      configPath,
+      readFile: async () => serializedConfig,
+      writeFile: async (_path, value) => {
+        serializedConfig = value;
+      },
+      credentialStore: { load: credentials, store: async () => {} },
+      connectorFactory: async () => fakeConnector(),
+    });
+    const selectorConnector = {
+      ...fakeConnector(),
+      connect: async () => [budgetInfo(budgetA), budgetInfo(budgetB)],
+      disconnect: async () => { activeBudget = null; },
+      selectBudget: vi.fn(async (id: string) => {
+        activeBudget = id;
+        return id === budgetB.budgetId ? budgetInfo(budgetB) : budgetInfo(budgetA);
+      }),
+      synchronize: vi.fn(async () => ({
+        snapshot: { transactions: [], categories: [] },
+        health: { state: 'healthy' },
+        watermark: {},
+      })),
+    };
+    const selector = new ConnectionManager({
+      configPath,
+      readFile: async () => serializedConfig,
+      writeFile: async (_path, value) => {
+        serializedConfig = value;
+      },
+      credentialStore: { load: credentials, store: async () => {} },
+      connectorFactory: async () => selectorConnector,
+    });
+    const sourceLoadCredentials = vi.fn(credentials);
+    const sourceSelectBudget = vi.fn(async () => budgetInfo(budgetA));
+    const sourceSynchronize = vi.fn(async () => ({
+      snapshot: { transactions: [], categories: [] },
+      health: { state: 'healthy' },
+      watermark: {},
+    }));
+    const sourceConnector = {
+      ...fakeConnector(),
+      selectBudget: sourceSelectBudget,
+      synchronize: sourceSynchronize,
+    };
+    const sourceFactory = vi.fn(async () => sourceConnector);
+    const source = new ConnectionManager({
+      configPath,
+      readFile: async () => serializedConfig,
+      writeFile: async (_path, value) => {
+        serializedConfig = value;
+      },
+      credentialStore: { load: sourceLoadCredentials, store: async () => {} },
+      connectorFactory: sourceFactory,
+    });
+    let releaseBlocker: (() => void) | undefined;
+    let unblockStart: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      unblockStart = resolve;
+    });
+    const holding = blocker.withConnection(async () => {
+      unblockStart?.();
+      await gate;
+    });
+
+    try {
+      await started;
+      const switching = selector.connect({ budgetId: budgetB.budgetId });
+      const callback = vi.fn(async () => 'wrong budget used');
+      const queuedUse = source.withConnection(callback, { expectedBudgetId: budgetA.budgetId });
+      releaseBlocker?.();
+
+      await switching;
+      expect(JSON.parse(serializedConfig).budgetId).toBe(budgetB.budgetId);
+      await expect(queuedUse).rejects.toThrow();
+      await holding;
+      expect(activeBudget).toBe(budgetB.budgetId);
+
+      expect(sourceLoadCredentials).not.toHaveBeenCalled();
+      expect(sourceFactory).not.toHaveBeenCalled();
+      expect(sourceSelectBudget).not.toHaveBeenCalled();
+      expect(sourceSynchronize).not.toHaveBeenCalled();
+      expect(callback).not.toHaveBeenCalled();
+    } finally {
+      releaseBlocker?.();
+      await Promise.all([blocker.disconnect(), selector.disconnect(), source.disconnect()]);
+    }
+  });
+
+
   it('deduplicates concurrent restores onto one connector lifecycle', async () => {
     const files = new Map([
       [
@@ -746,6 +955,45 @@ describe('ConnectionManager', () => {
     });
 
     expect(first).toBe(second);
+  });
+
+  it.each(['disconnect', 'removeConnection'] as const)('keeps another budget live during scoped %s', async (operation) => {
+    const credentials = { serverUrl: 'http://actual', secretKey: 'secret' };
+    const files = new Map<string, string>();
+    let activeBudget: string | null = null;
+    const managerFor = (id: string) => {
+      const path = `/tmp/scoped-${id}.json`;
+      files.set(path, JSON.stringify({
+        version: 1, serverUrl: credentials.serverUrl, budgetId: id, budgetName: id, groupId: id,
+      }));
+      return new ConnectionManager({
+        configPath: path,
+        readFile: async (file) => files.get(file) ?? null,
+        writeFile: async (file, value) => { files.set(file, value); },
+        deleteFile: async (file) => { files.delete(file); },
+        credentialStore: { load: async () => credentials, store: async () => {} },
+        connectorFactory: async () => ({
+          ...fakeConnector(),
+          connect: async () => [{ id, groupId: id, name: id, encrypted: false }],
+          selectBudget: async () => {
+            activeBudget = id;
+            return { id, groupId: id, name: id, encrypted: false };
+          },
+          disconnect: async () => { activeBudget = null; },
+        }),
+      });
+    };
+    const first = managerFor('budget-a');
+    const second = managerFor('budget-b');
+    await second.restore();
+    try {
+      await first[operation]('budget-a');
+      expect(activeBudget).toBe('budget-b');
+      expect((await second.loadConfig())?.budgetId).toBe('budget-b');
+      expect((await first.loadConfig())?.budgetId).toBe(operation === 'removeConnection' ? undefined : 'budget-a');
+    } finally {
+      await second.disconnect();
+    }
   });
 
   it('treats only an absent production config as unconfigured', async () => {

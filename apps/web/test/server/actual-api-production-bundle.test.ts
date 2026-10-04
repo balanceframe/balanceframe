@@ -8,38 +8,49 @@
  */
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 
 const WEB_ROOT = resolve(import.meta.dirname, '../..');
 
-const SERVER_NODE_MODULES = resolve(WEB_ROOT, '.output/server/node_modules');
-
-async function expectTracedActualRuntime(): Promise<void> {
-  await Promise.all([
-    access(resolve(SERVER_NODE_MODULES, '@actual-app/api/package.json')),
-    access(resolve(SERVER_NODE_MODULES, '@actual-app/api/dist/index.js')),
-    access(resolve(SERVER_NODE_MODULES, '@actual-app/api/dist/default-db.sqlite')),
-    access(
-      resolve(
-        SERVER_NODE_MODULES,
-        '@actual-app/api/dist/migrations/1548957970627_remove-db-version.sql',
-      ),
-    ),
-    access(
-      resolve(SERVER_NODE_MODULES, '@actual-app/api/dist/migrations/1632571489012_remove_cache.js'),
-    ),
-    access(resolve(SERVER_NODE_MODULES, 'better-sqlite3/package.json')),
-    access(resolve(SERVER_NODE_MODULES, 'better-sqlite3/build/Release/better_sqlite3.node')),
-  ]);
+function expectProductionSQLite(serverDir: string): void {
+  execFileSync(process.execPath, ['--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { resolve } from 'node:path';
+    import { mkdirSync, writeFileSync } from 'node:fs';
+    const require = createRequire(resolve(process.argv[1], 'index.mjs'));
+    const Database = require('better-sqlite3');
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE amounts (amount INTEGER NOT NULL)');
+      const values = [-9223372036854775808n, 0n, 9223372036854775807n];
+      const insert = db.prepare('INSERT INTO amounts VALUES (?)');
+      db.transaction(() => values.forEach(value => insert.run(value)))();
+      assert.deepEqual(db.prepare('SELECT amount FROM amounts ORDER BY amount').safeIntegers().all().map(row => row.amount), values);
+    } finally { db.close(); }
+    const dataDir = resolve(process.argv[1], '../actual-cache');
+    mkdirSync(dataDir, { recursive: true });
+    process.env.ACTUAL_CONFIG_PATH = resolve(dataDir, 'config.json');
+    writeFileSync(process.env.ACTUAL_CONFIG_PATH, '{}');
+    const actual = require('@actual-app/api');
+    await actual.init({ dataDir });
+    try {
+      await actual.internal.send('create-budget', {
+        budgetName: 'Production artifact fixture', avoidUpload: true,
+      });
+      assert.deepEqual(await actual.getAccounts(), []);
+    } finally { await actual.shutdown(); }
+  `, serverDir], {
+    cwd: serverDir,
+    env: { ...process.env, NODE_PATH: '' },
+    stdio: 'pipe',
+  });
 }
-
-const SERVER_ENTRY = resolve(WEB_ROOT, '.output/server/index.mjs');
 
 let activeChild: ChildProcessWithoutNullStreams | null = null;
 let activeDataDir: string | null = null;
@@ -78,17 +89,24 @@ async function availablePort(): Promise<number> {
 interface JsonResponse {
   statusCode: number;
   body: unknown;
+  cookies: string[];
 }
 
-async function requestJson(url: string): Promise<JsonResponse> {
+async function requestJson(url: string, options: {
+  method?: 'GET' | 'POST';
+  headers?: Record<string, string>;
+  body?: Record<string, unknown>;
+} = {}): Promise<JsonResponse> {
+  const payload = options.body ? JSON.stringify(options.body) : undefined;
   return await new Promise<JsonResponse>((resolveResponse, reject) => {
     const requestHandle = request(
       url,
       {
-        method: 'GET',
-        // Exercise the route through the legacy-token migration path, not
-        // the development bypass or an unauthenticated middleware response.
-        headers: { authorization: 'Bearer production-bundle-api-token' },
+        method: options.method ?? 'GET',
+        headers: {
+          ...(payload ? { 'content-type': 'application/json' } : {}),
+          ...options.headers,
+        },
       },
       (response) => {
         let body = '';
@@ -101,6 +119,7 @@ async function requestJson(url: string): Promise<JsonResponse> {
             resolveResponse({
               statusCode: response.statusCode ?? 0,
               body: JSON.parse(body),
+              cookies: response.headers['set-cookie'] ?? [],
             });
           } catch (error) {
             reject(error);
@@ -109,7 +128,7 @@ async function requestJson(url: string): Promise<JsonResponse> {
       },
     );
     requestHandle.once('error', reject);
-    requestHandle.end();
+    requestHandle.end(payload);
   });
 }
 
@@ -130,35 +149,44 @@ async function waitUntilListening(child: ChildProcessWithoutNullStreams): Promis
 
 describe('production Actual API bundle', () => {
   it(
-    'loads the Actual client without CommonJS or module-resolution failures',
+    'loads the Actual client and executes exact SQLite queries from the production artifact',
     { timeout: 180_000 },
     async () => {
-      execFileSync('pnpm', ['exec', 'nuxt', 'build'], {
-        cwd: WEB_ROOT,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
-      await expectTracedActualRuntime();
-
       const dataDir = await mkdtemp(resolve(tmpdir(), 'balanceframe-prod-bundle-'));
       activeDataDir = dataDir;
-      const workflow = new SqliteWorkflowStore(resolve(dataDir, 'workflow.db'));
-      try {
-        await workflow.claimBootstrap({
-          name: 'Bundle owner',
-          email: 'bundle-owner@example.test',
-          claimId: 'bundle-owner-claim',
-        });
-        await workflow.finalizeBootstrap({
-          claimId: 'bundle-owner-claim',
-          ownerUserId: 'production-bundle-owner',
-        });
-        await workflow.upsertActorMembership('production-bundle-owner', 'active', ['observe'], '*');
-      } finally {
-        workflow.close();
-      }
+      const outputDir = resolve(dataDir, '.output');
+      // Scenario tests use the workspace bundle concurrently; never rebuild their artifact.
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `
+          import { build, loadNuxt } from 'nuxt';
+          import { resolve } from 'node:path';
+          const root = process.argv[1];
+          const nuxt = await loadNuxt({
+            cwd: process.cwd(),
+            overrides: {
+              dev: false,
+              buildDir: resolve(root, '.nuxt'),
+              nitro: { output: { dir: resolve(root, '.output') } },
+            },
+          });
+          try { await build(nuxt); } finally { await nuxt.close(); }
+        `,
+          dataDir,
+        ],
+        {
+          cwd: WEB_ROOT,
+          env: { ...process.env, NODE_ENV: 'production' },
+          encoding: 'utf8',
+          stdio: 'pipe',
+        },
+      );
+      expectProductionSQLite(resolve(outputDir, 'server'));
       const port = await availablePort();
-      const child = spawn(process.execPath, [SERVER_ENTRY], {
+      const child = spawn(process.execPath, [resolve(outputDir, 'server/index.mjs')], {
         cwd: WEB_ROOT,
         env: {
           ...process.env,
@@ -167,8 +195,6 @@ describe('production Actual API bundle', () => {
           HOST: '127.0.0.1',
           NITRO_PORT: String(port),
           NITRO_HOST: '127.0.0.1',
-          BALANCEFRAME_API_TOKEN: 'production-bundle-api-token',
-          NUXT_AUTH_ACTOR_ID: 'production-bundle-owner',
           BALANCEFRAME_DEV_BYPASS_AUTH: 'false',
           NUXT_DEV_BYPASS_AUTH: 'false',
           ACTUAL_SERVER_URL: 'http://127.0.0.1:9',
@@ -187,7 +213,52 @@ describe('production Actual API bundle', () => {
 
       try {
         const readServerOutput = await waitUntilListening(child);
-        const response = await requestJson(`http://127.0.0.1:${port}/api/connection/budgets`);
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const icons = await requestJson(`${baseUrl}/_nuxt_icon/heroicons.json?icons=exclamation-circle`);
+        expect(icons.statusCode).toBe(200);
+        expect(icons.body).toMatchObject({
+          prefix: 'heroicons',
+          icons: { 'exclamation-circle': { body: expect.stringContaining('<path') } },
+        });
+        const protectedResponse = await requestJson(`${baseUrl}/api/home/attention`);
+        expect([401, 503]).toContain(protectedResponse.statusCode);
+        const cookies = new Map<string, string>();
+        const password = 'production-bundle-owner-password';
+        const call = async (path: string, body?: Record<string, unknown>, spaceId?: string) => {
+          const response = await requestJson(`${baseUrl}${path}`, {
+            method: body ? 'POST' : 'GET',
+            body,
+            headers: {
+              origin: baseUrl,
+              cookie: [...cookies.values()].join('; '),
+              ...(spaceId ? { 'x-balanceframe-space': spaceId } : {}),
+            },
+          });
+          for (const value of response.cookies) {
+            const pair = value.split(';', 1)[0]!;
+            cookies.set(pair.split('=', 1)[0]!, pair);
+          }
+          return response;
+        };
+        const registered = await call('/api/registration/bootstrap', {
+          name: 'Bundle owner',
+          email: 'bundle-owner@example.test',
+          password,
+          bootstrapSecret: 'production-bundle-test-bootstrap-secret',
+        });
+        expect(registered.statusCode).toBe(200);
+        const signedIn = await call('/api/auth/sign-in/email', {
+          email: 'bundle-owner@example.test', password,
+        });
+        expect(signedIn.statusCode).toBe(200);
+        const reauthenticated = await call('/api/reauth', { password });
+        expect(reauthenticated.statusCode).toBe(200);
+        const created = await call('/api/spaces', { name: 'Bundle loading', kind: 'personal' });
+        expect(created.statusCode).toBe(200);
+        const spaceBody = created.body as { result?: { space?: { id?: unknown } } };
+        const spaceId = spaceBody.result?.space?.id;
+        if (typeof spaceId !== 'string') throw new Error('Production owner space unavailable');
+        const response = await call('/api/connection/budgets', undefined, spaceId);
         const body = response.body as {
           status?: unknown;
           error?: { code?: unknown; message?: unknown } | null;
@@ -196,8 +267,8 @@ describe('production Actual API bundle', () => {
         await stopChild(child);
         activeChild = null;
 
-        // The registered owner can discover budgets. This Actual-specific 503
-        // proves the request reached the client through the production bundle.
+        // A real reauthenticated owner reaches the SDK through current space control.
+        // This Actual-specific 503 proves the production client was loaded.
         expect(response.statusCode).toBe(503);
         expect(body.status).toBe('error');
         expect(body.error?.code).toBe('ACTUAL_BUDGET_LIST_FAILED');

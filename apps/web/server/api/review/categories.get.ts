@@ -39,7 +39,7 @@ export default defineEventHandler(async (event) => {
         if (connected.config.budgetId !== authCheck.budgetId)
           throw new Error('Selected budget changed');
         return { config: connected.config, synchronization: connected.synchronization };
-      }),
+      }, { expectedBudgetId: authCheck.budgetId }),
     );
     return okEnvelope({ categories }, auth, requestId);
   } catch (error) {

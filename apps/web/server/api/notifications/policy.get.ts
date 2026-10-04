@@ -8,58 +8,58 @@
  * Response envelope: NotificationPolicyRecord
  */
 
-import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
+import { defineEventHandler, getQuery, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
+import { requireSelectedSpace } from '../../utils/space-context';
 import {
+  errorEnvelope,
   getWorkflowStore,
   okEnvelope,
-  errorEnvelope,
   requireAuthorization,
   sanitizeError,
 } from '../../utils/workflow-store';
+import type { EventWithContext } from '../../utils/workflow-store';
+
+const PolicyQuery = z.object({
+  spaceId: z.string().trim().min(1).optional(),
+  policyKey: z.string().trim().min(1).optional(),
+}).strict();
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-  const query = getQuery(event);
-  const spaceId = typeof query.spaceId === 'string' ? query.spaceId.trim() : '';
-  const policyKey = typeof query.policyKey === 'string' ? query.policyKey.trim() : 'delivery';
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
 
-  if (!spaceId) {
+  const parsed = PolicyQuery.safeParse(getQuery(event));
+  if (!parsed.success || parsed.data.spaceId && parsed.data.spaceId !== selected.space.id ||
+      parsed.data.policyKey && parsed.data.policyKey !== 'notification') {
     setResponseStatus(event, 400);
-    return errorEnvelope(
-      'MISSING_SPACE_ID',
-      'spaceId query parameter is required.',
-      null,
-      false,
-      requestId,
-    );
+    return errorEnvelope('INVALID_POLICY_QUERY', 'Notification policy query is invalid.', null, false, requestId);
   }
-
-  const auth = await requireAuthorization(event, 'notification:admin', spaceId);
-  if (!auth.ok) return auth.response;
-  const authInfo = auth.info;
-
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const policyKey = 'notification';
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'policy:manage',
+    `space:${selected.space.id}`,
+  );
+  if (!authorization.ok) return authorization.response;
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Notification policy is unavailable.', authorization.info, false, requestId);
   }
 
   try {
-    const policy = await wf.store.getNotificationPolicy(spaceId, policyKey);
-    if (!policy) {
+    const policy = await workflow.store.getNotificationPolicy(selected.space.id, policyKey);
+    if (!policy || policy.spaceId !== selected.space.id || policy.policyKey !== policyKey) {
       setResponseStatus(event, 404);
-      return errorEnvelope(
-        'POLICY_NOT_FOUND',
-        `No notification policy found for space "${spaceId}" with key "${policyKey}".`,
-        authInfo,
-        false,
-        requestId,
-      );
+      return errorEnvelope('POLICY_NOT_FOUND', 'Notification policy not found.', authorization.info, false, requestId);
     }
-    return okEnvelope(policy, authInfo, requestId);
+    return okEnvelope(policy, authorization.info, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'FETCH_FAILED', false);
     setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
-    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+    return errorEnvelope(safe.code, safe.message, authorization.info, safe.retryable, requestId);
   }
 });

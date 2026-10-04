@@ -8,6 +8,7 @@ import {
   createDefaultActualClient,
 } from '@balanceframe/actual-adapter';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { LiquidityActor } from '@balanceframe/workflow-store';
 import { ConnectionManager, createLiquidityService } from '../../packages/application/src/index.js';
 import type { FinancialSnapshot } from '@balanceframe/protocol-generated';
 import type {
@@ -26,7 +27,6 @@ import { cleanupBudget, createTestBudget, withActualClient } from './helpers.js'
 type ActualIdMaps = SeededEntityIds;
 type SeededLiveBudget = SeededBudget & SeededEntityIds;
 
-type TestActor = { actorId: string; budgetId: string };
 
 function id(values: Readonly<Record<string, string>>, logicalId: string, resource: string): string {
   const mapped = values[logicalId];
@@ -183,9 +183,12 @@ describe('09 — live Actual decision Card', () => {
       const cacheDir = join(root, 'actual-cache');
       store = new SqliteWorkflowStore(workflowPath);
 
-      const actor: TestActor = {
-        actorId: 'live-card-owner',
-        budgetId: budget.budgetId,
+      const actorId = 'live-card-owner';
+      const auth = {
+        method: 'human-session' as const,
+        actorId,
+        sessionId: 'live-card-owner-session',
+        reauthenticatedAt: anchorIso,
       };
       await store.claimBootstrap({
         name: 'Live Card Owner',
@@ -194,28 +197,21 @@ describe('09 — live Actual decision Card', () => {
       });
       await store.finalizeBootstrap({
         claimId: 'live-card-bootstrap',
-        ownerUserId: actor.actorId,
+        ownerUserId: actorId,
       });
-      await store.upsertActorMembership(
-        actor.actorId,
-        'active',
-        ['observe'],
-        `budget:${actor.budgetId}`,
-      );
-      store.liquidity.provisionOwnerAccess({
-        ...actor,
-        now: anchorIso,
-        resources: [
-          ...Object.values(budget.accountIds).map((resourceId) => ({
-            resourceKind: 'account' as const,
-            resourceId,
-          })),
-          ...Object.values(budget.categoryIds).map((resourceId) => ({
-            resourceKind: 'category' as const,
-            resourceId,
-          })),
-        ],
+      const space = store.governance.createSpace({
+        actorId, name: 'Live Card', kind: 'personal', now: anchorIso, auth,
       });
+      store.governance.bindBudget({
+        spaceId: space.id, budgetId: budget.budgetId, now: anchorIso, auth,
+      });
+      const membership = store.governance.getCurrentMembership({
+        spaceId: space.id, actorId, now: anchorIso,
+      });
+      if (!membership) throw new Error('Live fixture membership unavailable');
+      const actor: LiquidityActor = {
+        actorId, budgetId: budget.budgetId, spaceId: space.id, membershipId: membership.id, auth,
+      };
 
       const credentialStore = new NullCredentialStore();
       manager = new ConnectionManager({
@@ -238,8 +234,30 @@ describe('09 — live Actual decision Card', () => {
       });
       const sourceSynchronization = await manager.withConnection(
         async ({ synchronization }) => synchronization as { financialSnapshot: FinancialSnapshot },
+        { expectedBudgetId: actor.budgetId },
       );
       const sourceSnapshot = sourceSynchronization.financialSnapshot;
+      const resources = [
+        { resourceKind: 'budget' as const, resourceId: actor.budgetId },
+        ...sourceSnapshot.legacySnapshot.accounts.map(({ id: resourceId }) => ({
+          resourceKind: 'account' as const, resourceId,
+        })),
+        ...sourceSnapshot.legacySnapshot.categories.map(({ id: resourceId }) => ({
+          resourceKind: 'category' as const, resourceId,
+        })),
+        ...sourceSnapshot.legacySnapshot.transactions.map(({ id: resourceId }) => ({
+          resourceKind: 'transaction' as const, resourceId,
+        })),
+        ...sourceSnapshot.legacySnapshot.rules.map(({ id: resourceId }) => ({
+          resourceKind: 'rule' as const, resourceId,
+        })),
+      ];
+      for (const resource of resources)
+        for (const capability of ['conclusion', 'existence', 'name', 'balance', 'history', 'source', 'liquidity', 'policy', 'full-read'])
+          store.governance.setResourceGrant({
+            ...actor, spaceId: space.id, membershipId: membership.id, ...resource,
+            capability, granted: true, now: anchorIso, auth,
+          });
       const checkingId = id(budget.accountIds, 'acct-checking', 'account');
       expect(sourceSnapshot.legacySnapshot.accounts).toEqual(
         expect.arrayContaining([expect.objectContaining({ id: checkingId })]),

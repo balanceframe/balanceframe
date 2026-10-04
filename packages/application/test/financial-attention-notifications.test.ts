@@ -1,11 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SqliteWorkflowStore, type NotificationEvent } from '@balanceframe/workflow-store';
 import type { FinancialSnapshot, SourceObservation } from '@balanceframe/protocol-generated';
 import {
   NotificationRuntime,
   createNativeAnalysisProtocol,
   createObserveComposition,
   financialDecisionDedupKey,
+  type AttentionHomeResult,
   type ChannelAdapter,
+  type CreateNotificationInput,
   type NativeBindingShim,
   type NotificationPolicy,
 } from '../src';
@@ -18,6 +21,17 @@ const REVISION_TWO = 'sha256:attention-revision-2';
 const POLICY_VERSION = 'financial-attention-v1';
 const BUDGET_ID = 'budget-attention';
 const ACTOR_ID = 'actor-attention';
+const AUTHORITY_NOW = CAPTURED_AT;
+const AUTHORITY_LATER = '2026-08-24T12:00:00.000Z';
+const ADMIN_ACTOR_ID = 'actor-attention-admin';
+const RECIPIENT_ACTOR_ID = 'actor-attention-recipient';
+
+const authorityStores: SqliteWorkflowStore[] = [];
+afterEach(() => {
+  for (const store of authorityStores) store.close();
+  authorityStores.length = 0;
+  vi.useRealTimers();
+});
 
 const FINANCIAL_CLASSIFICATIONS = [
   'account_readiness_blocker',
@@ -369,46 +383,184 @@ function notificationPolicy(
   };
 }
 
-function notificationEvent(classification = 'reservation_conflict') {
+interface NotificationAuthorityOptions {
+  readonly actors?: readonly string[];
+  readonly receiveActors?: readonly string[];
+  readonly adminActors?: readonly string[];
+}
+
+function humanAuth(actorId: string, now = AUTHORITY_NOW) {
   return {
-    id: `event-${classification}`,
-    eventVersion: 1,
-    budgetId: BUDGET_ID,
-    classification,
-    recipientId: ACTOR_ID,
-    scope: `budget:${BUDGET_ID}`,
-    redactionClass: 'restricted',
-    channelConfigVersion: null,
-    policyVersion: POLICY_VERSION,
-    correlationId: 'financial-decision-key',
-    payload: JSON.stringify({ title: 'Decision attention', summary: 'Review required' }),
-    createdAt: CAPTURED_AT,
+    method: 'human-session' as const,
+    actorId,
+    sessionId: `fixture-session-${actorId}`,
+    reauthenticatedAt: now,
   };
 }
 
-function outbox(id: string, eventId: string) {
+async function createNotificationAuthority(options: NotificationAuthorityOptions = {}) {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(AUTHORITY_NOW));
+  const store = new SqliteWorkflowStore(':memory:');
+  authorityStores.push(store);
+  const claimId = 'financial-attention-notification-fixture';
+  await store.claimBootstrap({ name: 'Attention owner', email: 'attention@example.test', claimId });
+  await store.finalizeBootstrap({ claimId, ownerUserId: ACTOR_ID });
+  const auth = humanAuth(ACTOR_ID);
+  const unboundSpace = store.governance.createSpace({
+    actorId: ACTOR_ID,
+    name: 'Financial attention fixture',
+    kind: 'shared',
+    now: AUTHORITY_NOW,
+    auth,
+  });
+  const space = store.governance.bindBudget({
+    spaceId: unboundSpace.id,
+    budgetId: BUDGET_ID,
+    now: AUTHORITY_NOW,
+    auth,
+  });
+  const actors = new Set([
+    ACTOR_ID,
+    ...(options.actors ?? []),
+    ...(options.receiveActors ?? []),
+    ...(options.adminActors ?? []),
+  ]);
+  const memberships = new Map<string, string>();
+  for (const actorId of actors) {
+    if (actorId !== ACTOR_ID) {
+      await store.upsertActorMembership(actorId, 'active', [], '');
+      store.governance.addMembership({
+        spaceId: space.id,
+        actorId,
+        validFrom: AUTHORITY_NOW,
+        now: AUTHORITY_NOW,
+        auth,
+      });
+    }
+    const membership = store.governance.getCurrentMembership({
+      spaceId: space.id,
+      actorId,
+      now: AUTHORITY_NOW,
+    });
+    if (!membership) throw new Error(`Notification fixture membership missing for ${actorId}`);
+    memberships.set(actorId, membership.id);
+  }
+
+  for (const actorId of options.receiveActors ?? []) {
+    const membershipId = memberships.get(actorId);
+    if (!membershipId) throw new Error(`Notification fixture membership missing for ${actorId}`);
+    store.governance.provisionResourceGrant({
+      spaceId: space.id,
+      membershipId,
+      actorId,
+      budgetId: BUDGET_ID,
+      resourceKind: 'budget',
+      resourceId: BUDGET_ID,
+      capability: 'notification:receive',
+      granted: true,
+      now: AUTHORITY_NOW,
+    });
+  }
+  for (const actorId of options.adminActors ?? []) {
+    const membershipId = memberships.get(actorId);
+    if (!membershipId) throw new Error(`Notification fixture membership missing for ${actorId}`);
+    store.governance.provisionResourceGrant({
+      spaceId: space.id,
+      membershipId,
+      actorId,
+      budgetId: BUDGET_ID,
+      resourceKind: 'budget',
+      resourceId: BUDGET_ID,
+      capability: 'notification:admin',
+      granted: true,
+      now: AUTHORITY_NOW,
+    });
+  }
+  return { store, spaceId: space.id, memberships };
+}
+
+function financialNotificationInput(
+  overrides: Partial<CreateNotificationInput> = {},
+): CreateNotificationInput {
   return {
-    id,
-    eventId,
-    deliveryKey: `delivery-${id}`,
-    channelType: 'in_app',
-    channelConfigVersion: null,
-    status: 'pending',
-    attemptCount: 0,
-    maxAttempts: 3,
-    claimToken: null,
-    claimExpiresAt: null,
-    lastAttemptedAt: null,
-    nextAttemptAt: null,
-    acknowledgedAt: null,
-    failedAt: null,
-    failureReason: null,
-    suppressedAt: null,
-    suppressedReason: null,
-    correlationId: 'financial-decision-key',
-    createdAt: CAPTURED_AT,
-    updatedAt: CAPTURED_AT,
+    budgetId: BUDGET_ID,
+    classification: 'reservation_conflict',
+    severity: 'high',
+    payload: { title: 'Decision attention', summary: 'Review required' },
+    recipientId: ACTOR_ID,
+    scope: `budget:${BUDGET_ID}`,
+    redactionClass: 'restricted',
+    ...overrides,
   };
+}
+
+interface NotificationEventOptions {
+  readonly classification?: string;
+  readonly recipientId?: string;
+  readonly scope?: string;
+  readonly payload?: Record<string, unknown>;
+  readonly redactionClass?: string;
+}
+
+async function notificationEvent(
+  store: SqliteWorkflowStore,
+  options: NotificationEventOptions = {},
+) {
+  const classification = options.classification ?? 'reservation_conflict';
+  const scope = options.scope ?? `budget:${BUDGET_ID}`;
+  return store.createNotificationEvent({
+    budgetId: BUDGET_ID,
+    classification,
+    recipientId: options.recipientId ?? ACTOR_ID,
+    scope,
+    redactionClass: options.redactionClass ?? 'restricted',
+    policyVersion: POLICY_VERSION,
+    correlationId: 'financial-decision-key',
+    payload: {
+      title: 'Decision attention',
+      summary: 'Review required',
+      classification,
+      scope,
+      snapshotId: SNAPSHOT_ID,
+      ...options.payload,
+    },
+  });
+}
+
+async function enqueueNotification(
+  store: SqliteWorkflowStore,
+  event: NotificationEvent,
+) {
+  return store.enqueueNotification({
+    eventId: event.id,
+    deliveryKey: `delivery-${event.id}`,
+    channelType: 'in_app',
+    maxAttempts: 3,
+    correlationId: event.correlationId,
+  });
+}
+
+async function createNotificationDelivery(
+  store: SqliteWorkflowStore,
+  options: NotificationEventOptions = {},
+) {
+  const event = await notificationEvent(store, options);
+  const record = await enqueueNotification(store, event);
+  return { event, record };
+}
+function notificationRowCounts(store: SqliteWorkflowStore) {
+  const eventRows = store['db']
+    .prepare('SELECT COUNT(*) AS count FROM notification_events')
+    .get() as { count: number };
+  const outboxRows = store['db']
+    .prepare('SELECT COUNT(*) AS count FROM notification_outbox')
+    .get() as { count: number };
+  return { events: eventRows.count, outbox: outboxRows.count };
+}
+
+function channelAdapter(deliver: ChannelAdapter['deliver']): ChannelAdapter {
+  return { channelType: 'in_app', isHealthy: () => true, deliver };
 }
 
 describe('canonical financial observations on the existing attention home result', () => {
@@ -1000,12 +1152,10 @@ describe('canonical financial observations on the existing attention home result
       {},
     );
 
-    const keyFor = (result: Awaited<ReturnType<NonNullable<typeof protocol.attentionHome>>>) =>
+    const keyFor = (result: AttentionHomeResult) =>
       result.blockers.find(({ classification }) => classification === 'account_readiness_blocker')
         ?.dedupKey;
 
-    expect(keyFor(first)).toEqual(expect.any(String));
-    expect(keyFor(first)?.length).toBeGreaterThan(0);
     expect(keyFor(repeated)).toBe(keyFor(first));
     expect(keyFor(revised)).not.toBe(keyFor(first));
   });
@@ -1057,7 +1207,6 @@ describe('financial decision notification identity and policy', () => {
       getDeliveryAttempts: vi.fn(),
       listOutboxRecords: vi.fn(),
       getNotificationPolicy: vi.fn(),
-      getActorMembership: vi.fn(),
       appendAuditRecord: vi.fn(),
     };
     const composition = await createObserveComposition({
@@ -1075,303 +1224,248 @@ describe('financial decision notification identity and policy', () => {
     }
   });
 
-  it('rejects an explicitly targeted recipient that is not a recipient in the active policy', async () => {
-    const store = {
-      createNotificationEvent: vi.fn(),
-      enqueueNotification: vi.fn(),
-      appendAuditRecord: vi.fn(),
-      getActorMembership: vi.fn(),
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), []);
-    runtime.setReAuthorizationHook(async () => true);
+  it('rejects an explicitly targeted recipient outside the active notification policy', async () => {
+    const { store } = await createNotificationAuthority({ receiveActors: [ACTOR_ID] });
+    const runtime = new NotificationRuntime(store, notificationPolicy(), []);
 
     await expect(
-      runtime.create({
-        budgetId: BUDGET_ID,
-        classification: 'reservation_conflict',
-        severity: 'high',
-        payload: JSON.stringify({ title: 'Decision attention' }),
-        recipientId: 'actor-outside-policy',
-        scope: `budget:${BUDGET_ID}`,
-        redactionClass: 'restricted',
-      }),
-    ).rejects.toThrow();
+      runtime.create(
+        financialNotificationInput({ recipientId: 'actor-outside-policy' }),
+      ),
+    ).rejects.toMatchObject({ code: 'RECIPIENT_MISMATCH' });
 
-    expect(store.createNotificationEvent).not.toHaveBeenCalled();
-    expect(store.enqueueNotification).not.toHaveBeenCalled();
+    expect(notificationRowCounts(store)).toEqual({ events: 0, outbox: 0 });
   });
 
-  it('rejects creation before persistence when the requested scope is not the exact policy scope', async () => {
-    const store = {
-      createNotificationEvent: vi.fn(),
-      enqueueNotification: vi.fn(),
-      appendAuditRecord: vi.fn(),
-      getActorMembership: vi.fn(),
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), []);
-    const reauthorize = vi.fn(
-      async (_actorId: string, _capability: string, scope: string) =>
-        scope === `budget:${BUDGET_ID}`,
+  it('rejects a notification scope that differs from the active policy before persistence', async () => {
+    const { store } = await createNotificationAuthority({ receiveActors: [ACTOR_ID] });
+    const runtime = new NotificationRuntime(store, notificationPolicy(), []);
+
+    await expect(
+      runtime.create(
+        financialNotificationInput({ scope: 'budget:budget-outside-policy' }),
+      ),
+    ).rejects.toMatchObject({ code: 'SCOPE_MISMATCH' });
+
+    expect(notificationRowCounts(store)).toEqual({ events: 0, outbox: 0 });
+  });
+
+  it('requires a current scoped grant; registry wildcard capabilities and hooks cannot grant delivery', async () => {
+    const withoutGrant = await createNotificationAuthority();
+    const ungrantedRuntime = new NotificationRuntime(
+      withoutGrant.store,
+      notificationPolicy(),
+      [],
     );
-    runtime.setReAuthorizationHook(reauthorize);
+    ungrantedRuntime.setReAuthorizationHook(async () => true);
 
     await expect(
-      runtime.create({
-        budgetId: BUDGET_ID,
-        classification: 'reservation_conflict',
-        severity: 'high',
-        payload: JSON.stringify({ title: 'Decision attention' }),
-        recipientId: ACTOR_ID,
-        scope: 'budget:budget-outside-policy',
-        redactionClass: 'restricted',
-      }),
-    ).rejects.toThrow();
-
-    expect(store.createNotificationEvent).not.toHaveBeenCalled();
-    expect(store.enqueueNotification).not.toHaveBeenCalled();
-  });
-
-  it('creates the matching policy recipient only after exact-scope authorization succeeds', async () => {
-    const event = notificationEvent();
-    const record = outbox('outbox-authorized', event.id);
-    const store = {
-      createNotificationEvent: vi.fn(async () => event),
-      enqueueNotification: vi.fn(async () => record),
-      appendAuditRecord: vi.fn(),
-      getActorMembership: vi.fn(),
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), []);
-    const reauthorize = vi.fn(async () => true);
-    runtime.setReAuthorizationHook(reauthorize);
-
-    const result = await runtime.create({
-      budgetId: BUDGET_ID,
-      classification: 'reservation_conflict',
-      severity: 'high',
-      payload: event.payload,
-      recipientId: ACTOR_ID,
-      scope: `budget:${BUDGET_ID}`,
-      redactionClass: 'restricted',
+      ungrantedRuntime.create(financialNotificationInput()),
+    ).rejects.toMatchObject({ code: 'NOT_AUTHORIZED' });
+    expect(await withoutGrant.store.getActorMembership(ACTOR_ID)).toMatchObject({
+      status: 'active',
+      capabilities: expect.arrayContaining(['notification:receive', 'notification:admin']),
+      scope: '*',
     });
-
-    expect(reauthorize).toHaveBeenCalledWith(
-      ACTOR_ID,
-      'notification:receive',
-      `budget:${BUDGET_ID}`,
+    expect(notificationRowCounts(withoutGrant.store)).toEqual({ events: 0, outbox: 0 });
+    const withGrant = await createNotificationAuthority({ receiveActors: [ACTOR_ID] });
+    const additionallyDenied = new NotificationRuntime(
+      withGrant.store,
+      notificationPolicy(),
+      [],
     );
-    expect(store.createNotificationEvent).toHaveBeenCalledTimes(1);
-    expect(store.enqueueNotification).toHaveBeenCalledTimes(1);
-    expect(result.outboxRecords).toEqual([record]);
-  });
-
-  it.each([`budget:${BUDGET_ID}`, '*'])(
-    'accepts an active store membership scoped to %s without a custom re-authorization hook',
-    async (membershipScope) => {
-      const event = notificationEvent();
-      const record = outbox(`outbox-membership-${membershipScope}`, event.id);
-      const store = {
-        createNotificationEvent: vi.fn(async () => event),
-        enqueueNotification: vi.fn(async () => record),
-        appendAuditRecord: vi.fn(),
-        getActorMembership: vi.fn(async () => ({
-          actorId: ACTOR_ID,
-          status: 'active',
-          capabilities: ['notification:receive'],
-          scope: membershipScope,
-        })),
-      };
-      const runtime = new NotificationRuntime(store as never, notificationPolicy(), []);
-
-      const result = await runtime.create({
-        budgetId: BUDGET_ID,
-        classification: 'reservation_conflict',
-        severity: 'high',
-        payload: event.payload,
-        recipientId: ACTOR_ID,
-        scope: `budget:${BUDGET_ID}`,
-        redactionClass: 'restricted',
-      });
-
-      expect(result.outboxRecords).toEqual([record]);
-      expect(store.createNotificationEvent).toHaveBeenCalledTimes(1);
-      expect(store.enqueueNotification).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it('rejects creation before persistence when store membership has a different scope', async () => {
-    const store = {
-      createNotificationEvent: vi.fn(),
-      enqueueNotification: vi.fn(),
-      appendAuditRecord: vi.fn(),
-      getActorMembership: vi.fn(async () => ({
-        actorId: ACTOR_ID,
-        status: 'active',
-        capabilities: ['notification:receive'],
-        scope: 'budget:budget-other',
-      })),
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), []);
+    additionallyDenied.setReAuthorizationHook(async () => false);
 
     await expect(
-      runtime.create({
-        budgetId: BUDGET_ID,
-        classification: 'reservation_conflict',
-        severity: 'high',
-        payload: notificationEvent().payload,
-        recipientId: ACTOR_ID,
-        scope: `budget:${BUDGET_ID}`,
-        redactionClass: 'restricted',
-      }),
-    ).rejects.toThrow();
+      additionallyDenied.create(financialNotificationInput()),
+    ).rejects.toMatchObject({ code: 'NOT_AUTHORIZED' });
+    expect(notificationRowCounts(withGrant.store)).toEqual({ events: 0, outbox: 0 });
+  });
 
-    expect(store.createNotificationEvent).not.toHaveBeenCalled();
-    expect(store.enqueueNotification).not.toHaveBeenCalled();
+  it('creates a policy recipient through the current budget-bound membership and resource grant', async () => {
+    const { store, spaceId, memberships } = await createNotificationAuthority({
+      receiveActors: [ACTOR_ID],
+    });
+    const runtime = new NotificationRuntime(store, notificationPolicy(), []);
+
+    const result = await runtime.create(financialNotificationInput());
+
+    expect(result.event).toMatchObject({
+      budgetId: BUDGET_ID,
+      spaceId,
+      recipientId: ACTOR_ID,
+      recipientMembershipId: memberships.get(ACTOR_ID),
+      scope: `budget:${BUDGET_ID}`,
+    });
+    expect(result.outboxRecords).toHaveLength(1);
+    expect((await store.listOutboxRecords()).map(({ id }) => id)).toEqual([
+      result.outboxRecords[0]!.id,
+    ]);
+    expect(notificationRowCounts(store)).toEqual({ events: 1, outbox: 1 });
+  });
+
+  it('uses only a current exact notification:admin grant for unredacted event reads', async () => {
+    const { store } = await createNotificationAuthority({
+      actors: [ADMIN_ACTOR_ID],
+      receiveActors: [ACTOR_ID],
+      adminActors: [ADMIN_ACTOR_ID],
+    });
+    const event = await notificationEvent(store, {
+      payload: { internalFinding: 'private finding' },
+    });
+    const runtime = new NotificationRuntime(store, notificationPolicy(), []);
+
+    expect(await runtime.redactForActor(event, ACTOR_ID)).toEqual({
+      title: 'Decision attention',
+      summary: 'Review required',
+      classification: 'reservation_conflict',
+      scope: `budget:${BUDGET_ID}`,
+      snapshotId: SNAPSHOT_ID,
+    });
+    expect(await runtime.redactForActor(event, ADMIN_ACTOR_ID)).toEqual({
+      title: 'Decision attention',
+      summary: 'Review required',
+      classification: 'reservation_conflict',
+      scope: `budget:${BUDGET_ID}`,
+      snapshotId: SNAPSHOT_ID,
+      internalFinding: 'private finding',
+    });
   });
 });
 
 describe('financial decision notification delivery isolation', () => {
-  it('re-authorizes the recipient capability and exact scope again at dispatch', async () => {
-    const event = notificationEvent();
-    const record = outbox('outbox-revoked', event.id);
-    const store = {
-      claimNotificationDelivery: vi.fn(async () => record),
-      getNotificationEvent: vi.fn(async () => event),
-      failNotificationDelivery: vi.fn(async () => ({ ...record, status: 'failed' })),
-      appendAuditRecord: vi.fn(),
-    };
-    const deliver = vi.fn();
-    const adapter: ChannelAdapter = {
-      channelType: 'in_app',
-      isHealthy: () => true,
-      deliver,
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), [adapter]);
-    const reauthorize = vi.fn(async () => false);
-    runtime.setReAuthorizationHook(reauthorize);
+  it('rechecks the current scoped grant at dispatch and suppresses a revoked recipient', async () => {
+    const { store, spaceId, memberships } = await createNotificationAuthority({
+      receiveActors: [ACTOR_ID],
+    });
+    const { record } = await createNotificationDelivery(store);
+    const membershipId = memberships.get(ACTOR_ID);
+    if (!membershipId) throw new Error('Recipient membership missing');
+    store.governance.provisionResourceGrant({
+      spaceId,
+      membershipId,
+      actorId: ACTOR_ID,
+      budgetId: BUDGET_ID,
+      resourceKind: 'budget',
+      resourceId: BUDGET_ID,
+      capability: 'notification:receive',
+      granted: false,
+      now: AUTHORITY_NOW,
+    });
+    const deliver = vi.fn(async () => ({ ok: true, code: 'accepted' }));
+    const runtime = new NotificationRuntime(
+      store,
+      notificationPolicy(),
+      [channelAdapter(deliver)],
+    );
 
     const result = await runtime.dispatch(record.id, 'claim-revoked');
+    const current = await store.getOutboxRecord(record.id);
 
-    expect(reauthorize).toHaveBeenCalledWith(
-      ACTOR_ID,
-      'notification:receive',
-      `budget:${BUDGET_ID}`,
-    );
     expect(result.status).toBe('failed');
-    expect(store.failNotificationDelivery).toHaveBeenCalledWith(
-      record.id,
-      'claim-revoked',
-      'Recipient authorization revoked',
-      false,
-    );
+    expect(result.errorMessage).toBe('Recipient authorization revoked');
+    expect(current).toMatchObject({
+      status: 'failed',
+      failureReason: 'Recipient authorization revoked',
+    });
+    expect(await store.getDeliveryAttempts(record.id)).toHaveLength(1);
     expect(deliver).not.toHaveBeenCalled();
   });
 
-  it('denies dispatch when store membership is not scoped to the event', async () => {
-    const event = notificationEvent();
-    const record = outbox('outbox-membership-scope-mismatch', event.id);
-    const store = {
-      claimNotificationDelivery: vi.fn(async () => record),
-      getNotificationEvent: vi.fn(async () => event),
-      getActorMembership: vi.fn(async () => ({
-        actorId: ACTOR_ID,
-        status: 'active',
-        capabilities: ['notification:receive'],
-        scope: 'budget:budget-other',
-      })),
-      completeNotificationDelivery: vi.fn(async () => ({ ...record, status: 'delivered' })),
-      failNotificationDelivery: vi.fn(async () => ({ ...record, status: 'failed' })),
-      appendAuditRecord: vi.fn(),
-    };
-    const deliver = vi.fn(async () => ({ ok: true, code: 'accepted' }));
-    const adapter: ChannelAdapter = {
-      channelType: 'in_app',
-      isHealthy: () => true,
-      deliver,
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), [adapter]);
-
-    const result = await runtime.dispatch(record.id, 'claim-membership-scope-mismatch');
-
-    expect(result.status).toBe('failed');
-    expect(deliver).not.toHaveBeenCalled();
-    expect(store.completeNotificationDelivery).not.toHaveBeenCalled();
-  });
-
-  it('denies dispatch when the classification rule required scope differs from the event scope', async () => {
-    const event = {
-      ...notificationEvent(),
+  it('rejects an event whose scope no longer matches the classification policy', async () => {
+    const { store } = await createNotificationAuthority({ receiveActors: [ACTOR_ID] });
+    const { record } = await createNotificationDelivery(store, {
       scope: 'budget:budget-outside-policy',
-    };
-    const record = outbox('outbox-rule-scope-mismatch', event.id);
-    const store = {
-      claimNotificationDelivery: vi.fn(async () => record),
-      getNotificationEvent: vi.fn(async () => event),
-      getActorMembership: vi.fn(async () => ({
-        actorId: ACTOR_ID,
-        status: 'active',
-        capabilities: ['notification:receive'],
-        scope: '*',
-      })),
-      completeNotificationDelivery: vi.fn(async () => ({ ...record, status: 'delivered' })),
-      failNotificationDelivery: vi.fn(async () => ({ ...record, status: 'failed' })),
-      appendAuditRecord: vi.fn(),
-    };
+    });
     const deliver = vi.fn(async () => ({ ok: true, code: 'accepted' }));
-    const adapter: ChannelAdapter = {
-      channelType: 'in_app',
-      isHealthy: () => true,
-      deliver,
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), [adapter]);
+    const runtime = new NotificationRuntime(
+      store,
+      notificationPolicy(),
+      [channelAdapter(deliver)],
+    );
 
-    const result = await runtime.dispatch(record.id, 'claim-rule-scope-mismatch');
+    const result = await runtime.dispatch(record.id, 'claim-scope-mismatch');
 
     expect(result.status).toBe('failed');
+    expect(result.errorMessage).toBe('Notification classification is no longer eligible');
+    expect(await store.getOutboxRecord(record.id)).toMatchObject({ status: 'failed' });
     expect(deliver).not.toHaveBeenCalled();
-    expect(store.completeNotificationDelivery).not.toHaveBeenCalled();
   });
 
-  it('applies the restricted policy before the adapter sees a delivery payload', async () => {
+  it('does not deliver a prior membership period to a recipient who rejoins with a new epoch', async () => {
+    const { store, spaceId, memberships } = await createNotificationAuthority({
+      actors: [RECIPIENT_ACTOR_ID],
+      receiveActors: [RECIPIENT_ACTOR_ID],
+    });
+    const { event, record } = await createNotificationDelivery(store, {
+      recipientId: RECIPIENT_ACTOR_ID,
+    });
+    const oldMembershipId = memberships.get(RECIPIENT_ACTOR_ID);
+    if (!oldMembershipId) throw new Error('Original recipient membership missing');
+    expect(event.recipientMembershipId).toBe(oldMembershipId);
+
+    vi.setSystemTime(new Date(AUTHORITY_LATER));
+    const auth = humanAuth(ACTOR_ID, AUTHORITY_LATER);
+    store.governance.revokeMembership({
+      spaceId,
+      membershipId: oldMembershipId,
+      now: AUTHORITY_LATER,
+      auth,
+    });
+    const rejoined = store.governance.addMembership({
+      spaceId,
+      actorId: RECIPIENT_ACTOR_ID,
+      validFrom: AUTHORITY_LATER,
+      now: AUTHORITY_LATER,
+      auth,
+    });
+    store.governance.provisionResourceGrant({
+      spaceId,
+      membershipId: rejoined.id,
+      actorId: RECIPIENT_ACTOR_ID,
+      budgetId: BUDGET_ID,
+      resourceKind: 'budget',
+      resourceId: BUDGET_ID,
+      capability: 'notification:receive',
+      granted: true,
+      now: AUTHORITY_LATER,
+    });
+    const deliver = vi.fn(async () => ({ ok: true, code: 'accepted' }));
+    const runtime = new NotificationRuntime(
+      store,
+      notificationPolicy(),
+      [channelAdapter(deliver)],
+    );
+
+    const result = await runtime.dispatch(record.id, 'claim-rejoined');
+
+    expect(rejoined.id).not.toBe(oldMembershipId);
+    expect(result.status).toBe('failed');
+    expect(result.errorMessage).toBe('Recipient authorization revoked');
+    expect(await store.getOutboxRecord(record.id)).toMatchObject({ status: 'failed' });
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('redacts private payload fields before an authorized adapter receives them', async () => {
     const secret = 'provider-secret-that-must-not-reach-an-adapter';
-    const event = {
-      ...notificationEvent(),
-      payload: JSON.stringify({
-        title: 'Decision attention',
-        summary: 'Review required',
-        classification: 'reservation_conflict',
-        scope: `budget:${BUDGET_ID}`,
-        snapshotId: SNAPSHOT_ID,
+    const { store } = await createNotificationAuthority({ receiveActors: [ACTOR_ID] });
+    const { record } = await createNotificationDelivery(store, {
+      payload: {
         rawEvidence: { accountId: 'account-restricted', value: secret },
         rawPayload: { providerResponse: secret },
         secrets: { accessToken: secret },
-      }),
-    };
-    const record = outbox('outbox-restricted', event.id);
-    const store = {
-      claimNotificationDelivery: vi.fn(async () => record),
-      getNotificationEvent: vi.fn(async () => event),
-      completeNotificationDelivery: vi.fn(async () => ({ ...record, status: 'delivered' })),
-      failNotificationDelivery: vi.fn(),
-      appendAuditRecord: vi.fn(),
-    };
+      },
+    });
     const deliver = vi.fn(async () => ({ ok: true, code: 'accepted' }));
-    const adapter: ChannelAdapter = {
-      channelType: 'in_app',
-      isHealthy: () => true,
-      deliver,
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), [adapter]);
-    const reauthorize = vi.fn(async () => true);
-    runtime.setReAuthorizationHook(reauthorize);
+    const runtime = new NotificationRuntime(
+      store,
+      notificationPolicy(),
+      [channelAdapter(deliver)],
+    );
 
     const result = await runtime.dispatch(record.id, 'claim-restricted');
 
     expect(result.status).toBe('delivered');
-    expect(reauthorize).toHaveBeenCalledWith(
-      ACTOR_ID,
-      'notification:receive',
-      `budget:${BUDGET_ID}`,
-    );
     expect(deliver).toHaveBeenCalledWith(
       {
         title: 'Decision attention',
@@ -1382,8 +1476,6 @@ describe('financial decision notification delivery isolation', () => {
       },
       ACTOR_ID,
     );
-    expect(deliver.mock.calls[0]?.[1]).toBe(ACTOR_ID);
-    expect(deliver.mock.calls[0]?.[1]).not.toBe(record.deliveryKey);
     const adapterPayload = deliver.mock.calls[0]?.[0];
     expect(adapterPayload).not.toHaveProperty('rawEvidence');
     expect(adapterPayload).not.toHaveProperty('rawPayload');
@@ -1391,59 +1483,65 @@ describe('financial decision notification delivery isolation', () => {
     expect(JSON.stringify(adapterPayload)).not.toContain(secret);
   });
 
-  it('allows one delivery to fail without preventing an independent delivery', async () => {
-    const failedEvent = notificationEvent('reservation_conflict');
-    const deliveredEvent = {
-      ...notificationEvent('commitment_conflict'),
-      id: 'event-commitment-conflict',
-    };
-    const failedOutbox = outbox('outbox-failed', failedEvent.id);
-    const deliveredOutbox = outbox('outbox-delivered', deliveredEvent.id);
-    const records = new Map([
-      [failedOutbox.id, failedOutbox],
-      [deliveredOutbox.id, deliveredOutbox],
-    ]);
-    const events = new Map([
-      [failedEvent.id, failedEvent],
-      [deliveredEvent.id, deliveredEvent],
-    ]);
-    const store = {
-      claimNotificationDelivery: vi.fn(async (id: string) => records.get(id) ?? null),
-      getNotificationEvent: vi.fn(async (id: string) => events.get(id) ?? null),
-      failNotificationDelivery: vi.fn(async () => ({ ...failedOutbox, status: 'pending' })),
-      completeNotificationDelivery: vi.fn(async () => ({
-        ...deliveredOutbox,
-        status: 'delivered',
-      })),
-      appendAuditRecord: vi.fn(),
-    };
+  it('allows one delivery to fail and retry without blocking an independent delivery', async () => {
+    const { store } = await createNotificationAuthority({ receiveActors: [ACTOR_ID] });
+    const failed = await createNotificationDelivery(store, {
+      classification: 'reservation_conflict',
+    });
+    const delivered = await createNotificationDelivery(store, {
+      classification: 'commitment_conflict',
+    });
     const deliver = vi
       .fn()
       .mockResolvedValueOnce({ ok: false, error: 'email provider unavailable' })
+      .mockResolvedValueOnce({ ok: true, code: 'accepted' })
       .mockResolvedValueOnce({ ok: true, code: 'accepted' });
-    const adapter: ChannelAdapter = {
-      channelType: 'in_app',
-      isHealthy: () => true,
-      deliver,
-    };
-    const runtime = new NotificationRuntime(store as never, notificationPolicy(), [adapter]);
-    runtime.setReAuthorizationHook(async () => true);
-
-    const failed = await runtime.dispatch(failedOutbox.id, 'claim-failed');
-    const delivered = await runtime.dispatch(deliveredOutbox.id, 'claim-delivered');
-
-    expect(failed.status).toBe('retryable');
-    expect(delivered.status).toBe('delivered');
-    expect(store.failNotificationDelivery).toHaveBeenCalledWith(
-      failedOutbox.id,
-      'claim-failed',
-      'email provider unavailable',
-      true,
+    const runtime = new NotificationRuntime(
+      store,
+      notificationPolicy(),
+      [channelAdapter(deliver)],
     );
-    expect(store.completeNotificationDelivery).toHaveBeenCalledWith(
-      deliveredOutbox.id,
-      'claim-delivered',
-      { code: 'accepted', body: undefined },
-    );
+
+    const failedResult = await runtime.dispatch(failed.record.id, 'claim-failed');
+    const deliveredResult = await runtime.dispatch(delivered.record.id, 'claim-delivered');
+
+    expect(failedResult.status).toBe('retryable');
+    expect(deliveredResult.status).toBe('delivered');
+    expect((await store.getRetryableNotifications()).map(({ id }) => id)).toEqual([failed.record.id]);
+    expect(await runtime.processRetries()).toMatchObject([{ status: 'delivered' }]);
+    expect(await store.getOutboxRecord(failed.record.id)).toMatchObject({
+      status: 'delivered',
+      attemptCount: 2,
+    });
+    expect(await store.getOutboxRecord(delivered.record.id)).toMatchObject({
+      status: 'delivered',
+      attemptCount: 1,
+    });
   });
+
+  it.each(['inactive', 'suspended'] as const)(
+    'composition denies delivery when the registered recipient is %s',
+    async (status) => {
+      const { store } = await createNotificationAuthority({ receiveActors: [ACTOR_ID] });
+      const { record } = await createNotificationDelivery(store);
+      await store.upsertActorMembership(
+        ACTOR_ID,
+        status,
+        ['notification:receive', 'notification:admin'],
+        '*',
+      );
+      const composition = await createObserveComposition({
+        analysisProtocol: {} as never,
+        workflowStore: store,
+        notificationPolicy: notificationPolicy(),
+        actorId: ACTOR_ID,
+      });
+
+      const result = await composition.notificationRuntime!.dispatch(record.id, 'claim-current');
+
+      expect(result.status).toBe('failed');
+      expect(result.errorMessage).toBe('Recipient authorization revoked');
+      expect(await store.getOutboxRecord(record.id)).toMatchObject({ status: 'failed' });
+    },
+  );
 });

@@ -10,17 +10,19 @@
  * NUXT_AUTH_DB_PATH is the Nuxt runtimeConfig.authDbPath env override
  * convention; BALANCEFRAME_AUTH_DB_PATH is the legacy fallback.
  *
- * Schema migrations are handled by `server/plugins/auth-migration.ts`.
+ * Schema migrations finish before Better Auth starts schema validation.
  */
 
 import { admin } from 'better-auth/plugins';
 import { apiKey } from '@better-auth/api-key';
-import { betterAuth } from 'better-auth';
+import { betterAuth, type BetterAuthOptions } from 'better-auth';
+import { getMigrations } from 'better-auth/db/migration';
 import Database from 'better-sqlite3';
 
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { resolveAuthDbPath } from './auth-db-path';
+import { setAuthMigrationFailed } from '../server/utils/auth-migration-status';
 
 const AUTH_DB_PATH = resolveAuthDbPath();
 
@@ -34,7 +36,7 @@ db.pragma('journal_mode = WAL');
 
 const BASE_URL = process.env.BETTER_AUTH_URL || 'http://localhost:3000';
 
-export const auth = betterAuth({
+const options = {
   database: db,
   baseURL: BASE_URL,
   secret: process.env.BETTER_AUTH_SECRET || process.env.NUXT_BETTER_AUTH_SECRET,
@@ -53,4 +55,17 @@ export const auth = betterAuth({
     admin(),
     apiKey(),
   ],
-});
+} satisfies BetterAuthOptions;
+
+try {
+  const { runMigrations } = await getMigrations(options);
+  await runMigrations();
+  console.log('[auth] Database migrations complete');
+} catch (error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  setAuthMigrationFailed(message);
+  console.error('[auth] Failed to run database migrations:', message);
+}
+
+/** Authentication instance, constructed only after the schema migration attempt. */
+export const auth = betterAuth(options);

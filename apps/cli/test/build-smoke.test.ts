@@ -44,9 +44,8 @@ describe('CLI executable path', () => {
       expect(parsed).toHaveProperty('schemaVersion');
       expect(parsed).toHaveProperty('requestId');
       expect(parsed).toHaveProperty('status');
-      // An error envelope is expected (no ledger connected), but the
-      // important thing is that command handling was reached — not a
-      // module-resolution failure.
+      // The smoke environment need not have a trusted authenticated server;
+      // command handling must still return the standard error envelope.
       expect(parsed.status).toBe('error');
       expect(parsed.error).toHaveProperty('code');
     },

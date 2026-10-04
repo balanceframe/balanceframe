@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::blockers::{Blocker, BlockerCollector, ReasonCode};
-use crate::categorization::{find_candidates, CategorizationCandidate};
+use crate::categorization::{find_candidates_with_rules, CategorizationCandidate};
 use crate::coverage::{build_coverage_report, CoverageReport, InclusionScope};
 use crate::data_quality::{analyze_readiness, DataQualityReport};
 use crate::duplicates::{find_duplicates, DuplicateEvidence};
@@ -177,7 +177,7 @@ pub fn run_deterministic_analysis(
     transactions: &[Transaction],
     categories: &[Category],
     payees: &[Payee],
-    _rules: &[Rule],
+    rules: &[Rule],
     schedules: &[Schedule],
     budgets: &[BudgetMonth],
     compatibility: CompatibilityMetadata,
@@ -378,7 +378,8 @@ pub fn run_deterministic_analysis(
         })
         .collect();
 
-    let deterministic_classifications = find_candidates(&scoped_txns, payees, &history);
+    let deterministic_classifications =
+        find_candidates_with_rules(&scoped_txns, payees, &history, categories, rules);
 
     // -----------------------------------------------------------------------
     // 8. Rule candidates (uses filtered transactions)

@@ -149,6 +149,7 @@
     <ProposedRulesModal
       :open="showProposalsModal"
       :proposals="activeProposals"
+      :proposal-approval-views="adapter.proposalApprovalViews ?? []"
       @close="showProposalsModal = false"
       @accepted="handleProposalAccepted"
       @discarded="handleProposalDiscarded"
@@ -158,6 +159,7 @@
 </template>
 
 <script setup lang="ts">
+import { watch } from 'vue';
 interface SavedView {
   viewId: string;
   name: string;
@@ -280,6 +282,7 @@ import type { CategorizationProposalListItem } from '../components/ProposedRules
 // Use the configured API base, falling back to the current origin for
 // same-origin SPA operation (the default with Better Auth on Nuxt).
 const config = useRuntimeConfig();
+const toast = useToast();
 const apiBase = config.public.apiBase || (import.meta.client ? window.location.origin : '');
 
 // Session auth is provided by Better Auth's HttpOnly session cookie, sent
@@ -303,6 +306,12 @@ const showCorrectModal = ref(false);
 const correcting = ref(false);
 const showProposalsModal = ref(false);
 const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
+watch(
+  () => adapter.proposalApprovalViews,
+  (views) => {
+    if (views?.length) showProposalsModal.value = true;
+  },
+);
 const interactiveControlSelector =
   'a, button, input, textarea, select, summary, [contenteditable], [role="button"], [role="link"], [role="menuitem"]';
 
@@ -410,8 +419,9 @@ async function onCorrectConfirm(categoryId: string): Promise<void> {
   correcting.value = true;
   try {
     const result = await adapter.correct(categoryId);
-    if (result?.success) {
+    if (result?.success || result?.approvalRequired) {
       showCorrectModal.value = false;
+      showProposalsModal.value = result.approvalRequired === true;
       await nextTick();
       keyboardInput.value?.focus();
     }
@@ -428,7 +438,6 @@ async function promptProposeRule(): Promise<void> {
   if (merchant && categoryId) {
     const result = await adapter.proposeRule(current.reviewItem.id, merchant, categoryId);
     if (result.success) {
-      const toast = useToast();
       toast.add({
         title: 'Rule proposal created',
         description: `${merchant} → ${categoryId}`,
@@ -451,20 +460,21 @@ async function promptProposeRule(): Promise<void> {
   }
 }
 
-async function handleProposalAccepted(_proposalId: string) {
+async function handleProposalAccepted(proposalId: string) {
+  adapter.clearProposalApprovalViews?.(proposalId);
   showProposalsModal.value = false;
   await adapter.refresh();
   await fetchProposals();
 }
 
-async function handleProposalDiscarded(_proposalId: string) {
+async function handleProposalDiscarded(proposalId: string) {
+  adapter.clearProposalApprovalViews?.(proposalId);
   await fetchProposals();
 }
 
 function handleProposalError(message: string, retryable: boolean): void {
-  const toast = useToast();
   toast.add({
-    title: 'Rule activation failed',
+    title: 'Proposal action failed',
     description: retryable ? `${message} Try again after fixing the connection.` : message,
     color: 'error',
     duration: 10000,
@@ -478,14 +488,12 @@ async function handleSync() {
     const res = await fetch('/api/review/sync', { method: 'POST', credentials: 'same-origin' });
     const data = await res.json();
     if (data.status === 'ok') {
-      const toast = useToast();
       toast.add({ title: 'Sync complete', color: 'success', duration: 5000 });
       await adapter.refresh();
       const pendingCategoryLoad = categoryLoadPromise;
       if (pendingCategoryLoad) await pendingCategoryLoad;
       await loadReviewCategories();
     } else {
-      const toast = useToast();
       const error = data.error;
       toast.add({
         title: 'Sync failed',
@@ -505,7 +513,6 @@ async function handleSync() {
       });
     }
   } catch (e) {
-    const toast = useToast();
     toast.add({
       title: 'Sync failed',
       description: e instanceof Error ? e.message : 'Connection error',

@@ -16,6 +16,22 @@
             aria-label="Current space"
             >{{ currentSpace }}</span
           >
+          <label v-if="isAuthenticated && spaceOptions.length" class="sr-only" for="space-picker">
+            Select current space
+          </label>
+          <select
+            v-if="isAuthenticated && spaceOptions.length"
+            id="space-picker"
+            v-model="selectedSpaceId"
+            aria-label="Select current space"
+            :disabled="spaceSwitching"
+            class="max-w-36 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+            data-navigation-popover
+            @change="selectSpace"
+          >
+            <option v-for="space in spaceOptions" :key="space.id" :value="space.id">{{ space.name }}</option>
+          </select>
+          <p v-if="spaceSwitchError" role="alert" class="absolute left-4 top-14 z-50 rounded bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950 dark:text-red-200">{{ spaceSwitchError }}</p>
         </div>
 
         <nav class="hidden items-center gap-0.5 xl:flex" aria-label="Main navigation">
@@ -244,7 +260,10 @@
       aria-label="Loading page"
       aria-busy="true"
     />
-    <main class="flex-1" :aria-busy="routePending ? 'true' : undefined"><slot /></main>
+    <main v-if="!spaceSwitching" class="flex-1" :aria-busy="routePending ? 'true' : undefined"><slot /></main>
+    <main v-else class="flex flex-1 items-center justify-center text-sm text-gray-500" role="status">
+      Changing selected space…
+    </main>
     <footer
       v-if="route.path !== '/review'"
       class="mt-8 border-t border-gray-200 py-4 dark:border-gray-800"
@@ -259,6 +278,7 @@
 </template>
 
 <script setup lang="ts">
+import { z } from 'zod';
 import { authClient } from '../../lib/auth-client';
 import FreshnessBanner from '../components/FreshnessBanner.vue';
 import DemoBanner from '../components/DemoBanner.vue';
@@ -282,6 +302,7 @@ const navigation: { direct: readonly NavigationLink[]; groups: readonly Navigati
     { to: '/', label: 'Dashboard' },
     { to: '/review', label: 'Review' },
     { to: '/notifications', label: 'Notifications' },
+    { to: '/spaces', label: 'Spaces' },
   ],
   groups: [
     {
@@ -329,8 +350,24 @@ const session = authClient.useSession();
 const isAuthenticated = computed(() => !!session?.value?.data);
 const userEmail = computed(() => session?.value?.data?.user?.email ?? 'Account');
 const currentSpace = ref('Current space');
+const spaceOptions = ref<{ id: string; name: string; kind: 'personal' | 'shared' }[]>([]);
+const selectedSpaceId = ref('');
+const currentSpaceId = ref('');
+const spaceSwitching = ref(false);
+const spaceSwitchError = ref('');
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const authorization = ref<{ capability?: string; allowed?: boolean } | null>(null);
+const SpaceListResponse = z.object({
+  status: z.literal('ok'),
+  result: z.object({
+    spaces: z.array(z.object({
+      id: z.string(),
+      name: z.string(),
+      kind: z.enum(['personal', 'shared']),
+    })),
+    selectedSpaceId: z.string().nullable(),
+  }),
+});
 
 function panelId(groupId: NavigationGroupId) {
   return `navigation-${groupId}-panel`;
@@ -470,6 +507,43 @@ async function refreshShell() {
   }
 }
 
+async function loadSpacePicker() {
+  if (!isAuthenticated.value) return;
+  try {
+    const parsed = SpaceListResponse.safeParse(await $fetch<unknown>('/api/spaces'));
+    if (!parsed.success) return;
+    spaceOptions.value = parsed.data.result.spaces;
+    selectedSpaceId.value = parsed.data.result.selectedSpaceId ?? '';
+    currentSpaceId.value = selectedSpaceId.value;
+    currentSpace.value =
+      spaceOptions.value.find((space) => space.id === selectedSpaceId.value)?.name ?? currentSpace.value;
+  } catch {
+    /* the page itself remains the recovery path when the picker cannot load */
+  }
+}
+
+async function selectSpace() {
+  const target = spaceOptions.value.find((space) => space.id === selectedSpaceId.value);
+  if (!target || target.id === currentSpaceId.value || spaceSwitching.value) return;
+  spaceSwitching.value = true;
+  spaceSwitchError.value = '';
+  try {
+    await $fetch(`/api/spaces/${encodeURIComponent(target.id)}/select`, {
+      method: 'POST',
+      headers: { 'X-BalanceFrame-Space': target.id },
+      body: {},
+    });
+    currentSpace.value = target.name;
+    freshness.value = null;
+    authorization.value = null;
+    window.location.reload();
+  } catch {
+    selectedSpaceId.value = currentSpaceId.value;
+    spaceSwitching.value = false;
+    spaceSwitchError.value = 'The selected space could not be changed. Refresh your memberships and try again.';
+  }
+}
+
 function currentMonth() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -478,7 +552,19 @@ function currentMonth() {
 watch(() => route.fullPath, closeNavigationMenus);
 
 onMounted(() => {
-  void refreshShell();
+  watch(isAuthenticated, (authenticated) => {
+    if (authenticated) {
+      void loadSpacePicker();
+      void refreshShell();
+    } else {
+      spaceOptions.value = [];
+      selectedSpaceId.value = '';
+      currentSpaceId.value = '';
+      currentSpace.value = 'Current space';
+      freshness.value = null;
+      authorization.value = null;
+    }
+  }, { immediate: true });
   if (typeof useNuxtApp === 'function') {
     const app = useNuxtApp();
     app.hook('page:start', () => {

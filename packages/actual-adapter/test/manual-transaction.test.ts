@@ -183,7 +183,6 @@ function createMockClient(overrides: Partial<ActualClient> = {}): ActualClient {
     createAccount: vi.fn().mockResolvedValue('new-account-id'),
     updateTransaction: vi.fn().mockResolvedValue(undefined),
     createRule: vi.fn().mockResolvedValue({ id: 'new-rule-id' }),
-    updateRule: vi.fn().mockResolvedValue(undefined),
     deleteRule: vi.fn().mockResolvedValue(true),
     setBudgetAmount: vi.fn().mockResolvedValue(undefined),
     ...overrides,

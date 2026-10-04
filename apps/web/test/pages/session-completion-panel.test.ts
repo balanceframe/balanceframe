@@ -6,8 +6,16 @@ import SemanticAmount from '../../app/components/SemanticAmount.vue';
 
 const money = (minorUnits: string, currency = 'USD') => ({ minorUnits, currency });
 const fetchMock = vi.fn();
+const reauthFetchMock = vi.fn();
 vi.stubGlobal('$fetch', fetchMock);
-
+vi.stubGlobal('fetch', reauthFetchMock);
+const reauthSuccess = () => Promise.resolve({
+  ok: true, status: 200, json: async () => ({ status: 'success' }),
+});
+const reauthFailure = () => Promise.resolve({
+  ok: false, status: 401,
+  json: async () => ({ status: 'error', error: { code: 'REAUTHENTICATION_FAILED', message: 'Password confirmation failed.' } }),
+});
 const sessionFixture = (): PublicSpendSession => ({
   id: 'fixture-session',
   version: 3,
@@ -113,6 +121,8 @@ const global = {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  reauthFetchMock.mockReset();
+  reauthFetchMock.mockImplementation(reauthSuccess);
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-06T10:01:00.000Z'));
 });
@@ -170,6 +180,8 @@ describe('SessionCompletionPanel', () => {
       '/spend-sessions/fixture-session/completions/completion-1',
     );
     expect(wrapper.text()).toContain('Fixture shop');
+    expect(wrapper.text()).toContain('hash-1');
+    expect(wrapper.text()).toContain('Proposal expires 2026-09-06T15:00:00.000Z');
     expect(wrapper.text()).toContain('Order 1');
     expect(wrapper.text()).toContain('Cooldown until');
 
@@ -192,8 +204,17 @@ describe('SessionCompletionPanel', () => {
     await flushPromises();
 
     await wrapper.get('[data-testid="completion-approve-confirmation"]').setValue(true);
+    await wrapper.get('input[type="password"]').setValue('current-password');
     await wrapper.get('[data-testid="completion-approve"]').trigger('click');
     await flushPromises();
+    expect(reauthFetchMock).toHaveBeenCalledWith(
+      '/api/reauth',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'same-origin',
+        body: JSON.stringify({ password: 'current-password' }),
+      }),
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/spend-sessions/fixture-session/completions/completion-1/approve',
       expect.objectContaining({
@@ -201,6 +222,11 @@ describe('SessionCompletionPanel', () => {
         body: expect.objectContaining({ payloadHash: 'hash-1', expectedVersion: 1 }),
       }),
     );
+    const approvalBody = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/approve'))?.[1]?.body;
+    expect(approvalBody).not.toHaveProperty('actorId');
+    expect(approvalBody).not.toHaveProperty('reauthenticatedAt');
+    expect(approvalBody).not.toHaveProperty('password');
+    expect(wrapper.get('input[type="password"]').element).toHaveProperty('value', '');
     expect(
       fetchMock.mock.calls.filter(
         ([url, options]) => options?.method === 'POST' && String(url).endsWith('/execute'),
@@ -208,6 +234,7 @@ describe('SessionCompletionPanel', () => {
     ).toHaveLength(0);
 
     await wrapper.get('[data-testid="completion-execute-confirmation"]').setValue(true);
+    await wrapper.get('input[type="password"]').setValue('current-password');
     await wrapper.get('[data-testid="completion-execute"]').trigger('click');
     await flushPromises();
     expect(fetchMock).toHaveBeenCalledWith(
@@ -217,8 +244,109 @@ describe('SessionCompletionPanel', () => {
         body: expect.objectContaining({ payloadHash: 'hash-1', expectedVersion: 2 }),
       }),
     );
+    expect(reauthFetchMock).toHaveBeenCalledTimes(2);
+    expect(wrapper.get('input[type="password"]').element).toHaveProperty('value', '');
     expect(wrapper.text()).toContain('Human review required');
     expect(wrapper.text()).not.toContain('Verified manual transaction');
+  });
+
+
+  it('blocks approval after failed password confirmation and clears the password', async () => {
+    const proposal = completion({ cooldownUntil: null, canApprove: true });
+    fetchMock.mockResolvedValue(envelope([proposal]));
+    reauthFetchMock.mockImplementationOnce(reauthFailure);
+    const wrapper = mount(SessionCompletionPanel, { props: { session: sessionFixture() }, global });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="completion-approve-confirmation"]').setValue(true);
+    await wrapper.get('input[type="password"]').setValue('wrong-password');
+    await wrapper.get('[data-testid="completion-approve"]').trigger('click');
+    await flushPromises();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/spend-sessions/fixture-session/completions');
+    expect(wrapper.text()).toContain('REAUTHENTICATION_FAILED');
+    expect(wrapper.text()).toContain('hash-1');
+    expect(wrapper.get('input[type="password"]').element).toHaveProperty('value', '');
+  });
+
+  it('keeps the old completion snapshot after a stale approval until explicit refresh', async () => {
+    const capturedMetadata = {
+      requesterActorId: 'original-requester',
+      requesterMembershipId: 'original-membership',
+      governancePolicyVersion: 'captured-governance-policy',
+      financialPolicyVersion: 'captured-financial-policy',
+      approvers: [{
+        actorId: 'old-eligible-human',
+        issuedAt: '2026-09-06T09:00:00Z',
+        expiresAt: '2026-09-06T11:00:00Z',
+      }],
+    };
+    const proposal = completion({
+      cooldownUntil: null, canApprove: true, approvalMetadata: capturedMetadata,
+    });
+    const fresh = completion({
+      version: 2,
+      payloadHash: 'fresh-hash',
+      cooldownUntil: null,
+      approvalMetadata: {
+        ...capturedMetadata,
+        approvers: [{
+          actorId: 'new-eligible-human',
+          issuedAt: '2026-09-06T10:00:00Z',
+          expiresAt: '2026-09-06T12:00:00Z',
+        }],
+      },
+    });
+    fetchMock
+      .mockResolvedValueOnce(envelope([proposal]))
+      .mockRejectedValueOnce({
+        statusCode: 409,
+        data: { error: { message: 'stale payload hash' } },
+      })
+      .mockResolvedValueOnce(envelope([fresh]));
+    const wrapper = mount(SessionCompletionPanel, { props: { session: sessionFixture() }, global });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="completion-approve-confirmation"]').setValue(true);
+    await wrapper.get('input[type="password"]').setValue('current-password');
+    await wrapper.get('[data-testid="completion-approve"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('[data-testid="approval-requester-actor"]').text()).toContain('original-requester');
+    expect(wrapper.get('[data-testid="approval-requester-membership"]').text()).toContain('original-membership');
+    expect(wrapper.get('[data-testid="approval-governance-policy"]').text()).toContain('captured-governance-policy');
+    expect(wrapper.get('[data-testid="approval-financial-policy"]').text()).toContain('captured-financial-policy');
+    const currentApprovers = wrapper
+      .findAll('[data-testid="approval-current-approver"]')
+      .map((item) => item.text())
+      .join(' ');
+    expect(currentApprovers).toContain('old-eligible-human');
+    expect(currentApprovers).toContain('2026-09-06T09:00:00Z');
+    expect(currentApprovers).toContain('2026-09-06T11:00:00Z');
+    expect(wrapper.text()).not.toContain('new-eligible-human');
+
+    expect(wrapper.text()).toContain('hash-1');
+    expect(wrapper.text()).toContain('Fixture shop');
+    expect(wrapper.text()).toMatch(/plan or version changed/i);
+    expect(wrapper.text()).not.toContain('fresh-hash');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await wrapper.get('[data-testid="completion-refresh"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('fresh-hash');
+    expect(wrapper.text()).not.toContain('hash-1');
+    expect(wrapper.get('[data-testid="approval-requester-actor"]').text()).toContain('original-requester');
+    expect(wrapper.get('[data-testid="approval-requester-membership"]').text()).toContain('original-membership');
+    expect(wrapper.get('[data-testid="approval-governance-policy"]').text()).toContain('captured-governance-policy');
+    expect(wrapper.get('[data-testid="approval-financial-policy"]').text()).toContain('captured-financial-policy');
+    const refreshedApprovers = wrapper
+      .findAll('[data-testid="approval-current-approver"]')
+      .map((item) => item.text())
+      .join(' ');
+    expect(refreshedApprovers).toContain('new-eligible-human');
+    expect(refreshedApprovers).not.toContain('old-eligible-human');
+    expect(refreshedApprovers).toContain('2026-09-06T10:00:00Z');
+    expect(refreshedApprovers).toContain('2026-09-06T12:00:00Z');
   });
 
   it('never offers a completion proposal when the current Card has a material blocker', async () => {
@@ -243,6 +371,17 @@ describe('SessionCompletionPanel', () => {
       debit: null,
       canApprove: true,
       canExecute: true,
+      approvalMetadata: {
+        requesterActorId: 'hidden-requester',
+        requesterMembershipId: 'hidden-membership',
+        governancePolicyVersion: 'hidden-governance-policy',
+        financialPolicyVersion: 'hidden-financial-policy',
+        approvers: [{
+          actorId: 'hidden-current-approver',
+          issuedAt: '2026-09-06T09:00:00Z',
+          expiresAt: '2026-09-06T11:00:00Z',
+        }],
+      },
     });
     fetchMock.mockResolvedValue(envelope([redacted]));
     const wrapper = mount(SessionCompletionPanel, {
@@ -252,6 +391,10 @@ describe('SessionCompletionPanel', () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain('Restricted completion details');
+    expect(wrapper.find('[data-testid="approval-metadata"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toMatch(
+      /hidden-requester|hidden-membership|hidden-governance-policy|hidden-financial-policy|hidden-current-approver/,
+    );
     expect(wrapper.find('[data-testid="completion-approve"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="completion-execute"]').exists()).toBe(false);
 
@@ -281,8 +424,17 @@ describe('SessionCompletionPanel', () => {
     });
     await flushPromises();
     expect(wrapper.text()).toContain('Verified manual transaction');
+    await wrapper.get('input[type="password"]').setValue('current-password');
     await wrapper.get('[data-testid="completion-reconcile"]').trigger('click');
     await flushPromises();
+    expect(reauthFetchMock).toHaveBeenCalledWith(
+      '/api/reauth',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'same-origin',
+        body: JSON.stringify({ password: 'current-password' }),
+      }),
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/spend-sessions/fixture-session/completions/completion-1/reconcile',
       expect.objectContaining({

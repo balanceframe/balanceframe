@@ -104,7 +104,7 @@ const pageGlobals = {
     UButton: UButtonStub,
     UCard: UCardStub,
     UContainer: { template: '<div><slot /></div>' },
-    UFormGroup: {
+    UFormField: {
       template: '<label>{{ label }}<slot /></label>',
       props: ['label'],
     },

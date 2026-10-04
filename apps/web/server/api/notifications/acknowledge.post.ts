@@ -8,128 +8,109 @@
  * Response envelope: { outboxId, status: 'acknowledged' }
  */
 
-import { defineEventHandler, readBody, setResponseStatus } from 'h3';
-import { canReadFinancialNotification } from '../../utils/liquidity-service';
+import { defineEventHandler, readBody, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
+import { canReadFinancialNotification, selectedLiquidityActor } from '../../utils/liquidity-service';
+import { createNotificationRuntime } from '../../utils/notification-runtime';
+import { getHumanControlAuth, hasTrustedRequestOrigin } from '../../utils/reauthentication';
+import type { ReauthenticationEvent } from '../../utils/reauthentication';
+import { requireSelectedSpace } from '../../utils/space-context';
 import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
   requireAuthorization,
-  getActorId,
-  sanitizeError,
 } from '../../utils/workflow-store';
-import { NotificationRuntime, InAppChannelAdapter } from '@balanceframe/application';
+import type { AuthorizationInfo, EventWithContext } from '../../utils/workflow-store';
 
-/** Module-level singleton — lazy-initialised from workflow store. */
-let runtime: NotificationRuntime | null = null;
-
-function getRuntime(event: { context: Record<string, unknown> }): NotificationRuntime {
-  if (runtime) return runtime;
-  const result = getWorkflowStore(event as any);
-  if ('error' in result) {
-    throw new Error('Workflow store not available');
-  }
-  const policy = {
-    policyVersion: 'v1',
-    eligibility: [
-      {
-        classifications: ['budget_alert', 'review_complete', 'security_alert'],
-        minSeverity: 'normal' as const,
-        requiredCapability: 'notification:receive',
-      },
-    ],
-    recipients: [],
-    channels: [
-      { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
-    ],
-    redaction: {
-      sensitive: { visibleFields: ['title', 'summary'] },
-      public: { visibleFields: ['title', 'summary', 'amount', 'account'] },
-      restricted: { visibleFields: ['title'] },
-    },
-    maxRetries: 3,
-    defaultRedactionClass: 'public',
-  };
-  const adapter = new InAppChannelAdapter();
-  runtime = new NotificationRuntime(result.store, policy, [adapter]);
-  return runtime;
-}
+const AcknowledgeBody = z.object({
+  outboxId: z.string().trim().min(1).max(200),
+}).strict();
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-  const auth = await requireAuthorization(event, 'notification:receive');
-  if (!auth.ok) return auth.response;
-  const authInfo = auth.info;
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  if (!hasTrustedRequestOrigin(event as ReauthenticationEvent)) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Notification action is unavailable.', null, false, requestId);
+  }
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  const budgetId = selected.space.budgetId;
+  if (!budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget.', null, false, requestId);
+  }
 
-  let body: Record<string, unknown>;
-  try {
-    body = (await readBody(event)) ?? {};
-  } catch {
+  const receiver = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'notification:receive',
+    `budget:${budgetId}`,
+  );
+  const administrator = receiver.ok ? null : await requireAuthorization(
+    event as unknown as EventWithContext,
+    'policy:manage',
+    `space:${selected.space.id}`,
+  );
+  let authInfo: AuthorizationInfo;
+  if (receiver.ok) authInfo = receiver.info;
+  else if (administrator?.ok) authInfo = administrator.info;
+  else if (administrator && !administrator.ok) return administrator.response;
+  else return receiver.response;
+  if (!receiver.ok) {
+    const controlAuth = await getHumanControlAuth(event as ReauthenticationEvent);
+    if (!controlAuth || controlAuth.actorId !== selected.auth.actorId) {
+      setResponseStatus(event, 403);
+      return errorEnvelope('HUMAN_CONTROL_REQUIRED', 'A recently reauthenticated human session is required.', authInfo, false, requestId);
+    }
+  }
+
+  const parsed = AcknowledgeBody.safeParse(await readBody<unknown>(event).catch(() => null));
+  if (!parsed.success) {
     setResponseStatus(event, 400);
-    return errorEnvelope(
-      'INVALID_BODY',
-      'Request body must be valid JSON.',
-      authInfo,
-      false,
-      requestId,
+    return errorEnvelope('INVALID_BODY', 'A valid outboxId is required.', authInfo, false, requestId);
+  }
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
+    setResponseStatus(event, 503);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Notification state is unavailable.', authInfo, false, requestId);
+  }
+  const actor = selectedLiquidityActor(workflow.store, selected);
+  if (!actor) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Current selected-space authorization is unavailable.', authInfo, false, requestId);
+  }
+
+  try {
+    const { runtime } = await createNotificationRuntime(workflow.store, selected.space.id);
+    if (receiver.ok) {
+      const detail = await runtime.getOutboxDetail(parsed.data.outboxId, selected.auth.actorId);
+      if (!detail || detail.event.spaceId !== selected.space.id || detail.event.budgetId !== budgetId ||
+          detail.event.recipientId !== selected.auth.actorId ||
+          detail.event.recipientMembershipId !== selected.membership.id ||
+          (detail.event.classification === 'transfer_needs_attention' &&
+            !(await canReadFinancialNotification(workflow.store, actor, detail.event)))) {
+        setResponseStatus(event, 404);
+        return errorEnvelope('NOT_FOUND', 'Notification not found or access denied.', authInfo, false, requestId);
+      }
+    } else {
+      const outbox = await workflow.store.getOutboxRecord(parsed.data.outboxId);
+      const notification = outbox ? await workflow.store.getNotificationEvent(outbox.eventId) : null;
+      if (!notification || notification.spaceId !== selected.space.id || notification.budgetId !== budgetId ||
+          (notification.classification === 'transfer_needs_attention' &&
+            !(await canReadFinancialNotification(workflow.store, actor, notification)))) {
+        setResponseStatus(event, 404);
+        return errorEnvelope('NOT_FOUND', 'Notification not found or access denied.', authInfo, false, requestId);
+      }
+    }
+
+    const record = await runtime.acknowledgeFromCallback(
+      parsed.data.outboxId,
+      { outboxId: parsed.data.outboxId },
     );
-  }
-
-  const outboxId = typeof body.outboxId === 'string' ? body.outboxId.trim() : '';
-  if (!outboxId) {
-    setResponseStatus(event, 400);
-    return errorEnvelope('MISSING_OUTBOX_ID', 'outboxId is required.', authInfo, false, requestId);
-  }
-
-  try {
-    const rt = getRuntime(event as { context: Record<string, unknown> });
-    const actorId = getActorId(event);
-    const detail = await rt.getOutboxDetail(outboxId, actorId);
-    const workflow = getWorkflowStore(event);
-    if ('error' in workflow) throw new Error('Workflow store unavailable');
-
-    if (!detail || !(await canReadFinancialNotification(workflow.store, actorId, detail.event))) {
-      setResponseStatus(event, 404);
-      return errorEnvelope(
-        'NOT_FOUND',
-        'Notification not found or access denied.',
-        authInfo,
-        false,
-        requestId,
-      );
-    }
-
-    if (detail.event.recipientId !== actorId) {
-      const scope = typeof detail.event.scope === 'string' ? detail.event.scope.trim() : '';
-      if (!scope) {
-        setResponseStatus(event, 404);
-        return errorEnvelope(
-          'NOT_FOUND',
-          'Notification not found or access denied.',
-          authInfo,
-          false,
-          requestId,
-        );
-      }
-
-      const adminAuth = await requireAuthorization(event, 'notification:admin', scope);
-      if (!adminAuth.ok) {
-        setResponseStatus(event, 404);
-        return errorEnvelope(
-          'NOT_FOUND',
-          'Notification not found or access denied.',
-          authInfo,
-          false,
-          requestId,
-        );
-      }
-    }
-
-    const record = await rt.acknowledgeFromCallback(outboxId, body);
     return okEnvelope({ outboxId: record.id, status: record.status }, authInfo, requestId);
-  } catch (error) {
-    const safe = sanitizeError(error, requestId, 'ACKNOWLEDGE_FAILED', false);
-    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
-    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+  } catch {
+    setResponseStatus(event, 503);
+    return errorEnvelope('ACKNOWLEDGE_FAILED', 'Notification could not be acknowledged.', authInfo, false, requestId);
   }
 });

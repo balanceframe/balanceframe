@@ -45,16 +45,16 @@ let
   ];
 in
 {
-  formatter = pkgs.nixfmt-rfc-style;
+  formatter = pkgs.nixfmt;
 
-  packages = [ pkgs.nixfmt-rfc-style ];
+  packages = [ pkgs.nixfmt ];
 
   nativeBuildInputs =
     rust
     ++ node
     ++ nativeBuildInputs
     ++ repoTools
-    ++ [ pkgs.nixfmt-rfc-style ]
+    ++ [ pkgs.nixfmt ]
     ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.gdb ];
 
   buildInputs = buildInputs;

@@ -3,7 +3,7 @@ import {
   createDefaultActualClient,
   EnvCredentialStore,
 } from '@balanceframe/actual-adapter';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { ApplicationError, ReasonCodes } from './errors.js';
 
@@ -46,6 +46,7 @@ export interface ConnectionManagerOptions {
   readonly connectorFactory: (credentials: Credentials) => Promise<Connector>;
   readonly readFile?: (path: string) => Promise<string | null>;
   readonly writeFile?: (path: string, value: string) => Promise<void>;
+  readonly deleteFile?: (path: string) => Promise<void>;
 }
 
 export interface ConnectedBudget {
@@ -59,6 +60,8 @@ export interface ConnectedBudget {
 export interface ConnectionUseOptions {
   /** Disconnect and discard the connector after the scoped operation, including on failure. */
   readonly dispose?: boolean;
+  /** Selected budget authorized before waiting for the global lifecycle lock. */
+  readonly expectedBudgetId?: string;
 }
 
 /** Persists selected-budget metadata and serializes access to the process-global Actual API. */
@@ -68,6 +71,7 @@ export class ConnectionManager {
   private readonly connectorFactory: ConnectionManagerOptions['connectorFactory'];
   private readonly readConfigFile: (path: string) => Promise<string | null>;
   private readonly writeConfigFile: (path: string, value: string) => Promise<void>;
+  private readonly deleteConfigFile: (path: string) => Promise<void>;
   private connectedBudget: ConnectedBudget | null = null;
   private connectedConfig: ConnectionConfig | null = null;
   private connectedCredentials: Credentials | null = null;
@@ -93,6 +97,15 @@ export class ConnectionManager {
       (async (path, value) => {
         await mkdir(dirname(path), { recursive: true, mode: 0o700 });
         await writeFile(path, value, { mode: 0o600 });
+      });
+    this.deleteConfigFile =
+      options.deleteFile ??
+      (async (path) => {
+        try {
+          await unlink(path);
+        } catch (error: unknown) {
+          if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+        }
       });
   }
 
@@ -206,7 +219,7 @@ export class ConnectionManager {
     options: ConnectionUseOptions = {},
   ): Promise<T> {
     return this.runWithLifecycle(async () => {
-      const connected = await this.restoreConfiguredBudget();
+      const connected = await this.restoreConfiguredBudget(options.expectedBudgetId);
       try {
         return await operation(connected);
       } finally {
@@ -218,15 +231,33 @@ export class ConnectionManager {
           }
         }
       }
+    }, options.expectedBudgetId);
+  }
+
+  /** Disconnect without changing the selected-budget configuration. */
+  async disconnect(expectedBudgetId?: string): Promise<void> {
+    await runActualLifecycleExclusive(async () => {
+      if (expectedBudgetId !== undefined) {
+        const config = await this.loadConfig();
+        if (!config || config.budgetId !== expectedBudgetId)
+          throw new Error('Selected budget changed');
+      }
+      await this.disconnectCurrentConnection(expectedBudgetId);
     });
   }
 
-  /** Disconnect and discard this manager's active connector. */
-  async disconnect(): Promise<void> {
-    await runActualLifecycleExclusive(() => this.disconnectConnected());
+  /** Disconnect and remove only the selected-budget configuration. */
+  async removeConnection(expectedBudgetId: string): Promise<void> {
+    await runActualLifecycleExclusive(async () => {
+      const config = await this.loadConfig();
+      if (!config || config.budgetId !== expectedBudgetId)
+        throw new Error('Selected budget changed');
+      await this.disconnectCurrentConnection(expectedBudgetId);
+      await this.deleteConfigFile(this.configPath);
+    });
   }
 
-  private async restoreConfiguredBudget(): Promise<ConnectedBudget> {
+  private async restoreConfiguredBudget(expectedBudgetId?: string): Promise<ConnectedBudget> {
     const config = await this.loadConfig();
     if (!config) {
       await this.disconnectConnected();
@@ -237,6 +268,8 @@ export class ConnectionManager {
         retryable: true,
       });
     }
+    if (expectedBudgetId !== undefined && config.budgetId !== expectedBudgetId)
+      throw new Error('Selected budget changed');
     const credentials = await this.credentialStore.load();
     if (!credentials) {
       await this.disconnectConnected();
@@ -317,8 +350,16 @@ export class ConnectionManager {
     return value as ConnectionConfig;
   }
 
-  private async runWithLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+  private async runWithLifecycle<T>(
+    operation: () => Promise<T>,
+    expectedBudgetId?: string,
+  ): Promise<T> {
     return runActualLifecycleExclusive(async () => {
+      if (expectedBudgetId !== undefined) {
+        const config = await this.loadConfig();
+        if (!config || config.budgetId !== expectedBudgetId)
+          throw new Error('Selected budget changed');
+      }
       const owner = actualLifecycleState.owner;
       if (owner && (owner !== this || owner.quarantinedConnector)) {
         await owner.disconnectConnected();
@@ -328,6 +369,15 @@ export class ConnectionManager {
       actualLifecycleState.owner = this;
       return operation();
     });
+  }
+
+  private async disconnectCurrentConnection(expectedBudgetId?: string): Promise<void> {
+    const owner = actualLifecycleState.owner;
+    if (owner && owner !== this &&
+        (expectedBudgetId === undefined || owner.connectedConfig?.budgetId === expectedBudgetId))
+      await owner.disconnectConnected();
+    if (expectedBudgetId === undefined || this.connectedConfig?.budgetId === expectedBudgetId)
+      await this.disconnectConnected();
   }
 
   private async disconnectConnected(): Promise<void> {

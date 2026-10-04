@@ -14,7 +14,6 @@ import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  getActorId,
   sanitizeError,
 } from '../../../../utils/workflow-store';
 
@@ -68,16 +67,22 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
+  const authority = {
+    actorId: fullRead.info.actorId,
+    spaceId: fullRead.spaceId,
+    budgetId: fullRead.budgetId,
+    membershipId: fullRead.actor.membershipId!,
+  };
   try {
-    const existing = await wf.store.getSavedView(sourceViewId);
-    if (!existing || existing.actorId !== fullRead.info.actorId) {
+    const existing = await wf.store.getSavedView(sourceViewId, authority);
+    if (!existing) {
       setResponseStatus(event, 404);
       return errorEnvelope('VIEW_NOT_FOUND', 'Saved view not found.', authInfo, false, requestId);
     }
     const duplicated = await wf.store.duplicateSavedView({
       sourceViewId,
       name,
-      actorId: getActorId(event),
+      authority,
     });
     return okEnvelope(duplicated, authInfo, requestId);
   } catch (error) {

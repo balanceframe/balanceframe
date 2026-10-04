@@ -17,6 +17,7 @@ const presentationGlobal = {
     SemanticAmount,
   },
   stubs: {
+    NuxtLink: { props: ['to'], template: '<a :href="to"><slot /></a>' },
     UButton: {
       template: '<button type="button"><slot /></button>',
     },

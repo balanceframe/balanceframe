@@ -29,7 +29,7 @@
           <div class="flex items-center gap-2 shrink-0 ml-2">
             <span class="text-xs text-gray-400">#{{ rule.order }}</span>
             <UBadge :color="rule.inactive ? 'neutral' : 'success'" variant="solid" size="xs">
-              {{ rule.inactive ? 'Inactive' : 'Active' }}
+              {{ rule.inactive ? 'Paused in BalanceFrame' : 'Active in BalanceFrame' }}
             </UBadge>
           </div>
         </div>

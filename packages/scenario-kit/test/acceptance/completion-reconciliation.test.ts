@@ -200,6 +200,7 @@ async function waitForCooldown(
     const response = await scenarioRequest<Envelope<Completion>>(
       handle,
       completionPath(sessionId, completionId),
+      { personaId: 'approver' },
     );
     latest = resultOf(response);
     if (Date.parse(deadline) <= Date.now() && latest.canApprove) return latest;
@@ -270,13 +271,17 @@ describe('completion and reconciliation scenarios', () => {
           ].sort(byCategory),
         );
 
-        const approved = resultOf(
+        const scopedApproval = resultOf(
           await scenarioRequest<Envelope<Completion>>(
             handle,
             completionPath(sessionId, completionId, 'approve'),
-            { method: 'POST', body: actionBody(proposed) },
+            { method: 'POST', personaId: 'approver', body: actionBody(proposed) },
           ),
         );
+        expect(scopedApproval).toMatchObject({ phase: 'approved', approvalCount: 1, canExecute: false });
+        const approved = resultOf(await scenarioRequest<Envelope<Completion>>(
+          handle, completionPath(sessionId, completionId),
+        ));
         expect(approved).toMatchObject({
           id: completionId,
           phase: 'approved',
@@ -402,7 +407,7 @@ describe('completion and reconciliation scenarios', () => {
         const early = await scenarioRequest<Envelope<Completion>>(
           handle,
           completionPath(sessionId, completionId, 'approve'),
-          { method: 'POST', body: actionBody(proposed) },
+          { method: 'POST', personaId: 'approver', body: actionBody(proposed) },
         );
         errorOf(early, 409, 'LIQUIDITY_REFRESH_REQUIRED');
 
@@ -412,13 +417,17 @@ describe('completion and reconciliation scenarios', () => {
           cooldownUntil: deadline,
           canApprove: true,
         });
-        const approved = resultOf(
+        const scopedApproval = resultOf(
           await scenarioRequest<Envelope<Completion>>(
             handle,
             completionPath(sessionId, completionId, 'approve'),
-            { method: 'POST', body: actionBody(ready) },
+            { method: 'POST', personaId: 'approver', body: actionBody(ready) },
           ),
         );
+        expect(scopedApproval).toMatchObject({ phase: 'approved', approvalCount: 1, canExecute: false });
+        const approved = resultOf(await scenarioRequest<Envelope<Completion>>(
+          handle, completionPath(sessionId, completionId),
+        ));
         expect(approved).toMatchObject({
           phase: 'approved',
           cooldownUntil: deadline,
@@ -557,7 +566,7 @@ describe('completion and reconciliation scenarios', () => {
             body: sessionUpdateBody(ownerSession, ownerSession.items),
           },
         );
-        errorOf(peerEdit, 403, 'LIQUIDITY_DENIED');
+        errorOf(peerEdit, 403, 'FORBIDDEN');
 
         const peerApproved = resultOf(
           await scenarioRequest<Envelope<Completion>>(
@@ -580,13 +589,23 @@ describe('completion and reconciliation scenarios', () => {
             completionPath(sessionId, completionId),
           ),
         );
-        const ownerApproved = resultOf(
+        const requesterApproval = resultOf(
           await scenarioRequest<Envelope<Completion>>(
             handle,
             completionPath(sessionId, completionId, 'approve'),
             { method: 'POST', body: actionBody(ownerAfterPeer) },
           ),
         );
+        expect(requesterApproval).toMatchObject({ phase: 'proposed', approvalCount: 1 });
+        const independentApproval = resultOf(await scenarioRequest<Envelope<Completion>>(
+          handle,
+          completionPath(sessionId, completionId, 'approve'),
+          { method: 'POST', personaId: 'approver', body: actionBody(requesterApproval) },
+        ));
+        expect(independentApproval).toMatchObject({ phase: 'approved', approvalCount: 2, canExecute: false });
+        const ownerApproved = resultOf(await scenarioRequest<Envelope<Completion>>(
+          handle, completionPath(sessionId, completionId),
+        ));
         expect(ownerApproved).toMatchObject({
           id: completionId,
           phase: 'approved',
@@ -608,14 +627,14 @@ describe('completion and reconciliation scenarios', () => {
           completionPath(sessionId, completionId, 'execute'),
           { method: 'POST', personaId: 'coapprover', body: actionBody(peerAfterOwner) },
         );
-        errorOf(peerExecute, 403, 'LIQUIDITY_DENIED');
+        errorOf(peerExecute, 403, 'FORBIDDEN');
 
         const restrictedView = await scenarioRequest<Envelope<Completion>>(
           handle,
           completionPath(sessionId, completionId),
           { personaId: 'restricted' },
         );
-        errorOf(restrictedView, 403, 'LIQUIDITY_DENIED');
+        errorOf(restrictedView, 403, 'FORBIDDEN');
         const restrictedBody = JSON.stringify(restrictedView.body);
         expect(restrictedBody).not.toContain(completionId);
         expect(restrictedBody).not.toContain(sessionId);

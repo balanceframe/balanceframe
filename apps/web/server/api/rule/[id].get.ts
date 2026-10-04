@@ -1,108 +1,78 @@
+import type { BudgetLedger } from '@balanceframe/actual-adapter';
+import { setHeader } from 'h3';
+import { z } from 'zod';
 import { requireFullRead } from '../../utils/legacy-financial-read';
-/**
- * GET /api/rule/[id] — show a single automation rule by ID.
- *
- * Looks up the rule from the connected ledger.  The store guard verifies
- * the workflow DB is initialised; the rule is fetched from the ledger
- * adapter injected into the event context by the lifecycle plugin.
- *
- * When a local inactive override exists (from a previous PATCH that failed
- * verification or a stale annotation), `inactive` reflects the effective
- * value and the `_localOverride` flag is set so callers can distinguish
- * local annotations from Actual source-of-truth.
- *
- * Response envelope carries the full RuleShowResult shape including
- * trigger and action configuration.
- */
-
-import type { RuleShowResult, LedgerHandle } from '../../utils/rule-types';
-import { createMutationConnectionManager } from '../../utils/mutation-executor';
+import { requireSelectedSpace } from '../../utils/space-context';
+import type { EventWithContext } from '../../utils/workflow-store';
 import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
   classifyConnectionError,
+  sanitizeError,
 } from '../../utils/workflow-store';
+import { createMutationConnectionManager } from '../../utils/mutation-executor';
+
+const RuleId = z.string().trim().min(1).max(200);
 
 export default defineEventHandler(async (event) => {
-  const fullRead = await requireFullRead(event);
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  const context = event as unknown as EventWithContext;
+  const selected = await requireSelectedSpace(context);
+  if (!selected.ok) return selected.response;
+  const fullRead = await requireFullRead(context);
   if (!fullRead.ok) return fullRead.response;
   const authInfo = fullRead.info;
   const requestId = crypto.randomUUID();
 
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const rawParams = event.context.params as Record<string, unknown> | undefined;
+  const parsedId = RuleId.safeParse(rawParams?.id);
+  if (!parsedId.success) {
+    setResponseStatus(event, 400);
+    return errorEnvelope('MISSING_RULE_ID', 'Rule ID is required.', authInfo, false, requestId);
+  }
+  if (selected.space.budgetId !== fullRead.budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_CONNECTION_MISMATCH', 'The selected space connection is unavailable.', authInfo, false, requestId);
+  }
+
+  const workflow = getWorkflowStore(context);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Rule data is unavailable.', authInfo, false, requestId);
   }
 
   try {
     const manager = createMutationConnectionManager();
-    return await manager.withConnection(
-      async ({ connector, budget }) => {
-        if (budget.id !== fullRead.budgetId) throw new Error('Selected budget changed');
-        const ledger = connector as unknown as LedgerHandle;
-
-        const allRules = (await ledger.listRules()) as RuleShowResult[];
-        const routeId = event.context.params?.id;
-        if (!routeId) {
-          setResponseStatus(event, 400);
-          return errorEnvelope(
-            'MISSING_RULE_ID',
-            'Rule ID is required.',
-            authInfo,
-            false,
-            requestId,
-          );
-        }
-
-        const rule: RuleShowResult | undefined = allRules.find((r) => r.id === routeId);
-
-        if (!rule) {
-          setResponseStatus(event, 404);
-          return errorEnvelope(
-            'RULE_NOT_FOUND',
-            `Rule not found: ${routeId}`,
-            authInfo,
-            false,
-            requestId,
-          );
-        }
-
-        // Merge local rule override if present, with explicit flag
-        const overrides = await wf.store.getRuleOverrides();
-        const overrideInactive = overrides.get(rule.id);
-        if (overrideInactive !== undefined) {
-          rule.inactive = overrideInactive;
-          rule._localOverride = true;
-        }
-
-        return okEnvelope(rule, authInfo, requestId);
-      },
-      { dispose: true },
-    );
-  } catch (e) {
-    if (event.node.res.headersSent) throw e;
-
-    const connectionError = classifyConnectionError(e);
+    return await manager.withConnection(async ({ connector, budget }) => {
+      if (budget.id !== fullRead.budgetId) throw new Error('Selected budget changed');
+      const rules = await (connector as unknown as BudgetLedger).listRules();
+      const current = rules.find((rule) => rule.id === parsedId.data);
+      if (!current) {
+        setResponseStatus(event, 404);
+        return errorEnvelope('RULE_NOT_FOUND', 'Rule not found.', authInfo, false, requestId);
+      }
+      const override = await workflow.store.getRuleOverride({
+        spaceId: selected.space.id,
+        budgetId: fullRead.budgetId,
+        ruleId: current.id,
+      });
+      const inactive = override?.inactive;
+      return okEnvelope({
+        ...current,
+        inactive: typeof inactive === 'boolean' ? inactive : current.inactive,
+        ...(typeof inactive === 'boolean' ? { _localOverride: true } : {}),
+      }, authInfo, requestId);
+    }, { expectedBudgetId: fullRead.budgetId, dispose: true });
+  } catch (error) {
+    if (event.node.res.headersSent) throw error;
+    const connectionError = classifyConnectionError(error);
     if (connectionError) {
       setResponseStatus(event, 503);
-      return errorEnvelope(
-        connectionError.code,
-        connectionError.message,
-        authInfo,
-        connectionError.retryable,
-        requestId,
-      );
+      return errorEnvelope(connectionError.code, connectionError.message, authInfo, connectionError.retryable, requestId);
     }
-
+    const safe = sanitizeError(error, requestId, 'RULE_SHOW_FAILED', true);
     setResponseStatus(event, 500);
-    return errorEnvelope(
-      'RULE_SHOW_FAILED',
-      e instanceof Error ? e.message : String(e),
-      authInfo,
-      true,
-      requestId,
-    );
+    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
   }
 });

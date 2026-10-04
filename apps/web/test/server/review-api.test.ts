@@ -1,437 +1,268 @@
-/**
- * Focused tests for the server-side review API boundary.
- *
- * Tests the pure business-logic functions in the workflow-store utility
- * and verifies that handler-level validation rejects malformed input.
- *
- * The pure functions (`getActorId`, `buildAuthorizationInfo`,
- * `performReviewAction`) are testable with any WorkflowStore implementation
- * and require no Nitro runtime.
- *
- * Handler-level tests use lightweight mocks for `readBody` / `setResponseStatus`
- * / `useRuntimeConfig` which are auto-imported by Nitro.
- */
-
-import { describe, it, expect, beforeEach } from 'vitest';
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-import type { CreateReviewItemInput, ReviewItem } from '@balanceframe/workflow-store';
-
-import {
-  getActorId,
-  buildAuthorizationInfo,
-  performReviewAction,
-  buildReviewQueueItem,
-} from '../../server/utils/workflow-store';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SqliteWorkflowStore } from '../../../../packages/workflow-store/src/store';
 import type {
-  EventWithContext,
-  ClassificationHistoryEntry,
-} from '../../server/utils/workflow-store';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+  CreateReviewItemInput,
+  ReviewActionAuthorization,
+  ReviewItem,
+} from '@balanceframe/workflow-store';
+import fixture from '../../../../protocol/fixtures/representative.json';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import { getActorId, performReviewAction } from '../../server/utils/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
+import { projectReviewQueueItem } from '../../server/utils/review-projection';
 
 const ACTOR = 'test-api-user';
+const OWNER = 'review-api-owner';
 const BUDGET = 'budget-test';
-
-/** Minimal seed data for a pending review item. */
+const canonicalSnapshot = canonicalProtocolSnapshotSchema.parse(fixture);
+const transaction = canonicalSnapshot.transactions[0]!;
+const currentCategoryId = transaction.categoryId!;
+const targetCategoryId = canonicalSnapshot.transactions[1]!.categoryId!;
+const privateCategoryId = 'private-category';
 const BASE_CREATE: CreateReviewItemInput = {
-  transactionId: 'txn-api-test',
+  transactionId: transaction.id,
   budgetId: BUDGET,
-  categoryId: 'cat-food',
+  categoryId: targetCategoryId,
   classifier: 'test-classifier',
   provenance: 'api-test',
 };
+let now: string;
+let ownerAuth: {
+  method: 'human-session';
+  actorId: string;
+  sessionId: string;
+  reauthenticatedAt: string;
+};
 
-/** Wait just enough for fresh timestamps in the store. */
-function tickSync(): void {
-  const end = Date.now() + 5;
-  while (Date.now() < end) {
-    /* spin */
-  }
-}
+let store: SqliteWorkflowStore;
+let spaceId: string;
+let membershipId: string;
+let policyVersion: string;
 
-/**
- * Seed a review item in `pending_review` status.
- * Creates the item (discovered), then transitions to suggestion_generated,
- * then to pending_review.
- */
 async function seedPendingReview(
-  store: SqliteWorkflowStore,
   overrides: Partial<CreateReviewItemInput> = {},
-  priority: number = 0,
+  priority = 0,
 ): Promise<ReviewItem> {
-  const input = { ...BASE_CREATE, ...overrides, priority };
-  const item = await store.createReviewItem(input);
-  tickSync();
-
-  // Transition discovered -> suggestion_generated
-  const sg = await store.transitionReviewItem(item.id, {
-    toStatus: 'suggestion_generated',
-    actor: ACTOR,
-    expectedVersion: 1,
-  });
-  tickSync();
-
-  // Transition suggestion_generated -> pending_review
-  const pr = await store.transitionReviewItem(sg.id, {
-    toStatus: 'pending_review',
-    actor: ACTOR,
-    expectedVersion: 2,
-  });
-  return pr;
+  let item = await store.createReviewItem({ ...BASE_CREATE, ...overrides, priority });
+  for (const toStatus of ['suggestion_generated', 'pending_review'] as const) {
+    item = await store.transitionInternalReviewItem(item.id, {
+      toStatus,
+      actor: 'trusted-fixture',
+      expectedVersion: item.version,
+    });
+  }
+  return item;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers — create mock Nitro-like event objects
-// ---------------------------------------------------------------------------
+function setGrant(resourceKind: 'budget' | 'account' | 'category' | 'transaction', resourceId: string, capability: string) {
+  store.governance.setResourceGrant({
+    spaceId,
+    actorId: ACTOR,
+    budgetId: BUDGET,
+    membershipId,
+    resourceKind,
+    resourceId,
+    capability,
+    granted: true,
+    now,
+    auth: ownerAuth,
+  });
+}
 
-function mockEvent(opts: {
-  authenticated?: boolean;
-  config?: Record<string, unknown>;
-}): EventWithContext {
+function authorization(): ReviewActionAuthorization {
+  const signedAmount = BigInt(transaction.amount.minorUnits);
   return {
-    context: {
-      auth: opts.authenticated ? { authenticated: true } : undefined,
-      runtimeConfig: opts.config ?? {},
+    spaceId,
+    policyVersion,
+    auth: { method: 'session', actorId: ACTOR, sessionId: 'session:test-api-user' },
+    transaction: {
+      id: transaction.id,
+      accountId: transaction.accountId,
+      categoryId: currentCategoryId,
+      direction: signedAmount < 0n ? 'outgoing' : 'incoming',
+      amount: {
+        minorUnits: (signedAmount < 0n ? -signedAmount : signedAmount).toString(),
+        currency: transaction.amount.currency,
+      },
     },
   };
 }
-// ---------------------------------------------------------------------------
 
-describe('getActorId', () => {
-  it('returns "api-user" for authenticated requests', () => {
-    const ev = mockEvent({ authenticated: true });
-    expect(getActorId(ev)).toBe('api-user');
-  });
+function grantReviewAction(categoryId = targetCategoryId) {
+  for (const [kind, id] of [
+    ['budget', BUDGET],
+    ['transaction', transaction.id],
+    ['account', transaction.accountId],
+    ['category', categoryId],
+    ['category', currentCategoryId],
+  ] as const) setGrant(kind, id, 'categorization:execute');
+}
 
-  it('returns "anonymous" for unauthenticated requests', () => {
-    const ev = mockEvent({ authenticated: false });
-    expect(getActorId(ev)).toBe('anonymous');
+function grantProjectionResources() {
+  for (const [kind, id, capability] of [
+    ['account', transaction.accountId, 'existence'],
+    ['account', transaction.accountId, 'history'],
+    ['account', transaction.accountId, 'name'],
+    ['category', currentCategoryId, 'existence'],
+    ['category', currentCategoryId, 'name'],
+    ['category', targetCategoryId, 'existence'],
+    ['category', targetCategoryId, 'name'],
+  ] as const) setGrant(kind, id, capability);
+}
+
+beforeEach(async () => {
+  now = new Date().toISOString();
+  ownerAuth = {
+    method: 'human-session',
+    actorId: OWNER,
+    sessionId: 'session:review-api-owner',
+    reauthenticatedAt: now,
+  };
+  store = new SqliteWorkflowStore(':memory:');
+  await store.claimBootstrap({
+    name: 'Review API owner',
+    email: 'review-api-owner@example.test',
+    claimId: 'review-api-fixture',
   });
+  await store.finalizeBootstrap({ claimId: 'review-api-fixture', ownerUserId: OWNER });
+  const space = store.governance.createSpace({
+    actorId: OWNER,
+    name: 'Review API fixture',
+    kind: 'shared',
+    now,
+    auth: ownerAuth,
+  });
+  spaceId = space.id;
+  store.governance.bindBudget({ spaceId, budgetId: BUDGET, now, auth: ownerAuth });
+  await store.upsertActorMembership(ACTOR, 'active', [], '');
+  membershipId = store.governance.addMembership({
+    spaceId,
+    actorId: ACTOR,
+    validFrom: now,
+    now,
+    auth: ownerAuth,
+  }).id;
+  policyVersion = store.governance.getPolicy({ spaceId })!.version;
+  grantReviewAction();
 });
 
-describe('buildAuthorizationInfo', () => {
-  it('returns null when auth context is absent', () => {
-    const ev = mockEvent({ authenticated: false });
-    expect(buildAuthorizationInfo(ev, 'observe')).toBeNull();
-  });
+afterEach(() => store.close());
 
-  it('returns authorization info when auth context is present', () => {
-    const ev = mockEvent({ authenticated: true });
-    const info = buildAuthorizationInfo(ev, 'categorization:execute');
-    expect(info).not.toBeNull();
-    expect(info!.actorId).toBe('api-user');
-    expect(info!.capability).toBe('categorization:execute');
-    expect(info!.allowed).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: performReviewAction
-// ---------------------------------------------------------------------------
-
-describe('performReviewAction', () => {
-  let store: SqliteWorkflowStore;
-
-  beforeEach(() => {
-    store = new SqliteWorkflowStore(':memory:');
-  });
-
-  it('approves a pending review item', async () => {
-    const item = await seedPendingReview(store);
-    const outcome = await performReviewAction(store, item.id, 'approve', ACTOR);
-    expect(outcome.success).toBe(true);
-    expect(outcome.error).toBeNull();
-    expect(outcome.itemId).toBe(item.id);
-
-    // Verify the item was actually transitioned
-    const refreshed = await store.getReviewItem(item.id);
-    expect(refreshed!.status).toBe('approved');
-  });
-
-  it('corrects a pending review item (transitions to correcting with category metadata)', async () => {
-    const item = await seedPendingReview(store);
-    const outcome = await performReviewAction(store, item.id, 'correct', ACTOR, 'cat-office');
-    expect(outcome.success).toBe(true);
-    expect(outcome.error).toBeNull();
-    expect(outcome.itemId).toBe(item.id);
-
-    // Item should now be in 'correcting' status (not auto-approved)
-    const refreshed = await store.getReviewItem(item.id);
-    expect(refreshed!.status).toBe('correcting');
-  });
-  it('rejects a pending review item', async () => {
-    const item = await seedPendingReview(store);
-    const outcome = await performReviewAction(store, item.id, 'reject', ACTOR);
-    expect(outcome.success).toBe(true);
-    expect(outcome.error).toBeNull();
-    expect(outcome.itemId).toBe(item.id);
-
-    const refreshed = await store.getReviewItem(item.id);
-    expect(refreshed!.status).toBe('rejected');
-  });
-
-  it('skips a pending review item', async () => {
-    const item = await seedPendingReview(store);
-    const outcome = await performReviewAction(store, item.id, 'skip', ACTOR);
-    expect(outcome.success).toBe(true);
-    expect(outcome.error).toBeNull();
-    expect(outcome.itemId).toBe(item.id);
-
-    const refreshed = await store.getReviewItem(item.id);
-    expect(refreshed!.status).toBe('skipped');
-  });
-
-  it('returns not-found error for a non-existent review ID', async () => {
-    const outcome = await performReviewAction(
-      store,
-      '00000000-0000-0000-0000-000000000000',
-      'approve',
-      ACTOR,
-    );
-    expect(outcome.success).toBe(false);
-    expect(outcome.error).toBe('Review item not found');
-  });
-
-  it('fails when transitioning from an invalid status', async () => {
-    const item = await seedPendingReview(store);
-
-    // First reject it
-    await store.transitionReviewItem(item.id, {
-      toStatus: 'rejected',
-      actor: ACTOR,
-      expectedVersion: 3,
-    });
-
-    // Trying to approve a rejected item should fail
-    const outcome = await performReviewAction(store, item.id, 'approve', ACTOR);
-    expect(outcome.success).toBe(false);
-    expect(outcome.error).not.toBeNull();
-  });
-
-  it('throws for unknown action names', async () => {
-    const item = await seedPendingReview(store);
-    await expect(
-      performReviewAction(store, item.id, 'unknown-action' as string, ACTOR),
-    ).rejects.toThrow('Unknown review action');
-  });
-
-  it('records correct categoryId in transition metadata', async () => {
-    const item = await seedPendingReview(store);
-    const outcome = await performReviewAction(store, item.id, 'correct', ACTOR, 'cat-office');
-    expect(outcome.success).toBe(true);
-
-    // Verify the transition action persisted the metadata
-    const actions = await store.getReviewActions(item.id);
-    // Verify the transition action persisted the metadata on the correcting transition
-    const correctAction = actions.find((a) => a.toStatus === 'correcting');
-    expect(correctAction).toBeDefined();
-    expect(correctAction!.metadata).toEqual({ categoryId: 'cat-office' });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: GET /api/review — listing
-// ---------------------------------------------------------------------------
-
-describe('GET /api/review (listReviewItems)', () => {
-  let store: SqliteWorkflowStore;
-
-  beforeEach(() => {
-    store = new SqliteWorkflowStore(':memory:');
-  });
-
-  it('returns pending_review items when queried', async () => {
-    const item = await seedPendingReview(store);
-    const items = await store.listReviewItems({ status: 'pending_review' });
-    expect(items.length).toBe(1);
-    expect(items[0].id).toBe(item.id);
-    expect(items[0].status).toBe('pending_review');
-  });
-
-  it('does not return approved items in pending query', async () => {
-    const item = await seedPendingReview(store);
-    await store.transitionReviewItem(item.id, {
-      toStatus: 'approved',
-      actor: ACTOR,
-      expectedVersion: 3,
-    });
-
-    const items = await store.listReviewItems({ status: 'pending_review' });
-    expect(items.length).toBe(0);
-  });
-
-  it('lists multiple pending items ordered by priority', async () => {
-    const low = await seedPendingReview(store, { ...BASE_CREATE, transactionId: 'txn-low' }, 0);
-    const high = await seedPendingReview(store, { ...BASE_CREATE, transactionId: 'txn-high' }, 100);
-
-    const items = await store.listReviewItems({ status: 'pending_review' });
-    expect(items.length).toBe(2);
-    // Highest priority first
-    expect(items[0].id).toBe(high.id);
-    expect(items[1].id).toBe(low.id);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: actor spoofing prevention
-// ---------------------------------------------------------------------------
-
-describe('actor spoofing prevention', () => {
-  it('getActorId never reads from a body-like source', () => {
-    // Even if a malformed event carries an `actorId` at top level,
-    // getActorId only looks at event.context.auth.
-    const ev: EventWithContext & { body?: unknown } = {
+describe('trusted review identity and non-ledger actions', () => {
+  it('uses the authenticated human identity, never legacy or body identity', () => {
+    const event = {
+      body: { actorId: 'body-attacker' },
       context: {
-        auth: { authenticated: true },
+        auth: {
+          authenticated: true,
+          actorId: 'legacy-attacker',
+          user: { id: ACTOR },
+          method: 'session',
+          principalType: 'human',
+          sessionId: 'session:test-api-user',
+          impersonatedBy: null,
+        },
       },
-      body: { actorId: 'impostor@evil.dev' },
-    };
-    expect(getActorId(ev)).toBe('api-user');
+    } as unknown as EventWithContext & { body: unknown };
+    expect(getActorId(event)).toBe(ACTOR);
   });
 
-  it('does not propagate body.actorId in the pure action path', async () => {
-    const store = new SqliteWorkflowStore(':memory:');
-    const item = await seedPendingReview(store);
+  it.each([
+    ['reject', 'rejected'],
+    ['skip', 'skipped'],
+  ] as const)('%s records one scoped Native transition without applying a ledger mutation', async (action, status) => {
+    const item = await seedPendingReview();
+    const outcome = await performReviewAction(store, item.id, action, ACTOR, authorization());
 
-    // Perform the action with a different actor than the "body.actorId"
-    const outcome = await performReviewAction(store, item.id, 'approve', 'api-user');
-    expect(outcome.success).toBe(true);
-
-    // Verify the audit trail reflects the server-derived actor
-    const actions = await store.getReviewActions(item.id);
-    const approveAction = actions.at(-1); // most recent
-    expect(approveAction!.actor).toBe('api-user');
+    expect(outcome).toMatchObject({ success: true, status, error: null });
+    expect((await store.getReviewItem(item.id))?.status).toBe(status);
+    expect((await store.getReviewActions(item.id)).at(-1)?.actor).toBe(ACTOR);
   });
-});
 
-// ---------------------------------------------------------------------------
-// Tests: error envelope consistency
-// ---------------------------------------------------------------------------
+  it('undo returns a skipped item to the queue under the same current scope', async () => {
+    const item = await seedPendingReview();
+    await performReviewAction(store, item.id, 'skip', ACTOR, authorization());
+    const outcome = await performReviewAction(store, item.id, 'undo', ACTOR, authorization());
 
-describe('error envelope consistency', () => {
-  it('performReviewAction returns failure for non-existent item', async () => {
-    const store = new SqliteWorkflowStore(':memory:');
-    const outcome = await performReviewAction(store, 'no-such-id', 'approve', ACTOR);
+    expect(outcome).toMatchObject({ success: true, status: 'pending_review' });
+    expect((await store.getReviewItem(item.id))?.status).toBe('pending_review');
+  });
+
+  it('does not transition when a review grant has been revoked', async () => {
+    const item = await seedPendingReview();
+    store.governance.setResourceGrant({
+      spaceId,
+      actorId: ACTOR,
+      budgetId: BUDGET,
+      membershipId,
+      resourceKind: 'transaction',
+      resourceId: transaction.id,
+      capability: 'categorization:execute',
+      granted: false,
+      now,
+      auth: ownerAuth,
+    });
+
+    await expect(performReviewAction(store, item.id, 'reject', ACTOR, authorization()))
+      .rejects.toMatchObject({ cause: 'authorization_denied' });
+    expect(await store.getReviewItem(item.id)).toEqual(item);
+  });
+
+  it('reports an invalid transition without changing the rejected item', async () => {
+    const item = await seedPendingReview();
+    await performReviewAction(store, item.id, 'reject', ACTOR, authorization());
+
+    const outcome = await performReviewAction(store, item.id, 'skip', ACTOR, authorization());
+
     expect(outcome.success).toBe(false);
-    expect(outcome.error).toBe('Review item not found');
+    expect(outcome.error).toContain("from 'rejected'");
+    expect((await store.getReviewItem(item.id))?.status).toBe('rejected');
   });
 });
 
-// ---------------------------------------------------------------------------
-// Tests: buildReviewQueueItem — evidence enrichment
-// ---------------------------------------------------------------------------
-
-describe('buildReviewQueueItem evidence enrichment', () => {
-  let store: SqliteWorkflowStore;
-
-  beforeEach(() => {
-    store = new SqliteWorkflowStore(':memory:');
-  });
-
-  it('populates all rendering-critical evidence fields from a non-empty item', async () => {
-    const evidence: Record<string, unknown> = {
-      originalName: 'COFFEE SHOP #42',
-      normalizedMerchant: 'Coffee Shop Inc.',
-      account: 'Checking (1234)',
-      amount: 12.5,
-      currentCategory: 'cat-food',
-      alternatives: ['cat-dining', 'cat-entertainment'],
-      history: [
-        { categoryId: 'cat-food', count: 3, lastClassified: '2026-06-01T00:00:00.000Z' },
-        { categoryId: 'cat-dining', count: 1, lastClassified: '2026-05-15T00:00:00.000Z' },
+describe('review queue Native privacy projection', () => {
+  it('returns only independently granted current facts and denies an ungranted category', async () => {
+    grantProjectionResources();
+    const item = await seedPendingReview({
+      evidence: {
+        rawModelInput: 'private-model-input-sentinel',
+        alternatives: ['private-alternative-sentinel'],
+      },
+      provenance: 'private-provider-prompt',
+    });
+    const snapshot = {
+      ...canonicalSnapshot,
+      categories: [
+        ...canonicalSnapshot.categories,
+        { ...canonicalSnapshot.categories[0]!, id: privateCategoryId, name: 'Private category sentinel' },
       ],
     };
+    const policy = store.governance.getPolicy({ spaceId })!;
+    const actor = {
+      actorId: ACTOR,
+      budgetId: BUDGET,
+      spaceId,
+      membershipId,
+      governancePolicyVersion: policy.version,
+      now,
+      auth: { method: 'session' as const, actorId: ACTOR, sessionId: 'session:test-api-user' },
+    };
 
-    const item = await seedPendingReview(store, {
-      transactionId: 'txn-evidence-test',
-      evidence,
-      provenance: 'classifier-v2',
-      correlationId: 'corr-abc-123',
+    const projected = projectReviewQueueItem(store, actor, item, snapshot);
+    expect(projected).not.toBeNull();
+    expect(projected?.evidence).toMatchObject({
+      account: canonicalSnapshot.accounts.find(({ id }) => id === transaction.accountId)!.name,
+      currentCategory: canonicalSnapshot.categories.find(({ id }) => id === currentCategoryId)!.name,
+      suggestedCategory: canonicalSnapshot.categories.find(({ id }) => id === targetCategoryId)!.name,
     });
+    expect(JSON.stringify(projected)).not.toContain('private-model-input-sentinel');
+    expect(JSON.stringify(projected)).not.toContain('private-alternative-sentinel');
+    expect(JSON.stringify(projected)).not.toContain('private-provider-prompt');
+    expect(JSON.stringify(projected)).not.toContain('Private category sentinel');
+    expect(projected?.evidence.history).toEqual([]);
+    expect(projected?.evidence.alternatives).toEqual([]);
 
-    const queueItem = buildReviewQueueItem(item);
-
-    // --- Fields rendered by ReviewItem.vue ---
-    expect(queueItem.reviewItem).toBe(item);
-
-    // Head: normalizedMerchant
-    expect(queueItem.evidence.normalizedMerchant).toBe('Coffee Shop Inc.');
-
-    // Transaction details grid: originalImportedName, account, amount, provenance
-    expect(queueItem.evidence.originalImportedName).toBe('COFFEE SHOP #42');
-    expect(queueItem.evidence.account).toBe('Checking (1234)');
-    expect(queueItem.evidence.amount).toBe(12.5);
-    expect(queueItem.evidence.provenance).toBe('classifier-v2');
-
-    // Proposal metadata: correlationId, promptVersion
-    expect(queueItem.evidence.correlationId).toBe('corr-abc-123');
-    expect(queueItem.evidence.promptVersion).toBe(item.promptVersion);
-
-    // Category change preview: fromCategory, toCategory, affectsEnvelope
-    expect(queueItem.evidence.currentCategory).toBe('cat-food');
-    expect(queueItem.evidence.suggestedCategory).toBe(item.categoryId);
-    expect(queueItem.evidence.changePreview.fromCategory).toBe('cat-food');
-    expect(queueItem.evidence.changePreview.toCategory).toBe(item.categoryId);
-    expect(queueItem.evidence.changePreview.affectsEnvelope).toBe('cat-food' !== item.categoryId);
-
-    // Alternatives list
-    expect(queueItem.evidence.alternatives).toEqual(['cat-dining', 'cat-entertainment']);
-
-    // History entries
-    expect(queueItem.evidence.history).toHaveLength(2);
-    expect(queueItem.evidence.history[0].categoryId).toBe('cat-food');
-    expect(queueItem.evidence.history[0].count).toBe(3);
-    expect(queueItem.evidence.history[0].lastClassified).toBe('2026-06-01T00:00:00.000Z');
-
-    // Rule candidates derived from history
-    expect(queueItem.evidence.ruleCandidates).toHaveLength(2);
-    expect(queueItem.evidence.ruleCandidates[0]).toEqual({
-      merchant: 'Coffee Shop Inc.',
-      currentCategory: 'cat-food',
-      matchCount: 3,
-      consistency: 0.75,
-    });
-    expect(queueItem.evidence.ruleCandidates[1]).toEqual({
-      merchant: 'Coffee Shop Inc.',
-      currentCategory: 'cat-dining',
-      matchCount: 1,
-      consistency: 0.25,
-    });
-
-    // Freshness (falls through from item.freshnessExpiresAt, which is null)
-    expect(queueItem.evidence.freshness).toBeNull();
-
-    // Homogeneity defaults
-    expect(queueItem.homogeneity.sameMerchant).toBe(false);
-    expect(queueItem.homogeneity.sameAmount).toBe(false);
-    expect(queueItem.homogeneity.sameClassifier).toBe(false);
-    expect(queueItem.homogeneity.sameCategory).toBe(false);
-
-    // Actionable
-    expect(queueItem.actionable).toBe(true);
-  });
-
-  it('falls back to safe defaults when classifier evidence is absent', async () => {
-    const item = await seedPendingReview(store, {
-      transactionId: 'txn-no-evidence',
-    });
-
-    const queueItem = buildReviewQueueItem(item);
-
-    // Without evidence payload, falls back to item fields
-    expect(queueItem.evidence.originalImportedName).toBe('txn-no-evidence');
-    expect(queueItem.evidence.normalizedMerchant).toBe('txn-no-evidence');
-    expect(queueItem.evidence.account).toBe('');
-    expect(queueItem.evidence.amount).toBe(0);
-    expect(queueItem.evidence.alternatives).toEqual([]);
-    expect(queueItem.evidence.history).toEqual([]);
-    expect(queueItem.evidence.ruleCandidates).toEqual([]);
-
-    // currentCategory falls back to item.categoryId when evidence.currentCategory absent
-    expect(queueItem.evidence.currentCategory).toBe(item.categoryId);
-    expect(queueItem.evidence.changePreview.fromCategory).toBe(item.categoryId);
-    expect(queueItem.evidence.changePreview.affectsEnvelope).toBe(false);
+    const inaccessible = await seedPendingReview({ categoryId: privateCategoryId });
+    expect(projectReviewQueueItem(store, actor, inaccessible, snapshot)).toBeNull();
   });
 });

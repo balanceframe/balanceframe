@@ -11,8 +11,8 @@
 .cargo/
 .direnv/
 .editorconfig
-.env*
-.eslintrc.json
+**/.env*
+eslint.config.js
 .envrc
 .flake-env/
 .pre-commit-config.yaml
@@ -26,10 +26,15 @@ result*
 *.drv
 
 # ---- Node / JS ----
-node_modules/
+**/node_modules/
 .pnpm-store/
 
 # ---- Source maps / build artifacts ----
+target/
+**/dist/
+**/.nuxt/
+**/.output/
+**/*.node
 **/*.map
 **/*.tsbuildinfo
 
@@ -63,6 +68,3 @@ data/
 
 # ---- Scripts ----
 scripts/
-
-# ---- Protocol / schema fixtures (used at build time but not runtime) ----
-protocol/

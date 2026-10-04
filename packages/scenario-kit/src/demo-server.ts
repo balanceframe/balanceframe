@@ -364,14 +364,29 @@ async function signInPersona(
   const body = (await session.json()) as { user?: { id?: string } };
   if (!session.ok || body.user?.id !== credentials.actorId)
     throw new Error('Scenario persona identity mismatch');
-  return setCookies;
+  const selected = await fetch(`${workspace.processes.webUrl}/api/spaces/${credentials.spaceId}/select`, {
+    method: 'POST',
+    headers: {
+      ...internalHeaders(supervisor, workspace),
+      cookie: pairs,
+      'x-balanceframe-space': credentials.spaceId,
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  });
+  if (!selected.ok) throw new Error('Scenario persona space selection failed');
+  return [...setCookies, ...selected.headers.getSetCookie()];
 }
 
 async function verifyNativeReadiness(supervisor: Supervisor, workspace: Workspace): Promise<void> {
   const owner = personaCredentials(workspace, 'owner');
   if (!owner) throw new Error('Scenario owner is unavailable');
   const response = await fetch(`${workspace.processes.webUrl}/api/liquidity/spendability`, {
-    headers: { ...internalHeaders(supervisor, workspace), cookie: owner.cookieHeader },
+    headers: {
+      ...internalHeaders(supervisor, workspace),
+      cookie: owner.cookieHeader,
+      'x-balanceframe-space': owner.spaceId,
+    },
   });
   const body: unknown = await response.json().catch(() => null);
   if (
@@ -676,7 +691,7 @@ async function handleControl(
     return;
   }
   if (
-    !['/__demo/load', '/__demo/reset', '/__demo/persona', '/__demo/event'].includes(path) ||
+    !['/__demo/load', '/__demo/reset', '/__demo/persona', '/__demo/reauth', '/__demo/event'].includes(path) ||
     method !== 'POST'
   ) {
     error(response, 404, 'DEMO_CONTROL_UNAVAILABLE');
@@ -733,6 +748,67 @@ async function handleControl(
       issueControl(supervisor, response, payload.personaId);
       appendCookies(response, cookies);
       json(response, 200, { generation: supervisor.generation, path: '/demo' });
+    } finally {
+      done();
+    }
+    return;
+  }
+  if (path === '/__demo/reauth') {
+    if (supervisor.status !== 'ready' || !current?.loaded) {
+      error(response, 503, 'DEMO_NOT_READY');
+      return;
+    }
+    const done = trackFinancial(supervisor);
+    try {
+      const credentials = personaCredentials(current, control.session.personaId);
+      const cookie = header(request, 'cookie');
+      if (!cookie || !credentials ||
+        await authorizedActor(supervisor, current, request) !== credentials.actorId) {
+        error(response, 401, 'DEMO_AUTH_REQUIRED');
+        return;
+      }
+      // Let Source verify the browser's existing selection and current membership;
+      // do not silently select a space on the browser's behalf.
+      const selected = await fetch(`${current.processes.webUrl}/api/spaces/${credentials.spaceId}`, {
+        headers: { ...internalHeaders(supervisor, current), cookie },
+      });
+      const selectedBody = await selected.json().catch(() => null) as {
+        result?: { space?: { id?: string; membership?: { id?: string; actorId?: string } } };
+      } | null;
+      const space = selectedBody?.result?.space;
+      if (!selected.ok || space?.id !== credentials.spaceId ||
+        space.membership?.id !== credentials.membershipId ||
+        space.membership.actorId !== credentials.actorId) {
+        error(response, 403, 'DEMO_SPACE_REQUIRED');
+        return;
+      }
+      const renewed = await fetch(`${current.processes.webUrl}/api/reauth`, {
+        method: 'POST',
+        headers: {
+          ...internalHeaders(supervisor, current), cookie,
+          'x-balanceframe-space': credentials.spaceId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ password: credentials.password }),
+      });
+      const stillCurrent = readControl(supervisor, request);
+      if (supervisor.busy || supervisor.current !== current ||
+        supervisor.generation !== control.session.generation ||
+        stillCurrent?.token !== control.token ||
+        stillCurrent.session.personaId !== control.session.personaId) {
+        error(response, 409, 'DEMO_STALE_GENERATION');
+        return;
+      }
+      const proofCookies = renewed.headers.getSetCookie()
+        .filter((value) => /^balanceframe_reauth=[^;]+;/.test(value));
+      if (!renewed.ok || proofCookies.length !== 1) {
+        error(response, 401, 'DEMO_REAUTHENTICATION_FAILED');
+        return;
+      }
+      appendCookies(response, proofCookies);
+      json(response, 200, { generation: supervisor.generation, reauthenticated: true });
+    } catch {
+      error(response, 503, 'DEMO_REAUTHENTICATION_UNAVAILABLE');
     } finally {
       done();
     }

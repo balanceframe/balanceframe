@@ -7,7 +7,7 @@
         </h2>
         <div class="flex items-center gap-2">
           <UBadge :color="rule.inactive ? 'neutral' : 'success'" variant="solid" size="sm">
-            {{ rule.inactive ? 'Inactive' : 'Active' }}
+            {{ rule.inactive ? 'Paused in BalanceFrame' : 'Active in BalanceFrame' }}
           </UBadge>
           <span class="text-xs text-gray-400">#{{ rule.order }}</span>
           <UButton
@@ -16,12 +16,17 @@
             variant="solid"
             @click="toggleInactive"
           >
-            {{ rule.inactive ? 'Activate' : 'Deactivate' }}
+            {{ rule.inactive ? 'Resume BalanceFrame classification' : 'Pause BalanceFrame classification' }}
           </UButton>
-          <UButton size="xs" color="error" variant="outline" @click="deleteRule"> Delete </UButton>
+          <UButton size="xs" color="error" variant="outline" @click="deleteRule">
+            Delete Actual rule
+          </UButton>
         </div>
       </div>
     </template>
+    <p class="mb-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+      Pause and resume affect BalanceFrame classification only. Actual may still execute this rule.
+    </p>
 
     <div class="space-y-4">
       <!-- Name -->

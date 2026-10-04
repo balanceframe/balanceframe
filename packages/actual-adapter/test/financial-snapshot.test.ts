@@ -158,7 +158,6 @@ function createActualClient(
     createAccount: vi.fn().mockResolvedValue('created-account'),
     updateTransaction: vi.fn().mockResolvedValue(undefined),
     createRule: vi.fn().mockResolvedValue({ id: 'created-rule' }),
-    updateRule: vi.fn().mockResolvedValue(undefined),
     deleteRule: vi.fn().mockResolvedValue(true),
     setBudgetAmount: vi.fn().mockResolvedValue(undefined),
     ...overrides,

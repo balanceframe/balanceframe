@@ -114,7 +114,7 @@ mkdir -p coverage/js/coverage-gates coverage/rust coverage/native
 # LLVM tools are provided by the development shell, not downloaded by rustup.
 # A private target directory keeps existing release artifacts and profiles intact.
 export CARGO_TARGET_DIR="$ROOT/coverage/target"
-run_child cargo llvm-cov show-env --export-prefix > "$TEMP/llvm-env"
+run_child cargo llvm-cov show-env --sh > "$TEMP/llvm-env"
 eval "$(cat "$TEMP/llvm-env")"
 export CARGO_TARGET_DIR="$CARGO_LLVM_COV_TARGET_DIR"
 run_child cargo test --workspace --all-features

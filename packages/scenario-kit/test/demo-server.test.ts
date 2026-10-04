@@ -12,6 +12,7 @@ type DemoState = {
   csrfToken: string | null;
   personaId: string | null;
   personaIds: string[];
+  failureCode?: string;
 };
 
 function cookieHeader(response: Response): string {
@@ -228,6 +229,108 @@ describe('owned demo supervisor', () => {
     expect(tooSoon.headers.get('retry-after')).toEqual(expect.any(String));
   }, 180_000);
 
+  it('requires an explicit generation-guarded browser proof before scoped persona approval', async () => {
+    const previous = demo;
+    demo = await startDemoServer({ scenarioId: 'coapproval-completion', port: 0 });
+    try {
+      const page = await fetch(`${demo.url}/demo`);
+      const ownerCookie = cookieHeader(page);
+      const ownerState = await state(ownerCookie);
+      expect(ownerState.status, ownerState.failureCode).toBe('ready');
+      expect(ownerState.personaId).toBe('owner');
+      const entry = await fetch(`${demo.url}/__demo/entry?generation=${ownerState.generation}`, {
+        headers: { cookie: ownerCookie },
+      });
+      const entryBody = await entry.json() as { path: string };
+      expect(entry.status, JSON.stringify(entryBody)).toBe(200);
+      expect(entryBody.path).toMatch(/^\/spend-sessions\/[^/]+\/completions\/[^/]+$/);
+      const switched = await control('/__demo/persona', ownerCookie, ownerState.csrfToken!, {
+        expectedGeneration: ownerState.generation, personaId: 'coapprover',
+      });
+      expect(switched.status).toBe(200);
+      const peerCookie = cookieHeader(switched);
+      const peerState = await state(peerCookie);
+      const proposal = await fetch(`${demo.url}/api${entryBody.path}`, { headers: { cookie: peerCookie } });
+      expect(proposal.status).toBe(200);
+      const detail = await proposal.json() as {
+        result: { payloadHash: string; version: number; phase: string; canApprove: boolean };
+      };
+      const approvalBody = JSON.stringify({
+        payloadHash: detail.result.payloadHash,
+        expectedVersion: detail.result.version,
+        idempotencyKey: 'demo-explicit-human-approval',
+      });
+      const unproved = await fetch(`${demo.url}/api${entryBody.path}/approve`, {
+        method: 'POST',
+        headers: { origin: demo.url, cookie: peerCookie, 'content-type': 'application/json' },
+        body: approvalBody,
+      });
+      expect(unproved.status).toBe(403);
+      expect(await unproved.json()).toMatchObject({ error: { code: 'REAUTHENTICATION_REQUIRED' } });
+      const mismatchedCookies = new Map(peerCookie.split('; ').map((pair) => {
+        const separator = pair.indexOf('=');
+        return [pair.slice(0, separator), pair.slice(separator + 1)] as const;
+      }));
+      const ownerControl = ownerCookie.split('; ').find((pair) => pair.startsWith('bf_demo='));
+      if (!ownerControl) throw new Error('Owner signed demo control was not issued');
+      mismatchedCookies.set('bf_demo', ownerControl.slice('bf_demo='.length));
+      const wrongIdentity = await control(
+        '/__demo/reauth',
+        [...mismatchedCookies].map(([name, value]) => `${name}=${value}`).join('; '),
+        ownerState.csrfToken!,
+        { expectedGeneration: ownerState.generation },
+      );
+      expect(wrongIdentity.status).toBe(401);
+      expect(wrongIdentity.headers.get('set-cookie')).toBeNull();
+      const rejected = await control('/__demo/reauth', peerCookie, 'wrong-csrf', {
+        expectedGeneration: peerState.generation,
+      });
+      expect(rejected.status).toBe(403);
+      expect(rejected.headers.get('set-cookie')).toBeNull();
+      mismatchedCookies.set('bf_demo', peerCookie.split('; ')
+        .find((pair) => pair.startsWith('bf_demo='))!.slice('bf_demo='.length));
+      mismatchedCookies.set('balanceframe_space', 'unavailable-space');
+      const wrongSpace = await control(
+        '/__demo/reauth',
+        [...mismatchedCookies].map(([name, value]) => `${name}=${value}`).join('; '),
+        peerState.csrfToken!,
+        { expectedGeneration: peerState.generation },
+      );
+      expect(wrongSpace.status).toBe(403);
+      expect(wrongSpace.headers.get('set-cookie')).toBeNull();
+      const renewed = await control('/__demo/reauth', peerCookie, peerState.csrfToken!, {
+        expectedGeneration: peerState.generation,
+      });
+      expect(renewed.status).toBe(200);
+      expect(await renewed.json()).toEqual({ generation: peerState.generation, reauthenticated: true });
+      expect(renewed.headers.getSetCookie()).toHaveLength(1);
+      const cookies = new Map([...peerCookie.split('; '), cookieHeader(renewed)].map((pair) => {
+        const separator = pair.indexOf('=');
+        return [pair.slice(0, separator), pair.slice(separator + 1)] as const;
+      }));
+      const proved = await fetch(`${demo.url}/api${entryBody.path}/approve`, {
+        method: 'POST',
+        headers: {
+          origin: demo.url,
+          cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; '),
+          'content-type': 'application/json',
+        },
+        body: approvalBody,
+      });
+      expect(proved.status).toBe(200);
+      const provedBody = await proved.json();
+      expect(provedBody).toMatchObject({ result: { approvalCount: 1, canExecute: false } });
+      const stale = await control('/__demo/reauth', peerCookie, peerState.csrfToken!, {
+        expectedGeneration: peerState.generation - 1,
+      });
+      expect(stale.status).toBe(409);
+      expect(stale.headers.get('set-cookie')).toBeNull();
+    } finally {
+      await stopDemoServer(demo);
+      demo = previous;
+    }
+  }, 180_000);
+
   it('does not relay a stale persona session when a shared reset races sign-in', async () => {
     const previous = demo;
     demo = await startDemoServer({ scenarioId: 'coapproval-completion', port: 0 });
@@ -238,7 +341,7 @@ describe('owned demo supervisor', () => {
       const current = await state(cookie);
       expect(current).toMatchObject({
         status: 'ready',
-        personaIds: ['owner', 'coapprover', 'restricted'],
+        personaIds: ['owner', 'coapprover', 'restricted', 'approver'],
       });
       const baselineSwitch = await control('/__demo/persona', cookie, current.csrfToken!, {
         expectedGeneration: current.generation,
@@ -355,6 +458,59 @@ describe('owned demo supervisor', () => {
       } finally {
         releaseSession();
         await Promise.allSettled([openingPage, resetting]);
+      }
+    } finally {
+      vi.restoreAllMocks();
+      await stopDemoServer(demo);
+      demo = previous;
+    }
+  }, 180_000);
+  it('withholds a renewed browser proof when reset races Source password verification', async () => {
+    const previous = demo;
+    demo = await startDemoServer({ scenarioId: 'funded-purchase', port: 0 });
+    let releaseProof = () => {};
+    try {
+      const page = await fetch(`${demo.url}/demo`);
+      const cookie = cookieHeader(page);
+      const current = await state(cookie);
+      expect(current.status).toBe('ready');
+      let reachedProof!: () => void;
+      const proofReached = new Promise<void>((resolve) => { reachedProof = resolve; });
+      const proofReleased = new Promise<void>((resolve) => { releaseProof = resolve; });
+      const realFetch = globalThis.fetch.bind(globalThis);
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const result = await realFetch(input, init);
+        if (String(input).endsWith('/api/reauth')) {
+          reachedProof();
+          await proofReleased;
+        }
+        return result;
+      });
+      const renewing = control('/__demo/reauth', cookie, current.csrfToken!, {
+        expectedGeneration: current.generation,
+      });
+      await Promise.race([
+        proofReached,
+        renewing.then((response) => {
+          throw new Error(`Proof request returned ${response.status} before Source verification`);
+        }),
+      ]);
+      const resetting = control('/__demo/load', cookie, current.csrfToken!, {
+        expectedGeneration: current.generation, scenarioId: 'rich-cart',
+      });
+      try {
+        const deadline = Date.now() + 10_000;
+        while ((await state(cookie)).status !== 'loading') {
+          if (Date.now() > deadline) throw new Error('Reset did not begin while Source proof was pending');
+        }
+        releaseProof();
+        const staleProof = await renewing;
+        expect(staleProof.status).toBe(409);
+        expect(staleProof.headers.get('set-cookie')).toBeNull();
+        expect((await resetting).status).toBe(200);
+      } finally {
+        releaseProof();
+        await Promise.allSettled([renewing, resetting]);
       }
     } finally {
       vi.restoreAllMocks();

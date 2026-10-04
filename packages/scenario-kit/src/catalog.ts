@@ -714,19 +714,33 @@ function richCartWarnings() {
 function simpleCompletion(
   sessionKey: string,
   stage: ScenarioCompletionRecipe['stage'],
-  approvers: readonly string[] = ['owner'],
+  approvers: readonly string[] = ['approver'],
 ): ScenarioCompletionRecipe {
   return { sessionKey, stage, approvers };
 }
 
-function ownerPersona(): ScenarioPersona {
+function ownerPersona(ledger?: ProtocolSnapshot): ScenarioPersona {
+  const capabilities: ResourceCapability[] = [
+    'conclusion', 'existence', 'name', 'balance', 'history', 'liquidity', 'source', 'category',
+    'policy', 'session', 'proposal', 'approval', 'initiation-report', 'confirmation', 'audit',
+  ];
+  const routeCapabilities = [
+    'affordability:evaluate', 'ingest', 'reservation:resolve',
+    'session:propose', 'session:approve', 'session:execute', 'session:reconcile',
+    'transfer:propose', 'transfer:approve', 'transfer:initiation-report', 'transfer:confirm',
+  ] as const;
+  const resources: { resourceKind: 'budget' | 'account' | 'category'; resourceId: string }[] = [
+    { resourceKind: 'budget', resourceId: HOUSEHOLD_BUDGET_ID },
+    ...(ledger?.accounts ?? []).map(({ id }) => ({ resourceKind: 'account' as const, resourceId: id })),
+    ...(ledger?.categories ?? []).map(({ id }) => ({ resourceKind: 'category' as const, resourceId: id })),
+  ];
   return {
     id: 'owner',
     role: 'owner',
     displayName: 'Alex Household',
     membership: {
       status: 'active',
-      capabilities: ['full-read', 'policy', 'session', 'proposal', 'approval', 'confirmation'],
+      capabilities: [...capabilities, 'full-read', ...routeCapabilities],
     },
     grants: [
       {
@@ -735,33 +749,41 @@ function ownerPersona(): ScenarioPersona {
         capability: 'full-read',
         granted: true,
       },
+      ...resources.flatMap((resource) => capabilities.map((capability) => ({
+        ...resource, capability, granted: true,
+      }))),
+      ...routeCapabilities.map((capability) => ({
+        resourceKind: 'budget' as const, resourceId: HOUSEHOLD_BUDGET_ID, capability, granted: true,
+      })),
     ],
   };
 }
 
-function coapproverPersona(): ScenarioPersona {
+function coapproverPersona(
+  id = 'coapprover',
+  categoryIds: readonly string[] = ['cat-groceries', 'cat-household', 'cat-entertainment'],
+  accountIds: readonly string[] = ['acct-checking'],
+): ScenarioPersona {
   return {
-    id: 'coapprover',
+    id,
     role: 'coapprover',
-    displayName: 'Jordan Household',
+    displayName: id === 'coapprover' ? 'Jordan Household' : 'Taylor Reviewer',
     membership: {
       status: 'active',
-      capabilities: ['existence', 'balance', 'liquidity', 'category', 'conclusion', 'session', 'proposal', 'approval'],
+      capabilities: ['existence', 'balance', 'liquidity', 'category', 'conclusion', 'session', 'proposal', 'approval', 'session:approve'],
     },
     grants: [
-      ...(['session', 'proposal', 'approval', 'conclusion'] as const).map((capability) => ({
+      ...(['session', 'proposal', 'approval', 'conclusion', 'liquidity', 'session:approve'] as const).map((capability) => ({
         resourceKind: 'budget' as const,
         resourceId: HOUSEHOLD_BUDGET_ID,
         capability,
         granted: true,
       })),
-      ...(['existence', 'balance', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
-        resourceKind: 'account' as const,
-        resourceId: 'acct-checking',
-        capability,
-        granted: true,
-      })),
-      ...(['cat-groceries', 'cat-household', 'cat-entertainment'] as const).flatMap((resourceId) =>
+      ...accountIds.flatMap((resourceId) =>
+        (['existence', 'balance', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
+          resourceKind: 'account' as const, resourceId, capability, granted: true,
+        }))),
+      ...categoryIds.flatMap((resourceId) =>
         (['existence', 'category', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
           resourceKind: 'category' as const,
           resourceId,
@@ -1223,7 +1245,7 @@ function completionCart(context: BuildContext, id: ScenarioId): MutableScenario 
 
 function buildSplitCompletion(context: BuildContext): MutableScenario {
   const scenario = completionCart(context, 'split-completion');
-  scenario.completions.purchase = simpleCompletion('cart', 'proposed', ['owner']);
+  scenario.completions.purchase = simpleCompletion('cart', 'proposed');
   scenario.entry = { kind: 'completion', sessionKey: 'cart', completionKey: 'purchase' };
   return scenario;
 }
@@ -1231,7 +1253,7 @@ function buildSplitCompletion(context: BuildContext): MutableScenario {
 function buildCooldownCompletion(context: BuildContext): MutableScenario {
   const scenario = completionCart(context, 'cooldown-completion');
   addCategoryPolicy(scenario, 'cat-groceries', 'discretionary', { cooldownMinutes: 1 });
-  scenario.completions.purchase = simpleCompletion('cart', 'proposed', ['owner']);
+  scenario.completions.purchase = simpleCompletion('cart', 'proposed');
   scenario.entry = { kind: 'completion', sessionKey: 'cart', completionKey: 'purchase' };
   return scenario;
 }
@@ -1240,7 +1262,7 @@ function buildCoapprovalCompletion(context: BuildContext): MutableScenario {
   const scenario = completionCart(context, 'coapproval-completion');
   scenario.policy.approvalPolicy.minimumApprovers = 2;
   scenario.personas.push(coapproverPersona(), restrictedPersona());
-  scenario.completions.purchase = simpleCompletion('cart', 'proposed', ['owner', 'coapprover']);
+  scenario.completions.purchase = simpleCompletion('cart', 'proposed', ['approver', 'coapprover']);
   scenario.entry = { kind: 'completion', sessionKey: 'cart', completionKey: 'purchase' };
   return scenario;
 }
@@ -1749,6 +1771,7 @@ function validateScenario(scenario: MutableScenario): MaterializedScenario {
   return clone(scenario) as MaterializedScenario;
 }
 
+/** Lists the checked catalog's presentation metadata without runtime authority. */
 export function listScenarios(): readonly ScenarioSummary[] {
   return SCENARIO_IDS.map((id) => ({
     id,
@@ -1758,8 +1781,20 @@ export function listScenarios(): readonly ScenarioSummary[] {
   }));
 }
 
+/** Materializes the canonical ledger and explicit least-privilege persona grants. */
 export function materializeScenario(id: string, anchor: Date): MaterializedScenario {
   if (!SCENARIO_IDS.includes(id as ScenarioId)) throw new Error(`Unknown scenario ID: ${id}`);
   const context = makeContext(anchor);
-  return validateScenario(buildScenario(context, id as ScenarioId));
+  const scenario = buildScenario(context, id as ScenarioId);
+  scenario.personas = scenario.personas.map((persona) =>
+    persona.id === 'owner' ? ownerPersona(scenario.ledger) : persona);
+  if (Object.values(scenario.completions).some(({ approvers }) => approvers.includes('approver'))) {
+    const sessions = Object.values(scenario.completions).map(({ sessionKey }) => scenario.sessions[sessionKey]!);
+    const categories = new Set(sessions.flatMap(({ items }) => items.flatMap((item) =>
+      [item.categoryId, ...(item.categoryAllocations ?? []).map(({ categoryId }) => categoryId)])));
+    const accounts = new Set(sessions.flatMap(({ accountId, items }) =>
+      [accountId, ...items.map((item) => item.accountId)].filter((id): id is string => id !== null)));
+    scenario.personas.push(coapproverPersona('approver', [...categories], [...accounts]));
+  }
+  return validateScenario(scenario);
 }

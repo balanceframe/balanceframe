@@ -499,7 +499,9 @@ function setupWrite(path: string, method: string): boolean {
       (path === '/api/registration/bootstrap' ||
         path === '/api/invitations' ||
         path === '/api/invitations/redeem' ||
-        path === '/api/connection')) ||
+        path === '/api/connection' ||
+        path === '/api/spaces')) ||
+    (method === 'PUT' && /^\/api\/spaces\/[^/]+\/grants$/.test(path)) ||
     approvedFinancialWrite(path, method)
   );
 }
@@ -548,10 +550,13 @@ export function enforceDemoBoundary(event: EventWithContext): Record<string, unk
   if (externalWrite(path, method) && !internal && manifest.phase === 'ready') return undefined;
 
   if (internal) {
-    // The body is deliberately not parsed in middleware; the supervisor owns
-    // fictional credential selection and the sign-in result remains subject to
-    // Better Auth. This boundary only accepts the private loopback transport.
-    if (path === '/api/auth/sign-in/email' && method === 'POST') return undefined;
+    // Private transport still reaches Source's real session, membership and
+    // password handlers; it grants no public control or financial authority.
+    if (method === 'POST' && (
+      path === '/api/auth/sign-in/email' ||
+      path === '/api/reauth' ||
+      /^\/api\/spaces\/[^/]+\/select$/.test(path)
+    )) return undefined;
     if (manifest.phase === 'setup' && setupWrite(path, method)) return undefined;
   }
 

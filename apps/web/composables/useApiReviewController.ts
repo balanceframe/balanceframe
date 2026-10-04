@@ -7,16 +7,17 @@
  * Same-origin credentials are always sent; a Bearer token is added when
  * a getSessionToken function is provided.
  *
- * Response envelopes are validated before result consumption. Result-level
- * failures propagate to adapter error state. Actions with no current item
- * are rejected early. Unsupported operations return explicit failures.
- * After a successful action the consumed item is removed from the local
- * queue.
+ * Response-level errors propagate to adapter error state. Proposal-based
+ * approve/correct actions retain the exact server snapshot without consuming
+ * the pending review item; only confirmed reject/skip actions refresh the queue.
  */
 
+
 import { ref, shallowRef } from 'vue';
+import { isProposalApprovalView } from '../types/review-client';
 import type {
-  ReviewControllerAdapter,
+  ApiReviewControllerAdapter,
+  PendingProposalApproval,
   WebActionResult,
   WebBulkActionResult,
 } from '../types/review-client';
@@ -24,7 +25,6 @@ import type {
   ReviewSurfaceState,
   ReviewQueueItem,
   ReviewMetricsSnapshot,
-  ReviewError,
   HomogeneityInfo,
 } from '../src/review';
 
@@ -91,8 +91,19 @@ interface SingleActionResult {
   itemId: string | null;
   success: boolean;
   error: string | null;
+  disposition?: string;
+  approvalRequired?: boolean;
+  applied?: boolean;
+  verified?: boolean;
+  categorizationExecuted?: boolean;
+  proposal?: unknown;
 }
 
+interface RuleProposalResult {
+  proposal?: unknown;
+  simulationStatus?: string;
+  simulationWarning?: string | null;
+}
 interface ApiEnvelope<T> {
   schemaVersion: string;
   requestId: string;
@@ -102,6 +113,7 @@ interface ApiEnvelope<T> {
   result: T;
   error: { code: string; message: string; retryable: boolean } | null;
 }
+
 
 // ---------------------------------------------------------------------------
 // Proposal detail types (mirrors server-side shapes)
@@ -124,41 +136,6 @@ export interface SimulationEvidence {
   readonly simulatedAt: string;
 }
 
-export interface CategorizationProposalDetail {
-  readonly id: string;
-  readonly operation: string;
-  readonly budgetId: string;
-  readonly transactionId: string;
-  readonly categoryId: string;
-  readonly payloadHash: string;
-  readonly policyVersion: string;
-  readonly preconditions: string;
-  readonly expiresAt: string;
-  readonly actorId: string;
-  readonly provenance: string;
-  readonly providerModel: string | null;
-  readonly correlationId: string | null;
-  readonly supersededAt: string | null;
-  readonly createdAt: string;
-}
-
-export interface ProposalDetailPayload {
-  readonly proposal: CategorizationProposalDetail;
-  readonly simulation: SimulationEvidence | null;
-  readonly stale: boolean;
-  readonly simulationStatus: 'present' | 'missing' | 'stale';
-}
-
-export interface ProposeRulePayload {
-  readonly proposalId: string;
-  readonly operation: string;
-  readonly merchant: string;
-  readonly categoryId: string;
-  readonly simulation: SimulationEvidence | null;
-  readonly simulationStatus: 'present' | 'missing';
-  readonly simulationWarning: string | null;
-  readonly message: string;
-}
 
 // ---------------------------------------------------------------------------
 // Composable
@@ -177,13 +154,14 @@ export interface ApiReviewControllerOptions {
 export function useApiReviewController(
   baseUrl: string,
   options?: ApiReviewControllerOptions,
-): ReviewControllerAdapter {
+): ApiReviewControllerAdapter {
   // ── Reactive state ──────────────────────────────────────────────
   const state = ref<ReviewSurfaceState>(createDefaultState());
   const loading = ref(false);
   const error = ref<string | null>(null);
   /** ID of the most recently consumed item, for undo when queue resets. */
   const lastActedItemId = ref<string | null>(null);
+  const proposalApprovalViews = shallowRef<readonly PendingProposalApproval[]>([]);
 
   // Normalise the base URL (strip trailing slash).
   const api = baseUrl.replace(/\/+$/, '');
@@ -265,6 +243,20 @@ export function useApiReviewController(
 
     return envelope;
   }
+  function retainProposalApproval(reviewId: string, value: unknown): boolean {
+    if (!isProposalApprovalView(value)) return false;
+    proposalApprovalViews.value = [
+      ...proposalApprovalViews.value.filter((entry) => entry.reviewId !== reviewId),
+      { reviewId, proposal: value },
+    ];
+    return true;
+  }
+
+  function clearProposalApprovalViews(proposalId?: string): void {
+    proposalApprovalViews.value = proposalId
+      ? proposalApprovalViews.value.filter((entry) => entry.proposal.id !== proposalId)
+      : [];
+  }
 
   /** Perform a single-item action via the API and return a WebActionResult. */
   async function doAction(
@@ -311,9 +303,31 @@ export function useApiReviewController(
         return { itemId: currentId, success: false, error: msg };
       }
 
-      // Propagate result-level failures
+      if (
+        actionName === 'approve' &&
+        result.disposition === 'approval_required' &&
+        result.approvalRequired === true &&
+        result.applied === false &&
+        result.verified === false &&
+        result.categorizationExecuted === false
+      ) {
+        if (retainProposalApproval(currentId, result.proposal)) {
+          error.value = null;
+          return { itemId: currentId, success: false, error: null, approvalRequired: true };
+        }
+        const msg = 'The server did not return an exact proposal for review.';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
       if (!result.success) {
         const msg = result.error ?? 'Action failed';
+        error.value = msg;
+        return { itemId: currentId, success: false, error: msg };
+      }
+
+      if (actionName === 'approve') {
+        const msg = 'The server did not return an approval-required proposal.';
         error.value = msg;
         return { itemId: currentId, success: false, error: msg };
       }
@@ -454,21 +468,25 @@ export function useApiReviewController(
         return { itemId: currentId, success: false, error: msg };
       }
 
-      if (!result.success) {
-        const msg = result.error ?? 'Edit failed';
+      if (
+        result.disposition === 'approval_required' &&
+        result.approvalRequired === true &&
+        result.applied === false &&
+        result.verified === false &&
+        result.categorizationExecuted === false
+      ) {
+        if (retainProposalApproval(currentId, result.proposal)) {
+          error.value = null;
+          return { itemId: currentId, success: false, error: null, approvalRequired: true };
+        }
+        const msg = 'The server did not return an exact proposal for review.';
         error.value = msg;
         return { itemId: currentId, success: false, error: msg };
       }
 
-      // Refresh the queue to show the updated item (still pending_review
-      // or correcting, not removed).
-      await fetchItems();
-
-      return {
-        itemId: result.itemId ?? currentId,
-        success: true,
-        error: null,
-      };
+      const msg = result.error ?? 'The server did not return an approval-required category proposal.';
+      error.value = msg;
+      return { itemId: currentId, success: false, error: msg };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       error.value = msg;
@@ -557,34 +575,38 @@ export function useApiReviewController(
         body.simulation = simulation;
       }
   
-      const envelope = await callApi<SingleActionResult>(
+      const envelope = await callApi<RuleProposalResult>(
         '/api/review/propose-rule',
         'POST',
         body,
       );
-  
+
       if (envelope.status === 'error' || envelope.error) {
         const msg = envelope.error?.message ?? 'Unknown error';
         error.value = msg;
         return { itemId: reviewId, success: false, error: msg };
       }
-  
-      const result = envelope.result as unknown as Record<string, unknown> | null;
-      if (!result || typeof result !== 'object') {
-        const msg = 'Invalid action result envelope';
+
+      const result = envelope.result;
+      if (
+        !result ||
+        !isProposalApprovalView(result.proposal) ||
+        result.proposal.operation !== 'create_rule' ||
+        result.proposal.disposition !== 'approval_required' ||
+        !retainProposalApproval(reviewId, result.proposal)
+      ) {
+        const msg = 'The server did not return an exact rule proposal for review.';
         error.value = msg;
         return { itemId: reviewId, success: false, error: msg };
       }
-  
-      const simStatus = typeof result.simulationStatus === 'string' ? result.simulationStatus : undefined;
-      const simWarning = typeof result.simulationWarning === 'string' ? result.simulationWarning : null;
-  
+
       return {
-        itemId: (result.proposalId as string) ?? reviewId,
+        itemId: result.proposal.id,
         success: true,
         error: null,
-        simulationStatus: simStatus,
-        simulationWarning: simWarning,
+        approvalRequired: true,
+        simulationStatus: result.simulationStatus,
+        simulationWarning: result.simulationWarning ?? null,
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -597,60 +619,137 @@ export function useApiReviewController(
   
   // ── Bulk actions ────────────────────────────────────────────────
 
-  async function bulkApprove(): Promise<WebBulkActionResult> {
-    return {
-      results: [
-        {
-          itemId: '<bulk>',
-          success: false,
-          error: 'Bulk operations are not supported by the API',
-        },
-      ],
-      consumedCount: 0,
-      errorCount: 1,
-    };
+  async function requestBulkProposals(
+    action: 'approve' | 'correct',
+    categoryId?: string,
+  ): Promise<WebBulkActionResult> {
+    const selectedIds = [
+      ...new Set(
+        state.value.selectedIndices.flatMap((index) => {
+          const item = state.value.items[index];
+          return item ? [item.reviewItem.id] : [];
+        }),
+      ),
+    ];
+    if (!selectedIds.length) {
+      return {
+        results: [{ itemId: '<bulk>', success: false, error: 'No selected review items.' }],
+        consumedCount: 0,
+        errorCount: 1,
+      };
+    }
+
+    loading.value = true;
+    error.value = null;
+    const results: WebActionResult[] = [];
+    let errorCount = 0;
+    try {
+      for (const reviewId of selectedIds) {
+        try {
+          const envelope = await callApi<SingleActionResult>(
+            `/api/review/${action}`,
+            'POST',
+            { reviewId, ...(action === 'correct' ? { categoryId } : {}) },
+          );
+          const result = envelope.result;
+          if (
+            envelope.status !== 'ok' ||
+            envelope.error ||
+            !result ||
+            result.success !== false ||
+            result.disposition !== 'approval_required' ||
+            result.approvalRequired !== true ||
+            result.applied !== false ||
+            result.verified !== false ||
+            result.categorizationExecuted !== false ||
+            !isProposalApprovalView(result.proposal) ||
+            !retainProposalApproval(reviewId, result.proposal)
+          ) {
+            const message =
+              envelope.error?.message ?? result?.error ?? 'The server did not return an exact proposal for review.';
+            results.push({ itemId: reviewId, success: false, error: message });
+            errorCount += 1;
+            continue;
+          }
+          results.push({ itemId: reviewId, success: false, error: null, approvalRequired: true });
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          results.push({ itemId: reviewId, success: false, error: message });
+          errorCount += 1;
+        }
+      }
+    } finally {
+      loading.value = false;
+    }
+    error.value = errorCount ? `${errorCount} selected review proposal(s) could not be prepared.` : null;
+    return { results, consumedCount: 0, errorCount };
   }
 
-  async function bulkCorrect(_categoryId: string): Promise<WebBulkActionResult> {
-    return {
-      results: [
-        {
-          itemId: '<bulk>',
-          success: false,
-          error: 'Bulk operations are not supported by the API',
-        },
-      ],
-      consumedCount: 0,
-      errorCount: 1,
-    };
+  async function bulkApprove(): Promise<WebBulkActionResult> {
+    return requestBulkProposals('approve');
+  }
+
+  async function bulkCorrect(categoryId: string): Promise<WebBulkActionResult> {
+    return requestBulkProposals('correct', categoryId);
+  }
+
+  async function runBulkTransition(action: 'reject' | 'skip'): Promise<WebBulkActionResult> {
+    const selectedIds = [
+      ...new Set(
+        state.value.selectedIndices.flatMap((index) => {
+          const item = state.value.items[index];
+          return item ? [item.reviewItem.id] : [];
+        }),
+      ),
+    ];
+    if (!selectedIds.length) {
+      return {
+        results: [{ itemId: '<bulk>', success: false, error: 'No selected review items.' }],
+        consumedCount: 0,
+        errorCount: 1,
+      };
+    }
+    loading.value = true;
+    error.value = null;
+    const results: WebActionResult[] = [];
+    let consumedCount = 0;
+    let errorCount = 0;
+    try {
+      for (const reviewId of selectedIds) {
+        try {
+          const envelope = await callApi<SingleActionResult>(
+            `/api/review/${action}`,
+            'POST',
+            { reviewId },
+          );
+          if (envelope.status === 'ok' && !envelope.error && envelope.result?.success) {
+            results.push({ itemId: reviewId, success: true, error: null });
+            consumedCount += 1;
+          } else {
+            const message = envelope.error?.message ?? envelope.result?.error ?? 'Review action failed.';
+            results.push({ itemId: reviewId, success: false, error: message });
+            errorCount += 1;
+          }
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          results.push({ itemId: reviewId, success: false, error: message });
+          errorCount += 1;
+        }
+      }
+      if (consumedCount > 0) await fetchItems();
+    } finally {
+      loading.value = false;
+    }
+    error.value = errorCount ? `${errorCount} selected review action(s) failed.` : null;
+    return { results, consumedCount, errorCount };
   }
 
   async function bulkReject(): Promise<WebBulkActionResult> {
-    return {
-      results: [
-        {
-          itemId: '<bulk>',
-          success: false,
-          error: 'Bulk operations are not supported by the API',
-        },
-      ],
-      consumedCount: 0,
-      errorCount: 1,
-    };
+    return runBulkTransition('reject');
   }
 
   async function bulkSkip(): Promise<WebBulkActionResult> {
-    return {
-      results: [
-        {
-          itemId: '<bulk>',
-          success: false,
-          error: 'Bulk operations are not supported by the API',
-        },
-      ],
-      consumedCount: 0,
-      errorCount: 1,
-    };
+    return runBulkTransition('skip');
   }
 
   // ── Navigation ──────────────────────────────────────────────────
@@ -731,12 +830,16 @@ export function useApiReviewController(
     get state() {
       return state.value as Readonly<ReviewSurfaceState>;
     },
+    get proposalApprovalViews() {
+      return proposalApprovalViews.value;
+    },
     get loading() {
       return loading.value;
     },
     get error() {
       return error.value;
     },
+    clearProposalApprovalViews,
     loadNextPage,
     refresh,
     approve,

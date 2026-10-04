@@ -264,16 +264,28 @@ pub fn plan_create_rule(input: String) -> napi::Result<String> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct VerifyRuleMutationInput {
+struct RulePlanSnapshotInput {
     plan: CreateRulePlan,
     snapshot: ProtocolSnapshot,
 }
 
-/// Verify that a rule creation plan is still valid against a snapshot.
-/// Returns { verified, reasonCodes, message }.
+/// Preview a complete creation plan against current transactions and active rule conflicts.
+/// Deserialization and native failures become JavaScript errors; this performs no writes.
+#[napi]
+pub fn simulate_create_rule_plan(input: String) -> napi::Result<String> {
+    run::<RulePlanSnapshotInput, RuleSimulationResult>(input, |request| {
+        Ok(cp::simulate_create_rule_plan(
+            &request.plan,
+            &request.snapshot,
+        ))
+    })
+}
+
+/// Verify the created rule's complete postcondition in a fresh Actual snapshot.
+/// Absence or mismatched content returns an unverified result; this performs no writes.
 #[napi]
 pub fn verify_rule_mutation(input: String) -> napi::Result<String> {
-    run::<VerifyRuleMutationInput, VerificationResult>(input, |vrmi| {
+    run::<RulePlanSnapshotInput, VerificationResult>(input, |vrmi| {
         Ok(cp::verify_rule_mutation(&vrmi.plan, &vrmi.snapshot))
     })
 }

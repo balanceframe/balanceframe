@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 import { config as loadEnv } from 'dotenv';
 
-loadEnv({ path: resolve(__dirname, '.env.test') });
+loadEnv({ path: resolve(import.meta.dirname, '.env.test') });
 
 export default defineConfig({
   test: {
@@ -13,7 +13,7 @@ export default defineConfig({
 
     // Node environment — no DOM needed.
     environment: 'node',
-    setupFiles: [resolve(__dirname, 'setup.ts')],
+    setupFiles: [resolve(import.meta.dirname, 'setup.ts')],
 
     // Actual's embedded API owns process-global services, and the fixture
     // server rate-limits concurrent authentication. Run live proof files
@@ -24,7 +24,6 @@ export default defineConfig({
     bail: 1,
     coverage: {
       provider: 'v8',
-      all: true,
       reporter: ['text-summary', 'lcov', 'json'],
       reportsDirectory: '../../coverage/js/actual-integration',
       include: ['src/**'],
@@ -64,10 +63,10 @@ export default defineConfig({
   resolve: {
     alias: {
       // Allow tests to import from the monorepo workspace packages.
-      '@balanceframe/actual-adapter': resolve(__dirname, '../../packages/actual-adapter/src'),
-      '@balanceframe/workflow-store': resolve(__dirname, '../../packages/workflow-store/src'),
+      '@balanceframe/actual-adapter': resolve(import.meta.dirname, '../../packages/actual-adapter/src'),
+      '@balanceframe/workflow-store': resolve(import.meta.dirname, '../../packages/workflow-store/src'),
       '@balanceframe/protocol-generated': resolve(
-        __dirname,
+        import.meta.dirname,
         '../../packages/protocol-generated/src',
       ),
     },

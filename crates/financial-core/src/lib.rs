@@ -38,8 +38,9 @@ pub use analytics::{
 pub use blockers::{Blocker, BlockerCollector, ReasonCode};
 pub use cash_flow::{compute_cash_flow_projection, CashFlowProjection};
 pub use categorization::{
-    classify_exact_match, classify_historical, find_candidates, CandidateStatus,
-    CategorizationCandidate, Evidence, EvidenceKind, HistoryRecord, InferencePolicy, Provenance,
+    actual_rule_conditions_match, classify_exact_match, classify_historical, find_candidates,
+    ActualRuleConditions, CandidateStatus, CategorizationCandidate, Evidence, EvidenceKind,
+    HistoryRecord, InferencePolicy, Provenance,
 };
 pub use coverage::{
     build_coverage_report, AccountCoverage, CoverageReport, DateRange, InclusionScope,

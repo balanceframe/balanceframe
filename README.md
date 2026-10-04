@@ -144,6 +144,8 @@ nix develop
 This drops you into a shell with Rust, Node.js, pnpm, and all native build
 dependencies. If you are not using Nix, see `nix/tooling.nix` for the
 required tool versions.
+Supported Node releases are **22.19+ within 22.x, 24.11+ within 24.x, or 26+**;
+Nix, CI, and Docker use Node 24. Node 20 is no longer supported.
 
 ### Build and Test
 
@@ -160,6 +162,33 @@ pnpm test
 # Full flake check
 nix flake check
 ```
+
+Scenario tests consume the workspace's production Nuxt bundle. The production
+dependency regression builds its own disposable `.nuxt` and `.output` directories
+so parallel workspace tests never lose or replace that shared runtime.
+
+Dependency maintenance:
+
+- Vitest and its V8 coverage provider move together. Explicit coverage includes
+  retain unimported production files; the coverage gates are unchanged.
+  The scenario CLI streams raw test output so passing verification JSON remains
+  visible and parseable even when terminal colors are enabled.
+- The install-script allowlist includes `vue-demi`'s local Vue-version export
+  selector. Docker builds use source inputs, not host dependencies or build outputs.
+- `patches/` contains version-specific compatibility fixes for Nitro 2.13.4's
+  Archiver 8 ZIP API and Nuxt DevTools 3.4.2's Vite environment configuration.
+  Frozen installs and Docker builds require these patch files. Remove a patch
+  only after an upstream fix passes the real ZIP/RPC regressions in
+  `apps/web/test/server/`.
+- Icons use the installed Heroicons and Lucide datasets through Nuxt's local
+  server provider rather than fetching missing collections from a public API.
+- Typography uses the system font stack, so remote font-catalog discovery is disabled.
+- Nuxt UI consumers use `UFormField` and `UFieldGroup`. Resolve `useToast` during
+  component setup so asynchronous notifications retain the app's injected limits.
+- Better Auth's SQLite migrations finish before authentication initialization and
+  schema validation; migration failures keep protected/auth APIs unavailable.
+- Rolldown's callback/link-time profiling advisory is disabled; correctness,
+  security, import-protection, and deprecation diagnostics remain enabled.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development workflow.
 
@@ -183,6 +212,10 @@ pnpm demo --scenario rich-cart
 `verify --all` runs the 29 independent authenticated Actual/Nuxt cases and then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with its catalog version, scenario ID, anchor, assertion count, and sanitized evidence mode. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, and interrupted completion writes without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
 
 Scenario account attestations are explicit, fictional source evidence, not bank imports; missing or expired attestations keep the Card at `insufficient_data`. Reset regenerates only the active instance's credentials, budget, sessions and attestations; another runner is independent.
+
+Scenario setup creates a real personal/shared space, accepts space-scoped invitations into current membership periods, and installs the catalog's exact resource grants. An explicit selected-budget full-read grant is resolved into finite read-only scopes for the real Actual baseline, including generated balances and default categories; it grants no extra write/control authority. Every persona has independent Better Auth credentials and selected-space cookies, and completions use independent scoped approvers rather than the requester. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this explicitly renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.
+
+Scoped completion approvers have explicit selected-budget liquidity admission for Native Card revalidation and exact grants for their completion's canonical accounts and categories. Persona roles infer no private history/source/full-read, execution, or control authority.
 
 ### Release
 
@@ -278,6 +311,9 @@ individual tiny files):
 CI fetches history and supplies the pull-request base SHA. Local comparison uses
 the merge base with `HEAD`, plus working-tree and untracked sources. An unavailable
 base, malformed report, missing report/source, or threshold failure exits nonzero.
+Before pushing a pull request, use its base SHA (the CI job's `COVERAGE_BASE`)
+or a freshly fetched target branch. The default `HEAD` changed-file gate only
+covers uncommitted changes, not earlier PR commits.
 The checker and runner isolation/cancellation contracts have executable behavior tests:
 `pnpm test:coverage-gates`.
 

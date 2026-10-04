@@ -9,6 +9,7 @@
  */
 
 import { ReasonCodes, ApplicationError } from './errors.js';
+import type { SavedViewAuthority } from '@balanceframe/workflow-store';
 import {
   okResponse,
   errorResponse,
@@ -1686,200 +1687,139 @@ export async function reportGenerateAnalysis(
 // ---------------------------------------------------------------------------
 
 /**
- * List saved views.
- * Read-only deterministic — no model or cloud invocation.
- * Skips auth gates.
+ * List saved views in the verified selected space and membership period.
  */
 export async function savedViewsListAnalysis(
   input: CommandInput,
+  authority: SavedViewAuthority,
 ): Promise<SavedViewsListOutput['envelope']> {
-  const { requestId, actorId, ledger, freshness, analysisProtocol, workflowStore } = input;
+  const { requestId, actorId, freshness, workflowStore } = input;
+  if (authority.actorId !== actorId) {
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
+        code: 'saved_view_scope_mismatch',
+        message: 'Saved-view authority does not match the acting identity.',
+        retryable: false,
+        reasonCodes: ['saved_view_scope_mismatch'],
+      }),
+    );
+  }
+  if (!workflowStore) {
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
+        code: 'saved_view_store_required',
+        message: 'Saved views require an active selected-space workflow store.',
+        retryable: false,
+        reasonCodes: ['saved_view_store_required'],
+      }),
+    );
+  }
 
-  // Prefer workflow persistence when the supplied store implements the
-  // saved-view contract; test doubles and CLI callers may provide a partial
-  // store and must continue through the protocol fallback.
-  if (workflowStore && typeof workflowStore.listSavedViews === 'function') {
-    try {
-      const views = await workflowStore.listSavedViews(actorId);
-      const result: SavedViewsListResult = {
-        views: views.map((v) => ({
-          viewId: v.viewId,
-          name: v.name,
-          viewType: v.viewType,
-          scope: v.scope,
-          ...(v.sort != null ? { sort: v.sort } : {}),
-          createdAt: v.createdAt,
-        })),
-        total: views.length,
-      };
-      return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const errInfo = new ErrorInfo({
+  try {
+    const views = await workflowStore.listSavedViews(authority);
+    const result: SavedViewsListResult = {
+      views: views.map((view) => ({
+        viewId: view.viewId,
+        name: view.name,
+        viewType: view.viewType,
+        scope: view.scope,
+        spaceId: view.spaceId,
+        budgetId: view.budgetId,
+        ...(view.sort != null ? { sort: view.sort } : {}),
+        createdAt: view.createdAt,
+      })),
+      total: views.length,
+    };
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
         code: 'store_failed',
         message,
         retryable: true,
         reasonCodes: ['store_error'],
-      });
-      return errorResponse(requestId, errInfo);
-    }
-  }
-
-  // Fallback: protocol path (CLI/no-store environments)
-  if (!ledger) {
-    const err = new ErrorInfo({
-      code: 'not_connected',
-      message: 'No ledger connected. Use a connect command first.',
-      retryable: true,
-      reasonCodes: ['missing_ledger_config'],
-    });
-    return errorResponse(requestId, err);
-  }
-
-  if (freshness && freshness.isStale) {
-    const err = new ErrorInfo({
-      code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before listing views.',
-      retryable: true,
-      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
-    });
-    return errorResponse(requestId, err);
-  }
-
-  if (!analysisProtocol || !analysisProtocol.listSavedViews) {
-    const err = new ErrorInfo({
-      code: 'no_analysis_protocol',
-      message: 'Saved views are not available. Ensure the Rust protocol bindings are loaded.',
-      retryable: true,
-      reasonCodes: ['missing_analysis_protocol'],
-    });
-    return errorResponse(requestId, err);
-  }
-
-  try {
-    const result = await analysisProtocol.listSavedViews(ledger);
-    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const errInfo = new ErrorInfo({
-      code: 'analysis_failed',
-      message,
-      retryable: true,
-      reasonCodes: ['analysis_error'],
-    });
-    return errorResponse(requestId, errInfo);
+      }),
+    );
   }
 }
 
-/**
- * Create a saved view.
- * Read-only scope persistence — no model or cloud invocation.
- * Skips auth gates — view creation is a local preference operation.
- */
+/** Create a saved view within the verified selected space and membership period. */
 export async function savedViewCreateAnalysis(
   input: CommandInput,
   params: CreateSavedViewParams,
+  authority: SavedViewAuthority,
 ): Promise<CreateSavedViewOutput['envelope']> {
-  const { requestId, actorId, ledger, freshness, analysisProtocol, workflowStore } = input;
-
-  // Prefer workflow persistence when the supplied store implements the
-  // saved-view contract; partial store doubles use the protocol fallback.
-  if (workflowStore && typeof workflowStore.createSavedView === 'function') {
-    if (!params.name || !params.viewType) {
-      const err = new ErrorInfo({
+  const { requestId, actorId, freshness, workflowStore } = input;
+  if (!params.name || !params.viewType) {
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
         code: 'view_params_required',
         message: 'A view name and type are required.',
         retryable: false,
         reasonCodes: ['view_params_required'],
-      });
-      return errorResponse(requestId, err);
-    }
+      }),
+    );
+  }
+  if (authority.actorId !== actorId) {
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
+        code: 'saved_view_scope_mismatch',
+        message: 'Saved-view authority does not match the acting identity.',
+        retryable: false,
+        reasonCodes: ['saved_view_scope_mismatch'],
+      }),
+    );
+  }
+  if (!workflowStore) {
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
+        code: 'saved_view_store_required',
+        message: 'Saved views require an active selected-space workflow store.',
+        retryable: false,
+        reasonCodes: ['saved_view_store_required'],
+      }),
+    );
+  }
 
-    try {
-      const savedView = await workflowStore.createSavedView({
-        name: params.name,
-        viewType: params.viewType,
-        scope: params.scope,
-        sort: params.sort,
-        actorId,
-      });
-      const result: CreateSavedViewResult = {
-        view: {
-          viewId: savedView.viewId,
-          name: savedView.name,
-          viewType: savedView.viewType,
-          scope: savedView.scope,
-          ...(savedView.sort != null ? { sort: savedView.sort } : {}),
-          createdAt: savedView.createdAt,
-        },
-      };
-      return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const errInfo = new ErrorInfo({
+  try {
+    const savedView = await workflowStore.createSavedView({
+      authority,
+      name: params.name,
+      viewType: params.viewType,
+      scope: params.scope,
+      sort: params.sort,
+    });
+    const result: CreateSavedViewResult = {
+      view: {
+        viewId: savedView.viewId,
+        name: savedView.name,
+        viewType: savedView.viewType,
+        scope: savedView.scope,
+        spaceId: savedView.spaceId,
+        budgetId: savedView.budgetId,
+        ...(savedView.sort != null ? { sort: savedView.sort } : {}),
+        createdAt: savedView.createdAt,
+      },
+    };
+    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return errorResponse(
+      requestId,
+      new ErrorInfo({
         code: 'store_failed',
         message,
         retryable: true,
         reasonCodes: ['store_error'],
-      });
-      return errorResponse(requestId, errInfo);
-    }
-  }
-
-  // Fallback: protocol path (CLI/no-store environments)
-  if (!ledger) {
-    const err = new ErrorInfo({
-      code: 'not_connected',
-      message: 'No ledger connected. Use a connect command first.',
-      retryable: true,
-      reasonCodes: ['missing_ledger_config'],
-    });
-    return errorResponse(requestId, err);
-  }
-
-  if (freshness && freshness.isStale) {
-    const err = new ErrorInfo({
-      code: 'stale_budget_intelligence',
-      message: 'Snapshot data is stale. Reconnect or re-download before creating a view.',
-      retryable: true,
-      reasonCodes: [ReasonCodes.STALE_BUDGET_INTELLIGENCE_DATA],
-    });
-    return errorResponse(requestId, err);
-  }
-
-  if (!analysisProtocol || !analysisProtocol.createSavedView) {
-    const err = new ErrorInfo({
-      code: 'no_analysis_protocol',
-      message:
-        'Saved view creation is not available. Ensure the Rust protocol bindings are loaded.',
-      retryable: true,
-      reasonCodes: ['missing_analysis_protocol'],
-    });
-    return errorResponse(requestId, err);
-  }
-
-  if (!params.name || !params.viewType) {
-    const err = new ErrorInfo({
-      code: 'view_params_required',
-      message: 'A view name and type are required.',
-      retryable: false,
-      reasonCodes: ['view_params_required'],
-    });
-    return errorResponse(requestId, err);
-  }
-
-  try {
-    const result = await analysisProtocol.createSavedView(ledger, params);
-    return okResponse(requestId, freshness, AuthorizationContext.observe(actorId), result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const errInfo = new ErrorInfo({
-      code: 'analysis_failed',
-      message,
-      retryable: true,
-      reasonCodes: ['analysis_error'],
-    });
-    return errorResponse(requestId, errInfo);
+      }),
+    );
   }
 }
 

@@ -24,6 +24,21 @@
             Approvals {{ completion.approvalCount }} / {{ completion.requiredApprovals }} · Proposal
             version {{ completion.version }}
           </p>
+          <p class="mt-1 text-sm">Proposal expires {{ completion.expiresAt }}</p>
+          <p
+            v-if="completion.debit && completion.payloadHash"
+            class="mt-1 break-all text-sm"
+            data-testid="completion-payload-hash"
+          >
+            Immutable payload hash: <code>{{ completion.payloadHash }}</code>
+          </p>
+          <ApprovalMetadata
+            v-if="completion.debit && completion.payloadHash && completion.approvalMetadata"
+            :metadata="completion.approvalMetadata"
+          />
+          <p v-if="actionError" role="alert" class="mt-2 text-red-600">
+            {{ actionError.code }}: {{ actionError.message }}
+          </p>
           <p v-if="completion.outcome" role="status" class="mt-2 text-amber-700">
             Outcome: {{ humanize(completion.outcome) }}. Refresh and review the current evidence before
             taking any further action.
@@ -140,6 +155,17 @@
               />
               I reviewed the exact account, debit, date, payee, notes, and category splits above.
             </label>
+            <label class="grid gap-1 text-sm">
+              <span>{{ confirmationLabel }}</span>
+              <input
+                v-model="password"
+                data-testid="completion-approval-password"
+                type="password"
+                autocomplete="current-password"
+                class="rounded border px-2 py-1"
+                :disabled="confirmationDisabled(completion) || Boolean(actionError)"
+              />
+            </label>
             <UButton
               data-testid="completion-approve"
               :disabled="approveDisabled(completion)"
@@ -172,12 +198,16 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import ApprovalMetadata from '../../../../components/ApprovalMetadata.vue';
 import type { PublicSessionCompletion } from '@balanceframe/application';
 import type { Amount } from '../../../../components/types';
 import SemanticAmount from '../../../../components/SemanticAmount.vue';
 import { liquidityError, liquidityRequest } from '../../../../utils/liquidity-client';
+import { reauthenticateHuman } from '../../../../utils/reauthentication';
 
 definePageMeta({ layout: 'default' });
+const confirmationLabel = typeof useRuntimeConfig === 'function' && useRuntimeConfig().public.demoMode === true
+  ? 'Disposable-demo confirmation (type CONFIRM)' : 'Account password';
 
 const route = useRoute();
 const sessionId = computed(() => String(route.params.id ?? ''));
@@ -186,6 +216,8 @@ const completion = ref<PublicSessionCompletion | null>(null);
 const loading = ref(true);
 const busy = ref(false);
 const error = ref<{ code: string; message: string } | null>(null);
+const actionError = ref<{ code: string; message: string } | null>(null);
+const password = ref('');
 const confirmed = ref(false);
 const clock = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | undefined;
@@ -245,12 +277,13 @@ function detailsAvailable(value: PublicSessionCompletion) {
 }
 
 function confirmationDisabled(value: PublicSessionCompletion) {
-  return busy.value || expired(value) || cooldownActive(value) || !detailsAvailable(value) ||
-    !value.canApprove || value.reviewRequired;
+  return busy.value || Boolean(actionError.value) || expired(value) || cooldownActive(value) ||
+    !detailsAvailable(value) || !value.canApprove || value.reviewRequired;
 }
 
 function approveDisabled(value: PublicSessionCompletion) {
-  return confirmationDisabled(value) || !confirmed.value || value.phase !== 'proposed';
+  return confirmationDisabled(value) || !confirmed.value || !password.value ||
+    value.phase !== 'proposed';
 }
 
 function approvalKey(version: number) {
@@ -266,6 +299,8 @@ async function load() {
   if (busy.value) return;
   loading.value = true;
   error.value = null;
+  actionError.value = null;
+  password.value = '';
   completion.value = null;
   confirmed.value = false;
   clock.value = Date.now();
@@ -280,20 +315,34 @@ async function load() {
 
 async function approve() {
   const current = completion.value;
-  if (!current || approveDisabled(current) || busy.value) return;
+  let passwordSnapshot = password.value;
+  if (!current || approveDisabled(current) || busy.value || !passwordSnapshot) return;
+  const payloadHash = current.payloadHash;
+  if (!payloadHash) return;
+  const expectedVersion = current.version;
+  const actionPath = completionPath('approve');
+  const idempotencyKey = approvalKey(expectedVersion);
   busy.value = true;
-  error.value = null;
+  actionError.value = null;
   clock.value = Date.now();
+  password.value = '';
   try {
-    completion.value = await liquidityRequest<PublicSessionCompletion>(completionPath('approve'), 'POST', {
-      payloadHash: current.payloadHash,
-      expectedVersion: current.version,
-      idempotencyKey: approvalKey(current.version),
-    });
+    await reauthenticateHuman(passwordSnapshot);
+    passwordSnapshot = '';
+    completion.value = await liquidityRequest<PublicSessionCompletion>(
+      actionPath,
+      'POST',
+      { payloadHash, expectedVersion, idempotencyKey },
+    );
     confirmed.value = false;
   } catch (failure) {
-    error.value = { code: 'COMPLETION_APPROVAL_UNAVAILABLE', message: liquidityError(failure) };
+    actionError.value = {
+      code: 'COMPLETION_APPROVAL_UNAVAILABLE',
+      message: liquidityError(failure),
+    };
   } finally {
+    passwordSnapshot = '';
+    password.value = '';
     busy.value = false;
   }
 }

@@ -1,163 +1,140 @@
-/**
- * POST /api/review/approve — approve a review item.
- *
- * Accepts JSON body: { reviewId }.
- * actorId is derived from the authenticated event context — never from the
- * request body (prevents spoofing).
- */
-
-import { readBody, defineEventHandler, setResponseStatus } from 'h3';
+import { defineEventHandler, readBody, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
+import { hasTrustedRequestOrigin } from '../../utils/reauthentication';
+import type { ReauthenticationEvent } from '../../utils/reauthentication';
+import { requireSelectedSpace } from '../../utils/space-context';
 import {
-  getWorkflowStore,
-  getActorId,
-  performReviewAction,
-  okEnvelope,
-  errorEnvelope,
-  requireAuthorization,
-  buildAuthorizationInfo,
-  reviewAndApplyEnabled,
-  getReviewMutationExecutorFromEvent,
   applyReviewMutationWithTransition,
+  errorEnvelope,
+  getReviewMutationExecutorFromEvent,
+  getWorkflowStore,
+  okEnvelope,
   sanitizeError,
-  sanitizeErrorMessage,
 } from '../../utils/workflow-store';
-import type { ReviewStatus } from '../../utils/workflow-store';
+import type { EventWithContext } from '../../utils/workflow-store';
+import { buildProposalApprovalView } from '../../utils/proposal-approval-view';
+import { hasReviewScopeAdmission } from '../../utils/review-scope-admission';
+
+const Body = z.object({
+  reviewId: z.string().trim().min(1).max(200),
+}).strict();
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-  const authCheck = await requireAuthorization(event, 'categorization:execute');
-  if (!authCheck.ok) return authCheck.response;
-  const authInfo = authCheck.info;
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  if (!hasTrustedRequestOrigin(event as unknown as ReauthenticationEvent)) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Review proposal is unavailable.', null, false, requestId);
+  }
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  if (!selected.space.budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget.', null, false, requestId);
+  }
 
-  // Parse and validate body
-  let body: Record<string, unknown>;
-  try {
-    body = (await readBody(event)) ?? {};
-  } catch {
+  const parsed = Body.safeParse(await readBody<unknown>(event).catch(() => null));
+  if (!parsed.success) {
     setResponseStatus(event, 400);
-    return errorEnvelope(
-      'INVALID_JSON',
-      'Request body must be valid JSON',
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope('INVALID_REVIEW_ID', 'Review ID is required.', null, false, requestId);
   }
-
-  const reviewId = typeof body.reviewId === 'string' ? body.reviewId.trim() : '';
-  if (!reviewId) {
-    setResponseStatus(event, 422);
-    return errorEnvelope(
-      'MISSING_REVIEW_ID',
-      'reviewId is required and must be a non-empty string',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
-
-  // Derive actor from auth context — never from body
-  const actorId = getActorId(event);
-
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Review proposal is unavailable.', null, false, requestId);
+  }
+  const item = await workflow.store.getReviewItem(parsed.data.reviewId);
+  if (!item || item.budgetId !== selected.space.budgetId) {
+    setResponseStatus(event, 404);
+    return errorEnvelope('NOT_FOUND', 'Review item not found.', null, false, requestId);
+  }
+  const policy = workflow.store.governance.getPolicy({ spaceId: selected.space.id });
+  if (
+    !policy || !hasReviewScopeAdmission({
+      store: workflow.store,
+      selected,
+      item,
+      capability: 'categorization:propose',
+      phase: 'propose',
+      operation: 'set_category',
+      policyVersion: policy.version,
+    })
+  ) {
+    setResponseStatus(event, 404);
+    return errorEnvelope('NOT_FOUND', 'Review item not found.', null, false, requestId);
+  }
+  if (item.status !== 'pending_review') {
+    setResponseStatus(event, 404);
+    return errorEnvelope('NOT_FOUND', 'Review item not found.', null, false, requestId);
+  }
+  const executor = getReviewMutationExecutorFromEvent(event as unknown as EventWithContext);
+  if (!executor) {
+    setResponseStatus(event, 503);
+    return errorEnvelope('NATIVE_UNAVAILABLE', 'Native proposal service is unavailable.', null, false, requestId);
   }
 
-  const outcome = await performReviewAction(wf.store, reviewId, 'approve', actorId);
-
-  if (!outcome.success) {
-    let status = 500;
-    let code = 'ACTION_FAILED';
-    if (outcome.error === 'Review item not found') {
-      status = 404;
-      code = 'NOT_FOUND';
-    } else if (outcome.error?.startsWith('Version conflict')) {
-      status = 409;
-      code = 'VERSION_CONFLICT';
-    }
-    console.error(`[${requestId}] ${code}: ${outcome.error ?? 'Unknown error'}`);
-    setResponseStatus(event, status);
-    return errorEnvelope(
-      code,
-      sanitizeErrorMessage(outcome.error ?? 'Unknown error'),
-      authInfo,
-      false,
+  try {
+    const pending = await applyReviewMutationWithTransition(
+      workflow.store,
+      item.id,
+      selected.auth.actorId,
+      executor,
       requestId,
     );
-  }
-
-  // Only invoke mutation when the item has reached full 'approved' status
-  // (quorum met).  Partial approvals are successful transitions but must
-  // NOT trigger external ledger writes.
-  if (reviewAndApplyEnabled(event) && outcome.status === 'approved') {
-    const executor = getReviewMutationExecutorFromEvent(event);
-    if (executor) {
-      try {
-        const { mutationResult, finalStatus } = await applyReviewMutationWithTransition(
-          wf.store,
-          reviewId,
-          actorId,
-          executor,
-          requestId,
-        );
-
-        return okEnvelope(
-          {
-            itemId: outcome.itemId,
-            success: mutationResult.success,
-            error: mutationResult.error,
-            status: outcome.status,
-            categorizationExecuted: true,
-            mutationStatus: mutationResult.mutationStatus,
-            applied: mutationResult.applied,
-            verified: mutationResult.verified,
-            stale: mutationResult.stale,
-            transactionId: mutationResult.transactionId,
-            previousCategoryId: mutationResult.previousCategoryId,
-            newCategoryId: mutationResult.newCategoryId,
-            finalStatus,
-          },
-          authInfo,
-          requestId,
-        );
-      } catch (e) {
-        const safe = sanitizeError(e, requestId, 'MUTATION_FAILED', false);
-        setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
-        return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
-      }
+    const result = pending.mutationResult;
+    if (pending.disposition !== 'approval_required') {
+      setResponseStatus(event, result.disposition === 'native_unavailable' ? 503 : 409);
+      return errorEnvelope(
+        result.disposition === 'native_unavailable' ? 'NATIVE_UNAVAILABLE' : 'PROPOSAL_DENIED',
+        result.error ?? 'Native proposal was not admitted.',
+        null,
+        false,
+        requestId,
+      );
     }
-
-    // Review-and-apply must fail closed if the secure application service was
-    // not injected; never report a successful workflow-only approval.
-    setResponseStatus(event, 501);
-    return errorEnvelope(
-      'NOT_IMPLEMENTED',
-      'Review-and-apply requires a secure mutation service composition.',
-      authInfo,
-      false,
+    if (!result.proposalId) {
+      setResponseStatus(event, 409);
+      return errorEnvelope('PROPOSAL_UNAVAILABLE', 'The exact proposal is unavailable.', null, false, requestId);
+    }
+    const proposal = await workflow.store.getProposal(result.proposalId);
+    if (
+      !proposal ||
+      proposal.spaceId !== selected.space.id ||
+      proposal.budgetId !== selected.space.budgetId ||
+      proposal.operation !== 'set_category'
+    ) {
+      setResponseStatus(event, 409);
+      return errorEnvelope('PROPOSAL_UNAVAILABLE', 'The exact proposal is unavailable.', null, false, requestId);
+    }
+    const proposalView = await buildProposalApprovalView({
+      store: workflow.store,
+      proposal,
+      actorId: selected.auth.actorId,
+      auth: selected.auth,
+      now: new Date().toISOString(),
       requestId,
-    );
-  }
-
-  // Not quorate or observe mode — workflow transition only, no mutation
-  return okEnvelope(
-    {
-      itemId: outcome.itemId,
-      success: true,
+    });
+    if (!proposalView) {
+      setResponseStatus(event, 409);
+      return errorEnvelope('PROPOSAL_UNAVAILABLE', 'The exact proposal is unavailable.', null, false, requestId);
+    }
+    return okEnvelope({
+      itemId: item.id,
+      success: false,
       error: null,
-      status: outcome.status,
+      status: pending.finalStatus,
+      mutationStatus: 'approval_required',
+      disposition: 'approval_required',
+      approvalRequired: true,
       categorizationExecuted: false,
-      mutationStatus: 'noop',
       applied: false,
       verified: false,
       stale: false,
-      transactionId: null,
-      previousCategoryId: null,
-      newCategoryId: null,
-    },
-    authInfo,
-    requestId,
-  );
+      proposal: proposalView,
+    }, null, requestId);
+  } catch (error) {
+    const safe = sanitizeError(error, requestId, 'PROPOSAL_FAILED', false);
+    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 409);
+    return errorEnvelope(safe.code, safe.message, null, safe.retryable, requestId);
+  }
 });

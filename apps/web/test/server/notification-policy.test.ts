@@ -1,169 +1,231 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-
-const { mockReadBody, mockSave, mockRequireAuthorization } = vi.hoisted(() => ({
-  mockReadBody: vi.fn(),
-  mockSave: vi.fn(),
-  mockRequireAuthorization: vi.fn(),
-}));
-
-vi.mock('h3', () => ({
-  defineEventHandler: <T>(handler: T) => handler,
-  readBody: mockReadBody,
-  setResponseStatus: vi.fn(),
-}));
-
-vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: vi.fn(() => ({ store: { saveNotificationPolicy: mockSave } })),
-  getActorId: vi.fn(() => 'actor-1'),
-  requireAuthorization: mockRequireAuthorization,
-  sanitizeError: vi.fn((err, _requestId, code, retryable) => ({
-    code,
-    message: String(err),
-    retryable,
-  })),
-  okEnvelope: (result: unknown) => ({ status: 'ok', result }),
-  errorEnvelope: (code: string, message: string, authorization: unknown) => ({
-    status: 'error',
-    authorization,
-    error: { code, message },
-  }),
-}));
-
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as H3 from 'h3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
+import type { ReauthenticationEvent } from '../../server/utils/reauthentication';
+import { issueReauthentication, REAUTH_COOKIE_NAME } from '../../server/utils/reauthentication';
 import handler from '../../server/api/notifications/policy.post';
 
-describe('POST /api/notifications/policy authorization', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockRequireAuthorization.mockResolvedValue({
-      ok: true,
-      info: { actorId: 'actor-1', capability: 'notification:admin', allowed: true },
-    });
-    mockReadBody.mockResolvedValue({ spaceId: 'space-a', policy: { maxRetries: 3 } });
-    mockSave.mockResolvedValue({ id: 'policy-1', spaceId: 'space-a' });
+const mocks = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  verifyPassword: vi.fn(),
+}));
+vi.mock('h3', async (importOriginal) => ({
+  ...(await importOriginal<typeof H3>()),
+  readBody: async (event: { body: unknown }) => event.body,
+}));
+vi.mock('better-auth/node', () => ({ fromNodeHeaders: (headers: ConstructorParameters<typeof Headers>[0]) => new Headers(headers) }));
+vi.mock('../../lib/auth', () => ({
+  auth: { api: { getSession: mocks.getSession, verifyPassword: mocks.verifyPassword } },
+}));
+// Load the Source Native store in Vitest's hoisted mock factory, not a stale workspace dist export.
+vi.mock('@balanceframe/workflow-store', async () =>
+  import('../../../../packages/workflow-store/src/index'));
+
+const OWNER = 'notification-policy-owner';
+const AGENT = 'notification-policy-agent';
+const ORIGIN = 'https://balanceframe.example.test';
+const SESSION_ID = 'notification-policy-session';
+const NOW = '2026-09-06T10:00:00.000Z';
+const ownerControl = {
+  method: 'human-session' as const,
+  actorId: OWNER,
+  sessionId: SESSION_ID,
+  reauthenticatedAt: NOW,
+};
+let directory = '';
+let store: SqliteWorkflowStore;
+let sequence = 0;
+let spaceId = '';
+let foreignSpaceId = '';
+let budgetId = '';
+
+function request(options: {
+  body?: unknown;
+  cookie?: string;
+  selectedSpace?: string;
+  auth?: Record<string, unknown>;
+} = {}) {
+  const headers = new Map<string, string | number | readonly string[]>();
+  const cookie = [`better-auth.session_token=${SESSION_ID}`, options.cookie].filter(Boolean).join('; ');
+  return {
+    body: options.body,
+    node: {
+      req: {
+        headers: {
+          origin: ORIGIN,
+          cookie,
+          'x-balanceframe-space': options.selectedSpace ?? spaceId,
+        },
+      },
+      res: {
+        statusCode: 200,
+        statusMessage: '',
+        headersSent: false,
+        setHeader(name: string, value: string | number | readonly string[]) {
+          headers.set(name.toLowerCase(), value);
+        },
+        getHeader(name: string) {
+          return headers.get(name.toLowerCase());
+        },
+        removeHeader(name: string) {
+          headers.delete(name.toLowerCase());
+        },
+      },
+    },
+    context: {
+      auth: options.auth ?? {
+        authenticated: true,
+        actorId: OWNER,
+        user: { id: OWNER },
+        method: 'session',
+        principalType: 'human',
+        sessionId: SESSION_ID,
+        impersonatedBy: null,
+      },
+      runtimeConfig: { workflowDbPath: join(directory, 'workflow.sqlite'), devBypassAuth: false },
+    },
+  } as unknown as H3.H3Event & EventWithContext;
+}
+
+function createSpace(selectedBudget: string, name: string) {
+  const created = store.governance.createSpace({
+    actorId: OWNER,
+    name,
+    kind: 'shared',
+    now: NOW,
+    auth: ownerControl,
   });
-
-  it('rejects an invalid body before checking authorization or mutating the store', async () => {
-    mockReadBody.mockRejectedValueOnce(new SyntaxError('invalid JSON'));
-    const event = { context: { auth: { authenticated: true, user: { id: 'user-1' } } } };
-
-    const response = await handler(event);
-
-    expect(response.status).toBe('error');
-    expect(response.error.code).toBe('INVALID_BODY');
-    expect(response.authorization).toBeNull();
-    expect(mockRequireAuthorization).not.toHaveBeenCalled();
-    expect(mockSave).not.toHaveBeenCalled();
+  return store.governance.bindBudget({
+    spaceId: created.id,
+    budgetId: selectedBudget,
+    now: NOW,
+    auth: ownerControl,
   });
+}
 
-  it('rejects a missing body space before checking authorization or mutating the store', async () => {
-    mockReadBody.mockResolvedValueOnce({ policy: { maxRetries: 3 } });
-    const event = { context: { auth: { authenticated: true, user: { id: 'user-1' } } } };
+function policy() {
+  return {
+    policyVersion: `policy-${sequence}`,
+    eligibility: [{
+      classifications: ['budget_alert'],
+      minSeverity: 'low',
+      requiredCapability: 'notification:receive',
+      requiredScope: `budget:${budgetId}`,
+    }],
+    recipients: [{ actorId: OWNER, channels: ['in_app'], quietHours: null }],
+    channels: [{ type: 'in_app', enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' }],
+    redaction: { sensitive: { visibleFields: ['title'] } },
+    maxRetries: 3,
+    defaultRedactionClass: 'sensitive',
+  };
+}
 
-    const response = await handler(event);
+async function issueCookie(): Promise<string> {
+  const event = request();
+  if (!(await issueReauthentication(event as unknown as ReauthenticationEvent, 'fixture-password')))
+    throw new Error('Fixture human reauthentication failed');
+  const header = event.node.res.getHeader('set-cookie');
+  const values = Array.isArray(header) ? header : [header];
+  const value = values.find((entry): entry is string => typeof entry === 'string' && entry.startsWith(`${REAUTH_COOKIE_NAME}=`));
+  if (!value) throw new Error('Reauthentication proof cookie was not issued');
+  return value.split(';', 1)[0]!;
+}
 
-    expect(response.status).toBe('error');
-    expect(response.error.code).toBe('MISSING_SPACE_ID');
-    expect(response.authorization).toBeNull();
-    expect(mockRequireAuthorization).not.toHaveBeenCalled();
-    expect(mockSave).not.toHaveBeenCalled();
-  });
+beforeAll(async () => {
+  directory = mkdtempSync(join(tmpdir(), 'notification-policy-'));
+  const opened = getWorkflowStore(request({ selectedSpace: '' }) as unknown as EventWithContext);
+  if ('error' in opened) throw new Error(opened.error);
+  store = opened.store;
+  await store.claimBootstrap({ name: 'Policy owner', email: 'policy-owner@example.test', claimId: 'notification-policy-fixture' });
+  await store.finalizeBootstrap({ claimId: 'notification-policy-fixture', ownerUserId: OWNER });
+  mocks.getSession.mockResolvedValue({ user: { id: OWNER }, session: { id: SESSION_ID, userId: OWNER } });
+  mocks.verifyPassword.mockResolvedValue({ status: true });
+});
 
-  it('rejects unauthorized callers after forwarding the body space to authorization', async () => {
-    const forbidden = { status: 'error', error: { code: 'FORBIDDEN' } };
-    mockRequireAuthorization.mockResolvedValueOnce({
-      ok: false,
-      info: null,
-      response: forbidden,
-    });
-    const event = { context: { auth: { authenticated: false } } };
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(NOW));
+  vi.stubEnv('BETTER_AUTH_SECRET', 'notification-policy-fixture-secret');
+  vi.stubEnv('BETTER_AUTH_URL', ORIGIN);
+  vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'false');
+  budgetId = `notification-policy-budget-${++sequence}`;
+  spaceId = createSpace(budgetId, `Selected notification space ${sequence}`).id;
+  foreignSpaceId = createSpace(`notification-policy-private-${sequence}`, `Foreign notification space ${sequence}`).id;
+});
 
-    const response = await handler(event);
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
-    expect(response).toBe(forbidden);
-    expect(mockReadBody).toHaveBeenCalledWith(event);
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(
-      event,
-      'notification:admin',
-      'space-a',
-    );
-    expect(mockSave).not.toHaveBeenCalled();
-  });
+afterAll(() => {
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
+});
 
-  it('allows a Better Auth session without auth spaceId when membership authorizes the body space', async () => {
-    const event = { context: { auth: { authenticated: true, user: { id: 'user-1' } } } };
-
-    const response = await handler(event);
-
+describe('POST /api/notifications/policy governed human control', () => {
+  it('saves a complete policy only after a fresh selected-space human proof', async () => {
+    const body = { spaceId, policy: policy() };
+    const cookie = await issueCookie();
+    const response = await handler(request({ body, cookie }));
     expect(response.status).toBe('ok');
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(
-      event,
-      'notification:admin',
-      'space-a',
-    );
-    expect(mockSave).toHaveBeenCalledWith(
-      expect.objectContaining({
-        spaceId: 'space-a',
-        policy: { maxRetries: 3 },
-      }),
-    );
-    expect(mockRequireAuthorization.mock.invocationCallOrder[0]).toBeLessThan(
-      mockSave.mock.invocationCallOrder[0],
-    );
+    expect(response.result).toMatchObject({ spaceId, policyKey: 'notification', policyVersion: `policy-${sequence}` });
+    expect(JSON.parse(response.result.policy)).toMatchObject(body.policy);
+    expect(await store.getNotificationPolicy(foreignSpaceId, 'notification')).toBeNull();
   });
 
-  it('allows an authorized caller to mutate policy in the requested space', async () => {
-    const event = {
-      context: { auth: { authenticated: true, actorId: 'actor-1', spaceId: 'space-a' } },
-    };
+  it('rejects missing, expired, and future reauthentication proofs without changing policy', async () => {
+    const body = { spaceId, policy: policy() };
+    const missing = await handler(request({ body }));
+    expect(missing.status).toBe('error');
+    expect(missing.error?.code).toBe('HUMAN_CONTROL_REQUIRED');
+    expect(await store.getNotificationPolicy(spaceId, 'notification')).toBeNull();
 
-    const response = await handler(event);
+    const staleCookie = await issueCookie();
+    vi.setSystemTime(new Date(Date.parse(NOW) + 301_000));
+    const stale = await handler(request({ body, cookie: staleCookie }));
+    expect(stale.status).toBe('error');
+    expect(stale.error?.code).toBe('HUMAN_CONTROL_REQUIRED');
+    expect(await store.getNotificationPolicy(spaceId, 'notification')).toBeNull();
 
-    expect(response.status).toBe('ok');
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(
-      event,
-      'notification:admin',
-      'space-a',
-    );
-    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'space-a' }));
+    vi.setSystemTime(new Date(Date.parse(NOW) + 60_000));
+    const futureCookie = await issueCookie();
+    vi.setSystemTime(new Date(NOW));
+    const future = await handler(request({ body, cookie: futureCookie }));
+    expect(future.status).toBe('error');
+    expect(future.error?.code).toBe('HUMAN_CONTROL_REQUIRED');
+    expect(await store.getNotificationPolicy(spaceId, 'notification')).toBeNull();
   });
 
-  it('returns the authorization denial for a restricted membership in the requested space', async () => {
-    mockReadBody.mockResolvedValueOnce({ spaceId: 'space-b', policy: {} });
-    const forbidden = { status: 'error', error: { code: 'FORBIDDEN' } };
-    mockRequireAuthorization.mockImplementationOnce(async (_event, _capability, spaceId) =>
-      spaceId === 'space-b'
-        ? { ok: false, info: null, response: forbidden }
-        : {
-            ok: true,
-            info: { actorId: 'actor-1', capability: 'notification:admin', allowed: true },
-          },
-    );
-    const event = { context: { auth: { authenticated: true, user: { id: 'user-1' } } } };
+  it('rejects foreign body authority and prevents delegation of human-controlled notification policy', async () => {
+    const cookie = await issueCookie();
+    const wrongSpace = await handler(request({
+      body: { spaceId: foreignSpaceId, policy: policy() },
+      cookie,
+    }));
+    expect(wrongSpace.status).toBe('error');
+    expect(wrongSpace.error?.code).toBe('SPACE_SCOPE_MISMATCH');
+    expect(await store.getNotificationPolicy(foreignSpaceId, 'notification')).toBeNull();
 
-    const response = await handler(event);
-
-    expect(response).toBe(forbidden);
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(
-      event,
-      'notification:admin',
-      'space-b',
-    );
-    expect(mockSave).not.toHaveBeenCalled();
-  });
-
-  it('returns a sanitized store failure after exact-scope authorization', async () => {
-    mockSave.mockRejectedValueOnce(new Error('database unavailable'));
-    const event = { context: { auth: { authenticated: true, user: { id: 'user-1' } } } };
-
-    const response = await handler(event);
-
-    expect(response.status).toBe('error');
-    expect(response.error.code).toBe('SAVE_FAILED');
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(
-      event,
-      'notification:admin',
-      'space-a',
-    );
-    expect(mockSave).toHaveBeenCalledOnce();
+    const ownerMembership = store.governance.getCurrentMembership({ spaceId, actorId: OWNER, now: NOW });
+    if (!ownerMembership) throw new Error('Owner fixture membership unavailable');
+    store.governance.registerAgent({ spaceId, agentId: AGENT, now: NOW, auth: ownerControl });
+    expect(() => store.governance.delegate({
+      spaceId,
+      agentId: AGENT,
+      issuerMembershipId: ownerMembership.id,
+      expectedVersion: null,
+      rights: [{ capability: 'policy:manage', resourceKind: 'space', resourceId: spaceId }],
+      validFrom: NOW,
+      now: NOW,
+      auth: ownerControl,
+    })).toThrow(Error);
+    expect(store.governance.listDelegations({ spaceId, agentId: AGENT })).toEqual([]);
+    expect(await store.getNotificationPolicy(spaceId, 'notification')).toBeNull();
   });
 });

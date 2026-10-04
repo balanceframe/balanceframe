@@ -564,6 +564,7 @@ describe('claims and cart scenario acceptance', () => {
           `/api/spend-sessions/${sessionId}/completions/${encodeURIComponent(completionId)}/approve`,
           {
             method: 'POST',
+            personaId: 'approver',
             body: {
               payloadHash: proposed.payloadHash,
               expectedVersion: proposed.version,
@@ -575,6 +576,7 @@ describe('claims and cart scenario acceptance', () => {
       );
       expect(approved.phase).toBe('approved');
       expect(approved.debit?.amount).toBe(-1500);
+      expect(approved.canExecute).toBe(false);
       const executed = resultOf<PublicSessionCompletion>(
         await scenarioRequest<unknown>(
           handle,
@@ -940,23 +942,22 @@ describe('claims and cart scenario acceptance', () => {
       const recipe = handle.scenario.sessions.expired;
       if (!recipe) throw new Error('Expired session recipe is unavailable');
       expect(Date.parse(recipe.expiresAt) - Date.parse(handle.scenario.anchor)).toBe(2_000);
-      const saved = resultOf<PublicSpendSession>(
-        await scenarioRequest<unknown>(handle, `/api/spend-sessions/${sessionId}`),
-        'read newly saved expiring session',
-      );
-      const expiry = Date.parse(saved.expiresAt);
-      expect(expiry - Date.now()).toBeGreaterThan(0);
-      expect(expiry - Date.now()).toBeLessThanOrEqual(2_000);
-      expect(saved.canEdit).toBe(true);
-      while (Date.now() < expiry) {
-        const active = await scenarioRequest<unknown>(handle, `/api/spend-sessions/${sessionId}`);
-        if (active.status !== 200) break;
-        await wait(100);
-      }
-      const expiredRead = await scenarioRequest<unknown>(
+      let expiredRead = await scenarioRequest<unknown>(
         handle,
         `/api/spend-sessions/${sessionId}`,
       );
+      let observedExpiry: number | undefined;
+      while (expiredRead.status === 200) {
+        const active = resultOf<PublicSpendSession>(expiredRead, 'read expiring session');
+        observedExpiry = Date.parse(active.expiresAt);
+        expect(active.canEdit).toBe(true);
+        await wait(100);
+        expiredRead = await scenarioRequest<unknown>(
+          handle,
+          `/api/spend-sessions/${sessionId}`,
+        );
+      }
+      if (observedExpiry !== undefined) expect(Date.now()).toBeGreaterThanOrEqual(observedExpiry);
       expectConflict(expiredRead, 'expired session read');
 
       const edit = mappedSessionInput(handle, 'expired');

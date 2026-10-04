@@ -200,7 +200,7 @@ export function normalizePayees(payees: APIPayeeEntity[]): Payee[] {
 // Rule normalization
 // ---------------------------------------------------------------------------
 
-export function normalizeRule(rule: RuleEntity): Rule {
+export function normalizeRule(rule: RuleEntity, order: number): Rule {
   // Derive a human-readable name from conditions when the rule's name is not set.
   // Rules created via BalanceFrame's sync protocol can't pass `name`, so the
   // name field in Actual is empty.  Fall back to the payee_name condition value.
@@ -214,15 +214,21 @@ export function normalizeRule(rule: RuleEntity): Rule {
   return {
     id: rule.id,
     name: (ruleAny.name as string) || derivedName,
-    order: (ruleAny.order as number) ?? 0,
-    trigger: rule.conditions,
+    order,
+    trigger: {
+      stage: rule.stage,
+      conditionsOp: rule.conditionsOp,
+      conditions: rule.conditions,
+    },
     actions: rule.actions,
     inactive: rule.tombstone ?? false,
   };
 }
 
 export function normalizeRules(rules: RuleEntity[]): Rule[] {
-  return rules.filter((r) => !r.tombstone).map(normalizeRule);
+  return rules
+    .filter((r) => !r.tombstone)
+    .map((rule, index) => normalizeRule(rule, index));
 }
 
 // ---------------------------------------------------------------------------

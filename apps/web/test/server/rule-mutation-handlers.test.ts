@@ -1,9 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { ResourceCapability } from '@balanceframe/workflow-store';
 import type * as Workflow from '../../server/utils/workflow-store';
 import type * as H3 from 'h3';
+import patchHandler from '../../server/api/rule/[id].patch';
+import removeHandler from '../../server/api/rule/[id].delete';
 
-const { connect } = vi.hoisted(() => ({ connect: vi.fn() }));
+const { withConnection, loadConfig } = vi.hoisted(() => ({
+  withConnection: vi.fn(),
+  loadConfig: vi.fn(),
+}));
+
 vi.mock('h3', async (original) => ({
   ...(await original<typeof H3>()),
   readBody: async (event: { body: unknown }) => {
@@ -11,258 +18,645 @@ vi.mock('h3', async (original) => ({
     return event.body;
   },
 }));
-vi.mock('../../server/utils/mutation-executor', () => ({
-  createMutationConnectionManager: () => ({ withConnection: connect }),
+vi.mock('@balanceframe/application', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  createDefaultConnectionManager: () => ({ loadConfig, withConnection }),
 }));
-interface RequestEvent {
+vi.mock('../../server/utils/mutation-executor', () => ({
+  createMutationConnectionManager: () => ({ loadConfig, withConnection }),
+}));
+vi.mock('@balanceframe/workflow-store', async () =>
+  import('../../../../packages/workflow-store/src/index'));
+import { getWorkflowStore } from '../../server/utils/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
+
+interface TestResponse {
+  statusCode: number;
+  statusMessage: string;
+  headersSent: boolean;
+  setHeader(name: string, value: string | string[]): TestResponse;
+  getHeader(name: string): string | string[] | undefined;
+  removeHeader(name: string): void;
+}
+interface RequestEvent extends EventWithContext {
   body: unknown;
-  node: { res: { statusCode: number; statusMessage: string } };
-  context: {
+  node: { req: { headers: Record<string, string> }; res: TestResponse };
+  context: EventWithContext['context'] & {
     params: { id: string };
-    auth: { authenticated: boolean; actorId: string };
-    runtimeConfig: { workflowDbPath: string };
+    auth: NonNullable<EventWithContext['context']['auth']>;
+    runtimeConfig: { workflowDbPath: string; devBypassAuth: false };
   };
 }
 type Handler = (event: RequestEvent) => Promise<Workflow.ApiEnvelope<Record<string, unknown>>>;
-let workflow: typeof Workflow;
-let store: SqliteWorkflowStore;
-let patch: Handler;
-let remove: Handler;
-let rules: Array<{ id: string; inactive: boolean }>;
-const ledger = {
-  listRules: vi.fn(async () => rules.map((rule) => ({ ...rule }))),
-  updateRule: vi.fn(async (id: string, fields: { inactive: boolean }) => {
-    const rule = rules.find((entry) => entry.id === id);
-    if (!rule) return { success: false };
-    rule.inactive = fields.inactive;
-    return { success: true };
-  }),
-  deleteRule: vi.fn(async (id: string) => {
-    rules = rules.filter((rule) => rule.id !== id);
-    return { success: true };
-  }),
-  synchronize: vi.fn(async () => {}),
+const patch = patchHandler as unknown as Handler;
+const remove = removeHandler as unknown as Handler;
+
+const actorId = 'rule-editor';
+const ownerId = 'rule-space-owner';
+let budgetId = '';
+const now = '2098-01-01T12:00:00.000Z';
+let fixtureSequence = 0;
+let bootstrapped = false;
+let actualVersion = '';
+const controlAuth = {
+  method: 'human-session' as const,
+  actorId: ownerId,
+  sessionId: `session:${ownerId}`,
+  reauthenticatedAt: now,
 };
-function event(body: unknown = { inactive: true }, id = 'rule-one'): RequestEvent {
-  return {
-    body,
-    node: { res: { statusCode: 200, statusMessage: '' } },
-    context: {
-      params: { id },
-      auth: { authenticated: true, actorId: 'rule-editor' },
-      runtimeConfig: { workflowDbPath: ':memory:' },
+const normalizedRule = {
+  id: 'rule-one',
+  name: 'Merchant category',
+  order: 1,
+  trigger: [{ field: 'category_group', op: 'is', value: 'food-group' }],
+  actions: [{ op: 'set', field: 'category', value: 'food' }],
+  inactive: false,
+  stage: null,
+  conditionsOp: 'and' as const,
+};
+const BASE_COMPOSITE = {
+  operations: [],
+  reallocations: [],
+  transferRecommendations: [],
+  ledgerProjections: [],
+  evidenceReferences: [],
+};
+
+type TestRule = Omit<typeof normalizedRule, 'trigger'> & { trigger: unknown[] };
+
+let store: SqliteWorkflowStore;
+let spaceId: string;
+let membershipId: string;
+let rules: TestRule[];
+const ledger = {
+  listRules: vi.fn(async () => rules.map((rule) => structuredClone(rule))),
+  updateRule: vi.fn(),
+  deleteRule: vi.fn(),
+  getRuleCategoryGroupMembers: vi.fn(async () => ({ 'food-group': ['food'] })),
+};
+
+function event(body: unknown = undefined, id = 'rule-one'): RequestEvent {
+  const responseHeaders = new Map<string, string | string[]>();
+  const response: TestResponse = {
+    statusCode: 200,
+    statusMessage: '',
+    headersSent: false,
+    setHeader(name, value) {
+      responseHeaders.set(name.toLowerCase(), value);
+      return response;
+    },
+    getHeader(name) {
+      return responseHeaders.get(name.toLowerCase());
+    },
+    removeHeader(name) {
+      responseHeaders.delete(name.toLowerCase());
     },
   };
+  return {
+    body,
+    node: {
+      req: {
+        headers: {
+          origin: 'https://balanceframe.example.test',
+          'x-balanceframe-space': spaceId,
+        },
+      },
+      res: response,
+    },
+    context: {
+      params: { id },
+      auth: {
+        authenticated: true,
+        actorId,
+        principalType: 'human',
+        method: 'session',
+        sessionId: `session:${actorId}`,
+        user: { id: actorId },
+      },
+      runtimeConfig: { workflowDbPath: ':memory:', devBypassAuth: false },
+    },
+  } as RequestEvent;
 }
+
+function provisionGrant(
+  capability: ResourceCapability,
+  resourceKind: 'budget' | 'rule' | 'category' | 'account',
+  resourceId: string,
+) {
+  return store.governance.provisionResourceGrant({
+    spaceId,
+    actorId,
+    membershipId,
+    budgetId,
+    capability,
+    resourceKind,
+    resourceId,
+    granted: true,
+    now,
+    auth: controlAuth,
+  });
+}
+
 beforeEach(async () => {
-  // These routes share a module-owned database; reloading isolates that singleton.
-  vi.resetModules();
-  vi.resetAllMocks();
-  workflow = await import('../../server/utils/workflow-store');
-  const result = workflow.getWorkflowStore(event());
-  if ('error' in result) throw new Error(result.error);
-  store = result.store;
-  await store.upsertActorMembership('rule-editor', 'active', ['rule:execute'], '*');
-  await store.setRuleOverride('rule-one', false);
-  await store.setRuleOverride('unrelated-rule', true);
-  patch = (await import('../../server/api/rule/[id].patch')).default as unknown as Handler;
-  remove = (await import('../../server/api/rule/[id].delete')).default as unknown as Handler;
-  rules = [
-    { id: 'rule-one', inactive: false },
-    { id: 'unrelated-rule', inactive: false },
-  ];
-  ledger.listRules.mockImplementation(async () => rules.map((rule) => ({ ...rule })));
-  ledger.updateRule.mockImplementation(async (id, fields) => {
-    const rule = rules.find((entry) => entry.id === id);
-    if (!rule) return { success: false };
-    rule.inactive = fields.inactive;
-    return { success: true };
+  vi.useFakeTimers();
+  vi.setSystemTime(now);
+  vi.clearAllMocks();
+  vi.stubEnv('BETTER_AUTH_URL', 'https://balanceframe.example.test');
+  spaceId = '';
+  budgetId = `rule-space-budget-${++fixtureSequence}`;
+  actualVersion = `actual-rule-version-${fixtureSequence}`;
+  const provider = getWorkflowStore(event() as EventWithContext);
+  if ('error' in provider) throw new Error(provider.error);
+  store = provider.store;
+  if (!bootstrapped) {
+    await store.claimBootstrap({ name: 'Owner', email: 'owner@example.com', claimId: 'rule-route-fixture' });
+    await store.finalizeBootstrap({ claimId: 'rule-route-fixture', ownerUserId: ownerId });
+    bootstrapped = true;
+  }
+  await store.upsertActorMembership(actorId, 'active', [], '');
+  const space = store.governance.createSpace({
+    actorId: ownerId,
+    name: `Rule route selected space ${fixtureSequence}`,
+    kind: 'shared',
+    now,
+    auth: controlAuth,
   });
-  ledger.deleteRule.mockImplementation(async (id) => {
-    rules = rules.filter((rule) => rule.id !== id);
-    return { success: true };
+  spaceId = space.id;
+  store.governance.bindBudget({ spaceId, budgetId, now, auth: controlAuth });
+  if (!store.governance.getPolicy({ spaceId })) {
+    store.governance.setPolicy({
+      spaceId,
+      expectedVersion: null,
+      policy: { minimumApprovers: 1, approvalThresholds: [] },
+      now,
+      auth: controlAuth,
+    });
+  }
+  const membership = store.governance.addMembership({
+    spaceId,
+    actorId,
+    validFrom: now,
+    now,
+    auth: controlAuth,
   });
-  ledger.synchronize.mockResolvedValue(undefined);
-  connect.mockImplementation(async (operation) => operation({ connector: ledger }));
-});
-afterEach(() => {
-  vi.restoreAllMocks();
-  store.close();
+  membershipId = membership.id;
+  for (const [kind, id] of [
+    ['budget', budgetId],
+    ['rule', normalizedRule.id],
+    ['category', 'food'],
+  ] as const) {
+    await provisionGrant('rule:propose', kind, id);
+  }
+  for (const capability of ['observe', 'full-read'] as const)
+    await provisionGrant(capability, 'budget', budgetId);
+
+  rules = [structuredClone(normalizedRule)];
+  loadConfig.mockResolvedValue({ budgetId });
+  withConnection.mockImplementation(async (operation) => operation({
+    config: { budgetId },
+    budget: { id: budgetId },
+    connector: ledger,
+    synchronization: {
+      snapshot: {
+        schemaVersion: '1',
+        actualVersion,
+        snapshotDate: now,
+        actualDownloadedAt: now,
+        bankSyncedAt: null,
+        encrypted: false,
+        unlocked: true,
+      },
+      financialSnapshot: {
+        legacySnapshot: {
+          accounts: [{ id: 'rule-account', name: 'Checking' }],
+          categories: [{ id: 'food', name: 'Food' }],
+          transactions: [],
+        },
+      },
+    },
+  }));
 });
 
-describe.each(['patch', 'delete'] as const)('rule %s boundary', (operation) => {
-  const invoke = (request: RequestEvent) =>
-    operation === 'patch' ? patch(request) : remove(request);
-  it.each([
-    { status: 'active', capabilities: ['observe'], scope: '*' },
-    { status: 'revoked', capabilities: ['rule:execute'], scope: '*' },
-    { status: 'active', capabilities: ['rule:execute'], scope: 'budget:another' },
-  ] as const)(
-    'denies $status membership with $capabilities in $scope before ledger access',
-    async ({ status, capabilities, scope }) => {
-      await store.upsertActorMembership('rule-editor', status, [...capabilities], scope);
-      const request = event();
-      expect((await invoke(request)).error?.code).toBe('FORBIDDEN');
-      expect(request.node.res.statusCode).toBe(403);
-      expect(connect).not.toHaveBeenCalled();
-      expect(await store.getRuleOverrides()).toEqual(
-        new Map([
-          ['rule-one', false],
-          ['unrelated-rule', true],
-        ]),
-      );
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+afterAll(() => store.close());
+
+describe('governed rule proposal routes', () => {
+  it('requires exact selected-space rule and budget proposal grants before reading rule fields', async () => {
+    store.governance.setResourceGrant({
+      spaceId,
+      actorId,
+      membershipId,
+      budgetId,
+      capability: 'rule:propose',
+      resourceKind: 'rule',
+      resourceId: normalizedRule.id,
+      granted: false,
+      now,
+      auth: controlAuth,
+    });
+
+    const response = await patch(event({ inactive: true }));
+
+    expect(response.status).toBe('error');
+    expect(withConnection).not.toHaveBeenCalled();
+    expect(ledger.listRules).not.toHaveBeenCalled();
+    expect(ledger.updateRule).not.toHaveBeenCalled();
+    expect(loadConfig).not.toHaveBeenCalled();
+  });
+
+  it.each(['update_rule', 'delete_rule'] as const)(
+    'preserves Native exact account scope for %s proposals',
+    async (operation) => {
+      const scopedRule = {
+        ...normalizedRule,
+        trigger: [
+          { field: 'account', op: 'is', value: 'rule-account' },
+          { field: 'payee_name', op: 'is', value: 'Market' },
+        ],
+        conditionsOp: 'and' as const,
+      };
+      rules = [structuredClone(scopedRule)];
+      provisionGrant('rule:propose', 'account', 'rule-account');
+      for (const [kind, id] of [
+        ['budget', budgetId],
+        ['rule', normalizedRule.id],
+      ] as const)
+        store.governance.setResourceGrant({
+          spaceId,
+          actorId,
+          membershipId,
+          budgetId,
+          capability: 'rule:propose',
+          resourceKind: kind,
+          resourceId: id,
+          granted: true,
+          restrictions: {
+            accountIds: ['rule-account'],
+            operations: [operation],
+            proposalOnly: true,
+            maxOperationCount: 1,
+          },
+          now,
+          auth: controlAuth,
+        });
+      store.governance.setResourceGrant({
+        spaceId,
+        actorId,
+        membershipId,
+        budgetId,
+        capability: 'full-read',
+        resourceKind: 'budget',
+        resourceId: budgetId,
+        granted: false,
+        now,
+        auth: controlAuth,
+      });
+      const request = operation === 'update_rule'
+        ? event({ inactive: true })
+        : event(undefined);
+      const response = operation === 'update_rule'
+        ? await patch(request)
+        : await remove(request);
+
+      expect(response.status).toBe('ok');
+      expect(response.error).toBeNull();
+      const proposalView = response.result.proposal as Record<string, unknown>;
+      expect(proposalView).toMatchObject({
+        operation,
+        privateEnvelopeVisible: false,
+        payload: null,
+        preconditions: null,
+      });
+      const persisted = await store.getProposal(proposalView.id as string);
+      expect(JSON.parse(persisted!.preconditions)).toMatchObject({ rule: scopedRule });
+      expect(loadConfig).toHaveBeenCalledOnce();
+      expect(ledger.listRules).toHaveBeenCalledOnce();
+      expect(ledger.updateRule).not.toHaveBeenCalled();
+      expect(ledger.deleteRule).not.toHaveBeenCalled();
     },
   );
-  it('rejects missing route identifiers without touching the ledger', async () => {
-    const request = event({ inactive: true }, '');
-    expect((await invoke(request)).error?.code).toBe('MISSING_RULE_ID');
-    expect(request.node.res.statusCode).toBe(400);
-    expect(connect).not.toHaveBeenCalled();
-  });
-  it('fails closed when the store disappears after authorization', async () => {
-    vi.spyOn(workflow, 'getWorkflowStore').mockReturnValue({ error: 'Store unavailable' });
-    const request = event();
-    expect((await invoke(request)).error?.code).toBe('STORE_UNAVAILABLE');
-    expect(request.node.res.statusCode).toBe(503);
-    expect(connect).not.toHaveBeenCalled();
-  });
-  it('returns a recoverable missing connection failure without clearing local state', async () => {
-    connect.mockRejectedValue(Object.assign(new Error('not selected'), { code: 'not_connected' }));
-    const request = event();
-    expect((await invoke(request)).error).toMatchObject({ code: 'not_connected', retryable: true });
-    expect(request.node.res.statusCode).toBe(503);
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-  it('does not clear the override after failed post-write synchronization', async () => {
-    ledger.synchronize.mockRejectedValue(new Error('sync conflict'));
-    const request = event();
-    expect((await invoke(request)).error).toMatchObject({ code: 'SYNC_FAILED', retryable: true });
-    expect(request.node.res.statusCode).toBe(500);
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-  it('does not clear the override when post-write verification cannot read the ledger', async () => {
-    if (operation === 'patch') ledger.listRules.mockResolvedValueOnce(rules);
-    ledger.listRules.mockRejectedValue(new Error('read failed'));
-    const request = event();
-    expect((await invoke(request)).error?.code).toBe('VERIFICATION_FAILED');
-    expect(request.node.res.statusCode).toBe(500);
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-  it('returns verified success even if cleanup of an obsolete override fails', async () => {
-    vi.spyOn(store, 'removeRuleOverride').mockRejectedValue(new Error('store busy'));
-    const response = await invoke(event());
-    expect(response.status).toBe('ok');
-    expect(rules.find((rule) => rule.id === 'rule-one')).toEqual(
-      operation === 'patch' ? { id: 'rule-one', inactive: true } : undefined,
-    );
-    expect((await store.getRuleOverrides()).get('unrelated-rule')).toBe(true);
-  });
-  it('accepts the canonical rule:execute grant and clears only the verified rule override', async () => {
-    const response = await invoke(event());
-    expect(response.status).toBe('ok');
-    expect(rules.find((rule) => rule.id === 'rule-one')).toEqual(
-      operation === 'patch' ? { id: 'rule-one', inactive: true } : undefined,
-    );
-    expect(await store.getRuleOverrides()).toEqual(new Map([['unrelated-rule', true]]));
-  });
-  it('reports thrown ledger writes without removing the local override', async () => {
-    (operation === 'patch' ? ledger.updateRule : ledger.deleteRule).mockRejectedValue(
-      new Error('write failed'),
-    );
-    const request = event();
-    expect((await invoke(request)).error?.code).toBe(
-      operation === 'patch' ? 'RULE_UPDATE_FAILED' : 'RULE_DELETE_FAILED',
-    );
-    expect(request.node.res.statusCode).toBe(500);
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-});
 
-describe('PATCH verified inactive state', () => {
-  it('rejects JSON null with 400 before any ledger mutation', async () => {
-    const request = event(null);
-    expect((await patch(request)).error?.code).toBe('INVALID_BODY');
-    expect(request.node.res.statusCode).toBe(400);
-    expect(connect).not.toHaveBeenCalled();
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
+  it('correlates private rule inspection audit with the trusted response request', async () => {
+    const request = event({ inactive: true });
+    request.node.req.headers['x-balanceframe-request-id'] = 'untrusted-request-correlation';
+
+    const response = await patch(request);
+
+    expect(response.status).toBe('ok');
+    expect(response.requestId).not.toBe('untrusted-request-correlation');
+    expect(request.node.res.getHeader('X-BalanceFrame-Request-ID')).toBe(response.requestId);
+    const records = await store.queryAuditRecords('authorization_check', 100);
+    const inspection = records.find((record) => {
+      const result = JSON.parse(record.result) as Record<string, unknown>;
+      return record.requestId === response.requestId &&
+        record.operation === 'update_rule' &&
+        result.resourceKind === 'rule' &&
+        result.resourceId === normalizedRule.id;
+    });
+    expect(inspection).toMatchObject({
+      actorId,
+      budgetId,
+      requestId: response.requestId,
+      correlationId: response.requestId,
+      policyVersion: store.governance.getPolicy({ spaceId })!.version,
+    });
+    expect(JSON.parse(inspection!.result)).toMatchObject({
+      spaceId,
+      membershipId,
+      capability: 'rule:propose',
+    });
+    expect(JSON.stringify(inspection)).not.toContain(normalizedRule.name);
+    expect(JSON.stringify(inspection)).not.toContain(`session:${actorId}`);
   });
+
   it.each([
-    { body: new SyntaxError('invalid JSON'), status: 400, code: 'INVALID_BODY' },
-    { body: {}, status: 422, code: 'INVALID_FIELD' },
-    { body: { inactive: 'true' }, status: 422, code: 'INVALID_FIELD' },
-  ])('rejects invalid input with $status before reading rules', async ({ body, status, code }) => {
-    const request = event(body);
-    expect((await patch(request)).error?.code).toBe(code);
-    expect(request.node.res.statusCode).toBe(status);
-    expect(connect).not.toHaveBeenCalled();
-  });
-  it('cannot update an absent rule', async () => {
-    const request = event({ inactive: true }, 'missing');
-    expect((await patch(request)).error?.code).toBe('RULE_NOT_FOUND');
-    expect(request.node.res.statusCode).toBe(404);
-    expect(ledger.updateRule).not.toHaveBeenCalled();
-  });
-  it('fails before mutation when the initial ledger read fails', async () => {
-    ledger.listRules.mockRejectedValue(new Error('read unavailable'));
-    const request = event();
-    expect((await patch(request)).error?.code).toBe('LEDGER_READ_FAILED');
-    expect(request.node.res.statusCode).toBe(503);
-    expect(ledger.updateRule).not.toHaveBeenCalled();
-  });
-  it('rejects an explicit failed connector result', async () => {
-    ledger.updateRule.mockResolvedValue({ success: false });
-    expect((await patch(event())).error?.code).toBe('RULE_UPDATE_FAILED');
-    expect(rules[0]?.inactive).toBe(false);
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-  it('detects a connector that reports success without persisting the requested value', async () => {
-    ledger.updateRule.mockResolvedValue({ success: true });
-    expect((await patch(event())).error).toMatchObject({
-      code: 'RULE_UPDATE_FAILED',
-      retryable: true,
+    ['zero budget operation allowance', 'budget', {
+      accountIds: ['rule-account'],
+      operations: ['update_rule'],
+      proposalOnly: true,
+      maxOperationCount: 0,
+    }],
+    ['wrong budget operation allowance', 'budget', {
+      accountIds: ['rule-account'],
+      operations: ['delete_rule'],
+      proposalOnly: true,
+      maxOperationCount: 1,
+    }],
+    ['zero rule operation allowance', 'rule', {
+      accountIds: ['rule-account'],
+      operations: ['update_rule'],
+      proposalOnly: true,
+      maxOperationCount: 0,
+    }],
+    ['wrong rule operation allowance', 'rule', {
+      accountIds: ['rule-account'],
+      operations: ['delete_rule'],
+      proposalOnly: true,
+      maxOperationCount: 1,
+    }],
+  ] as const)('denies scoped update proposals with %s before proposal output', async (_name, resourceKind, restrictions) => {
+    const scopedRule = {
+      ...normalizedRule,
+      trigger: [
+        { field: 'account', op: 'is', value: 'rule-account' },
+        { field: 'payee_name', op: 'is', value: 'Market' },
+      ],
+      conditionsOp: 'and' as const,
+    };
+    rules = [structuredClone(scopedRule)];
+    provisionGrant('rule:propose', 'account', 'rule-account');
+    store.governance.setResourceGrant({
+      spaceId,
+      actorId,
+      membershipId,
+      budgetId,
+      capability: 'rule:propose',
+      resourceKind,
+      resourceId: resourceKind === 'budget' ? budgetId : normalizedRule.id,
+      granted: true,
+      restrictions,
+      now,
+      auth: controlAuth,
     });
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-  it('reports concurrent deletion during update verification as nonretryable', async () => {
-    ledger.synchronize.mockImplementation(async () => {
-      rules = [];
-    });
-    expect((await patch(event())).error).toMatchObject({
-      code: 'VERIFICATION_FAILED',
-      retryable: false,
-    });
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-});
+    const before = (await store.listProposals()).map(({ id }) => id).sort();
 
-describe('DELETE verified absence', () => {
-  it('preserves the override when a schedule prevents deletion', async () => {
-    ledger.deleteRule.mockResolvedValue({
-      success: false,
-      code: 'RULE_HAS_SCHEDULE',
-      error: 'Scheduled rule',
-    });
-    expect((await remove(event())).error).toMatchObject({
-      code: 'RULE_HAS_SCHEDULE',
-      retryable: false,
-    });
-    expect(rules.find((rule) => rule.id === 'rule-one')).toBeDefined();
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
+    const response = await patch(event({ inactive: true }));
+
+    expect(response.status).toBe('error');
+    expect((await store.listProposals()).map(({ id }) => id).sort()).toEqual(before);
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect(withConnection).not.toHaveBeenCalled();
+    expect(ledger.listRules).not.toHaveBeenCalled();
+    expect(ledger.updateRule).not.toHaveBeenCalled();
+    expect(ledger.deleteRule).not.toHaveBeenCalled();
   });
-  it('does not confuse a successful connector response with verified absence', async () => {
-    ledger.deleteRule.mockResolvedValue({ success: true });
-    expect((await remove(event())).error).toMatchObject({
-      code: 'VERIFICATION_FAILED',
-      retryable: true,
+
+  it('conceals an inaccessible rule baseline like an unknown rule before private reads', async () => {
+    store.governance.setResourceGrant({
+      spaceId,
+      actorId,
+      membershipId,
+      budgetId,
+      capability: 'rule:propose',
+      resourceKind: 'rule',
+      resourceId: normalizedRule.id,
+      granted: false,
+      now,
+      auth: controlAuth,
     });
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
-  });
-  it('provides the retryable deletion failure when the connector supplies no error code', async () => {
-    ledger.deleteRule.mockResolvedValue({ success: false });
-    expect((await remove(event())).error).toMatchObject({
-      code: 'RULE_DELETE_FAILED',
-      retryable: true,
+    store.governance.setResourceGrant({
+      spaceId,
+      actorId,
+      membershipId,
+      budgetId,
+      capability: 'full-read',
+      resourceKind: 'budget',
+      resourceId: budgetId,
+      granted: false,
+      now,
+      auth: controlAuth,
     });
-    expect((await store.getRuleOverrides()).has('rule-one')).toBe(true);
+    const inaccessibleEvent = event({ inactive: true });
+    const inaccessible = await patch(inaccessibleEvent);
+    const unknownEvent = event({ inactive: true }, 'unknown-rule');
+    const unknown = await patch(unknownEvent);
+
+    expect({
+      status: inaccessibleEvent.node.res.statusCode,
+      code: inaccessible.error?.code,
+      message: inaccessible.error?.message,
+      authorization: inaccessible.authorization,
+    }).toEqual({
+      status: unknownEvent.node.res.statusCode,
+      code: unknown.error?.code,
+      message: unknown.error?.message,
+      authorization: unknown.authorization,
+    });
+    expect(inaccessibleEvent.node.res.statusCode).toBe(403);
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect(withConnection).not.toHaveBeenCalled();
+    expect(ledger.listRules).not.toHaveBeenCalled();
   });
+
+  it('creates a pending BalanceFrame pause proposal from complete current rule and override facts', async () => {
+    const currentOverride = await store.setRuleOverride({
+      spaceId,
+      budgetId,
+      ruleId: normalizedRule.id,
+      inactive: false,
+      expectedVersion: null,
+    });
+
+    const response = await patch(event({ inactive: true }));
+    expect(response.error).toBeNull();
+    expect(response.status).toBe('ok');
+    expect(withConnection).toHaveBeenCalledWith(expect.any(Function), {
+      expectedBudgetId: budgetId,
+      dispose: true,
+    });
+    const pending = response.result;
+    const proposal = pending.proposal as Record<string, unknown>;
+    const preconditions = proposal.preconditions as Record<string, unknown>;
+
+    expect(pending).toMatchObject({ state: 'approval_required', applied: false, verified: false });
+    expect(proposal).toMatchObject({
+      operation: 'update_rule',
+      payload: { kind: 'update_rule', ruleId: normalizedRule.id, inactive: true },
+    });
+    expect(preconditions.rule).toEqual(normalizedRule);
+    expect(preconditions.categoryGroupMembers).toEqual({ 'food-group': ['food'] });
+    expect(preconditions.override).toEqual(currentOverride);
+    expect(preconditions.actualVersion).toBe(actualVersion);
+    expect(Object.keys(preconditions.rule as Record<string, unknown>).sort()).toEqual([
+      'actions', 'conditionsOp', 'id', 'inactive', 'name', 'order', 'stage', 'trigger',
+    ]);
+    expect(proposal.payload).toMatchObject({ composite: BASE_COMPOSITE });
+    expect(ledger.listRules).toHaveBeenCalledTimes(1);
+    expect(ledger.updateRule).not.toHaveBeenCalled();
+    expect(ledger.deleteRule).not.toHaveBeenCalled();
+    expect(await store.getRuleOverride({ spaceId, budgetId, ruleId: normalizedRule.id })).toEqual(currentOverride);
+  });
+  it.each(['oneOf', 'notOneOf'] as const)(
+    'captures complete group membership for the Actual category-group %s predicate',
+    async (op) => {
+      const trigger = [{ field: 'category_group', op, value: ['food-group', 'home-group'] }];
+      const members = { 'food-group': ['food'], 'home-group': ['transport'] };
+      await provisionGrant('rule:propose', 'category', 'transport');
+      rules = [{ ...normalizedRule, trigger }];
+      ledger.getRuleCategoryGroupMembers.mockResolvedValueOnce(members);
+
+      const response = await patch(event({ inactive: true }));
+
+      expect(response.status).toBe('ok');
+      const proposal = response.result.proposal as Record<string, unknown>;
+      const preconditions = proposal.preconditions as Record<string, unknown>;
+      expect(preconditions.rule).toMatchObject({ trigger });
+      expect(preconditions.categoryGroupMembers).toEqual(members);
+      expect(ledger.getRuleCategoryGroupMembers).toHaveBeenCalledTimes(1);
+      expect(ledger.updateRule).not.toHaveBeenCalled();
+      expect(ledger.deleteRule).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['contains', 'doesNotContain', 'matches'] as const)(
+    'does not look up a category-group name pattern for %s',
+    async (op) => {
+      rules = [{
+        ...normalizedRule,
+        trigger: [{ field: 'category_group', op, value: 'Household' }],
+      }];
+
+      const response = await patch(event({ inactive: true }));
+
+      expect(response.status).toBe('ok');
+      const preconditions = response.result.proposal.preconditions as Record<string, unknown>;
+      expect(preconditions.categoryGroupMembers).toBeUndefined();
+      expect(ledger.getRuleCategoryGroupMembers).not.toHaveBeenCalled();
+    },
+  );
+
+
+  it('creates a pending resume proposal without clearing the current override', async () => {
+    const currentOverride = await store.setRuleOverride({
+      spaceId,
+      budgetId,
+      ruleId: normalizedRule.id,
+      inactive: true,
+      expectedVersion: null,
+    });
+
+    const response = await patch(event({ inactive: false }));
+    expect(response.status).toBe('ok');
+    const pending = response.result;
+    const proposal = pending.proposal as Record<string, unknown>;
+    const preconditions = proposal.preconditions as Record<string, unknown>;
+
+    expect(pending).toMatchObject({ state: 'approval_required', applied: false, verified: false });
+    expect(proposal).toMatchObject({
+      operation: 'update_rule',
+      payload: { kind: 'update_rule', ruleId: normalizedRule.id, inactive: false },
+    });
+    expect(preconditions.rule).toEqual(normalizedRule);
+    expect(preconditions.override).toEqual(currentOverride);
+    expect(ledger.updateRule).not.toHaveBeenCalled();
+    expect(ledger.deleteRule).not.toHaveBeenCalled();
+    expect(await store.getRuleOverride({ spaceId, budgetId, ruleId: normalizedRule.id })).toEqual(currentOverride);
+  });
+
+  it('creates a pending Actual deletion proposal without deleting the rule or clearing its override', async () => {
+    const currentOverride = await store.setRuleOverride({
+      spaceId,
+      budgetId,
+      ruleId: normalizedRule.id,
+      inactive: true,
+      expectedVersion: null,
+    });
+
+    const response = await remove(event());
+    expect(response.status).toBe('ok');
+    const pending = response.result;
+    const proposal = pending.proposal as Record<string, unknown>;
+    const preconditions = proposal.preconditions as Record<string, unknown>;
+
+    expect(pending).toMatchObject({ state: 'approval_required', applied: false, verified: false });
+    expect(proposal).toMatchObject({
+      operation: 'delete_rule',
+      payload: { kind: 'delete_rule', ruleId: normalizedRule.id },
+    });
+    expect(preconditions.rule).toEqual(normalizedRule);
+    expect(preconditions.categoryGroupMembers).toEqual({ 'food-group': ['food'] });
+    expect(preconditions.actualVersion).toBe(actualVersion);
+    expect(Object.keys(preconditions.rule as Record<string, unknown>).sort()).toEqual([
+      'actions', 'conditionsOp', 'id', 'inactive', 'name', 'order', 'stage', 'trigger',
+    ]);
+    expect(proposal.payload).toMatchObject({ composite: BASE_COMPOSITE });
+    expect(preconditions.override).toEqual(currentOverride);
+    expect(ledger.listRules).toHaveBeenCalledTimes(1);
+    expect(ledger.deleteRule).not.toHaveBeenCalled();
+    expect(await store.getRuleOverride({ spaceId, budgetId, ruleId: normalizedRule.id })).toEqual(currentOverride);
+  });
+  it('records an explicit null override snapshot when none exists', async () => {
+    const response = await remove(event());
+
+    expect(response.status).toBe('ok');
+    const proposal = response.result.proposal as Record<string, unknown>;
+    const preconditions = proposal.preconditions as Record<string, unknown>;
+    expect(preconditions.override).toBeNull();
+    expect(await store.getRuleOverride({ spaceId, budgetId, ruleId: normalizedRule.id })).toBeNull();
+  });
+
+  it('rejects unresolved category-group members instead of guessing a partial set', async () => {
+    ledger.getRuleCategoryGroupMembers.mockResolvedValueOnce({});
+    const response = await patch(event({ inactive: true }));
+
+    expect(response.status).toBe('error');
+    expect(await store.countProposals({ budgetId, operations: ['update_rule'] })).toBe(0);
+  });
+
+
+  it('rejects non-canonical mutation bodies before opening a ledger connection', async () => {
+    const update = await patch(event({ inactive: true, spaceId }));
+    const deletion = await remove(event({ ruleId: normalizedRule.id }));
+
+    expect(update.status).toBe('error');
+    expect(deletion.status).toBe('error');
+    expect(withConnection).not.toHaveBeenCalled();
+    expect(ledger.listRules).not.toHaveBeenCalled();
+    expect(loadConfig).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the Actual rule lacks its complete stage/operator snapshot', async () => {
+    const incomplete = structuredClone(normalizedRule);
+    Reflect.deleteProperty(incomplete, 'stage');
+    Reflect.deleteProperty(incomplete, 'conditionsOp');
+    rules = [incomplete];
+
+    const response = await patch(event({ inactive: false }));
+
+    expect(response.status).toBe('error');
+    expect(ledger.updateRule).not.toHaveBeenCalled();
+    expect(ledger.deleteRule).not.toHaveBeenCalled();
+    expect(await store.countProposals({ budgetId, operations: ['update_rule'] })).toBe(0);
+  });
+
 });

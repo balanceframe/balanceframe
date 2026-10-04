@@ -4,6 +4,14 @@
       <h1 class="text-xl font-bold">Rules</h1>
       <div class="flex items-center gap-2">
         <UButton
+          v-if="pendingRuleProposal"
+          label="Review pending rule proposal"
+          color="primary"
+          variant="solid"
+          size="sm"
+          @click="showProposalModal = true"
+        />
+        <UButton
           variant="ghost"
           color="neutral"
           size="sm"
@@ -60,12 +68,21 @@
         </div>
       </div>
     </template>
+    <ProposedRulesModal
+      :open="showProposalModal"
+      :proposals="[]"
+      :proposal-approval-views="[]"
+      :initial-proposal="pendingRuleProposal"
+      @accepted="handleRuleProposalAccepted"
+      @close="showProposalModal = false"
+    />
   </UContainer>
 </template>
 
 <script setup lang="ts">
 import { authClient } from '../../lib/auth-client';
-
+import { isProposalApprovalView } from '../../types/review-client';
+import type { ProposalApprovalView } from '../../server/utils/proposal-approval-view';
 interface RuleListItem {
   readonly id: string;
   readonly name: string;
@@ -86,6 +103,12 @@ interface RuleShowResult {
   readonly actions: unknown;
   readonly inactive: boolean;
 }
+interface RuleMutationResult {
+  readonly proposal?: unknown;
+  readonly applied?: boolean;
+  readonly verified?: boolean;
+}
+
 
 interface ApiEnvelope<T> {
   readonly schemaVersion: string;
@@ -95,8 +118,12 @@ interface ApiEnvelope<T> {
   readonly error: { code: string; message: string; retryable: boolean } | null;
   readonly auth: unknown;
 }
+const pendingRuleProposal = ref<ProposalApprovalView | null>(null);
+const showProposalModal = ref(false);
+
 
 const config = useRuntimeConfig();
+const toast = useToast();
 const apiBase = config.public.apiBase || (import.meta.client ? window.location.origin : '');
 
 const rules = ref<RuleListResult | null>(null);
@@ -161,34 +188,21 @@ async function handleSignOut() {
 }
 
 async function handleToggleRule(id: string, inactive: boolean) {
+  if (pendingRuleProposal.value) {
+    showProposalModal.value = true;
+    return;
+  }
   try {
-    const res = await $fetch<ApiEnvelope<{ updated: boolean }>>(`/api/rule/${id}`, {
+    const res = await $fetch<ApiEnvelope<RuleMutationResult>>(`/api/rule/${id}`, {
       method: 'PATCH',
       baseURL: apiBase || undefined,
       credentials: 'same-origin',
       body: { inactive },
     });
-    if (res.status === 'ok') {
-      const toast = useToast();
-      toast.add({
-        title: `Rule ${inactive ? 'deactivated' : 'activated'}`,
-        color: 'success',
-        duration: 5000,
-      });
-      await loadRules();
-    } else {
-      const toast = useToast();
-      toast.add({
-        title: 'Failed to update rule',
-        description: res.error?.message ?? 'Unknown error',
-        color: 'error',
-        duration: 10000,
-      });
-    }
+    retainPendingProposal(res, id, 'update_rule', inactive);
   } catch (e) {
-    const toast = useToast();
     toast.add({
-      title: 'Failed to update rule',
+      title: 'Failed to propose BalanceFrame classification change',
       description: e instanceof Error ? e.message : 'Connection error',
       color: 'error',
       duration: 10000,
@@ -196,36 +210,66 @@ async function handleToggleRule(id: string, inactive: boolean) {
   }
 }
 async function handleDeleteRule(id: string) {
-  // Confirm first
-  const confirmed = window.confirm('Are you sure you want to delete this rule?');
+  if (pendingRuleProposal.value) {
+    showProposalModal.value = true;
+    return;
+  }
+  const confirmed = window.confirm(
+    'Delete this rule from Actual? This starts a separate human-approved deletion. The rule remains in Actual until the proposal is explicitly executed.',
+  );
   if (!confirmed) return;
   try {
-    const res = await $fetch<ApiEnvelope<{ deleted: boolean }>>(`/api/rule/${id}`, {
+    const res = await $fetch<ApiEnvelope<RuleMutationResult>>(`/api/rule/${id}`, {
       method: 'DELETE',
       baseURL: apiBase || undefined,
       credentials: 'same-origin',
     });
-    if (res.status === 'ok') {
-      const toast = useToast();
-      toast.add({ title: 'Rule deleted', color: 'success', duration: 5000 });
-      await loadRules();
-    } else {
-      const toast = useToast();
-      toast.add({
-        title: 'Failed to delete rule',
-        description: res.error?.message ?? 'Unknown error',
-        color: 'error',
-        duration: 10000,
-      });
-    }
+    retainPendingProposal(res, id, 'delete_rule');
   } catch (e) {
-    const toast = useToast();
     toast.add({
-      title: 'Failed to delete rule',
+      title: 'Failed to propose Actual rule deletion',
       description: e instanceof Error ? e.message : 'Connection error',
       color: 'error',
       duration: 10000,
     });
   }
+}
+
+function retainPendingProposal(
+  response: ApiEnvelope<RuleMutationResult>,
+  ruleId: string,
+  operation: 'update_rule' | 'delete_rule',
+  inactive?: boolean,
+): void {
+  const result = response.result;
+  const proposal = result?.proposal;
+  if (
+    response.status !== 'ok' ||
+    !result ||
+    result.applied !== false ||
+    result.verified !== false ||
+    !isProposalApprovalView(proposal) ||
+    proposal.operation !== operation ||
+    proposal.disposition !== 'approval_required' ||
+    proposal.payload === null ||
+    !('ruleId' in proposal.payload) ||
+    proposal.payload.kind !== operation ||
+    proposal.payload.ruleId !== ruleId ||
+    (operation === 'update_rule' &&
+      (!('inactive' in proposal.payload) || proposal.payload.inactive !== inactive))
+  ) {
+    throw new Error(
+      response.error?.message ?? 'The server did not return an exact pending rule proposal.',
+    );
+  }
+  pendingRuleProposal.value = proposal;
+  showProposalModal.value = true;
+}
+
+async function handleRuleProposalAccepted(proposalId: string): Promise<void> {
+  if (pendingRuleProposal.value?.id !== proposalId) return;
+  pendingRuleProposal.value = null;
+  showProposalModal.value = false;
+  await loadRules();
 }
 </script>

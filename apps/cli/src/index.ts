@@ -1,78 +1,26 @@
 /**
  * @balanceframe/cli — BalanceFrame CLI tool.
  *
- * Entry point for the CLI. Parses arguments, routes commands through the
- * application layer, and prints versioned JSON envelopes to stdout.
+ * Parses CLI commands and sends governed operations to the authenticated
+ * BalanceFrame server. Financial and governance authority remains server-side.
  *
  * Usage:
  *   balanceframe transactions pending-review --json
  *   balanceframe reviews show REVIEW_ID --json
- *   balanceframe budget summary --json
- *   balanceframe disconnect
+ *   balanceframe proposals approve PROPOSAL_ID --payload-hash HASH --json
+ *   balanceframe reviews approve-bulk REVIEW_ID... --payload-hashes JSON --json
+ *   balanceframe spaces policy set --expected-version VERSION --policy JSON --json
  *   balanceframe export --json
- *   balanceframe remove-connection
  */
 
-import {
-  routeCommand,
-  pendingReviewAnalysis,
-  reviewShowAnalysis,
-  reviewApproveAnalysis,
-  reviewCorrectAnalysis,
-  reviewRejectAnalysis,
-  reviewSkipAnalysis,
-  reviewUndoAnalysis,
-  reviewApproveBulkAnalysis,
-  reviewGroupAnalysis,
-  budgetSummaryAnalysis,
-  proposalCreateAnalysis,
-  proposalShowAnalysis,
-  proposalApproveAnalysis,
-  proposalExecuteAnalysis,
-  proposalListAnalysis,
-  auditQueryAnalysis,
-  ruleCreateAnalysis,
-  ruleListAnalysis,
-  ruleShowAnalysis,
-  ruleUpdateAnalysis,
-  purchaseEvaluationAnalysis,
-  cashFlowProjectionAnalysis,
-  targetHealthAnalysis,
-  sinkingFundHealthAnalysis,
-  reportGenerateAnalysis,
-  savedViewsListAnalysis,
-  savedViewCreateAnalysis,
-  attentionHomeAnalysis,
-  type CommandInput,
-  type ConnectionMode,
-  type AnalysisProtocol,
-  type LifecycleCallbacks,
-  type AuditQueryOptions,
-  type ReviewActionOptions,
-  type PurchaseEvaluationParams,
-  type CashFlowProjectionParams,
-  type ReportGenerationParams,
-  type ReportScope,
-  type CreateSavedViewParams,
-  type AttentionHomeParams,
-  ApplicationError,
-  okResponse,
-  errorResponse,
-  ErrorInfo,
-  type DataFreshness,
-  AuthorizationContext,
-  createObserveComposition,
-  createLiquidityService,
-} from '@balanceframe/application';
-import { createDefaultConnectionManager, type ConnectionManager } from '@balanceframe/application';
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { ErrorInfo, errorResponse } from '@balanceframe/application/envelope';
+import { runServerCommand } from './transport.js';
 
 // ---------------------------------------------------------------------------
 // Parsed CLI command
 // ---------------------------------------------------------------------------
 
+/** Normalized command and options submitted to the server transport. */
 export interface CliCommand {
   /** Dot-separated command path (e.g. 'transactions.pending-review'). */
   command: string;
@@ -94,8 +42,255 @@ export interface CliCommand {
   options?: Record<string, string>;
 }
 
+/** Result of parsing command-line arguments. */
 export type ParseResult =
   { ok: true; cmd: CliCommand } | { ok: false; error: { code: string; message: string } };
+
+type FlagParseResult =
+  | { ok: true; options: Record<string, string> }
+  | { ok: false; error: { code: string; message: string } };
+
+function readFlagOptions(args: string[], allowed: string[], command: string): FlagParseResult {
+  const options: Record<string, string> = {};
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]!;
+    const key = token.startsWith('--') ? token.slice(2) : '';
+    if (!key || !allowed.includes(key)) {
+      return {
+        ok: false,
+        error: {
+          code: 'unknown_flags',
+          message: token.startsWith('--') ? `Unknown flag for ${command}: ${token}` : `Unexpected argument for ${command}: ${token}`,
+        },
+      };
+    }
+    const value = args[i + 1];
+    if (!value || value.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_flag_value', message: `${token} requires a value.` },
+      };
+    }
+    if (options[key] !== undefined) {
+      return {
+        ok: false,
+        error: { code: 'duplicate_flag', message: `${token} may be supplied only once.` },
+      };
+    }
+    options[key] = value;
+    i++;
+  }
+  return { ok: true, options };
+}
+
+function parseFlagCommand(
+  command: string,
+  format: string,
+  normalized: string[],
+  args: string[],
+  allowed: string[],
+  required: string[],
+  extraOptions: Record<string, string> = {},
+): ParseResult {
+  const parsed = readFlagOptions(args, allowed, command);
+  if (!parsed.ok) return parsed;
+  for (const key of required) {
+    if (!parsed.options[key]) {
+      return {
+        ok: false,
+        error: { code: 'missing_flag_value', message: `${command} requires --${key}.` },
+      };
+    }
+  }
+  return {
+    ok: true,
+    cmd: {
+      command,
+      format,
+      args: normalized,
+      options: { ...parsed.options, ...extraOptions },
+    },
+  };
+}
+
+function parseSpaceCommand(cleanArgs: string[], normalized: string[], format: string): ParseResult | null {
+  if (cleanArgs[0] !== 'spaces') return null;
+  const resource = cleanArgs[1];
+  const action = cleanArgs[2];
+  const rest = cleanArgs.slice(3);
+  const noArgs = (command: string, length = 2): ParseResult =>
+    cleanArgs.length === length
+      ? { ok: true, cmd: { command, format, args: normalized } }
+      : {
+          ok: false,
+          error: {
+            code: 'trailing_args',
+            message: `Unexpected arguments after 'spaces ${resource} ${action ?? ''}'.`,
+          },
+        };
+  const positionalId = (
+    command: string,
+    idKey: string,
+    allowed: string[] = [],
+    required: string[] = [],
+  ): ParseResult => {
+    const id = cleanArgs[3];
+    if (!id || id.startsWith('--')) {
+      return {
+        ok: false,
+        error: { code: 'missing_id', message: `spaces ${resource} ${action} requires an ID.` },
+      };
+    }
+    const parsed = readFlagOptions(cleanArgs.slice(4), allowed, `spaces ${resource} ${action}`);
+    if (!parsed.ok) return parsed;
+    for (const key of required) {
+      if (!parsed.options[key]) {
+        return { ok: false, error: { code: 'missing_flag_value', message: `--${key} is required.` } };
+      }
+    }
+    return {
+      ok: true,
+      cmd: {
+        command,
+        format,
+        args: normalized,
+        options: { ...parsed.options, [idKey]: id },
+      },
+    };
+  };
+
+  if (resource === 'list') return noArgs('spaces.list');
+  if (resource === 'create') {
+    const result = parseFlagCommand('spaces.create', format, normalized, cleanArgs.slice(2), ['name', 'kind'], ['name', 'kind']);
+    if (result.ok && result.cmd.options?.kind !== 'personal' && result.cmd.options?.kind !== 'shared') {
+      return { ok: false, error: { code: 'invalid_space_kind', message: '--kind must be personal or shared.' } };
+    }
+    return result;
+  }
+  if (resource === 'select') {
+    const id = cleanArgs[2];
+    if (!id || id.startsWith('--')) {
+      return { ok: false, error: { code: 'missing_space_id', message: 'spaces select requires a SPACE_ID.' } };
+    }
+    return cleanArgs.length === 3
+      ? { ok: true, cmd: { command: 'spaces.select', format, args: normalized, options: { spaceId: id } } }
+      : { ok: false, error: { code: 'trailing_args', message: 'Unexpected arguments after SPACE_ID.' } };
+  }
+  if (resource === 'show') return cleanArgs.length === 2
+    ? { ok: true, cmd: { command: 'spaces.show', format, args: normalized } }
+    : { ok: false, error: { code: 'trailing_args', message: "Use 'spaces show' with BALANCEFRAME_SPACE_ID selected." } };
+  if (resource === 'policy' && (action === 'get' || action === 'read')) return noArgs('spaces.policy.get', 3);
+  if (resource === 'policy' && action === 'set') {
+    return parseFlagCommand(
+      'spaces.policy.set',
+      format,
+      normalized,
+      rest,
+      ['expected-version', 'policy'],
+      ['expected-version', 'policy'],
+    );
+  }
+  if ((resource === 'memberships' || resource === 'members') && (action === 'list' || action === 'history')) {
+    return noArgs('spaces.memberships.list', 3);
+  }
+  if ((resource === 'memberships' || resource === 'members') && (action === 'create' || action === 'add')) {
+    return parseFlagCommand(
+      'spaces.memberships.create',
+      format,
+      normalized,
+      rest,
+      ['member-id', 'valid-from', 'valid-until'],
+      ['member-id', 'valid-from'],
+    );
+  }
+  if ((resource === 'memberships' || resource === 'members') && action === 'revoke') {
+    return positionalId('spaces.memberships.revoke', 'membershipId');
+  }
+  if (resource === 'grants' && (action === 'list' || action === 'read')) return noArgs('spaces.grants.list', 3);
+  if (resource === 'grants' && action === 'set') {
+    const result = parseFlagCommand(
+      'spaces.grants.set',
+      format,
+      normalized,
+      rest,
+      ['membership-id', 'capability', 'resource-kind', 'resource-id', 'granted', 'restrictions'],
+      ['membership-id', 'capability', 'resource-kind', 'resource-id', 'granted'],
+    );
+    if (result.ok && result.cmd.options?.granted !== 'true' && result.cmd.options?.granted !== 'false') {
+      return { ok: false, error: { code: 'invalid_granted', message: '--granted must be true or false.' } };
+    }
+    return result;
+  }
+  if (resource === 'grants' && action === 'revoke') {
+    return parseFlagCommand(
+      'spaces.grants.revoke',
+      format,
+      normalized,
+      rest,
+      ['membership-id', 'capability', 'resource-kind', 'resource-id', 'restrictions'],
+      ['membership-id', 'capability', 'resource-kind', 'resource-id'],
+    );
+  }
+  if (resource === 'delegations' && action === 'list') return noArgs('spaces.delegations.list', 3);
+  if (resource === 'delegations' && action === 'create') {
+    return parseFlagCommand(
+      'spaces.delegations.create',
+      format,
+      normalized,
+      rest,
+      ['agent-id', 'issuer-membership-id', 'expected-version', 'rights', 'valid-from', 'valid-until'],
+      ['agent-id', 'issuer-membership-id', 'expected-version', 'rights', 'valid-from'],
+    );
+  }
+  if (resource === 'delegations' && action === 'revoke') {
+    return positionalId(
+      'spaces.delegations.revoke',
+      'delegationId',
+      ['expected-version'],
+      ['expected-version'],
+    );
+  }
+  if (resource === 'agents' && action === 'register') {
+    return parseFlagCommand('spaces.agents.register', format, normalized, rest, ['agent-id'], ['agent-id']);
+  }
+  if (resource === 'credentials' && action === 'list') return noArgs('spaces.credentials.list', 3);
+  if (resource === 'credentials' && action === 'register') {
+    const result = parseFlagCommand(
+      'spaces.credentials.register',
+      format,
+      normalized,
+      rest,
+      ['credential-id', 'principal-type', 'principal-id', 'delegation-id', 'expected-delegation-version'],
+      ['credential-id', 'principal-type', 'principal-id'],
+    );
+    if (result.ok && result.cmd.options?.['principal-type'] !== 'human' && result.cmd.options?.['principal-type'] !== 'agent') {
+      return { ok: false, error: { code: 'invalid_principal_type', message: '--principal-type must be human or agent.' } };
+    }
+    if (
+      result.ok &&
+      result.cmd.options?.['principal-type'] === 'agent' &&
+      (!result.cmd.options['delegation-id'] ||
+        !result.cmd.options['expected-delegation-version'] ||
+        result.cmd.options['expected-delegation-version'] === 'null')
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: 'missing_delegation_binding',
+          message: 'Agent credentials require an active --delegation-id and --expected-delegation-version.',
+        },
+      };
+    }
+    return result;
+  }
+  if (resource === 'credentials' && action === 'revoke') {
+    return positionalId('spaces.credentials.revoke', 'credential-id');
+  }
+  return {
+    ok: false,
+    error: { code: 'unknown_command', message: `Unknown spaces command: ${cleanArgs.join(' ')}` },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Rejected command patterns
@@ -172,6 +367,28 @@ export function parseArgs(argv: string[]): ParseResult {
     '--sort': true,
     '--detailed': true,
     '--category-group': true,
+    '--payload-hashes': true,
+    '--payload-hash': true,
+    '--kind': true,
+    '--expected-version': true,
+    '--policy': true,
+    '--member-id': true,
+    '--valid-from': true,
+    '--valid-until': true,
+    '--membership-id': true,
+    '--capability': true,
+    '--resource-kind': true,
+    '--resource-id': true,
+    '--granted': true,
+    '--restrictions': true,
+    '--agent-id': true,
+    '--issuer-membership-id': true,
+    '--rights': true,
+    '--credential-id': true,
+    '--principal-type': true,
+    '--principal-id': true,
+    '--delegation-id': true,
+    '--expected-delegation-version': true,
   };
   const unknownFlags = normalized.filter((a) => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -184,6 +401,21 @@ export function parseArgs(argv: string[]): ParseResult {
   const hasJson = normalized.includes('--json');
   const format = hasJson ? 'json' : 'json';
   const cleanArgs = normalized.filter((a) => a !== '--json');
+
+  if (
+    cleanArgs.includes('--actor-id') &&
+    !(cleanArgs[0] === 'audit' && cleanArgs[1] === 'query')
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: 'actor_filter_only',
+        message: '--actor-id is only an audit query filter; it never selects the caller.',
+      },
+    };
+  }
+  const spaceCommand = parseSpaceCommand(cleanArgs, normalized, format);
+  if (spaceCommand) return spaceCommand;
 
   // Extract command path
   if (cleanArgs[0] === 'connect') {
@@ -449,25 +681,70 @@ export function parseArgs(argv: string[]): ParseResult {
 
   if (cleanArgs[0] === 'reviews' && cleanArgs[1] === 'approve-bulk') {
     const ids: string[] = [];
-    for (const a of cleanArgs.slice(2)) {
-      if (a.startsWith('--')) continue; // skip flags (already validated by KNOWN_FLAGS check)
-      if (!a.startsWith('rev_')) {
+    const flags: string[] = [];
+    const remaining = cleanArgs.slice(2);
+    for (let i = 0; i < remaining.length; i++) {
+      const token = remaining[i]!;
+      if (token.startsWith('--')) {
+        flags.push(token);
+        const value = remaining[i + 1];
+        if (value && !value.startsWith('--')) {
+          flags.push(value);
+          i++;
+        }
+        continue;
+      }
+      if (!token.startsWith('rev_')) {
         return {
           ok: false,
           error: {
             code: 'invalid_review_id',
-            message: `Invalid review ID: "${a}". Review IDs must start with "rev_".`,
+            message: `Invalid review ID: "${token}". Review IDs must start with "rev_".`,
           },
         };
       }
-      ids.push(a);
+      ids.push(token);
     }
     if (ids.length < 1) {
       return {
         ok: false,
+        error: { code: 'missing_review_ids', message: 'reviews approve-bulk requires at least one REVIEW_ID.' },
+      };
+    }
+    if (new Set(ids).size !== ids.length) {
+      return {
+        ok: false,
+        error: { code: 'duplicate_review_id', message: 'reviews approve-bulk requires unique REVIEW_ID values.' },
+      };
+    }
+    const parsedFlags = readFlagOptions(flags, ['payload-hashes'], 'reviews approve-bulk');
+    if (!parsedFlags.ok) return parsedFlags;
+    const source = parsedFlags.options['payload-hashes'];
+    if (!source) {
+      return {
+        ok: false,
+        error: { code: 'payload_hashes_required', message: 'reviews approve-bulk requires --payload-hashes JSON.' },
+      };
+    }
+    let hashMap: unknown;
+    try {
+      hashMap = JSON.parse(source);
+    } catch {
+      hashMap = null;
+    }
+    if (
+      hashMap === null ||
+      typeof hashMap !== 'object' ||
+      Array.isArray(hashMap) ||
+      Object.keys(hashMap).length !== ids.length ||
+      ids.some((id) => typeof (hashMap as Record<string, unknown>)[id] !== 'string' ||
+        (hashMap as Record<string, string>)[id]!.length === 0)
+    ) {
+      return {
+        ok: false,
         error: {
-          code: 'missing_review_ids',
-          message: 'reviews approve-bulk requires at least one REVIEW_ID.',
+          code: 'invalid_payload_hashes',
+          message: '--payload-hashes must be an object with one non-empty displayed hash for each REVIEW_ID.',
         },
       };
     }
@@ -478,6 +755,7 @@ export function parseArgs(argv: string[]): ParseResult {
         format,
         args: normalized,
         ids,
+        options: { 'payload-hashes': source },
       },
     };
   }
@@ -782,12 +1060,19 @@ export function parseArgs(argv: string[]): ParseResult {
         },
       };
     }
-    if (cleanArgs.length > 3) {
+    const hashOptions = readFlagOptions(
+      cleanArgs.slice(3),
+      ['payload-hash'],
+      'proposals approve',
+    );
+    if (!hashOptions.ok) return hashOptions;
+    const payloadHash = hashOptions.options['payload-hash'];
+    if (!payloadHash) {
       return {
         ok: false,
         error: {
-          code: 'trailing_args',
-          message: `Unexpected arguments after proposal ID: ${cleanArgs.slice(3).join(' ')}`,
+          code: 'payload_hash_required',
+          message: 'proposals approve requires the exact displayed --payload-hash.',
         },
       };
     }
@@ -798,6 +1083,7 @@ export function parseArgs(argv: string[]): ParseResult {
         format,
         args: normalized,
         proposalId,
+        options: { 'payload-hash': payloadHash },
       },
     };
   }
@@ -1415,75 +1701,13 @@ export function parseArgs(argv: string[]): ParseResult {
     },
   };
 }
-
-// ---------------------------------------------------------------------------
-// Authorization helpers
-// ---------------------------------------------------------------------------
-
 /**
- * Build an `AuthorizationContext` for a lifecycle operation.
+ * Execute a parsed CLI command against the authenticated server.
  *
- * Destructive operations (remove-connection) are denied in Observe mode.
- * Read-lifecycle operations (export, disconnect) proceed in any mode, but
- * the returned context reflects the operation name so callers can audit it.
+ * @param argv CLI argument vector excluding the node executable and binary.
  */
-function modeAuthorization(
-  mode: ConnectionMode,
-  actorId: string,
-  operation: string,
-): AuthorizationContext {
-  if ((operation === 'remove-connection' || operation === 'delete-data') && mode === 'observe') {
-    return AuthorizationContext.denied(actorId, operation);
-  }
-  return { actorId, capability: operation, allowed: true };
-}
-
-// ---------------------------------------------------------------------------
-// Main dispatcher (called from bin script or tests)
-// ---------------------------------------------------------------------------
-
-function freshnessFromSynchronization(synchronization: unknown): DataFreshness | null {
-  if (!synchronization || typeof synchronization !== 'object') return null;
-  const result = synchronization as {
-    snapshot?: {
-      actualDownloadedAt?: string | null;
-      bankSyncedAt?: string | null;
-    };
-  };
-  const downloadedAt = result.snapshot?.actualDownloadedAt ?? null;
-  const bankSyncedAt = result.snapshot?.bankSyncedAt ?? null;
-  return {
-    actualDownloadedAt: downloadedAt,
-    bankSyncedAt,
-    pendingTransactionsIncluded: true,
-    stalenessDays: 0,
-    isStale: false,
-  };
-}
-/**
- * Execute a CLI command and return a JSON envelope.
- *
- * @param argv CLI argument vector (excluding node/binary).
- * @param opts Optional injected services for testing.
- */
-export async function main(
-  argv: string[],
-  opts?: {
-    actorId?: string;
-    requestId?: string;
-    mode?: ConnectionMode;
-    ledger?: unknown;
-    freshness?: DataFreshness | null;
-    analysisProtocol?: AnalysisProtocol;
-    lifecycleCallbacks?: LifecycleCallbacks;
-  },
-): Promise<string> {
-  const mode: ConnectionMode = opts?.mode ?? 'observe';
-  const actorId = opts?.actorId ?? process.env.BALANCEFRAME_ACTOR_ID ?? 'usr_cli';
-  const requestId = opts?.requestId ?? `req_${Date.now().toString(36)}`;
-  let ledger = opts?.ledger ?? null;
-  let freshness: DataFreshness | null = opts?.freshness ?? null;
-
+export async function main(argv: string[]): Promise<string> {
+  const requestId = `req_${Date.now().toString(36)}`;
   const parsed = parseArgs(argv);
   if (!parsed.ok) {
     const info = new ErrorInfo({
@@ -1494,560 +1718,5 @@ export async function main(
     });
     return JSON.stringify(errorResponse(requestId, info), null, 2);
   }
-  const cmd = parsed.cmd;
-
-  let connectionManager: ConnectionManager | null = null;
-  if (opts === undefined) {
-    try {
-      connectionManager = createDefaultConnectionManager({
-        configPath: process.env.BALANCEFRAME_CONFIG_PATH,
-      });
-      if (cmd.command === 'budget.list') {
-        const budgets = await connectionManager.listBudgets();
-        return JSON.stringify(
-          okResponse(requestId, null, AuthorizationContext.observe(actorId), {
-            budgets,
-          }),
-          null,
-          2,
-        );
-      }
-      if (cmd.command === 'connect') {
-        const connected = await connectionManager.connect({
-          budgetId: cmd.options?.budgetId ?? '',
-        });
-        return JSON.stringify(
-          okResponse(requestId, null, AuthorizationContext.observe(actorId), {
-            connected: true,
-            budget: connected.budget,
-            synchronized: true,
-          }),
-          null,
-          2,
-        );
-      }
-      if (cmd.command !== 'purchase.evaluate') {
-        const restored = await connectionManager.restore();
-        ledger = restored.connector;
-        freshness = freshnessFromSynchronization(restored.synchronization);
-      }
-    } catch (err) {
-      if (cmd.command === 'connect' || cmd.command === 'budget.list') {
-        const info = new ErrorInfo({
-          code: 'connection_failed',
-          message: err instanceof Error ? err.message : String(err),
-          retryable: true,
-          reasonCodes: ['connection_error'],
-        });
-        return JSON.stringify(errorResponse(requestId, info), null, 2);
-      }
-    }
-  }
-
-  // When no opts are provided (production), fall back to the composition
-  // factory. Test injection preserves explicitly supplied protocol/callbacks.
-  let analysisProtocol: AnalysisProtocol | undefined;
-  let lifecycleCallbacksVal: LifecycleCallbacks | undefined;
-  if (opts === undefined) {
-    try {
-      const composition = await createObserveComposition({
-        ledger,
-        freshness,
-      });
-      analysisProtocol = composition.analysisProtocol;
-      lifecycleCallbacksVal = composition.lifecycleCallbacks;
-    } catch {
-      // Composition failure is represented by the stable error envelope below.
-    }
-  } else {
-    analysisProtocol = opts.analysisProtocol;
-    lifecycleCallbacksVal = opts.lifecycleCallbacks;
-  }
-
-  const commandInput: CommandInput = {
-    args: cmd.args,
-    mode,
-    actorId,
-    requestId,
-    ledger,
-    freshness,
-    analysisProtocol,
-    lifecycleCallbacks: lifecycleCallbacksVal,
-  };
-
-  try {
-    const routed = routeCommand(commandInput);
-
-    // Dispatch to handlers based on route
-    switch (routed.command) {
-      case 'transactions.pending-review': {
-        const envelope = await pendingReviewAnalysis(commandInput);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.show': {
-        const envelope = await reviewShowAnalysis(commandInput, cmd.reviewId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.approve': {
-        const envelope = await reviewApproveAnalysis(commandInput, cmd.reviewId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.correct': {
-        const envelope = await reviewCorrectAnalysis(commandInput, cmd.reviewId!, cmd.categoryId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.reject': {
-        const envelope = await reviewRejectAnalysis(commandInput, cmd.reviewId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.skip': {
-        const envelope = await reviewSkipAnalysis(commandInput, cmd.reviewId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.undo': {
-        const envelope = await reviewUndoAnalysis(commandInput, cmd.reviewId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.approve-bulk': {
-        const envelope = await reviewApproveBulkAnalysis(commandInput, cmd.ids!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reviews.group': {
-        const envelope = await reviewGroupAnalysis(commandInput, cmd.ids!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'budget.summary': {
-        const envelope = await budgetSummaryAnalysis(commandInput);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'export': {
-        const callbacks = commandInput.lifecycleCallbacks;
-        if (!callbacks) {
-          const info = new ErrorInfo({
-            code: 'no_lifecycle_callbacks',
-            message: 'Export command requires lifecycle callbacks. Not connected?',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        if (!ledger) {
-          const info = new ErrorInfo({
-            code: 'not_connected',
-            message: 'No ledger connected. Use a connect command first.',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        try {
-          const result = await callbacks.doExport(ledger);
-          const envelope = okResponse(
-            requestId,
-            freshness,
-            modeAuthorization(mode, actorId, 'export'),
-            result,
-          );
-          return JSON.stringify(envelope, null, 2);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          const info = new ErrorInfo({
-            code: 'export_failed',
-            message,
-            retryable: true,
-            reasonCodes: ['export_error'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-      }
-
-      case 'disconnect': {
-        const callbacks = commandInput.lifecycleCallbacks;
-        if (!callbacks) {
-          const info = new ErrorInfo({
-            code: 'no_lifecycle_callbacks',
-            message: 'Disconnect command requires lifecycle callbacks. Not connected?',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        if (!ledger) {
-          const info = new ErrorInfo({
-            code: 'not_connected',
-            message: 'No ledger connected. Use a connect command first.',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        try {
-          const result = await callbacks.doDisconnect(ledger);
-          const envelope = okResponse(
-            requestId,
-            null,
-            modeAuthorization(mode, actorId, 'disconnect'),
-            result,
-          );
-          return JSON.stringify(envelope, null, 2);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          const info = new ErrorInfo({
-            code: 'disconnect_failed',
-            message,
-            retryable: true,
-            reasonCodes: ['disconnect_error'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-      }
-
-      case 'remove-connection': {
-        const callbacks = commandInput.lifecycleCallbacks;
-        if (!callbacks) {
-          const info = new ErrorInfo({
-            code: 'no_lifecycle_callbacks',
-            message: 'Remove-connection command requires lifecycle callbacks. Not connected?',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        if (!ledger) {
-          const info = new ErrorInfo({
-            code: 'not_connected',
-            message: 'No ledger connected. Use a connect command first.',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        // Enforce mode authorization — destructive operation blocked in Observe
-        if (mode === 'observe') {
-          const info = new ErrorInfo({
-            code: 'write_rejected',
-            message:
-              'remove-connection requires write authorization and is not available in observe mode.',
-            retryable: false,
-            reasonCodes: ['observe_mode_write_blocked'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        try {
-          const result = await callbacks.doRemoveConnection(ledger);
-          const envelope = okResponse(
-            requestId,
-            null,
-            modeAuthorization(mode, actorId, 'remove-connection'),
-            result,
-          );
-          return JSON.stringify(envelope, null, 2);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          const info = new ErrorInfo({
-            code: 'remove_connection_failed',
-            message,
-            retryable: true,
-            reasonCodes: ['remove_connection_error'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-      }
-
-      case 'delete-data': {
-        const callbacks = commandInput.lifecycleCallbacks;
-        if (!callbacks) {
-          const info = new ErrorInfo({
-            code: 'no_lifecycle_callbacks',
-            message: 'Delete-data command requires lifecycle callbacks. Not connected?',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        if (!ledger) {
-          const info = new ErrorInfo({
-            code: 'not_connected',
-            message: 'No ledger connected. Use a connect command first.',
-            retryable: true,
-            reasonCodes: ['missing_ledger_config'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        // Enforce mode authorization — destructive operation blocked in Observe
-        if (mode === 'observe') {
-          const info = new ErrorInfo({
-            code: 'write_rejected',
-            message:
-              'delete-data requires write authorization and is not available in observe mode.',
-            retryable: false,
-            reasonCodes: ['observe_mode_write_blocked'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-        try {
-          const scope = cmd.options?.scope;
-          const result = await callbacks.doDeleteData(ledger, scope!);
-          const envelope = okResponse(
-            requestId,
-            null,
-            modeAuthorization(mode, actorId, 'delete-data'),
-            result,
-          );
-          return JSON.stringify(envelope, null, 2);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          const info = new ErrorInfo({
-            code: 'delete_data_failed',
-            message,
-            retryable: true,
-            reasonCodes: ['delete_data_error'],
-          });
-          return JSON.stringify(errorResponse(requestId, info), null, 2);
-        }
-      }
-
-      case 'proposals.create': {
-        const proposalOptions: ReviewActionOptions = {};
-        if (cmd.options?.['category-id']) proposalOptions.categoryId = cmd.options['category-id'];
-        if (cmd.options?.['transaction-id'])
-          proposalOptions.transactionId = cmd.options['transaction-id'];
-        if (cmd.options?.message) proposalOptions.message = cmd.options.message;
-        if (cmd.options?.reason) proposalOptions.reason = cmd.options.reason;
-        if (cmd.options?.operation) proposalOptions.operation = cmd.options.operation;
-        const envelope = await proposalCreateAnalysis(commandInput, proposalOptions);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'proposals.show': {
-        const envelope = await proposalShowAnalysis(commandInput, cmd.proposalId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'proposals.approve': {
-        const envelope = await proposalApproveAnalysis(commandInput, cmd.proposalId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'proposals.execute': {
-        const envelope = await proposalExecuteAnalysis(commandInput, cmd.proposalId!);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'proposals.list': {
-        const envelope = await proposalListAnalysis(commandInput);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'audit.query': {
-        const queryOptions: Record<string, unknown> = {};
-        if (cmd.options?.limit) queryOptions.limit = Number(cmd.options.limit);
-        if (cmd.options?.offset) queryOptions.offset = Number(cmd.options.offset);
-        if (cmd.options?.action) queryOptions.action = cmd.options.action;
-        if (cmd.options?.['actor-id']) queryOptions.actorId = cmd.options['actor-id'];
-        if (cmd.options?.['entity-id']) queryOptions.entityId = cmd.options['entity-id'];
-        const envelope = await auditQueryAnalysis(commandInput, queryOptions as AuditQueryOptions);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'rules.create': {
-        const ruleOptions: ReviewActionOptions = {};
-        if (cmd.options?.['name']) ruleOptions.message = cmd.options['name'];
-        if (cmd.options?.['payee']) ruleOptions.reason = cmd.options['payee'];
-        if (cmd.options?.['category-id']) ruleOptions.categoryId = cmd.options['category-id'];
-        if (cmd.options?.['transaction-id'])
-          ruleOptions.transactionId = cmd.options['transaction-id'];
-        if (cmd.options?.operation) ruleOptions.operation = cmd.options.operation;
-        const envelope = await ruleCreateAnalysis(commandInput, ruleOptions);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'rules.list': {
-        const envelope = await ruleListAnalysis(commandInput);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'rules.show': {
-        if (!cmd.ruleId) {
-          const info = new ErrorInfo({
-            code: 'missing_rule_id',
-            message: 'Rule ID is required. Use --rule-id or pass it as the first argument.',
-            retryable: false,
-            reasonCodes: ['missing_rule_id'],
-          });
-          return JSON.stringify(errorResponse(commandInput.requestId ?? 'cli', info), null, 2);
-        }
-        const envelope = await ruleShowAnalysis(commandInput, cmd.ruleId);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'rules.update': {
-        const updateOptions: ReviewActionOptions = {};
-        if (cmd.options?.['name']) updateOptions.message = cmd.options['name'];
-        if (cmd.options?.['active']) updateOptions.reason = cmd.options['active'];
-        if (cmd.options?.['category-id']) updateOptions.categoryId = cmd.options['category-id'];
-        if (cmd.options?.['rule-id']) updateOptions.message = cmd.options['rule-id'];
-        const envelope = await ruleUpdateAnalysis(commandInput, updateOptions);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      // -------------------------------------------------------------------
-      // Budget Intelligence commands (read-only deterministic analysis)
-      // -------------------------------------------------------------------
-
-      case 'purchase.evaluate': {
-        const purchaseParams: PurchaseEvaluationParams = {
-          categoryId: cmd.options?.['category-id'] ?? '',
-          amount: {
-            minorUnits: cmd.options?.amount ?? '0',
-            currency: cmd.options?.currency ?? 'USD',
-          },
-          accountId: cmd.options?.['account-id'],
-          purchaseAt: cmd.options?.['purchase-at'],
-          requiredBy: cmd.options?.['required-by'],
-        };
-        if (connectionManager) {
-          const config = await connectionManager.loadConfig();
-          if (!config) {
-            const info = new ErrorInfo({
-              code: 'not_connected',
-              message: 'No Actual budget selected. Use a connect command first.',
-              retryable: true,
-              reasonCodes: ['missing_ledger_config'],
-            });
-            return JSON.stringify(
-              errorResponse(requestId, info, undefined, AuthorizationContext.observe(actorId)),
-              null,
-              2,
-            );
-          }
-          const path = process.env.BALANCEFRAME_WORKFLOW_DB_PATH ?? './data/workflow.db';
-          mkdirSync(dirname(path), { recursive: true });
-          const store = new SqliteWorkflowStore(path);
-          try {
-            const service = await createLiquidityService({ connectionManager, store });
-            const envelope = await purchaseEvaluationAnalysis(
-              { ...commandInput, liquidity: { service, budgetId: config.budgetId } },
-              purchaseParams,
-            );
-            return JSON.stringify(envelope, null, 2);
-          } finally {
-            store.close();
-          }
-        }
-        const envelope = await purchaseEvaluationAnalysis(commandInput, purchaseParams);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'cash-flow.project': {
-        const cfParams: CashFlowProjectionParams = {
-          months: cmd.options?.months ? Number(cmd.options.months) : 3,
-          startMonth: cmd.options?.['start-month'],
-        };
-        const envelope = await cashFlowProjectionAnalysis(commandInput, cfParams);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'target.health': {
-        const envelope = await targetHealthAnalysis(commandInput);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'sinking-fund.health': {
-        const envelope = await sinkingFundHealthAnalysis(commandInput);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'reports.generate': {
-        const scope: ReportScope = {
-          monthRange: cmd.options?.['month-range'] ?? '',
-          includePending: true,
-        };
-        const reportParams: ReportGenerationParams = {
-          reportType: cmd.options?.['report-type'] ?? '',
-          scope,
-          label: cmd.options?.label,
-          tags: cmd.options?.tag ? [cmd.options.tag] : undefined,
-        };
-        const envelope = await reportGenerateAnalysis(commandInput, reportParams);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'views.list': {
-        const envelope = await savedViewsListAnalysis(commandInput);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'views.create': {
-        let parsedScope: Record<string, unknown> = {};
-        if (cmd.options?.scope) {
-          try {
-            parsedScope = JSON.parse(cmd.options.scope);
-          } catch {
-            const info = new ErrorInfo({
-              code: 'invalid_scope_json',
-              message: '--scope must be valid JSON.',
-              retryable: false,
-              reasonCodes: ['cli_error'],
-            });
-            return JSON.stringify(errorResponse(requestId, info), null, 2);
-          }
-        }
-        const viewParams: CreateSavedViewParams = {
-          name: cmd.options?.name ?? '',
-          viewType: cmd.options?.['view-type'] ?? '',
-          scope: parsedScope,
-          sort: cmd.options?.sort,
-        };
-        const envelope = await savedViewCreateAnalysis(commandInput, viewParams);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      case 'home.attention': {
-        const attentionParams: AttentionHomeParams = {
-          context: {
-            categoryGroup: cmd.options?.['category-group'],
-            detailed: cmd.options?.detailed === 'true',
-          },
-        };
-        const envelope = await attentionHomeAnalysis(commandInput, attentionParams);
-        return JSON.stringify(envelope, null, 2);
-      }
-
-      default:
-        throw new Error(`Unhandled command: ${routed.command}`);
-    }
-  } catch (err) {
-    if (err instanceof ApplicationError) {
-      const info = new ErrorInfo({
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-        reasonCodes: err.reasonCodes,
-      });
-      const envelope = errorResponse(requestId, info);
-      return JSON.stringify(envelope, null, 2);
-    }
-    if (err instanceof Error) {
-      const info = new ErrorInfo({
-        code: 'cli_error',
-        message: err.message,
-        retryable: false,
-        reasonCodes: ['cli_error'],
-      });
-      const envelope = errorResponse(requestId, info);
-      return JSON.stringify(envelope, null, 2);
-    }
-    throw err;
-  }
+  return runServerCommand(parsed.cmd, requestId);
 }

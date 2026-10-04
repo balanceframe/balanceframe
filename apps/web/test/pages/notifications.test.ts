@@ -13,6 +13,7 @@ vi.stubGlobal('$fetch', mockFetch);
 import NotificationsPage from '../../app/pages/notifications/index.vue';
 
 const stubs = {
+  NotificationStatusBadge: { props: ['status'], template: '<span>{{ status }}</span>' },
   AnalysisPage: {
     template:
       '<div><span v-if="error" data-testid="error">{{ error.code }}</span><slot v-else name="content" /></div>',
@@ -27,7 +28,7 @@ const stubs = {
     template: '<button @click="$emit(\'click\')"><slot /></button>',
     props: ['size', 'variant', 'color'],
   },
-  UFormGroup: { template: '<div><slot /></div>', props: ['label'] },
+  UFormField: { template: '<div><slot /></div>', props: ['label'] },
   UInput: { template: '<input />', props: ['modelValue', 'placeholder'] },
 };
 
@@ -82,17 +83,31 @@ describe('Notifications page', () => {
     mockFetch.mockReset();
   });
 
-  it('calls notification APIs on mount', async () => {
+  it('renders the selected-space policy without replacing authorized inbox items when policy access is denied', async () => {
+    mockFetch.mockImplementation((url: string, options?: { query?: Record<string, string> }) => {
+      if (url.includes('/notifications/status')) return Promise.resolve(okEnvelope(statusResult));
+      if (url.includes('/notifications/inbox')) return Promise.resolve(okEnvelope(inboxResult));
+      if (url.includes('/notifications/policy')) {
+        if (options?.query?.spaceId || options?.query?.policyKey) {
+          return Promise.reject(new Error('Policy scope must come from the selected space'));
+        }
+        return Promise.resolve(okEnvelope({ ...policyResult, policyVersion: 'selected-space-policy-7' }));
+      }
+      return Promise.resolve(okEnvelope({}));
+    });
+    const wrapper = shallowMount(NotificationsPage, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('Budget Alert');
+    expect(wrapper.text()).toContain('selected-space-policy-7');
     mockFetch.mockImplementation((url: string) => {
       if (url.includes('/notifications/status')) return Promise.resolve(okEnvelope(statusResult));
       if (url.includes('/notifications/inbox')) return Promise.resolve(okEnvelope(inboxResult));
-      if (url.includes('/notifications/policy')) return Promise.resolve(okEnvelope(policyResult));
-      return Promise.resolve(okEnvelope({}));
+      return Promise.reject(new Error('Current actor cannot manage policy'));
     });
-    shallowMount(NotificationsPage, { global: { stubs } });
+    const restricted = shallowMount(NotificationsPage, { global: { stubs } });
     await flushPromises();
-    expect(mockFetch).toHaveBeenCalledWith('/api/notifications/status');
-    expect(mockFetch).toHaveBeenCalledWith('/api/notifications/inbox');
+    expect(restricted.text()).toContain('Budget Alert');
+    expect(restricted.find('[data-testid="error"]').exists()).toBe(false);
   });
 
   it('renders runtime status counts', async () => {

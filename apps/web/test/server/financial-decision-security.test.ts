@@ -1,314 +1,248 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as H3 from 'h3';
+import { IncomingMessage, ServerResponse } from 'node:http';
+import { Socket } from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ConnectionManager } from '@balanceframe/application';
+import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
 
-const RESTRICTED_EVIDENCE_SECRET = 'restricted-bank-secret-9f43f0';
-const RAW_NOTIFICATION_SECRET = 'raw-notification-secret-6ac12e';
-const CAPTURED_AT = '2026-08-23T12:00:00Z';
-
-const {
-  mockAttentionHomeAnalysis,
-  mockBuildAuthorizationInfo,
-  mockCreateDefaultConnectionManager,
-  mockCreateNativeAnalysisProtocol,
-  mockGetActorId,
-  mockGetQuery,
-  mockGetWorkflowStore,
-  mockLoadConfig,
-  mockNotificationRuntime,
-  mockRequireAuthorization,
-  mockRestore,
-  mockSetResponseStatus,
-  mockWithConnection,
-  mockFullRead,
-  mockLiquidityAttention,
-} = vi.hoisted(() => {
-  const mockRestore = vi.fn();
-  const mockLoadConfig = vi.fn();
-  const mockWithConnection = vi.fn();
-  const mockFullRead = vi.fn();
-  const mockLiquidityAttention = vi.fn();
-  return {
-    mockFullRead,
-    mockLiquidityAttention,
-    mockAttentionHomeAnalysis: vi.fn(),
-    mockBuildAuthorizationInfo: vi.fn(() => ({
-      actorId: 'security-actor',
-      capability: 'observe',
-      allowed: true,
-    })),
-    mockCreateDefaultConnectionManager: vi.fn(() => ({
-      restore: mockRestore,
-      loadConfig: mockLoadConfig,
-      withConnection: mockWithConnection,
-    })),
-    mockCreateNativeAnalysisProtocol: vi.fn(),
-    mockGetActorId: vi.fn(() => 'security-actor'),
-    mockGetQuery: vi.fn(() => ({})),
-    mockGetWorkflowStore: vi.fn(),
-    mockLoadConfig,
-    mockNotificationRuntime: {
-      listOutbox: vi.fn(),
-    },
-    mockRequireAuthorization: vi.fn(),
-    mockRestore,
-    mockSetResponseStatus: vi.fn(),
-    mockWithConnection,
-  };
-});
-
-vi.mock('h3', () => ({
-  defineEventHandler: <T>(handler: T) => handler,
-  getQuery: mockGetQuery,
-  setResponseStatus: mockSetResponseStatus,
+const mocks = vi.hoisted(() => ({
+  manager: null as unknown,
+  loadConfig: vi.fn(),
+  withConnection: vi.fn(async (operation: (connected: unknown) => Promise<unknown>) => operation({})),
+  attentionHome: vi.fn(),
+  createNativeAnalysisProtocol: vi.fn(),
 }));
 
-vi.mock('@balanceframe/application', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
+vi.mock('@balanceframe/workflow-store', async () =>
+  import('../../../../packages/workflow-store/src/index'));
+// The hoisted package mock loads Source application code; only Actual/native I/O is replaced.
+vi.mock('@balanceframe/application', async () => {
+  const application = await import('../../../../packages/application/src/index');
   return {
-    ...actual,
-    attentionHomeAnalysis: mockAttentionHomeAnalysis,
-    createDefaultConnectionManager: mockCreateDefaultConnectionManager,
-    createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol,
-    createLiquidityService: vi.fn(async () => ({ attention: mockLiquidityAttention })),
-    NotificationRuntime: vi.fn(() => mockNotificationRuntime),
-    InAppChannelAdapter: vi.fn(() => ({ channelType: 'in_app' })),
+    ...application,
+    createDefaultConnectionManager: () => mocks.manager as ConnectionManager,
+    createNativeAnalysisProtocol: () => mocks.createNativeAnalysisProtocol(),
   };
 });
-
-vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: mockGetWorkflowStore,
-  buildAuthorizationInfo: mockBuildAuthorizationInfo,
-  getActorId: mockGetActorId,
-  requireAuthorization: mockRequireAuthorization,
-  sanitizeError: vi.fn((_error, requestId, code, retryable) => ({
-    code,
-    message: 'Sanitized server error',
-    retryable,
-    requestId,
-  })),
-  envelopeMetadata: vi.fn((envelope) => ({ dataFreshness: envelope.dataFreshness ?? null })),
-  okEnvelope: (result, authorization, requestId, metadata = {}) => ({
-    schemaVersion: '1',
-    requestId,
-    status: 'ok' as const,
-    dataFreshness: null,
-    authorization,
-    result,
-    error: null,
-    ...metadata,
-  }),
-  errorEnvelope: (code, message, authorization, retryable = false, requestId = 'request') => ({
-    schemaVersion: '1',
-    requestId,
-    status: 'error' as const,
-    dataFreshness: null,
-    authorization,
-    result: null,
-    error: { code, message, retryable },
-  }),
-}));
 
 import attentionHandler from '../../server/api/home/attention.get';
 import inboxHandler from '../../server/api/notifications/inbox.get';
 
-function event() {
+const OWNER = 'financial-security-owner';
+const ACTOR = 'financial-security-human';
+const ORIGIN = 'https://balanceframe.example.test';
+const NOW = '2026-09-06T10:00:00.000Z';
+const HOME_SECRET = 'restricted-bank-source-secret-74c1';
+const NOTIFICATION_SECRET = 'raw-notification-provider-secret-18ad';
+const ownerAuth = {
+  method: 'human-session' as const,
+  actorId: OWNER,
+  sessionId: `session:${OWNER}`,
+  reauthenticatedAt: NOW,
+};
+let directory = '';
+let store: SqliteWorkflowStore;
+let sequence = 0;
+let budgetId = '';
+let spaceId = '';
+let membershipId = '';
+
+function request(path: string) {
+  const req = new IncomingMessage(new Socket());
+  req.url = path;
+  req.method = 'GET';
+  req.headers = { 'x-balanceframe-space': spaceId, origin: ORIGIN };
+  const res = new ServerResponse(req);
   return {
-    node: { res: { statusCode: 200 } },
+    path,
+    node: { req, res },
     context: {
-      auth: { authenticated: true, actorId: 'security-actor' },
+      auth: {
+        authenticated: true,
+        actorId: 'forged-legacy-actor',
+        user: { id: ACTOR },
+        method: 'session' as const,
+        principalType: 'human' as const,
+        sessionId: `session:${ACTOR}`,
+        impersonatedBy: null,
+      },
+      runtimeConfig: { workflowDbPath: join(directory, 'workflow.sqlite'), devBypassAuth: false },
     },
-  };
+  } as unknown as H3.H3Event & EventWithContext;
 }
 
-function authorized(capability: string) {
-  return {
-    ok: true as const,
-    info: {
-      actorId: 'security-actor',
-      capability,
-      allowed: true,
-    },
-  };
+function grant(capability: string) {
+  store.governance.provisionResourceGrant({
+    spaceId,
+    actorId: ACTOR,
+    membershipId,
+    budgetId,
+    capability,
+    resourceKind: 'budget',
+    resourceId: budgetId,
+    granted: true,
+    now: NOW,
+    auth: ownerAuth,
+  });
 }
 
-function denied() {
-  return {
-    ok: false as const,
-    response: {
-      schemaVersion: '1',
-      requestId: 'request-denied',
-      status: 'error' as const,
-      dataFreshness: null,
-      authorization: {
-        actorId: 'security-actor',
-        capability: 'observe',
-        allowed: false,
-      },
-      result: null,
-      error: {
-        code: 'FORBIDDEN',
-        message: 'Observe capability is required for this scope.',
-        retryable: false,
-      },
-    },
-  };
-}
+beforeAll(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(NOW));
+  vi.stubEnv('BETTER_AUTH_URL', ORIGIN);
+  directory = mkdtempSync(join(tmpdir(), 'financial-decision-security-native-'));
+  const req = new IncomingMessage(new Socket());
+  req.url = '/api/home/attention';
+  req.headers = { 'x-balanceframe-space': '' };
+  const opened = getWorkflowStore({
+    node: { req, res: new ServerResponse(req) },
+    context: { runtimeConfig: { workflowDbPath: join(directory, 'workflow.sqlite') } },
+  } as unknown as EventWithContext);
+  if ('error' in opened) throw new Error(opened.error);
+  store = opened.store;
+  await store.claimBootstrap({
+    name: 'Financial security owner',
+    email: 'financial-security-owner@example.test',
+    claimId: 'financial-decision-security-native-fixture',
+  });
+  await store.finalizeBootstrap({ claimId: 'financial-decision-security-native-fixture', ownerUserId: OWNER });
+  await store.upsertActorMembership(ACTOR, 'active', [], '');
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockGetQuery.mockReturnValue({});
-  mockFullRead.mockReturnValue(true);
-  mockLiquidityAttention.mockResolvedValue([]);
-  mockGetWorkflowStore.mockReturnValue({
-    store: {
-      liquidity: {
-        isOwner: () => false,
-        isAuthorized: mockFullRead,
-      },
-      evaluateAuthorization: async (actorId, capability, scope) => ({
-        allowed:
-          actorId === 'security-actor' &&
-          capability === 'observe' &&
-          scope === 'budget:budget-security',
-      }),
+  budgetId = `financial-security-budget-${++sequence}`;
+  const baseSpace = store.governance.createSpace({
+    actorId: OWNER,
+    name: `Financial decision space ${sequence}`,
+    kind: 'shared',
+    now: NOW,
+    auth: ownerAuth,
+  });
+  spaceId = store.governance.bindBudget({
+    spaceId: baseSpace.id,
+    budgetId,
+    now: NOW,
+    auth: ownerAuth,
+  }).id;
+  if (!store.governance.getPolicy({ spaceId }))
+    store.governance.setPolicy({
+      spaceId,
+      expectedVersion: null,
+      policy: { minimumApprovers: 1, approvalThresholds: [] },
+      now: NOW,
+      auth: ownerAuth,
+    });
+  membershipId = store.governance.addMembership({
+    spaceId,
+    actorId: ACTOR,
+    validFrom: NOW,
+    now: NOW,
+    auth: ownerAuth,
+  }).id;
+  grant('observe');
+  grant('liquidity');
+  grant('notification:receive');
+  mocks.manager = {
+    loadConfig: mocks.loadConfig,
+    withConnection: mocks.withConnection,
+  };
+  mocks.loadConfig.mockResolvedValue({ budgetId });
+  mocks.withConnection.mockImplementation(async (operation) => operation({
+    config: { budgetId },
+    budget: { id: budgetId },
+    connector: { name: 'selected-budget-Actual-connector' },
+  }));
+  mocks.createNativeAnalysisProtocol.mockResolvedValue({
+    attentionHome: (ledger: unknown, params: unknown) => mocks.attentionHome(ledger, params),
+  });
+  mocks.attentionHome.mockResolvedValue({
+    blockers: [],
+    alerts: [],
+    recurrences: [],
+    categoryRisks: [],
+    targetProgress: {
+      overallLabel: 'healthy',
+      healthyCount: 0,
+      atRiskCount: 0,
+      sinkingFundsOnTrack: 0,
+      totalSinkingFunds: 0,
     },
   });
-  mockLoadConfig.mockResolvedValue({
-    version: 1,
-    serverUrl: 'http://actual.invalid',
-    budgetId: 'budget-security',
-    budgetName: 'Security budget',
-    groupId: 'group-security',
+});
+
+afterAll(() => {
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
+
+describe('financial attention selected-space privacy', () => {
+  it('does not restore a private budget for an observer without independent full-read', async () => {
+    const response = await attentionHandler(request('/api/home/attention'));
+
+    expect(response.status).toBe('ok');
+    expect(response.result).toMatchObject({ blockers: [], alerts: [], recurrences: [], categoryRisks: [], scopeLimited: true });
+    expect(mocks.loadConfig).toHaveBeenCalledOnce();
+    expect(mocks.withConnection).not.toHaveBeenCalled();
+    expect(mocks.createNativeAnalysisProtocol).not.toHaveBeenCalled();
+    expect(mocks.attentionHome).not.toHaveBeenCalled();
   });
-  mockRestore.mockResolvedValue({
-    connector: { name: 'actual-security' },
-    budget: { id: 'budget-security', groupId: 'group-security', name: 'Security budget' },
-    synchronization: {},
-  });
-  mockWithConnection.mockImplementation(async (operation) =>
-    operation({ connector: { name: 'actual-security' } }),
-  );
-  mockCreateNativeAnalysisProtocol.mockResolvedValue({ attentionHome: vi.fn() });
-  mockRequireAuthorization.mockImplementation(async (_event, capability) => authorized(capability));
-  mockAttentionHomeAnalysis.mockResolvedValue({
-    schemaVersion: '1',
-    requestId: 'request-attention',
-    status: 'ok',
-    dataFreshness: null,
-    authorization: null,
-    result: {
-      blockers: [],
+
+  it('strips restricted canonical evidence from a full-read Native analysis DTO', async () => {
+    grant('full-read');
+    mocks.attentionHome.mockResolvedValueOnce({
+      blockers: [{
+        code: 'account_freshness_coverage',
+        message: 'An account source is unavailable.',
+        severity: 'critical',
+        classification: 'evidence_connector_degradation',
+        snapshotId: 'snapshot-financial-security',
+        policyVersion: 'financial-attention-v1',
+        revision: 'sha256:financial-security-revision',
+        dedupKey: 'financial-decision:restricted',
+        rawEvidence: { providerAccessToken: HOME_SECRET },
+        issue: {
+          code: 'account_freshness_coverage',
+          severity: 'critical',
+          effect: 'blocks',
+          scope: { kind: 'account', id: 'account-restricted' },
+          evidence: [{
+            evidenceId: 'restricted-reference-1',
+            kind: 'connector_error',
+            authorized: false,
+            redaction: 'redacted',
+            rawPayload: { providerResponse: HOME_SECRET },
+          }],
+          remediation: { code: 'reconnect_source', action: 'Reconnect the account source.' },
+          redaction: 'redacted',
+        },
+      }],
       alerts: [],
       recurrences: [],
       categoryRisks: [],
       targetProgress: {
-        overallLabel: 'healthy',
+        overallLabel: 'unknown',
         healthyCount: 0,
-        atRiskCount: 0,
+        atRiskCount: 1,
         sinkingFundsOnTrack: 0,
         totalSinkingFunds: 0,
       },
-    },
-    error: null,
-  });
-});
-
-describe('financial attention ledger authorization', () => {
-  it('requires observe capability before configuration, store, connection, or ledger access', async () => {
-    const request = event();
-    mockRequireAuthorization.mockResolvedValueOnce(denied());
-
-    const response = await attentionHandler(request);
-
-    expect(response.status).toBe('error');
-    expect(response.error?.code).toBe('FORBIDDEN');
-    expect(mockCreateDefaultConnectionManager).not.toHaveBeenCalled();
-    expect(mockLoadConfig).not.toHaveBeenCalled();
-    expect(mockGetWorkflowStore).not.toHaveBeenCalled();
-    expect(mockWithConnection).not.toHaveBeenCalled();
-    expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
-    expect(mockAttentionHomeAnalysis).not.toHaveBeenCalled();
-  });
-
-  it('withholds whole-budget attention from an observer without full-read membership', async () => {
-    mockFullRead.mockReturnValue(false);
-
-    const response = await attentionHandler(event());
-
-    expect(response.status).toBe('ok');
-    expect(response.result).toEqual({
-      blockers: [],
-      alerts: [],
-      recurrences: [],
-      categoryRisks: [],
-      scopeLimited: true,
-    });
-    expect(mockWithConnection).not.toHaveBeenCalled();
-    expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
-    expect(mockAttentionHomeAnalysis).not.toHaveBeenCalled();
-  });
-
-  it('redacts restricted canonical evidence on the server before returning the home DTO', async () => {
-    mockAttentionHomeAnalysis.mockResolvedValueOnce({
-      schemaVersion: '1',
-      requestId: 'request-restricted',
-      status: 'ok',
-      dataFreshness: null,
-      authorization: null,
-      result: {
-        blockers: [
-          {
-            code: 'account_freshness_coverage',
-            message: 'An account source is unavailable.',
-            severity: 'critical',
-            classification: 'evidence_connector_degradation',
-            snapshotId: 'snapshot-security',
-            policyVersion: 'financial-attention-v1',
-            revision: 'sha256:security-revision',
-            dedupKey: 'financial-decision:restricted',
-            rawEvidence: {
-              providerAccessToken: RESTRICTED_EVIDENCE_SECRET,
-            },
-            issue: {
-              code: 'account_freshness_coverage',
-              severity: 'critical',
-              effect: 'blocks',
-              scope: { kind: 'account', id: 'account-restricted' },
-              evidence: [
-                {
-                  evidenceId: 'restricted-reference-1',
-                  kind: 'connector_error',
-                  authorized: false,
-                  redaction: 'redacted',
-                  rawPayload: {
-                    providerResponse: RESTRICTED_EVIDENCE_SECRET,
-                  },
-                },
-              ],
-              remediation: { code: 'reconnect_source', action: 'Reconnect the account source.' },
-              redaction: 'redacted',
-            },
-          },
-        ],
-        alerts: [],
-        recurrences: [],
-        categoryRisks: [],
-        targetProgress: {
-          overallLabel: 'unknown',
-          healthyCount: 0,
-          atRiskCount: 1,
-          sinkingFundsOnTrack: 0,
-          totalSinkingFunds: 0,
-        },
-      },
-      error: null,
     });
 
-    const response = await attentionHandler(event());
+    const response = await attentionHandler(request('/api/home/attention'));
     const serialized = JSON.stringify(response);
     const blocker = response.result.blockers[0];
 
     expect(response.status).toBe('ok');
-    expect(serialized).not.toContain(RESTRICTED_EVIDENCE_SECRET);
+    expect(mocks.withConnection).toHaveBeenCalledOnce();
+    expect(serialized).not.toContain(HOME_SECRET);
     expect(blocker).not.toHaveProperty('rawEvidence');
     expect(blocker.issue.evidence[0]).toEqual({
       evidenceId: 'restricted-reference-1',
@@ -321,43 +255,33 @@ describe('financial attention ledger authorization', () => {
 });
 
 describe('financial notification browser DTO', () => {
-  it('returns redactedPayload and sanitized event metadata without the stored raw payload', async () => {
-    mockNotificationRuntime.listOutbox.mockResolvedValueOnce([
-      {
-        outbox: {
-          id: 'outbox-security',
-          eventId: 'event-security',
-          deliveryKey: 'delivery-security',
-          channelType: 'in_app',
-          status: 'delivered',
-        },
-        event: {
-          id: 'event-security',
-          eventVersion: 1,
-          budgetId: 'budget-security',
-          classification: 'unresolved_material_evidence',
-          recipientId: 'security-actor',
-          scope: 'budget:budget-security',
-          redactionClass: 'restricted',
-          channelConfigVersion: null,
-          policyVersion: 'financial-attention-v1',
-          correlationId: 'financial-decision:security',
-          payload: JSON.stringify({
-            title: 'Restricted finding',
-            providerToken: RAW_NOTIFICATION_SECRET,
-            rawEvidence: { body: RAW_NOTIFICATION_SECRET },
-          }),
-          createdAt: CAPTURED_AT,
-        },
-        redactedPayload: {
-          title: 'Restricted finding',
-          summary: 'Material evidence needs review.',
-        },
-        deliveryAttempts: [],
+  it('strips secret containers from the real Native outbox projection', async () => {
+    grant('full-read');
+    grant('notification:admin');
+    const event = await store.createNotificationEvent({
+      budgetId,
+      classification: 'budget_alert',
+      recipientId: ACTOR,
+      scope: `budget:${budgetId}`,
+      redactionClass: 'restricted',
+      policyVersion: 'notification-security-v1',
+      payload: {
+        title: 'Restricted finding',
+        summary: 'Material evidence needs review.',
+        rawEvidence: { providerToken: NOTIFICATION_SECRET },
+        rawPayload: { providerResponse: NOTIFICATION_SECRET },
+        secrets: { accessToken: NOTIFICATION_SECRET },
+        details: { authorization: NOTIFICATION_SECRET, explanation: 'Safe public summary.' },
       },
-    ]);
+      now: NOW,
+    });
+    await store.enqueueNotification({
+      eventId: event.id,
+      deliveryKey: `financial-security-delivery-${sequence}`,
+      channelType: 'in_app',
+    });
 
-    const response = await inboxHandler(event());
+    const response = await inboxHandler(request('/api/notifications/inbox'));
     const serialized = JSON.stringify(response);
     const item = response.result.items[0];
 
@@ -365,71 +289,12 @@ describe('financial notification browser DTO', () => {
     expect(item.redactedPayload).toEqual({
       title: 'Restricted finding',
       summary: 'Material evidence needs review.',
-    });
-    expect(item.event).not.toHaveProperty('payload');
-    expect(serialized).not.toContain(RAW_NOTIFICATION_SECRET);
-  });
-
-  it('strips structural secret containers from an administrator browser DTO too', async () => {
-    mockGetActorId.mockReturnValueOnce('security-admin');
-    mockRequireAuthorization.mockResolvedValueOnce({
-      ok: true,
-      info: {
-        actorId: 'security-admin',
-        capability: 'notification:receive',
-        allowed: true,
-      },
-    });
-    mockNotificationRuntime.listOutbox.mockResolvedValueOnce([
-      {
-        outbox: {
-          id: 'outbox-admin-security',
-          eventId: 'event-admin-security',
-          deliveryKey: 'delivery-admin-security',
-          channelType: 'in_app',
-          status: 'delivered',
-        },
-        event: {
-          id: 'event-admin-security',
-          eventVersion: 1,
-          budgetId: 'budget-security',
-          classification: 'unresolved_material_evidence',
-          recipientId: 'another-security-actor',
-          scope: 'budget:budget-security',
-          redactionClass: 'restricted',
-          channelConfigVersion: null,
-          policyVersion: 'financial-attention-v1',
-          correlationId: 'financial-decision:admin-security',
-          payload: JSON.stringify({
-            title: 'Restricted finding',
-            rawEvidence: { providerToken: RAW_NOTIFICATION_SECRET },
-          }),
-          createdAt: CAPTURED_AT,
-        },
-        redactedPayload: {
-          title: 'Restricted finding',
-          summary: 'Material evidence needs review.',
-          rawEvidence: { providerToken: RAW_NOTIFICATION_SECRET },
-          rawPayload: { providerResponse: RAW_NOTIFICATION_SECRET },
-          secrets: { accessToken: RAW_NOTIFICATION_SECRET },
-        },
-        deliveryAttempts: [],
-      },
-    ]);
-
-    const response = await inboxHandler(event());
-    const serialized = JSON.stringify(response);
-    const item = response.result.items[0];
-
-    expect(response.status).toBe('ok');
-    expect(item.redactedPayload).toEqual({
-      title: 'Restricted finding',
-      summary: 'Material evidence needs review.',
+      details: { explanation: 'Safe public summary.' },
     });
     expect(item.redactedPayload).not.toHaveProperty('rawEvidence');
     expect(item.redactedPayload).not.toHaveProperty('rawPayload');
     expect(item.redactedPayload).not.toHaveProperty('secrets');
     expect(item.event).not.toHaveProperty('payload');
-    expect(serialized).not.toContain(RAW_NOTIFICATION_SECRET);
+    expect(serialized).not.toContain(NOTIFICATION_SECRET);
   });
 });

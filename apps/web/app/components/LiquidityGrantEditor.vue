@@ -55,7 +55,11 @@
           >
         </div>
         <p v-if="!catalog.members.length">No current members are available for scoped grants.</p>
-        <UButton :disabled="busy || !dirty" @click="save">{{
+        <label class="grid gap-1 text-sm">
+          {{ demoMode ? 'Disposable-demo confirmation (type CONFIRM)' : 'Account password' }}
+          <input v-model="password" type="password" autocomplete="current-password" required class="rounded border bg-transparent p-2" />
+        </label>
+        <UButton :disabled="busy || !changes.length || !password" @click="save">{{
           busy ? 'Saving access…' : 'Save scoped resource grants'
         }}</UButton>
       </fieldset>
@@ -71,14 +75,16 @@
 <script setup lang="ts">
 import type { PublicLiquidityGrants, PublicLiquidityGrant } from '@balanceframe/application';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
+import { reauthenticateHuman } from '../utils/reauthentication';
+const password = ref('');
+const demoMode = useRuntimeConfig().public.demoMode === true;
 const catalog = ref<PublicLiquidityGrants | null>(null);
-const grants = ref<PublicLiquidityGrant[]>([]);
+const changes = ref<PublicLiquidityGrant[]>([]);
 const actorId = ref('');
 const resourceKey = ref('');
 const loading = ref(true);
 const busy = ref(false);
 const error = ref('');
-const dirty = ref(false);
 const saved = ref(false);
 function key(resource: { resourceKind: string; resourceId: string }) {
   return `${resource.resourceKind}:${resource.resourceId}`;
@@ -87,18 +93,16 @@ const selectedResource = computed(() =>
   catalog.value?.resources.find((resource) => key(resource) === resourceKey.value),
 );
 function isGranted(capability: PublicLiquidityGrant['capability']) {
-  return grants.value.some(
-    (grant) =>
-      grant.actorId === actorId.value &&
-      key(grant) === resourceKey.value &&
-      grant.capability === capability &&
-      grant.granted,
-  );
+  const matches = (grant: PublicLiquidityGrant) =>
+    grant.actorId === actorId.value &&
+    key(grant) === resourceKey.value &&
+    grant.capability === capability;
+  return (changes.value.find(matches) ?? catalog.value?.grants.find(matches))?.granted ?? false;
 }
 function setGrant(capability: PublicLiquidityGrant['capability'], granted: boolean) {
   const resource = selectedResource.value;
   if (!resource) return;
-  const existing = grants.value.find(
+  const existing = changes.value.find(
     (grant) =>
       grant.actorId === actorId.value &&
       key(grant) === resourceKey.value &&
@@ -106,14 +110,13 @@ function setGrant(capability: PublicLiquidityGrant['capability'], granted: boole
   );
   if (existing) existing.granted = granted;
   else
-    grants.value.push({
+    changes.value.push({
       actorId: actorId.value,
       resourceKind: resource.resourceKind,
       resourceId: resource.resourceId,
       capability,
       granted,
     });
-  dirty.value = true;
   saved.value = false;
 }
 async function load() {
@@ -121,8 +124,7 @@ async function load() {
   error.value = '';
   try {
     catalog.value = await liquidityRequest<PublicLiquidityGrants>('/api/liquidity/grants');
-    grants.value = catalog.value.grants.map((grant) => ({ ...grant }));
-    dirty.value = false;
+    changes.value = [];
   } catch (e) {
     error.value = liquidityError(e);
   } finally {
@@ -130,18 +132,23 @@ async function load() {
   }
 }
 async function save() {
+  if (busy.value || !changes.value.length || !password.value) return;
   busy.value = true;
   error.value = '';
+  let passwordSnapshot = password.value;
+  password.value = '';
   try {
+    await reauthenticateHuman(passwordSnapshot);
+    passwordSnapshot = '';
     catalog.value = await liquidityRequest<PublicLiquidityGrants>('/api/liquidity/grants', 'PUT', {
-      grants: grants.value,
+      grants: changes.value,
     });
-    grants.value = catalog.value.grants.map((grant) => ({ ...grant }));
-    dirty.value = false;
+    changes.value = [];
     saved.value = true;
   } catch (e) {
     error.value = liquidityError(e);
   } finally {
+    passwordSnapshot = '';
     busy.value = false;
   }
 }

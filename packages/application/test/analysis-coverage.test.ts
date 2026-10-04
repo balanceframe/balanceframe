@@ -259,19 +259,29 @@ describe('rule analysis workflows', () => {
 });
 
 type SavedViewPersistenceInput = {
+  authority: {
+    actorId: string;
+    spaceId: string;
+    budgetId: string;
+    membershipId: string;
+  };
   name: string;
   viewType: string;
   scope: Record<string, unknown>;
   sort?: string;
-  actorId: string;
 };
 
 describe('saved-view persistence analysis', () => {
-
   it('returns stable validation and persistence errors from the store path', async () => {
     let createCalled = false;
+    const authority = {
+      actorId: 'usr_analysis_coverage',
+      spaceId: 'analysis-space',
+      budgetId: 'analysis-budget',
+      membershipId: 'analysis-membership',
+    };
     const store = {
-      async listSavedViews(_actorId: string): Promise<never> {
+      async listSavedViews(_authority: typeof authority): Promise<never> {
         throw new Error('saved-view database unavailable');
       },
       async createSavedView(_params: SavedViewPersistenceInput): Promise<never> {
@@ -281,7 +291,7 @@ describe('saved-view persistence analysis', () => {
     };
     const input = baseInput({
       ledger: null,
-      // Deliberately narrow store double: this test exercises only the saved-view boundary.
+      // Deliberately narrow store double: this test exercises only error mapping.
       workflowStore: store as unknown as CommandInput['workflowStore'],
     });
 
@@ -289,13 +299,13 @@ describe('saved-view persistence analysis', () => {
       name: '',
       viewType: 'attention',
       scope: {},
-    });
-    const listed = await savedViewsListAnalysis(input);
+    }, authority);
+    const listed = await savedViewsListAnalysis(input, authority);
     const created = await savedViewCreateAnalysis(input, {
       name: 'Should fail',
       viewType: 'attention',
       scope: {},
-    });
+    }, authority);
 
     expect(missingName.error?.code).toBe('view_params_required');
     expect(listed.error).toMatchObject({

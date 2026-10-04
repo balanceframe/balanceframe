@@ -2,12 +2,18 @@
   <UCard>
     <template #header><h2 class="font-semibold">Exact transfer review</h2></template>
     <p class="font-medium">Read-only preview — no funds moved or reserved</p>
+    <p class="break-all text-sm" data-testid="transfer-payload-hash">
+      Immutable payload hash: <code>{{ preview.payloadHash }}</code>
+    </p>
     <p>Minimum required: <SemanticAmount :amount="preview.plan.minimumAmount" /></p>
     <p>
       Required by {{ preview.plan.requiredBy }} · Estimated arrival
       {{ preview.plan.estimatedArrival }}
     </p>
     <p>Expires {{ preview.plan.expiresAt }}</p>
+    <p class="text-sm">
+      Snapshot {{ preview.plan.snapshotId }} · Financial policy {{ preview.plan.policyVersion }}
+    </p>
     <ul class="mt-3 space-y-3">
       <li v-for="(leg, index) in preview.plan.legs" :key="index" class="rounded border p-3">
         <h3 class="font-medium">

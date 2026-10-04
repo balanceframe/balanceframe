@@ -84,6 +84,21 @@ describe('demo selector', () => {
     );
   });
 
+  it('offers the independent completion approver and submits that exact current-generation persona', async () => {
+    state.personaIds = ['owner', 'coapprover', 'restricted', 'approver'];
+    const wrapper = mount(DemoPage, { global: { stubs } });
+    await flushPromises();
+    const selector = wrapper.get('select[aria-label="Fictional persona"]');
+    expect(selector.findAll('option').map((option) => option.element.value)).toContain('approver');
+    await selector.setValue('approver');
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledWith('/__demo/persona', expect.objectContaining({
+      method: 'POST',
+      body: { personaId: 'approver', expectedGeneration: 3 },
+      headers: expect.objectContaining({ 'X-BalanceFrame-Demo-CSRF': 'csrf-3' }),
+    }));
+  });
+
   it('opens only a current-generation authorized entry in the real application', async () => {
     const navigate = vi.fn();
     vi.stubGlobal('navigateTo', navigate);

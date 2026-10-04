@@ -46,7 +46,7 @@
         shared.
       </p></UCard
     >
-    <UCard v-if="current.plan && !error"
+    <UCard v-if="current.plan && !current.conclusion?.authorizedHolderRequired"
       ><template #header
         ><h2 class="font-semibold">
           {{
@@ -64,6 +64,19 @@
         Estimated arrival {{ current.plan.estimatedArrival }} · Plan expires
         {{ current.plan.expiresAt }}
       </p>
+      <p v-if="current.payloadHash" class="break-all text-sm" data-testid="transfer-payload-hash">
+        Immutable payload hash: <code>{{ current.payloadHash }}</code>
+      </p>
+      <p v-if="current.expiresAt && current.payloadHash" data-testid="proposal-expires-at" class="text-sm">
+        Proposal expires {{ current.expiresAt }}
+      </p>
+      <p class="text-sm">
+        Snapshot {{ current.plan.snapshotId }} · Financial policy {{ current.plan.policyVersion }}
+      </p>
+      <ApprovalMetadata
+        v-if="current.payloadHash && current.approvalMetadata"
+        :metadata="current.approvalMetadata"
+      />
       <ol class="mt-3 list-inside list-decimal space-y-3">
         <li v-for="(leg, index) in current.plan.legs" :key="index" class="rounded border p-3">
           <span
@@ -91,31 +104,45 @@
     <p v-if="error" role="alert" class="text-red-600">{{ error }}</p>
     <div class="flex flex-wrap gap-2" aria-label="Transfer actions">
       <template
-        v-if="!error && current.payloadHash && !current.conclusion?.authorizedHolderRequired"
+        v-if="!error && current.plan && current.payloadHash && !current.conclusion?.authorizedHolderRequired"
       >
-        <UButton v-if="current.canApprove" :disabled="busy" @click="act('approve')"
+        <label
+          v-if="current.canApprove || current.canGetInstructions || current.canReportInitiated || current.canReconcile || current.canCancel"
+          class="basis-full space-y-1 text-sm"
+        >
+          <span class="block font-medium">{{ confirmationLabel }}</span>
+          <input
+            v-model="password"
+            data-testid="transfer-password"
+            type="password"
+            autocomplete="current-password"
+            class="w-full rounded border px-3 py-2"
+            :disabled="busy"
+          />
+        </label>
+        <UButton v-if="current.canApprove" :disabled="busy || !password" @click="act('approve')"
           >Approve exact transfer</UButton
         >
-        <UButton v-if="current.canGetInstructions" :disabled="busy" @click="act('instructions')"
+        <UButton v-if="current.canGetInstructions" :disabled="busy || !password" @click="act('instructions')"
           >Get transfer instructions</UButton
         >
         <UButton
           v-if="current.canReportInitiated"
           data-testid="report-initiated"
-          :disabled="busy"
+          :disabled="busy || !password"
           @click="act('report-initiated')"
           >I initiated this transfer — report only</UButton
         >
         <UButton
           v-if="current.canReconcile"
-          :disabled="busy"
+          :disabled="busy || !password"
           variant="outline"
           @click="act('reconcile')"
           >Check trusted settlement evidence</UButton
         >
         <UButton
           v-if="current.canCancel"
-          :disabled="busy"
+          :disabled="busy || !password"
           color="error"
           variant="outline"
           @click="act('cancel')"
@@ -128,47 +155,70 @@
   </section>
 </template>
 <script setup lang="ts">
+import ApprovalMetadata from './ApprovalMetadata.vue';
 import type { PublicTransferDetail } from '@balanceframe/application';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
+import { reauthenticateHuman } from '../utils/reauthentication';
 const props = defineProps<{ detail: PublicTransferDetail }>();
+const confirmationLabel = typeof useRuntimeConfig === 'function' && useRuntimeConfig().public.demoMode === true
+  ? 'Disposable-demo confirmation (type CONFIRM)' : 'Account password';
 const current = ref(props.detail);
 const busy = ref(false);
 const error = ref('');
+const password = ref('');
 watch(
   () => props.detail,
   (detail) => {
     current.value = detail;
+    password.value = '';
   },
 );
 const attempts = new Map<string, string>();
 function label(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1).replaceAll('_', ' ');
 }
-async function act(action: string) {
-  if (!current.value.payloadHash || busy.value) return;
+type TransferAction = 'approve' | 'instructions' | 'report-initiated' | 'reconcile' | 'cancel';
+async function act(action: TransferAction) {
+  const proposal = current.value;
+  let passwordSnapshot = password.value;
+  if (
+    busy.value ||
+    !passwordSnapshot ||
+    !proposal.plan ||
+    !proposal.payloadHash ||
+    proposal.conclusion?.authorizedHolderRequired
+  )
+    return;
+  const { id, payloadHash, version } = proposal;
   busy.value = true;
   error.value = '';
-  const key = `${current.value.version}:${action}`;
+  password.value = '';
+  const key = `${version}:${action}`;
   if (!attempts.has(key)) attempts.set(key, crypto.randomUUID());
   try {
+    await reauthenticateHuman(passwordSnapshot);
+    passwordSnapshot = '';
     current.value = await liquidityRequest<PublicTransferDetail>(
-      `/api/transfer/${encodeURIComponent(current.value.id)}/${action}`,
+      `/api/transfer/${encodeURIComponent(id)}/${action}`,
       'POST',
       {
-        payloadHash: current.value.payloadHash,
-        expectedVersion: current.value.version,
+        payloadHash,
+        expectedVersion: version,
         idempotencyKey: attempts.get(key),
       },
     );
-  } catch (e) {
-    error.value = liquidityError(e);
+  } catch (failure) {
+    error.value = liquidityError(failure);
   } finally {
+    passwordSnapshot = '';
+    password.value = '';
     busy.value = false;
   }
 }
 async function refresh() {
   busy.value = true;
   error.value = '';
+  password.value = '';
   try {
     current.value = await liquidityRequest<PublicTransferDetail>(
       `/api/transfer/${encodeURIComponent(current.value.id)}`,

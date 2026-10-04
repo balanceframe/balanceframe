@@ -8,7 +8,7 @@
  * Uses fake timers to avoid real wall-clock delays.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { Orchestrator } from '../src/orchestrator';
+import { Orchestrator, type OrchestratorConfig } from '../src/orchestrator';
 import { createPolicyEngine } from '../src/policy';
 import { createRedactor } from '../src/redactor';
 import type {
@@ -37,8 +37,18 @@ function makeCandidate(overrides: Partial<UnresolvedCandidate> = {}): Unresolved
     categoryId: null,
     importedId: 'imp_001',
     deterministicEvidence: { reasonCodes: ['uncategorized'] },
+    allowedCategoryIds: ['cat_food'],
     ...overrides,
   };
+}
+
+function createAuthorizedOrchestrator(
+  config: Omit<OrchestratorConfig, 'authorizeCandidate'>,
+): Orchestrator {
+  return new Orchestrator({
+    ...config,
+    authorizeCandidate: (candidate) => candidate,
+  });
 }
 
 function defaultPolicies(overrides: Partial<CapabilityPolicies> = {}): CapabilityPolicies {
@@ -101,7 +111,7 @@ describe('bounded concurrency', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -169,7 +179,7 @@ describe('bounded concurrency', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -235,7 +245,7 @@ describe('bounded concurrency', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -304,7 +314,7 @@ describe('bounded concurrency', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -372,7 +382,7 @@ describe('bounded concurrency', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -441,7 +451,7 @@ describe('abort-listener cleanup', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -493,7 +503,7 @@ describe('abort-listener cleanup', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -539,7 +549,7 @@ describe('abort-listener cleanup', () => {
       classify,
     };
 
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [adapter],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),

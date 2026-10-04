@@ -147,6 +147,19 @@ afterEach(() => {
 });
 
 describe('current liquidity and cash-neutral previews', () => {
+  it('renders amount-redacted purchase conclusions without enabling identity-specific route or transfer actions', () => {
+    const result = view();
+    result.purchases = [{
+      categoryId: 'food', fundingStatus: 'funded', paymentStatus: 'transfer_required',
+      reasons: [], alternatives: [{ accountId: 'checking', status: 'ready' }],
+      transfer: { minimumAmount: money('2000'), requiredBy: '2099-09-07T12:00:00Z', authorizedHolderRequired: false },
+      canPlanTransfer: true,
+    }];
+    const wrapper = remember(mount(LiquidityResult, { global, props: { view: result, selectable: true } }));
+    expect(wrapper.text()).toContain('Food');
+    expect(wrapper.findAll('button').filter((item) => ['Use this account', 'Review exact transfer'].includes(item.text()))).toEqual([]);
+  });
+
   it('offers configuration and session links only when the current view authorizes them', async () => {
     fetchMock.mockResolvedValueOnce(ok(view()));
     const wrapper = remember(mount(CurrentLiquidityPanel, { global }));
@@ -240,8 +253,11 @@ describe('current liquidity and cash-neutral previews', () => {
 });
 
 describe('exact transfer review', () => {
-  it('requires reviewing actual capacity effects before proposing and prevents actions while the proposal is pending', async () => {
+  it('shows the immutable payload hash beside the exact transfer preview and requires reviewing capacity effects', async () => {
     const wrapper = remember(mount(TransferPlanReview, { props: { preview: preview() }, global }));
+    expect(wrapper.text()).toContain('reviewed-payload');
+    expect(wrapper.text()).toContain('snapshot-1');
+    expect(wrapper.text()).toContain('policy-1');
     expect(wrapper.text()).toContain('Private reserve → Daily checking');
     expect(wrapper.text()).toContain('40.00 USD');
     expect(wrapper.text()).toContain('25.00 USD');
@@ -255,12 +271,18 @@ describe('exact transfer review', () => {
     expect(button(wrapper, 'Close preview').attributes('disabled')).toBeDefined();
     expect(navigate).not.toHaveBeenCalled();
     pending.resolve(ok(detail()));
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/transfer/propose',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.objectContaining({ payloadHash: 'reviewed-payload' }),
+      }),
+    );
     await flushPromises();
     expect(navigate).toHaveBeenCalledWith('/transfer/transfer-1');
     expect(wrapper.emitted('proposed')).toHaveLength(1);
     expect(wrapper.text()).not.toMatch(/transfer (?:settled|confirmed)/i);
   });
-
   it('cannot propose an expired preview, including one which expires while a new preview prop arrives', async () => {
     const value = preview();
     const wrapper = remember(mount(TransferPlanReview, { props: { preview: value }, global }));

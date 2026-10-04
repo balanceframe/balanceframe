@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import {
   NotificationRuntime,
@@ -13,6 +13,7 @@ const BUDGET_ID = 'budget-durable-dedup';
 const PRIMARY_RECIPIENT = 'actor-primary';
 const SECONDARY_RECIPIENT = 'actor-secondary';
 const SCOPE = 'category:groceries';
+const AUTHORITY_NOW = '2026-08-23T12:00:00.000Z';
 
 function notificationPolicy(): NotificationPolicy {
   return {
@@ -81,29 +82,98 @@ function notificationInput(
   };
 }
 
+function humanAuth(actorId: string) {
+  return {
+    method: 'human-session' as const,
+    actorId,
+    sessionId: `fixture-session-${actorId}`,
+    reauthenticatedAt: AUTHORITY_NOW,
+  };
+}
+
 describe('durable notification deduplication', () => {
   let store: SqliteWorkflowStore | undefined;
+  let spaceId: string;
+  let primaryMembershipId: string;
+  let secondaryMembershipId: string;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(AUTHORITY_NOW));
+    store = new SqliteWorkflowStore(':memory:');
+    const claimId = 'durable-notification-fixture';
+    await store.claimBootstrap({ name: 'Primary', email: 'primary@example.test', claimId });
+    await store.finalizeBootstrap({ claimId, ownerUserId: PRIMARY_RECIPIENT });
+    const auth = humanAuth(PRIMARY_RECIPIENT);
+    const unboundSpace = store.governance.createSpace({
+      actorId: PRIMARY_RECIPIENT,
+      name: 'Durable notification fixture',
+      kind: 'shared',
+      now: AUTHORITY_NOW,
+      auth,
+    });
+    const space = store.governance.bindBudget({
+      spaceId: unboundSpace.id,
+      budgetId: BUDGET_ID,
+      now: AUTHORITY_NOW,
+      auth,
+    });
+    spaceId = space.id;
+    const primaryMembership = store.governance.getCurrentMembership({
+      spaceId,
+      actorId: PRIMARY_RECIPIENT,
+      now: AUTHORITY_NOW,
+    });
+    if (!primaryMembership) throw new Error('Primary fixture membership missing');
+    primaryMembershipId = primaryMembership.id;
+
+    await store.upsertActorMembership(SECONDARY_RECIPIENT, 'active', [], '');
+    const secondaryMembership = store.governance.addMembership({
+      spaceId,
+      actorId: SECONDARY_RECIPIENT,
+      validFrom: AUTHORITY_NOW,
+      now: AUTHORITY_NOW,
+      auth,
+    });
+    secondaryMembershipId = secondaryMembership.id;
+
+    for (const [actorId, membershipId] of [
+      [PRIMARY_RECIPIENT, primaryMembershipId],
+      [SECONDARY_RECIPIENT, secondaryMembershipId],
+    ] as const) {
+      store.governance.provisionResourceGrant({
+        spaceId,
+        membershipId,
+        actorId,
+        budgetId: BUDGET_ID,
+        resourceKind: 'category',
+        resourceId: 'groceries',
+        capability: 'notification:receive',
+        granted: true,
+        now: AUTHORITY_NOW,
+      });
+    }
+  });
 
   afterEach(() => {
     store?.close();
     store = undefined;
+    vi.useRealTimers();
   });
 
   it('deduplicates concurrent creation and delivery across recreated runtimes', async () => {
-    store = new SqliteWorkflowStore(':memory:');
-    const deliveries: Array<{ payload: unknown; deliveryKey: string }> = [];
+    if (!store) throw new Error('Durable notification fixture unavailable');
+    const deliveries: Array<{ payload: unknown; recipientId: string }> = [];
     const adapter: ChannelAdapter = {
       channelType: 'in_app',
-      async deliver(payload, deliveryKey) {
-        deliveries.push({ payload, deliveryKey });
+      async deliver(payload, recipientId) {
+        deliveries.push({ payload, recipientId });
         return { ok: true, code: 'delivered' };
       },
       isHealthy: () => true,
     };
     const firstRuntime = new NotificationRuntime(store, notificationPolicy(), [adapter]);
     const recreatedRuntime = new NotificationRuntime(store, notificationPolicy(), [adapter]);
-    firstRuntime.setReAuthorizationHook(async () => true);
-    recreatedRuntime.setReAuthorizationHook(async () => true);
 
     const firstRevision = decisionIdentity('sha256:revision-1');
     const [first, repeated] = await Promise.all([
@@ -112,10 +182,19 @@ describe('durable notification deduplication', () => {
     ]);
 
     expect(repeated.event.id).toBe(first.event.id);
+    expect(first.event.spaceId).toBe(spaceId);
+    expect(first.event.recipientMembershipId).toBe(primaryMembershipId);
+    expect(first.event.scope).toBe(SCOPE);
     expect(first.outboxRecords).toHaveLength(1);
     expect(repeated.outboxRecords).toHaveLength(1);
     expect(repeated.outboxRecords[0]!.id).toBe(first.outboxRecords[0]!.id);
     expect(await store.listOutboxRecords()).toHaveLength(1);
+    expect(store['db'].prepare('SELECT COUNT(*) AS count FROM notification_events').get()).toEqual({
+      count: 1,
+    });
+    expect(store['db'].prepare('SELECT COUNT(*) AS count FROM notification_outbox').get()).toEqual({
+      count: 1,
+    });
 
     const deliveryResults = await Promise.all([
       firstRuntime.dispatch(first.outboxRecords[0]!.id, 'claim-first-runtime'),
@@ -124,6 +203,7 @@ describe('durable notification deduplication', () => {
 
     expect(deliveryResults.filter(({ status }) => status === 'delivered')).toHaveLength(1);
     expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.recipientId).toBe(PRIMARY_RECIPIENT);
     expect(await store.getDeliveryAttempts(first.outboxRecords[0]!.id)).toHaveLength(1);
 
     const changedRevision = await recreatedRuntime.create(
@@ -136,7 +216,14 @@ describe('durable notification deduplication', () => {
     expect(changedRevision.event.id).not.toBe(first.event.id);
     expect(changedRevision.outboxRecords[0]!.id).not.toBe(first.outboxRecords[0]!.id);
     expect(changedRecipient.event.id).not.toBe(first.event.id);
+    expect(changedRecipient.event.recipientMembershipId).toBe(secondaryMembershipId);
     expect(changedRecipient.outboxRecords[0]!.id).not.toBe(first.outboxRecords[0]!.id);
     expect(await store.listOutboxRecords()).toHaveLength(3);
+    expect(store['db'].prepare('SELECT COUNT(*) AS count FROM notification_events').get()).toEqual({
+      count: 3,
+    });
+    expect(store['db'].prepare('SELECT COUNT(*) AS count FROM notification_outbox').get()).toEqual({
+      count: 3,
+    });
   });
 });

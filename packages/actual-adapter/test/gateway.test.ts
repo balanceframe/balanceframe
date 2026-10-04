@@ -85,6 +85,7 @@ function createMockClient(overrides: Partial<ActualClient> = {}): ActualClient {
     createAccount: vi.fn().mockResolvedValue('new-account-id'),
     updateTransaction: vi.fn().mockResolvedValue(undefined),
     createRule: vi.fn().mockResolvedValue({ id: 'new-rule-id' }),
+    deleteRule: vi.fn().mockResolvedValue(true),
     setBudgetAmount: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -182,6 +183,34 @@ const mockFiles: APIFileEntity[] = [
     state: 'remote',
   },
 ];
+
+function automationRuleSnapshot(rule: RuleEntity, order: number) {
+  return {
+    id: rule.id,
+    name: '',
+    order,
+    trigger: rule.conditions,
+    actions: rule.actions,
+    inactive: rule.tombstone ?? false,
+    stage: rule.stage,
+    conditionsOp: rule.conditionsOp,
+  };
+}
+
+async function connectRuleWriter(mock: ActualClient, cacheDir: string): Promise<ActualConnector> {
+  const writeConnector = new ActualConnector({
+    client: mock,
+    credentialStore: new NullCredentialStore(),
+    mode: 'reviewAndApply',
+    cacheDir,
+  });
+  await writeConnector.connect({
+    serverUrl: 'http://test:5006',
+    secretKey: 'test',
+  });
+  await writeConnector.selectBudget('budget_1');
+  return writeConnector;
+}
 
 // ============================================================================
 // Tests
@@ -406,6 +435,248 @@ describe('ActualConnector', () => {
         actions: [{ op: 'set', field: 'category', value: 'c1' }],
       });
       expect(mock.sync).toHaveBeenCalled();
+      await writeConnector.disconnect();
+    });
+    it.each([
+      {
+        label: 'stage',
+        rules: [{ ...mockRules[0]!, stage: null }],
+        actualVersion: '26.7.0',
+      },
+      {
+        label: 'conditions operator',
+        rules: [{ ...mockRules[0]!, conditionsOp: 'or' }],
+        actualVersion: '26.7.0',
+      },
+      {
+        label: 'actions',
+        rules: [
+          {
+            ...mockRules[0]!,
+            actions: [{ op: 'set', field: 'category', value: 'c2' }],
+          } as RuleEntity,
+        ],
+        actualVersion: '26.7.0',
+      },
+      {
+        label: 'rank',
+        rules: [{ ...mockRules[0]!, id: 'r_before' }, mockRules[0]!],
+        actualVersion: '26.7.0',
+      },
+      {
+        label: 'Actual version',
+        rules: [mockRules[0]!],
+        actualVersion: '26.6.0',
+      },
+    ])('does not delete when the displayed $label baseline is stale', async ({
+      rules,
+      actualVersion,
+    }) => {
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getRules: vi.fn().mockResolvedValue(rules),
+        deleteRule: vi.fn().mockResolvedValue(true),
+      });
+      const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-stale');
+      const precondition = {
+        rule: automationRuleSnapshot(mockRules[0]!, 0),
+        actualVersion,
+      };
+
+      try {
+        await expect(writeConnector.deleteRule('r1', precondition)).rejects.toThrow();
+        expect(mock.deleteRule).not.toHaveBeenCalled();
+      } finally {
+        await writeConnector.disconnect();
+      }
+    });
+
+    it('synchronizes and confirms fresh Actual absence after deleting the captured rule', async () => {
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getRules: vi.fn().mockResolvedValueOnce([mockRules[0]!]).mockResolvedValueOnce([]),
+        deleteRule: vi.fn().mockResolvedValue(true),
+      });
+      const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-success');
+
+      try {
+        await expect(
+          writeConnector.deleteRule('r1', {
+            rule: automationRuleSnapshot(mockRules[0]!, 0),
+            actualVersion: '26.7.0',
+          }),
+        ).resolves.toBeUndefined();
+        expect(mock.deleteRule).toHaveBeenCalledWith('r1');
+        expect(mock.sync).toHaveBeenCalledTimes(1);
+        expect(mock.getRules).toHaveBeenCalledTimes(2);
+      } finally {
+        await writeConnector.disconnect();
+      }
+    });
+
+    it('does not report deletion success when the synchronized rule remains present', async () => {
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getRules: vi.fn().mockResolvedValue([mockRules[0]!]),
+        deleteRule: vi.fn().mockResolvedValue(true),
+      });
+      const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-unverified');
+
+      try {
+        await expect(
+          writeConnector.deleteRule('r1', {
+            rule: automationRuleSnapshot(mockRules[0]!, 0),
+            actualVersion: '26.7.0',
+          }),
+        ).rejects.toThrow();
+        expect(mock.deleteRule).toHaveBeenCalledWith('r1');
+        expect(mock.sync).toHaveBeenCalledTimes(1);
+        expect(mock.getRules).toHaveBeenCalledTimes(2);
+      } finally {
+        await writeConnector.disconnect();
+      }
+    });
+
+    it('fails when Actual refuses to delete a rule referenced by a schedule', async () => {
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getRules: vi.fn().mockResolvedValue([mockRules[0]!]),
+        deleteRule: vi.fn().mockResolvedValue(false),
+      });
+      const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-scheduled');
+
+      try {
+        await expect(
+          writeConnector.deleteRule('r1', {
+            rule: automationRuleSnapshot(mockRules[0]!, 0),
+            actualVersion: '26.7.0',
+          }),
+        ).rejects.toThrow(/schedule/i);
+        expect(mock.deleteRule).toHaveBeenCalledWith('r1');
+        expect(mock.sync).not.toHaveBeenCalled();
+      } finally {
+        await writeConnector.disconnect();
+      }
+    });
+
+    it('exposes the complete executable rule condition metadata in its read snapshot', async () => {
+      const secondRule: RuleEntity = {
+        ...mockRules[0]!,
+        id: 'r2',
+        stage: null,
+        conditionsOp: 'or',
+      };
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getRules: vi.fn().mockResolvedValue([...mockRules, secondRule]),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-rule-snapshot',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      const [rule, secondRuleSnapshot] = await writeConnector.listRules();
+
+      expect(rule).toMatchObject({
+        id: 'r1',
+        order: 0,
+        stage: 'post',
+        conditionsOp: 'and',
+        trigger: mockRules[0]?.conditions,
+        actions: mockRules[0]?.actions,
+        inactive: false,
+      });
+      expect(secondRuleSnapshot).toMatchObject({
+        id: 'r2',
+        order: 1,
+        stage: null,
+        conditionsOp: 'or',
+      });
+      await writeConnector.disconnect();
+    });
+
+    it('preserves an Actual null rule stage instead of inventing a default', async () => {
+      const nullStageRule: RuleEntity = {
+        ...mockRules[0]!,
+        id: 'r_null_stage',
+        stage: null,
+        conditionsOp: 'or',
+      };
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getRules: vi.fn().mockResolvedValue([nullStageRule]),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-rule-null-stage',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      const [rule] = await writeConnector.listRules();
+
+      expect(rule).toMatchObject({
+        id: 'r_null_stage',
+        stage: null,
+        conditionsOp: 'or',
+      });
+      await writeConnector.disconnect();
+    });
+
+    it('returns all sorted current categories for every Actual group, including empty groups', async () => {
+      const categories: APICategoryEntity[] = [
+        { id: 'c-z', name: 'Zed', group_id: 'g1', is_income: false, hidden: false },
+        { id: 'c-hidden', name: 'Hidden', group_id: 'g1', is_income: false, hidden: true },
+        { id: 'c-a', name: 'Alpha', group_id: 'g1', is_income: false, hidden: false },
+        { id: 'c2', name: 'Income', group_id: 'g2', is_income: true, hidden: false },
+      ];
+      const groups: APICategoryGroupEntity[] = [
+        ...mockCategoryGroups,
+        { id: 'g_empty', name: 'Empty', is_income: false, hidden: false },
+      ];
+      const mock = createMockClient({
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getCategories: vi.fn().mockResolvedValue(categories),
+        getCategoryGroups: vi.fn().mockResolvedValue(groups),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-rule-category-groups',
+      });
+      await writeConnector.connect({
+        serverUrl: 'http://test:5006',
+        secretKey: 'test',
+      });
+      await writeConnector.selectBudget('budget_1');
+
+      const members = await writeConnector.getRuleCategoryGroupMembers();
+
+      expect(members).toEqual({
+        g1: ['c-a', 'c-hidden', 'c-z'],
+        g2: ['c2'],
+        g_empty: [],
+      });
       await writeConnector.disconnect();
     });
 
@@ -689,11 +960,30 @@ describe('ActualConnector', () => {
       });
     });
 
-    it('should normalize rules correctly', () => {
-      const rules = normalizeRules(mockRules);
-      expect(rules).toHaveLength(1);
-      expect(rules[0].id).toBe('r1');
-      expect(rules[0].inactive).toBe(false);
+    it('preserves stage, conditions operator, and source order in normalized rule snapshots', () => {
+      const nativeRule: RuleEntity = {
+        ...mockRules[0]!,
+        stage: null,
+        conditionsOp: 'or',
+      };
+      const laterRule: RuleEntity = {
+        ...nativeRule,
+        id: 'r2',
+        stage: 'post',
+      };
+
+      const [rule, later] = normalizeRules([nativeRule, laterRule]);
+
+      expect(rule).toMatchObject({
+        id: 'r1',
+        order: 0,
+        trigger: {
+          stage: null,
+          conditionsOp: 'or',
+          conditions: nativeRule.conditions,
+        },
+      });
+      expect(later).toMatchObject({ id: 'r2', order: 1 });
     });
 
     it('should normalize schedules correctly', () => {

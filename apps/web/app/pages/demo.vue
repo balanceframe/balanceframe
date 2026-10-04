@@ -293,6 +293,7 @@ interface DemoEntryError {
 
 const personas = [
   { id: 'owner', label: 'Fictional owner' },
+  { id: 'approver', label: 'Fictional independent approver' },
   { id: 'coapprover', label: 'Fictional co-approver' },
   { id: 'restricted', label: 'Fictional restricted viewer' },
 ] as const;

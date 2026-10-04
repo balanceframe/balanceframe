@@ -1,14 +1,11 @@
 /**
- * Tests for strict model output bounds and request-category allowlist validation.
+ * Tests for strict model output bounds.
  *
  * Provider output is validated against bounded Zod schemas after parsing.
- * Category IDs returned by the provider must be within the allowed set
- * from the UnresolvedCandidate.
  */
 import { describe, it, expect } from 'vitest';
-import { z } from 'zod';
 
-// We import and re-test the bounded schemas that will be defined in validators
+// Exercise the bounded schemas exported by validators.
 import { classificationResultSchema, alternativeSchema } from '../src/validators';
 
 describe('provider output bounds', () => {
@@ -155,32 +152,5 @@ describe('provider output bounds', () => {
       });
       expect(result.success).toBe(true);
     });
-  });
-});
-
-describe('category allowlist validation', () => {
-  it('category allowlist validation is applied after schema parse', () => {
-    // This tests the orchestrator integration — categoryId from the
-    // provider is checked against allowedCategoryIds from the candidate.
-    // If the returned categoryId is not in the allowed set, the suggestion
-    // should carry an error.
-    const allowedCategoryIds = ['cat_food', 'cat_housing'];
-    const returnedCategoryId = 'cat_shopping'; // NOT in allowlist
-    const isAllowed = allowedCategoryIds.length === 0 || allowedCategoryIds.includes(returnedCategoryId);
-    expect(isAllowed).toBe(false);
-  });
-
-  it('accepts categoryId when allowedCategoryIds is empty (no constraint)', () => {
-    const allowedCategoryIds: string[] = [];
-    const returnedCategoryId = 'cat_anything';
-    const isAllowed = allowedCategoryIds.length === 0 || allowedCategoryIds.includes(returnedCategoryId);
-    expect(isAllowed).toBe(true);
-  });
-
-  it('accepts categoryId when it is in the allowlist', () => {
-    const allowedCategoryIds = ['cat_food', 'cat_housing'];
-    const returnedCategoryId = 'cat_housing';
-    const isAllowed = allowedCategoryIds.length === 0 || allowedCategoryIds.includes(returnedCategoryId);
-    expect(isAllowed).toBe(true);
   });
 });

@@ -1,228 +1,258 @@
-/**
- * TDD: Notification policy routes and report history route.
- * GET/POST /api/notifications/policy, GET /api/reports/history
- */
-
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-
-const {
-  mockReadBody,
-  mockGetWorkflowStore,
-  mockGetQuery,
-  mockGetRouterParam,
-  mockRequireAuthorization,
-} = vi.hoisted(() => {
-  const mockRequireAuthorization = vi.fn();
-  mockRequireAuthorization.mockResolvedValue({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'notification:admin', allowed: true },
-  });
-  return {
-    mockReadBody: vi.fn(),
-    mockGetWorkflowStore: vi.fn(),
-    mockGetQuery: vi.fn(() => ({})),
-    mockGetRouterParam: vi.fn(),
-    mockRequireAuthorization,
-  };
-});
-
-vi.mock('h3', () => ({
-  defineEventHandler: <T>(h: T) => h,
-  readBody: mockReadBody,
-  getQuery: mockGetQuery,
-  getRouterParam: mockGetRouterParam,
-  setResponseStatus: vi.fn(),
-}));
-
-const mockStore = {
-  getNotificationPolicy: vi.fn(),
-  saveNotificationPolicy: vi.fn(),
-  getReportHistory: vi.fn(),
-  countReportRecords: vi.fn(),
-};
-
-vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: vi.fn(() => ({ store: mockStore })),
-  buildAuthorizationInfo: vi.fn(() => ({
-    actorId: 'test-actor',
-    capability: 'observe',
-    allowed: true,
-  })),
-  requireAuthorization: mockRequireAuthorization,
-  getActorId: vi.fn(() => 'test-actor'),
-  sanitizeError: vi.fn((e, r, c, ret) => ({ code: c, message: String(e), retryable: ret })),
-  okEnvelope: (r) => ({
-    schemaVersion: '1',
-    requestId: 'tr',
-    status: 'ok',
-    result: r,
-    error: null,
-  }),
-  errorEnvelope: (c, m, authorization) => ({
-    schemaVersion: '1',
-    requestId: 'tr',
-    status: 'error',
-    authorization,
-    error: { code: c, message: m, retryable: false },
-  }),
-}));
-
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as H3 from 'h3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
 import policyGet from '../../server/api/notifications/policy.get';
-import policyPost from '../../server/api/notifications/policy.post';
 import historyGet from '../../server/api/reports/history.get';
 
-const SAMPLE_POLICY = {
-  id: 'pol_001',
-  spaceId: 'space_1',
-  policyKey: 'delivery',
-  policyVersion: 'v1',
-  policy: '{}',
-  isActive: true,
-  createdAt: '2026-07-27T10:00:00Z',
-  updatedAt: '2026-07-27T10:00:00Z',
+const mocks = vi.hoisted(() => ({
+  loadConfig: vi.fn(async () => ({ budgetId: '' })),
+}));
+vi.mock('h3', async (importOriginal) => ({
+  ...(await importOriginal<typeof H3>()),
+  getQuery: (event: { query?: unknown }) => event.query ?? {},
+}));
+// Load Source Native modules in Vitest's hoisted mock factories, not stale workspace dist exports.
+vi.mock('@balanceframe/application', async () => ({
+  ...(await import('../../../../packages/application/src/index')),
+  createDefaultConnectionManager: () => ({ loadConfig: mocks.loadConfig }),
+}));
+vi.mock('@balanceframe/workflow-store', async () =>
+  import('../../../../packages/workflow-store/src/index'));
+
+const OWNER = 'policy-history-owner';
+const READER = 'report-history-reader';
+const ORIGIN = 'https://balanceframe.example.test';
+const NOW = '2026-09-06T10:00:00.000Z';
+const ownerControl = {
+  method: 'human-session' as const,
+  actorId: OWNER,
+  sessionId: 'policy-history-owner-session',
+  reauthenticatedAt: NOW,
 };
+let directory = '';
+let store: SqliteWorkflowStore;
+let sequence = 0;
+let selectedBudgetId = '';
+let selectedSpaceId = '';
+let readerMembershipId = '';
+let privateBudgetId = '';
+let privateSpaceId = '';
 
-describe('GET /api/notifications/policy', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetQuery.mockReturnValue({});
-  });
-
-  it('must return the requested notification policy for a Better Auth session without spaceId', async () => {
-    mockGetQuery.mockReturnValue({ spaceId: 'space-a', policyKey: 'delivery' });
-    const policy = { ...SAMPLE_POLICY, spaceId: 'space-a' };
-    mockStore.getNotificationPolicy.mockResolvedValue(policy);
-    const event = {
-      context: {
-        auth: { authenticated: true, user: { id: 'policy-admin' } },
+function request(options: {
+  actorId?: string;
+  selectedSpace?: string;
+  query?: unknown;
+} = {}) {
+  const headers = new Map<string, string | number | readonly string[]>();
+  const actorId = options.actorId ?? READER;
+  return {
+    query: options.query,
+    node: {
+      req: {
+        headers: {
+          origin: ORIGIN,
+          'x-balanceframe-space': options.selectedSpace ?? selectedSpaceId,
+        },
       },
-    };
-
-    const r = await policyGet(event);
-
-    expect(r.status).toBe('ok');
-    expect(r.result).toEqual(policy);
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(event, 'notification:admin', 'space-a');
-    expect(mockStore.getNotificationPolicy).toHaveBeenCalledWith('space-a', 'delivery');
-  });
-
-  it('must deny a requested space outside the caller membership scope before store lookup', async () => {
-    mockGetQuery.mockReturnValue({ spaceId: 'space-b', policyKey: 'delivery' });
-    mockRequireAuthorization.mockResolvedValueOnce({
-      ok: false,
-      response: {
-        status: 'error',
-        error: { code: 'FORBIDDEN', message: 'Capability required', retryable: false },
+      res: {
+        statusCode: 200,
+        statusMessage: '',
+        headersSent: false,
+        setHeader(name: string, value: string | number | readonly string[]) {
+          headers.set(name.toLowerCase(), value);
+        },
+        getHeader(name: string) {
+          return headers.get(name.toLowerCase());
+        },
+        removeHeader(name: string) {
+          headers.delete(name.toLowerCase());
+        },
       },
-    });
-    const event = {
-      context: {
-        auth: { authenticated: true, user: { id: 'restricted-admin' } },
+    },
+    context: {
+      auth: {
+        authenticated: true,
+        actorId,
+        user: { id: actorId },
+        method: 'session' as const,
+        principalType: 'human' as const,
+        sessionId: `session:${actorId}`,
+        impersonatedBy: null,
       },
-    };
+      runtimeConfig: { workflowDbPath: join(directory, 'workflow.sqlite'), devBypassAuth: false },
+    },
+  } as unknown as H3.H3Event & EventWithContext;
+}
 
-    const r = await policyGet(event);
-
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('FORBIDDEN');
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(event, 'notification:admin', 'space-b');
-    expect(mockStore.getNotificationPolicy).not.toHaveBeenCalled();
+function createScope(selectedBudget: string, name: string) {
+  const created = store.governance.createSpace({
+    actorId: OWNER,
+    name,
+    kind: 'shared',
+    now: NOW,
+    auth: ownerControl,
   });
-
-  it('must reject missing query spaceId before authorization or policy store lookup', async () => {
-    mockGetQuery.mockReturnValue({});
-    const r = await policyGet({
-      context: { auth: { authenticated: true, user: { id: 'policy-admin' } } },
-    });
-
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_SPACE_ID');
-    expect(r.authorization).toBeNull();
-    expect(mockRequireAuthorization).not.toHaveBeenCalled();
-    expect(mockStore.getNotificationPolicy).not.toHaveBeenCalled();
+  const space = store.governance.bindBudget({
+    spaceId: created.id,
+    budgetId: selectedBudget,
+    now: NOW,
+    auth: ownerControl,
   });
+  const reader = store.governance.addMembership({
+    spaceId: space.id,
+    actorId: READER,
+    validFrom: NOW,
+    now: NOW,
+    auth: ownerControl,
+  });
+  return { spaceId: space.id, membershipId: reader.id };
+}
 
-  it('must return 404 when the requested policy is not found', async () => {
-    mockGetQuery.mockReturnValue({ spaceId: 'space_x' });
-    mockStore.getNotificationPolicy.mockResolvedValue(null);
-    const event = {
-      context: {
-        auth: { authenticated: true, user: { id: 'policy-admin' } },
-      },
-    };
+function grant(capability: string, granted = true) {
+  store.governance.provisionResourceGrant({
+    spaceId: selectedSpaceId,
+    actorId: READER,
+    membershipId: readerMembershipId,
+    budgetId: selectedBudgetId,
+    capability,
+    resourceKind: 'budget',
+    resourceId: selectedBudgetId,
+    granted,
+    now: NOW,
+  });
+}
 
-    const r = await policyGet(event);
+beforeAll(async () => {
+  directory = mkdtempSync(join(tmpdir(), 'notification-policy-history-'));
+  const opened = getWorkflowStore(request({ selectedSpace: '' }) as unknown as EventWithContext);
+  if ('error' in opened) throw new Error(opened.error);
+  store = opened.store;
+  await store.claimBootstrap({ name: 'Policy history owner', email: 'policy-history@example.test', claimId: 'notification-policy-history-fixture' });
+  await store.finalizeBootstrap({ claimId: 'notification-policy-history-fixture', ownerUserId: OWNER });
+  await store.upsertActorMembership(READER, 'active', [], 'unscoped');
+});
 
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('POLICY_NOT_FOUND');
-    expect(mockRequireAuthorization).toHaveBeenCalledWith(event, 'notification:admin', 'space_x');
-    expect(mockStore.getNotificationPolicy).toHaveBeenCalledWith('space_x', 'delivery');
+beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(NOW));
+  vi.stubEnv('BETTER_AUTH_URL', ORIGIN);
+  selectedBudgetId = `report-history-selected-${++sequence}`;
+  privateBudgetId = `report-history-private-${sequence}`;
+  mocks.loadConfig.mockResolvedValue({ budgetId: selectedBudgetId });
+  const selected = createScope(selectedBudgetId, `Selected policy/report space ${sequence}`);
+  selectedSpaceId = selected.spaceId;
+  readerMembershipId = selected.membershipId;
+  const privateScope = createScope(privateBudgetId, `Private policy/report space ${sequence}`);
+  privateSpaceId = privateScope.spaceId;
+  grant('observe');
+  grant('full-read');
+  await store.saveNotificationPolicy({
+    spaceId: selectedSpaceId,
+    policyKey: 'notification',
+    policyVersion: `selected-policy-${sequence}`,
+    policy: { label: 'selected-space notification policy' },
+  });
+  await store.saveNotificationPolicy({
+    spaceId: privateSpaceId,
+    policyKey: 'notification',
+    policyVersion: `private-policy-${sequence}`,
+    policy: { label: 'private-space policy secret' },
   });
 });
 
-describe('POST /api/notifications/policy', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
-  it('must save notification policy', async () => {
-    mockReadBody.mockResolvedValue({
-      spaceId: 'space_1',
-      policyKey: 'delivery',
-      policyVersion: 'v1',
-      policy: { maxRetries: 3 },
+afterAll(() => {
+  store.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
+describe('GET /api/notifications/policy', () => {
+  it('reads the current policy from the explicitly selected space', async () => {
+    const response = await policyGet(request({ actorId: OWNER, query: {} }));
+    expect(response.status).toBe('ok');
+    expect(response.result).toMatchObject({
+      spaceId: selectedSpaceId,
+      policyKey: 'notification',
+      policyVersion: `selected-policy-${sequence}`,
     });
-    mockStore.saveNotificationPolicy.mockResolvedValue(SAMPLE_POLICY);
-    const r = await policyPost({ context: { auth: { authenticated: true } } });
-    expect(r.status).toBe('ok');
-    expect(r.result.spaceId).toBe('space_1');
+    expect(JSON.parse(response.result.policy)).toEqual({ label: 'selected-space notification policy' });
+    expect(JSON.stringify(response)).not.toContain('private-space policy secret');
   });
 
-  it('must reject missing spaceId', async () => {
-    mockReadBody.mockResolvedValue({});
-    const r = await policyPost({ context: { auth: { authenticated: true } } });
-    expect(r.status).toBe('error');
-    expect(r.error?.code).toBe('MISSING_SPACE_ID');
+  it('does not use a query-selected foreign space or an implicit missing selection', async () => {
+    const foreign = await policyGet(request({ actorId: OWNER, query: { spaceId: privateSpaceId } }));
+    expect(foreign.status).toBe('error');
+    expect(foreign.error?.code).toBe('INVALID_POLICY_QUERY');
+    expect(JSON.stringify(foreign)).not.toContain('private-space policy secret');
+
+    const missing = await policyGet(request({ actorId: OWNER, selectedSpace: '', query: {} }));
+    expect(missing.status).toBe('error');
+    expect(missing.error?.code).toBe('SPACE_SELECTION_REQUIRED');
   });
 });
 
 describe('GET /api/reports/history', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetQuery.mockReturnValue({});
-  });
+  it('paginates and counts only the exact selected budget while returning no metadata after revocation', async () => {
+    const first = await store.createReportRecord({
+      budgetId: selectedBudgetId,
+      reportType: 'spending',
+      config: { label: 'Selected first report' },
+      policyVersion: '1',
+    });
+    vi.setSystemTime(new Date(Date.parse(NOW) + 1_000));
+    const second = await store.createReportRecord({
+      budgetId: selectedBudgetId,
+      reportType: 'spending',
+      config: { label: 'Selected second report' },
+      policyVersion: '1',
+    });
+    vi.setSystemTime(new Date(Date.parse(NOW) + 2_000));
+    const foreign = await store.createReportRecord({
+      budgetId: privateBudgetId,
+      reportType: 'spending',
+      config: { label: 'private-report-count-and-label-secret' },
+      policyVersion: '1',
+    });
+    expect(foreign.budgetId).toBe(privateBudgetId);
 
-  it('must return report history', async () => {
-    mockStore.getReportHistory.mockResolvedValue([
-      { id: 'r_001', reportType: 'spending', label: 'July Spending', isExpired: false },
-    ]);
-    mockStore.countReportRecords.mockResolvedValue(1);
-    const r = await historyGet({ context: { auth: { authenticated: true } } });
-    expect(r.status).toBe('ok');
-    expect(Array.isArray(r.result.entries)).toBe(true);
-    expect(r.result.total).toBe(1);
-  });
+    const firstPage = await historyGet(request({ query: { limit: '1', offset: '0' } }));
+    const secondPage = await historyGet(request({ query: { limit: '1', offset: '1' } }));
+    expect(firstPage.status).toBe('ok');
+    expect(firstPage.result).toMatchObject({ total: 2, entries: [{ id: second.id, budgetId: selectedBudgetId, label: 'Selected second report' }] });
+    expect(secondPage.status).toBe('ok');
+    expect(secondPage.result).toMatchObject({ total: 2, entries: [{ id: first.id, budgetId: selectedBudgetId, label: 'Selected first report' }] });
 
-  it('must apply limit and offset params', async () => {
-    mockGetQuery.mockReturnValue({ limit: '10', offset: '5' });
-    mockStore.getReportHistory.mockResolvedValue([]);
-    mockStore.countReportRecords.mockResolvedValue(0);
-    const r = await historyGet({ context: { auth: { authenticated: true } } });
-    expect(r.status).toBe('ok');
+    const foreignBudgetQuery = await historyGet(request({ query: { budgetId: privateBudgetId } }));
+    expect(foreignBudgetQuery.status).toBe('error');
+    expect(foreignBudgetQuery.error?.code).toBe('FORBIDDEN');
+    expect(JSON.stringify([firstPage, secondPage, foreignBudgetQuery])).not.toContain('private-report-count-and-label-secret');
+    expect(JSON.stringify([firstPage, secondPage])).not.toContain(privateSpaceId);
+
+    store.governance.setResourceGrant({
+      spaceId: selectedSpaceId,
+      actorId: READER,
+      membershipId: readerMembershipId,
+      budgetId: selectedBudgetId,
+      capability: 'full-read',
+      resourceKind: 'budget',
+      resourceId: selectedBudgetId,
+      granted: false,
+      now: new Date().toISOString(),
+      auth: ownerControl,
+    });
+    const revoked = await historyGet(request());
+    expect(revoked.status).toBe('error');
+    expect(revoked.error?.code).toBe('FORBIDDEN');
+    expect(JSON.stringify(revoked)).not.toContain('Selected first report');
+    expect(JSON.stringify(revoked)).not.toContain('Selected second report');
   });
 });
-
-// These behavior fixtures explicitly represent an authorized legacy full-read request.
-// Real membership, revocation and resource denial are covered in legacy-financial-read.test.ts.
-vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  requireFullRead: vi.fn(async () => ({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'liquidity:full-read', allowed: true },
-    budgetId: 'budget_test',
-  })),
-  requireRegisteredOwner: vi.fn(async () => ({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'owner:financial-discovery', allowed: true },
-  })),
-}));

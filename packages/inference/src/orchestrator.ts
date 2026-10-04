@@ -30,8 +30,14 @@ import type {
 import type { ProviderAdapter } from './providers/types';
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
+/** Authorizes a candidate and returns its downstream-safe projection, or null to deny. */
+export type CandidateAuthorizer = (
+  candidate: UnresolvedCandidate,
+) => UnresolvedCandidate | null | Promise<UnresolvedCandidate | null>;
 /** Dependency-injection configuration for the orchestrator. */
 export interface OrchestratorConfig {
+  /** Authorize and project candidate data before classification. Missing authorization denies. */
+  authorizeCandidate?: CandidateAuthorizer | null;
   /** Registered provider adapters — injectable. */
   providers: ProviderAdapter[];
   /** Capability policy engine. */
@@ -64,6 +70,7 @@ export class Orchestrator {
   private readonly providerTimeoutMs: number | undefined;
   private readonly signal: AbortSignal | undefined;
   private readonly layers: AuthoritativeLayer[] | undefined;
+  private readonly authorizeCandidate: CandidateAuthorizer | null | undefined;
   private readonly maxConcurrency: number | undefined;
   /** Track abort listener for cleanup after each classifyOne call. */
   private _abortListener: (() => void) | null = null;
@@ -75,6 +82,7 @@ export class Orchestrator {
     this.promptVersion = config.promptVersion;
     this.providerTimeoutMs = config.providerTimeoutMs;
     this.signal = config.signal;
+    this.authorizeCandidate = config.authorizeCandidate;
     this.layers = config.layers;
     this.maxConcurrency = config.maxConcurrency;
   }
@@ -128,18 +136,36 @@ export class Orchestrator {
     return results;
   }
   private async classifyOne(candidate: UnresolvedCandidate): Promise<Suggestion> {
-    // Check candidate eligibility
-    const eligibilityError = this.checkEligibility(candidate);
+    let authorizedCandidate: UnresolvedCandidate | null;
+    try {
+      authorizedCandidate = this.authorizeCandidate
+        ? await this.authorizeCandidate(candidate)
+        : null;
+    } catch {
+      authorizedCandidate = null;
+    }
+
+    const allowedCategoryIds = authorizedCandidate?.allowedCategoryIds;
+    if (
+      !authorizedCandidate ||
+      !Array.isArray(allowedCategoryIds) ||
+      allowedCategoryIds.length === 0
+    ) {
+      return this.authorizationDeniedSuggestion(candidate);
+    }
+
+    // Check candidate eligibility only after successful authorization.
+    const eligibilityError = this.checkEligibility(authorizedCandidate);
     if (eligibilityError) {
-      return this.errorSuggestion(candidate, eligibilityError, null);
+      return this.errorSuggestion(authorizedCandidate, eligibilityError, null);
     }
 
     // Check policy
     if (!this.policy.isEnabled('classification')) {
-      return this.errorSuggestion(candidate, 'classification disabled by policy', null);
+      return this.errorSuggestion(authorizedCandidate, 'classification disabled by policy', null);
     }
-    // Run authoritative layers before falling through to providers
-    const layerSuggestion = await this.resolveLayers(candidate);
+    // Run authoritative layers before falling through to providers.
+    const layerSuggestion = await this.resolveLayers(authorizedCandidate, allowedCategoryIds);
     if (layerSuggestion) {
       return layerSuggestion;
     }
@@ -149,7 +175,7 @@ export class Orchestrator {
     const allowed = this.policy.getAllowedProviders('classification', registry);
 
     if (allowed.length === 0) {
-      return this.errorSuggestion(candidate, 'no eligible providers for classification', null);
+      return this.errorSuggestion(authorizedCandidate, 'no eligible providers for classification', null);
     }
 
     // Pick the first eligible provider
@@ -159,7 +185,7 @@ export class Orchestrator {
     );
     if (!chosenAdapter) {
       return this.errorSuggestion(
-        candidate,
+        authorizedCandidate,
         `provider ${chosenProviderInfo.id} not found in registry`,
         chosenProviderInfo.id,
       );
@@ -168,8 +194,8 @@ export class Orchestrator {
     // Redact for external calls
     const isExternal = chosenProviderInfo.locality === 'external';
     const preparedCandidate = isExternal
-      ? this.redactor.forExternal(candidate)
-      : this.redactor.forLocal(candidate);
+      ? this.redactor.forExternal(authorizedCandidate)
+      : this.redactor.forLocal(authorizedCandidate);
 
     // Build classify request with deadline race and category context
     let timeoutId: TimeoutHandle | undefined;
@@ -213,7 +239,7 @@ export class Orchestrator {
       currency: preparedCandidate.currency,
       date: preparedCandidate.date,
       categoryId: preparedCandidate.categoryId,
-      // Category context from protocol snapshot — carried on the candidate
+      // Category context from the authorized projection.
       allowedCategoryIds: preparedCandidate.allowedCategoryIds ?? [],
       categoryNames: preparedCandidate.categoryNames ?? {},
       categoryGroups: preparedCandidate.categoryGroups ?? {},
@@ -237,7 +263,7 @@ export class Orchestrator {
             ? err.message.split(':')[0].trim()
             : 'Error'
           : 'Unknown';
-      return this.errorSuggestion(candidate, message, chosenProviderInfo.id, errorCode);
+      return this.errorSuggestion(authorizedCandidate, message, chosenProviderInfo.id, errorCode);
     } finally {
       clearTimeout(timeoutId);
       if (this.signal) {
@@ -250,7 +276,7 @@ export class Orchestrator {
     if (!parsed.success) {
       const issues = parsed.error.issues.map((i) => i.message).join('; ');
       return this.errorSuggestion(
-        candidate,
+        authorizedCandidate,
         `provider output validation failed: ${issues}`,
         chosenProviderInfo.id,
       );
@@ -258,12 +284,9 @@ export class Orchestrator {
 
     const validated = parsed.data;
 
-    // Category allowlist validation: if allowedCategoryIds is non-empty, the
-    // returned categoryId must be in the allowed set.
-    const allowedIds = candidate.allowedCategoryIds ?? [];
-    if (allowedIds.length > 0 && !allowedIds.includes(validated.categoryId)) {
+    if (!allowedCategoryIds.includes(validated.categoryId)) {
       return this.errorSuggestion(
-        candidate,
+        authorizedCandidate,
         `provider returned category "${validated.categoryId}" which is not in the allowed category set`,
         chosenProviderInfo.id,
         'CATEGORY_NOT_ALLOWED',
@@ -271,7 +294,7 @@ export class Orchestrator {
     }
 
     // Build the suggestion with deterministic idempotency key
-    return this.buildSuggestion(candidate, validated, chosenProviderInfo);
+    return this.buildSuggestion(authorizedCandidate, validated, chosenProviderInfo);
   }
 
   /**
@@ -291,6 +314,37 @@ export class Orchestrator {
       return 'candidate missing budgetId';
     }
     return null;
+  }
+
+  private authorizationDeniedSuggestion(candidate: UnresolvedCandidate): Suggestion {
+    // Keep only the correlation ID; denied candidates expose no other data.
+    const deniedCandidate: UnresolvedCandidate = {
+      transactionId: candidate.transactionId,
+      transactionVersion: '',
+      budgetId: '',
+      spaceId: '',
+      connectionId: '',
+      rawMerchant: null,
+      normalizedMerchant: null,
+      description: null,
+      notes: null,
+      importedPayee: null,
+      amountMinorUnits: '',
+      currency: '',
+      date: '',
+      categoryId: null,
+      importedId: null,
+      allowedCategoryIds: [],
+      categoryNames: {},
+      categoryGroups: {},
+      deterministicEvidence: {},
+    };
+    return this.errorSuggestion(
+      deniedCandidate,
+      'Candidate authorization denied',
+      null,
+      'CANDIDATE_AUTHORIZATION_DENIED',
+    );
   }
 
   /**
@@ -431,7 +485,10 @@ export class Orchestrator {
    * Returns a Suggestion if any layer resolves or blocks the candidate,
    * or null if all layers return unresolved/unavailable.
    */
-  private async resolveLayers(candidate: UnresolvedCandidate): Promise<Suggestion | null> {
+  private async resolveLayers(
+    candidate: UnresolvedCandidate,
+    allowedCategoryIds: string[],
+  ): Promise<Suggestion | null> {
     if (!this.layers || this.layers.length === 0) {
       return null;
     }
@@ -446,6 +503,14 @@ export class Orchestrator {
       }
 
       if (result.outcome === 'resolved') {
+        if (!result.categoryId || !allowedCategoryIds.includes(result.categoryId)) {
+          return this.errorSuggestion(
+            candidate,
+            `layer ${layer.layerId} returned category "${result.categoryId ?? ''}" which is not in the allowed category set`,
+            `${layer.layerId}-layer`,
+            'CATEGORY_NOT_ALLOWED',
+          );
+        }
         return this.buildLayerSuggestion(candidate, result, layer.layerId);
       }
 
