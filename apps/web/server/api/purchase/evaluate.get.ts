@@ -13,4 +13,4 @@ export default liquidityRoute(async (event, service, actor) => {
     purchaseAt: query.purchaseAt,
     requiredBy: query.requiredBy,
   });
-}, true);
+}, { capability: 'affordability:evaluate', purchaseQuery: true });

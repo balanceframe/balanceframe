@@ -12,12 +12,44 @@
 
 import Database from 'better-sqlite3';
 import { LiquidityWorkflow } from './liquidity.js';
+import { SpaceGovernance, migrateGovernance } from './governance.js';
+import { migrateScopedInvitations } from './scoped-invitations.js';
+import { migrateNotificationGovernance } from './notification-governance.js';
 import {
   migrateLiquidityWorkflow,
   migrateTransferPreviews,
   migrateSessionCompletion,
   migrateScopedProspectiveEffects,
 } from './liquidity-migration.js';
+import {
+  canonicalProposalHash,
+  canonicalProposalJson,
+  deriveProposalAuthorizationFacts,
+  GENERIC_MUTATION_POLICY_VERSION,
+  ProposalAcquisitionError,
+  requiredProposalApprovers,
+} from './proposal.js';
+import type { ProposalAuthorizationFacts } from './proposal.js';
+import type {
+  AcquireProposalExecutionInput,
+  GetProposalApprovalSummaryInput,
+  DiscardProposalAuthorization,
+  GenericActionProposal,
+  GenericProposalOperation,
+  CategoryActionPayload,
+  CreateIdempotencyInput,
+  ProposalApprovalSummary,
+  ProposalExecutionAcquisition,
+  RuleActionPayload,
+} from './types.js';
+import type {
+  GovernanceOperation,
+  GovernanceResourceKind,
+  GovernanceResourceRef,
+  OperationalAuth,
+  HumanControlContext,
+} from './governance-types.js';
+import { migrateProposalApprovals, migrateProposalOrigins } from './proposal-migration.js';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 
@@ -29,11 +61,18 @@ import type {
   FailureRecord,
   EnqueueJobInput,
   WorkflowStore,
+  GetRuleOverrideInput,
+  RuleOverride,
+  RuleOverrideScope,
+  SetRuleOverrideInput,
+  RemoveRuleOverrideInput,
   ReviewItem,
   ReviewStatus,
   ReviewAction,
   ReviewListOptions,
   TransitionReviewInput,
+  AuthorizedReviewTransitionInput,
+  ReviewActionAuthorization,
   CreateReviewItemInput,
   TransitionReviewResult,
   ActionProposal,
@@ -47,7 +86,7 @@ import type {
   AuditClassification,
   CreateProposalInput,
   CreateApprovalInput,
-  CreateIdempotencyInput,
+  CreateApprovalsInput,
   AppendAuditInput,
   ListProposalsOptions,
   AuthorizationDisposition,
@@ -65,6 +104,7 @@ import type {
   InvitationStatus,
   Invitation,
   InvitationMetadata,
+  InvitationControlInput,
   CreateInvitationResult,
   ClaimInvitationInput,
   ClaimInvitationResult,
@@ -86,6 +126,7 @@ import type {
   SavedFilter,
   SavedFilterListOptions,
   SavedViewResult,
+  SavedViewAuthority,
   UpdateSavedFilterInput,
   // Phase 8.5 types
   Finding,
@@ -105,6 +146,7 @@ import type {
   ListNotificationPoliciesOptions,
   ListOutboxRecordsOptions,
   ReportHistoryEntry,
+  LifecycleScope,
 } from './types.js';
 // ---------------------------------------------------------------------------
 // Helpers
@@ -115,10 +157,28 @@ function nowISO(): string {
   return new Date().toISOString();
 }
 
+function isGenericProposalOperation(operation: string): operation is GenericProposalOperation {
+  return operation === 'set_category' ||
+    operation === 'create_rule' ||
+    operation === 'update_rule' ||
+    operation === 'delete_rule';
+}
+
 /** Returns true if the ISO-8601 string is invalid or represents a moment <= now. */
 function isExpired(isoString: string): boolean {
   const parsed = new Date(isoString);
   return isNaN(parsed.getTime()) || parsed <= new Date();
+}
+
+function timestampMillis(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value))
+    return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Map a raw DB row to a typed Suggestion. */
@@ -170,6 +230,8 @@ function rowToReviewItem(row: ReviewItemRow): ReviewItem {
     suggestionId: row.suggestion_id,
     budgetId: row.budget_id,
     transactionId: row.transaction_id,
+    sourceTransaction: row.source_transaction_json === null ? null
+      : JSON.parse(row.source_transaction_json) as ReviewActionAuthorization['transaction'],
     categoryId: row.category_id,
     classifier: row.classifier,
     promptVersion: row.prompt_version,
@@ -211,6 +273,9 @@ function rowToProposal(row: ProposalRow): ActionProposal {
     id: row.id,
     operation: row.operation as ProposalOperation,
     budgetId: row.budget_id,
+    spaceId: row.space_id,
+    requesterMembershipId: row.requester_membership_id,
+    governancePolicyVersion: row.governance_policy_version,
     payload: JSON.parse(row.payload),
     version: row.version,
     state: JSON.parse(row.state),
@@ -227,6 +292,16 @@ function rowToProposal(row: ProposalRow): ActionProposal {
   } as ActionProposal;
 }
 
+function rowToRuleOverride(row: RuleOverrideRow): RuleOverride {
+  if (row.inactive !== null && row.inactive !== 0 && row.inactive !== 1)
+    throw new Error('Stored rule override has invalid inactive state');
+  return {
+    ruleId: row.rule_id,
+    inactive: row.inactive === null ? null : row.inactive === 1,
+    version: row.version,
+  };
+}
+
 /** Map a raw DB row to a typed ProposalApproval. */
 function rowToApproval(row: ApprovalRow): ProposalApproval {
   return {
@@ -235,6 +310,10 @@ function rowToApproval(row: ApprovalRow): ProposalApproval {
     payloadHash: row.payload_hash,
     actorId: row.actor_id,
     status: row.status as ApprovalStatus,
+    membershipId: row.issuer_membership_id,
+    governancePolicyVersion: row.governance_policy_version,
+    reauthenticatedSessionId: row.reauthenticated_session_id,
+    reauthenticatedAt: row.reauthenticated_at,
     expiresAt: row.expires_at,
     consumedAt: row.consumed_at,
     supersededAt: row.superseded_at,
@@ -253,6 +332,7 @@ function rowToIdempotency(row: IdempotencyRow): IdempotencyRecord {
     status: row.idempotency_status as IdempotencyStatus,
     leaseExpiresAt: row.lease_expires_at,
     serialisedEffect: row.serialised_effect,
+    serialisedResult: row.serialised_result,
     errorMessage: row.error_message,
     updatedAt: row.updated_at,
   };
@@ -299,6 +379,12 @@ function rowToCorrection(row: CorrectionRow): CorrectionRecord {
     amount: row.amount,
     date: row.date,
     categoryId: row.category_id,
+    previousCategoryId: row.previous_category_id,
+    proposalId: row.proposal_id,
+    proposalActorId: row.proposal_actor_id,
+    payloadHash: row.payload_hash,
+    idempotencyKey: row.idempotency_key,
+    verified: row.verified !== 0,
     categoryName: row.category_name,
     actor: row.actor,
     fromStatus: row.from_status as ReviewStatus,
@@ -314,6 +400,9 @@ function rowToInvitationMetadata(row: InvitationRow): InvitationMetadata {
     id: row.id,
     status: row.status as InvitationStatus,
     createdByUserId: row.created_by_user_id,
+    spaceId: row.space_id!,
+    issuerMembershipId: row.issuer_membership_id!,
+    governancePolicyVersion: row.governance_policy_version!,
     expiresAt: row.expires_at,
     claimedEmail: row.claimed_email,
     redeemedUserId: row.redeemed_user_id,
@@ -331,6 +420,8 @@ function rowToNotificationEvent(row: NotificationEventRow): NotificationEvent {
     budgetId: row.budget_id,
     classification: row.classification,
     recipientId: row.recipient_id,
+    spaceId: row.space_id,
+    recipientMembershipId: row.recipient_membership_id,
     scope: row.scope,
     redactionClass: row.redaction_class,
     channelConfigVersion: row.channel_config_version,
@@ -441,6 +532,8 @@ function parseSavedViewScope(scope: string): Record<string, unknown> {
 
 /** Map a raw DB row to a typed SavedViewResult. */
 function rowToSavedViewResult(row: SavedViewRow): SavedViewResult {
+  if (row.space_id === null || row.budget_id === null || row.membership_id === null)
+    throw new Error('Saved view provenance is unavailable');
   return {
     viewId: row.view_id,
     name: row.name,
@@ -448,6 +541,8 @@ function rowToSavedViewResult(row: SavedViewRow): SavedViewResult {
     scope: parseSavedViewScope(row.scope),
     sort: row.sort,
     actorId: row.actor_id,
+    spaceId: row.space_id,
+    budgetId: row.budget_id,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
   };
@@ -568,6 +663,9 @@ interface JobRow {
   claim_expires_at: string | null;
   created_at: string;
   updated_at: string;
+  space_id: string | null;
+  budget_id: string | null;
+  actor_id: string | null;
 }
 
 interface ReviewItemRow {
@@ -575,6 +673,7 @@ interface ReviewItemRow {
   suggestion_id: string | null;
   budget_id: string;
   transaction_id: string;
+  source_transaction_json: string | null;
   category_id: string;
   classifier: string;
   prompt_version: string;
@@ -618,6 +717,11 @@ interface ProposalRow {
   id: string;
   operation: string;
   budget_id: string;
+  space_id: string | null;
+  requester_membership_id: string | null;
+  requester_delegation_id: string | null;
+  requester_delegation_version: string | null;
+  governance_policy_version: string | null;
   payload: string;
   version: number;
   state: string;
@@ -633,12 +737,22 @@ interface ProposalRow {
   created_at: string;
 }
 
+interface RuleOverrideRow {
+  rule_id: string;
+  inactive: number | null;
+  version: number;
+}
+
 interface ApprovalRow {
   id: string;
   proposal_id: string;
   payload_hash: string;
   actor_id: string;
   status: string;
+  issuer_membership_id: string | null;
+  governance_policy_version: string | null;
+  reauthenticated_session_id: string | null;
+  reauthenticated_at: string | null;
   expires_at: string;
   consumed_at: string | null;
   superseded_at: string | null;
@@ -654,6 +768,7 @@ interface IdempotencyRow {
   idempotency_status: string;
   lease_expires_at: string | null;
   serialised_effect: string;
+  serialised_result: string | null;
   error_message: string | null;
   updated_at: string;
 }
@@ -692,6 +807,9 @@ interface InvitationRow {
   token_digest: string;
   status: string;
   created_by_user_id: string;
+  space_id: string | null;
+  issuer_membership_id: string | null;
+  governance_policy_version: string | null;
   expires_at: string;
   claimed_email: string | null;
   claim_id: string | null;
@@ -708,6 +826,8 @@ interface NotificationEventRow {
   classification: string;
   dedup_key: string | null;
   recipient_id: string | null;
+  space_id: string | null;
+  recipient_membership_id: string | null;
   scope: string | null;
   redaction_class: string | null;
   channel_config_version: string | null;
@@ -783,6 +903,9 @@ interface SavedViewRow {
   scope: string;
   sort: string | null;
   actor_id: string;
+  space_id: string | null;
+  budget_id: string | null;
+  membership_id: string | null;
   created_at: string;
   last_used_at: string | null;
 }
@@ -852,6 +975,12 @@ interface CorrectionRow {
   date: string | null;
   category_id: string;
   category_name: string | null;
+  previous_category_id: string | null;
+  proposal_id: string | null;
+  proposal_actor_id: string | null;
+  payload_hash: string | null;
+  idempotency_key: string | null;
+  verified: number;
   actor: string;
   from_status: string;
   to_status: string;
@@ -923,6 +1052,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectActiveApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
     consumeApprovalStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectApprovalByProposalActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectProposalExecutionAcquisition: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertProposalExecutionAcquisition: null as unknown as ReturnType<DatabaseType['prepare']>,
     supersedeProposalApprovals: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectProposalStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertIdempotency: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -952,8 +1083,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectAllCorrections: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectCorrectionConflicts: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateReviewItemCategory: null as unknown as ReturnType<DatabaseType['prepare']>,
+    completeReviewCategorization: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectCorrectionByIdempotencyKey: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectCorrectionByReviewTransition: null as unknown as ReturnType<DatabaseType['prepare']>,
-    upsertRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
+    insertRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
+    getRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
     getAllRuleOverrides: null as unknown as ReturnType<DatabaseType['prepare']>,
     removeRuleOverride: null as unknown as ReturnType<DatabaseType['prepare']>,
     countReviewItems: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -978,7 +1113,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
     updateInvitationRevoke: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateInvitationExpired: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateInvitationRedeemed: null as unknown as ReturnType<DatabaseType['prepare']>,
-    selectStrandedClaims: null as unknown as ReturnType<DatabaseType['prepare']>,
     // ── Notification events ──
     insertNotificationEvent: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertOrIgnoreNotificationEvent: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1032,14 +1166,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
     listReportRecordsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
     listReportRecordsByType: null as unknown as ReturnType<DatabaseType['prepare']>,
     expireReportRecord: null as unknown as ReturnType<DatabaseType['prepare']>,
+    validateSavedViewAuthority: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
-    listSavedViewsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
-    countSavedViewsByActor: null as unknown as ReturnType<DatabaseType['prepare']>,
+    listSavedViewsByAuthority: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
     deleteSavedView: null as unknown as ReturnType<DatabaseType['prepare']>,
     recordSavedViewUsage: null as unknown as ReturnType<DatabaseType['prepare']>,
-    selectSavedViewByActorViewType: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertFinding: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectFinding: null as unknown as ReturnType<DatabaseType['prepare']>,
     listFindings: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1065,8 +1198,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     countReportRecordsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
   };
 
+  readonly governance: SpaceGovernance;
   readonly liquidity: LiquidityWorkflow;
-
   constructor(filename: string = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
@@ -1086,7 +1219,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     // (4) Prepare runtime statements
     this.prepareStatements();
-    this.liquidity = new LiquidityWorkflow(this.db, (row) => rowToProposal(row as ProposalRow));
+    this.governance = new SpaceGovernance(this.db);
+    this.liquidity = new LiquidityWorkflow(this.db, (row) => rowToProposal(row as ProposalRow), this.governance);
   }
   /** Release the database connection. */
   close(): void {
@@ -1692,6 +1826,69 @@ export class SqliteWorkflowStore implements WorkflowStore {
     migrateTransferPreviews,
     migrateSessionCompletion,
     migrateScopedProspectiveEffects,
+    migrateGovernance,
+    migrateProposalApprovals,
+    migrateScopedInvitations,
+    migrateNotificationGovernance,
+    (db) => {
+      db.exec(`
+        ALTER TABLE rule_overrides RENAME TO unscoped_rule_overrides;
+
+        CREATE TABLE rule_overrides (
+          space_id   TEXT NOT NULL,
+          budget_id  TEXT NOT NULL,
+          rule_id    TEXT NOT NULL,
+          inactive   INTEGER CHECK (inactive IS NULL OR inactive IN (0, 1)),
+          version    INTEGER NOT NULL CHECK (version > 0),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (space_id, budget_id, rule_id)
+        );
+      `);
+    },
+    migrateProposalOrigins,
+    (db) => {
+      db.exec(`
+        ALTER TABLE saved_views ADD COLUMN space_id TEXT;
+        ALTER TABLE saved_views ADD COLUMN budget_id TEXT;
+        ALTER TABLE saved_views ADD COLUMN membership_id TEXT;
+        CREATE INDEX idx_saved_views_scope
+          ON saved_views(space_id, budget_id, actor_id, membership_id);
+      `);
+    },
+    (db) => {
+      db.exec(`
+        ALTER TABLE idempotency_records ADD COLUMN serialised_result TEXT;
+        ALTER TABLE review_corrections ADD COLUMN previous_category_id TEXT;
+        ALTER TABLE review_corrections ADD COLUMN proposal_id TEXT;
+        ALTER TABLE review_corrections ADD COLUMN proposal_actor_id TEXT;
+        ALTER TABLE review_corrections ADD COLUMN payload_hash TEXT;
+        ALTER TABLE review_corrections ADD COLUMN idempotency_key TEXT;
+        ALTER TABLE review_corrections ADD COLUMN verified INTEGER NOT NULL DEFAULT 0
+          CHECK (verified IN (0, 1));
+        CREATE UNIQUE INDEX idx_review_corrections_idempotency
+          ON review_corrections(idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+      `);
+    },
+    // Version 23: Exact lifecycle provenance for exports and candidate jobs
+    (db) => {
+      db.exec(`
+        ALTER TABLE candidate_jobs ADD COLUMN space_id TEXT;
+        ALTER TABLE candidate_jobs ADD COLUMN budget_id TEXT;
+        ALTER TABLE candidate_jobs ADD COLUMN actor_id TEXT;
+        ALTER TABLE export_records ADD COLUMN space_id TEXT;
+        ALTER TABLE export_records ADD COLUMN budget_id TEXT;
+        ALTER TABLE export_records ADD COLUMN actor_id TEXT;
+        ALTER TABLE export_records ADD COLUMN sha256_hash TEXT;
+        ALTER TABLE export_records ADD COLUMN byte_size INTEGER;
+        ALTER TABLE review_items ADD COLUMN source_transaction_json TEXT;
+        CREATE INDEX idx_jobs_lifecycle_scope
+          ON candidate_jobs(space_id, budget_id, status);
+        CREATE INDEX idx_exports_lifecycle_scope
+          ON export_records(actor_id, space_id, budget_id, exported_at);
+      `);
+    },
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -1785,11 +1982,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Jobs ───────────────────────────────────────────────────────────
 
     this.stmt.upsertJob = this.db.prepare(`
-      INSERT INTO candidate_jobs (id, job_type, candidate_id, status,
-                                  claim_token, claimed_at,
-                                  claim_expires_at, created_at, updated_at)
-      VALUES (@id, @jobType, @candidateId, 'pending',
-              NULL, NULL, NULL, @now, @now)
+      INSERT INTO candidate_jobs (
+        id, job_type, candidate_id, status, claim_token, claimed_at,
+        claim_expires_at, created_at, updated_at, space_id, budget_id, actor_id
+      )
+      VALUES (
+        @id, @jobType, @candidateId, 'pending', NULL, NULL, NULL, @now, @now,
+        @spaceId, @budgetId, @actorId
+      )
       ON CONFLICT(job_type, candidate_id) DO NOTHING
       RETURNING *
     `);
@@ -1877,7 +2077,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
                                 reviewers_required, priority, evidence,
                                 provenance, superseded_by, superseded_reason,
                                 freshness_expires_at, version, created_at,
-                                updated_at)
+                                updated_at, source_transaction_json)
       VALUES (@id, @suggestionId, @budgetId, @transactionId,
               @categoryId, @classifier, @promptVersion,
               @transactionVersion, @status, @correlationId,
@@ -1885,7 +2085,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
               @reviewersRequired, @priority, @evidence,
               @provenance, @supersededBy, @supersededReason,
               @freshnessExpiresAt, @version, @createdAt,
-              @updatedAt)
+              @updatedAt, @sourceTransaction)
       ON CONFLICT(budget_id, transaction_id, category_id, classifier)
         WHERE status != 'superseded'
         DO NOTHING
@@ -1973,6 +2173,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
          AND version = @expectedVersion
     `);
 
+    this.stmt.completeReviewCategorization = this.db.prepare(`
+      UPDATE review_items
+         SET category_id = @categoryId,
+             status = 'applied',
+             updated_at = @now,
+             version = version + 1
+       WHERE id = @id
+         AND budget_id = @budgetId
+         AND transaction_id = @transactionId
+         AND category_id = @previousCategoryId
+         AND status = @fromStatus
+         AND version = @expectedVersion
+         AND superseded_by IS NULL
+    `);
+
     this.stmt.updateReviewItemCategory = this.db.prepare(`
       UPDATE review_items
          SET category_id = @categoryId,
@@ -1981,7 +2196,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
        WHERE id = @id
          AND version = @expectedVersion
     `);
-
     this.stmt.insertReviewAction = this.db.prepare(`
       INSERT INTO review_actions (id, review_item_id, from_status, to_status,
                                   actor, reason, metadata, created_at)
@@ -2006,13 +2220,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Proposals ──────────────────────────────────────────────────────
 
     this.stmt.insertProposal = this.db.prepare(`
-      INSERT OR IGNORE INTO action_proposals (id, operation, budget_id, payload,
-                                            payload_hash, policy_version,
+      INSERT OR IGNORE INTO action_proposals (id, operation, budget_id, space_id,
+                                            requester_membership_id, requester_delegation_id,
+                                            requester_delegation_version, governance_policy_version,
+                                            payload, payload_hash, policy_version,
                                             preconditions, expires_at, actor_id,
                                             provenance, provider_model, correlation_id,
                                             superseded_at, created_at)
-      VALUES (@id, @operation, @budgetId, @payload,
-              @payloadHash, @policyVersion,
+      VALUES (@id, @operation, @budgetId, @spaceId,
+              @requesterMembershipId, @requesterDelegationId,
+              @requesterDelegationVersion, @governancePolicyVersion,
+              @payload, @payloadHash, @policyVersion,
               @preconditions, @expiresAt, @actorId,
               @provenance, @providerModel, @correlationId,
               @supersededAt, @createdAt)
@@ -2052,11 +2270,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     this.stmt.insertApproval = this.db.prepare(`
       INSERT OR IGNORE INTO proposal_approvals (id, proposal_id, payload_hash, actor_id,
-                                      status, expires_at, consumed_at,
-                                      superseded_at, created_at)
+                                      issuer_membership_id, governance_policy_version,
+                                      reauthenticated_session_id, reauthenticated_at,
+                                      status, expires_at, consumed_at, superseded_at, created_at)
       VALUES (@id, @proposalId, @payloadHash, @actorId,
-              'active', @expiresAt, NULL,
-              NULL, @createdAt)
+              @issuerMembershipId, @governancePolicyVersion,
+              @reauthenticatedSessionId, @reauthenticatedAt,
+              'active', @expiresAt, NULL, NULL, @createdAt)
       RETURNING *
     `);
 
@@ -2182,15 +2402,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
       SELECT * FROM idempotency_records WHERE proposal_id = @proposalId AND operation = @operation
     `);
 
+    this.stmt.selectProposalExecutionAcquisition = this.db.prepare(`
+      SELECT * FROM proposal_execution_acquisitions WHERE proposal_id = ?
+    `);
+
+    this.stmt.insertProposalExecutionAcquisition = this.db.prepare(`
+      INSERT INTO proposal_execution_acquisitions (proposal_id, idempotency_key, actor_id, acquired_at)
+      VALUES (@proposalId, @idempotencyKey, @actorId, @acquiredAt)
+      ON CONFLICT DO NOTHING
+      RETURNING proposal_id
+    `);
+
     this.stmt.completeIdempotencyStmt = this.db.prepare(`
       UPDATE idempotency_records
          SET completed = 1,
              idempotency_status = @status,
              error_message = @errorMessage,
+             serialised_result = CASE WHEN @status = 'succeeded' THEN @serialisedResult ELSE NULL END,
              updated_at = @now
        WHERE idempotency_key = @key
+         AND idempotency_status IN ('in_progress', 'retryable_failed')
     `);
-
     this.stmt.updateIdempotencyStatusStmt = this.db.prepare(`
       UPDATE idempotency_records
          SET idempotency_status = @status,
@@ -2259,16 +2491,25 @@ export class SqliteWorkflowStore implements WorkflowStore {
       INSERT INTO review_corrections (id, review_item_id, transaction_id,
                                       transaction_version, merchant, imported_payee,
                                       account_id, direction, amount, date,
-                                      category_id, category_name, actor,
+                                      category_id, category_name, previous_category_id,
+                                      proposal_id, proposal_actor_id, payload_hash,
+                                      idempotency_key, verified, actor,
                                       from_status, to_status, source_review_id,
                                       created_at)
       VALUES (@id, @reviewItemId, @transactionId,
               @transactionVersion, @merchant, @importedPayee,
               @accountId, @direction, @amount, @date,
-              @categoryId, @categoryName, @actor,
+              @categoryId, @categoryName, @previousCategoryId,
+              @proposalId, @proposalActorId, @payloadHash,
+              @idempotencyKey, @verified, @actor,
               @fromStatus, @toStatus, @sourceReviewId,
               @createdAt)
     `);
+
+    this.stmt.selectCorrectionByIdempotencyKey = this.db.prepare(`
+      SELECT * FROM review_corrections WHERE idempotency_key = ?
+    `);
+
 
     this.stmt.selectCorrectionByReviewTransition = this.db.prepare(`
       SELECT * FROM review_corrections
@@ -2352,7 +2593,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Lifecycle ──────────────────────────────────────────────────────
 
     this.stmt.cancelPendingJobsStmt = this.db.prepare(`
-      DELETE FROM candidate_jobs WHERE status = 'pending'
+      DELETE FROM candidate_jobs
+       WHERE status = 'pending'
+         AND space_id = @spaceId
+         AND budget_id = @budgetId
+         AND (@actorOnly = 0 OR actor_id = @actorId)
     `);
 
     this.stmt.deleteMembershipStmt = this.db.prepare(`
@@ -2360,38 +2605,70 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     this.stmt.insertExportRecordStmt = this.db.prepare(`
-      DELETE FROM export_records
-    `);
-    // Re-insert as single-row tracking table
-    this.stmt.insertExportRecordStmt = this.db.prepare(`
-      INSERT INTO export_records (id, budget_name, export_path,
-                                   account_count, transaction_count,
-                                   exported_at)
-      VALUES (@id, @budgetName, @exportPath,
-              @accountCount, @transactionCount,
-              @exportedAt)
+      INSERT INTO export_records (
+        id, budget_name, export_path, account_count, transaction_count, exported_at,
+        space_id, budget_id, actor_id, sha256_hash, byte_size
+      )
+      VALUES (
+        @id, @budgetName, @exportPath, @accountCount, @transactionCount, @exportedAt,
+        @spaceId, @budgetId, @actorId, @sha256Hash, @byteSize
+      )
     `);
 
     this.stmt.selectLastExportStmt = this.db.prepare(`
-      SELECT * FROM export_records ORDER BY exported_at DESC LIMIT 1
+      SELECT * FROM export_records
+       WHERE space_id = @spaceId AND budget_id = @budgetId AND actor_id = @actorId
+         AND sha256_hash IS NOT NULL AND byte_size IS NOT NULL
+       ORDER BY exported_at DESC, id DESC
+       LIMIT 1
     `);
 
     // ── Rule overrides ─────────────────────────────────────────────────
 
-    this.stmt.upsertRuleOverride = this.db.prepare(`
-      INSERT INTO rule_overrides (rule_id, inactive, created_at, updated_at)
-      VALUES (@ruleId, @inactive, @now, @now)
-      ON CONFLICT(rule_id) DO UPDATE SET
-        inactive = @inactive,
-        updated_at = @now
+    this.stmt.insertRuleOverride = this.db.prepare(`
+      INSERT INTO rule_overrides (
+        space_id, budget_id, rule_id, inactive, version, created_at, updated_at
+      )
+      VALUES (@spaceId, @budgetId, @ruleId, @inactive, 1, @now, @now)
+      ON CONFLICT(space_id, budget_id, rule_id) DO NOTHING
+    `);
+
+    this.stmt.updateRuleOverride = this.db.prepare(`
+      UPDATE rule_overrides
+         SET inactive = @inactive,
+             version = version + 1,
+             updated_at = @now
+       WHERE space_id = @spaceId
+         AND budget_id = @budgetId
+         AND rule_id = @ruleId
+         AND version = @expectedVersion
+    `);
+
+    this.stmt.getRuleOverride = this.db.prepare(`
+      SELECT rule_id, inactive, version
+        FROM rule_overrides
+       WHERE space_id = @spaceId
+         AND budget_id = @budgetId
+         AND rule_id = @ruleId
     `);
 
     this.stmt.getAllRuleOverrides = this.db.prepare(`
-      SELECT rule_id, inactive FROM rule_overrides
+      SELECT rule_id, inactive, version
+        FROM rule_overrides
+       WHERE space_id = @spaceId
+         AND budget_id = @budgetId
+         AND inactive IS NOT NULL
     `);
 
     this.stmt.removeRuleOverride = this.db.prepare(`
-      DELETE FROM rule_overrides WHERE rule_id = @ruleId
+      UPDATE rule_overrides
+         SET inactive = NULL,
+             version = version + 1,
+             updated_at = @now
+       WHERE space_id = @spaceId
+         AND budget_id = @budgetId
+         AND rule_id = @ruleId
+         AND version = @expectedVersion
     `);
 
     // ── Schema version ──────────────────────────────────────────────────
@@ -2472,8 +2749,10 @@ export class SqliteWorkflowStore implements WorkflowStore {
     // ── Invitations ─────────────────────────────────────────────────────
 
     this.stmt.insertInvitation = this.db.prepare(`
-      INSERT INTO invitations (id, token_digest, status, created_by_user_id, expires_at, created_at)
-      VALUES (@id, @tokenDigest, 'active', @createdByUserId, @expiresAt, @createdAt)
+      INSERT INTO invitations (id, token_digest, status, created_by_user_id, expires_at, created_at,
+        space_id, issuer_membership_id, governance_policy_version)
+      VALUES (@id, @tokenDigest, 'active', @createdByUserId, @expiresAt, @createdAt,
+        @spaceId, @issuerMembershipId, @governancePolicyVersion)
     `);
 
     this.stmt.selectInvitation = this.db.prepare(`
@@ -2485,7 +2764,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     this.stmt.selectAllInvitations = this.db.prepare(`
-      SELECT * FROM invitations ORDER BY created_at DESC
+      SELECT * FROM invitations WHERE space_id=@spaceId ORDER BY created_at DESC
     `);
 
     this.stmt.updateInvitationClaim = this.db.prepare(`
@@ -2502,15 +2781,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
       UPDATE invitations
          SET status = 'revoked'
        WHERE id = @id
-         AND status = 'active'
+         AND status IN ('active', 'claimed')
     `);
 
     this.stmt.updateInvitationExpired = this.db.prepare(`
       UPDATE invitations
          SET status = 'expired'
        WHERE id = @id
-         AND status = 'active'
-         AND expires_at < @now
+         AND status IN ('active', 'claimed')
+         AND expires_at <= @now
     `);
 
     this.stmt.updateInvitationRedeemed = this.db.prepare(`
@@ -2522,35 +2801,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
          AND status = 'claimed'
     `);
 
-    this.stmt.selectStrandedClaims = this.db.prepare(`
-      SELECT * FROM invitations
-       WHERE status = 'claimed'
-         AND redeemed_user_id IS NULL
-    `);
-
     // ── Notification events ────────────────────────────────────────────
 
     this.stmt.insertNotificationEvent = this.db.prepare(`
       INSERT INTO notification_events (id, event_version, budget_id, classification,
                                        recipient_id, scope, redaction_class,
                                        channel_config_version, policy_version,
-                                       correlation_id, payload, created_at, dedup_key)
+                                       correlation_id, payload, created_at, dedup_key,
+                                       space_id, recipient_membership_id)
       VALUES (@id, @eventVersion, @budgetId, @classification,
               @recipientId, @scope, @redactionClass,
               @channelConfigVersion, @policyVersion,
-              @correlationId, @payload, @createdAt, @dedupKey)
+              @correlationId, @payload, @createdAt, @dedupKey,
+              @spaceId, @recipientMembershipId)
     `);
 
     this.stmt.insertOrIgnoreNotificationEvent = this.db.prepare(`
       INSERT OR IGNORE INTO notification_events (
         id, event_version, budget_id, classification, recipient_id, scope,
         redaction_class, channel_config_version, policy_version, correlation_id,
-        payload, created_at, dedup_key
+        payload, created_at, dedup_key, space_id, recipient_membership_id
       )
       VALUES (
         @id, @eventVersion, @budgetId, @classification, @recipientId, @scope,
         @redactionClass, @channelConfigVersion, @policyVersion, @correlationId,
-        @payload, @createdAt, @dedupKey
+        @payload, @createdAt, @dedupKey, @spaceId, @recipientMembershipId
       )
     `);
 
@@ -2563,6 +2838,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
        WHERE dedup_key = @dedupKey
          AND recipient_id IS @recipientId
          AND scope IS @scope
+         AND budget_id = @budgetId
+         AND space_id IS @spaceId
+         AND recipient_membership_id IS @recipientMembershipId
     `);
 
     // ── Notification outbox ────────────────────────────────────────────
@@ -2915,48 +3193,138 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     // ── Saved views ────────────────────────────────────────────────────
 
+    this.stmt.validateSavedViewAuthority = this.db.prepare(`
+      SELECT 1
+        FROM space_memberships AS m
+        JOIN spaces AS s ON s.id = m.space_id
+       WHERE m.id = @membershipId
+         AND m.space_id = @spaceId
+         AND m.actor_id = @actorId
+         AND m.valid_from <= @now
+         AND (m.valid_until IS NULL OR @now < m.valid_until)
+         AND m.revoked_at IS NULL
+         AND s.budget_id = @budgetId
+         AND s.deleted_at IS NULL
+    `);
+
     this.stmt.insertSavedView = this.db.prepare(`
-      INSERT INTO saved_views (view_id, name, view_type, scope, sort, actor_id, created_at)
-      VALUES (@viewId, @name, @viewType, @scope, @sort, @actorId, @createdAt)
+      INSERT INTO saved_views (
+        view_id, name, view_type, scope, sort, actor_id,
+        space_id, budget_id, membership_id, created_at
+      )
+      VALUES (
+        @viewId, @name, @viewType, @scope, @sort, @actorId,
+        @spaceId, @budgetId, @membershipId, @createdAt
+      )
     `);
 
     this.stmt.selectSavedView = this.db.prepare(`
-      SELECT * FROM saved_views WHERE view_id = @viewId
+      SELECT v.*
+        FROM saved_views AS v
+        JOIN space_memberships AS m ON m.id = v.membership_id
+        JOIN spaces AS s ON s.id = v.space_id
+       WHERE v.view_id = @viewId
+         AND v.actor_id = @actorId
+         AND v.space_id = @spaceId
+         AND v.budget_id = @budgetId
+         AND v.membership_id = @membershipId
+         AND m.space_id = @spaceId
+         AND m.actor_id = @actorId
+         AND m.valid_from <= @now
+         AND (m.valid_until IS NULL OR @now < m.valid_until)
+         AND m.revoked_at IS NULL
+         AND s.budget_id = @budgetId
+         AND s.deleted_at IS NULL
     `);
 
-    this.stmt.listSavedViewsByActor = this.db.prepare(`
-      SELECT * FROM saved_views
-       WHERE actor_id = @actorId
-       ORDER BY created_at DESC
+    this.stmt.listSavedViewsByAuthority = this.db.prepare(`
+      SELECT v.*
+        FROM saved_views AS v
+        JOIN space_memberships AS m ON m.id = v.membership_id
+        JOIN spaces AS s ON s.id = v.space_id
+       WHERE v.actor_id = @actorId
+         AND v.space_id = @spaceId
+         AND v.budget_id = @budgetId
+         AND v.membership_id = @membershipId
+         AND m.space_id = @spaceId
+         AND m.actor_id = @actorId
+         AND m.valid_from <= @now
+         AND (m.valid_until IS NULL OR @now < m.valid_until)
+         AND m.revoked_at IS NULL
+         AND s.budget_id = @budgetId
+         AND s.deleted_at IS NULL
+       ORDER BY v.created_at DESC
        LIMIT @limit OFFSET @offset
-    `);
-
-    this.stmt.countSavedViewsByActor = this.db.prepare(`
-      SELECT COUNT(*) AS count FROM saved_views WHERE actor_id = @actorId
     `);
 
     this.stmt.updateSavedView = this.db.prepare(`
       UPDATE saved_views
          SET name = COALESCE(@name, name),
              scope = COALESCE(@scope, scope),
-             sort = @sort,
-             last_used_at = COALESCE(@lastUsedAt, last_used_at)
+             sort = @sort
        WHERE view_id = @viewId
+         AND actor_id = @actorId
+         AND space_id = @spaceId
+         AND budget_id = @budgetId
+         AND membership_id = @membershipId
+         AND EXISTS (
+           SELECT 1
+             FROM space_memberships AS m
+             JOIN spaces AS s ON s.id = m.space_id
+            WHERE m.id = @membershipId
+              AND m.space_id = @spaceId
+              AND m.actor_id = @actorId
+              AND m.valid_from <= @now
+              AND (m.valid_until IS NULL OR @now < m.valid_until)
+              AND m.revoked_at IS NULL
+              AND s.budget_id = @budgetId
+              AND s.deleted_at IS NULL
+         )
     `);
 
     this.stmt.deleteSavedView = this.db.prepare(`
-      DELETE FROM saved_views WHERE view_id = ?
+      DELETE FROM saved_views
+       WHERE view_id = @viewId
+         AND actor_id = @actorId
+         AND space_id = @spaceId
+         AND budget_id = @budgetId
+         AND membership_id = @membershipId
+         AND EXISTS (
+           SELECT 1
+             FROM space_memberships AS m
+             JOIN spaces AS s ON s.id = m.space_id
+            WHERE m.id = @membershipId
+              AND m.space_id = @spaceId
+              AND m.actor_id = @actorId
+              AND m.valid_from <= @now
+              AND (m.valid_until IS NULL OR @now < m.valid_until)
+              AND m.revoked_at IS NULL
+              AND s.budget_id = @budgetId
+              AND s.deleted_at IS NULL
+         )
     `);
 
     this.stmt.recordSavedViewUsage = this.db.prepare(`
-      UPDATE saved_views SET last_used_at = @now WHERE view_id = @viewId
-    `);
-
-    this.stmt.selectSavedViewByActorViewType = this.db.prepare(`
-      SELECT * FROM saved_views
-       WHERE actor_id = @actorId AND view_type = @viewType
-       ORDER BY created_at DESC
-       LIMIT 1
+      UPDATE saved_views
+         SET last_used_at = @now
+       WHERE view_id = @viewId
+         AND actor_id = @actorId
+         AND space_id = @spaceId
+         AND budget_id = @budgetId
+         AND membership_id = @membershipId
+         AND EXISTS (
+           SELECT 1
+             FROM space_memberships AS m
+             JOIN spaces AS s ON s.id = m.space_id
+            WHERE m.id = @membershipId
+              AND m.space_id = @spaceId
+              AND m.actor_id = @actorId
+              AND m.valid_from <= @now
+              AND (m.valid_until IS NULL OR @now < m.valid_until)
+              AND m.revoked_at IS NULL
+              AND s.budget_id = @budgetId
+              AND s.deleted_at IS NULL
+         )
     `);
 
     // ── Findings ────────────────────────────────────────────────────────
@@ -3273,25 +3641,48 @@ export class SqliteWorkflowStore implements WorkflowStore {
   // ── Job lifecycle ─────────────────────────────────────────────────
 
   async enqueueJob(input: EnqueueJobInput): Promise<CandidateJob> {
+    const suppliedScope = [input.spaceId, input.budgetId, input.actorId].some(
+      (value) => value !== undefined,
+    );
+    if (
+      suppliedScope &&
+      (typeof input.spaceId !== 'string' ||
+        !input.spaceId.trim() ||
+        typeof input.budgetId !== 'string' ||
+        !input.budgetId.trim() ||
+        typeof input.actorId !== 'string' ||
+        !input.actorId.trim())
+    )
+      throw new Error('Scoped jobs require spaceId, budgetId, and actorId');
+    const scope = suppliedScope
+      ? { spaceId: input.spaceId!, budgetId: input.budgetId!, actorId: input.actorId! }
+      : null;
+    if (scope) this.assertLifecycleScope(scope);
+
     const id = randomUUID();
     const now = nowISO();
-
-    // ON CONFLICT DO NOTHING RETURNING * returns undefined on duplicate
     const row = this.stmt.upsertJob.get({
       id,
       jobType: input.jobType,
       candidateId: input.candidateId,
       now,
+      spaceId: scope?.spaceId ?? null,
+      budgetId: scope?.budgetId ?? null,
+      actorId: scope?.actorId ?? null,
     }) as JobRow | undefined;
 
     if (!row) {
-      // Row already existed — fetch the existing record unchanged
-      // (no updated_at modification, true no-op).
       const existing = this.stmt.selectJobByCandidate.get({
         jobType: input.jobType,
         candidateId: input.candidateId,
       }) as JobRow | undefined;
       if (!existing) throw new Error('Failed to enqueue or retrieve job');
+      if (
+        existing.space_id !== (scope?.spaceId ?? null) ||
+        existing.budget_id !== (scope?.budgetId ?? null) ||
+        existing.actor_id !== (scope?.actorId ?? null)
+      )
+        throw new Error('Candidate job already exists in a different lifecycle scope');
       return rowToJob(existing);
     }
 
@@ -3421,6 +3812,22 @@ export class SqliteWorkflowStore implements WorkflowStore {
   // ── Review lifecycle ──────────────────────────────────────────────
 
   async createReviewItem(input: CreateReviewItemInput): Promise<ReviewItem> {
+    const source = input.sourceTransaction;
+    if (source && (
+      source.id !== input.transactionId ||
+      typeof source.accountId !== 'string' || !source.accountId.trim() ||
+      (source.categoryId !== null && (typeof source.categoryId !== 'string' || !source.categoryId.trim())) ||
+      (source.direction !== 'incoming' && source.direction !== 'outgoing') ||
+      typeof source.amount?.minorUnits !== 'string' || !/^(0|[1-9]\d*)$/.test(source.amount.minorUnits) ||
+      BigInt(source.amount.minorUnits) > 9_223_372_036_854_775_807n ||
+      typeof source.amount.currency !== 'string' || !/^[A-Z]{3}$/.test(source.amount.currency)
+    )) throw new Error('Invalid canonical review source authority');
+    const sourceTransaction = source ? canonicalProposalJson({
+      id: source.id, accountId: source.accountId, categoryId: source.categoryId,
+      direction: source.direction,
+      amount: { minorUnits: source.amount.minorUnits, currency: source.amount.currency },
+    }) : null;
+    return this.db.transaction(() => {
     const id = randomUUID();
     const now = nowISO();
     const inputVersion = input.transactionVersion ?? 1;
@@ -3435,7 +3842,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     if (existingActive) {
       if (inputVersion <= existingActive.transaction_version) {
-        // Not newer — return existing (idempotent)
+        if (sourceTransaction !== null && sourceTransaction !== existingActive.source_transaction_json) {
+          this.db.prepare(`UPDATE review_items SET source_transaction_json=?, version=version+1, updated_at=?
+            WHERE id=?`).run(sourceTransaction, now, existingActive.id);
+          return rowToReviewItem(this.stmt.selectReviewItem.get(existingActive.id) as ReviewItemRow);
+        }
         return rowToReviewItem(existingActive);
       }
 
@@ -3471,6 +3882,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
           suggestionId: input.suggestionId ?? null,
           budgetId: input.budgetId,
           transactionId: input.transactionId,
+          sourceTransaction,
           categoryId: input.categoryId,
           classifier: input.classifier,
           promptVersion: input.promptVersion ?? '',
@@ -3505,6 +3917,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       suggestionId: input.suggestionId ?? null,
       budgetId: input.budgetId,
       transactionId: input.transactionId,
+      sourceTransaction,
       categoryId: input.categoryId,
       classifier: input.classifier,
       promptVersion: input.promptVersion ?? '',
@@ -3538,11 +3951,69 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }
 
     return rowToReviewItem(row);
+    }).immediate();
   }
 
   async getReviewItem(id: string): Promise<ReviewItem | null> {
     const row = this.stmt.selectReviewItem.get(id) as ReviewItemRow | undefined;
     return row ? rowToReviewItem(row) : null;
+  }
+
+  async isProposalReviewProvenanceCurrent(proposalId: string): Promise<boolean> {
+    const proposal = this.stmt.selectProposal.get(proposalId) as ProposalRow | undefined;
+    return proposal !== undefined && this.proposalReviewProvenanceMatches(proposal);
+  }
+
+  private proposalReviewProvenanceMatches(
+    row: Pick<ProposalRow, 'operation' | 'budget_id' | 'payload' | 'preconditions'>,
+  ): boolean {
+    if (row.operation !== 'set_category') return true;
+    let payload: unknown;
+    let preconditions: unknown;
+    try {
+      payload = JSON.parse(row.payload) as unknown;
+      preconditions = JSON.parse(row.preconditions) as unknown;
+    } catch {
+      return false;
+    }
+    if (
+      !isPlainRecord(payload) ||
+      payload.kind !== 'set_category' ||
+      typeof payload.transactionId !== 'string' ||
+      !payload.transactionId
+    )
+      return false;
+    if (!isPlainRecord(preconditions)) return false;
+    const reviewId = preconditions.reviewId;
+    const provenance = preconditions.reviewProvenance;
+    if (reviewId === undefined && provenance === undefined) return true;
+    if (typeof reviewId !== 'string' || !reviewId || !isPlainRecord(provenance)) return false;
+    const fields = ['budgetId', 'transactionId', 'categoryId', 'status', 'version'] as const;
+    if (
+      Object.keys(provenance).length !== fields.length ||
+      fields.some((field) => !(field in provenance)) ||
+      typeof provenance.budgetId !== 'string' ||
+      !provenance.budgetId ||
+      typeof provenance.transactionId !== 'string' ||
+      !provenance.transactionId ||
+      typeof provenance.categoryId !== 'string' ||
+      typeof provenance.version !== 'number' ||
+      !Number.isSafeInteger(provenance.version) ||
+      (provenance.status !== 'pending_review' && provenance.status !== 'correcting')
+    )
+      return false;
+    const review = this.stmt.selectReviewItem.get(reviewId) as ReviewItemRow | undefined;
+    return !!review &&
+      review.id === reviewId &&
+      review.budget_id === row.budget_id &&
+      review.transaction_id === payload.transactionId &&
+      provenance.budgetId === review.budget_id &&
+      provenance.transactionId === review.transaction_id &&
+      provenance.categoryId === review.category_id &&
+      provenance.status === review.status &&
+      provenance.version === review.version &&
+      (review.status === 'pending_review' || review.status === 'correcting') &&
+      review.superseded_by === null;
   }
 
   async findReviewByIssue(
@@ -3610,11 +4081,69 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToReviewItem);
   }
 
-  async transitionReviewItem(id: string, input: TransitionReviewInput): Promise<ReviewItem> {
+  async transitionReviewItem(id: string, input: AuthorizedReviewTransitionInput): Promise<ReviewItem> {
+    if (
+      !input ||
+      !input.authorization ||
+      (input.toStatus !== 'rejected' && input.toStatus !== 'skipped' && input.toStatus !== 'pending_review')
+    ) {
+      return this.db.transaction(() => {
+        throw new Error('Review action authorization unavailable', { cause: 'authorization_denied' });
+      }).immediate();
+    }
+    return this.transitionInternalReviewItem(id, input);
+  }
+
+  async transitionInternalReviewItem(id: string, input: TransitionReviewInput): Promise<ReviewItem> {
+    return this.db.transaction(() => {
     const now = nowISO();
     const current = this.stmt.selectReviewItemStatus.get(id) as
       { id: string; status: string; version: number; approved_by: string } | undefined;
     if (!current) throw new Error(`Review item ${id} not found`);
+    if (input.authorization) {
+      const context = input.authorization;
+      const full = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
+      const operation = input.toStatus === 'rejected' ? 'reject_review'
+        : input.toStatus === 'skipped' ? 'skip_review'
+          : input.toStatus === 'pending_review' && UNDO_SOURCES.includes(current.status as ReviewStatus)
+            ? 'undo_review' : null;
+      const boundSpace = this.governance.getSpaceForBudget({ budgetId: full.budget_id });
+      const human = context.auth.method === 'session' || context.auth.method === 'human-session' ||
+        (context.auth.method === 'api-key' && context.auth.principalType === 'human');
+      if (!operation || !human || context.auth.actorId !== input.actor ||
+        boundSpace?.id !== context.spaceId || context.transaction.id !== full.transaction_id)
+        throw new Error('Review action authorization unavailable', { cause: 'authorization_denied' });
+      const refs: GovernanceResourceRef[] = [
+        { resourceKind: 'budget', resourceId: full.budget_id },
+        { resourceKind: 'transaction', resourceId: full.transaction_id },
+        { resourceKind: 'account', resourceId: context.transaction.accountId },
+      ];
+      if (full.category_id) refs.push({ resourceKind: 'category', resourceId: full.category_id });
+      if (context.transaction.categoryId && context.transaction.categoryId !== full.category_id)
+        refs.push({ resourceKind: 'category', resourceId: context.transaction.categoryId });
+      const result = this.governance.authorize({
+        actorId: input.actor,
+        auth: context.auth,
+        spaceId: context.spaceId,
+        expectedPolicyVersion: context.policyVersion,
+        phase: 'read',
+        operation,
+        required: refs.map((ref) => ({ ...ref, capability: 'categorization:execute', visibility: 'resource' })),
+        payload: {
+          operations: [{
+            operation,
+            transactionId: full.transaction_id,
+            accountId: context.transaction.accountId,
+            direction: context.transaction.direction,
+            amount: context.transaction.amount,
+            ...(full.category_id ? { categoryId: full.category_id } : {}),
+          }],
+          currentTransaction: { categoryId: context.transaction.categoryId },
+        },
+        now,
+      });
+      if (!result.allowed) throw new Error('Review action authorization unavailable', { cause: 'authorization_denied' });
+    }
 
     const fromStatus = current.status as ReviewStatus;
     const toStatus = input.toStatus;
@@ -3749,6 +4278,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
           date: input.date ?? null,
           categoryId: fullRow.category_id,
           categoryName: input.categoryName ?? null,
+          previousCategoryId: null,
+          proposalId: null,
+          proposalActorId: null,
+          payloadHash: null,
+          idempotencyKey: null,
+          verified: 0,
           actor: input.actor,
           fromStatus,
           toStatus,
@@ -3762,6 +4297,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const updated = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
     return rowToReviewItem(updated);
+    }).immediate();
   }
 
   async updateReviewItemCategory(
@@ -3785,7 +4321,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rowToReviewItem(updated);
   }
 
-  async transitionReviewItems(
+  async transitionInternalReviewItems(
     ids: string[],
     toStatus: ReviewStatus,
     actor: string,
@@ -3849,7 +4385,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       }
 
       try {
-        const transitioned = await this.transitionReviewItem(item.id, {
+        const transitioned = await this.transitionInternalReviewItem(item.id, {
           toStatus,
           actor,
           reason,
@@ -3877,8 +4413,40 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async undoReviewTransition(
     id: string,
     actor: string,
+    reason: string | undefined,
+    expectedVersion: number | undefined,
+    authorization: ReviewActionAuthorization,
+  ): Promise<ReviewItem> {
+    if (!authorization) {
+      return this.db.transaction(() => {
+        throw new Error('Review action authorization unavailable', { cause: 'authorization_denied' });
+      }).immediate();
+    }
+    const current = this.stmt.selectReviewItemStatus.get(id) as
+      { id: string; status: string; version: number } | undefined;
+    if (!current) throw new Error(`Review item ${id} not found`);
+    const fromStatus = current.status as ReviewStatus;
+    if (!UNDO_SOURCES.includes(fromStatus)) {
+      throw new Error(
+        `Cannot undo from '${fromStatus}': only ${UNDO_SOURCES.join(', ')} support undo`,
+      );
+    }
+    return this.transitionReviewItem(id, {
+      toStatus: 'pending_review',
+      actor,
+      reason: reason ?? `Undo from '${fromStatus}'`,
+      metadata: { undo: true, previousStatus: fromStatus },
+      expectedVersion: expectedVersion ?? current.version,
+      authorization,
+    });
+  }
+
+  async undoInternalReviewTransition(
+    id: string,
+    actor: string,
     reason?: string,
     expectedVersion?: number,
+    authorization?: ReviewActionAuthorization,
   ): Promise<ReviewItem> {
     const current = this.stmt.selectReviewItemStatus.get(id) as
       { id: string; status: string; version: number } | undefined;
@@ -3895,12 +4463,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     const version = expectedVersion ?? current.version;
 
-    return this.transitionReviewItem(id, {
+    return this.transitionInternalReviewItem(id, {
       toStatus: 'pending_review',
       actor,
       reason: reason ?? `Undo from '${fromStatus}'`,
       metadata: { undo: true, previousStatus: fromStatus },
       expectedVersion: version,
+      authorization,
     });
   }
 
@@ -3946,6 +4515,191 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToCorrection);
   }
 
+  async completeVerifiedCategorizationReview(idempotencyKey: string): Promise<ReviewItem | null> {
+    return this.db.transaction(() => {
+      const idempotency = this.stmt.selectIdempotency.get(idempotencyKey) as IdempotencyRow | undefined;
+      if (!idempotency || idempotency.idempotency_status !== 'succeeded' || !idempotency.serialised_result)
+        throw new Error('Verified categorization result is unavailable');
+      const proposalRow = this.stmt.selectProposal.get(idempotency.proposal_id) as ProposalRow | undefined;
+      if (!proposalRow || proposalRow.operation !== 'set_category')
+        throw new Error('Verified categorization proposal is unavailable');
+      const proposal = rowToProposal(proposalRow);
+      if (proposal.operation !== 'set_category' || proposal.id !== idempotency.proposal_id)
+        throw new Error('Verified categorization proposal is invalid');
+      const acquisition = this.stmt.selectProposalExecutionAcquisition.get(proposal.id) as {
+        idempotency_key: string;
+        actor_id: string;
+      } | undefined;
+      if (!acquisition || acquisition.idempotency_key !== idempotencyKey || !acquisition.actor_id)
+        throw new Error('Verified categorization execution attribution is unavailable');
+
+      let effect: unknown;
+      let preconditions: unknown;
+      let result: unknown;
+      try {
+        effect = JSON.parse(idempotency.serialised_effect) as unknown;
+        preconditions = JSON.parse(proposal.preconditions) as unknown;
+        result = JSON.parse(idempotency.serialised_result) as unknown;
+      } catch {
+        throw new Error('Verified categorization result envelope is invalid');
+      }
+      if (
+        !isPlainRecord(effect) ||
+        Object.keys(effect).length !== 3 ||
+        effect.operation !== 'set_category' ||
+        !isPlainRecord(effect.payload) ||
+        !isPlainRecord(effect.preconditions) ||
+        !isPlainRecord(preconditions) ||
+        canonicalProposalJson(effect) !== canonicalProposalJson({
+          operation: proposal.operation,
+          payload: proposal.payload,
+          preconditions,
+        })
+      )
+        throw new Error('Verified categorization result does not match its acquired proposal');
+      const resultFields = [
+        'verified',
+        'transactionId',
+        'previousCategoryId',
+        'newCategoryId',
+        'planId',
+      ] as const;
+      if (
+        !isPlainRecord(result) ||
+        Object.keys(result).length !== resultFields.length ||
+        resultFields.some((field) => !(field in result)) ||
+        result.verified !== true ||
+        typeof result.transactionId !== 'string' ||
+        !result.transactionId ||
+        !(result.previousCategoryId === null ||
+          (typeof result.previousCategoryId === 'string' && !!result.previousCategoryId)) ||
+        typeof result.newCategoryId !== 'string' ||
+        !result.newCategoryId ||
+        typeof result.planId !== 'string' ||
+        !result.planId
+      )
+        throw new Error('Verified categorization result is malformed');
+
+      const payload = effect.payload;
+      const acquiredPreconditions = effect.preconditions;
+      const plan = acquiredPreconditions.nativePlan;
+      const reviewId = acquiredPreconditions.reviewId;
+      const reviewProvenance = acquiredPreconditions.reviewProvenance;
+      const reviewFields = ['budgetId', 'transactionId', 'categoryId', 'status', 'version'] as const;
+      if (
+        proposal.operation !== 'set_category' ||
+        typeof reviewId !== 'string' ||
+        !reviewId ||
+        !isPlainRecord(reviewProvenance) ||
+        Object.keys(reviewProvenance).length !== reviewFields.length ||
+        reviewFields.some((field) => !(field in reviewProvenance)) ||
+        !isPlainRecord(plan) ||
+        typeof payload.transactionId !== 'string' ||
+        !payload.transactionId ||
+        typeof payload.categoryId !== 'string' ||
+        !payload.categoryId ||
+        result.transactionId !== payload.transactionId ||
+        result.transactionId !== proposal.payload.transactionId ||
+        result.newCategoryId !== payload.categoryId ||
+        result.newCategoryId !== proposal.payload.categoryId ||
+        result.planId !== plan.planId ||
+        result.previousCategoryId !== plan.currentCategoryId ||
+        plan.transactionId !== payload.transactionId ||
+        plan.proposedCategoryId !== payload.categoryId ||
+        reviewProvenance.budgetId !== proposal.budgetId ||
+        reviewProvenance.transactionId !== payload.transactionId ||
+        (reviewProvenance.categoryId !== null && typeof reviewProvenance.categoryId !== 'string') ||
+        (reviewProvenance.status !== 'pending_review' && reviewProvenance.status !== 'correcting') ||
+        typeof reviewProvenance.version !== 'number' ||
+        !Number.isSafeInteger(reviewProvenance.version)
+      )
+        throw new Error('Verified categorization result does not match its review reference');
+
+      const priorCorrection = this.stmt.selectCorrectionByIdempotencyKey.get(idempotencyKey) as
+        CorrectionRow | undefined;
+      const currentReview = this.stmt.selectReviewItem.get(reviewId) as ReviewItemRow | undefined;
+      if (priorCorrection) {
+        if (
+          !currentReview ||
+          priorCorrection.review_item_id !== reviewId ||
+          priorCorrection.transaction_id !== proposal.payload.transactionId ||
+          priorCorrection.previous_category_id !== result.previousCategoryId ||
+          priorCorrection.category_id !== proposal.payload.categoryId ||
+          priorCorrection.proposal_id !== proposal.id ||
+          priorCorrection.proposal_actor_id !== proposal.actorId ||
+          priorCorrection.payload_hash !== proposal.payloadHash ||
+          priorCorrection.idempotency_key !== idempotencyKey ||
+          priorCorrection.actor !== acquisition.actor_id ||
+          priorCorrection.from_status !== reviewProvenance.status ||
+          priorCorrection.to_status !== 'applied' ||
+          priorCorrection.source_review_id !== reviewId ||
+          priorCorrection.verified !== 1
+        )
+          throw new Error('Completed review correction does not match its verified execution');
+        return rowToReviewItem(currentReview);
+      }
+      if (!this.proposalReviewProvenanceMatches(proposalRow) || !currentReview)
+        throw new Error('Review provenance changed before verified completion');
+
+      const now = nowISO();
+      const update = this.stmt.completeReviewCategorization.run({
+        id: reviewId,
+        budgetId: proposal.budgetId,
+        transactionId: proposal.payload.transactionId,
+        categoryId: proposal.payload.categoryId,
+        previousCategoryId: reviewProvenance.categoryId,
+        fromStatus: currentReview.status,
+        expectedVersion: currentReview.version,
+        now,
+      });
+      if (update.changes !== 1)
+        throw new Error('Review changed before verified completion');
+      this.stmt.insertReviewAction.run({
+        id: randomUUID(),
+        reviewItemId: reviewId,
+        fromStatus: currentReview.status,
+        toStatus: 'applied',
+        actor: acquisition.actor_id,
+        reason: 'Verified categorization proposal',
+        metadata: JSON.stringify({
+          proposalId: proposal.id,
+          payloadHash: proposal.payloadHash,
+          idempotencyKey,
+          verified: true,
+        }),
+        createdAt: now,
+      });
+      this.stmt.insertCorrection.run({
+        id: randomUUID(),
+        reviewItemId: reviewId,
+        transactionId: currentReview.transaction_id,
+        transactionVersion: currentReview.transaction_version,
+        merchant: null,
+        importedPayee: null,
+        accountId: null,
+        direction: null,
+        amount: null,
+        date: null,
+        categoryId: proposal.payload.categoryId,
+        categoryName: null,
+        previousCategoryId: result.previousCategoryId,
+        proposalId: proposal.id,
+        proposalActorId: proposal.actorId,
+        payloadHash: proposal.payloadHash,
+        idempotencyKey,
+        verified: 1,
+        actor: acquisition.actor_id,
+        fromStatus: currentReview.status,
+        toStatus: 'applied',
+        sourceReviewId: reviewId,
+        createdAt: now,
+      });
+      const updatedReview = this.stmt.selectReviewItem.get(reviewId) as ReviewItemRow | undefined;
+      if (!updatedReview) throw new Error('Completed review item is unavailable');
+      return rowToReviewItem(updatedReview);
+    }).immediate();
+  }
+
   async findCorrectionConflicts(limit: number = 50): Promise<CorrectionConflict[]> {
     const rows = this.stmt.selectCorrectionConflicts.all({ limit }) as {
       field: string;
@@ -3963,57 +4717,142 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
   // ── Categorization proposal lifecycle ─────────────────────────────
 
-  async createProposal(
-    input: CreateProposalInput,
-  ): Promise<Exclude<ActionProposal, { operation: 'transfer' }>> {
-    if (
-      input.operation !== input.payload.kind ||
-      !['set_category', 'create_rule'].includes(input.operation)
-    )
-      throw new Error('Unsupported proposal operation');
-    const id = randomUUID();
+  async createProposal(input: CreateProposalInput): Promise<GenericActionProposal> {
+    return this.db.transaction(() => {
+      if (
+        input.operation !== input.payload.kind ||
+        !isGenericProposalOperation(input.operation)
+      )
+        throw new Error('Unsupported proposal operation');
+      if (input.policyVersion !== GENERIC_MUTATION_POLICY_VERSION)
+        throw new ProposalAcquisitionError('policy_version_mismatch', 'Unsupported generic mutation policy version');
 
-    // Validate expiresAt
-    const expiresAtDate = new Date(input.expiresAt);
-    if (isNaN(expiresAtDate.getTime())) {
-      throw new Error(`Invalid expiresAt: '${input.expiresAt}' is not a valid ISO-8601 timestamp`);
-    }
-    if (expiresAtDate <= new Date()) {
-      throw new Error(`expiresAt '${input.expiresAt}' is in the past`);
-    }
-    const now = nowISO();
+      const now = nowISO();
+      const nowMillis = timestampMillis(now)!;
+      const expiresAtMillis = timestampMillis(input.expiresAt);
+      if (expiresAtMillis === null) throw new Error(`Invalid expiresAt: '${input.expiresAt}' is not ISO-8601`);
+      if (expiresAtMillis <= nowMillis) throw new Error(`expiresAt '${input.expiresAt}' is in the past`);
+      if (input.actorId !== input.auth.actorId || !this.operationalAuthMatches(input.auth, input.actorId, now))
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal actor does not match trusted credentials');
 
-    const row = this.stmt.insertProposal.get({
-      id,
-      operation: input.operation,
-      budgetId: input.budgetId,
-      payload: JSON.stringify(input.payload),
-      payloadHash: input.payloadHash,
-      policyVersion: input.policyVersion,
-      preconditions: input.preconditions,
-      expiresAt: input.expiresAt,
-      actorId: input.actorId,
-      provenance: input.provenance,
-      providerModel: input.providerModel ?? null,
-      correlationId: input.correlationId ?? null,
-      supersededAt: null,
-      createdAt: now,
-    }) as ProposalRow | undefined;
+      const space = this.governance.getSpace({ spaceId: input.spaceId });
+      const policy = this.governance.getPolicy({ spaceId: input.spaceId });
+      if (!space || space.deletedAt !== null || space.budgetId !== input.budgetId || !policy)
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal budget is not bound to an active space');
 
-    if (!row) {
-      // Duplicate (same target + payload_hash) — fetch existing by exact key
+      let preconditions: unknown;
+      let payload: CreateProposalInput['payload'];
+      try {
+        preconditions = JSON.parse(input.preconditions) as unknown;
+        canonicalProposalJson(preconditions);
+        payload = JSON.parse(canonicalProposalJson(input.payload)) as CreateProposalInput['payload'];
+      } catch {
+        throw new Error('Proposal payload and preconditions must be canonical JSON values');
+      }
+      if (input.operation === 'create_rule') {
+        const preconditionsRecord = isPlainRecord(preconditions) ? preconditions : null;
+        const embeddedRule = preconditionsRecord && isPlainRecord(preconditionsRecord.nativeRule)
+          ? preconditionsRecord.nativeRule
+          : null;
+        const flatRule = preconditionsRecord &&
+          ['name', 'conditions', 'actions'].some((key) => key in preconditionsRecord)
+          ? Object.fromEntries(
+              ['name', 'conditions', 'actions', 'conditionsOp', 'stage']
+                .filter((key) => key in preconditionsRecord)
+                .map((key) => [key, preconditionsRecord[key]]),
+            )
+          : null;
+        const preconditionRule = embeddedRule ?? flatRule;
+        const rulePayload = payload as RuleActionPayload;
+        const payloadRule = isPlainRecord(rulePayload.rule) ? rulePayload.rule : null;
+        if (preconditionRule) {
+          if (!payloadRule || Object.keys(payloadRule).length === 0)
+            throw new ProposalAcquisitionError('payload_hash_mismatch', 'Proposal payload has no normalized rule');
+          if (canonicalProposalJson(preconditionRule) !== canonicalProposalJson(payloadRule))
+            throw new ProposalAcquisitionError('payload_hash_mismatch', 'Proposal rule differs from its native precondition');
+        }
+      }
+
+      const facts = deriveProposalAuthorizationFacts(input.operation, payload, preconditions);
+      if (!this.ruleOverrideSnapshotMatches(input.spaceId, input.budgetId, payload, preconditions))
+        throw new ProposalAcquisitionError('authorization_denied', 'Current rule override state differs from the proposal');
+      const authorization = this.authorizeGenericProposal({
+        actorId: input.actorId,
+        auth: input.auth,
+        spaceId: input.spaceId,
+        policyVersion: policy.version,
+        phase: 'propose',
+        capability: input.operation === 'set_category' ? 'categorization:propose' : 'rule:propose',
+        operation: input.operation,
+        budgetId: input.budgetId,
+        facts,
+        payload,
+        now,
+      });
+      if (!authorization.allowed)
+        throw new ProposalAcquisitionError('authorization_denied', authorization.reason);
+      if (
+        input.operation === 'set_category' &&
+        !this.proposalReviewProvenanceMatches({
+          operation: input.operation,
+          budget_id: input.budgetId,
+          payload: canonicalProposalJson(payload),
+          preconditions: canonicalProposalJson(preconditions),
+        })
+      )
+        throw new ProposalAcquisitionError('authorization_denied', 'Review provenance does not match a current review item');
+
+      const payloadHash = canonicalProposalHash({
+        operation: input.operation,
+        budgetId: input.budgetId,
+        payload,
+        preconditions,
+        actorId: input.actorId,
+        policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+        expiresAt: input.expiresAt,
+      });
+      const id = randomUUID();
+      const row = this.stmt.insertProposal.get({
+        id,
+        operation: input.operation,
+        budgetId: input.budgetId,
+        spaceId: input.spaceId,
+        requesterMembershipId: authorization.membershipId,
+        requesterDelegationId:
+          input.auth.method === 'api-key' && input.auth.principalType === 'agent'
+            ? input.auth.delegationId
+            : null,
+        requesterDelegationVersion:
+          input.auth.method === 'api-key' && input.auth.principalType === 'agent'
+            ? input.auth.delegationVersion
+            : null,
+        governancePolicyVersion: policy.version,
+        payload: canonicalProposalJson(payload),
+        payloadHash,
+        policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+        preconditions: canonicalProposalJson(preconditions),
+        expiresAt: input.expiresAt,
+        actorId: input.actorId,
+        provenance: input.provenance,
+        providerModel: input.providerModel ?? null,
+        correlationId: input.correlationId ?? null,
+        supersededAt: null,
+        createdAt: now,
+      }) as ProposalRow | undefined;
+      if (row) return rowToProposal(row) as GenericActionProposal;
+
+      const transactionId = payload.kind === 'set_category' || payload.kind === 'create_rule'
+        ? payload.transactionId
+        : null;
       const existing = this.stmt.selectProposalByExactKey.get({
         budgetId: input.budgetId,
-        transactionId: input.payload.transactionId,
+        transactionId,
         operation: input.operation,
-        payloadHash: input.payloadHash,
+        payloadHash,
       }) as ProposalRow | undefined;
-      if (existing)
-        return rowToProposal(existing) as Exclude<ActionProposal, { operation: 'transfer' }>;
-      throw new Error('Failed to create or retrieve proposal');
-    }
-
-    return rowToProposal(row) as Exclude<ActionProposal, { operation: 'transfer' }>;
+      if (existing) return rowToProposal(existing) as GenericActionProposal;
+      throw new ProposalAcquisitionError('authorization_denied', 'Failed to create or retrieve proposal');
+    }).immediate();
   }
 
   async getProposal(id: string): Promise<ActionProposal | null> {
@@ -4054,18 +4893,52 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rowToProposal(updated);
   }
 
-  /** Discard a categorization/rule proposal and its approvals under current transactional authorization. */
-  async discardProposal(id: string, actorId: string): Promise<ActionProposal | null> {
+  /** Cancels an exact intent and its votes under current human authority in one transaction. */
+  async discardProposal(
+    id: string,
+    actorId: string,
+    context: DiscardProposalAuthorization,
+  ): Promise<ActionProposal | null> {
     return this.db.transaction(() => {
+      if (!context || context.auth?.method !== 'human-session' ||
+          !this.freshHumanControl(context.auth, actorId, context.now) ||
+          !this.operationalAuthMatches(context.auth, actorId, context.now)) return null;
       const proposal = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
-      if (!proposal || !this.approvalIssuerAuthorized(actorId, proposal)) return null;
+      if (!proposal || !isGenericProposalOperation(proposal.operation) ||
+          proposal.space_id !== context.spaceId || !this.proposalHashMatches(proposal)) return null;
+      if (this.stmt.selectProposalExecutionAcquisition.get(id)) return null;
+      const policy = this.governance.getPolicy({ spaceId: context.spaceId });
+      if (!policy || policy.version !== context.governancePolicyVersion) return null;
+      let payload: unknown;
+      let facts: ProposalAuthorizationFacts;
+      try {
+        payload = JSON.parse(proposal.payload) as unknown;
+        facts = deriveProposalAuthorizationFacts(proposal.operation, payload, JSON.parse(proposal.preconditions) as unknown);
+      } catch {
+        return null;
+      }
+      const authorization = this.authorizeGenericProposal({
+        actorId, auth: context.auth, spaceId: context.spaceId, policyVersion: policy.version,
+        phase: 'execute',
+        capability: proposal.operation === 'set_category' ? 'categorization:execute' : 'rule:execute',
+        operation: proposal.operation, budgetId: proposal.budget_id, facts, payload, now: context.now,
+      });
+      if (!authorization.allowed) return null;
       if (!proposal.superseded_at) {
-        const now = nowISO();
-        this.stmt.supersedeProposalStmt.run({ id, now });
-        this.stmt.supersedeProposalApprovals.run({ proposalId: id, now });
+        this.stmt.supersedeProposalStmt.run({ id, now: context.now });
+        this.stmt.supersedeProposalApprovals.run({ proposalId: id, now: context.now });
+        this.stmt.insertAudit.run({
+          id: randomUUID(), classification: 'proposal_superseded', timestamp: context.now,
+          actorId, operation: proposal.operation, proposalId: id, payloadHash: proposal.payload_hash,
+          budgetId: proposal.budget_id, backendIds: '[]', policyVersion: policy.version,
+          authorizationDisposition: JSON.stringify(authorization.disposition),
+          idempotencyKey: null, expectedPriorState: null, observedResultState: 'superseded',
+          providerModel: proposal.provider_model, correlationId: proposal.correlation_id, requestId: null,
+          result: 'discarded', isError: 0,
+        });
       }
       return rowToProposal(this.stmt.selectProposal.get(id) as ProposalRow);
-    })();
+    }).immediate();
   }
 
   async listProposals(options?: ListProposalsOptions): Promise<ActionProposal[]> {
@@ -4168,79 +5041,762 @@ export class SqliteWorkflowStore implements WorkflowStore {
   // ── Proposal approval lifecycle ───────────────────────────────────
 
   async createApproval(input: CreateApprovalInput): Promise<ProposalApproval> {
+    return this.db.transaction(() => this.createApprovalSync(input)).immediate();
+  }
+
+  async createApprovals(input: CreateApprovalsInput): Promise<ProposalApproval[]> {
     return this.db.transaction(() => {
-      // Validate proposal exists and is not superseded
-      const proposalRow = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
-      if (!proposalRow) throw new Error(`Proposal ${input.proposalId} not found`);
-      if (proposalRow.operation === 'transfer' || proposalRow.operation === 'session_completion')
-        throw new Error('Specialized workflow transition required');
-      if (!this.approvalIssuerAuthorized(input.actorId, proposalRow)) {
-        throw new Error('Approval authorization denied');
+      const now = input?.now ?? nowISO();
+      if (!input || typeof input.spaceId !== 'string' || !input.spaceId.trim() ||
+          !input.auth || typeof input.auth.actorId !== 'string' ||
+          !Array.isArray(input.approvals) || input.approvals.length === 0)
+        throw new ProposalAcquisitionError('authorization_denied', 'Bulk approval request is invalid');
+      const actorId = input.auth.actorId;
+      const seen = new Set<string>();
+      const approvals: ProposalApproval[] = [];
+      for (const item of input.approvals) {
+        if (!item || typeof item !== 'object' || typeof item.proposalId !== 'string' ||
+            !item.proposalId.trim() || typeof item.payloadHash !== 'string')
+          throw new ProposalAcquisitionError('authorization_denied', 'Bulk approval item is invalid');
+        if (seen.has(item.proposalId))
+          throw new ProposalAcquisitionError('authorization_denied', 'Duplicate proposal in bulk approvals');
+        seen.add(item.proposalId);
+        const proposal = this.stmt.selectProposal.get(item.proposalId) as ProposalRow | undefined;
+        if (!proposal || proposal.space_id !== input.spaceId)
+          throw new ProposalAcquisitionError('authorization_denied', 'Proposal unavailable in selected space');
+        approvals.push(this.createApprovalSync({
+          proposalId: item.proposalId,
+          payloadHash: item.payloadHash,
+          actorId,
+          expiresAt: proposal.expires_at,
+          auth: input.auth,
+          now,
+        }, { requestId: input.requestId, correlationId: input.correlationId }));
       }
-      if (proposalRow.superseded_at) throw new Error(`Proposal ${input.proposalId} is superseded`);
+      return approvals;
+    }).immediate();
+  }
 
-      // Validate proposal has not expired
-      if (isExpired(proposalRow.expires_at)) {
-        throw new Error(`Proposal ${input.proposalId} expired at ${proposalRow.expires_at}`);
+  private createApprovalSync(
+    input: CreateApprovalInput,
+    auditContext: Pick<CreateApprovalsInput, 'requestId' | 'correlationId'> = {},
+  ): ProposalApproval {
+    const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+    if (!proposal || !isGenericProposalOperation(proposal.operation))
+      throw new ProposalAcquisitionError('authorization_denied', 'Generic proposal not found');
+    const operation = proposal.operation as GenericProposalOperation;
+    const now = input.now;
+    const nowMillis = timestampMillis(now);
+    const proposalExpiry = timestampMillis(proposal.expires_at);
+    const approvalExpiry = timestampMillis(input.expiresAt);
+    if (nowMillis === null || proposalExpiry === null || approvalExpiry === null)
+      throw new ProposalAcquisitionError('proposal_expired', 'Proposal or approval time is invalid');
+    if (proposal.superseded_at)
+      throw new ProposalAcquisitionError('proposal_superseded', 'Proposal is superseded');
+    if (proposalExpiry <= nowMillis || approvalExpiry <= nowMillis || approvalExpiry > proposalExpiry)
+      throw new ProposalAcquisitionError('proposal_expired', 'Proposal or approval expiry is invalid');
+    if (
+      proposal.policy_version !== GENERIC_MUTATION_POLICY_VERSION ||
+      !this.proposalHashMatches(proposal) ||
+      input.payloadHash !== proposal.payload_hash
+    )
+      throw new ProposalAcquisitionError('payload_hash_mismatch', 'Displayed proposal hash does not match');
+    if (
+      !this.freshHumanControl(input.auth, input.actorId, now) ||
+      !this.operationalAuthMatches(input.auth, input.actorId, now)
+    )
+      throw new ProposalAcquisitionError('authorization_denied', 'Fresh human approval session required');
+    if (!this.requesterMembershipCurrent(proposal, now))
+      throw new ProposalAcquisitionError('authorization_denied', 'Proposal requester membership is no longer current');
+    const spaceId = proposal.space_id;
+    if (!spaceId || !proposal.requester_membership_id || !proposal.governance_policy_version)
+      throw new ProposalAcquisitionError('authorization_denied', 'Proposal lacks trusted governance provenance');
+
+    const space = this.governance.getSpace({ spaceId });
+    const policy = this.governance.getPolicy({ spaceId });
+    if (
+      !space ||
+      space.deletedAt !== null ||
+      space.budgetId !== proposal.budget_id ||
+      !policy ||
+      policy.version !== proposal.governance_policy_version
+    )
+      throw new ProposalAcquisitionError('policy_version_mismatch', 'Current governance policy differs from proposal');
+
+    let payload: unknown;
+    let preconditions: unknown;
+    let facts: ProposalAuthorizationFacts;
+    try {
+      payload = JSON.parse(proposal.payload) as unknown;
+      preconditions = JSON.parse(proposal.preconditions) as unknown;
+      facts = deriveProposalAuthorizationFacts(
+        operation,
+        payload,
+        preconditions,
+      );
+    } catch {
+      throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal envelope is invalid');
+    }
+    if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, policy.version, now))
+      throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
+    if (!this.ruleOverrideSnapshotMatches(spaceId, proposal.budget_id, payload, preconditions))
+      throw new ProposalAcquisitionError('authorization_denied', 'Current rule override state differs from the proposal');
+    const capability = operation === 'set_category' ? 'categorization:approve' : 'rule:approve';
+    const authorization = this.authorizeGenericProposal({
+      actorId: input.actorId,
+      auth: input.auth,
+      spaceId,
+      policyVersion: policy.version,
+      phase: 'approve',
+      capability,
+      operation: proposal.operation,
+      budgetId: proposal.budget_id,
+      facts,
+      payload,
+      now,
+    });
+    if (!authorization.allowed || !authorization.membershipId)
+      throw new ProposalAcquisitionError('authorization_denied', authorization.reason);
+
+    const id = randomUUID();
+    const row = this.stmt.insertApproval.get({
+      id,
+      proposalId: input.proposalId,
+      payloadHash: input.payloadHash,
+      actorId: input.actorId,
+      issuerMembershipId: authorization.membershipId,
+      governancePolicyVersion: policy.version,
+      reauthenticatedSessionId: input.auth.sessionId,
+      reauthenticatedAt: input.auth.reauthenticatedAt,
+      expiresAt: input.expiresAt,
+      createdAt: now,
+    }) as ApprovalRow | undefined;
+    if (row) {
+      const approval = rowToApproval(row);
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'approval_granted',
+        timestamp: now,
+        actorId: input.actorId,
+        operation: proposal.operation,
+        proposalId: proposal.id,
+        payloadHash: proposal.payload_hash,
+        budgetId: proposal.budget_id,
+        backendIds: '[]',
+        policyVersion: proposal.policy_version,
+        authorizationDisposition: JSON.stringify(authorization.disposition),
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: 'active',
+        providerModel: proposal.provider_model,
+        correlationId: auditContext.correlationId ?? proposal.correlation_id,
+        requestId: auditContext.requestId ?? null,
+        result: JSON.stringify({
+          approvalId: approval.id,
+          spaceId,
+          issuerMembershipId: authorization.membershipId,
+          governancePolicyVersion: policy.version,
+        }),
+        isError: 0,
+      });
+      return approval;
+    }
+
+    const existing = this.stmt.selectApprovalByProposalActor.get({
+      proposalId: input.proposalId,
+      actorId: input.actorId,
+    }) as ApprovalRow | undefined;
+    const existingExpiry = existing ? timestampMillis(existing.expires_at) : null;
+    if (
+      existing?.status === 'active' &&
+      existingExpiry !== null &&
+      existingExpiry > nowMillis &&
+      existing.payload_hash === proposal.payload_hash &&
+      existing.issuer_membership_id === authorization.membershipId &&
+      existing.governance_policy_version === policy.version &&
+      existing.reauthenticated_session_id !== null &&
+      existing.reauthenticated_at !== null
+    )
+      return rowToApproval(existing);
+    throw new ProposalAcquisitionError('approval_consumed', 'Approval cannot be reissued');
+  }
+
+  async getProposalApprovalSummary(
+    input: GetProposalApprovalSummaryInput,
+  ): Promise<ProposalApprovalSummary> {
+    return this.db.transaction(() => {
+      const nowMillis = timestampMillis(input.now);
+      if (nowMillis === null)
+        throw new ProposalAcquisitionError('authorization_denied', 'Current governance context unavailable');
+      const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+      if (
+        !proposal ||
+        !isGenericProposalOperation(proposal.operation) ||
+        !proposal.space_id ||
+        proposal.space_id !== input.spaceId ||
+        !proposal.requester_membership_id ||
+        !proposal.governance_policy_version
+      )
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal is unavailable in selected space');
+      if (
+        !input.auth ||
+        input.actorId !== input.auth.actorId ||
+        !this.operationalAuthMatches(input.auth, input.actorId, input.now)
+      )
+        throw new ProposalAcquisitionError('authorization_denied', 'Summary reader credentials are unavailable');
+      const agentPrincipal = input.auth.method === 'api-key' && input.auth.principalType === 'agent';
+      const isProposalRequester = input.actorId === proposal.actor_id;
+      if (
+        isProposalRequester &&
+        input.auth.method === 'api-key' &&
+        input.auth.principalType === 'agent' &&
+        (proposal.requester_delegation_id !== null || proposal.requester_delegation_version !== null) &&
+        (proposal.requester_delegation_id !== input.auth.delegationId ||
+          proposal.requester_delegation_version !== input.auth.delegationVersion)
+      )
+        throw new ProposalAcquisitionError('authorization_denied', 'Agent proposal origin delegation differs');
+
+      const space = this.governance.getSpace({ spaceId: input.spaceId });
+      const policy = this.governance.getPolicy({ spaceId: input.spaceId });
+      const membership = agentPrincipal
+        ? null
+        : this.governance.getCurrentMembership({
+            spaceId: input.spaceId,
+            actorId: input.actorId,
+            now: input.now,
+          });
+      if (
+        !space ||
+        space.deletedAt !== null ||
+        space.budgetId !== proposal.budget_id ||
+        !policy ||
+        (!membership && !agentPrincipal) ||
+        !this.requesterMembershipCurrent(proposal, input.now)
+      )
+        throw new ProposalAcquisitionError('authorization_denied', 'Current selected-space membership unavailable');
+      if (proposal.policy_version !== GENERIC_MUTATION_POLICY_VERSION)
+        throw new ProposalAcquisitionError('policy_version_mismatch', 'Generic mutation policy version changed');
+
+      const operation = proposal.operation as GenericProposalOperation;
+      const requesterCapability = operation === 'set_category' ? 'categorization:propose' : 'rule:propose';
+      const approvalCapability = operation === 'set_category' ? 'categorization:approve' : 'rule:approve';
+      const executionCapability = operation === 'set_category' ? 'categorization:execute' : 'rule:execute';
+
+      let payload: unknown;
+      let preconditions: unknown;
+      let facts: ProposalAuthorizationFacts;
+      try {
+        payload = JSON.parse(proposal.payload) as unknown;
+        preconditions = JSON.parse(proposal.preconditions) as unknown;
+        if (canonicalProposalHash({
+          operation,
+          budgetId: proposal.budget_id,
+          payload,
+          preconditions,
+          actorId: proposal.actor_id,
+          policyVersion: proposal.policy_version,
+          expiresAt: proposal.expires_at,
+        }) !== proposal.payload_hash)
+          throw new Error('Proposal hash mismatch');
+        facts = deriveProposalAuthorizationFacts(operation, payload, preconditions);
+      } catch {
+        throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal authorization facts are invalid');
       }
+      if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, policy.version, input.now))
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
+      const ruleOverrideCurrent = this.ruleOverrideSnapshotMatches(
+        input.spaceId,
+        proposal.budget_id,
+        payload,
+        preconditions,
+      );
 
-      // Validate payload hash matches proposal
-      if (input.payloadHash !== proposalRow.payload_hash) {
-        throw new Error(
-          `Payload hash mismatch: approval hash ${input.payloadHash} does not match proposal hash ${proposalRow.payload_hash}`,
+      const requesterRead = isProposalRequester
+        ? this.authorizeGenericProposal({
+            actorId: input.actorId,
+            auth: input.auth,
+            spaceId: input.spaceId,
+            policyVersion: policy.version,
+            phase: 'propose',
+            capability: requesterCapability,
+            operation,
+            budgetId: proposal.budget_id,
+            facts,
+            payload,
+            now: input.now,
+            membershipId: proposal.requester_membership_id,
+          })
+        : null;
+      const approvalRead = agentPrincipal
+        ? null
+        : this.authorizeGenericProposal({
+            actorId: input.actorId,
+            auth: input.auth,
+            spaceId: input.spaceId,
+            policyVersion: policy.version,
+            phase: 'read',
+            capability: approvalCapability,
+            operation,
+            budgetId: proposal.budget_id,
+            facts,
+            payload,
+            now: input.now,
+          });
+      const executionRead = this.authorizeGenericProposal({
+            actorId: input.actorId,
+            auth: input.auth,
+            spaceId: input.spaceId,
+            policyVersion: policy.version,
+            phase: 'read',
+            capability: executionCapability,
+            operation,
+            budgetId: proposal.budget_id,
+            facts,
+            payload,
+            now: input.now,
+          });
+      const fullReadResource = !agentPrincipal && membership
+        ? this.governance.authorize({
+            actorId: input.actorId,
+            spaceId: input.spaceId,
+            membershipId: membership.id,
+            expectedPolicyVersion: policy.version,
+            phase: 'read',
+            operation,
+            required: [
+              {
+                capability: 'full-read',
+                resourceKind: 'budget',
+                resourceId: proposal.budget_id,
+                visibility: 'resource',
+              },
+              ...facts.resources
+                .filter((resource) =>
+                  resource.resourceKind !== 'account' &&
+                  resource.resourceKind !== 'category' &&
+                  resource.resourceKind !== 'transaction' &&
+                  resource.resourceKind !== 'rule')
+                .map((resource) => ({ ...resource, capability: 'full-read' })),
+            ],
+            payload: { operations: facts.operations, resources: facts.resources },
+            now: input.now,
+            auth: input.auth,
+          })
+        : null;
+      const exactPrivateRead = !agentPrincipal && membership && facts.resources.length > 0
+        ? this.governance.authorize({
+            actorId: input.actorId,
+            spaceId: input.spaceId,
+            membershipId: membership.id,
+            expectedPolicyVersion: policy.version,
+            phase: 'read',
+            operation,
+            required: facts.resources.map((resource) => ({ ...resource, capability: 'full-read' })),
+            payload: { operations: facts.operations, resources: facts.resources },
+            now: input.now,
+            auth: input.auth,
+          })
+        : null;
+      const fullReadAllowed =
+        fullReadResource?.allowed === true ||
+        exactPrivateRead?.allowed === true;
+      if (
+        !fullReadAllowed &&
+        !approvalRead?.allowed &&
+        !executionRead?.allowed &&
+        !requesterRead?.allowed
+      )
+        throw new ProposalAcquisitionError('authorization_denied', 'Current exact proposal read authority unavailable');
+
+      const eligible = ruleOverrideCurrent
+        ? this.eligibleHumanApprovals({
+            proposalId: proposal.id,
+            payloadHash: proposal.payload_hash,
+            spaceId: input.spaceId,
+            policyVersion: policy.version,
+            operation,
+            budgetId: proposal.budget_id,
+            facts,
+            payload,
+            now: input.now,
+          })
+        : [];
+      const executionAdmission = this.authorizeGenericProposal({
+        actorId: input.actorId,
+        auth: input.auth,
+        spaceId: input.spaceId,
+        policyVersion: policy.version,
+        phase: 'execute',
+        capability: executionCapability,
+        operation,
+        budgetId: proposal.budget_id,
+        facts,
+        payload,
+        now: input.now,
+      });
+      const requiredApprovers = requiredProposalApprovers(executionAdmission);
+      const proposalExpiresAt = timestampMillis(proposal.expires_at);
+      const proposalCurrent =
+        proposal.governance_policy_version === policy.version &&
+        proposal.superseded_at === null &&
+        proposalExpiresAt !== null &&
+        proposalExpiresAt > nowMillis &&
+        ruleOverrideCurrent &&
+        this.proposalReviewProvenanceMatches(proposal);
+      const disposition = !proposalCurrent
+        ? {
+            kind: 'denied' as const,
+            reason: proposal.governance_policy_version !== policy.version
+              ? 'Current governance policy differs from proposal'
+              : 'Proposal is no longer executable',
+          }
+        : eligible.length < requiredApprovers
+          ? { kind: 'approval_required' as const }
+          : { kind: 'authorized_without_approval' as const };
+      const executionWithApprovals =
+        proposalCurrent && eligible.length >= requiredApprovers
+          ? this.authorizeGenericProposal({
+              actorId: input.actorId,
+              auth: input.auth,
+              spaceId: input.spaceId,
+              policyVersion: policy.version,
+              phase: 'execute',
+              capability: executionCapability,
+              operation,
+              budgetId: proposal.budget_id,
+              facts,
+              payload,
+              now: input.now,
+              verifiedHumanApproval: true,
+            })
+          : null;
+      const canExecute =
+        executionWithApprovals?.allowed === true &&
+        executionWithApprovals.disposition.kind === 'authorized_without_approval';
+
+      const canApprove = !agentPrincipal && proposalCurrent && approvalRead?.allowed === true;
+      const requestId = input.requestId ?? randomUUID();
+      const readAdmission = [fullReadResource, exactPrivateRead, approvalRead, executionRead, requesterRead]
+        .find((authorization) => authorization?.allowed);
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification: 'authorization_check',
+        timestamp: input.now,
+        actorId: input.actorId,
+        operation,
+        proposalId: proposal.id,
+        payloadHash: proposal.payload_hash,
+        budgetId: proposal.budget_id,
+        backendIds: '[]',
+        policyVersion: policy.version,
+        authorizationDisposition: JSON.stringify({ kind: 'authorized_without_approval' }),
+        idempotencyKey: null,
+        expectedPriorState: null,
+        observedResultState: null,
+        providerModel: null,
+        correlationId: requestId,
+        requestId,
+        result: JSON.stringify({
+          kind: 'proposal_read_admission',
+          spaceId: input.spaceId,
+          membershipId: readAdmission?.membershipId ?? null,
+          delegationId: agentPrincipal && input.auth.method === 'api-key' ? input.auth.delegationId : null,
+          delegationVersion: agentPrincipal && input.auth.method === 'api-key' ? input.auth.delegationVersion : null,
+        }),
+        isError: 0,
+      });
+      return {
+        currentGovernancePolicyVersion: policy.version,
+        requesterMembershipCurrent: true,
+        privateEnvelopeVisible: fullReadAllowed,
+        approvalAuthorized: approvalRead?.allowed === true,
+        executionAuthorized: executionRead?.allowed === true,
+        requiredApprovers,
+        approvers: eligible.map((approval) => ({
+          actorId: approval.actor_id,
+          issuedAt: approval.created_at,
+          expiresAt: approval.expires_at,
+        })),
+        disposition,
+        canApprove,
+        canExecute,
+      };
+    }).immediate();
+  }
+
+
+
+  async acquireProposalExecution(
+    input: AcquireProposalExecutionInput,
+  ): Promise<ProposalExecutionAcquisition> {
+    return this.db.transaction(() => {
+      const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+      if (!proposal || !isGenericProposalOperation(proposal.operation))
+        throw new ProposalAcquisitionError('authorization_denied', 'Generic proposal not found');
+      const operation = proposal.operation as GenericProposalOperation;
+      const now = input.now ?? nowISO();
+      const nowMillis = timestampMillis(now);
+      const expiresAt = timestampMillis(proposal.expires_at);
+      const existingAcquisition = this.stmt.selectProposalExecutionAcquisition.get(
+        input.proposalId,
+      ) as
+        | { proposal_id: string; idempotency_key: string; actor_id: string; acquired_at: string }
+        | undefined;
+      const existingIdempotency =
+        existingAcquisition?.idempotency_key === input.idempotencyKey
+          ? (this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined)
+          : undefined;
+      const completedReplay =
+        existingAcquisition?.actor_id === input.actorId &&
+        existingIdempotency !== undefined &&
+        existingIdempotency.proposal_id === input.proposalId &&
+        existingIdempotency.operation === operation &&
+        existingIdempotency.completed !== 0;
+      if (
+        nowMillis === null ||
+        expiresAt === null ||
+        (expiresAt <= nowMillis && !completedReplay)
+      )
+        throw new ProposalAcquisitionError('proposal_expired', 'Proposal is expired');
+      if (proposal.superseded_at && !completedReplay)
+        throw new ProposalAcquisitionError('proposal_superseded', 'Proposal is superseded');
+      if (proposal.policy_version !== GENERIC_MUTATION_POLICY_VERSION)
+        throw new ProposalAcquisitionError('policy_version_mismatch', 'Generic mutation policy version changed');
+      if (!this.proposalHashMatches(proposal) || input.payloadHash !== proposal.payload_hash)
+        throw new ProposalAcquisitionError('payload_hash_mismatch', 'Proposal hash does not match stored envelope');
+      if (input.actorId !== input.auth.actorId || !this.operationalAuthMatches(input.auth, input.actorId, now))
+        throw new ProposalAcquisitionError('authorization_denied', 'Executor does not match trusted credentials');
+      if (
+        input.auth.method === 'api-key' &&
+        input.auth.principalType === 'agent' &&
+        (proposal.requester_delegation_id !== null || proposal.requester_delegation_version !== null) &&
+        (proposal.requester_delegation_id !== input.auth.delegationId ||
+          proposal.requester_delegation_version !== input.auth.delegationVersion)
+      )
+        throw new ProposalAcquisitionError('authorization_denied', 'Agent proposal origin delegation differs');
+      if (!input.idempotencyKey.trim())
+        throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Idempotency key is required');
+
+      const spaceId = proposal.space_id;
+      const requesterMembershipId = proposal.requester_membership_id;
+      const governancePolicyVersion = proposal.governance_policy_version;
+      if (!spaceId || !requesterMembershipId || !governancePolicyVersion)
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal lacks trusted governance provenance');
+      const space = this.governance.getSpace({ spaceId });
+      const policy = this.governance.getPolicy({ spaceId });
+      if (
+        !space ||
+        space.deletedAt !== null ||
+        space.budgetId !== proposal.budget_id ||
+        !policy ||
+        policy.version !== governancePolicyVersion ||
+        input.governancePolicyVersion !== governancePolicyVersion
+      )
+        throw new ProposalAcquisitionError('policy_version_mismatch', 'Current governance policy differs from proposal');
+      if (!this.requesterMembershipCurrent(proposal, now))
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal requester membership is no longer current');
+
+      let payload: unknown;
+      let preconditions: unknown;
+      try {
+        payload = JSON.parse(proposal.payload) as unknown;
+        preconditions = JSON.parse(proposal.preconditions) as unknown;
+      } catch {
+        throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal envelope is invalid');
+      }
+      let facts: ProposalAuthorizationFacts;
+      try {
+        facts = deriveProposalAuthorizationFacts(operation, payload, preconditions);
+      } catch {
+        throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal authorization facts are invalid');
+      }
+      if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, policy.version, now))
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
+      const serializedProposal = JSON.stringify({ operation, payload, preconditions });
+      if (serializedProposal !== input.serialisedEffect)
+        throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution effect differs from proposal');
+      const capability = operation === 'set_category' ? 'categorization:execute' : 'rule:execute';
+      const authorization = this.authorizeGenericProposal({
+        actorId: input.actorId,
+        auth: input.auth,
+        spaceId,
+        policyVersion: policy.version,
+        phase: 'propose',
+        capability,
+        operation,
+        budgetId: proposal.budget_id,
+        facts,
+        payload,
+        now,
+      });
+      if (!authorization.allowed)
+        throw new ProposalAcquisitionError('authorization_denied', authorization.reason);
+
+      if (existingAcquisition) {
+        if (existingAcquisition.actor_id !== input.actorId)
+          throw new ProposalAcquisitionError('authorization_denied', 'Execution replay is unavailable');
+        if (existingAcquisition.idempotency_key !== input.idempotencyKey)
+          throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already acquired');
+        const existing = existingIdempotency;
+        if (
+          !existing ||
+          existing.proposal_id !== input.proposalId ||
+          existing.operation !== operation ||
+          existing.serialised_effect !== input.serialisedEffect
+        )
+          throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution replay does not match its claim');
+        return {
+          claim: { record: rowToIdempotency(existing), isOwner: false },
+          approvals: [],
+          auditRecord: null,
+        };
+      }
+      if (!this.proposalReviewProvenanceMatches(proposal))
+        throw new ProposalAcquisitionError('authorization_denied', 'Proposal review provenance is no longer current');
+
+      if (!this.ruleOverrideSnapshotMatches(spaceId, proposal.budget_id, payload, preconditions))
+        throw new ProposalAcquisitionError('authorization_denied', 'Current rule override state differs from the proposal');
+      const existingKey = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined;
+      if (existingKey)
+        throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Idempotency key is already in use');
+      const priorClaim = this.stmt.selectIdempotencyByProposalOp.get({
+        proposalId: input.proposalId,
+        operation,
+      }) as IdempotencyRow | undefined;
+      if (priorClaim)
+        throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already claimed');
+
+      const eligible = this.eligibleHumanApprovals({
+        proposalId: input.proposalId,
+        payloadHash: proposal.payload_hash,
+        spaceId,
+        policyVersion: policy.version,
+        operation,
+        budgetId: proposal.budget_id,
+        facts,
+        payload,
+        now,
+      });
+
+      const requiredApprovers = requiredProposalApprovers(authorization);
+      let selectedApprovals = eligible;
+      if (input.approvalId) {
+        const selected = eligible.find((approval) => approval.id === input.approvalId);
+        if (!selected) {
+          const hinted = this.stmt.selectApproval.get(input.approvalId) as ApprovalRow | undefined;
+          throw new ProposalAcquisitionError(
+            hinted?.status === 'consumed' ? 'approval_consumed' : 'approval_required',
+            'Selected approval is not currently eligible',
+          );
+        }
+        selectedApprovals = [selected, ...eligible.filter((approval) => approval.id !== selected.id)];
+      }
+      selectedApprovals = selectedApprovals.slice(0, requiredApprovers);
+      if (selectedApprovals.length < requiredApprovers)
+        throw new ProposalAcquisitionError('approval_required', 'Additional human approval is required');
+
+      const executionAuthorization = this.authorizeGenericProposal({
+        actorId: input.actorId,
+        auth: input.auth,
+        spaceId,
+        policyVersion: policy.version,
+        phase: 'execute',
+        capability,
+        operation,
+        budgetId: proposal.budget_id,
+        facts,
+        payload,
+        now,
+        verifiedHumanApproval: true,
+      });
+      if (!executionAuthorization.allowed)
+        throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
+
+      const leaseExpiresAt = new Date(nowMillis + 60_000).toISOString();
+      const claim = this.stmt.insertIdempotency.get({
+        idempotencyKey: input.idempotencyKey,
+        proposalId: input.proposalId,
+        operation,
+        executedAt: now,
+        serialisedEffect: input.serialisedEffect,
+        leaseExpiresAt,
+        updatedAt: now,
+      }) as IdempotencyRow | undefined;
+      if (!claim)
+        throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Idempotency key is already in use');
+      const acquired = this.stmt.insertProposalExecutionAcquisition.get({
+        proposalId: input.proposalId,
+        idempotencyKey: input.idempotencyKey,
+        actorId: input.actorId,
+        acquiredAt: now,
+      }) as { proposal_id: string } | undefined;
+      if (!acquired)
+        throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already acquired');
+
+      const consumedApprovals: ProposalApproval[] = [];
+      for (const approval of selectedApprovals) {
+        const result = this.stmt.consumeApprovalStmt.run({ id: approval.id, now });
+        if (result.changes !== 1)
+          throw new ProposalAcquisitionError('approval_consumed', 'Approval changed during execution acquisition');
+        consumedApprovals.push(
+          rowToApproval({ ...approval, status: 'consumed', consumed_at: now }),
         );
       }
 
-      // Validate approval expiry is in the future
-      if (isExpired(input.expiresAt)) {
-        throw new Error(`Approval expiry ${input.expiresAt} is in the past`);
-      }
-
-      const id = randomUUID();
-      const now = nowISO();
-
-      const row = this.stmt.insertApproval.get({
-        id,
+      const auditId = randomUUID();
+      const auditResult = JSON.stringify({
         proposalId: input.proposalId,
-        payloadHash: input.payloadHash,
+        approvalIds: consumedApprovals.map((approval) => approval.id),
+      });
+      this.stmt.insertAudit.run({
+        id: auditId,
+        classification: 'execution_started',
+        timestamp: now,
         actorId: input.actorId,
-        expiresAt: input.expiresAt,
-        createdAt: now,
-      }) as ApprovalRow | undefined;
-
-      if (!row) {
-        // Check if any approval (in any state) already exists for this (proposalId, actorId)
-        const existingAny = this.stmt.selectApprovalByProposalActor.get({
-          proposalId: input.proposalId,
-          actorId: input.actorId,
-        }) as ApprovalRow | undefined;
-
-        if (existingAny) {
-          if (existingAny.status === 'active') {
-            // Check if the existing active approval has actually expired
-            if (isExpired(existingAny.expires_at)) {
-              throw new Error(
-                `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
-                  `already exists with status 'active' (expired at ${existingAny.expires_at}) and cannot be re-issued`,
-              );
-            }
-            // Active and not expired — idempotent return
-            return rowToApproval(existingAny);
-          }
-          // Reject re-issuance — a consumed/expired/superseded approval already exists
-          throw new Error(
-            `Approval for proposal ${input.proposalId} by actor ${input.actorId} ` +
-              `already exists with status '${existingAny.status}' and cannot be re-issued`,
-          );
-        }
-
-        throw new Error('Failed to create approval');
-      }
-
-      return rowToApproval(row);
-    })();
+        operation,
+        proposalId: input.proposalId,
+        payloadHash: proposal.payload_hash,
+        budgetId: proposal.budget_id,
+        backendIds: '[]',
+        policyVersion: proposal.policy_version,
+        authorizationDisposition: JSON.stringify(executionAuthorization.disposition),
+        idempotencyKey: input.idempotencyKey,
+        expectedPriorState: null,
+        observedResultState: 'acquired',
+        providerModel: proposal.provider_model,
+        correlationId: input.correlationId ?? proposal.correlation_id,
+        requestId: input.requestId ?? null,
+        result: auditResult,
+        isError: 0,
+      });
+      const auditRecord: AuditRecord = {
+        id: auditId,
+        classification: 'execution_started',
+        timestamp: now,
+        actorId: input.actorId,
+        operation,
+        proposalId: input.proposalId,
+        payloadHash: proposal.payload_hash,
+        budgetId: proposal.budget_id,
+        backendIds: '[]',
+        policyVersion: proposal.policy_version,
+        authorizationDisposition: executionAuthorization.disposition,
+        idempotencyKey: input.idempotencyKey,
+        expectedPriorState: null,
+        observedResultState: 'acquired',
+        providerModel: proposal.provider_model,
+        correlationId: input.correlationId ?? proposal.correlation_id,
+        requestId: input.requestId ?? null,
+        result: auditResult,
+        isError: false,
+      };
+      return {
+        claim: { record: rowToIdempotency(claim), isOwner: true },
+        approvals: consumedApprovals,
+        auditRecord,
+      };
+    }).immediate();
   }
-
   async getApproval(id: string): Promise<ProposalApproval | null> {
     const row = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
     return row ? rowToApproval(row) : null;
@@ -4255,98 +5811,6 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rows.map(rowToApproval);
   }
 
-  async consumeApproval(id: string): Promise<ProposalApproval> {
-    return this.db.transaction(() => {
-      const existing = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
-      if (!existing) throw new Error(`Approval ${id} not found`);
-
-      if (existing.consumed_at)
-        throw new Error(`Approval ${id} already consumed at ${existing.consumed_at}`);
-      if (existing.superseded_at) throw new Error(`Approval ${id} is superseded`);
-
-      // Check proposal is not superseded
-      const proposalRow = this.stmt.selectProposal.get(existing.proposal_id) as
-        ProposalRow | undefined;
-      if (!proposalRow) throw new Error(`Proposal ${existing.proposal_id} not found`);
-      if (proposalRow.operation === 'transfer' || proposalRow.operation === 'session_completion')
-        throw new Error('Specialized workflow transition required');
-      if (!this.approvalIssuerAuthorized(existing.actor_id, proposalRow)) {
-        throw new Error('Approval authorization denied');
-      }
-      if (existing.payload_hash !== proposalRow.payload_hash) {
-        throw new Error('Approval payload hash mismatch');
-      }
-      if (proposalRow.superseded_at)
-        throw new Error(
-          `Proposal ${existing.proposal_id} is superseded — cannot consume its approval`,
-        );
-
-      // Check proposal has not expired
-      if (isExpired(proposalRow.expires_at)) {
-        throw new Error(
-          `Proposal ${existing.proposal_id} expired at ${proposalRow.expires_at} — cannot consume its approval`,
-        );
-      }
-
-      // Check expiry
-      const now = nowISO();
-      if (isExpired(existing.expires_at)) {
-        throw new Error(`Approval ${id} expired at ${existing.expires_at}`);
-      }
-
-      const result = this.stmt.consumeApprovalStmt.run({ id, now });
-      if (result.changes === 0) {
-        throw new Error(`Approval ${id} could not be consumed (concurrent state change)`);
-      }
-
-      const updated = this.stmt.selectApproval.get(id) as ApprovalRow;
-      return rowToApproval(updated);
-    })();
-  }
-
-  async verifyApprovalForExecution(
-    proposalId: string,
-    payloadHash: string,
-  ): Promise<string | null> {
-    // Check proposal exists
-    const proposalRow = this.stmt.selectProposal.get(proposalId) as ProposalRow | undefined;
-    if (!proposalRow) return `Proposal ${proposalId} not found`;
-
-    // Check proposal is not superseded
-    if (proposalRow.superseded_at)
-      return `Proposal ${proposalId} was superseded at ${proposalRow.superseded_at}`;
-
-    // Check proposal has not expired
-    if (isExpired(proposalRow.expires_at)) {
-      return `Proposal ${proposalId} expired at ${proposalRow.expires_at}`;
-    }
-
-    // Check payload hash matches
-    if (payloadHash !== proposalRow.payload_hash) {
-      return `Payload hash mismatch: expected ${proposalRow.payload_hash}, got ${payloadHash}`;
-    }
-
-    // Find active approvals
-    const now = nowISO();
-    this.stmt.markExpiredApprovals.run({ now });
-    const activeApprovals = this.stmt.selectActiveApprovals.all({
-      proposalId,
-      now,
-    }) as ApprovalRow[];
-
-    if (
-      !activeApprovals.some(
-        (approval) =>
-          approval.payload_hash === proposalRow.payload_hash &&
-          !isExpired(approval.expires_at) &&
-          this.approvalIssuerAuthorized(approval.actor_id, proposalRow),
-      )
-    ) {
-      return `No authorized active approvals found for proposal ${proposalId}`;
-    }
-
-    return null;
-  }
 
   // ── Idempotency records ───────────────────────────────────────────
 
@@ -4400,6 +5864,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     key: string,
     errorMessage?: string | null,
     isRetryable?: boolean,
+    serialisedResult?: string | null,
   ): Promise<IdempotencyRecord> {
     const now = nowISO();
     const status: IdempotencyStatus = errorMessage
@@ -4407,7 +5872,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
         ? 'retryable_failed'
         : 'terminal_failed'
       : 'succeeded';
-    this.stmt.completeIdempotencyStmt.run({ key, status, errorMessage: errorMessage ?? null, now });
+    this.stmt.completeIdempotencyStmt.run({
+      key,
+      status,
+      errorMessage: errorMessage ?? null,
+      serialisedResult: status === 'succeeded' ? (serialisedResult ?? null) : null,
+      now,
+    });
     const row = this.stmt.selectIdempotency.get(key) as IdempotencyRow;
     return rowToIdempotency(row);
   }
@@ -4507,23 +5978,288 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Authorization ─────────────────────────────────────────────────
 
-  private approvalIssuerAuthorized(actorId: string, proposal: ProposalRow): boolean {
-    const capability =
-      proposal.operation === 'set_category'
-        ? 'categorization:execute'
-        : proposal.operation === 'create_rule'
-          ? 'rule:execute'
-          : null;
-    return (
-      capability !== null &&
-      this.evaluateAuthorizationSync(
-        actorId,
-        capability,
-        `budget:${proposal.budget_id}`,
-        proposal.policy_version,
-      ).allowed
-    );
+  private operationalAuthMatches(auth: OperationalAuth, actorId: string, now: string): boolean {
+    if (auth.actorId !== actorId) return false;
+    if (auth.method === 'session')
+      return typeof auth.sessionId === 'string' && auth.sessionId.trim().length > 0;
+    if (auth.method === 'human-session')
+      return typeof auth.sessionId === 'string' && auth.sessionId.trim().length > 0;
+    const principal = this.governance.resolveCredentialPrincipal({
+      credentialId: auth.credentialId,
+      referenceId: auth.credentialOwnerId,
+      now,
+    });
+    return !!principal &&
+      principal.actorId === auth.actorId &&
+      principal.credentialId === auth.credentialId &&
+      principal.credentialOwnerId === auth.credentialOwnerId &&
+      principal.principalType === auth.principalType &&
+      (auth.principalType === 'human' ||
+        (principal.principalType === 'agent' &&
+          principal.delegationId === auth.delegationId &&
+          principal.delegationVersion === auth.delegationVersion));
   }
+
+  private requesterMembershipCurrent(proposal: ProposalRow, now: string): boolean {
+    if (!proposal.space_id || !proposal.requester_membership_id) return false;
+    const membership = this.governance
+      .listMembershipHistory({ spaceId: proposal.space_id })
+      .find((candidate) => candidate.id === proposal.requester_membership_id);
+    if (
+      !membership ||
+      this.governance.getCurrentMembership({
+        spaceId: proposal.space_id,
+        actorId: membership.actorId,
+        now,
+      })?.id !== membership.id
+    )
+      return false;
+    if (!proposal.requester_delegation_id && !proposal.requester_delegation_version)
+      return membership.actorId === proposal.actor_id;
+    if (
+      !proposal.requester_delegation_id ||
+      !proposal.requester_delegation_version ||
+      membership.actorId === proposal.actor_id
+    )
+      return false;
+
+    const delegation = this.governance
+      .listDelegations({ spaceId: proposal.space_id, agentId: proposal.actor_id })
+      .find((candidate) =>
+        candidate.id === proposal.requester_delegation_id &&
+        candidate.version === proposal.requester_delegation_version);
+    const agent = this.governance.getAgent({ agentId: proposal.actor_id });
+    const nowMillis = timestampMillis(now);
+    const validFrom = delegation ? timestampMillis(delegation.validFrom) : null;
+    const validUntil = delegation?.validUntil === null || delegation?.validUntil === undefined
+      ? null
+      : timestampMillis(delegation.validUntil);
+    return !!delegation &&
+      delegation.revokedAt === null &&
+      delegation.spaceId === proposal.space_id &&
+      delegation.agentId === proposal.actor_id &&
+      delegation.issuerActorId === membership.actorId &&
+      delegation.issuerMembershipId === membership.id &&
+      agent !== null &&
+      agent.registeredSpaceId === proposal.space_id &&
+      agent.status === 'active' &&
+      nowMillis !== null &&
+      validFrom !== null &&
+      validFrom <= nowMillis &&
+      (delegation.validUntil === null || validUntil !== null && nowMillis < validUntil);
+  }
+
+  private proposalOriginAuthorityCurrent(
+    proposal: ProposalRow,
+    operation: GenericProposalOperation,
+    facts: ProposalAuthorizationFacts,
+    payload: unknown,
+    policyVersion: string,
+    now: string,
+  ): boolean {
+    if (!proposal.space_id || !proposal.requester_membership_id)
+      return false;
+    const hasDelegationId = proposal.requester_delegation_id !== null;
+    const hasDelegationVersion = proposal.requester_delegation_version !== null;
+    if (hasDelegationId !== hasDelegationVersion)
+      return false;
+    const issuerMembership = this.governance
+      .listMembershipHistory({ spaceId: proposal.space_id })
+      .find((membership) => membership.id === proposal.requester_membership_id);
+    if (
+      !issuerMembership ||
+      (hasDelegationId
+        ? issuerMembership.actorId === proposal.actor_id
+        : issuerMembership.actorId !== proposal.actor_id)
+    )
+      return false;
+    const capability = operation === 'set_category' ? 'categorization:propose' : 'rule:propose';
+    return this.authorizeGenericProposal({
+      actorId: issuerMembership.actorId,
+      spaceId: proposal.space_id,
+      membershipId: issuerMembership.id,
+      policyVersion,
+      phase: 'propose',
+      capability,
+      operation,
+      budgetId: proposal.budget_id,
+      facts,
+      payload,
+      now,
+    }).allowed;
+  }
+
+  private proposalHashMatches(proposal: ProposalRow): boolean {
+    try {
+      return canonicalProposalHash({
+        operation: proposal.operation,
+        budgetId: proposal.budget_id,
+        payload: JSON.parse(proposal.payload) as unknown,
+        preconditions: JSON.parse(proposal.preconditions) as unknown,
+        actorId: proposal.actor_id,
+        policyVersion: proposal.policy_version,
+        expiresAt: proposal.expires_at,
+      }) === proposal.payload_hash;
+    } catch {
+      return false;
+    }
+  }
+
+  private freshHumanControl(auth: CreateApprovalInput['auth'], actorId: string, now: string): boolean {
+    const current = timestampMillis(now);
+    const reauthenticated = timestampMillis(auth.reauthenticatedAt);
+    return auth.method === 'human-session' &&
+      auth.actorId === actorId &&
+      typeof auth.sessionId === 'string' &&
+      auth.sessionId.trim().length > 0 &&
+      current !== null &&
+      reauthenticated !== null &&
+      reauthenticated <= current &&
+      current - reauthenticated <= 5 * 60_000;
+  }
+
+  private eligibleHumanApprovals(input: {
+    readonly proposalId: string;
+    readonly payloadHash: string;
+    readonly spaceId: string;
+    readonly policyVersion: string;
+    readonly operation: GenericProposalOperation;
+    readonly budgetId: string;
+    readonly facts: ProposalAuthorizationFacts;
+    readonly payload: unknown;
+    readonly now: string;
+  }): ApprovalRow[] {
+    const activeApprovals = this.stmt.selectActiveApprovals.all({
+      proposalId: input.proposalId,
+      now: input.now,
+    }) as ApprovalRow[];
+    const eligible: ApprovalRow[] = [];
+    const actors = new Set<string>();
+    for (const approval of activeApprovals) {
+      if (
+        approval.payload_hash !== input.payloadHash ||
+        approval.governance_policy_version !== input.policyVersion ||
+        !approval.issuer_membership_id ||
+        !approval.reauthenticated_session_id?.trim() ||
+        !approval.reauthenticated_at
+      )
+        continue;
+      const reauthenticatedAt = timestampMillis(approval.reauthenticated_at);
+      const approvedAt = timestampMillis(approval.created_at);
+      if (
+        reauthenticatedAt === null ||
+        approvedAt === null ||
+        reauthenticatedAt > approvedAt ||
+        approvedAt - reauthenticatedAt > 5 * 60_000
+      )
+        continue;
+      const membership = this.governance
+        .listMembershipHistory({ spaceId: input.spaceId, actorId: approval.actor_id })
+        .find((candidate) => candidate.id === approval.issuer_membership_id);
+      if (
+        !membership ||
+        this.governance.getCurrentMembership({
+          spaceId: input.spaceId,
+          actorId: approval.actor_id,
+          now: input.now,
+        })?.id !== membership.id
+      )
+        continue;
+      const approvalAuthorization = this.authorizeGenericProposal({
+        actorId: approval.actor_id,
+        spaceId: input.spaceId,
+        policyVersion: input.policyVersion,
+        phase: 'execute',
+        capability: input.operation === 'set_category' ? 'categorization:approve' : 'rule:approve',
+        operation: input.operation,
+        budgetId: input.budgetId,
+        facts: input.facts,
+        payload: input.payload,
+        now: input.now,
+        membershipId: approval.issuer_membership_id,
+        verifiedHumanApproval: true,
+      });
+      if (!approvalAuthorization.allowed || actors.has(approval.actor_id)) continue;
+      actors.add(approval.actor_id);
+      eligible.push(approval);
+    }
+    return eligible;
+  }
+
+  private authorizeGenericProposal(input: {
+    readonly actorId: string;
+    readonly auth?: OperationalAuth;
+    readonly spaceId: string;
+    readonly policyVersion: string;
+    readonly phase: 'read' | 'propose' | 'approve' | 'execute';
+    readonly capability: string;
+    readonly operation: string;
+    readonly budgetId: string;
+    readonly facts: ProposalAuthorizationFacts;
+    readonly payload: unknown;
+    readonly now: string;
+    readonly membershipId?: string;
+    readonly verifiedHumanApproval?: true;
+  }) {
+    const required: Record<string, GovernanceResourceRef & { readonly capability: string }> = {};
+    const addRequired = (resource: GovernanceResourceRef, capability: string): void => {
+      required[`${resource.resourceKind}:${resource.resourceId}:${capability}`] = { ...resource, capability };
+    };
+    addRequired({ resourceKind: 'budget', resourceId: input.budgetId }, input.capability);
+    for (const resource of input.facts.resources) addRequired(resource, input.capability);
+    const agent = input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
+      ? input.auth
+      : null;
+    return this.governance.authorize({
+      actorId: input.actorId,
+      spaceId: input.spaceId,
+      ...(input.membershipId ? { membershipId: input.membershipId } : {}),
+      expectedPolicyVersion: input.policyVersion,
+      phase: input.phase,
+      operation: input.operation,
+      required: Object.values(required),
+      payload: {
+        operations: input.facts.operations,
+        proposal: input.payload,
+        resources: input.facts.resources,
+      },
+      now: input.now,
+      ...(input.auth ? { auth: input.auth } : {}),
+      ...(agent
+        ? {
+            agentId: agent.actorId,
+            delegationId: agent.delegationId,
+            delegationVersion: agent.delegationVersion,
+          }
+        : {}),
+      ...(input.verifiedHumanApproval ? { verifiedHumanApproval: true as const } : {}),
+    });
+  }
+
+  private ruleOverrideSnapshotMatches(
+    spaceId: string,
+    budgetId: string,
+    payload: unknown,
+    preconditions: unknown,
+  ): boolean {
+    const proposal = isPlainRecord(payload) ? payload : null;
+    if (!proposal || (proposal.kind !== 'update_rule' && proposal.kind !== 'delete_rule')) return true;
+    const before = isPlainRecord(preconditions) ? preconditions : null;
+    if (
+      !before ||
+      !Object.prototype.hasOwnProperty.call(before, 'override') ||
+      typeof proposal.ruleId !== 'string'
+    )
+      return false;
+    const row = this.stmt.getRuleOverride.get({
+      spaceId,
+      budgetId,
+      ruleId: proposal.ruleId,
+    }) as RuleOverrideRow | undefined;
+    const current = row ? rowToRuleOverride(row) : null;
+    return canonicalProposalJson(current) === canonicalProposalJson(before.override);
+  }
+
 
   async evaluateAuthorization(
     actorId: string,
@@ -4540,73 +6276,55 @@ export class SqliteWorkflowStore implements WorkflowStore {
     scope: string,
     policyVersion: string,
   ): AuthorizationResult {
-    const row = this.stmt.selectActorMembership.get(actorId) as ActorMembershipRow | undefined;
-
-    if (!row) {
-      return {
-        allowed: false,
-        disposition: { kind: 'denied', reason: 'Actor not found in membership registry' },
-        actorId,
-        membershipStatus: 'unknown',
-        capability,
-        scope,
-        policyVersion,
-        reason: 'Actor is not a registered member',
-      };
-    }
-
-    if (row.status !== 'active') {
-      return {
-        allowed: false,
-        disposition: { kind: 'denied', reason: `Member status is '${row.status}', not 'active'` },
-        actorId,
-        membershipStatus: row.status as MembershipStatus,
-        capability,
-        scope,
-        policyVersion,
-        reason: `Member is ${row.status}, requires active membership`,
-      };
-    }
-
-    const capabilities = JSON.parse(row.capabilities) as string[];
-    if (!capabilities.includes(capability)) {
-      return {
-        allowed: false,
-        disposition: { kind: 'denied', reason: `Missing capability '${capability}'` },
-        actorId,
-        membershipStatus: 'active',
-        capability,
-        scope,
-        policyVersion,
-        reason: `Actor lacks required capability '${capability}'`,
-      };
-    }
-
-    if (row.scope !== '*' && row.scope !== scope) {
-      return {
-        allowed: false,
-        disposition: {
-          kind: 'denied',
-          reason: `Scope '${row.scope}' does not cover required scope '${scope}'`,
-        },
-        actorId,
-        membershipStatus: 'active',
-        capability,
-        scope,
-        policyVersion,
-        reason: `Actor scope '${row.scope}' does not include '${scope}'`,
-      };
-    }
-
+    const identity = this.stmt.selectActorMembership.get(actorId) as ActorMembershipRow | undefined;
+    const budgetId = scope.startsWith('budget:') ? scope.slice('budget:'.length) : scope;
+    const space = budgetId && budgetId !== '*' ? this.governance.getSpaceForBudget({ budgetId }) : null;
+    const policy = space ? this.governance.getPolicy({ spaceId: space.id }) : null;
+    const now = nowISO();
+    const membership = space
+      ? this.governance.getCurrentMembership({ spaceId: space.id, actorId, now })
+      : null;
+    const phase =
+      capability.endsWith(':approve') || capability.endsWith('.approve')
+        ? 'approve'
+        : capability.includes(':propose') || capability.endsWith('.create')
+          ? 'propose'
+          : capability === 'observe' || capability.startsWith('read:')
+            ? 'read'
+            : 'execute';
+    const result = space && policy
+      ? this.governance.authorize({
+          actorId,
+          spaceId: space.id,
+          ...(membership ? { membershipId: membership.id } : {}),
+          expectedPolicyVersion: policyVersion,
+          phase,
+          operation: capability,
+          required: [{
+            capability,
+            resourceKind: 'budget',
+            resourceId: budgetId,
+          }],
+          payload: { operations: [] },
+          now,
+        })
+      : null;
+    const allowed = result?.allowed ?? false;
+    const reason = result?.reason ?? (
+      !identity ? 'Actor is not registered'
+        : !space ? 'Budget is not bound to a governed space'
+          : !policy ? 'Current governance policy unavailable'
+            : 'Authorization denied'
+    );
     return {
-      allowed: true,
-      disposition: { kind: 'authorized_without_approval' },
+      allowed,
+      disposition: result?.disposition ?? { kind: 'denied', reason },
       actorId,
-      membershipStatus: 'active',
+      membershipStatus: (identity?.status as MembershipStatus | undefined) ?? 'unknown',
       capability,
       scope,
-      policyVersion,
-      reason: 'Authorized',
+      policyVersion: result?.policyVersion ?? policyVersion,
+      reason,
     };
   }
 
@@ -4642,8 +6360,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Lifecycle operations ──────────────────────────────────────────
 
-  async cancelPendingJobs(): Promise<number> {
-    const result = this.stmt.cancelPendingJobsStmt.run({});
+  async cancelPendingJobs(
+    scope: LifecycleScope,
+    options?: { actorOnly?: boolean },
+  ): Promise<number> {
+    this.assertLifecycleScope(scope);
+    const result = this.stmt.cancelPendingJobsStmt.run({
+      spaceId: scope.spaceId,
+      budgetId: scope.budgetId,
+      actorId: scope.actorId,
+      actorOnly: options?.actorOnly ? 1 : 0,
+    });
     return result.changes;
   }
 
@@ -4652,38 +6379,59 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return result.changes > 0;
   }
 
-  async recordExport(input: {
+  async recordExport(input: LifecycleScope & {
     budgetName: string;
     exportPath: string;
+    sha256Hash: string;
+    byteSize: number;
     accountCount: number;
     transactionCount: number;
   }): Promise<void> {
-    const id = randomUUID();
-    const now = nowISO();
-    // Clear previous record then insert fresh one (single-row tracking)
-    this.db.prepare(`DELETE FROM export_records`).run();
+    this.assertLifecycleScope(input);
+    if (
+      !input.budgetName.trim() ||
+      !input.exportPath.trim() ||
+      !/^[a-f0-9]{64}$/i.test(input.sha256Hash) ||
+      !Number.isSafeInteger(input.byteSize) ||
+      input.byteSize < 0 ||
+      !Number.isSafeInteger(input.accountCount) ||
+      input.accountCount < 0 ||
+      !Number.isSafeInteger(input.transactionCount) ||
+      input.transactionCount < 0
+    )
+      throw new Error('Export record has invalid provenance');
+
     this.stmt.insertExportRecordStmt.run({
-      id,
+      id: randomUUID(),
       budgetName: input.budgetName,
       exportPath: input.exportPath,
       accountCount: input.accountCount,
       transactionCount: input.transactionCount,
-      exportedAt: now,
+      exportedAt: nowISO(),
+      spaceId: input.spaceId,
+      budgetId: input.budgetId,
+      actorId: input.actorId,
+      sha256Hash: input.sha256Hash,
+      byteSize: input.byteSize,
     });
   }
 
-  async getLastExport(): Promise<{
+  async getLastExport(scope: LifecycleScope): Promise<{
     exportedAt: string;
     budgetName: string;
     exportPath: string;
+    sha256Hash: string;
+    byteSize: number;
     accountCount: number;
     transactionCount: number;
   } | null> {
-    const row = this.stmt.selectLastExportStmt.get({}) as
+    this.assertLifecycleScope(scope);
+    const row = this.stmt.selectLastExportStmt.get(scope) as
       | {
-          id: string;
           budget_name: string;
           export_path: string;
+          sha256_hash: string;
+          byte_size: number;
           account_count: number;
           transaction_count: number;
           exported_at: string;
@@ -4694,133 +6442,303 @@ export class SqliteWorkflowStore implements WorkflowStore {
       exportedAt: row.exported_at,
       budgetName: row.budget_name,
       exportPath: row.export_path,
+      sha256Hash: row.sha256_hash,
+      byteSize: row.byte_size,
       accountCount: row.account_count,
       transactionCount: row.transaction_count,
     };
   }
 
   async deleteScopeData(
-    scope: string,
-    options?: { actorId?: string },
+    dataScope: string,
+    scope: LifecycleScope,
   ): Promise<{
     deleted: Record<string, number>;
     retained: { count: number; reasons: string[] };
   }> {
+    this.assertLifecycleScope(scope);
+    if (
+      !['connection', 'space', 'user', 'provider', 'workflow', 'notification'].includes(
+        dataScope,
+      )
+    )
+      throw new Error(`Unknown lifecycle data scope "${dataScope}"`);
+
+    const db = this.db;
     const deleted: Record<string, number> = {};
     const reasons: string[] = [];
-    const db = this.db;
+    const actorOnly = dataScope === 'user';
+    const params = { budgetId: scope.budgetId, spaceId: scope.spaceId, actorId: scope.actorId };
+    const run = (sql: string): number => db.prepare(sql).run(params).changes;
+    const transaction = db.transaction(() => {
 
-    switch (scope) {
-      case 'connection':
-      case 'space':
-        deleted.corrections = db.prepare('DELETE FROM review_corrections').run().changes;
-        deleted.reviewActions = db.prepare('DELETE FROM review_actions').run().changes;
-        deleted.reviewItems = db.prepare('DELETE FROM review_items').run().changes;
-        deleted.failures = db.prepare('DELETE FROM failure_records').run().changes;
-        deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
-        deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
-        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
-        deleted.proposals = db.prepare('DELETE FROM action_proposals').run().changes;
-        deleted.auditRecords = db.prepare('DELETE FROM audit_records').run().changes;
-        deleted.memberships = db.prepare('DELETE FROM actor_memberships').run().changes;
-        deleted.exports = db.prepare('DELETE FROM export_records').run().changes;
-        deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
-        deleted.deliveryAttempts = db.prepare('DELETE FROM delivery_attempts').run().changes;
-        deleted.outboxRecords = db.prepare('DELETE FROM notification_outbox').run().changes;
-        deleted.notificationEvents = db.prepare('DELETE FROM notification_events').run().changes;
-        deleted.policyVersions = db.prepare('DELETE FROM policy_versions').run().changes;
-        deleted.savedFilters = db.prepare('DELETE FROM saved_filters').run().changes;
-        deleted.reportRecords = db.prepare('DELETE FROM report_records').run().changes;
-        break;
-
-      case 'user':
-        if (options?.actorId) {
-          const a = options.actorId;
-          deleted.memberships = db
-            .prepare('DELETE FROM actor_memberships WHERE actor_id = ?')
-            .run(a).changes;
-        } else {
-          reasons.push('No actorId provided for user-scope deletion');
+      if (['connection', 'space', 'workflow', 'user'].includes(dataScope)) {
+        const targetJobs = `
+          SELECT id FROM candidate_jobs
+           WHERE space_id = @spaceId AND budget_id = @budgetId
+             ${actorOnly ? 'AND actor_id = @actorId' : ''}
+        `;
+        if (!actorOnly) {
+          deleted.corrections = run(`
+            DELETE FROM review_corrections
+             WHERE review_item_id IN (SELECT id FROM review_items WHERE budget_id = @budgetId)
+          `);
+          deleted.reviewActions = run(`
+            DELETE FROM review_actions
+             WHERE review_item_id IN (SELECT id FROM review_items WHERE budget_id = @budgetId)
+          `);
+          deleted.reviewItems = run('DELETE FROM review_items WHERE budget_id = @budgetId');
+          deleted.suggestions = run('DELETE FROM suggestions WHERE budget_id = @budgetId');
         }
-        break;
+        deleted.failures = run(`
+          DELETE FROM failure_records WHERE job_id IN (${targetJobs})
+        `);
+        deleted.jobs = run(`
+          DELETE FROM candidate_jobs WHERE id IN (${targetJobs}) AND status != 'processing'
+        `);
+      }
 
-      case 'workflow':
-        deleted.corrections = db.prepare('DELETE FROM review_corrections').run().changes;
-        deleted.reviewActions = db.prepare('DELETE FROM review_actions').run().changes;
-        deleted.reviewItems = db.prepare('DELETE FROM review_items').run().changes;
-        deleted.failures = db.prepare('DELETE FROM failure_records').run().changes;
-        deleted.suggestions = db.prepare('DELETE FROM suggestions').run().changes;
-        deleted.idempotency = db.prepare('DELETE FROM idempotency_records').run().changes;
-        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
-        deleted.proposals = db.prepare('DELETE FROM action_proposals').run().changes;
-        deleted.jobs = db.prepare('DELETE FROM candidate_jobs').run().changes;
-        deleted.deliveryAttempts = db.prepare('DELETE FROM delivery_attempts').run().changes;
-        deleted.outboxRecords = db.prepare('DELETE FROM notification_outbox').run().changes;
-        deleted.notificationEvents = db.prepare('DELETE FROM notification_events').run().changes;
-        deleted.policyVersions = db.prepare('DELETE FROM policy_versions').run().changes;
-        deleted.savedFilters = db.prepare('DELETE FROM saved_filters').run().changes;
-        deleted.reportRecords = db.prepare('DELETE FROM report_records').run().changes;
-        break;
+      if (['connection', 'space', 'workflow', 'provider'].includes(dataScope)) {
+        deleted.findings = run('DELETE FROM findings WHERE budget_id = @budgetId');
+      } else if (actorOnly) {
+        deleted.findings = run(
+          'DELETE FROM findings WHERE budget_id = @budgetId AND actor_id = @actorId',
+        );
+      }
 
-      case 'provider':
-        deleted.approvals = db.prepare('DELETE FROM proposal_approvals').run().changes;
-        deleted.proposals = db.prepare('DELETE FROM action_proposals').run().changes;
-        break;
+      if (['connection', 'space', 'workflow', 'user'].includes(dataScope)) {
+        const filters = actorOnly
+          ? 'budget_id = @budgetId AND actor_id = @actorId'
+          : 'budget_id = @budgetId';
+        const reportScope = actorOnly
+          ? `filter_id IN (SELECT id FROM saved_filters WHERE ${filters})`
+          : `budget_id = @budgetId OR filter_id IN (SELECT id FROM saved_filters WHERE ${filters})`;
+        deleted.reports = run(`DELETE FROM report_records WHERE ${reportScope}`);
+        deleted.savedFilters = run(`DELETE FROM saved_filters WHERE ${filters}`);
+        deleted.savedViews = run(
+          actorOnly
+            ? 'DELETE FROM saved_views WHERE space_id = @spaceId AND budget_id = @budgetId AND actor_id = @actorId'
+            : 'DELETE FROM saved_views WHERE space_id = @spaceId AND budget_id = @budgetId',
+        );
+      }
 
-      case 'notification':
-        deleted.deliveryAttempts = db.prepare('DELETE FROM delivery_attempts').run().changes;
-        deleted.outboxRecords = db.prepare('DELETE FROM notification_outbox').run().changes;
-        deleted.notificationEvents = db.prepare('DELETE FROM notification_events').run().changes;
-        break;
+      if (['connection', 'space', 'notification'].includes(dataScope)) {
+        const selectedOutbox = `
+          SELECT id FROM notification_outbox
+           WHERE event_id IN (
+             SELECT id FROM notification_events WHERE budget_id = @budgetId
+           )
+        `;
+        deleted.deliveryAttempts = run(`
+          DELETE FROM delivery_attempts WHERE outbox_id IN (${selectedOutbox})
+        `);
+        deleted.outboxRecords = run(`DELETE FROM notification_outbox WHERE id IN (${selectedOutbox})`);
+        deleted.notificationEvents = run(`
+          DELETE FROM notification_events WHERE budget_id = @budgetId
+        `);
+      }
+    });
+    transaction();
 
-      default:
-        reasons.push(`Unknown scope "${scope}": no data deleted`);
-    }
+    const unscopedJobs = db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM candidate_jobs
+         WHERE status = 'pending'
+           AND (space_id IS NULL OR budget_id IS NULL OR actor_id IS NULL)
+      `)
+      .get() as { count: number };
+    let retainedCount = unscopedJobs.count;
+    if (unscopedJobs.count > 0)
+      reasons.push(`${unscopedJobs.count} legacy unscoped pending job(s) retained`);
 
-    // Count retained records still present
-    let retainedCount = 0;
-    try {
-      const row = db.prepare('SELECT COUNT(*) as c FROM suggestions').get() as
-        { c: number } | undefined;
-      if (row) retainedCount += row.c;
-    } catch {
-      /* table may not exist */
-    }
-    try {
-      const row = db.prepare('SELECT COUNT(*) as c FROM candidate_jobs').get() as
-        { c: number } | undefined;
-      if (row) retainedCount += row.c;
-    } catch {
-      /* table may not exist */
-    }
+    const activeJobs = db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM candidate_jobs
+         WHERE space_id = @spaceId AND budget_id = @budgetId
+           AND status = 'processing'${actorOnly ? ' AND actor_id = @actorId' : ''}
+      `)
+      .get(params) as { count: number };
+    retainedCount += activeJobs.count;
+    if (activeJobs.count > 0)
+      reasons.push(`${activeJobs.count} processing job(s) retained until completion`);
 
-    return {
-      deleted,
-      retained: { count: retainedCount, reasons },
-    };
+    const auditRecords = db
+      .prepare('SELECT COUNT(*) AS count FROM audit_records WHERE budget_id = @budgetId')
+      .get(params) as { count: number };
+    retainedCount += auditRecords.count;
+    if (auditRecords.count > 0)
+      reasons.push(`${auditRecords.count} financial audit record(s) retained with attribution`);
+
+    const identityRecords = db
+      .prepare('SELECT COUNT(*) AS count FROM actor_memberships WHERE actor_id = @actorId')
+      .get(params) as { count: number };
+    retainedCount += identityRecords.count;
+    if (identityRecords.count > 0)
+      reasons.push(`${identityRecords.count} actor identity record(s) retained`);
+
+    const governanceHistory = db
+      .prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM spaces WHERE id = @spaceId) +
+          (SELECT COUNT(*) FROM space_memberships WHERE space_id = @spaceId) +
+          (SELECT COUNT(*) FROM governance_policies WHERE space_id = @spaceId) +
+          (SELECT COUNT(*) FROM resource_grants WHERE space_id = @spaceId) +
+          (SELECT COUNT(*) FROM governance_agents WHERE registered_space_id = @spaceId) +
+          (SELECT COUNT(*) FROM agent_delegations WHERE space_id = @spaceId) +
+          (SELECT COUNT(*) FROM credential_bindings WHERE space_id = @spaceId) +
+          (SELECT COUNT(*) FROM space_governance_audit WHERE space_id = @spaceId) +
+          (SELECT COUNT(*) FROM notification_policies WHERE space_id = @spaceId) AS count
+      `)
+      .get(params) as { count: number };
+    retainedCount += governanceHistory.count;
+    if (governanceHistory.count > 0)
+      reasons.push(
+        `${governanceHistory.count} space identity, membership, grant, delegation, policy and audit record(s) retained`,
+      );
+    const economicRecords = db
+      .prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM action_proposals WHERE space_id = @spaceId AND budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM proposal_approvals a JOIN action_proposals p ON p.id = a.proposal_id
+            WHERE p.space_id = @spaceId AND p.budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM idempotency_records i JOIN action_proposals p ON p.id = i.proposal_id
+            WHERE p.space_id = @spaceId AND p.budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM transfer_previews WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM spend_sessions WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM payment_preferences WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM liquidity_claim_revisions WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM liquidity_claims WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM liquidity_claim_metadata WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM liquidity_allocations WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM liquidity_supplemental_facts WHERE budget_id = @budgetId) +
+          (SELECT COUNT(*) FROM transfer_evidence WHERE budget_id = @budgetId) AS count
+      `)
+      .get(params) as { count: number };
+    retainedCount += economicRecords.count;
+    if (economicRecords.count > 0)
+      reasons.push(`${economicRecords.count} economic claim, proposal and idempotency record(s) retained`);
+
+    const exportRecords = db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM export_records
+         WHERE actor_id = @actorId AND space_id = @spaceId AND budget_id = @budgetId
+      `)
+      .get(params) as { count: number };
+    retainedCount += exportRecords.count;
+    if (exportRecords.count > 0)
+      reasons.push(`${exportRecords.count} export provenance record(s) retained`);
+
+    return { deleted, retained: { count: retainedCount, reasons } };
   }
 
-  // ── Rule overrides ──────────────────────────────────────────────────
-
-  async setRuleOverride(ruleId: string, inactive: boolean): Promise<void> {
-    const now = nowISO();
-    this.stmt.upsertRuleOverride.run({ ruleId, inactive: inactive ? 1 : 0, now });
+  private assertLifecycleScope(scope: LifecycleScope): void {
+    if (
+      !scope ||
+      typeof scope.spaceId !== 'string' ||
+      !scope.spaceId.trim() ||
+      typeof scope.budgetId !== 'string' ||
+      !scope.budgetId.trim() ||
+      typeof scope.actorId !== 'string' ||
+      !scope.actorId.trim()
+    )
+      throw new Error('Lifecycle operations require an exact actor, space, and budget scope');
+    const space = this.governance.getSpaceForBudget({ budgetId: scope.budgetId });
+    if (!space || space.id !== scope.spaceId)
+      throw new Error('Lifecycle scope does not match the current space/budget binding');
   }
 
-  async getRuleOverrides(): Promise<Map<string, boolean>> {
-    const rows = this.stmt.getAllRuleOverrides.all({}) as Array<{
-      rule_id: string;
-      inactive: number;
-    }>;
-    const map = new Map<string, boolean>();
-    for (const row of rows) {
-      map.set(row.rule_id, row.inactive === 1);
-    }
-    return map;
+  private assertRuleOverrideScope(scope: RuleOverrideScope): void {
+    if (
+      !scope ||
+      typeof scope.spaceId !== 'string' ||
+      !scope.spaceId.trim() ||
+      typeof scope.budgetId !== 'string' ||
+      !scope.budgetId.trim()
+    )
+      throw new Error('Rule override requires an exact space and budget scope');
+    const space = this.governance.getSpaceForBudget({ budgetId: scope.budgetId });
+    if (!space || space.id !== scope.spaceId)
+      throw new Error('Rule override scope does not match the current space/budget binding');
   }
 
-  async removeRuleOverride(ruleId: string): Promise<void> {
-    this.stmt.removeRuleOverride.run({ ruleId });
+  private assertRuleOverrideId(ruleId: string): void {
+    if (typeof ruleId !== 'string' || !ruleId.trim())
+      throw new Error('Rule override requires a non-empty rule ID');
+  }
+
+  async setRuleOverride(input: SetRuleOverrideInput): Promise<RuleOverride> {
+    this.assertRuleOverrideId(input.ruleId);
+    if (typeof input.inactive !== 'boolean')
+      throw new Error('Rule override inactive state must be a boolean');
+    if (
+      input.expectedVersion !== null &&
+      (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1)
+    )
+      throw new Error('Rule override expected version must be a positive integer or null');
+
+    return this.db.transaction(() => {
+      this.assertRuleOverrideScope(input);
+      const now = nowISO();
+      const parameters = {
+        spaceId: input.spaceId,
+        budgetId: input.budgetId,
+        ruleId: input.ruleId,
+        inactive: input.inactive ? 1 : 0,
+        now,
+      };
+      const result = input.expectedVersion === null
+        ? this.stmt.insertRuleOverride.run(parameters)
+        : this.stmt.updateRuleOverride.run({
+            ...parameters,
+            expectedVersion: input.expectedVersion,
+          });
+      if (result.changes !== 1)
+        throw new Error('Rule override version conflict');
+      const row = this.stmt.getRuleOverride.get(input) as RuleOverrideRow | undefined;
+      if (!row) throw new Error('Rule override write did not persist');
+      return rowToRuleOverride(row);
+    }).immediate();
+  }
+
+  async getRuleOverrides(scope: RuleOverrideScope): Promise<Map<string, RuleOverride>> {
+    return this.db.transaction(() => {
+      this.assertRuleOverrideScope(scope);
+      const rows = this.stmt.getAllRuleOverrides.all(scope) as RuleOverrideRow[];
+      const overrides = new Map<string, RuleOverride>();
+      for (const row of rows) {
+        const override = rowToRuleOverride(row);
+        if (override.inactive !== null) overrides.set(override.ruleId, override);
+      }
+      return overrides;
+    })();
+  }
+
+  async getRuleOverride(input: GetRuleOverrideInput): Promise<RuleOverride | null> {
+    this.assertRuleOverrideId(input.ruleId);
+    return this.db.transaction(() => {
+      this.assertRuleOverrideScope(input);
+      const row = this.stmt.getRuleOverride.get(input) as RuleOverrideRow | undefined;
+      return row ? rowToRuleOverride(row) : null;
+    })();
+  }
+
+  async removeRuleOverride(input: RemoveRuleOverrideInput): Promise<void> {
+    this.assertRuleOverrideId(input.ruleId);
+    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1)
+      throw new Error('Rule override expected version must be a positive integer');
+
+    this.db.transaction(() => {
+      this.assertRuleOverrideScope(input);
+      const result = this.stmt.removeRuleOverride.run({
+        spaceId: input.spaceId,
+        budgetId: input.budgetId,
+        ruleId: input.ruleId,
+        expectedVersion: input.expectedVersion,
+        now: nowISO(),
+      });
+      if (result.changes !== 1)
+        throw new Error('Rule override version conflict');
+    }).immediate();
   }
 
   // ── Registration and invitations ─────────────────────────────────
@@ -4961,271 +6879,183 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return txn() as FinalizeBootstrapResult;
   }
 
-  async createInvitation(
-    creatorUserId: string,
-    auditContext?: { requestId?: string; correlationId?: string },
-  ): Promise<CreateInvitationResult> {
-    const id = randomUUID();
-    const rawToken = randomBytes(32).toString('hex');
-    const tokenDigest = createHash('sha256').update(rawToken).digest('hex');
-    const now = nowISO();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-
-    this.stmt.insertInvitation.run({
-      id,
-      tokenDigest,
-      createdByUserId: creatorUserId,
-      expiresAt,
-      createdAt: now,
+  private invitationControl(input: InvitationControlInput, operation: string) {
+    const now = input.now ?? nowISO();
+    const space = this.governance.getSpace({ spaceId: input.spaceId });
+    const policy = space && this.governance.getPolicy({ spaceId: space.id });
+    if (!space || !policy) throw new Error('Invitation control authorization denied');
+    const authorization = this.governance.authorize({
+      actorId: input.auth.actorId, spaceId: space.id, expectedPolicyVersion: policy.version,
+      phase: 'approve', operation, auth: input.auth, now,
+      required: [{ capability: 'membership:manage', resourceKind: 'space', resourceId: space.id }],
+      payload: { operations: [{ operation, resourceKind: 'space', resourceId: space.id }] },
     });
-
-    this.stmt.insertAudit.run({
-      id: randomUUID(),
-      classification: 'invitation_created',
-      timestamp: now,
-      actorId: creatorUserId,
-      operation: 'create_invitation',
-      proposalId: null,
-      payloadHash: null,
-      budgetId: null,
-      backendIds: '[]',
-      policyVersion: null,
-      authorizationDisposition: null,
-      idempotencyKey: null,
-      expectedPriorState: null,
-      observedResultState: null,
-      providerModel: null,
-      correlationId: auditContext?.correlationId ?? null,
-      requestId: auditContext?.requestId ?? null,
-      result: `Invitation ${id} created`,
-      isError: 0,
-    });
-
-    const base = (process.env.BETTER_AUTH_URL || 'http://localhost:3000').replace(/\/+$/, '');
-    return {
-      invitation: { id, expiresAt, status: 'active' as InvitationStatus },
-      inviteUrl: `${base}/invite#token=${rawToken}`,
-    };
+    if (!authorization.allowed || !authorization.membershipId)
+      throw new Error('Invitation control authorization denied');
+    return { space, policy, membershipId: authorization.membershipId, now };
   }
 
-  async revokeInvitation(
-    invitationId: string,
-    actorId?: string,
-    requestId?: string,
-  ): Promise<void> {
-    const now = nowISO();
-    const result = this.stmt.updateInvitationRevoke.run({ id: invitationId });
-    if (result.changes === 0) {
-      const row = this.stmt.selectInvitation.get(invitationId) as InvitationRow | undefined;
-      if (!row) throw new Error('Invitation not found');
+  private invitationIssuer(row: InvitationRow, now: string): void {
+    if (!row.space_id || !row.issuer_membership_id || !row.governance_policy_version ||
+        Date.parse(row.expires_at) <= Date.parse(now)) throw new Error('Invalid invitation');
+    const membership = this.governance.getCurrentMembership({
+      spaceId: row.space_id, actorId: row.created_by_user_id, now,
+    });
+    if (membership?.id !== row.issuer_membership_id) throw new Error('Invalid invitation');
+    const authorization = this.governance.authorize({
+      actorId: row.created_by_user_id, spaceId: row.space_id, membershipId: membership.id,
+      expectedPolicyVersion: row.governance_policy_version, phase: 'read', operation: 'invitation.create', now,
+      required: [{ capability: 'membership:manage', resourceKind: 'space', resourceId: row.space_id }],
+      payload: { operations: [{ operation: 'invitation.create', resourceKind: 'space', resourceId: row.space_id }] },
+    });
+    if (!authorization.allowed) throw new Error('Invalid invitation');
+  }
+
+  private invitationAudit(input: {
+    id: string; spaceId: string; actorId: string; action: string; now: string;
+    policyVersion: string; issuerMembershipId: string; requestId?: string; correlationId?: string;
+  }): void {
+    this.stmt.insertAudit.run({
+      id: randomUUID(), classification: `invitation_${input.action}`, timestamp: input.now,
+      actorId: input.actorId, operation: `invitation.${input.action}`, proposalId: input.id,
+      payloadHash: null, budgetId: this.governance.getSpace({ spaceId: input.spaceId })?.budgetId ?? null,
+      backendIds: '[]', policyVersion: input.policyVersion,
+      authorizationDisposition: 'authorized_without_approval', idempotencyKey: null,
+      expectedPriorState: JSON.stringify({ spaceId: input.spaceId, issuerMembershipId: input.issuerMembershipId }),
+      observedResultState: null, providerModel: null, correlationId: input.correlationId ?? null,
+      requestId: input.requestId ?? null, result: input.action, isError: 0,
+    });
+  }
+
+  /** Creates one membership-only invitation with immutable original issuer consent. */
+  async createInvitation(input: InvitationControlInput): Promise<CreateInvitationResult> {
+    return this.db.transaction(() => {
+      const context = this.invitationControl(input, 'invitation.create');
+      const id = randomUUID();
+      const rawToken = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.parse(context.now) + 7 * 24 * 60 * 60 * 1000).toISOString();
+      this.stmt.insertInvitation.run({
+        id, tokenDigest: createHash('sha256').update(rawToken).digest('hex'),
+        createdByUserId: input.auth.actorId, expiresAt, createdAt: context.now,
+        spaceId: context.space.id, issuerMembershipId: context.membershipId,
+        governancePolicyVersion: context.policy.version,
+      });
+      this.invitationAudit({
+        ...input, id, actorId: input.auth.actorId, action: 'created', now: context.now,
+        policyVersion: context.policy.version, issuerMembershipId: context.membershipId,
+      });
+      const base = (process.env.BETTER_AUTH_URL || 'http://localhost:3000').replace(/\/+$/, '');
+      return { invitation: { id, expiresAt, status: 'active' as const }, inviteUrl: `${base}/invite#token=${rawToken}` };
+    }).immediate();
+  }
+
+  /** Revokes selected-space invitations without deleting original attribution. */
+  async revokeInvitation(input: InvitationControlInput & { readonly invitationId: string }): Promise<void> {
+    this.db.transaction(() => {
+      const context = this.invitationControl(input, 'invitation.revoke');
+      const row = this.stmt.selectInvitation.get(input.invitationId) as InvitationRow | undefined;
+      if (!row || row.space_id !== input.spaceId) throw new Error('Invitation unavailable');
       if (row.status === 'revoked') return;
-      throw new Error(`Cannot revoke invitation in '${row.status}' state`);
-    }
-    this.stmt.insertAudit.run({
-      id: randomUUID(),
-      classification: 'invitation_revoked',
-      timestamp: now,
-      actorId: actorId ?? 'system',
-      operation: 'revoke_invitation',
-      proposalId: invitationId,
-      payloadHash: null,
-      budgetId: null,
-      backendIds: '[]',
-      policyVersion: null,
-      authorizationDisposition: null,
-      idempotencyKey: null,
-      expectedPriorState: null,
-      observedResultState: null,
-      providerModel: null,
-      correlationId: null,
-      requestId: requestId ?? null,
-      result: `Invitation ${invitationId} revoked`,
-      isError: 0,
-    });
+      if (this.stmt.updateInvitationRevoke.run({ id: row.id }).changes !== 1)
+        throw new Error('Invitation cannot be revoked');
+      this.invitationAudit({
+        ...input, id: row.id, actorId: input.auth.actorId, action: 'revoked', now: context.now,
+        policyVersion: context.policy.version, issuerMembershipId: context.membershipId,
+      });
+    }).immediate();
   }
 
-  async listInvitations(): Promise<InvitationMetadata[]> {
-    const rows = this.stmt.selectAllInvitations.all({}) as InvitationRow[];
+  /** Lists only token-free invitation metadata in the authorized selected space. */
+  async listInvitations(input: InvitationControlInput): Promise<InvitationMetadata[]> {
+    this.invitationControl(input, 'invitation.list');
+    const rows = this.stmt.selectAllInvitations.all({ spaceId: input.spaceId }) as InvitationRow[];
     return rows.map(rowToInvitationMetadata);
   }
 
+  /** Claims a canonical scoped invitation only while its original issuer authority is current. */
   async claimInvitation(input: ClaimInvitationInput): Promise<ClaimInvitationResult> {
+    if (typeof input.token !== 'string' || !/^[a-f0-9]{64}$/.test(input.token) ||
+        typeof input.email !== 'string' || !input.email.trim()) throw new Error('Invalid invitation');
     const digest = createHash('sha256').update(input.token).digest('hex');
-    const claimId = randomUUID();
-    const now = nowISO();
-
-    // First, look up the invitation outside the transaction.
-    // If it's expired, update status + audit outside the transaction
-    // so the status transition commits even though we throw.
-    const row = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
-    if (!row) throw new Error('Invalid invitation');
-
-    if (isExpired(row.expires_at)) {
-      this.stmt.updateInvitationExpired.run({ id: row.id, now });
-      this.stmt.insertAudit.run({
-        id: randomUUID(),
-        classification: 'invitation_expired',
-        timestamp: now,
-        actorId: input.email,
-        operation: 'claim_invitation',
-        proposalId: null,
-        payloadHash: null,
-        budgetId: null,
-        backendIds: '[]',
-        policyVersion: null,
-        authorizationDisposition: null,
-        idempotencyKey: null,
-        expectedPriorState: null,
-        observedResultState: null,
-        providerModel: null,
-        correlationId: input.correlationId ?? null,
-        requestId: input.requestId ?? null,
-        result: `Invitation ${row.id} expired`,
-        isError: 1,
-      });
-      throw new Error('Invitation has expired');
-    }
-
-    // Normal claim flow inside a transaction for atomicity
-    const txn = this.db.transaction(() => {
-      // Re-read within transaction for consistency under concurrent writes
-      const freshRow = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
-
-      if (freshRow!.status === 'claimed') {
-        if (freshRow!.claimed_email === input.email) {
-          return { claimId: freshRow!.claim_id!, email: freshRow!.claimed_email };
-        }
-        throw new Error('Invitation already claimed by a different email');
+    const email = input.email.trim().toLowerCase();
+    const result = this.db.transaction(() => {
+      const now = nowISO();
+      const row = this.stmt.selectInvitationByDigest.get(digest) as InvitationRow | undefined;
+      if (!row || (row.status !== 'active' && row.status !== 'claimed')) throw new Error('Invalid invitation');
+      if (Date.parse(row.expires_at) <= Date.parse(now)) {
+        this.stmt.updateInvitationExpired.run({ id: row.id, now });
+        if (row.space_id && row.issuer_membership_id && row.governance_policy_version)
+          this.invitationAudit({
+            id: row.id, spaceId: row.space_id, actorId: 'system', action: 'expired', now,
+            policyVersion: row.governance_policy_version, issuerMembershipId: row.issuer_membership_id,
+          });
+        return null;
       }
-
-      if (freshRow!.status !== 'active') {
-        throw new Error(`Invitation is ${freshRow!.status}`);
+      this.invitationIssuer(row, now);
+      if (row.status === 'claimed') {
+        if (row.claimed_email !== email || !row.claim_id) throw new Error('Invalid invitation');
+        return { claimId: row.claim_id, email, spaceId: row.space_id! };
       }
-
-      const updateResult = this.stmt.updateInvitationClaim.run({
-        id: freshRow!.id,
-        email: input.email,
-        claimId,
-        claimedAt: now,
+      const claimId = randomUUID();
+      if (this.stmt.updateInvitationClaim.run({ id: row.id, email, claimId, claimedAt: now }).changes !== 1)
+        throw new Error('Invalid invitation');
+      this.invitationAudit({
+        ...input, id: row.id, spaceId: row.space_id!, actorId: 'system', action: 'claimed', now,
+        policyVersion: row.governance_policy_version!, issuerMembershipId: row.issuer_membership_id!,
       });
-
-      if (updateResult.changes === 0) {
-        throw new Error('Invitation claim failed');
-      }
-      this.stmt.insertAudit.run({
-        id: randomUUID(),
-        classification: 'invitation_claimed',
-        timestamp: now,
-        actorId: input.email,
-        operation: 'claim_invitation',
-        proposalId: null,
-        payloadHash: null,
-        budgetId: null,
-        backendIds: '[]',
-        policyVersion: null,
-        authorizationDisposition: null,
-        idempotencyKey: null,
-        expectedPriorState: null,
-        observedResultState: null,
-        providerModel: null,
-        correlationId: input.correlationId ?? null,
-        requestId: input.requestId ?? null,
-        result: `Invitation ${freshRow!.id} claimed by ${input.email}`,
-        isError: 0,
-      });
-
-      return { claimId, email: input.email };
-    });
-
-    return txn() as ClaimInvitationResult;
+      return { claimId, email, spaceId: row.space_id! };
+    }).immediate();
+    // Commit terminal expiry and its audit before rejecting the unauthenticated claim.
+    if (!result) throw new Error('Invalid invitation');
+    return result;
   }
 
+  /** Completes verified human redemption and membership together, granting no financial rights. */
   async completeInvitationRedemption(
     claimId: string,
     userId: string,
-    options: {
-      readonly requestId?: string;
-      readonly provisionReadOnlyMembership: boolean;
-    },
+    options: { readonly auth: HumanControlContext; readonly email: string; readonly now?: string; readonly requestId?: string },
   ): Promise<void> {
-    const now = nowISO();
-    const txn = this.db.transaction(() => {
-      const membership = this.stmt.selectActorMembership.get(userId) as
-        ActorMembershipRow | undefined;
-      if (options.provisionReadOnlyMembership && membership && membership.status !== 'active') {
-        throw new Error(`Member status is '${membership.status}', not 'active'`);
-      }
-
-      const result = this.stmt.updateInvitationRedeemed.run({
-        claimId,
-        userId,
-        redeemedAt: now,
+    this.db.transaction(() => {
+      const now = options.now ?? nowISO();
+      if (options.auth.actorId !== userId) throw new Error('Invitation target identity mismatch');
+      const row = this.db.prepare('SELECT * FROM invitations WHERE claim_id=?').get(claimId) as InvitationRow | undefined;
+      if (!row || row.status !== 'claimed' || row.claimed_email !== options.email.trim().toLowerCase())
+        throw new Error('Invalid invitation');
+      this.invitationIssuer(row, now);
+      const identity = this.stmt.selectActorMembership.get(userId) as ActorMembershipRow | undefined;
+      if (identity && identity.status !== 'active') throw new Error('Invitation identity is inactive');
+      if (!identity) this.stmt.upsertActorMembershipStmt.run({
+        actorId: userId, status: 'active', capabilities: '[]', scope: '',
       });
-      if (result.changes === 0) {
-        throw new Error(`Claim ${claimId} not found or not in claimed state`);
-      }
-
-      if (options.provisionReadOnlyMembership) {
-        if (!membership) {
-          this.stmt.upsertActorMembershipStmt.run({
-            actorId: userId,
-            status: 'active',
-            capabilities: JSON.stringify(['observe']),
-            scope: '*',
-          });
-        } else {
-          const capabilities = JSON.parse(membership.capabilities) as string[];
-          if (capabilities.length === 0) {
-            this.stmt.upsertActorMembershipStmt.run({
-              actorId: userId,
-              status: membership.status,
-              capabilities: JSON.stringify(['observe']),
-              scope: membership.scope,
-            });
-          }
-        }
-      }
-
-      this.stmt.insertAudit.run({
-        id: randomUUID(),
-        classification: 'invitation_redeemed',
-        timestamp: now,
-        actorId: userId,
-        operation: 'redeem_invitation',
-        proposalId: null,
-        payloadHash: null,
-        budgetId: null,
-        backendIds: '[]',
-        policyVersion: null,
-        authorizationDisposition: null,
-        idempotencyKey: null,
-        expectedPriorState: null,
-        observedResultState: null,
-        providerModel: null,
-        correlationId: null,
-        requestId: options.requestId ?? null,
-        result: `Invitation redeemed for user ${userId}`,
-        isError: 0,
+      this.governance.acceptInvitedMembership({ claimId, email: options.email, auth: options.auth, now });
+      if (this.stmt.updateInvitationRedeemed.run({ claimId, userId, redeemedAt: now }).changes !== 1)
+        throw new Error('Invitation redemption failed');
+      this.invitationAudit({
+        ...options, id: row.id, spaceId: row.space_id!, actorId: userId, action: 'redeemed', now,
+        policyVersion: row.governance_policy_version!, issuerMembershipId: row.issuer_membership_id!,
       });
-    });
-
-    txn();
-  }
-
-  async reconcileClaimedInvitations(): Promise<number> {
-    const rows = this.stmt.selectStrandedClaims.all({}) as InvitationRow[];
-    return rows.length;
+    }).immediate();
   }
 
   // ── Notification event lifecycle ──────────────────────────────────
 
+  private notificationProvenance(input: CreateNotificationEventInput, now: string) {
+    const space = this.governance.getSpaceForBudget({ budgetId: input.budgetId });
+    const membership = space && input.recipientId
+      ? this.governance.getCurrentMembership({ spaceId: space.id, actorId: input.recipientId, now })
+      : null;
+    return { spaceId: space?.id ?? null, recipientMembershipId: membership?.id ?? null };
+  }
+
   async createNotificationEvent(input: CreateNotificationEventInput): Promise<NotificationEvent> {
     const id = randomUUID();
-    const now = nowISO();
+    const now = input.now ?? nowISO();
     const payloadJson = JSON.stringify(input.payload);
 
     this.stmt.insertNotificationEvent.run({
       id,
+      ...this.notificationProvenance(input, now),
       eventVersion: 1,
       budgetId: input.budgetId,
       classification: input.classification,
@@ -5250,11 +7080,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
   ): Promise<NotificationEvent> {
     const recipientId = input.recipientId ?? null;
     const scope = input.scope ?? null;
-    const identity = { dedupKey: input.dedupKey, recipientId, scope };
+    const now = input.now ?? nowISO();
+    const provenance = this.notificationProvenance(input, now);
+    const identity = { dedupKey: input.dedupKey, recipientId, scope, budgetId: input.budgetId, ...provenance };
     const id = randomUUID();
 
     this.stmt.insertOrIgnoreNotificationEvent.run({
       id,
+      ...provenance,
       eventVersion: 1,
       budgetId: input.budgetId,
       classification: input.classification,
@@ -5265,7 +7098,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       policyVersion: input.policyVersion,
       correlationId: input.correlationId ?? null,
       payload: JSON.stringify(input.payload),
-      createdAt: nowISO(),
+      createdAt: now,
       dedupKey: input.dedupKey,
     });
 
@@ -5806,96 +7639,137 @@ export class SqliteWorkflowStore implements WorkflowStore {
     return rowToReportRecord(row);
   }
 
-  // ── Saved views ───────────────────────────────────────────────────
-
-  async listSavedViews(actorId: string): Promise<SavedViewResult[]> {
-    const limit = 100;
-    const offset = 0;
-    const rows = this.stmt.listSavedViewsByActor.all({ actorId, limit, offset }) as SavedViewRow[];
+  async listSavedViews(authority: SavedViewAuthority): Promise<SavedViewResult[]> {
+    const rows = this.stmt.listSavedViewsByAuthority.all({
+      ...authority,
+      now: nowISO(),
+      limit: 100,
+      offset: 0,
+    }) as SavedViewRow[];
     return rows.map(rowToSavedViewResult);
   }
 
   async createSavedView(input: CreateSavedViewInput): Promise<SavedViewResult> {
-    const viewId = randomUUID();
+    const { authority } = input;
     const now = nowISO();
-    const scopeJson = JSON.stringify(input.scope);
+    const create = this.db.transaction(() => {
+      if (!this.stmt.validateSavedViewAuthority.get({ ...authority, now }))
+        throw new Error('Saved view authority is not current');
 
-    this.stmt.insertSavedView.run({
-      viewId,
-      name: input.name,
-      viewType: input.viewType,
-      scope: scopeJson,
-      sort: input.sort ?? null,
-      actorId: input.actorId,
-      createdAt: now,
+      const viewId = randomUUID();
+      this.stmt.insertSavedView.run({
+        viewId,
+        name: input.name,
+        viewType: input.viewType,
+        scope: JSON.stringify(input.scope),
+        sort: input.sort ?? null,
+        actorId: authority.actorId,
+        spaceId: authority.spaceId,
+        budgetId: authority.budgetId,
+        membershipId: authority.membershipId,
+        createdAt: now,
+      });
+
+      const row = this.stmt.selectSavedView.get({ ...authority, viewId, now }) as
+        | SavedViewRow
+        | undefined;
+      if (!row) throw new Error('Failed to read back saved view');
+      return rowToSavedViewResult(row);
     });
-
-    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow;
-    if (!row) throw new Error('Failed to read back saved view');
-    return rowToSavedViewResult(row);
+    return create.immediate();
   }
 
-  async getSavedView(viewId: string): Promise<SavedViewResult | null> {
-    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow | undefined;
+  async getSavedView(
+    viewId: string,
+    authority: SavedViewAuthority,
+  ): Promise<SavedViewResult | null> {
+    const row = this.stmt.selectSavedView.get({
+      ...authority,
+      viewId,
+      now: nowISO(),
+    }) as SavedViewRow | undefined;
     return row ? rowToSavedViewResult(row) : null;
   }
 
   async updateSavedView(viewId: string, input: UpdateSavedViewInput): Promise<SavedViewResult> {
-    const existing = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow | undefined;
-    if (!existing) throw new Error(`Saved view ${viewId} not found`);
+    const { authority } = input;
+    const now = nowISO();
+    const update = this.db.transaction(() => {
+      const query = { ...authority, viewId, now };
+      const existing = this.stmt.selectSavedView.get(query) as SavedViewRow | undefined;
+      if (!existing) throw new Error(`Saved view ${viewId} not found`);
 
-    const scopeJson = input.scope !== undefined ? JSON.stringify(input.scope) : undefined;
+      this.stmt.updateSavedView.run({
+        ...query,
+        name: input.name ?? null,
+        scope: input.scope !== undefined ? JSON.stringify(input.scope) : null,
+        sort: input.sort !== undefined ? input.sort : existing.sort,
+      });
 
-    this.stmt.updateSavedView.run({
-      viewId,
-      name: input.name ?? null,
-      scope: scopeJson ?? null,
-      sort: input.sort !== undefined ? input.sort : null,
-      lastUsedAt: existing.last_used_at,
+      const row = this.stmt.selectSavedView.get(query) as SavedViewRow | undefined;
+      if (!row) throw new Error(`Saved view ${viewId} not found`);
+      return rowToSavedViewResult(row);
     });
-
-    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow;
-    if (!row) throw new Error('Failed to read back updated saved view');
-    return rowToSavedViewResult(row);
+    return update.immediate();
   }
 
   async duplicateSavedView(input: DuplicateSavedViewInput): Promise<SavedViewResult> {
-    const source = this.stmt.selectSavedView.get({ viewId: input.sourceViewId }) as
-      SavedViewRow | undefined;
-    if (!source) throw new Error(`Source saved view ${input.sourceViewId} not found`);
-
-    const newViewId = randomUUID();
+    const { authority } = input;
     const now = nowISO();
+    const duplicate = this.db.transaction(() => {
+      const source = this.stmt.selectSavedView.get({
+        ...authority,
+        viewId: input.sourceViewId,
+        now,
+      }) as SavedViewRow | undefined;
+      if (!source) throw new Error(`Source saved view ${input.sourceViewId} not found`);
 
-    this.stmt.insertSavedView.run({
-      viewId: newViewId,
-      name: input.name,
-      viewType: source.view_type,
-      scope: source.scope,
-      sort: source.sort,
-      actorId: input.actorId,
-      createdAt: now,
+      const viewId = randomUUID();
+      this.stmt.insertSavedView.run({
+        viewId,
+        name: input.name,
+        viewType: source.view_type,
+        scope: source.scope,
+        sort: source.sort,
+        actorId: authority.actorId,
+        spaceId: authority.spaceId,
+        budgetId: authority.budgetId,
+        membershipId: authority.membershipId,
+        createdAt: now,
+      });
+
+      const row = this.stmt.selectSavedView.get({ ...authority, viewId, now }) as
+        | SavedViewRow
+        | undefined;
+      if (!row) throw new Error('Failed to read back duplicated saved view');
+      return rowToSavedViewResult(row);
     });
-
-    const row = this.stmt.selectSavedView.get({ viewId: newViewId }) as SavedViewRow;
-    if (!row) throw new Error('Failed to read back duplicated saved view');
-    return rowToSavedViewResult(row);
+    return duplicate.immediate();
   }
 
-  async deleteSavedView(viewId: string): Promise<boolean> {
-    const result = this.stmt.deleteSavedView.run(viewId);
-    return result.changes > 0;
-  }
-
-  async recordSavedViewUsage(viewId: string): Promise<SavedViewResult> {
-    const existing = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow | undefined;
-    if (!existing) throw new Error(`Saved view ${viewId} not found`);
-
+  async deleteSavedView(viewId: string, authority: SavedViewAuthority): Promise<boolean> {
     const now = nowISO();
-    this.stmt.recordSavedViewUsage.run({ viewId, now });
+    const remove = this.db.transaction(() =>
+      this.stmt.deleteSavedView.run({ ...authority, viewId, now }).changes > 0,
+    );
+    return remove.immediate();
+  }
 
-    const row = this.stmt.selectSavedView.get({ viewId }) as SavedViewRow;
-    return rowToSavedViewResult(row);
+  async recordSavedViewUsage(
+    viewId: string,
+    authority: SavedViewAuthority,
+  ): Promise<SavedViewResult> {
+    const now = nowISO();
+    const recordUsage = this.db.transaction(() => {
+      const query = { ...authority, viewId, now };
+      if (!this.stmt.selectSavedView.get(query))
+        throw new Error(`Saved view ${viewId} not found`);
+      this.stmt.recordSavedViewUsage.run(query);
+      const row = this.stmt.selectSavedView.get(query) as SavedViewRow | undefined;
+      if (!row) throw new Error(`Saved view ${viewId} not found`);
+      return rowToSavedViewResult(row);
+    });
+    return recordUsage.immediate();
   }
 
   // ── Finding lifecycle ────────────────────────────────────────────

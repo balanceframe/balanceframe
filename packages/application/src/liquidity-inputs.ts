@@ -228,6 +228,12 @@ export const liquidityCapabilities = [
   'policy',
   'session',
   'full-read',
+  'grant:manage',
+  'policy:manage',
+  'evidence',
+  'raw-document',
+  'normalized-evidence',
+  'ledger-effect',
 ] as const;
 export const liquidityGrantInputSchema = z
   .object({
@@ -236,7 +242,7 @@ export const liquidityGrantInputSchema = z
         z
           .object({
             actorId: id,
-            resourceKind: z.enum(['budget', 'account', 'category', 'session']),
+            resourceKind: z.enum(['space', 'budget', 'account', 'category', 'session', 'transfer', 'evidence']),
             resourceId: id,
             capability: z.enum(liquidityCapabilities),
             granted: z.boolean(),
@@ -244,7 +250,20 @@ export const liquidityGrantInputSchema = z
           .strict()
           .refine(
             (grant) => grant.capability !== 'full-read' || grant.resourceKind === 'budget',
-            'Full-read discloses the whole budget and is budget-only',
+            'Full-read is budget-only',
+          )
+          .refine(
+            (grant) =>
+              !['grant:manage', 'policy:manage'].includes(grant.capability) ||
+              grant.resourceKind === 'space',
+            'Space control capabilities are space-only',
+          )
+          .refine(
+            (grant) =>
+              !['evidence', 'raw-document', 'normalized-evidence', 'ledger-effect'].includes(
+                grant.capability,
+              ) || grant.resourceKind === 'evidence',
+            'Evidence capabilities are evidence-only',
           ),
       )
       .min(1)

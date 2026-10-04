@@ -1,42 +1,23 @@
 /**
- * CategorizationMutationService — orchestrates the proposal-driven
- * lifecycle for set-category mutations.
- *
- * Implements at-most-once execution with idempotency gating, approval
- * consumption before the Actual write, and post-write verification.
- * A mutation is reported as successful ONLY when the write completes
- * AND postcondition verification confirms the change.
- *
- * Flow summary:
- *   1. Load proposal — verifies existence, not superseded, not expired
- *   2. Backup verification (optional) — recent successful backup_verification
- *      audit record with matching budgetId
- *   3. Authorization — membership, capability, scope
- *   4. Load approval — exact proposalId + payloadHash binding,
- *      operation check, status checks (active, not consumed/expired/superseded)
- *   5. Consume approval — one-time lock preventing concurrent execution
- *   6. Idempotency claim — create record; completed → replay;
- *      in-flight → conflict; else proceed
- *   7. Audit: execution started
- *   8. Latest snapshot via ledger.synchronize()
- *   9. Plan via Rust planSetCategory
- *  10. Stale precondition check
- *  11. Write via ledger.setTransactionCategory
- *  12. Reread + Rust verifyMutation
- *  13. Complete idempotency record (error if verification failed)
- *  14. Append completion/failure audit
- *  15. Return result — success = verified
+ * Executes governed set-category proposals through atomic approval acquisition,
+ * fresh native planning, Actual writes, and postcondition verification.
  *
  * @module mutation
  */
 
+import {
+  GENERIC_MUTATION_POLICY_VERSION,
+  ProposalAcquisitionError,
+  canonicalProposalJson,
+} from '@balanceframe/workflow-store';
 import type {
   WorkflowStore,
   ActionProposal,
   IdempotencyRecord,
-  IdempotencyClaim,
   AuditRecord,
-  AuthorizationResult,
+  AuthorizationDisposition,
+  ProposalExecutionAcquisition,
+  OperationalAuth,
 } from '@balanceframe/workflow-store';
 
 import type {
@@ -46,6 +27,49 @@ import type {
 } from '@balanceframe/actual-adapter';
 
 import type { Transaction, Category, ProtocolSnapshot } from '@balanceframe/protocol-generated';
+import { moneySchema } from '@balanceframe/protocol-generated/validators';
+import { z } from 'zod';
+
+const categoryPreconditionsSchema = z.object({
+  transactionId: z.string().optional(),
+  accountId: z.string().optional(),
+  currentCategoryId: z.string().nullable().optional(),
+  amount: moneySchema.optional(),
+  actualVersion: z.string().optional(),
+  snapshotSchemaVersion: z.string().optional(),
+  reviewId: z.string().min(1).optional(),
+  reviewProvenance: z.object({
+    budgetId: z.string().min(1),
+    transactionId: z.string().min(1),
+    categoryId: z.string(),
+    status: z.enum(['pending_review', 'correcting']),
+    version: z.number().int().positive(),
+  }).strict().optional(),
+  transaction: z.object({
+    id: z.string().min(1).optional(),
+    accountId: z.string().min(1),
+    categoryId: z.string().nullable().optional(),
+    direction: z.enum(['incoming', 'outgoing']),
+    amount: moneySchema,
+  }).passthrough().optional(),
+}).passthrough();
+
+const verifiedCategorizationResultSchema = z.object({
+  verified: z.literal(true),
+  transactionId: z.string().min(1),
+  previousCategoryId: z.string().min(1).nullable(),
+  newCategoryId: z.string().min(1),
+  planId: z.string().min(1),
+}).strict();
+
+const replayEffectSchema = z.object({
+  operation: z.literal('set_category'),
+  payload: z.object({
+    transactionId: z.string().min(1),
+    categoryId: z.string().min(1),
+  }).passthrough(),
+  preconditions: categoryPreconditionsSchema,
+}).strict();
 
 // ---------------------------------------------------------------------------
 // Rust protocol types (match the Rust core-protocol JSON wire format)
@@ -79,7 +103,7 @@ export interface RustMutationProtocol {
   /** Plan a set-category mutation from a transaction + category. */
   planSetCategory(transaction: Transaction, category: Category): MutationPlan;
 
-  /** Verify that a mutation plan still holds against a snapshot. */
+  /** Verify the written target category and postconditions against a fresh snapshot. */
   verifyMutation(plan: MutationPlan, snapshot: ProtocolSnapshot): VerificationResult;
 }
 
@@ -95,14 +119,15 @@ export interface ExecuteCategorizationInput {
   actorId: string;
   /** The proposal to execute. */
   proposalId: string;
-  /** The one-time approval granting authorization. */
-  approvalId: string;
+  /** Optional selected approval hint; store checks the complete threshold. */
+  approvalId?: string;
+  /** Trusted server-supplied execution identity. */
+  auth: OperationalAuth;
   /** Idempotency key for at-most-once execution. */
   idempotencyKey: string;
   /** Optional correlation ID for grouping related operations. */
   correlationId?: string;
 }
-
 /** Result of executing a categorization proposal. */
 export interface ExecuteCategorizationResult {
   /** Whether the overall execution succeeded (write + verification). */
@@ -130,12 +155,6 @@ export interface ExecuteCategorizationResult {
 }
 
 // ---------------------------------------------------------------------------
-// Default capability / scope values
-// ---------------------------------------------------------------------------
-
-const CAPABILITY_EXECUTE = 'categorization:execute';
-
-// ---------------------------------------------------------------------------
 // Staleness / freshness thresholds (ms)
 // ---------------------------------------------------------------------------
 
@@ -160,41 +179,14 @@ export class CategorizationMutationService {
 
   constructor(
     private readonly store: WorkflowStore,
-    private readonly ledger: BudgetLedger,
-    private readonly rust: RustMutationProtocol,
+    private readonly ledger: BudgetLedger | null,
+    private readonly rust: RustMutationProtocol | null,
     options?: MutationServiceOptions,
   ) {
     this.requireBackupVerification = options?.requireBackupVerification ?? false;
   }
 
-  /**
-   * Execute a categorization proposal end-to-end.
-   *
-   * Flow summary:
-   *   1. Load proposal — verifies existence, not superseded, not expired
-   *   2. Backup verification (optional) — recent successful backup_verification
-   *      audit record with matching budgetId
-   *   3. Authorization — membership, capability, scope
-   *   4. Load approval — exact proposalId + payloadHash binding,
-   *      operation check, status checks (active, not consumed/expired/superseded)
-   *   5. Idempotency claim — create record; completed → replay;
-   *      in-flight → conflict; else proceed
-   *   6. Consume approval — one-time lock preventing concurrent execution
-   *   7. Audit: execution started
-   *   8. Latest snapshot via ledger.synchronize()
-   *   9. Plan via Rust planSetCategory
-   *  10. Stale precondition check
-   *  11. Write via ledger.setTransactionCategory
-   *  12. Reread + Rust verifyMutation
-   *  13. Complete idempotency record (error if verification failed)
-   *  14. Append completion/failure audit
-   *  15. Return result — success = verified
-   *
-   * @returns An {@link ExecuteCategorizationResult} describing the outcome.
-   *          The caller MUST check both `.success` and `.verified` for the
-   *          full picture — a write may succeed but postcondition
-   *          verification may fail.
-   */
+  /** Acquires the proposal's complete approval set before planning or writing. */
 
   async execute(input: ExecuteCategorizationInput): Promise<ExecuteCategorizationResult> {
     const baseResult: ExecuteCategorizationResult = {
@@ -245,14 +237,30 @@ export class CategorizationMutationService {
         input,
       );
     }
+    let priorIdempotency: IdempotencyRecord | null;
+    try {
+      priorIdempotency = await this.store.getIdempotencyRecord(input.idempotencyKey);
+    } catch {
+      return this.fail(baseResult, 'idempotency_record_unavailable', 'Execution record is unavailable', input);
+    }
+    const terminalReplay = priorIdempotency?.status === 'succeeded' ||
+      priorIdempotency?.status === 'terminal_failed';
+    if (!terminalReplay && (!this.ledger || !this.rust))
+      return this.fail(baseResult, 'dependencies_unavailable', 'Fresh execution requires ledger and Native verification dependencies', input);
 
-    if (proposal.supersededAt) {
+
+    if (!terminalReplay && proposal.policyVersion !== GENERIC_MUTATION_POLICY_VERSION) {
+      await this.appendFailureAudit(input, proposal, null, 'policy_version_mismatch');
+      return this.fail(baseResult, 'policy_version_mismatch', 'The approved mutation algorithm is no longer current', input);
+    }
+
+    if (!terminalReplay && proposal.supersededAt) {
       await this.appendFailureAudit(input, proposal, null, 'proposal_superseded');
       return this.fail(baseResult, 'proposal_superseded', 'Proposal has been superseded', input);
     }
 
     // Check proposal expiry
-    if (new Date(proposal.expiresAt).getTime() <= Date.now()) {
+    if (!terminalReplay && new Date(proposal.expiresAt).getTime() <= Date.now()) {
       await this.appendFailureAudit(input, proposal, null, 'proposal_expired');
       return this.fail(baseResult, 'proposal_expired', 'Proposal has expired', input);
     }
@@ -262,7 +270,7 @@ export class CategorizationMutationService {
     //    audit record with matching budgetId
     // =====================================================================
 
-    if (this.requireBackupVerification) {
+    if (!terminalReplay && this.requireBackupVerification) {
       const backupOk = await this.checkBackupVerified(proposal.budgetId);
       if (!backupOk) {
         await this.appendFailureAudit(input, proposal, null, 'backup_not_verified');
@@ -275,62 +283,91 @@ export class CategorizationMutationService {
       }
     }
 
-    // =====================================================================
-    // 3. Authorization — membership, capability, scope
-    // =====================================================================
+    let parsedPreconditions: unknown;
+    const composite = proposal.payload.composite;
+    if (
+      !terminalReplay &&
+      composite &&
+      ((composite.operations.length > 0 &&
+        (composite.operations.length !== 1 ||
+          composite.operations[0]?.operation !== 'set_category' ||
+          composite.operations[0]?.transactionId !== proposal.payload.transactionId ||
+          composite.operations[0]?.categoryId !== proposal.payload.categoryId)) ||
+        composite.reallocations.length > 0 ||
+        composite.transferRecommendations.length > 0 ||
+        composite.ledgerProjections.length > 0)
+    )
+      return this.fail(baseResult, 'unsupported_composite', 'Mutation cannot apply composite proposal operations', input);
 
-    const auth = await this.store.evaluateAuthorization(
-      input.actorId,
-      CAPABILITY_EXECUTE,
-      'budget:' + proposal.budgetId,
-      proposal.policyVersion,
-    );
-
-    if (!auth.allowed) {
-      const code = this.deniedReasonCode(auth);
-      let reasonMsg = 'Authorization denied';
-      if (auth.disposition.kind === 'denied') {
-        reasonMsg = auth.disposition.reason;
+    let serialisedEffect: string;
+    try {
+      parsedPreconditions = JSON.parse(proposal.preconditions) as unknown;
+      serialisedEffect = JSON.stringify({
+        operation: proposal.operation,
+        payload: proposal.payload,
+        preconditions: parsedPreconditions,
+      });
+    } catch {
+      return this.fail(baseResult, 'payload_hash_mismatch', 'Proposal envelope is invalid', input);
+    }
+    const parsed = categoryPreconditionsSchema.safeParse(parsedPreconditions);
+    if (!parsed.success)
+      return this.fail(baseResult, 'payload_hash_mismatch', 'Proposal preconditions are invalid', input);
+    const reviewId = parsed.data.reviewId ?? null;
+    const hasReviewReference = reviewId !== null || parsed.data.reviewProvenance !== undefined;
+    if (!terminalReplay && hasReviewReference) {
+      let reviewCurrent = false;
+      try {
+        reviewCurrent = await this.store.isProposalReviewProvenanceCurrent(input.proposalId);
+      } catch {
+        return this.fail(baseResult, 'review_reference_unavailable', 'Review provenance is unavailable', input);
       }
-      await this.appendFailureAudit(input, proposal, auth, code);
-      return this.fail(baseResult, code, reasonMsg, input);
+      if (!reviewCurrent)
+        return this.fail(baseResult, 'review_reference_mismatch', 'Review provenance no longer matches', input);
     }
 
-    // =====================================================================
-    // 4. Idempotency claim (atomic check-and-create) — completed → replay;
-    //    in-flight → conflict; owner → proceed to approval
-    // =====================================================================
-    const serialisedEffect = JSON.stringify({
-      transactionId: proposal.payload.transactionId,
-      newCategoryId: proposal.payload.categoryId,
-    });
 
-    let idemClaim: IdempotencyClaim;
+    if (!proposal.governancePolicyVersion)
+      return this.fail(baseResult, 'authorization_denied', 'Governed proposal provenance unavailable', input);
+    let acquisition: ProposalExecutionAcquisition;
     try {
-      idemClaim = await this.store.createIdempotencyRecord({
-        idempotencyKey: input.idempotencyKey,
+      acquisition = await this.store.acquireProposalExecution({
+        actorId: input.actorId,
         proposalId: input.proposalId,
-        operation: proposal.operation,
+        payloadHash: proposal.payloadHash,
+        governancePolicyVersion: proposal.governancePolicyVersion,
+        idempotencyKey: input.idempotencyKey,
         serialisedEffect,
+        ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+        auth: input.auth,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
       });
     } catch (err) {
-      await this.appendFailureAudit(input, proposal, auth, 'idempotency_replay_mismatch');
-      return this.fail(
-        baseResult,
-        'idempotency_replay_mismatch',
-        err instanceof Error ? err.message : 'Idempotency record creation failed',
-        input,
-      );
+      const code = err instanceof ProposalAcquisitionError ? err.reasonCode : 'execution_acquisition_failed';
+      const message = err instanceof ProposalAcquisitionError
+        ? err.message
+        : 'Execution authorization could not be acquired';
+      return this.fail(baseResult, code, message, input);
     }
 
-    if (!idemClaim.isOwner) {
-      // Replay if the record is already in a terminal state
-      if (idemClaim.record.status !== 'in_progress') {
-        return this.replayResult(idemClaim.record, input);
+    if (!acquisition.claim.isOwner) {
+      if (acquisition.claim.record.status !== 'in_progress') {
+        const replay = this.replayResult(acquisition.claim.record, input, baseResult);
+        if (!replay.success || !hasReviewReference) return replay;
+        try {
+          const completed = await this.store.completeVerifiedCategorizationReview(input.idempotencyKey);
+          if (completed === null) throw new Error('Linked review was not finalized');
+        } catch {
+          return this.fail(
+            baseResult,
+            'review_completion_failed',
+            'Verified execution could not complete its linked review',
+            input,
+          );
+        }
+        return replay;
       }
-      // In-flight: another execution is using this key — or previous run crashed
-      // and the lease hasn't expired yet. The caller should retry later.
-      await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
       return this.fail(
         baseResult,
         'idempotency_in_progress',
@@ -338,102 +375,28 @@ export class CategorizationMutationService {
         input,
       );
     }
-
-    // We own the claim — proceed with execution
-
-    // =====================================================================
-    // 5. Load approval — verify active, exact proposal ID binding,
-    //    payload hash match, operation supported, status checks
-    // =====================================================================
-
-    const approval = await this.store.getApproval(input.approvalId);
-    if (!approval) {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_not_found');
-      return this.fail(baseResult, 'approval_not_found', 'Approval not found', input);
-    }
-
-    // Bind approval to the exact proposal ID
-    if (approval.proposalId !== input.proposalId) {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_proposal_mismatch');
-      return this.fail(
-        baseResult,
-        'approval_proposal_mismatch',
-        'Approval proposal ID does not match the input proposal',
-        input,
+    if (!this.ledger || !this.rust)
+      return this.fail(baseResult, 'dependencies_unavailable', 'Fresh execution requires ledger and Native verification dependencies', input);
+    const auditStarted = acquisition.auditRecord;
+    if (!auditStarted) {
+      await this.store.completeIdempotencyRecord(
+        input.idempotencyKey,
+        'Acquisition did not return its durable audit record',
+        false,
       );
+      return this.fail(baseResult, 'execution_audit_missing', 'Execution audit record is unavailable', input);
     }
-
-    // Bind approval payload hash to proposal payload hash
-    if (approval.payloadHash !== proposal.payloadHash) {
-      await this.appendFailureAudit(input, proposal, auth, 'payload_hash_mismatch');
-      return this.fail(
-        baseResult,
-        'payload_hash_mismatch',
-        'Approval payload hash does not match proposal',
-        input,
+    const authorizationDisposition = auditStarted.authorizationDisposition;
+    if (!authorizationDisposition) {
+      await this.store.completeIdempotencyRecord(
+        input.idempotencyKey,
+        'Acquisition audit record omitted authorization disposition',
+        false,
       );
+      return this.fail(baseResult, 'execution_audit_invalid', 'Execution audit record is invalid', input);
     }
-
-    if (approval.status === 'consumed') {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_consumed');
-      return this.fail(
-        baseResult,
-        'approval_consumed',
-        'Approval has already been consumed',
-        input,
-      );
-    }
-
-    if (approval.status === 'expired' || new Date(approval.expiresAt).getTime() <= Date.now()) {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_expired');
-      return this.fail(baseResult, 'approval_expired', 'Approval has expired', input);
-    }
-
-    if (approval.status === 'superseded') {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_superseded');
-      return this.fail(baseResult, 'approval_superseded', 'Approval has been superseded', input);
-    }
-
-    // =====================================================================
-    // 6. Consume approval BEFORE mutation — one-time lock preventing
-    //    concurrent execution from both writing with the same approval
-    // =====================================================================
-
-    try {
-      await this.store.consumeApproval(input.approvalId);
-    } catch (err) {
-      await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth, 'approval_consumption_failed');
-      return this.fail(
-        baseResult,
-        'approval_consumption_failed',
-        err instanceof Error ? err.message : 'Failed to consume approval',
-        input,
-      );
-    }
-    // =====================================================================
-
-    let auditStarted: AuditRecord | null = null;
-    try {
-      auditStarted = await this.store.appendAuditRecord({
-        classification: 'execution_started',
-        actorId: input.actorId,
-        operation: proposal.operation,
-        proposalId: input.proposalId,
-        payloadHash: proposal.payloadHash,
-        budgetId: proposal.budgetId,
-        policyVersion: proposal.policyVersion,
-        idempotencyKey: input.idempotencyKey,
-        authorizationDisposition: auth.disposition,
-        correlationId: input.correlationId ?? null,
-        requestId: input.requestId,
-        result: 'started',
-        isError: false,
-      });
-    } catch {
-      // Non-fatal: audit append failure should not block execution
-    }
-
+    const consumedApprovalId =
+      input.approvalId ?? acquisition.approvals[0]?.id ?? null;
     // =====================================================================
     // 8. Latest snapshot via ledger.synchronize()
     // =====================================================================
@@ -446,7 +409,7 @@ export class CategorizationMutationService {
       await this.appendFailureAudit(
         input,
         proposal,
-        auth,
+        authorizationDisposition,
         err instanceof Error ? err.message : 'sync_failed',
       );
       return this.fail(
@@ -462,7 +425,7 @@ export class CategorizationMutationService {
     // Staleness check
     if (Date.now() - new Date(snapshot.snapshotDate).getTime() > STALE_SNAPSHOT_MS) {
       await this.recordFailure(input, new Error('Snapshot data is stale'));
-      await this.appendFailureAudit(input, proposal, auth, 'stale_snapshot');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'stale_snapshot');
       return this.fail(baseResult, 'stale_snapshot', 'Snapshot data is stale', input);
     }
 
@@ -470,7 +433,7 @@ export class CategorizationMutationService {
     const tx = snapshot.transactions.find((t) => t.id === proposal.payload.transactionId);
     if (!tx) {
       await this.recordFailure(input, new Error('Transaction not found in latest snapshot'));
-      await this.appendFailureAudit(input, proposal, auth, 'transaction_not_found');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'transaction_not_found');
       return this.fail(
         baseResult,
         'transaction_not_found',
@@ -481,9 +444,9 @@ export class CategorizationMutationService {
 
     // Find category in snapshot
     const cat = snapshot.categories.find((c) => c.id === proposal.payload.categoryId);
-    if (!cat) {
+    if (!cat || cat.deleted) {
       await this.recordFailure(input, new Error('Category not found in latest snapshot'));
-      await this.appendFailureAudit(input, proposal, auth, 'category_not_found');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'category_not_found');
       return this.fail(
         baseResult,
         'category_not_found',
@@ -504,7 +467,7 @@ export class CategorizationMutationService {
       await this.appendFailureAudit(
         input,
         proposal,
-        auth,
+        authorizationDisposition,
         err instanceof Error ? err.message : 'plan_failed',
       );
       return this.fail(
@@ -519,10 +482,10 @@ export class CategorizationMutationService {
     // 10. Stale precondition check
     // =====================================================================
 
-    const preconditionCheck = this.checkPreconditions(proposal, plan);
+    const preconditionCheck = this.checkPreconditions(proposal, plan, tx, snapshot);
     if (!preconditionCheck.ok) {
       await this.recordFailure(input, new Error(preconditionCheck.reason));
-      await this.appendFailureAudit(input, proposal, auth, 'precondition_mismatch');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'precondition_mismatch');
       return this.fail(baseResult, 'precondition_mismatch', preconditionCheck.reason, input);
     }
 
@@ -539,7 +502,7 @@ export class CategorizationMutationService {
       );
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.auditFailure(input, proposal, auth, err);
+      await this.auditFailure(input, proposal, authorizationDisposition, err);
       return this.fail(
         baseResult,
         'write_failed',
@@ -549,7 +512,7 @@ export class CategorizationMutationService {
     }
     if (!writeResult.success) {
       await this.recordFailure(input, new Error(writeResult.error));
-      await this.auditFailure(input, proposal, auth, new Error(writeResult.error));
+      await this.auditFailure(input, proposal, authorizationDisposition, new Error(writeResult.error));
       return this.fail(baseResult, 'write_failed', writeResult.error, input);
     }
 
@@ -564,7 +527,7 @@ export class CategorizationMutationService {
     } catch (err) {
       // Write happened but we can't verify — still need to record outcome
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth, 'reread_failed');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'reread_failed');
       return this.fail(
         baseResult,
         'reread_failed',
@@ -587,26 +550,64 @@ export class CategorizationMutationService {
       verifyMessage = err instanceof Error ? err.message : 'Verification threw';
     }
 
-    // =====================================================================
-    // 13. Complete idempotency record
-    //
-    // Post-write failures are terminal (the write may have happened externally
-    // even if verification failed).  Pre-write failures are handled above via
-    // recordFailure (retryable).
-    // =====================================================================
+    if (verified && (
+      writeResult.transactionId !== plan.transactionId ||
+      writeResult.transactionId !== proposal.payload.transactionId ||
+      writeResult.previousCategoryId !== plan.currentCategoryId ||
+      writeResult.newCategoryId !== plan.proposedCategoryId ||
+      writeResult.newCategoryId !== proposal.payload.categoryId
+    )) {
+      verified = false;
+      verifyReasonCodes.push('write_result_mismatch');
+      verifyMessage = 'Verified mutation result does not match the approved plan';
+    }
 
+    let completed = false;
     if (!verified) {
-      const errMsg = verifyMessage ?? 'Postcondition verification failed';
       try {
-        await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, false);
+        await this.store.completeIdempotencyRecord(
+          input.idempotencyKey,
+          verifyMessage ?? 'Postcondition verification failed',
+          false,
+        );
       } catch {
-        // Non-fatal
+        // Preserve the unverified result even if bookkeeping is unavailable.
       }
     } else {
+      const serialisedResult = JSON.stringify({
+        verified: true,
+        transactionId: writeResult.transactionId,
+        previousCategoryId: writeResult.previousCategoryId,
+        newCategoryId: writeResult.newCategoryId,
+        planId: plan.planId,
+      });
       try {
-        await this.store.completeIdempotencyRecord(input.idempotencyKey, null);
+        const record = await this.store.completeIdempotencyRecord(
+          input.idempotencyKey,
+          null,
+          undefined,
+          serialisedResult,
+        );
+        if (
+          record.status !== 'succeeded' ||
+          (reviewId === null && record.serialisedResult !== serialisedResult)
+        )
+          throw new Error('Verified result was not durably stored');
+        completed = true;
       } catch {
-        // Non-fatal
+        verifyReasonCodes.push('idempotency_result_unavailable');
+        verifyMessage = 'Verified result could not be durably stored';
+      }
+    }
+
+    if (completed && reviewId !== null) {
+      try {
+        const finalized = await this.store.completeVerifiedCategorizationReview(input.idempotencyKey);
+        if (finalized === null) throw new Error('Linked review was not finalized');
+      } catch {
+        completed = false;
+        verifyReasonCodes.push('review_completion_failed');
+        verifyMessage = 'Verified execution could not complete its linked review';
       }
     }
 
@@ -620,12 +621,13 @@ export class CategorizationMutationService {
       previousCategoryId: writeResult.previousCategoryId,
       newCategoryId: writeResult.newCategoryId,
       verified,
+      workflowCompleted: completed,
     });
 
     let auditCompleted: AuditRecord | null = null;
     try {
       auditCompleted = await this.store.appendAuditRecord({
-        classification: verified ? 'execution_completed' : 'execution_failed',
+        classification: completed ? 'execution_completed' : 'execution_failed',
         actorId: input.actorId,
         operation: proposal.operation,
         proposalId: input.proposalId,
@@ -633,15 +635,15 @@ export class CategorizationMutationService {
         budgetId: proposal.budgetId,
         backendIds: '',
         policyVersion: proposal.policyVersion,
-        authorizationDisposition: auth.disposition,
+        authorizationDisposition,
         idempotencyKey: input.idempotencyKey,
         expectedPriorState: proposal.preconditions,
         observedResultState: obsState,
         providerModel: proposal.providerModel ?? undefined,
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
-        result: verified ? 'completed' : 'verification_failed',
-        isError: !verified,
+        result: completed ? 'completed' : verified ? 'bookkeeping_failed' : 'verification_failed',
+        isError: !completed,
       });
     } catch {
       // Non-fatal: audit failure doesn't change execution outcome
@@ -652,17 +654,17 @@ export class CategorizationMutationService {
     // =====================================================================
 
     return {
-      success: verified,
+      success: completed,
       transactionId: writeResult.transactionId ?? null,
       previousCategoryId: writeResult.previousCategoryId ?? null,
       newCategoryId: writeResult.newCategoryId ?? null,
       verified,
       planId: plan.planId,
       idempotencyKey: input.idempotencyKey,
-      approvalId: input.approvalId,
+      approvalId: consumedApprovalId,
       auditRecordId: auditCompleted?.id ?? auditStarted?.id ?? null,
       reasonCodes: allReasonCodes,
-      message: verified ? undefined : (verifyMessage ?? 'Postcondition verification failed'),
+      message: completed ? undefined : (verifyMessage ?? 'Postcondition verification failed'),
     };
   }
 
@@ -671,47 +673,56 @@ export class CategorizationMutationService {
   // -------------------------------------------------------------------------
 
   /**
-   * Check that the proposal's preconditions match the plan's current state.
+   * Check approved transaction facts against the fresh ledger and native plan.
    */
   private checkPreconditions(
-    proposal: ActionProposal,
+    proposal: Extract<ActionProposal, { operation: 'set_category' }>,
     plan: MutationPlan,
+    transaction: Transaction,
+    snapshot: ProtocolSnapshot,
   ): { ok: true } | { ok: false; reason: string } {
-    if (proposal.operation !== 'set_category') {
-      return { ok: true }; // No precondition check for unknown operations
-    }
-
-    let expectedCurrentCategoryId: string | null = null;
     try {
-      const parsed = JSON.parse(proposal.preconditions);
-      expectedCurrentCategoryId = parsed.currentCategoryId ?? null;
+      const parsed = categoryPreconditionsSchema.safeParse(JSON.parse(proposal.preconditions) as unknown);
+      if (!parsed.success)
+        return { ok: false, reason: 'Invalid preconditions JSON in proposal' };
+      const expected = parsed.data;
+      if (
+        !expected.nativePlan ||
+        proposal.payload.composite?.nativePayloadHash !== plan.hash ||
+        canonicalProposalJson(expected.nativePlan) !== canonicalProposalJson(plan)
+      )
+        return { ok: false, reason: 'Approved native plan no longer matches the current algorithm' };
+      const expectedTransaction = expected.transaction;
+      const currentAmount = BigInt(transaction.amount.minorUnits);
+      const expectedCategory = expectedTransaction?.categoryId !== undefined
+        ? expectedTransaction.categoryId
+        : expected.currentCategoryId ?? null;
+      if (
+        expectedCategory !== plan.currentCategoryId ||
+        transaction.categoryId !== plan.currentCategoryId ||
+        (expected.transactionId !== undefined && expected.transactionId !== transaction.id) ||
+        (expected.accountId !== undefined && expected.accountId !== transaction.accountId) ||
+        expected.actualVersion !== snapshot.actualVersion ||
+        expected.snapshotSchemaVersion !== snapshot.schemaVersion ||
+        (expected.amount !== undefined && (
+          expected.amount.currency !== transaction.amount.currency ||
+          BigInt(expected.amount.minorUnits) !== BigInt(transaction.amount.minorUnits)
+        )) ||
+        (expectedTransaction !== undefined && (
+          (expectedTransaction.id !== undefined && expectedTransaction.id !== transaction.id) ||
+          expectedTransaction.accountId !== transaction.accountId ||
+          expectedTransaction.direction !== (currentAmount < 0n ? 'outgoing' : 'incoming') ||
+          expectedTransaction.amount.currency !== transaction.amount.currency ||
+          BigInt(expectedTransaction.amount.minorUnits) !== (currentAmount < 0n ? -currentAmount : currentAmount)
+        ))
+      )
+        return { ok: false, reason: 'Approved transaction facts no longer match the current ledger' };
+      return { ok: true };
     } catch {
       return { ok: false, reason: 'Invalid preconditions JSON in proposal' };
     }
-
-    if (expectedCurrentCategoryId !== plan.currentCategoryId) {
-      return {
-        ok: false,
-        reason: `Expected currentCategoryId "${expectedCurrentCategoryId}", got "${plan.currentCategoryId}"`,
-      };
-    }
-
-    return { ok: true };
   }
 
-  /**
-   * Map an authorization disposition to a reason code.
-   */
-  private deniedReasonCode(auth: AuthorizationResult): string {
-    if (auth.membershipStatus !== 'active') return 'member_inactive';
-    // Membership is active, so denial is due to capability or scope
-    if (auth.disposition.kind === 'denied') {
-      if (auth.disposition.reason.startsWith('Missing capability'))
-        return 'insufficient_capability';
-      if (auth.disposition.reason.startsWith('Scope')) return 'insufficient_scope';
-    }
-    return 'authorization_denied';
-  }
 
   /**
    * Build a failure result with the given reason code and message.
@@ -758,8 +769,8 @@ export class CategorizationMutationService {
   private async recordFailure(input: ExecuteCategorizationInput, err: unknown): Promise<void> {
     try {
       const errMsg = err instanceof Error ? err.message : String(err);
-      // Transient errors before the write are retryable
-      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, true);
+      // Acquired proposal authority is never returned to the approval pool.
+      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, false);
     } catch {
       // Non-fatal
     }
@@ -771,7 +782,7 @@ export class CategorizationMutationService {
   private async auditFailure(
     input: ExecuteCategorizationInput,
     proposal: ActionProposal,
-    auth: AuthorizationResult,
+    authorizationDisposition: AuthorizationDisposition,
     err: unknown,
   ): Promise<void> {
     try {
@@ -783,7 +794,7 @@ export class CategorizationMutationService {
         payloadHash: proposal.payloadHash,
         budgetId: proposal.budgetId,
         policyVersion: proposal.policyVersion,
-        authorizationDisposition: auth.disposition,
+        authorizationDisposition,
         idempotencyKey: input.idempotencyKey,
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
@@ -802,7 +813,7 @@ export class CategorizationMutationService {
   private async appendFailureAudit(
     input: ExecuteCategorizationInput,
     proposal: ActionProposal | null,
-    auth: AuthorizationResult | null,
+    authorizationDisposition: AuthorizationDisposition | null,
     result: string,
   ): Promise<void> {
     try {
@@ -814,7 +825,7 @@ export class CategorizationMutationService {
         payloadHash: proposal?.payloadHash ?? null,
         budgetId: proposal?.budgetId ?? null,
         policyVersion: proposal?.policyVersion ?? null,
-        authorizationDisposition: auth?.disposition ?? null,
+        authorizationDisposition,
         idempotencyKey: input.idempotencyKey,
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
@@ -833,30 +844,67 @@ export class CategorizationMutationService {
   private replayResult(
     idem: IdempotencyRecord,
     input: ExecuteCategorizationInput,
+    baseResult: ExecuteCategorizationResult,
   ): ExecuteCategorizationResult {
-    let txId: string | null = null;
-    let catId: string | null = null;
-    try {
-      const effect = JSON.parse(idem.serialisedEffect);
-      txId = effect.transactionId ?? null;
-      catId = effect.newCategoryId ?? null;
-    } catch {
-      // Ignore parse failures
-    }
+    if (idem.status !== 'succeeded')
+      return this.fail(
+        baseResult,
+        'idempotency_replay',
+        idem.errorMessage ?? 'The previous execution did not succeed',
+        input,
+      );
+    if (!idem.serialisedResult)
+      return this.fail(
+        baseResult,
+        'idempotency_result_unavailable',
+        'The previous execution has no stored verified result',
+        input,
+      );
 
-    const succeeded = idem.status === 'succeeded';
+    let storedEffect: unknown;
+    let storedResult: unknown;
+    try {
+      storedEffect = JSON.parse(idem.serialisedEffect) as unknown;
+      storedResult = JSON.parse(idem.serialisedResult) as unknown;
+    } catch {
+      return this.fail(baseResult, 'idempotency_result_invalid', 'Stored execution result is malformed', input);
+    }
+    const effect = replayEffectSchema.safeParse(storedEffect);
+    const result = verifiedCategorizationResultSchema.safeParse(storedResult);
+    if (!effect.success || !result.success)
+      return this.fail(baseResult, 'idempotency_result_invalid', 'Stored execution result is malformed', input);
+    const plan = z.object({
+      planId: z.string().min(1),
+      transactionId: z.string().min(1),
+      currentCategoryId: z.string().min(1).nullable(),
+      proposedCategoryId: z.string().min(1),
+    }).passthrough().safeParse(effect.data.preconditions.nativePlan);
+    if (!plan.success)
+      return this.fail(baseResult, 'idempotency_result_invalid', 'Stored execution plan is malformed', input);
+    if (
+      result.data.transactionId !== effect.data.payload.transactionId ||
+      result.data.newCategoryId !== effect.data.payload.categoryId ||
+      result.data.planId !== plan.data.planId ||
+      result.data.transactionId !== plan.data.transactionId ||
+      result.data.previousCategoryId !== plan.data.currentCategoryId ||
+      result.data.newCategoryId !== plan.data.proposedCategoryId
+    )
+      return this.fail(
+        baseResult,
+        'idempotency_result_mismatch',
+        'Stored verified result does not match its acquired proposal',
+        input,
+      );
+
     return {
-      success: succeeded,
-      transactionId: txId,
-      previousCategoryId: null,
-      newCategoryId: catId,
-      verified: succeeded,
-      planId: null,
-      idempotencyKey: input.idempotencyKey,
-      approvalId: null,
-      auditRecordId: null,
+      ...baseResult,
+      success: true,
+      transactionId: result.data.transactionId,
+      previousCategoryId: result.data.previousCategoryId,
+      newCategoryId: result.data.newCategoryId,
+      verified: true,
+      planId: result.data.planId,
       reasonCodes: ['idempotency_replay'],
-      message: idem.errorMessage ?? undefined,
     };
   }
 }

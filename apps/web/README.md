@@ -2,6 +2,38 @@
 
 BalanceFrame web frontend — responsive review surface for transaction categorization.
 
+## Authenticated spaces and approvals
+
+Sign in with an independent account and explicitly select a space in the header.
+`/spaces` manages membership periods, exact grants, policy versions, agents,
+delegations, credential bindings, connection scope, and scoped audit history.
+Creating a space does not select or bind an Actual budget. Control changes require
+fresh confirmation with the current account's password; credentials are never shared
+with another member or delegated agent.
+
+`/connection` requires password confirmation before discovering Actual budgets;
+`/connection` and `/spaces` leave discovered budgets unselected until you choose
+the intended budget. `/liquidity/settings` confirms the
+current human before saving policy, user-attested observations, or resource grants.
+Failed confirmation prevents the write, and submitted password fields are cleared.
+The grant editor sends only edited rows, leaving unrelated governance grants intact.
+
+Source derives identity from the verified session or live bound API credential, not
+request-body actor IDs. Every route uses current selected-space authority. Narrowed
+or aggregate-only grants do not permit a whole raw ledger; field-level projections
+withhold independently restricted account and evidence data.
+
+Review approval/correction creates an exact pending proposal rather than applying
+a financial change immediately. The proposal review displays its operation, payload
+hash, requester, policy versions, expiry, required approvers, and current approvals.
+Each approval binds the displayed hash and requires fresh human authentication.
+Execution remains separate and requires the current quorum and executor rights.
+The review is finalized only after Native verifies the actual ledger result.
+
+Use the disposable Actual fixture for browser verification and disable the development
+authentication bypass. A component test or successful API request alone does not
+verify the signed-in user path.
+
 ## Architecture
 
 The review surface is a **framework-neutral TypeScript controller** (`ReviewController` in `src/review.ts`) that consumes the shared `@balanceframe/workflow-store` persistence contract without duplicating it. It is designed to be adapted by any UI layer (React, Vue, Svelte, etc.) through state subscriptions and action bindings.
@@ -15,7 +47,9 @@ The review surface is a **framework-neutral TypeScript controller** (`ReviewCont
 
 ### Review lifecycle
 
-The controller maps the lifecycle from `@balanceframe/workflow-store`:
+The framework-neutral controller maps the persisted lifecycle below. The authenticated
+Source adapter keeps financial reviews pending while their proposals await approval
+and execution; creating or approving a proposal does not apply these terminal transitions.
   - Items are loaded from the store in priority order (highest first).
   - Actions transition items through the lifecycle: `pending_review → approved | correcting | rejected | skipped`.
   - The queue advances immediately after each action (immediate progression).

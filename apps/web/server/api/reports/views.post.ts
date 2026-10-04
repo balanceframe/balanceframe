@@ -103,6 +103,12 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
+  const authority = {
+    actorId: fullRead.info.actorId,
+    spaceId: fullRead.spaceId,
+    budgetId: fullRead.budgetId,
+    membershipId: fullRead.actor.membershipId!,
+  };
   try {
     const input: CommandInput = {
       args: [],
@@ -121,7 +127,7 @@ export default defineEventHandler(async (event) => {
       ...(sort !== undefined ? { sort } : {}),
     };
 
-    const envelope = await savedViewCreateAnalysis(input, params);
+    const envelope = await savedViewCreateAnalysis(input, params, authority);
 
     if (envelope.status === 'ok') {
       return okEnvelope(envelope.result, authInfo, envelope.requestId);

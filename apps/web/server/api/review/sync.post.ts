@@ -1,18 +1,23 @@
+import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import {
   createDefaultConnectionManager,
   createNativeAnalysisProtocol,
   persistPendingReviewResult,
   createLiquidityService,
 } from '@balanceframe/application';
+import type { PendingReviewScope } from '@balanceframe/application';
+import { getHumanControlAuth, hasTrustedRequestOrigin } from '../../utils/reauthentication';
+import type { ReauthenticationEvent } from '../../utils/reauthentication';
 import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
   sanitizeError,
-  getActorId,
 } from '../../utils/workflow-store';
 import { updateReviewCategoryCatalog } from '../../utils/review-category-catalog';
+import type { EventWithContext } from '../../utils/workflow-store';
 import { requireFullRead } from '../../utils/legacy-financial-read';
 
 /** Structured sync result with per-item outcome counts. */
@@ -38,16 +43,21 @@ function errorHasCode(error: unknown, code: string): boolean {
 
 /** Synchronize the configured Actual budget and persist deterministic review candidates. */
 export default defineEventHandler(async (event) => {
-  const access = await requireFullRead(event);
+  const requestId = crypto.randomUUID();
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  if (!hasTrustedRequestOrigin(event as ReauthenticationEvent)) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Review synchronization is unavailable.', null, false, requestId);
+  }
+  const access = await requireFullRead(event as unknown as EventWithContext);
   if (!access.ok) return access.response;
   const auth = access.info;
-  const requestId = crypto.randomUUID();
   try {
     const manager = createDefaultConnectionManager({
       configPath: process.env.BALANCEFRAME_CONFIG_PATH,
     });
     const config = await manager.loadConfig();
-    if (!config) {
+    if (!config || config.budgetId !== access.budgetId) {
       setResponseStatus(event, 503);
       return errorEnvelope(
         'not_connected',
@@ -60,27 +70,41 @@ export default defineEventHandler(async (event) => {
     const workflow = getWorkflowStore(event);
     if ('error' in workflow) {
       setResponseStatus(event, 503);
-      return errorEnvelope('STORE_UNAVAILABLE', workflow.error, auth, false, requestId);
+      return errorEnvelope('STORE_UNAVAILABLE', 'Financial data is unavailable.', auth, false, requestId);
     }
     const { result, created } = await manager.withConnection(async (connected) => {
+      if (connected.config.budgetId !== access.budgetId || connected.budget.id !== access.budgetId)
+        throw new Error('Selected budget changed');
       updateReviewCategoryCatalog(connected.config, connected.synchronization);
       const protocol = await createNativeAnalysisProtocol();
-      const result = await protocol.pendingReview(connected.connector, null);
-      const created = await persistPendingReviewResult(
-        workflow.store,
-        connected.budget.id || connected.budget.groupId,
-        result,
-      );
+      const scope: PendingReviewScope = {
+        store: workflow.store,
+        scope: { spaceId: access.spaceId, budgetId: access.budgetId },
+      };
+      const synchronization = z.object({ snapshot: z.unknown() }).parse(connected.synchronization);
+      const snapshot = canonicalProtocolSnapshotSchema.parse(synchronization.snapshot);
+      const result = await protocol.pendingReview(snapshot, null, scope);
+      const created = await persistPendingReviewResult(workflow.store, access.budgetId, result, snapshot);
       return { result, created };
-    });
-    const liquidity = await createLiquidityService({
-      connectionManager: manager,
-      store: workflow.store,
-    });
-    await liquidity.reconcileActive({ actorId: getActorId(event), budgetId: config.budgetId });
+    }, { expectedBudgetId: access.budgetId });
+    const actorAuth = access.actor.auth;
+    if (actorAuth?.method === 'session') {
+      const humanAuth = await getHumanControlAuth(event as ReauthenticationEvent);
+      if (
+        humanAuth &&
+        humanAuth.actorId === access.actor.actorId &&
+        humanAuth.sessionId === actorAuth.sessionId
+      ) {
+        const liquidity = await createLiquidityService({
+          connectionManager: manager,
+          store: workflow.store,
+        });
+        await liquidity.reconcileActive({ ...access.actor, auth: humanAuth });
+      }
+    }
 
     // Transition all discovered items to pending_review with structured reporting.
-    const discovered = await workflow.store.listReviewItems({ status: 'discovered' });
+    const discovered = await workflow.store.listReviewItems({ budgetId: access.budgetId, status: 'discovered' });
     let transitioned = 0;
     let skipped = 0;
     let failed = 0;
@@ -88,7 +112,7 @@ export default defineEventHandler(async (event) => {
 
     for (const item of discovered) {
       try {
-        await workflow.store.transitionReviewItem(item.id, {
+        await workflow.store.transitionInternalReviewItem(item.id, {
           toStatus: 'pending_review',
           actor: 'system',
           reason: 'Auto-transition from sync: deterministic analysis complete',

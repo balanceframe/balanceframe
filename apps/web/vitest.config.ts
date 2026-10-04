@@ -2,12 +2,17 @@ import vue from '@vitejs/plugin-vue';
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
-const srcDir = resolve(__dirname, '../../packages/workflow-store/src');
+const workflowStoreSrcDir = resolve(__dirname, '../../packages/workflow-store/src');
+const applicationSrcDir = resolve(__dirname, '../../packages/application/src');
 
 export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
+      '@balanceframe/workflow-store': workflowStoreSrcDir,
+      '@balanceframe/workflow-store/*': resolve(workflowStoreSrcDir, '*'),
+      '@balanceframe/application': applicationSrcDir,
+      '@balanceframe/application/*': resolve(applicationSrcDir, '*'),
       // Nuxt virtual module — resolved to a test shim so middleware tests
       // can mock #app imports via vi.mock outside the Nuxt build pipeline.
       '#app': resolve(__dirname, 'test/nuxt-app-shim.ts'),

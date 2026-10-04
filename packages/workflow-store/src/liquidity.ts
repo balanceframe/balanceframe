@@ -1,7 +1,15 @@
 import type { Database } from 'better-sqlite3';
+import type { SpaceGovernance } from './governance.js';
+import type {
+  GovernanceOperation,
+  GovernanceResourceRef,
+  HumanControlContext,
+  ProvisionResourceGrantInput,
+} from './governance-types.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type {
   ActionProposal,
+  CurrentHumanApproval,
   SessionCompletionPayload,
   SessionCompletionProposal,
   SessionCompletionState,
@@ -37,6 +45,7 @@ import type {
   SaveProspectiveClaimInput,
   SaveTransferPreviewInput,
   StoredProspectiveClaim,
+  TransferApprovalSummary,
   TransferPreview,
   VisibleStoredProspectiveClaim,
   SavePolicyInput,
@@ -53,6 +62,13 @@ import type {
   TransitionProspectiveClaimInput,
 } from './liquidity-types.js';
 
+type EligibleHumanApproval = { id: string; approval: CurrentHumanApproval };
+
+function currentHumanApprovers(
+  eligible: readonly EligibleHumanApproval[],
+): readonly CurrentHumanApproval[] {
+  return eligible.map(({ approval }) => approval);
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
   if (value !== null && typeof value === 'object')
@@ -73,7 +89,10 @@ function identity(value: unknown): string {
       ? Object.fromEntries(
           Object.entries(value).filter(
             ([key]) =>
-              key !== 'now' && key !== 'expectedVersion' && key !== 'expectedClaimSetRevision',
+              key !== 'now' &&
+              key !== 'expectedVersion' &&
+              key !== 'expectedClaimSetRevision' &&
+              key !== 'auth',
           ),
         )
       : value;
@@ -135,6 +154,26 @@ function completionResourceRefs(payload: SessionCompletionPayload): ResourceRef[
     refs.push({ resourceKind: 'category', resourceId: split.categoryId });
   }
   return [...new Map(refs.map((ref) => [`${ref.resourceKind}:${ref.resourceId}`, ref])).values()];
+}
+
+function completionOperations(payload: SessionCompletionPayload): GovernanceOperation[] {
+  return payload.categoryCharges.map((charge): GovernanceOperation => ({
+    operation: 'session_completion',
+    direction: 'outgoing',
+    amount: charge.amount,
+    accountId: payload.manualInput.accountId,
+    categoryId: charge.categoryId,
+  }));
+}
+
+function transferOperations(plan: TransferPlan): GovernanceOperation[] {
+  return plan.legs.map((leg): GovernanceOperation => ({
+    operation: 'transfer',
+    direction: 'outgoing',
+    amount: leg.amount,
+    sourceAccountId: leg.sourceAccountId,
+    destinationAccountId: leg.destinationAccountId,
+  }));
 }
 
 function completionMoneyEquals(
@@ -367,9 +406,18 @@ function normalizeSessionItem(item: unknown): SpendSessionItem {
 function normalizeSpendSession(value: unknown): SpendSession {
   const source = sessionObject(value);
   if (!Array.isArray(source.items)) throw new Error('Invalid spend session items');
+  const spaceId = source.spaceId;
+  const membershipId = source.membershipId;
+  const governancePolicyVersion = source.governancePolicyVersion;
+  if (!nonBlankString(spaceId) || !nonBlankString(membershipId) ||
+      !nonBlankString(governancePolicyVersion))
+    throw new Error('Spend session governance provenance unavailable');
   const accountId = optionalString(source.accountId);
   const session: SessionObject = {
     actorId: source.actorId,
+    spaceId,
+    membershipId,
+    governancePolicyVersion,
     budgetId: source.budgetId,
     id: source.id,
     version: source.version,
@@ -474,24 +522,6 @@ const initialState = (): TransferState => ({
   reconciled: false,
   outcome: null,
 });
-const capabilities: ResourceCapability[] = [
-  'conclusion',
-  'existence',
-  'name',
-  'balance',
-  'history',
-  'liquidity',
-  'source',
-  'category',
-  'proposal',
-  'approval',
-  'initiation-report',
-  'confirmation',
-  'audit',
-  'policy',
-  'session',
-  'full-read',
-];
 
 /** Typed transfer specialization of the shared action/approval/idempotency/audit tables.
  * All callbacks are synchronous trusted application capabilities, never request bodies.
@@ -500,141 +530,194 @@ export class LiquidityWorkflow {
   constructor(
     private readonly db: Database,
     private readonly mapProposal: (row: unknown) => ActionProposal,
+    private readonly governance: SpaceGovernance,
   ) {}
 
-  private member(actorId: string, budgetId: string): { capabilities: string[] } | null {
-    const row = this.db.prepare('SELECT * FROM actor_memberships WHERE actor_id=?').get(actorId) as
-      { status: string; scope: string; capabilities: string } | undefined;
-    if (
-      !row ||
-      row.status !== 'active' ||
-      (row.scope !== '*' && row.scope !== `budget:${budgetId}`)
-    )
-      return null;
-    return { capabilities: JSON.parse(row.capabilities) as string[] };
+  private principalAgent(input: LiquidityActor): string | undefined {
+    if (input.agentId) return input.agentId;
+    return input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
+      ? input.auth.actorId
+      : undefined;
   }
-  isOwner(input: LiquidityActor): boolean {
-    const row = this.db
-      .prepare('SELECT owner_user_id FROM registration_state WHERE singleton=1')
-      .get() as { owner_user_id: string | null } | undefined;
-    return (
-      row?.owner_user_id === input.actorId && this.member(input.actorId, input.budgetId) !== null
-    );
+
+  private spaceContext(input: LiquidityActor): {
+    spaceId: string;
+    membershipId: string | null;
+    governancePolicyVersion: string;
+    now: string;
+  } | null {
+    const now = input.now ?? new Date().toISOString();
+    const space = input.spaceId
+      ? this.governance.getSpace({ spaceId: input.spaceId })
+      : this.governance.getSpaceForBudget({ budgetId: input.budgetId });
+    if (!space || space.budgetId !== input.budgetId ||
+        (input.spaceId !== undefined && input.spaceId !== space.id)) return null;
+    const policy = this.governance.getPolicy({ spaceId: space.id });
+    if (!policy || (input.governancePolicyVersion !== undefined &&
+      input.governancePolicyVersion !== policy.version)) return null;
+    if (this.principalAgent(input))
+      return { spaceId: space.id, membershipId: null, governancePolicyVersion: policy.version, now };
+    const membership = this.governance.getCurrentMembership({
+      spaceId: space.id,
+      actorId: input.actorId,
+      now,
+    });
+    if (!membership || (input.membershipId !== undefined && input.membershipId !== membership.id)) return null;
+    return { spaceId: space.id, membershipId: membership.id, governancePolicyVersion: policy.version, now };
   }
-  /** Trusted provisioning primitive, like upsertActorMembership; HTTP uses manageResourceGrant. */
+  private currentMemberContext(input: LiquidityActor): {
+    spaceId: string;
+    membershipId: string;
+    governancePolicyVersion: string;
+    now: string;
+  } | null {
+    const context = this.spaceContext(input);
+    return context?.membershipId
+      ? { ...context, membershipId: context.membershipId }
+      : null;
+  }
+
+
+
+  /** Trusted fixture/bootstrap path; transport management uses governance.setResourceGrant. */
   setResourceGrant(input: ResourceGrant): void {
     time(input.now);
-    if (
-      input.capability === 'full-read' &&
-      (input.resourceKind !== 'budget' || input.resourceId !== input.budgetId)
-    )
+    if (input.capability === 'full-read' &&
+        (input.resourceKind !== 'budget' || input.resourceId !== input.budgetId))
       throw new Error('Full-read is a selected-budget-only resource capability');
-    this.db
-      .prepare(
-        'INSERT INTO resource_grants VALUES (@actorId,@budgetId,@capability,@resourceKind,@resourceId,@granted,@now) ON CONFLICT(actor_id,budget_id,capability,resource_kind,resource_id) DO UPDATE SET granted=excluded.granted,updated_at=excluded.updated_at',
-      )
-      .run({ ...input, granted: input.granted ? 1 : 0 });
+    const context = this.spaceContext(input);
+    if (!context?.membershipId) throw new Error('Current governed membership unavailable');
+    this.governance.provisionResourceGrant({
+      spaceId: context.spaceId,
+      actorId: input.actorId,
+      budgetId: input.budgetId,
+      membershipId: input.membershipId ?? context.membershipId,
+      capability: input.capability,
+      resourceKind: input.resourceKind,
+      resourceId: input.resourceId,
+      granted: input.granted,
+      restrictions: input.restrictions,
+      now: input.now,
+    });
   }
-  manageResourceGrant(input: ResourceGrant & { managerId: string }): void {
-    if (!this.isOwner({ actorId: input.managerId, budgetId: input.budgetId }))
-      throw new Error('Resource authorization denied');
-    this.db
-      .transaction(() => {
-        if (!this.isOwner({ actorId: input.managerId, budgetId: input.budgetId }))
-          throw new Error('Resource authorization denied');
-        const target = this.member(input.actorId, input.budgetId);
-        if (!target) throw new Error('Target membership unavailable');
-        if (input.granted && !target.capabilities.includes(`liquidity:${input.capability}`))
-          this.db
-            .prepare('UPDATE actor_memberships SET capabilities=? WHERE actor_id=?')
-            .run(
-              JSON.stringify([...target.capabilities, `liquidity:${input.capability}`]),
-              input.actorId,
-            );
-        this.setResourceGrant(input);
-        this.audit(
-          { actorId: input.managerId, budgetId: input.budgetId },
-          'resource_grant_changed',
-          null,
-          input.now,
-          null,
-        );
-      })
-      .immediate();
+
+  /** Manages one scoped grant after fresh human-session authorization. */
+  manageResourceGrant(input: ResourceGrant & {
+    managerId: string;
+    auth: HumanControlContext;
+  }): void {
+    if (input.managerId !== input.auth.actorId) throw new Error('Resource authorization denied');
+    const target = this.spaceContext({
+      actorId: input.actorId,
+      budgetId: input.budgetId,
+      ...(input.spaceId === undefined ? {} : { spaceId: input.spaceId }),
+      ...(input.membershipId === undefined ? {} : { membershipId: input.membershipId }),
+      now: input.now,
+    });
+    if (!target?.membershipId) throw new Error('Target membership unavailable');
+    this.governance.setResourceGrant({
+      spaceId: target.spaceId,
+      actorId: input.actorId,
+      budgetId: input.budgetId,
+      membershipId: input.membershipId ?? target.membershipId,
+      capability: input.capability,
+      resourceKind: input.resourceKind,
+      resourceId: input.resourceId,
+      granted: input.granted,
+      restrictions: input.restrictions,
+      now: input.now,
+      auth: input.auth,
+    });
   }
-  /** Explicit registered-owner setup; invited observe-only users never inherit resource access. */
-  provisionOwnerAccess(input: LiquidityActor & { resources: ResourceRef[]; now: string }): void {
-    if (!this.isOwner(input)) throw new Error('Owner authorization denied');
-    time(input.now);
-    this.db
-      .transaction(() => {
-        if (!this.isOwner(input)) throw new Error('Owner authorization denied');
-        const member = this.member(input.actorId, input.budgetId)!;
-        const initialized = this.db
-          .prepare('SELECT 1 FROM resource_grants WHERE actor_id=? AND budget_id=? LIMIT 1')
-          .get(input.actorId, input.budgetId);
-        if (!initialized)
-          this.db
-            .prepare('UPDATE actor_memberships SET capabilities=? WHERE actor_id=?')
-            .run(
-              JSON.stringify([
-                ...new Set([...member.capabilities, ...capabilities.map((c) => `liquidity:${c}`)]),
-              ]),
-              input.actorId,
-            );
-        const insert = this.db.prepare(
-          'INSERT INTO resource_grants VALUES (@actorId,@budgetId,@capability,@resourceKind,@resourceId,@granted,@now) ON CONFLICT(actor_id,budget_id,capability,resource_kind,resource_id) DO NOTHING',
-        );
-        let added = 0;
-        for (const resource of [
-          { resourceKind: 'budget' as const, resourceId: input.budgetId },
-          ...input.resources,
-        ])
-          for (const capability of capabilities) {
-            if (
-              capability !== 'full-read' ||
-              (resource.resourceKind === 'budget' && resource.resourceId === input.budgetId)
-            )
-              added += insert.run({ ...input, ...resource, capability, granted: 1 }).changes;
-          }
-        if (added > 0) this.audit(input, 'owner_liquidity_provisioned', null, input.now, null);
-      })
-      .immediate();
+
+  /** Evaluates an exact resource through the shared current-space policy and grant authority. */
+  isAuthorized(input: LiquidityActor & ResourceRef & {
+    capability: ResourceCapability;
+    operation?: string;
+    phase?: 'read' | 'propose' | 'approve' | 'execute';
+    visibility?: 'aggregate' | 'resource';
+    operations?: readonly GovernanceOperation[];
+    resources?: readonly GovernanceResourceRef[];
+    verifiedHumanApproval?: true;
+  }): boolean {
+    if (input.auth && input.auth.actorId !== input.actorId) return false;
+    const context = this.spaceContext(input);
+    const agentId = this.principalAgent(input);
+    if (!context || (!agentId && !context.membershipId)) return false;
+    const space = this.governance.getSpace({ spaceId: context.spaceId });
+    const policy = space && this.governance.getPolicy({ spaceId: space.id });
+    if (!space || !policy) return false;
+    const phase = input.phase ?? (
+      input.capability === 'approval' ? 'approve'
+        : input.capability === 'proposal' || input.capability.endsWith('.propose') ? 'propose'
+          : input.capability === 'confirmation' || input.capability === 'initiation-report' ? 'execute'
+            : 'read'
+    );
+    const delegationId = input.delegationId ??
+      (input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
+        ? input.auth.delegationId
+        : undefined);
+    const delegationVersion = input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
+      ? input.auth.delegationVersion
+      : undefined;
+    const authorization = this.governance.authorize({
+      actorId: input.actorId,
+      spaceId: context.spaceId,
+      ...(input.membershipId ?? context.membershipId
+        ? { membershipId: input.membershipId ?? context.membershipId! }
+        : {}),
+      expectedPolicyVersion: input.governancePolicyVersion ?? policy.version,
+      phase,
+      operation: input.operation ?? input.capability,
+      required: [{
+        capability: input.capability,
+        resourceKind: input.resourceKind,
+        resourceId: input.resourceId,
+        ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
+      }],
+      payload: {
+        operations: input.operations ?? [],
+        ...(input.resources === undefined ? {} : { resources: input.resources }),
+      },
+      now: context.now,
+      ...(agentId === undefined ? {} : { agentId }),
+      ...(delegationId === undefined ? {} : { delegationId }),
+      ...(delegationVersion === undefined ? {} : { delegationVersion }),
+      ...(input.auth === undefined ? {} : { auth: input.auth }),
+      ...(input.verifiedHumanApproval === true ? { verifiedHumanApproval: true } : {}),
+    });
+    return authorization.allowed &&
+      (phase !== 'execute' || authorization.disposition.kind === 'authorized_without_approval');
   }
-  isAuthorized(input: LiquidityActor & ResourceRef & { capability: ResourceCapability }): boolean {
-    const member = this.member(input.actorId, input.budgetId);
-    if (!member?.capabilities.includes(`liquidity:${input.capability}`)) return false;
-    if (
-      input.capability === 'full-read' &&
-      (input.resourceKind !== 'budget' ||
-        input.resourceId !== input.budgetId ||
-        !member.capabilities.includes('observe'))
-    )
-      return false;
-    const row = this.db
-      .prepare(
-        'SELECT granted FROM resource_grants WHERE actor_id=@actorId AND budget_id=@budgetId AND capability=@capability AND resource_kind=@resourceKind AND resource_id=@resourceId',
-      )
-      .get(input) as { granted: number } | undefined;
-    return row?.granted === 1;
-  }
-  requireResource(input: LiquidityActor & ResourceRef & { capability: ResourceCapability }): void {
+
+  /** Throws unless the exact space membership and scoped resource grant are current. */
+  requireResource(input: LiquidityActor & ResourceRef & {
+    capability: ResourceCapability;
+    operation?: string;
+    phase?: 'read' | 'propose' | 'approve' | 'execute';
+    visibility?: 'aggregate' | 'resource';
+    operations?: readonly GovernanceOperation[];
+  }): void {
     if (!this.isAuthorized(input)) throw new Error('Resource authorization denied');
   }
-  /** Sensitive server-only input loading; public callers must use an allowlisted projector. */
+
+  /** Loads trusted server-only state after current resource or aggregate conclusion admission. */
   loadEvaluationState(input: LiquidityActor & { now: string }): {
     policy: LiquidityPolicyRecord | null;
     supplemental: SupplementalFactsRecord | null;
     claimSet: LiquidityClaimSet;
     priorAllocation: { sequence: number; allocation: BackingAllocation } | null;
   } {
-    const member = this.member(input.actorId, input.budgetId);
-    const conclusion = this.db
-      .prepare(
-        "SELECT 1 FROM resource_grants WHERE actor_id=? AND budget_id=? AND capability='conclusion' AND granted=1 LIMIT 1",
-      )
-      .get(input.actorId, input.budgetId);
-    if (!member?.capabilities.includes('liquidity:conclusion') || !conclusion)
+    const conclusion = {
+      ...input,
+      resourceKind: 'budget' as const,
+      resourceId: input.budgetId,
+      capability: 'conclusion' as const,
+    };
+    if (
+      !this.isAuthorized({ ...conclusion, visibility: 'resource' }) &&
+      !this.isAuthorized({ ...conclusion, visibility: 'aggregate' })
+    )
       throw new Error('Resource authorization denied');
     return this.db
       .transaction(() => {
@@ -642,12 +725,10 @@ export class LiquidityWorkflow {
         try {
           policy = this.currentPolicy(input.budgetId);
         } catch {
-          /* Absent policy is a setup state. */
+          /* Absent financial policy remains a setup state, not an authorization bypass. */
         }
         const facts = this.db
-          .prepare(
-            'SELECT * FROM liquidity_supplemental_facts WHERE budget_id=? ORDER BY version DESC LIMIT 1',
-          )
+          .prepare('SELECT * FROM liquidity_supplemental_facts WHERE budget_id=? ORDER BY version DESC LIMIT 1')
           .get(input.budgetId) as
           | {
               version: number;
@@ -655,19 +736,28 @@ export class LiquidityWorkflow {
               actor_id: string;
               expires_at: string;
               created_at: string;
+              space_id: string | null;
+              membership_id: string | null;
             }
           | undefined;
+        const factsMembership = facts?.space_id && facts.membership_id
+          ? this.governance.getCurrentMembership({
+              spaceId: facts.space_id,
+              actorId: facts.actor_id,
+              now: input.now,
+            })
+          : null;
         const allocation = this.db
-          .prepare(
-            'SELECT sequence,allocation FROM liquidity_allocations WHERE budget_id=? ORDER BY sequence DESC LIMIT 1',
-          )
+          .prepare('SELECT sequence,allocation FROM liquidity_allocations WHERE budget_id=? ORDER BY sequence DESC LIMIT 1')
           .get(input.budgetId) as { sequence: number; allocation: string } | undefined;
         return {
           policy,
-          supplemental: facts
+          supplemental: facts && factsMembership?.id === facts.membership_id
             ? {
                 actorId: facts.actor_id,
                 budgetId: input.budgetId,
+                spaceId: facts.space_id!,
+                membershipId: facts.membership_id!,
                 version: facts.version,
                 observations: JSON.parse(facts.facts),
                 expiresAt: facts.expires_at,
@@ -676,51 +766,45 @@ export class LiquidityWorkflow {
             : null,
           claimSet: this.claimSet(input.budgetId, input.now, input.actorId),
           priorAllocation: allocation
-            ? {
-                sequence: allocation.sequence,
-                allocation: JSON.parse(allocation.allocation) as BackingAllocation,
-              }
+            ? { sequence: allocation.sequence, allocation: JSON.parse(allocation.allocation) as BackingAllocation }
             : null,
         };
       })
       .immediate();
   }
-  /** Owner-governed catalog contains workflow membership only, never authentication records. */
+
+  /** Lists active space members and grant history for a caller with grant-management authority. */
   getResourceGrantCatalog(input: LiquidityActor): {
     members: { actorId: string }[];
     grants: Omit<ResourceGrant, 'budgetId' | 'now'>[];
   } {
-    if (!this.isOwner(input)) throw new Error('Owner authorization denied');
-    const members = (
-      this.db
-        .prepare(
-          "SELECT actor_id FROM actor_memberships WHERE status='active' AND (scope='*' OR scope=?) ORDER BY actor_id",
-        )
-        .all(`budget:${input.budgetId}`) as { actor_id: string }[]
-    ).map((row) => ({ actorId: row.actor_id }));
-    const active = new Set(members.map((member) => member.actorId));
-    const rows = this.db
-      .prepare(
-        'SELECT * FROM resource_grants WHERE budget_id=? ORDER BY actor_id,resource_kind,resource_id,capability',
-      )
-      .all(input.budgetId) as {
-      actor_id: string;
-      resource_kind: ResourceRef['resourceKind'];
-      resource_id: string;
-      capability: ResourceCapability;
-      granted: number;
-    }[];
+    const context = this.spaceContext(input);
+    const space = context && this.governance.getSpace({ spaceId: context.spaceId });
+    if (!space || !this.isAuthorized({
+      ...input,
+      spaceId: space.id,
+      resourceKind: 'space',
+      resourceId: space.id,
+      capability: 'grant:manage',
+      operation: 'grant:manage',
+    })) throw new Error('Grant management authorization denied');
+    const membersByActor: Record<string, { actorId: string }> = {};
+    for (const period of this.governance.listMembershipHistory({ spaceId: space.id })) {
+      if (this.governance.getCurrentMembership({ spaceId: space.id, actorId: period.actorId, now: context.now })?.id === period.id)
+        membersByActor[period.actorId] = { actorId: period.actorId };
+    }
     return {
-      members,
-      grants: rows
-        .filter((row) => active.has(row.actor_id))
-        .map((row) => ({
-          actorId: row.actor_id,
-          resourceKind: row.resource_kind,
-          resourceId: row.resource_id,
-          capability: row.capability,
-          granted: row.granted === 1,
-        })),
+      members: Object.values(membersByActor),
+      grants: this.governance.listResourceGrants({ spaceId: space.id }).map((grant) => ({
+        spaceId: grant.spaceId,
+        membershipId: grant.membershipId ?? undefined,
+        actorId: grant.actorId,
+        resourceKind: grant.resourceKind,
+        resourceId: grant.resourceId,
+        capability: grant.capability as ResourceCapability,
+        granted: grant.granted,
+        restrictions: grant.restrictions,
+      })),
     };
   }
   private budget(input: LiquidityActor, capability: ResourceCapability): void {
@@ -732,10 +816,17 @@ export class LiquidityWorkflow {
     });
   }
   private resources(plan: TransferPlan): ResourceRef[] {
-    const resources: ResourceRef[] = plan.legs.flatMap((l) => [
-      { resourceKind: 'account' as const, resourceId: l.sourceAccountId },
-      { resourceKind: 'account' as const, resourceId: l.destinationAccountId },
+    const resources: ResourceRef[] = plan.legs.flatMap((leg) => [
+      { resourceKind: 'account', resourceId: leg.sourceAccountId },
+      { resourceKind: 'account', resourceId: leg.destinationAccountId },
+      { resourceKind: 'account', resourceId: leg.sourceBefore.accountId },
+      { resourceKind: 'account', resourceId: leg.destinationBefore.accountId },
     ]);
+    for (const line of plan.backingAfter.lines)
+      resources.push(
+        { resourceKind: 'account', resourceId: line.accountId },
+        { resourceKind: 'category', resourceId: line.categoryId },
+      );
     for (const effect of plan.reservations) {
       resources.push({
         resourceKind: effect.kind === 'category' ? 'category' : 'account',
@@ -763,22 +854,123 @@ export class LiquidityWorkflow {
         );
     return [...new Map(resources.map((r) => [r.resourceKind + ':' + r.resourceId, r])).values()];
   }
+  private authorizeGovernanceRequest(
+    input: LiquidityActor,
+    operation: string,
+    capability: ResourceCapability,
+    required: readonly {
+      readonly capability: string;
+      readonly resourceKind: ResourceRef['resourceKind'];
+      readonly resourceId: string;
+      readonly visibility?: 'aggregate' | 'resource';
+    }[],
+    operations: readonly GovernanceOperation[],
+    resources: readonly ResourceRef[],
+    verifiedHumanApproval = false,
+    phaseOverride?: 'read' | 'propose' | 'approve' | 'execute',
+  ): void {
+    const context = this.spaceContext(input);
+    if (!context) throw new Error('Resource authorization denied');
+    const phase: 'read' | 'propose' | 'approve' | 'execute' = phaseOverride ?? (
+      capability === 'approval' ? 'approve'
+        : capability === 'proposal' || capability.endsWith('.propose') ? 'propose'
+          : capability === 'confirmation' || capability === 'initiation-report' ? 'execute'
+            : 'read'
+    );
+    const agentId = this.principalAgent(input);
+    const delegationId = input.delegationId ??
+      (input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
+        ? input.auth.delegationId
+        : undefined);
+    const delegationVersion = input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
+      ? input.auth.delegationVersion
+      : undefined;
+    const authorization = this.governance.authorize({
+      actorId: input.actorId,
+      spaceId: context.spaceId,
+      ...(input.membershipId ?? context.membershipId
+        ? { membershipId: input.membershipId ?? context.membershipId! }
+        : {}),
+      expectedPolicyVersion: input.governancePolicyVersion ?? context.governancePolicyVersion,
+      phase,
+      operation,
+      required,
+      payload: { operations, resources },
+      now: context.now,
+      ...(agentId === undefined ? {} : { agentId }),
+      ...(delegationId === undefined ? {} : { delegationId }),
+      ...(delegationVersion === undefined ? {} : { delegationVersion }),
+      ...(input.auth === undefined ? {} : { auth: input.auth }),
+      ...(verifiedHumanApproval ? { verifiedHumanApproval: true as const } : {}),
+    });
+    if (!authorization.allowed ||
+        (phase === 'execute' && authorization.disposition.kind !== 'authorized_without_approval'))
+      throw new Error('Resource authorization denied');
+  }
   private authorizePlan(
     input: LiquidityActor,
     plan: TransferPlan,
     capability: ResourceCapability,
+    verifiedHumanApproval = false,
+    phaseOverride?: 'read' | 'propose' | 'approve' | 'execute',
+    aggregateBudgetConclusion = false,
   ): void {
-    this.budget(input, capability);
-    for (const resource of this.resources(plan))
-      this.requireResource({ ...input, ...resource, capability });
-    if (['proposal', 'approval', 'initiation-report'].includes(capability))
+    const resources = this.resources(plan);
+    const required: {
+      capability: string;
+      resourceKind: ResourceRef['resourceKind'];
+      resourceId: string;
+      visibility?: 'aggregate';
+    }[] = aggregateBudgetConclusion
+      ? [{
+          capability,
+          resourceKind: 'budget',
+          resourceId: input.budgetId,
+          visibility: 'aggregate',
+        }]
+      : [{ capability, resourceKind: 'budget', resourceId: input.budgetId }];
+    if (!aggregateBudgetConclusion)
+      for (const resource of resources) required.push({ ...resource, capability });
+    if (['proposal', 'approval', 'initiation-report', 'liquidity'].includes(capability))
       for (const leg of plan.legs)
-        this.requireResource({
-          ...input,
+        required.push({
           capability: 'source',
           resourceKind: 'account',
           resourceId: leg.sourceAccountId,
         });
+    this.authorizeGovernanceRequest(
+      input,
+      'transfer',
+      capability,
+      required,
+      transferOperations(plan),
+      resources,
+      verifiedHumanApproval,
+      phaseOverride,
+    );
+  }
+  /** Checks current complete-plan authority; private field visibility remains independently required. */
+  isTransferPlanAuthorized(
+    input: LiquidityActor & {
+      plan: TransferPlan;
+      capability: ResourceCapability;
+      phase?: 'read' | 'propose' | 'approve' | 'execute';
+    },
+  ): boolean {
+    try {
+      this.authorizePlan(
+        input,
+        input.plan,
+        input.capability,
+        false,
+        input.phase,
+        input.capability === 'conclusion' && input.phase === 'read',
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Resource authorization denied') return false;
+      throw error;
+    }
   }
   private load(id: string): TransferProposal {
     const row = this.db.prepare('SELECT * FROM action_proposals WHERE id=?').get(id);
@@ -795,6 +987,88 @@ export class LiquidityWorkflow {
       throw new Error('Unsupported operation');
     return proposal;
   }
+  private proposalOrigin(proposalId: string, now: string): LiquidityActor | null {
+    const row = this.db.prepare(`SELECT budget_id,actor_id,space_id,requester_membership_id,
+      requester_delegation_id,requester_delegation_version,governance_policy_version
+      FROM action_proposals WHERE id=?`).get(proposalId) as {
+      budget_id: string;
+      actor_id: string;
+      space_id: string | null;
+      requester_membership_id: string | null;
+      requester_delegation_id: string | null;
+      requester_delegation_version: string | null;
+      governance_policy_version: string | null;
+    } | undefined;
+    if (!row?.space_id || !row.requester_membership_id || !row.governance_policy_version) return null;
+    const space = this.governance.getSpace({ spaceId: row.space_id });
+    if (!space || space.budgetId !== row.budget_id) return null;
+    const membership = this.governance
+      .listMembershipHistory({ spaceId: space.id })
+      .find(({ id }) => id === row.requester_membership_id);
+    if (!membership || this.governance.getCurrentMembership({
+      spaceId: space.id,
+      actorId: membership.actorId,
+      now,
+    })?.id !== membership.id || this.governance.getPolicy({ spaceId: space.id })?.version !==
+      row.governance_policy_version)
+      return null;
+    const origin: LiquidityActor = {
+      actorId: row.actor_id,
+      budgetId: row.budget_id,
+      spaceId: space.id,
+      membershipId: membership.id,
+      governancePolicyVersion: row.governance_policy_version,
+      now,
+    };
+    const hasDelegationId = row.requester_delegation_id !== null;
+    const hasDelegationVersion = row.requester_delegation_version !== null;
+    if (hasDelegationId !== hasDelegationVersion) return null;
+    if (!hasDelegationId) return membership.actorId === row.actor_id ? origin : null;
+    if (membership.actorId === row.actor_id) return null;
+    const delegation = this.governance
+      .listDelegations({ spaceId: space.id, agentId: row.actor_id })
+      .find(({ id, version }) =>
+        id === row.requester_delegation_id && version === row.requester_delegation_version);
+    const agent = this.governance.getAgent({ agentId: row.actor_id });
+    const nowMillis = Date.parse(now);
+    const validFrom = delegation ? Date.parse(delegation.validFrom) : Number.NaN;
+    const validUntil = delegation?.validUntil === null || delegation?.validUntil === undefined
+      ? null
+      : Date.parse(delegation.validUntil);
+    if (!delegation || delegation.revokedAt !== null ||
+        delegation.spaceId !== space.id || delegation.agentId !== row.actor_id ||
+        delegation.issuerActorId !== membership.actorId ||
+        delegation.issuerMembershipId !== membership.id ||
+        agent?.registeredSpaceId !== space.id || agent.status !== 'active' ||
+        !Number.isFinite(nowMillis) || !Number.isFinite(validFrom) || validFrom > nowMillis ||
+        delegation.validUntil !== null &&
+          (validUntil === null || !Number.isFinite(validUntil) || nowMillis >= validUntil))
+      return null;
+    const binding = this.governance.listCredentialBindings({ spaceId: space.id }).find((item) =>
+      item.principalType === 'agent' &&
+      item.principalId === row.actor_id &&
+      item.credentialOwnerId === membership.actorId &&
+      item.delegationId === delegation.id &&
+      item.delegationVersion === delegation.version &&
+      item.issuerMembershipId === membership.id &&
+      item.revokedAt === null);
+    if (!binding) return null;
+    return {
+      ...origin,
+      agentId: row.actor_id,
+      delegationId: delegation.id,
+      auth: {
+        method: 'api-key',
+        actorId: row.actor_id,
+        credentialId: binding.credentialId,
+        credentialOwnerId: binding.credentialOwnerId,
+        principalType: 'agent',
+        delegationId: delegation.id,
+        delegationVersion: delegation.version,
+      },
+    };
+  }
+
   private hasVerifiedSessionCompletion(budgetId: string, sessionId: string): boolean {
     return !!this.db.prepare(
       "SELECT 1 FROM action_proposals WHERE budget_id=? AND operation='session_completion' AND json_extract(payload,'$.sessionId')=? AND json_extract(state,'$.phase')='verified' LIMIT 1",
@@ -804,16 +1078,52 @@ export class LiquidityWorkflow {
     input: LiquidityActor,
     payload: SessionCompletionPayload,
     capability: ResourceCapability,
+    verifiedHumanApproval = false,
+    phaseOverride?: 'read' | 'propose' | 'approve' | 'execute',
   ): void {
-    this.budget(input, capability);
-    for (const resource of completionResourceRefs(payload)) {
-      this.requireResource({
-        ...input,
+    const resources = completionResourceRefs(payload);
+    const required: {
+      capability: string;
+      resourceKind: ResourceRef['resourceKind'];
+      resourceId: string;
+    }[] = [{ capability, resourceKind: 'budget', resourceId: input.budgetId }];
+    for (const resource of resources) {
+      required.push({
         ...resource,
-        capability: resource.resourceKind === 'account' ? 'liquidity' : 'category',
+        capability: 'liquidity',
       });
-      this.requireResource({ ...input, ...resource, capability });
+      required.push({ ...resource, capability });
     }
+    this.authorizeGovernanceRequest(
+      input,
+      'session_completion',
+      capability,
+      required,
+      completionOperations(payload),
+      resources,
+      verifiedHumanApproval,
+      phaseOverride,
+    );
+  }
+  private requireHumanReconciliation(input: LiquidityActor & { now: string }): void {
+    const auth = input.auth;
+    const nowMillis = Date.parse(input.now);
+    const reauthenticatedAt = auth?.method === 'human-session'
+      ? Date.parse(auth.reauthenticatedAt)
+      : Number.NaN;
+    if (
+      !auth ||
+      auth.method !== 'human-session' ||
+      auth.actorId !== input.actorId ||
+      !auth.sessionId.trim() ||
+      input.agentId !== undefined ||
+      input.delegationId !== undefined ||
+      !Number.isFinite(nowMillis) ||
+      !Number.isFinite(reauthenticatedAt) ||
+      reauthenticatedAt > nowMillis ||
+      nowMillis - reauthenticatedAt > 300_000
+    )
+      throw new Error('Current human reconciliation required');
   }
   private completionSession(
     input: LiquidityActor,
@@ -824,11 +1134,26 @@ export class LiquidityWorkflow {
     allowChanged = false,
   ): SpendSession {
     const row = this.db
-      .prepare('SELECT record FROM spend_sessions WHERE budget_id=? AND id=?')
-      .get(input.budgetId, payload.sessionId) as { record: string } | undefined;
+      .prepare('SELECT * FROM spend_sessions WHERE budget_id=? AND id=?')
+      .get(input.budgetId, payload.sessionId) as
+      { record: string; space_id: string | null; membership_id: string | null } | undefined;
     if (!row) throw new Error('Session unavailable');
     const stored = sessionObject(JSON.parse(row.record));
     const session = normalizeSpendSession(stored);
+    if (row.space_id === null || row.membership_id === null) {
+      if (!allowChanged) throw new Error('Session membership provenance unavailable');
+    } else if (stored.spaceId !== row.space_id || stored.membershipId !== row.membership_id) {
+      throw new Error('Session membership provenance mismatch');
+    } else if (!allowChanged && this.governance.getCurrentMembership({
+      spaceId: row.space_id,
+      actorId: session.actorId,
+      now,
+    })?.id !== row.membership_id) {
+      throw new Error('Session membership is no longer current');
+    }
+    if (!allowChanged && session.governancePolicyVersion !==
+        this.governance.getPolicy({ spaceId: session.spaceId })?.version)
+      throw new Error('Session governance policy version is no longer current');
     if (requireOwner && session.actorId !== input.actorId)
       throw new Error('Session authorization denied');
     if (!allowChanged && session.version !== payload.sessionVersion)
@@ -846,57 +1171,156 @@ export class LiquidityWorkflow {
   private completionCommand(
     input: SessionCompletionCommand,
     capability: ResourceCapability,
+    verifiedHumanApproval = false,
   ): { proposal: SessionCompletionProposal; session: SpendSession } {
     const proposal = this.loadCompletion(input.proposalId);
     if (proposal.budgetId !== input.budgetId) throw new Error('Resource authorization denied');
     if (proposal.payloadHash !== input.payloadHash) throw new Error('Payload hash mismatch');
     validateCompletionPayload(proposal.payload, input.now);
-    this.authorizeCompletion(input, proposal.payload, capability);
+    if (['proposed', 'approved'].includes(proposal.state.phase)) {
+      const origin = this.proposalOrigin(proposal.id, input.now);
+      if (!origin) throw new Error('Pending proposal provenance is no longer current');
+      this.authorizeCompletion(origin, proposal.payload, 'proposal', false, 'propose');
+    }
+    this.authorizeCompletion(input, proposal.payload, capability, verifiedHumanApproval);
     const session = this.completionSession(input, proposal.payload, input.now);
     return { proposal, session };
   }
   private completionApprovals(
     proposal: SessionCompletionProposal,
     now: string,
-  ): { id: string }[] {
+    includeConsumed = false,
+  ): EligibleHumanApproval[] {
+    if (!proposal.spaceId || !proposal.governancePolicyVersion) return [];
     const rows = this.db
-      .prepare(
-        "SELECT id,actor_id,status,expires_at FROM proposal_approvals WHERE proposal_id=? AND payload_hash=? AND status='active' AND consumed_at IS NULL AND superseded_at IS NULL AND expires_at>?",
-      )
+      .prepare(includeConsumed
+        ? "SELECT id,actor_id,status,expires_at,created_at,issuer_membership_id,governance_policy_version,reauthenticated_session_id,reauthenticated_at FROM proposal_approvals WHERE proposal_id=? AND payload_hash=? AND superseded_at IS NULL AND ((status='active' AND consumed_at IS NULL AND expires_at>?) OR (status='consumed' AND consumed_at IS NOT NULL)) ORDER BY created_at DESC,id"
+        : "SELECT id,actor_id,status,expires_at,created_at,issuer_membership_id,governance_policy_version,reauthenticated_session_id,reauthenticated_at FROM proposal_approvals WHERE proposal_id=? AND payload_hash=? AND status='active' AND consumed_at IS NULL AND superseded_at IS NULL AND expires_at>? ORDER BY created_at DESC,id")
       .all(proposal.id, proposal.payloadHash, now) as {
       id: string;
       actor_id: string;
       status: string;
       expires_at: string;
+      created_at: string;
+      issuer_membership_id: string | null;
+      governance_policy_version: string | null;
+      reauthenticated_session_id: string | null;
+      reauthenticated_at: string | null;
     }[];
-    return rows.filter((row) => {
+    const accepted: EligibleHumanApproval[] = [];
+    const actors = new Set<string>();
+    for (const row of rows) {
+      if (row.actor_id === proposal.actorId || actors.has(row.actor_id) || !row.issuer_membership_id ||
+          row.governance_policy_version !== proposal.governancePolicyVersion ||
+          !row.reauthenticated_session_id || !row.reauthenticated_at) continue;
+      const membership = this.governance.getCurrentMembership({
+        spaceId: proposal.spaceId,
+        actorId: row.actor_id,
+        now,
+      });
+      if (membership?.id !== row.issuer_membership_id) continue;
+      const auth: HumanControlContext = {
+        method: 'human-session',
+        actorId: row.actor_id,
+        sessionId: row.reauthenticated_session_id,
+        reauthenticatedAt: row.reauthenticated_at,
+      };
+      const historical: LiquidityActor = {
+        actorId: row.actor_id,
+        budgetId: proposal.budgetId,
+        spaceId: proposal.spaceId,
+        membershipId: row.issuer_membership_id,
+        governancePolicyVersion: row.governance_policy_version,
+        now: row.created_at,
+        auth,
+      };
+      const current = { ...historical, now };
       try {
-        this.authorizeCompletion(
-          { actorId: row.actor_id, budgetId: proposal.budgetId },
-          proposal.payload,
-          'approval',
-        );
-        this.completionSession(
-          { actorId: row.actor_id, budgetId: proposal.budgetId },
-          proposal.payload, now, true,
-        );
-        return true;
+        this.authorizeCompletion(historical, proposal.payload, 'approval');
+        this.authorizeCompletion(current, proposal.payload, 'approval', false, 'read');
+        this.completionSession(current, proposal.payload, now, true);
+        actors.add(row.actor_id);
+        accepted.push({
+          id: row.id,
+          approval: {
+            actorId: row.actor_id,
+            issuedAt: row.created_at,
+            expiresAt: row.expires_at,
+          },
+        });
       } catch {
-        return false;
+        // A stored approval is current only while its exact member and grants remain current.
       }
-    });
+    }
+    return accepted;
   }
-  private completionRequiredApprovals(proposal: SessionCompletionProposal): number {
+  private governanceRequiredApprovers(
+    actorId: string,
+    spaceId: string,
+    budgetId: string,
+    operation: string,
+    operations: readonly GovernanceOperation[],
+    resources: readonly ResourceRef[],
+    now: string,
+  ): number {
+    const policy = this.governance.getPolicy({ spaceId });
+    if (!policy) throw new Error('Governance policy unavailable');
+    const required = [
+      { capability: 'approval', resourceKind: 'budget' as const, resourceId: budgetId },
+      ...resources.map((resource) => ({ ...resource, capability: 'approval' })),
+    ];
+    return this.governance.authorize({
+      actorId,
+      spaceId,
+      expectedPolicyVersion: policy.version,
+      phase: 'read',
+      operation,
+      required,
+      payload: { operations, resources },
+      now,
+    }).requiredApprovers;
+  }
+  private humanApprovalProvenance(input: LiquidityActor): {
+    spaceId: string;
+    membershipId: string;
+    governancePolicyVersion: string;
+    reauthenticatedSessionId: string;
+    reauthenticatedAt: string;
+  } {
+    const context = this.currentMemberContext(input);
+    const auth = input.auth;
+    if (!context || !auth || auth.method !== 'human-session' || auth.actorId !== input.actorId)
+      throw new Error('Human approval provenance unavailable');
+    return {
+      spaceId: context.spaceId,
+      membershipId: context.membershipId,
+      governancePolicyVersion: context.governancePolicyVersion,
+      reauthenticatedSessionId: auth.sessionId,
+      reauthenticatedAt: auth.reauthenticatedAt,
+    };
+  }
+  private completionRequiredApprovals(proposal: SessionCompletionProposal, now: string): number {
     const count = this.currentPolicy(proposal.budgetId).approvalPolicy.minimumApprovers;
     if (!Number.isInteger(count) || count < 1) throw new Error('Invalid approval policy');
-    return count;
+    if (!proposal.spaceId) throw new Error('Governance policy unavailable');
+    return Math.max(count, this.governanceRequiredApprovers(
+      proposal.actorId,
+      proposal.spaceId,
+      proposal.budgetId,
+      'session_completion',
+      completionOperations(proposal.payload),
+      completionResourceRefs(proposal.payload),
+      now,
+    ));
   }
   private completionView(
     input: LiquidityActor & { proposalId: string; now?: string },
   ): SessionCompletionProposalView {
     const proposal = this.loadCompletion(input.proposalId);
     if (proposal.budgetId !== input.budgetId) throw new Error('Resource authorization denied');
-    validateCompletionPayload(proposal.payload, input.now ?? proposal.createdAt);
+    if (['proposed', 'approved'].includes(proposal.state.phase) &&
+        !this.proposalOrigin(proposal.id, input.now ?? new Date().toISOString()))
+      throw new Error('Pending proposal provenance is no longer current');
     this.authorizeCompletion(input, proposal.payload, 'proposal');
     this.completionSession(input, proposal.payload, input.now ?? proposal.createdAt, true, false, true);
     const all = this.db
@@ -945,7 +1369,8 @@ export class LiquidityWorkflow {
       ...proposal,
       approvalId: active[0]?.id ?? null,
       approvalCount: active.length,
-      requiredApprovals: this.completionRequiredApprovals(proposal),
+      requiredApprovals: this.completionRequiredApprovals(proposal, now),
+      approvers: currentHumanApprovers(active),
       approvalStatus,
       manualTransactionId: proposal.state.phase === 'verified'
         ? proposal.payload.manualInput.parentId
@@ -1064,11 +1489,56 @@ export class LiquidityWorkflow {
         this.closeCompletion(proposal, 'superseded', now);
     }
   }
+  private scopedTransferIntent(input: LiquidityActor & { proposalId: string }): TransferProposal {
+    if (!this.spaceContext(input)) throw new Error('Resource authorization denied');
+    const proposal = this.load(input.proposalId);
+    if (proposal.budgetId !== input.budgetId) throw new Error('Resource authorization denied');
+    if (!['initiated', 'confirmed', 'closed'].includes(proposal.state.phase) &&
+        !this.proposalOrigin(proposal.id, input.now ?? new Date().toISOString()))
+      throw new Error('Pending proposal provenance is no longer current');
+    return proposal;
+  }
+  /** Returns a server-owned intent for an exact authorized operation or conclusion; project independent private reads before disclosure. */
+  getTransferProposalIntent(input: LiquidityActor & {
+    proposalId: string;
+    capability: 'proposal' | 'approval' | 'initiation-report' | 'confirmation' | 'conclusion';
+  }): TransferProposal {
+    const proposal = this.scopedTransferIntent(input);
+    this.authorizePlan(
+      input,
+      proposal.payload.plan,
+      input.capability,
+      false,
+      input.capability === 'proposal' ? 'propose' : 'read',
+      input.capability === 'conclusion',
+    );
+    return proposal;
+  }
+  /** Lists exact authorized server-owned intents; raw financial fields are not a public read projection. */
+  listTransferProposalIntents(input: LiquidityActor & {
+    capability: 'proposal' | 'approval' | 'initiation-report' | 'confirmation' | 'conclusion';
+  }): TransferProposal[] {
+    this.requireResource({
+      ...input,
+      resourceKind: 'budget',
+      resourceId: input.budgetId,
+      capability: input.capability,
+      operation: 'transfer',
+      phase: input.capability === 'proposal' ? 'propose' : 'read',
+      ...(input.capability === 'conclusion' ? { visibility: 'aggregate' as const } : {}),
+    });
+    const rows = this.db.prepare(
+      "SELECT id FROM action_proposals WHERE budget_id=? AND operation='transfer' ORDER BY created_at DESC,id",
+    ).all(input.budgetId) as { id: string }[];
+    return rows.flatMap(({ id }) => {
+      try { return [this.getTransferProposalIntent({ ...input, proposalId: id })]; }
+      catch { return []; }
+    });
+  }
   getTransferProposal(input: LiquidityActor & { proposalId: string }): TransferProposal {
-    this.budget(input, 'proposal');
-    const p = this.load(input.proposalId);
-    if (p.budgetId !== input.budgetId) throw new Error('Resource authorization denied');
-    this.authorizePlan(input, p.payload.plan, 'proposal');
+    this.budget(input, 'liquidity');
+    const p = this.scopedTransferIntent(input);
+    this.authorizePlan(input, p.payload.plan, 'liquidity', false, 'read');
     const projectionResources = [
       ...this.resources(p.payload.plan),
       ...p.payload.plan.backingAfter.lines.flatMap((line) => [
@@ -1083,7 +1553,7 @@ export class LiquidityWorkflow {
     return p;
   }
   listTransferProposals(input: LiquidityActor): TransferProposal[] {
-    this.budget(input, 'proposal');
+    this.budget(input, 'liquidity');
     return (
       this.db
         .prepare(
@@ -1176,9 +1646,13 @@ export class LiquidityWorkflow {
           input.claim.expiresAt,
         ].sort((left, right) => Date.parse(left) - Date.parse(right))[0]!;
         const payload = structuredClone(input.payload);
+        const context = this.currentMemberContext(input);
+        if (!context) throw new Error('Current human membership unavailable');
+        const governancePolicyVersion = this.currentPolicy(input.budgetId).governancePolicyVersion;
+        if (!governancePolicyVersion) throw new Error('Governance policy unavailable');
         this.db
           .prepare(
-            "INSERT INTO action_proposals (id,operation,budget_id,payload_hash,policy_version,preconditions,expires_at,actor_id,provenance,provider_model,correlation_id,superseded_at,created_at,payload,version,state) VALUES (?,'session_completion',?,?,?,?,?,?,'human',NULL,?,NULL,?,?,1,?)",
+            "INSERT INTO action_proposals (id,operation,budget_id,payload_hash,policy_version,preconditions,expires_at,actor_id,provenance,provider_model,correlation_id,superseded_at,created_at,payload,version,state,space_id,requester_membership_id,governance_policy_version) VALUES (?,'session_completion',?,?,?,?,?,?,'human',NULL,?,NULL,?,?,1,?,?,?,?)",
           )
           .run(
             id,
@@ -1196,6 +1670,9 @@ export class LiquidityWorkflow {
             input.now,
             JSON.stringify(payload),
             JSON.stringify(completionState()),
+            context.spaceId,
+            context.membershipId,
+            governancePolicyVersion,
           );
         this.validate(
           input,
@@ -1267,9 +1744,10 @@ export class LiquidityWorkflow {
             staleError: error instanceof Error ? error.message : 'Completion validation failed',
           };
         }
+        const proof = this.humanApprovalProvenance(input);
         this.db
           .prepare(
-            "INSERT INTO proposal_approvals (id,proposal_id,payload_hash,actor_id,status,expires_at,consumed_at,superseded_at,created_at,proposal_version) VALUES (?,?,?,?,'active',?,NULL,NULL,?,?)",
+            "INSERT INTO proposal_approvals (id,proposal_id,payload_hash,actor_id,status,expires_at,consumed_at,superseded_at,created_at,proposal_version,issuer_membership_id,governance_policy_version,reauthenticated_session_id,reauthenticated_at) VALUES (?,?,?,?,'active',?,NULL,NULL,?,?,?,?,?,?)",
           )
           .run(
             randomUUID(),
@@ -1279,10 +1757,14 @@ export class LiquidityWorkflow {
             proposal.expiresAt,
             input.now,
             proposal.version,
+            proof.membershipId,
+            proof.governancePolicyVersion,
+            proof.reauthenticatedSessionId,
+            proof.reauthenticatedAt,
           );
         const phase =
           this.completionApprovals(proposal, input.now).length >=
-          this.completionRequiredApprovals(proposal)
+          this.completionRequiredApprovals(proposal, input.now)
             ? 'approved'
             : 'proposed';
         const updated = this.updateCompletion(proposal, completionState(phase), input.now);
@@ -1305,8 +1787,15 @@ export class LiquidityWorkflow {
   ): SessionCompletionWriteIntentResult {
     const outcome = this.db
       .transaction(() => {
-        const { proposal, session } = this.completionCommand(input, 'initiation-report');
-        this.authorizeCompletion(input, proposal.payload, 'confirmation');
+        const candidate = this.loadCompletion(input.proposalId);
+        if (candidate.budgetId !== input.budgetId) throw new Error('Resource authorization denied');
+        if (!['approved', 'write_intent', 'verified', 'review_required'].includes(candidate.state.phase))
+          throw new Error('Current approval required');
+        if (this.completionApprovals(candidate, input.now, true).length <
+            this.completionRequiredApprovals(candidate, input.now))
+          throw new Error('Current authorized approvals required');
+        const { proposal, session } = this.completionCommand(input, 'initiation-report', true);
+        this.authorizeCompletion(input, proposal.payload, 'confirmation', true);
         const replay = this.replay<SessionCompletionWriteIntentResult>(
           input,
           'session_completion:begin_write',
@@ -1344,7 +1833,7 @@ export class LiquidityWorkflow {
         validateCompletionCooldown(proposal.payload, policy, input.now, false);
         if (
           this.completionApprovals(proposal, input.now).length <
-          this.completionRequiredApprovals(proposal)
+          this.completionRequiredApprovals(proposal, input.now)
         )
           throw new Error('Current authorized approvals required');
         try {
@@ -1417,7 +1906,8 @@ export class LiquidityWorkflow {
         if (proposal.payloadHash !== input.payloadHash)
           throw new Error('Payload hash mismatch');
         validateCompletionPayload(proposal.payload, input.now);
-        this.authorizeCompletion(input, proposal.payload, 'confirmation');
+        this.requireHumanReconciliation(input);
+        this.authorizeCompletion(input, proposal.payload, 'confirmation', false, 'read');
         this.completionSession(input, proposal.payload, input.now, true, false, true);
         const replay = this.replay<SessionCompletionProposalView>(
           input,
@@ -1437,12 +1927,19 @@ export class LiquidityWorkflow {
           throw new Error('Write intent unavailable');
         const write = this.db
           .prepare(
-            'SELECT status FROM session_completion_writes WHERE budget_id=? AND proposal_id=? AND payload_hash=?',
+            'SELECT status,intent_id,parent_id,correlation_id FROM session_completion_writes WHERE budget_id=? AND proposal_id=? AND payload_hash=?',
           )
           .get(input.budgetId, proposal.id, proposal.payloadHash) as
-          | { status: string }
+          | { status: string; intent_id: string; parent_id: string; correlation_id: string }
           | undefined;
-        if (!write || write.status !== 'write_intent') throw new Error('Write intent unavailable');
+        if (
+          !write ||
+          write.status !== 'write_intent' ||
+          !write.intent_id.trim() ||
+          write.parent_id !== proposal.payload.manualInput.parentId ||
+          write.correlation_id !== proposal.payload.manualInput.correlationId
+        )
+          throw new Error('Write intent unavailable');
         const result = input.result;
         if (
           result.parentId !== proposal.payload.manualInput.parentId ||
@@ -1550,8 +2047,31 @@ export class LiquidityWorkflow {
         if (proposal.payloadHash !== input.payloadHash)
           throw new Error('Payload hash mismatch');
         validateCompletionPayload(proposal.payload, input.now);
-        this.authorizeCompletion(input, proposal.payload, 'confirmation');
-        this.completionSession(input, proposal.payload, input.now, true, true, true);
+        this.requireHumanReconciliation(input);
+        this.authorizeCompletion(input, proposal.payload, 'confirmation', false, 'read');
+        this.completionSession(input, proposal.payload, input.now, true, false, true);
+        const write = this.db
+          .prepare(
+            'SELECT status,intent_id,payload_hash,parent_id,correlation_id FROM session_completion_writes WHERE budget_id=? AND proposal_id=?',
+          )
+          .get(input.budgetId, proposal.id) as
+          | {
+              status: string;
+              intent_id: string;
+              payload_hash: string;
+              parent_id: string;
+              correlation_id: string;
+            }
+          | undefined;
+        if (
+          !write ||
+          !write.intent_id.trim() ||
+          write.payload_hash !== proposal.payloadHash ||
+          write.parent_id !== proposal.payload.manualInput.parentId ||
+          write.correlation_id !== proposal.payload.manualInput.correlationId ||
+          !['write_intent', 'review_required', 'verified'].includes(write.status)
+        )
+          throw new Error('Completion write intent unavailable');
         const replay = this.replay<SessionCompletionProposalView>(
           input,
           'session_completion:reconcile',
@@ -1568,13 +2088,26 @@ export class LiquidityWorkflow {
           throw new Error('Proposal version conflict');
         const laterImport =
           proposal.state.phase === 'verified' && input.evidence.kind === 'imported_link';
-        if (!laterImport && !['write_intent', 'review_required'].includes(proposal.state.phase))
+        const awaitingEvidence = ['write_intent', 'review_required'].includes(proposal.state.phase);
+        if (!laterImport && !awaitingEvidence)
           throw new Error('Completion does not require reconciliation');
+        if (
+          (proposal.state.phase === 'write_intent' && write.status !== 'write_intent') ||
+          (proposal.state.phase === 'review_required' &&
+            !['write_intent', 'review_required'].includes(write.status)) ||
+          (laterImport && write.status !== 'verified')
+        )
+          throw new Error('Completion write intent unavailable');
+        if (awaitingEvidence) {
+          const hold = this.completionClaim(proposal);
+          if (hold.state !== 'initiated' || !hold.initiated)
+            throw new Error('Initiated completion hold unavailable');
+        }
         if (input.evidence.parentId !== proposal.payload.manualInput.parentId)
           throw new Error('Reconciliation parent mismatch');
         if (input.evidence.accountId !== proposal.payload.manualInput.accountId)
           throw new Error('Reconciliation account mismatch');
-        if (!input.evidence.evidenceId) throw new Error('Reconciliation evidence required');
+        if (!input.evidence.evidenceId.trim()) throw new Error('Reconciliation evidence required');
         if (input.evidence.kind === 'imported_link') {
           if (
             !laterImport ||
@@ -1590,7 +2123,23 @@ export class LiquidityWorkflow {
             ).get(input.budgetId, proposal.id)
           )
             throw new Error('Imported reconciliation link requires verified manual parent evidence');
+        } else if (input.evidence.kind === 'manual_parent') {
+          if (
+            input.evidence.verified !== true ||
+            input.evidence.transactionId !== input.evidence.parentId ||
+            input.evidence.evidenceId !==
+              `manual:${input.evidence.accountId}:${input.evidence.parentId}`
+          )
+            throw new Error('Verified exact manual parent evidence required');
+        } else if (input.evidence.kind === 'ambiguous' && input.evidence.verified === true) {
+          throw new Error('Ambiguous reconciliation evidence cannot be verified');
         }
+        if (!['manual_parent', 'imported_link', 'ambiguous'].includes(input.evidence.kind))
+          throw new Error('Invalid reconciliation evidence kind');
+        if (this.db.prepare(
+          'SELECT 1 FROM session_completion_evidence WHERE budget_id=? AND evidence_id=?',
+        ).get(input.budgetId, input.evidence.evidenceId))
+          throw new Error('Reconciliation evidence already used');
         this.db
           .prepare(
             'INSERT INTO session_completion_evidence (budget_id,evidence_id,proposal_id,payload_hash,evidence_kind,parent_id,account_id,transaction_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
@@ -1645,6 +2194,8 @@ export class LiquidityWorkflow {
     return this.db
       .transaction(() => {
         this.budget(input, 'conclusion');
+        const context = this.currentMemberContext(input);
+        if (!context) throw new Error('Current human membership unavailable');
         future(input.plan.expiresAt, input.now);
         const id = input.id ?? randomUUID();
         if (this.db.prepare('SELECT id FROM transfer_previews WHERE id=?').get(id))
@@ -1661,14 +2212,16 @@ export class LiquidityWorkflow {
           id,
           actorId: input.actorId,
           budgetId: input.budgetId,
+          spaceId: context.spaceId,
+          membershipId: context.membershipId,
           plan: structuredClone(input.plan),
           createdAt: input.now,
           sessionId: session?.id ?? null,
           sessionVersion: session?.version ?? null,
         };
         this.db
-          .prepare('INSERT INTO transfer_previews VALUES (?,?,?,?)')
-          .run(id, input.budgetId, input.actorId, JSON.stringify(preview));
+          .prepare('INSERT INTO transfer_previews (id,budget_id,actor_id,record,space_id,membership_id) VALUES (?,?,?,?,?,?)')
+          .run(id, input.budgetId, input.actorId, JSON.stringify(preview), context.spaceId, context.membershipId);
         return preview;
       })
       .immediate();
@@ -1677,24 +2230,37 @@ export class LiquidityWorkflow {
   getTransferPreview(input: LiquidityActor & { id: string }): TransferPreview | null {
     this.budget(input, 'conclusion');
     const row = this.db.prepare('SELECT * FROM transfer_previews WHERE id=?').get(input.id) as
-      { budget_id: string; actor_id: string; record: string } | undefined;
+      { budget_id: string; actor_id: string; record: string; space_id: string | null; membership_id: string | null } | undefined;
     if (!row) return null;
-    if (row.actor_id !== input.actorId || row.budget_id !== input.budgetId)
+    const context = this.currentMemberContext(input);
+    if (row.actor_id !== input.actorId || row.budget_id !== input.budgetId ||
+        !context || row.space_id !== context.spaceId || row.membership_id !== context.membershipId)
       throw new Error('Preview authorization denied');
     return JSON.parse(row.record) as TransferPreview;
   }
   private currentPolicy(budgetId: string): LiquidityPolicyRecord {
     const row = this.db
       .prepare(
-        'SELECT p.* FROM liquidity_policy_versions p JOIN liquidity_current_policy c ON c.budget_id=p.budget_id AND c.version=p.version WHERE p.budget_id=?',
+        'SELECT p.policy,p.actor_id,p.created_at FROM liquidity_policy_versions p JOIN liquidity_current_policy c ON c.budget_id=p.budget_id AND c.version=p.version WHERE p.budget_id=?',
       )
-      .get(budgetId) as
-      { policy: string; approval_policy: string; actor_id: string; created_at: string } | undefined;
+      .get(budgetId) as { policy: string; actor_id: string; created_at: string } | undefined;
     if (!row) throw new Error('Liquidity policy unavailable');
+    const space = this.governance.getSpaceForBudget({ budgetId });
+    const governancePolicy = space ? this.governance.getPolicy({ spaceId: space.id }) : null;
     return {
       budgetId,
       policy: JSON.parse(row.policy),
-      approvalPolicy: JSON.parse(row.approval_policy),
+      approvalPolicy: governancePolicy
+        ? {
+            minimumApprovers: governancePolicy.minimumApprovers,
+            thresholds: governancePolicy.approvalThresholds.map((threshold) => ({
+              currency: threshold.currency,
+              minimumMinorUnits: threshold.amountMinorUnits,
+              minimumApprovers: threshold.requiredApprovers,
+            })),
+          }
+        : { minimumApprovers: 1, thresholds: [] },
+      governancePolicyVersion: governancePolicy?.version ?? null,
       actorId: row.actor_id,
       createdAt: row.created_at,
     };
@@ -1708,32 +2274,50 @@ export class LiquidityWorkflow {
     }
   }
   savePolicy(input: SavePolicyInput): LiquidityPolicyRecord {
-    if (!this.isOwner(input)) this.budget(input, 'policy');
+    if (input.auth.actorId !== input.actorId) throw new Error('Policy authorization denied');
+    const context = this.spaceContext(input);
+    if (!context?.membershipId) throw new Error('Current governed membership unavailable');
     const reservationMode = governedReservationMode(input.policy);
     const governedPolicy = { ...input.policy, reservationMode };
     future(governedPolicy.expiresAt, input.now);
-    const counts = [
-      input.approvalPolicy.minimumApprovers,
-      ...(input.approvalPolicy.thresholds ?? []).map((t) => t.minimumApprovers),
-    ];
-    if (counts.some((n) => !Number.isInteger(n) || n < 1))
-      throw new Error('Invalid approval policy');
-    for (const threshold of input.approvalPolicy.thresholds ?? [])
-      positiveMoney({ minorUnits: threshold.minimumMinorUnits, currency: threshold.currency });
+    const currentGovernancePolicy = this.governance.getPolicy({ spaceId: context.spaceId });
+    const thresholds = input.approvalPolicy.thresholds === undefined
+      ? currentGovernancePolicy?.approvalThresholds.map((threshold) => ({
+          currency: threshold.currency,
+          minimumMinorUnits: threshold.amountMinorUnits,
+          minimumApprovers: threshold.requiredApprovers,
+        })) ?? []
+      : input.approvalPolicy.thresholds;
+    const operationApprovers = currentGovernancePolicy?.operationApprovers ?? {};
     return this.db
       .transaction(() => {
         const current = this.db
           .prepare('SELECT version FROM liquidity_current_policy WHERE budget_id=?')
           .get(input.budgetId) as { version: string } | undefined;
         if ((current?.version ?? null) !== input.expectedVersion)
-          throw new Error('Policy version conflict');
+          throw new Error('Financial policy version conflict');
+        this.governance.setPolicy({
+          spaceId: context.spaceId,
+          expectedVersion: input.expectedGovernancePolicyVersion,
+          policy: {
+            minimumApprovers: input.approvalPolicy.minimumApprovers,
+            approvalThresholds: thresholds.map((threshold) => ({
+              currency: threshold.currency,
+              amountMinorUnits: threshold.minimumMinorUnits,
+              requiredApprovers: threshold.minimumApprovers,
+            })),
+            operationApprovers,
+          },
+          now: input.now,
+          auth: input.auth,
+        });
         this.db
           .prepare('INSERT INTO liquidity_policy_versions VALUES (?,?,?,?,?,?)')
           .run(
             input.budgetId,
             governedPolicy.version,
             JSON.stringify(governedPolicy),
-            JSON.stringify(input.approvalPolicy),
+            '{}',
             input.actorId,
             input.now,
           );
@@ -2164,9 +2748,22 @@ export class LiquidityWorkflow {
         result,
       );
   }
+  private prospectiveOriginCurrent(
+    row: { actor_id: string; space_id: string | null; membership_id: string | null },
+    input: LiquidityActor,
+  ): boolean {
+    const spaceId = input.spaceId ?? this.governance.getSpaceForBudget({ budgetId: input.budgetId })?.id;
+    return !!row.space_id && row.space_id === spaceId && !!row.membership_id &&
+      this.governance.getCurrentMembership({
+        spaceId: row.space_id, actorId: row.actor_id, now: input.now ?? new Date().toISOString(),
+      })?.id === row.membership_id;
+  }
+
   private projectProspectiveClaim(
     row: {
       actor_id: string;
+      space_id: string | null;
+      membership_id: string | null;
       mode: ProspectiveClaimMode;
       lifecycle_state: ProspectiveClaimLifecycle;
       claim: string;
@@ -2177,7 +2774,7 @@ export class LiquidityWorkflow {
     const claim = JSON.parse(row.claim) as ProspectiveClaim;
     const scope = this.prospectiveScope(claim.scope);
     const visible =
-      claim.visibility === 'visible' &&
+      this.prospectiveOriginCurrent(row, input) && claim.visibility === 'visible' &&
       this.isAuthorized({
         ...input,
         capability: 'liquidity',
@@ -2252,7 +2849,11 @@ export class LiquidityWorkflow {
           prospectiveCreationRequest({ ...input, sourceId: input.claim.sourceId,
             kind: input.claim.kind, scope: input.claim.scope }),
         );
-        if (replay) return replay;
+        if (replay) {
+          const current = this.listProspectiveClaims(input).find((claim) => claim.claimId === replay.claimId);
+          if (!current) throw new Error('Claim authorization denied');
+          return current;
+        }
         const policy = this.currentPolicy(input.budgetId);
         future(policy.policy.expiresAt, input.now);
         const { mode, expiresAt, effect } = this.prospectiveInput(input.claim, policy, input.now);
@@ -2296,9 +2897,11 @@ export class LiquidityWorkflow {
           mode === 'block',
         );
         this.persistClaim(input.budgetId, 'prospective', input.claim.claimId, bundle);
+        const context = this.currentMemberContext(input);
+        if (!context) throw new Error('Claim authorization denied');
         this.db
           .prepare(
-            'INSERT INTO liquidity_claim_metadata (budget_id,claim_id,actor_id,mode,lifecycle_state,source_id,policy_version,snapshot_id,claim,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            'INSERT INTO liquidity_claim_metadata (budget_id,claim_id,actor_id,mode,lifecycle_state,source_id,policy_version,snapshot_id,claim,created_at,updated_at,space_id,membership_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
           )
           .run(
             input.budgetId,
@@ -2312,10 +2915,14 @@ export class LiquidityWorkflow {
             JSON.stringify(storedClaim),
             input.now,
             input.now,
+            context.spaceId,
+            context.membershipId,
           );
         const result = this.projectProspectiveClaim(
           {
             actor_id: input.actorId,
+            space_id: context.spaceId,
+            membership_id: context.membershipId,
             mode,
             lifecycle_state: 'active',
             claim: JSON.stringify(storedClaim),
@@ -2349,12 +2956,13 @@ export class LiquidityWorkflow {
       .transaction(() => {
         const replayAuthorization = this.db
           .prepare(
-            'SELECT actor_id,claim FROM liquidity_claim_metadata WHERE budget_id=? AND claim_id=?',
+            'SELECT actor_id,claim,space_id,membership_id FROM liquidity_claim_metadata WHERE budget_id=? AND claim_id=?',
           )
           .get(input.budgetId, input.claimId) as
-          | { actor_id: string; claim: string }
+          | { actor_id: string; claim: string; space_id: string | null; membership_id: string | null }
           | undefined;
-        if (!replayAuthorization) throw new Error('Prospective claim unavailable');
+        if (!replayAuthorization || !this.prospectiveOriginCurrent(replayAuthorization, input))
+          throw new Error('Prospective claim unavailable');
         const replayClaim = JSON.parse(replayAuthorization.claim) as ProspectiveClaim;
         const replayScope = this.prospectiveScope(replayClaim.scope);
         this.requireResource({
@@ -2385,11 +2993,13 @@ export class LiquidityWorkflow {
           throw new Error('Claim-set revision conflict');
         const row = this.db
           .prepare(
-            'SELECT actor_id,mode,lifecycle_state,source_id,policy_version,snapshot_id,claim FROM liquidity_claim_metadata WHERE budget_id=? AND claim_id=?',
+            'SELECT actor_id,mode,lifecycle_state,source_id,policy_version,snapshot_id,claim,space_id,membership_id FROM liquidity_claim_metadata WHERE budget_id=? AND claim_id=?',
           )
           .get(input.budgetId, input.claimId) as
           | {
               actor_id: string;
+              space_id: string | null;
+              membership_id: string | null;
               mode: ProspectiveClaimMode;
               lifecycle_state: ProspectiveClaimLifecycle;
               source_id: string;
@@ -2484,6 +3094,8 @@ export class LiquidityWorkflow {
         const result = this.projectProspectiveClaim(
           {
             actor_id: row.actor_id,
+            space_id: row.space_id,
+            membership_id: row.membership_id,
             mode: row.mode,
             lifecycle_state: lifecycleState,
             claim: row.claim,
@@ -2509,10 +3121,12 @@ export class LiquidityWorkflow {
     this.claimSet(input.budgetId, input.now, input.actorId);
     const rows = this.db
       .prepare(
-        'SELECT actor_id,mode,lifecycle_state,claim FROM liquidity_claim_metadata WHERE budget_id=? ORDER BY created_at,claim_id',
+        'SELECT actor_id,mode,lifecycle_state,claim,space_id,membership_id FROM liquidity_claim_metadata WHERE budget_id=? ORDER BY created_at,claim_id',
       )
       .all(input.budgetId) as {
       actor_id: string;
+      space_id: string | null;
+      membership_id: string | null;
       mode: ProspectiveClaimMode;
       lifecycle_state: ProspectiveClaimLifecycle;
       claim: string;
@@ -2521,6 +3135,7 @@ export class LiquidityWorkflow {
       ? governedReservationMode(this.currentPolicy(input.budgetId).policy)
       : undefined;
     return rows.flatMap((row) => {
+      if (!this.prospectiveOriginCurrent(row, input)) return [];
       const claim = this.projectProspectiveClaim(row, input, activeReservationMode);
       return row.actor_id !== input.actorId && claim.visibility === 'redacted' ? [] : [claim];
     });
@@ -2533,7 +3148,7 @@ export class LiquidityWorkflow {
       .transaction(() => {
         this.authorizePlan(input, input.plan, 'proposal');
         const replay = this.replay<TransferProposal>(input, 'transfer:admit', input);
-        if (replay) return this.getTransferProposal({ ...input, proposalId: replay.id });
+        if (replay) return this.getTransferProposalIntent({ ...input, proposalId: replay.id, capability: 'proposal' });
         future(input.plan.expiresAt, input.now);
         const session = input.sessionId
           ? this.getSpendSession({ ...input, id: input.sessionId, now: input.now })
@@ -2565,9 +3180,13 @@ export class LiquidityWorkflow {
           sessionId: session?.id ?? null,
           sessionVersion: session?.version ?? null,
         };
+        const context = this.currentMemberContext(input);
+        if (!context) throw new Error('Current human membership unavailable');
+        const governancePolicyVersion = this.currentPolicy(input.budgetId).governancePolicyVersion;
+        if (!governancePolicyVersion) throw new Error('Governance policy unavailable');
         this.db
           .prepare(
-            "INSERT INTO action_proposals (id,operation,budget_id,payload_hash,policy_version,preconditions,expires_at,actor_id,provenance,provider_model,correlation_id,superseded_at,created_at,payload,version,state) VALUES (?,'transfer',?,?,?,?,?,?,'human',NULL,NULL,NULL,?,?,1,?)",
+            "INSERT INTO action_proposals (id,operation,budget_id,payload_hash,policy_version,preconditions,expires_at,actor_id,provenance,provider_model,correlation_id,superseded_at,created_at,payload,version,state,space_id,requester_membership_id,governance_policy_version) VALUES (?,'transfer',?,?,?,?,?,?,'human',NULL,NULL,NULL,?,?,1,?,?,?,?)",
           )
           .run(
             id,
@@ -2580,6 +3199,9 @@ export class LiquidityWorkflow {
             input.now,
             JSON.stringify(payload),
             JSON.stringify(initialState()),
+            context.spaceId,
+            context.membershipId,
+            governancePolicyVersion,
           );
         this.persistClaim(input.budgetId, 'proposal', id, bundle);
         const result = this.load(id);
@@ -2588,11 +3210,30 @@ export class LiquidityWorkflow {
       })
       .immediate();
   }
-  private command(input: TransferCommand, capability: ResourceCapability): TransferProposal {
-    this.budget(input, capability);
+  private command(
+    input: TransferCommand,
+    capability: ResourceCapability,
+    phaseOverride?: 'read' | 'propose' | 'approve' | 'execute',
+  ): TransferProposal {
     const p = this.load(input.proposalId);
     if (p.budgetId !== input.budgetId) throw new Error('Resource authorization denied');
-    this.authorizePlan(input, p.payload.plan, capability);
+    if (!['initiated', 'confirmed', 'closed'].includes(p.state.phase)) {
+      const origin = this.proposalOrigin(p.id, input.now);
+      if (!origin) throw new Error('Pending proposal provenance is no longer current');
+      this.authorizePlan(origin, p.payload.plan, 'proposal', false, 'propose');
+    }
+    const initiatedSettlement = capability === 'confirmation' &&
+      ['initiated', 'confirmed'].includes(p.state.phase);
+    const verifiedHumanApproval = !initiatedSettlement &&
+      ['initiation-report', 'confirmation'].includes(capability) &&
+      this.approvals(p, input.now, true).length >= this.requiredApprovers(p, input.now);
+    this.authorizePlan(
+      input,
+      p.payload.plan,
+      capability,
+      verifiedHumanApproval,
+      initiatedSettlement ? 'read' : phaseOverride,
+    );
     if (p.payloadHash !== input.payloadHash) throw new Error('Payload hash mismatch');
     return p;
   }
@@ -2613,28 +3254,73 @@ export class LiquidityWorkflow {
     if (changed.changes !== 1) throw new Error('Proposal version conflict');
     return this.load(p.id);
   }
-  private approvals(p: TransferProposal, now: string): string[] {
+  private approvals(
+    p: TransferProposal,
+    now: string,
+    includeConsumed = false,
+  ): EligibleHumanApproval[] {
+    if (!p.spaceId || !p.governancePolicyVersion) return [];
     const rows = this.db
-      .prepare(
-        "SELECT * FROM proposal_approvals WHERE proposal_id=? AND payload_hash=? AND status='active' AND expires_at>? AND consumed_at IS NULL AND superseded_at IS NULL",
-      )
-      .all(p.id, p.payloadHash, now) as { actor_id: string; id: string }[];
-    return rows
-      .filter((r) => {
-        try {
-          this.authorizePlan(
-            { actorId: r.actor_id, budgetId: p.budgetId },
-            p.payload.plan,
-            'approval',
-          );
-          return true;
-        } catch {
-          return false;
-        }
-      })
-      .map((r) => r.id);
+      .prepare(includeConsumed
+        ? "SELECT id,actor_id,status,created_at,expires_at,issuer_membership_id,governance_policy_version,reauthenticated_session_id,reauthenticated_at FROM proposal_approvals WHERE proposal_id=? AND payload_hash=? AND superseded_at IS NULL AND ((status='active' AND expires_at>? AND consumed_at IS NULL) OR (status='consumed' AND consumed_at IS NOT NULL)) ORDER BY created_at DESC,id"
+        : "SELECT id,actor_id,status,created_at,expires_at,issuer_membership_id,governance_policy_version,reauthenticated_session_id,reauthenticated_at FROM proposal_approvals WHERE proposal_id=? AND payload_hash=? AND status='active' AND expires_at>? AND consumed_at IS NULL AND superseded_at IS NULL ORDER BY created_at DESC,id")
+      .all(p.id, p.payloadHash, now) as {
+      id: string;
+      actor_id: string;
+      status: string;
+      created_at: string;
+      expires_at: string;
+      issuer_membership_id: string | null;
+      governance_policy_version: string | null;
+      reauthenticated_session_id: string | null;
+      reauthenticated_at: string | null;
+    }[];
+    const accepted: EligibleHumanApproval[] = [];
+    const actors = new Set<string>();
+    for (const row of rows) {
+      if (row.actor_id === p.actorId || actors.has(row.actor_id) || !row.issuer_membership_id ||
+          row.governance_policy_version !== p.governancePolicyVersion ||
+          !row.reauthenticated_session_id || !row.reauthenticated_at) continue;
+      const membership = this.governance.getCurrentMembership({
+        spaceId: p.spaceId,
+        actorId: row.actor_id,
+        now,
+      });
+      if (membership?.id !== row.issuer_membership_id) continue;
+      const auth: HumanControlContext = {
+        method: 'human-session',
+        actorId: row.actor_id,
+        sessionId: row.reauthenticated_session_id,
+        reauthenticatedAt: row.reauthenticated_at,
+      };
+      const historical: LiquidityActor = {
+        actorId: row.actor_id,
+        budgetId: p.budgetId,
+        spaceId: p.spaceId,
+        membershipId: row.issuer_membership_id,
+        governancePolicyVersion: row.governance_policy_version,
+        now: row.created_at,
+        auth,
+      };
+      try {
+        this.authorizePlan(historical, p.payload.plan, 'approval');
+        this.authorizePlan({ ...historical, now }, p.payload.plan, 'approval', false, 'read');
+        actors.add(row.actor_id);
+        accepted.push({
+          id: row.id,
+          approval: {
+            actorId: row.actor_id,
+            issuedAt: row.created_at,
+            expiresAt: row.expires_at,
+          },
+        });
+      } catch {
+        // A stored approval is current only while its exact member and grants remain current.
+      }
+    }
+    return accepted;
   }
-  private requiredApprovers(p: TransferProposal): number {
+  private requiredApprovers(p: TransferProposal, now: string): number {
     const policy = this.currentPolicy(p.budgetId).approvalPolicy;
     let count = policy.minimumApprovers;
     for (const t of policy.thresholds ?? [])
@@ -2643,18 +3329,31 @@ export class LiquidityWorkflow {
         BigInt(p.payload.plan.minimumAmount.minorUnits) >= BigInt(t.minimumMinorUnits)
       )
         count = Math.max(count, t.minimumApprovers);
-    return count;
+    if (!p.spaceId) throw new Error('Governance policy unavailable');
+    return Math.max(count, this.governanceRequiredApprovers(
+      p.actorId,
+      p.spaceId,
+      p.budgetId,
+      'transfer',
+      transferOperations(p.payload.plan),
+      this.resources(p.payload.plan),
+      now,
+    ));
   }
   /** Read-only approval summary at the service's trusted time; never expires rows using a second clock. */
-  getTransferApprovalSummary(input: LiquidityActor & { proposalId: string; now: string }): {
-    requiredApprovals: number;
-    approvalCount: number;
-    actorHasApproved: boolean;
-  } {
+  getTransferApprovalSummary(
+    input: LiquidityActor & { proposalId: string; now: string },
+  ): TransferApprovalSummary {
     return this.db
       .transaction(() => {
         time(input.now);
-        const proposal = this.getTransferProposal(input);
+        const proposal = this.scopedTransferIntent(input);
+        if (!(['liquidity', 'proposal', 'approval', 'initiation-report', 'confirmation', 'conclusion'] as const)
+          .some((capability) => this.isTransferPlanAuthorized({
+            ...input, plan: proposal.payload.plan, capability,
+            phase: capability === 'proposal' ? 'propose' : 'read',
+          })))
+          throw new Error('Resource authorization denied');
         const ids = this.approvals(proposal, input.now);
         const own = this.db
           .prepare(
@@ -2662,9 +3361,10 @@ export class LiquidityWorkflow {
           )
           .all(proposal.id, input.actorId) as { id: string }[];
         return {
-          requiredApprovals: this.requiredApprovers(proposal),
+          requiredApprovals: this.requiredApprovers(proposal, input.now),
           approvalCount: ids.length,
-          actorHasApproved: own.some((row) => ids.includes(row.id)),
+          actorHasApproved: own.some((row) => ids.some((approval) => approval.id === row.id)),
+          approvers: currentHumanApprovers(ids),
         };
       })
       .immediate();
@@ -2690,13 +3390,26 @@ export class LiquidityWorkflow {
           null,
           p.id,
         );
+        const proof = this.humanApprovalProvenance(input);
         this.db
           .prepare(
-            "INSERT INTO proposal_approvals (id,proposal_id,payload_hash,actor_id,status,expires_at,consumed_at,superseded_at,created_at,proposal_version) VALUES (?,?,?,?,'active',?,NULL,NULL,?,?)",
+            "INSERT INTO proposal_approvals (id,proposal_id,payload_hash,actor_id,status,expires_at,consumed_at,superseded_at,created_at,proposal_version,issuer_membership_id,governance_policy_version,reauthenticated_session_id,reauthenticated_at) VALUES (?,?,?,?,'active',?,NULL,NULL,?,?,?,?,?,?)",
           )
-          .run(randomUUID(), p.id, p.payloadHash, input.actorId, p.expiresAt, input.now, p.version);
+          .run(
+            randomUUID(),
+            p.id,
+            p.payloadHash,
+            input.actorId,
+            p.expiresAt,
+            input.now,
+            p.version,
+            proof.membershipId,
+            proof.governancePolicyVersion,
+            proof.reauthenticatedSessionId,
+            proof.reauthenticatedAt,
+          );
         const phase =
-          this.approvals(p, input.now).length >= this.requiredApprovers(p)
+          this.approvals(p, input.now).length >= this.requiredApprovers(p, input.now)
             ? 'approved'
             : 'awaiting_approval';
         const result = this.update(p, { ...p.state, phase }, input.now);
@@ -2708,10 +3421,22 @@ export class LiquidityWorkflow {
   private linkedSession(p: TransferProposal, now: string): SpendSession | null {
     if (!p.payload.sessionId) return null;
     const row = this.db
-      .prepare('SELECT record FROM spend_sessions WHERE budget_id=? AND id=?')
-      .get(p.budgetId, p.payload.sessionId) as { record: string } | undefined;
+      .prepare('SELECT record,space_id,membership_id FROM spend_sessions WHERE budget_id=? AND id=?')
+      .get(p.budgetId, p.payload.sessionId) as
+      { record: string; space_id: string | null; membership_id: string | null } | undefined;
     if (!row) throw new Error('Session unavailable');
-    const session = JSON.parse(row.record) as SpendSession;
+    const session = normalizeSpendSession(JSON.parse(row.record));
+    if (!p.spaceId || !p.requesterMembershipId || !p.governancePolicyVersion ||
+        row.space_id !== p.spaceId || row.membership_id !== p.requesterMembershipId ||
+        session.spaceId !== row.space_id || session.membershipId !== row.membership_id ||
+        session.governancePolicyVersion !== p.governancePolicyVersion ||
+        this.governance.getCurrentMembership({
+          spaceId: session.spaceId,
+          actorId: session.actorId,
+          now,
+        })?.id !== session.membershipId ||
+        this.governance.getPolicy({ spaceId: session.spaceId })?.version !== session.governancePolicyVersion)
+      throw new Error('Session governance provenance mismatch');
     future(session.expiresAt, now);
     if (session.version !== p.payload.sessionVersion) throw new Error('Session changed');
     return session;
@@ -2720,7 +3445,7 @@ export class LiquidityWorkflow {
   revalidateTransfer(input: RecheckTransferCommand, validator: ClaimValidator): TransferProposal {
     return this.db
       .transaction(() => {
-        const p = this.command(input, 'initiation-report');
+        const p = this.command(input, 'initiation-report', 'propose');
         const replay = this.replay<TransferProposal>(input, 'transfer:recheck', input);
         if (replay) return replay;
         this.cas(p, input);
@@ -2778,7 +3503,7 @@ export class LiquidityWorkflow {
         );
         if (
           p.state.phase !== 'approved' ||
-          this.approvals(p, input.now).length < this.requiredApprovers(p)
+          this.approvals(p, input.now).length < this.requiredApprovers(p, input.now)
         )
           throw new Error('Current authorized approvals required');
         return p.payload.plan;
@@ -2796,7 +3521,7 @@ export class LiquidityWorkflow {
         if (replay) return replay;
         this.cas(p, input);
         const approvals = this.approvals(p, input.now);
-        if (p.state.phase !== 'approved' || approvals.length < this.requiredApprovers(p))
+        if (p.state.phase !== 'approved' || approvals.length < this.requiredApprovers(p, input.now))
           throw new Error('Current authorized approvals required');
         // The user is acknowledging an external action, not requesting permission to initiate it.
         // Expected ledger movement may invalidate pre-action equality without invalidating this report.
@@ -2815,12 +3540,12 @@ export class LiquidityWorkflow {
           : diagnostic.reason?.includes('delayed')
             ? 'delayed'
             : 'reconciliation_required';
-        for (const id of approvals)
+        for (const approval of approvals)
           this.db
             .prepare(
               "UPDATE proposal_approvals SET status='consumed',consumed_at=? WHERE id=? AND status='active'",
             )
-            .run(input.now, id);
+            .run(input.now, approval.id);
         this.changeClaim(p, 'initiated');
         const result = this.update(p, { ...p.state, phase: 'initiated', outcome }, input.now);
         this.record(input, 'transfer:initiate', p.id, input, result);
@@ -2846,6 +3571,7 @@ export class LiquidityWorkflow {
   verifyTransferSettlement(input: TransferCommand, verifier: SettlementVerifier): TransferProposal {
     return this.db
       .transaction(() => {
+        this.requireHumanReconciliation(input);
         const p = this.command(input, 'confirmation');
         const replay = this.replay<TransferProposal>(input, 'transfer:settlement', input);
         if (replay) return replay;
@@ -2971,7 +3697,7 @@ export class LiquidityWorkflow {
     time(input.now);
     this.db
       .transaction(() => {
-        for (const p of this.listTransferProposals(input))
+        for (const p of this.listTransferProposalIntents({ ...input, capability: 'proposal' }))
           if (
             Date.parse(p.expiresAt) <= Date.parse(input.now) &&
             !['confirmed', 'closed'].includes(p.state.phase) &&
@@ -3059,9 +3785,13 @@ export class LiquidityWorkflow {
   getSpendSession(input: LiquidityActor & { id: string; now: string }): SpendSession | null {
     this.budget(input, 'session');
     const row = this.db
-      .prepare('SELECT record FROM spend_sessions WHERE budget_id=? AND id=?')
-      .get(input.budgetId, input.id) as { record: string } | undefined;
+      .prepare('SELECT * FROM spend_sessions WHERE budget_id=? AND id=?')
+      .get(input.budgetId, input.id) as
+      { record: string; space_id: string | null; membership_id: string | null } | undefined;
     if (!row) return null;
+    const context = this.currentMemberContext(input);
+    if (!context || row.space_id !== context.spaceId || row.membership_id !== context.membershipId)
+      throw new Error('Session membership provenance mismatch');
     const stored = JSON.parse(row.record);
     const source = sessionObject(stored);
     if (source.actorId !== input.actorId) throw new Error('Session authorization denied');
@@ -3077,12 +3807,15 @@ export class LiquidityWorkflow {
   }
   listSpendSessions(input: LiquidityActor & { now: string }): SpendSession[] {
     this.budget(input, 'session');
+    const context = this.currentMemberContext(input);
+    if (!context) throw new Error('Current human membership unavailable');
     return (
       this.db
-        .prepare('SELECT record FROM spend_sessions WHERE budget_id=?')
-        .all(input.budgetId) as { record: string }[]
+        .prepare('SELECT record,space_id,membership_id FROM spend_sessions WHERE budget_id=?')
+        .all(input.budgetId) as { record: string; space_id: string | null; membership_id: string | null }[]
     )
-      .map((r) => JSON.parse(r.record))
+      .filter((row) => row.space_id === context.spaceId && row.membership_id === context.membershipId)
+      .map((row) => JSON.parse(row.record))
       .filter((stored) => {
         const source = sessionObject(stored);
         return (
@@ -3104,6 +3837,7 @@ export class LiquidityWorkflow {
   }
   saveSpendSession(input: SaveSpendSessionInput, validator: ClaimValidator): SpendSession {
     this.sessionResources(input, input);
+    if (!this.currentMemberContext(input)) throw new Error('Current human membership unavailable');
     future(input.expiresAt, input.now);
     const items = input.items.map((item) => normalizeSessionItem(item));
     if (
@@ -3116,11 +3850,21 @@ export class LiquidityWorkflow {
     return this.db
       .transaction(() => {
         this.sessionResources(input, input);
+        const context = this.currentMemberContext(input);
+        if (!context) throw new Error('Current human membership unavailable');
         const replay = this.replay<SpendSession>(input, 'session:save', input);
-        if (replay) return normalizeSpendSession(replay);
+        if (replay) {
+          if (replay.spaceId !== context.spaceId || replay.membershipId !== context.membershipId ||
+              replay.governancePolicyVersion !== context.governancePolicyVersion)
+            throw new Error('Session governance provenance mismatch');
+          return normalizeSpendSession(replay);
+        }
         const row = this.db
-          .prepare('SELECT record FROM spend_sessions WHERE budget_id=? AND id=?')
-          .get(input.budgetId, input.id) as { record: string } | undefined;
+          .prepare('SELECT * FROM spend_sessions WHERE budget_id=? AND id=?')
+          .get(input.budgetId, input.id) as
+          { record: string; space_id: string | null; membership_id: string | null } | undefined;
+        if (row && (row.space_id !== context.spaceId || row.membership_id !== context.membershipId))
+          throw new Error('Session membership provenance mismatch');
         const previousRecord = row ? JSON.parse(row.record) : null;
         const previous = previousRecord ? normalizeSpendSession(previousRecord) : null;
         if (previous && previous.actorId !== input.actorId)
@@ -3147,6 +3891,9 @@ export class LiquidityWorkflow {
         const session: SpendSession = {
           actorId: input.actorId,
           budgetId: input.budgetId,
+          spaceId: context.spaceId,
+          membershipId: context.membershipId,
+          governancePolicyVersion: context.governancePolicyVersion,
           id: input.id,
           version: input.expectedVersion + 1,
           items,
@@ -3185,10 +3932,9 @@ export class LiquidityWorkflow {
           });
         }
         this.db
-          .prepare(
-            'INSERT INTO spend_sessions VALUES (?,?,?) ON CONFLICT(budget_id,id) DO UPDATE SET record=excluded.record',
-          )
-          .run(input.budgetId, input.id, JSON.stringify(session));
+          .prepare(`INSERT INTO spend_sessions (budget_id,id,record,space_id,membership_id) VALUES (?,?,?,?,?)
+            ON CONFLICT(budget_id,id) DO UPDATE SET record=excluded.record`)
+          .run(input.budgetId, input.id, JSON.stringify(session), context.spaceId, context.membershipId);
         this.invalidateProposals(input.budgetId, input.now, input.id);
         this.record(input, 'session:save', input.id, input, session);
         return session;
@@ -3208,9 +3954,13 @@ export class LiquidityWorkflow {
       .transaction(() => {
         this.budget(input, 'session');
         const row = this.db
-          .prepare('SELECT record FROM spend_sessions WHERE budget_id=? AND id=?')
-          .get(input.budgetId, input.id) as { record: string } | undefined;
+          .prepare('SELECT * FROM spend_sessions WHERE budget_id=? AND id=?')
+          .get(input.budgetId, input.id) as
+          { record: string; space_id: string | null; membership_id: string | null } | undefined;
         if (!row) throw new Error('Session unavailable');
+        const context = this.currentMemberContext(input);
+        if (!context || row.space_id !== context.spaceId || row.membership_id !== context.membershipId)
+          throw new Error('Session membership provenance mismatch');
         const stored = JSON.parse(row.record);
         const source = sessionObject(stored);
         if (source.actorId !== input.actorId) throw new Error('Session authorization denied');
@@ -3221,7 +3971,11 @@ export class LiquidityWorkflow {
           warningThresholds: source.warningThresholds,
         });
         const replay = this.replay<SpendSession>(input, 'session:cancel', input);
-        if (replay) return normalizeSpendSession(replay);
+        if (replay) {
+          if (replay.spaceId !== context.spaceId || replay.membershipId !== context.membershipId)
+            throw new Error('Session membership provenance mismatch');
+          return normalizeSpendSession(replay);
+        }
         const previous = normalizeSpendSession(stored);
         if (previous.version !== input.expectedVersion) throw new Error('Session version conflict');
         if (this.hasVerifiedSessionCompletion(input.budgetId, input.id))
@@ -3313,8 +4067,9 @@ export class LiquidityWorkflow {
       now: string;
     },
   ): SupplementalFactsRecord {
-    if (!this.isOwner(input)) this.budget(input, 'policy');
-    future(input.expiresAt, input.now);
+    this.budget(input, 'policy');
+    const context = this.currentMemberContext(input);
+    if (!context) throw new Error('Current human membership unavailable');
     if (new Set(input.observations.map((o) => o.accountId)).size !== input.observations.length)
       throw new Error('Duplicate observation account');
     for (const observation of input.observations) {
@@ -3345,16 +4100,27 @@ export class LiquidityWorkflow {
         Date.parse(observation.expiresAt) < Date.parse(input.expiresAt)
       )
         throw new Error('Observation freshness mismatch');
-      if (!this.isOwner(input))
-        this.requireResource({
-          ...input,
-          capability: 'policy',
-          resourceKind: 'account',
-          resourceId: observation.accountId,
-        });
+      this.requireResource({
+        ...input,
+        capability: 'policy',
+        resourceKind: 'account',
+        resourceId: observation.accountId,
+      });
     }
     return this.db
       .transaction(() => {
+        this.budget(input, 'policy');
+        const writeContext = this.currentMemberContext(input);
+        if (!writeContext || writeContext.spaceId !== context.spaceId ||
+            writeContext.membershipId !== context.membershipId)
+          throw new Error('Current human membership unavailable');
+        for (const observation of input.observations)
+          this.requireResource({
+            ...input,
+            capability: 'policy',
+            resourceKind: 'account',
+            resourceId: observation.accountId,
+          });
         const current = this.db
           .prepare(
             'SELECT MAX(version) AS version FROM liquidity_supplemental_facts WHERE budget_id=?',
@@ -3365,13 +4131,17 @@ export class LiquidityWorkflow {
         const record = {
           actorId: input.actorId,
           budgetId: input.budgetId,
+          spaceId: context.spaceId,
+          membershipId: context.membershipId,
           version: input.expectedVersion + 1,
           observations: structuredClone(input.observations),
           expiresAt: input.expiresAt,
           createdAt: input.now,
         };
         this.db
-          .prepare('INSERT INTO liquidity_supplemental_facts VALUES (?,?,?,?,?,?)')
+          .prepare(`INSERT INTO liquidity_supplemental_facts
+            (budget_id,version,facts,actor_id,expires_at,created_at,space_id,membership_id)
+            VALUES (?,?,?,?,?,?,?,?)`)
           .run(
             input.budgetId,
             record.version,
@@ -3379,6 +4149,8 @@ export class LiquidityWorkflow {
             input.actorId,
             input.expiresAt,
             input.now,
+            context.spaceId,
+            context.membershipId,
           );
         this.invalidateProposals(input.budgetId, input.now);
         this.audit(input, 'supplemental_facts_changed', null, input.now, null);
@@ -3393,9 +4165,23 @@ export class LiquidityWorkflow {
         'SELECT * FROM liquidity_supplemental_facts WHERE budget_id=? ORDER BY version DESC LIMIT 1',
       )
       .get(input.budgetId) as
-      | { version: number; facts: string; actor_id: string; expires_at: string; created_at: string }
+      | {
+          version: number;
+          facts: string;
+          actor_id: string;
+          expires_at: string;
+          created_at: string;
+          space_id: string | null;
+          membership_id: string | null;
+        }
       | undefined;
-    if (!row || Date.parse(row.expires_at) <= Date.parse(input.now)) return null;
+    if (!row || !row.space_id || !row.membership_id ||
+        Date.parse(row.expires_at) <= Date.parse(input.now) ||
+        this.governance.getCurrentMembership({
+          spaceId: row.space_id,
+          actorId: row.actor_id,
+          now: input.now,
+        })?.id !== row.membership_id) return null;
     const observations = JSON.parse(row.facts) as SupplementalFactsRecord['observations'];
     for (const observation of observations)
       this.requireResource({
@@ -3407,6 +4193,8 @@ export class LiquidityWorkflow {
     return {
       actorId: row.actor_id,
       budgetId: input.budgetId,
+      spaceId: row.space_id,
+      membershipId: row.membership_id,
       version: row.version,
       observations,
       expiresAt: row.expires_at,
@@ -3439,6 +4227,8 @@ export class LiquidityWorkflow {
     future(input.expiresAt, input.now);
     return this.db
       .transaction(() => {
+        const context = this.currentMemberContext(input);
+        if (!context) throw new Error('Current governed membership unavailable');
         const row = this.db
           .prepare('SELECT record FROM payment_preferences WHERE budget_id=? AND id=?')
           .get(input.budgetId, input.id) as { record: string } | undefined;
@@ -3450,6 +4240,9 @@ export class LiquidityWorkflow {
         const record: PaymentPreferenceRecord = {
           actorId: input.actorId,
           budgetId: input.budgetId,
+          spaceId: context.spaceId,
+          membershipId: context.membershipId,
+          governancePolicyVersion: context.governancePolicyVersion,
           id: input.id,
           version: input.expectedVersion + 1,
           categoryId: input.categoryId,
@@ -3462,10 +4255,10 @@ export class LiquidityWorkflow {
           createdAt: input.now,
         };
         this.db
-          .prepare(
-            'INSERT INTO payment_preferences VALUES (?,?,?) ON CONFLICT(budget_id,id) DO UPDATE SET record=excluded.record',
-          )
-          .run(input.budgetId, input.id, JSON.stringify(record));
+          .prepare(`INSERT INTO payment_preferences (budget_id,id,record,space_id,membership_id)
+            VALUES (?,?,?,?,?) ON CONFLICT(budget_id,id) DO UPDATE SET
+              record=excluded.record,space_id=excluded.space_id,membership_id=excluded.membership_id`)
+          .run(input.budgetId, input.id, JSON.stringify(record), context.spaceId, context.membershipId);
         this.invalidateProposals(input.budgetId, input.now);
         this.audit(input, 'payment_preference_approved', null, input.now, null);
         return record;
@@ -3476,6 +4269,8 @@ export class LiquidityWorkflow {
     input: LiquidityActor & { now: string; includeExpired?: boolean },
   ): PaymentPreferenceRecord[] {
     this.budget(input, 'liquidity');
+    const context = this.currentMemberContext(input);
+    if (!context) return [];
     return (
       this.db
         .prepare('SELECT record FROM payment_preferences WHERE budget_id=?')
@@ -3485,6 +4280,9 @@ export class LiquidityWorkflow {
       .filter(
         (r) =>
           r.actorId === input.actorId &&
+          r.spaceId === context.spaceId &&
+          r.membershipId === context.membershipId &&
+          r.governancePolicyVersion === context.governancePolicyVersion &&
           (input.includeExpired || Date.parse(r.expiresAt) > Date.parse(input.now)) &&
           this.isAuthorized({
             ...input,
@@ -3499,8 +4297,11 @@ export class LiquidityWorkflow {
             resourceId: r.categoryId,
           }) &&
           this.isAuthorized({
+            ...input,
             actorId: r.approvedBy,
-            budgetId: input.budgetId,
+            spaceId: context.spaceId,
+            membershipId: context.membershipId,
+            governancePolicyVersion: context.governancePolicyVersion,
             capability: 'approval',
             resourceKind: 'account',
             resourceId: r.route.accountId,
@@ -3508,13 +4309,14 @@ export class LiquidityWorkflow {
       );
   }
   getTransferAudit(input: LiquidityActor & { proposalId: string }): unknown[] {
+    const now = input.now ?? new Date().toISOString();
+    const scoped = { ...input, now };
     const p = this.command(
       {
-        ...input,
-        payloadHash: this.getTransferProposal(input).payloadHash,
+        ...scoped,
+        payloadHash: this.getTransferProposal(scoped).payloadHash,
         expectedVersion: 0,
         idempotencyKey: '',
-        now: '',
       },
       'audit',
     );

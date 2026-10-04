@@ -14,7 +14,7 @@ import {
   budgetSummaryAnalysis,
 } from '@balanceframe/application';
 import type { CommandInput } from '@balanceframe/application';
-import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
+import { defineEventHandler, getQuery, setHeader, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -39,6 +39,7 @@ function httpStatusForCode(code: string): number {
 }
 
 export default defineEventHandler(async (event) => {
+  setHeader(event, 'Cache-Control', 'private, no-store');
   const fullRead = await requireFullRead(event);
   if (!fullRead.ok) return fullRead.response;
   const authInfo = fullRead.info;
@@ -101,7 +102,7 @@ export default defineEventHandler(async (event) => {
         envelope.error!.retryable,
         envelope.requestId,
       );
-    });
+    }, { expectedBudgetId: fullRead.budgetId });
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'ANALYSIS_FAILED', true);
     setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);

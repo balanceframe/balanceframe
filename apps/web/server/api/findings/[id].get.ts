@@ -1,61 +1,70 @@
-/**
- * GET /api/findings/:id — get a single finding by ID.
- *
- * Read-only with respect to ledger data (finding state is separate).
- * Fails with FINDING_NOT_FOUND when the finding does not exist.
- *
- * Response envelope: Finding
- */
-
-import { defineEventHandler, getRouterParam, setResponseStatus } from 'h3';
-import { canReadFinancialFinding } from '../../utils/liquidity-service';
+import { defineEventHandler, getRouterParam, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
 import {
+  findFindingInBudget,
+  projectFinancialFinding,
+  selectedLiquidityActor,
+} from '../../utils/liquidity-service';
+import { requireSelectedSpace } from '../../utils/space-context';
+import {
+  errorEnvelope,
   getWorkflowStore,
   okEnvelope,
-  errorEnvelope,
-  buildAuthorizationInfo,
+  requireAuthorization,
   sanitizeError,
-  getActorId,
 } from '../../utils/workflow-store';
+import type { EventWithContext } from '../../utils/workflow-store';
+
+const FindingId = z.string().trim().min(1).max(200);
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
+  setHeader(event, 'Cache-Control', 'private, no-store');
   const requestId = crypto.randomUUID();
-  const findingId = getRouterParam(event, 'id') ?? '';
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  if (!selected.space.budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget', null, false, requestId);
+  }
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'observe',
+    `budget:${selected.space.budgetId}`,
+  );
+  if (!authorization.ok) return authorization.response;
 
-  if (!findingId) {
+  const parsedId = FindingId.safeParse(getRouterParam(event, 'id'));
+  if (!parsedId.success) {
     setResponseStatus(event, 400);
-    return errorEnvelope(
-      'MISSING_FINDING_ID',
-      'Finding ID is required.',
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope('INVALID_FINDING_ID', 'Finding ID is invalid.', authorization.info, false, requestId);
   }
 
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
+    return errorEnvelope('STORE_UNAVAILABLE', workflow.error, authorization.info, true, requestId);
   }
 
   try {
-    const finding = await wf.store.getFinding(findingId);
-    if (!finding || !(await canReadFinancialFinding(wf.store, getActorId(event), finding))) {
-      setResponseStatus(event, 404);
-      return errorEnvelope(
-        'FINDING_NOT_FOUND',
-        `Finding "${findingId}" not found.`,
-        authInfo,
-        false,
-        requestId,
-      );
+    const actor = selectedLiquidityActor(workflow.store, selected);
+    if (!actor) {
+      setResponseStatus(event, 403);
+      return errorEnvelope('FORBIDDEN', 'The selected space is unavailable.', authorization.info, false, requestId);
     }
-    return okEnvelope(finding, authInfo, requestId);
+    const finding = await findFindingInBudget(
+      workflow.store,
+      selected.space.budgetId,
+      parsedId.data,
+    );
+    const projected = finding && projectFinancialFinding(workflow.store, actor, finding);
+    if (!projected) {
+      setResponseStatus(event, 404);
+      return errorEnvelope('FINDING_NOT_FOUND', 'Finding not found.', authorization.info, false, requestId);
+    }
+    return okEnvelope(projected, authorization.info, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'FETCH_FAILED', false);
-    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
-    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
+    setResponseStatus(event, 500);
+    return errorEnvelope(safe.code, safe.message, authorization.info, false, requestId);
   }
 });

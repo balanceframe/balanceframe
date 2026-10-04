@@ -34,6 +34,9 @@ importers:
       '@balanceframe/workflow-store':
         specifier: workspace:*
         version: link:../../packages/workflow-store
+      zod:
+        specifier: ^3.0.0
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

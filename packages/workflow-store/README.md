@@ -4,6 +4,38 @@ Workflow persistence (SQLite).
 
 Manages categorization review workflows and state transitions in a local SQLite database.
 
+## Space governance
+
+`store.governance` owns personal/shared spaces, half-open membership periods,
+versioned policies, exact resource grants, bounded agent delegations, and credential
+bindings. A space starts unbound; a separately authorized, freshly reauthenticated
+human binds its Actual budget. An Actual connection does not grant financial visibility.
+
+Authorization uses the authenticated principal, selected space and budget, current
+membership period, current policy, complete resource closure, and actual operations.
+Account/category restrictions, aggregate-only and proposal-only rights, gross outgoing
+amounts, and operation counts are checked together; unrelated grants cannot be combined
+to authorize an otherwise forbidden operation. Account existence, name, balance,
+history, liquidity, and transfer-source identity are separate capabilities, as are raw
+documents, normalized evidence, and proposed ledger effects.
+
+Proposals bind the canonical payload and preconditions, requester membership,
+financial policy, and governance policy. Composite actions bind every operation and
+resource—not just the total. Approval requires the displayed hash and fresh human
+authentication; acquisition rechecks current distinct approvers, expiry, current
+authority, and exact idempotency identity atomically with approval consumption and
+audit. Authentication-proof renewal does not change the financial command identity.
+
+Revocation ends future access without deleting attribution. Rejoining creates a new
+membership period; saved private references and approvals do not transfer to it.
+Agent authority is the intersection of its live credential/delegation and the issuer's
+current grants. Agents cannot receive human control, approval, or settlement authority.
+
+Aggregate conclusions may depend on private financial inputs without disclosing them.
+Projection must authorize the complete contributing resource/operation closure before
+returning any global status. Summary admission never grants access to source documents,
+transactions, rule details, or account fields.
+
 ## Liquidity action specialization
 
 `store.liquidity` extends the shared action proposals, approvals, idempotency and audit
@@ -35,10 +67,9 @@ for explicit CAS renewal; effective route selection excludes expired preferences
 approvals through another clock. `cancelSpendSession` uses CAS/idempotency, preserves
 session evidence and audit, and never releases initiated transfer holds.
 
-The registered active owner provisions resource grants. The budget-only `full-read`
-capability is an explicit privileged whole-budget disclosure permission for legacy
-financial endpoints; nonowners also need `observe` and `liquidity:full-read` membership.
-It does not imply source, proposal, approval, confirmation, or audit authority.
-Owner discovery inserts only absent grants and never replaces explicit revocations.
-Membership capabilities are initialized only on first provisioning; subsequent account
-discovery preserves current membership capabilities and existing budget grants.
+Resource discovery provisions only explicitly authorized current membership grants;
+it never replaces a revocation or restores a previous membership period's rights.
+The budget `full-read` capability is explicit privileged whole-budget disclosure for
+legacy financial endpoints, which also require current selected-space `observe`.
+Aggregate-only or narrowed budget grants cannot authorize a whole raw ledger.
+`full-read` does not imply proposal, approval, execution, settlement, or audit authority.

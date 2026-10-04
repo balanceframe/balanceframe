@@ -133,86 +133,86 @@ describe('ReviewItem lifecycle', () => {
       const item = await store.createReviewItem(BASE_CREATE);
       expect(item.status).toBe('discovered');
 
-      const t1 = await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      const t1 = await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       expect(t1.status).toBe('suggestion_generated');
 
-      const t2 = await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      const t2 = await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       expect(t2.status).toBe('pending_review');
 
-      const t3 = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const t3 = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(t3.status).toBe('approved');
 
-      const t4 = await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
+      const t4 = await store.transitionInternalReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
       expect(t4.status).toBe('correcting');
 
-      const tApply = await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      const tApply = await store.transitionInternalReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
       expect(tApply.status).toBe('applying');
 
-      const t5 = await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
+      const t5 = await store.transitionInternalReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
       expect(t5.status).toBe('applied');
     })
 
 
     it('apply_failed is reachable via approved -> correcting -> applying -> apply_failed', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
-      await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
 
-      const tApply = await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      const tApply = await store.transitionInternalReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
       expect(tApply.status).toBe('applying');
 
-      const failed = await store.transitionReviewItem(item.id, { ...APPLY_FAIL, expectedVersion: 6 });
+      const failed = await store.transitionInternalReviewItem(item.id, { ...APPLY_FAIL, expectedVersion: 6 });
       expect(failed.status).toBe('apply_failed');
     })
 
     it('rejected is reachable from pending_review', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
-      const rejected = await store.transitionReviewItem(item.id, { ...REJECT, expectedVersion: 3 });
+      const rejected = await store.transitionInternalReviewItem(item.id, { ...REJECT, expectedVersion: 3 });
       expect(rejected.status).toBe('rejected');
     });
 
     it('skipped is reachable from pending_review', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
-      const skipped = await store.transitionReviewItem(item.id, { ...SKIP, expectedVersion: 3 });
+      const skipped = await store.transitionInternalReviewItem(item.id, { ...SKIP, expectedVersion: 3 });
       expect(skipped.status).toBe('skipped');
     });
 
     it('skipped is reachable from suggestion_generated (before pending_review)', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
 
-      const skipped = await store.transitionReviewItem(item.id, { ...SKIP, expectedVersion: 2 });
+      const skipped = await store.transitionInternalReviewItem(item.id, { ...SKIP, expectedVersion: 2 });
       expect(skipped.status).toBe('skipped');
     });
 
     it('superseded is reachable from any non-terminal state', async () => {
       // From discovered
       const item1 = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b1', transactionId: 't1' });
-      const s1 = await store.transitionReviewItem(item1.id, { ...SUPERSEDE, expectedVersion: 1 });
+      const s1 = await store.transitionInternalReviewItem(item1.id, { ...SUPERSEDE, expectedVersion: 1 });
       expect(s1.status).toBe('superseded');
       expect(s1.supersededReason).toBe('Newer suggestion available');
 
       // From pending_review
       const item2 = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b2', transactionId: 't2' });
-      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
-      const s2 = await store.transitionReviewItem(item2.id, { ...SUPERSEDE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
+      const s2 = await store.transitionInternalReviewItem(item2.id, { ...SUPERSEDE, expectedVersion: 3 });
       expect(s2.status).toBe('superseded');
 
       // From approved
       const item3 = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b3', transactionId: 't3' });
-      await store.transitionReviewItem(item3.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item3.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item3.id, { ...APPROVE_ALICE, expectedVersion: 3 });
-      const s3 = await store.transitionReviewItem(item3.id, { ...SUPERSEDE, expectedVersion: 4 });
+      await store.transitionInternalReviewItem(item3.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item3.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item3.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const s3 = await store.transitionInternalReviewItem(item3.id, { ...SUPERSEDE, expectedVersion: 4 });
       expect(s3.status).toBe('superseded');
     });
   });
@@ -224,16 +224,16 @@ describe('ReviewItem lifecycle', () => {
   describe('intermediate transitions', () => {
     it('supports discovered -> suggestion_generated -> pending_review', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      const t1 = await store.transitionReviewItem(item.id, GENERATE);
+      const t1 = await store.transitionInternalReviewItem(item.id, GENERATE);
       expect(t1.status).toBe('suggestion_generated');
 
-      const t2 = await store.transitionReviewItem(t1.id, { ...START_REVIEW, expectedVersion: t1.version });
+      const t2 = await store.transitionInternalReviewItem(t1.id, { ...START_REVIEW, expectedVersion: t1.version });
       expect(t2.status).toBe('pending_review');
     });
 
     it('discovered -> pending_review (skipping suggestion_generated) is valid', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      const t = await store.transitionReviewItem(item.id, START_REVIEW);
+      const t = await store.transitionInternalReviewItem(item.id, START_REVIEW);
       expect(t.status).toBe('pending_review');
     });
 
@@ -269,7 +269,7 @@ describe('ReviewItem lifecycle', () => {
       expect(item.version).toBe(1);
 
       // Transition preserves fields
-      const t = await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      const t = await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       expect(t.suggestionId).toBe('sug-abc');
       expect(t.budgetId).toBe(input.budgetId);
       expect(t.correlationId).toBe('corr-xyz');
@@ -280,7 +280,7 @@ describe('ReviewItem lifecycle', () => {
       const item = await store.createReviewItem(BASE_CREATE);
       // discovered -> applied is not allowed
       await expect(
-        store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 1 }),
+        store.transitionInternalReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 1 }),
       ).rejects.toThrow();
     });
 
@@ -288,7 +288,7 @@ describe('ReviewItem lifecycle', () => {
       const item = await store.createReviewItem(BASE_CREATE);
       // Version is 1, so expectedVersion: 2 should fail
       await expect(
-        store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 2 }),
+        store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 2 }),
       ).rejects.toThrow(/version|conflict|stale/i);
     });
   });
@@ -309,7 +309,7 @@ describe('ReviewItem lifecycle', () => {
 
     it('dedupes even after transitions (non-superseded statuses)', async () => {
       const first = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(first.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(first.id, { ...GENERATE, expectedVersion: 1 });
 
       // Creating again should still return the existing item
       const second = await store.createReviewItem(BASE_CREATE);
@@ -319,7 +319,7 @@ describe('ReviewItem lifecycle', () => {
 
     it('allows creation after the existing item is superseded', async () => {
       const first = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(first.id, { ...SUPERSEDE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(first.id, { ...SUPERSEDE, expectedVersion: 1 });
 
       tickSync();
       const second = await store.createReviewItem(BASE_CREATE);
@@ -343,24 +343,24 @@ describe('ReviewItem lifecycle', () => {
   describe('idempotent transitions', () => {
     it('re-applying the same transition succeeds and returns the same state', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      const t1 = await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      const t1 = await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       expect(t1.status).toBe('suggestion_generated');
 
       // Replay the same transition (actor, reason same) — should succeed
-      const t2 = await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: t1.version });
+      const t2 = await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: t1.version });
       expect(t2.status).toBe('suggestion_generated');
       expect(t2.version).toBe(t1.version); // No version bump on no-op
     });
 
     it('replaying terminal state transitions is idempotent', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      const r1 = await store.transitionReviewItem(item.id, { ...REJECT, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      const r1 = await store.transitionInternalReviewItem(item.id, { ...REJECT, expectedVersion: 3 });
       expect(r1.status).toBe('rejected');
 
       // Reject again — idempotent
-      const r2 = await store.transitionReviewItem(item.id, { ...REJECT, expectedVersion: r1.version });
+      const r2 = await store.transitionInternalReviewItem(item.id, { ...REJECT, expectedVersion: r1.version });
       expect(r2.status).toBe('rejected');
       expect(r2.version).toBe(r1.version);
     });
@@ -398,14 +398,14 @@ describe('ReviewItem lifecycle', () => {
   describe('superseded with reason', () => {
     it('sets supersededReason and supersededBy on explicit supersede', async () => {
       const item1 = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-sup', transactionId: 't-sup' });
-      const s1 = await store.transitionReviewItem(item1.id, { ...SUPERSEDE, expectedVersion: 1 });
+      const s1 = await store.transitionInternalReviewItem(item1.id, { ...SUPERSEDE, expectedVersion: 1 });
       expect(s1.status).toBe('superseded');
       expect(s1.supersededReason).toBe('Newer suggestion available');
     });
 
     it('persists superseded fields in getReviewItem', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-x', transactionId: 't-x' });
-      const s = await store.transitionReviewItem(item.id, { ...SUPERSEDE, expectedVersion: 1 });
+      const s = await store.transitionInternalReviewItem(item.id, { ...SUPERSEDE, expectedVersion: 1 });
 
       const fetched = await store.getReviewItem(item.id);
       expect(fetched).not.toBeNull();
@@ -415,10 +415,10 @@ describe('ReviewItem lifecycle', () => {
 
     it('does not allow transitions from superseded', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-y', transactionId: 't-y' });
-      await store.transitionReviewItem(item.id, { ...SUPERSEDE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...SUPERSEDE, expectedVersion: 1 });
 
       await expect(
-        store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 2 }),
+        store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 2 }),
       ).rejects.toThrow();
     });
   });
@@ -435,11 +435,11 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't2r',
         reviewersRequired: 2,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
       // Alice approves — still pending_review because 2 needed
-      const afterAlice = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const afterAlice = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(afterAlice.status).toBe('pending_review');
     });
 
@@ -450,15 +450,15 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't2r2',
         reviewersRequired: 2,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
       // Alice approves first
-      const afterAlice = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const afterAlice = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(afterAlice.status).toBe('pending_review');
 
       // Bob approves — enough reviewers (use actual version from afterAlice)
-      const afterBob = await store.transitionReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: afterAlice.version });
+      const afterBob = await store.transitionInternalReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: afterAlice.version });
       expect(afterBob.status).toBe('approved');
     });
 
@@ -469,17 +469,17 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't2r3',
         reviewersRequired: 2,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
       // Alice approves
-      const afterFirst = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const afterFirst = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(afterFirst.status).toBe('pending_review');
 
       tickSync();
 
       // Alice tries to approve again — no-op, still pending_review
-      const afterDup = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const afterDup = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(afterDup.status).toBe('pending_review');
     });
   });
@@ -491,34 +491,34 @@ describe('ReviewItem lifecycle', () => {
   describe('undo', () => {
     it('can undo from approved back to pending_review (revert approval)', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-undo1', transactionId: 't-undo1' });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
 
       // Undo: approved -> pending_review
-      const undone = await store.undoReviewTransition(item.id, ACTOR_ALICE, 'Reverted approval', 4);
+      const undone = await store.undoInternalReviewTransition(item.id, ACTOR_ALICE, 'Reverted approval', 4);
       expect(undone.status).toBe('pending_review');
       expect(undone.version).toBe(5);
     });
 
     it('can undo from correcting back to pending_review (revert correction attempt)', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-undo2', transactionId: 't-undo2' });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
-      await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
 
-      const undone = await store.undoReviewTransition(item.id, ACTOR_ALICE, 'Reverting correction', 5);
+      const undone = await store.undoInternalReviewTransition(item.id, ACTOR_ALICE, 'Reverting correction', 5);
       expect(undone.status).toBe('pending_review');
     });
 
     it('records an action for the undo transition', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-undo3', transactionId: 't-undo3' });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
 
-      await store.undoReviewTransition(item.id, ACTOR_ALICE, 'Mistake', 4);
+      await store.undoInternalReviewTransition(item.id, ACTOR_ALICE, 'Mistake', 4);
 
       const actions = await store.getReviewActions(item.id);
       const undoAction = actions.find(a => a.toStatus === 'pending_review' && a.fromStatus === 'approved');
@@ -529,15 +529,15 @@ describe('ReviewItem lifecycle', () => {
 
     it('rejects undo from non-reversible states (applied)', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-undo4', transactionId: 't-undo4' });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
-      await store.transitionReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
-      await store.transitionReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
-      await store.transitionReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...START_CORRECTING, expectedVersion: 4 });
+      await store.transitionInternalReviewItem(item.id, { toStatus: 'applying', actor: ACTOR_ALICE, expectedVersion: 5 });
+      await store.transitionInternalReviewItem(item.id, { ...APPLY_DONE, expectedVersion: 6 });
 
       await expect(
-        store.undoReviewTransition(item.id, ACTOR_ALICE, 'Too late', 7),
+        store.undoInternalReviewTransition(item.id, ACTOR_ALICE, 'Too late', 7),
       ).rejects.toThrow();
     })
 
@@ -550,9 +550,9 @@ describe('ReviewItem lifecycle', () => {
   describe('review actions', () => {
     it('records an action for every status transition', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
 
       const actions = await store.getReviewActions(item.id);
       expect(actions.length).toBe(3);
@@ -566,7 +566,7 @@ describe('ReviewItem lifecycle', () => {
 
     it('action records include actor, reason, and metadata', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, {
+      await store.transitionInternalReviewItem(item.id, {
         toStatus: 'pending_review',
         actor: 'system',
         reason: 'Ready for human review',
@@ -584,11 +584,11 @@ describe('ReviewItem lifecycle', () => {
     it('actions are ordered by creation time', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
 
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
       tickSync();
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
       tickSync();
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
 
       // Fetch all actions at once to verify ordering
       const allActions = await store.getReviewActions(item.id);
@@ -637,7 +637,7 @@ describe('ReviewItem lifecycle', () => {
 
     it('findReviewByIssue returns null for superseded items', async () => {
       const item = await store.createReviewItem(BASE_CREATE);
-      await store.transitionReviewItem(item.id, { ...SUPERSEDE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...SUPERSEDE, expectedVersion: 1 });
 
       const found = await store.findReviewByIssue(
         BASE_CREATE.budgetId,
@@ -664,7 +664,7 @@ describe('ReviewItem lifecycle', () => {
     it('listReviewItems can filter by status', async () => {
       await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-f1', transactionId: 't-f1' });
       const item2 = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-f2', transactionId: 't-f2' });
-      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
 
       const discovered = await store.listReviewItems({ status: 'discovered' });
       expect(discovered.length).toBe(1);
@@ -710,25 +710,25 @@ describe('ReviewItem lifecycle', () => {
   // =======================================================================
 
   describe('heterogeneous grouping', () => {
-    it('transitionReviewItems rejects items with different current statuses', async () => {
+    it('transitionInternalReviewItems rejects items with different current statuses', async () => {
       const item1 = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-h1', transactionId: 't-h1' });
       const item2 = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-h2', transactionId: 't-h2' });
       // Put item2 in a different status
-      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
 
       await expect(
-        store.transitionReviewItems([item1.id, item2.id], 'superseded', 'system', 'Batch cleanup'),
+        store.transitionInternalReviewItems([item1.id, item2.id], 'superseded', 'system', 'Batch cleanup'),
       ).rejects.toThrow(/heterogeneous|status.*not equal/i);
     });
 
-    it('transitionReviewItems transitions all items with the same status atomically', async () => {
+    it('transitionInternalReviewItems transitions all items with the same status atomically', async () => {
       const items = await Promise.all([
         store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-b1', transactionId: 't-b1' }),
         store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-b2', transactionId: 't-b2' }),
         store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-b3', transactionId: 't-b3' }),
       ]);
 
-      const results = await store.transitionReviewItems(
+      const results = await store.transitionInternalReviewItems(
         items.map(i => i.id),
         'superseded',
         'system',
@@ -756,14 +756,14 @@ describe('ReviewItem lifecycle', () => {
       // Both are 'discovered' at version 1. Advance both through identical
       // statuses so they share a status, then advance one item further so its
       // current version is higher.
-      await store.transitionReviewItem(items[0].id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(items[0].id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(items[0].id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(items[0].id, { ...START_REVIEW, expectedVersion: 2 });
 
-      await store.transitionReviewItem(items[1].id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(items[1].id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(items[1].id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(items[1].id, { ...START_REVIEW, expectedVersion: 2 });
       // Item 1: approve then undo so version is higher but status same
-      const app = await store.transitionReviewItem(items[1].id, { ...APPROVE_ALICE, expectedVersion: 3 });
-      await store.undoReviewTransition(items[1].id, ACTOR_ALICE, 'test', app.version);
+      const app = await store.transitionInternalReviewItem(items[1].id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.undoInternalReviewTransition(items[1].id, ACTOR_ALICE, 'test', app.version);
 
       // Both now at 'pending_review' but item1 has a higher version
       const after = await store.getReviewItem(items[0].id);
@@ -773,14 +773,14 @@ describe('ReviewItem lifecycle', () => {
       expect(after1!.version).toBeGreaterThan(after!.version);
 
       // Bulk supersede — all at same status, version checked per-item at transition time
-      const results = await store.transitionReviewItems(
+      const results = await store.transitionInternalReviewItems(
         items.map(i => i.id),
         'superseded',
         'system',
         'Batch cleanup',
       );
 
-      // Since transitionReviewItems reads fresh versions, both should succeed
+      // Since transitionInternalReviewItems reads fresh versions, both should succeed
       expect(results.length).toBe(2);
       expect(results[0].success).toBe(true);
       expect(results[1].success).toBe(true);
@@ -803,7 +803,7 @@ describe('ReviewItem lifecycle', () => {
           budgetId: 'b-persist',
           transactionId: 't-persist',
         });
-        await store1.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+        await store1.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
         const actions1 = await store1.getReviewActions(item.id);
         store1.close();
 
@@ -838,10 +838,10 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't-fap1',
         reviewersRequired: 1,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
-      const approved = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const approved = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(approved.status).toBe('approved');
       expect(approved.approvedBy).toContain(ACTOR_ALICE);
 
@@ -857,13 +857,13 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't-fap2',
         reviewersRequired: 2,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
-      const afterAlice = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const afterAlice = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(afterAlice.approvedBy).toEqual([ACTOR_ALICE]);
 
-      const afterBob = await store.transitionReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: afterAlice.version });
+      const afterBob = await store.transitionInternalReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: afterAlice.version });
       expect(afterBob.status).toBe('approved');
       expect(afterBob.approvedBy).toEqual([ACTOR_ALICE, ACTOR_BOB]);
     });
@@ -878,10 +878,10 @@ describe('ReviewItem lifecycle', () => {
           transactionId: 't-fap3',
           reviewersRequired: 2,
         });
-        await store1.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-        await store1.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-        await store1.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
-        await store1.transitionReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: 4 });
+        await store1.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+        await store1.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+        await store1.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+        await store1.transitionInternalReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: 4 });
         store1.close();
 
         const store2 = new SqliteWorkflowStore(dbPath);
@@ -906,10 +906,10 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't-apa1',
         reviewersRequired: 2,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
-      const afterAlice = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const afterAlice = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(afterAlice.approvedBy).toEqual([ACTOR_ALICE]);
 
       const actions = await store.getReviewActions(item.id);
@@ -925,13 +925,13 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't-apa2',
         reviewersRequired: 3,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
-      const a1 = await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      const a1 = await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
       expect(a1.approvedBy).toEqual([ACTOR_ALICE]);
 
-      const a2 = await store.transitionReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: a1.version });
+      const a2 = await store.transitionInternalReviewItem(item.id, { ...APPROVE_BOB, expectedVersion: a1.version });
       expect(a2.approvedBy).toEqual([ACTOR_ALICE, ACTOR_BOB]);
     });
   });
@@ -953,7 +953,7 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't-ss2',
       });
 
-      const s1 = await store.transitionReviewItem(item1.id, {
+      const s1 = await store.transitionInternalReviewItem(item1.id, {
         toStatus: 'superseded',
         actor: 'system',
         reason: 'Superseded by newer',
@@ -978,7 +978,7 @@ describe('ReviewItem lifecycle', () => {
           budgetId: 'b-ss3',
           transactionId: 't-ss3',
         });
-        await store1.transitionReviewItem(item1.id, {
+        await store1.transitionInternalReviewItem(item1.id, {
           toStatus: 'superseded',
           actor: 'system',
           reason: 'Stale',
@@ -1096,14 +1096,14 @@ describe('ReviewItem lifecycle', () => {
   });
 
   // =======================================================================
-  // Bulk — missing IDs in transitionReviewItems
+  // Bulk — missing IDs in transitionInternalReviewItems
   // =======================================================================
 
   describe('bulk missing IDs', () => {
     it('returns a result for each requested ID including missing ones', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-bulk1', transactionId: 't-bulk1' });
 
-      const results = await store.transitionReviewItems(
+      const results = await store.transitionInternalReviewItems(
         [item.id, 'nonexistent-id'],
         'superseded',
         'system',
@@ -1118,7 +1118,7 @@ describe('ReviewItem lifecycle', () => {
     });
 
     it('returns failure for every ID when all are missing', async () => {
-      const results = await store.transitionReviewItems(
+      const results = await store.transitionInternalReviewItems(
         ['missing-1', 'missing-2'],
         'superseded',
         'system',
@@ -1134,7 +1134,7 @@ describe('ReviewItem lifecycle', () => {
     it('includes missing IDs among results even when some items exist', async () => {
       const item = await store.createReviewItem({ ...BASE_CREATE, budgetId: 'b-bulk2', transactionId: 't-bulk2' });
 
-      const results = await store.transitionReviewItems(
+      const results = await store.transitionInternalReviewItems(
         ['missing-a', item.id, 'missing-b'],
         'superseded',
         'system',
@@ -1166,8 +1166,8 @@ describe('ReviewItem lifecycle', () => {
           reviewersRequired: 2,
         });
         // Advance to pending_review
-        await initStore.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-        await initStore.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+        await initStore.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+        await initStore.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
         initStore.close();
 
         const store1 = new SqliteWorkflowStore(dbPath);
@@ -1175,7 +1175,7 @@ describe('ReviewItem lifecycle', () => {
 
         // Both see version 3, pending_review
         // store1 does partial approval (Alice), bumps version to 4, stays pending_review
-        const afterAlice = await store1.transitionReviewItem(item.id, {
+        const afterAlice = await store1.transitionInternalReviewItem(item.id, {
           ...APPROVE_ALICE,
           expectedVersion: 3,
         });
@@ -1184,7 +1184,7 @@ describe('ReviewItem lifecycle', () => {
 
         // store2 tries with stale expectedVersion 3 (still valid status but wrong version) — should fail
         await expect(
-          store2.transitionReviewItem(item.id, {
+          store2.transitionInternalReviewItem(item.id, {
             ...APPROVE_BOB,
             expectedVersion: 3,
           }),
@@ -1213,7 +1213,7 @@ describe('ReviewItem lifecycle', () => {
         const store2 = new SqliteWorkflowStore(dbPath);
 
         // Both see version 1, discovered. store1 transitions.
-        const t1 = await store1.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+        const t1 = await store1.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
         expect(t1.version).toBe(2);
         expect(t1.status).toBe('suggestion_generated');
 
@@ -1223,7 +1223,7 @@ describe('ReviewItem lifecycle', () => {
         // For a "stale expectedVersion" test, we need a non-idempotent target.
         // store2 tries to supersede with expectedVersion 1 (stale):
         await expect(
-          store2.transitionReviewItem(item.id, {
+          store2.transitionInternalReviewItem(item.id, {
             toStatus: 'superseded',
             actor: 'system',
             reason: 'Stale',
@@ -1253,14 +1253,14 @@ describe('ReviewItem lifecycle', () => {
           budgetId: 'b-audit1',
           transactionId: 't-audit1',
         });
-        await store1.transitionReviewItem(item.id, {
+        await store1.transitionInternalReviewItem(item.id, {
           toStatus: 'pending_review',
           actor: 'system',
           reason: 'Auto-promote',
           metadata: { source: 'scheduler' },
           expectedVersion: 1,
         });
-        await store1.transitionReviewItem(item.id, {
+        await store1.transitionInternalReviewItem(item.id, {
           ...APPROVE_ALICE,
           expectedVersion: 2,
         });
@@ -1305,9 +1305,9 @@ describe('ReviewItem lifecycle', () => {
         transactionId: 't-audit2',
       });
 
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
 
       const actions = await store.getReviewActions(item.id);
       expect(actions.length).toBe(3);
@@ -1374,11 +1374,11 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-ch1',
         transactionId: 't-ch1',
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
       // Approve with correction evidence
-      const approved = await store.transitionReviewItem(item.id, {
+      const approved = await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         reason: 'Looks correct',
@@ -1417,9 +1417,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-ch2',
         transactionId: 't-ch2',
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, {
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         reason: 'Looks correct',
@@ -1429,7 +1429,7 @@ describe('CorrectionHistory', () => {
       });
 
       // Correcting transition also records correction evidence
-      const correcting = await store.transitionReviewItem(item.id, {
+      const correcting = await store.transitionInternalReviewItem(item.id, {
         toStatus: 'correcting',
         actor: ACTOR_BOB,
         reason: 'Applying correction',
@@ -1467,10 +1467,10 @@ describe('CorrectionHistory', () => {
         transactionId: 't-ch3',
         suggestionId: savedSuggestion.id,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
-      await store.transitionReviewItem(item.id, {
+      await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 3,
@@ -1497,9 +1497,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-ch4',
         transactionId: 't-ch4',
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
 
-      const skipped = await store.transitionReviewItem(item.id, {
+      const skipped = await store.transitionInternalReviewItem(item.id, {
         ...SKIP,
         expectedVersion: 2,
         merchant: 'ShouldNotRecord',
@@ -1516,9 +1516,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-ch5',
         transactionId: 't-ch5',
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, {
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 3,
@@ -1527,11 +1527,11 @@ describe('CorrectionHistory', () => {
       });
 
       // Undo
-      const undone = await store.undoReviewTransition(item.id, ACTOR_ALICE, 'Mistake', 4);
+      const undone = await store.undoInternalReviewTransition(item.id, ACTOR_ALICE, 'Mistake', 4);
       expect(undone.status).toBe('pending_review');
 
       // Re-approve with different merchant
-      const reApproved = await store.transitionReviewItem(item.id, {
+      const reApproved = await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_BOB,
         expectedVersion: undone.version,
@@ -1561,9 +1561,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-idem1',
         transactionId: 't-idem1',
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, {
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 3,
@@ -1571,7 +1571,7 @@ describe('CorrectionHistory', () => {
       });
 
       // Replay same transition (idempotent)
-      await store.transitionReviewItem(item.id, {
+      await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 4,
@@ -1590,11 +1590,11 @@ describe('CorrectionHistory', () => {
         transactionId: 't-idem2',
         reviewersRequired: 2,
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
 
       // Alice approves (partial — still pending_review)
-      const afterAlice = await store.transitionReviewItem(item.id, {
+      const afterAlice = await store.transitionInternalReviewItem(item.id, {
         ...APPROVE_ALICE,
         expectedVersion: 3,
         merchant: 'Partial',
@@ -1606,7 +1606,7 @@ describe('CorrectionHistory', () => {
       expect(h1.length).toBe(0);
 
       // Bob approves now (final approval)
-      const afterBob = await store.transitionReviewItem(item.id, {
+      const afterBob = await store.transitionInternalReviewItem(item.id, {
         ...APPROVE_BOB,
         expectedVersion: afterAlice.version,
         merchant: 'Partial',
@@ -1624,12 +1624,12 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-idem3',
         transactionId: 't-idem3',
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, { ...APPROVE_ALICE, expectedVersion: 3 });
 
       // Enter correcting mode
-      const c1 = await store.transitionReviewItem(item.id, {
+      const c1 = await store.transitionInternalReviewItem(item.id, {
         ...START_CORRECTING,
         expectedVersion: 4,
         merchant: 'Fix',
@@ -1638,7 +1638,7 @@ describe('CorrectionHistory', () => {
       expect(c1.status).toBe('correcting');
 
       // Idempotent transition (already correcting)
-      const c2 = await store.transitionReviewItem(item.id, {
+      const c2 = await store.transitionInternalReviewItem(item.id, {
         ...START_CORRECTING,
         expectedVersion: c1.version,
         merchant: 'Fix',
@@ -1666,9 +1666,9 @@ describe('CorrectionHistory', () => {
         transactionId: 't-conf1',
         categoryId: 'cat-food',
       });
-      await store.transitionReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item1.id, {
+      await store.transitionInternalReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item1.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 3,
@@ -1682,9 +1682,9 @@ describe('CorrectionHistory', () => {
         transactionId: 't-conf2',
         categoryId: 'cat-clothing',
       });
-      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item2.id, {
+      await store.transitionInternalReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item2.id, {
         toStatus: 'approved',
         actor: ACTOR_BOB,
         expectedVersion: 3,
@@ -1707,9 +1707,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-conf3',
         transactionId: 't-conf3',
       });
-      await store.transitionReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item1.id, {
+      await store.transitionInternalReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item1.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 3,
@@ -1722,9 +1722,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-conf4',
         transactionId: 't-conf4',
       });
-      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item2.id, {
+      await store.transitionInternalReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item2.id, {
         toStatus: 'approved',
         actor: ACTOR_BOB,
         expectedVersion: 3,
@@ -1744,9 +1744,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-conf5',
         transactionId: 't-conf5',
       });
-      await store.transitionReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item1.id, {
+      await store.transitionInternalReviewItem(item1.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item1.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item1.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 3,
@@ -1759,9 +1759,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-conf6',
         transactionId: 't-conf6',
       });
-      await store.transitionReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item2.id, {
+      await store.transitionInternalReviewItem(item2.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item2.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item2.id, {
         toStatus: 'approved',
         actor: ACTOR_BOB,
         expectedVersion: 3,
@@ -1781,9 +1781,9 @@ describe('CorrectionHistory', () => {
         budgetId: 'b-conf7',
         transactionId: 't-conf7',
       });
-      await store.transitionReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
-      await store.transitionReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
-      await store.transitionReviewItem(item.id, {
+      await store.transitionInternalReviewItem(item.id, { ...GENERATE, expectedVersion: 1 });
+      await store.transitionInternalReviewItem(item.id, { ...START_REVIEW, expectedVersion: 2 });
+      await store.transitionInternalReviewItem(item.id, {
         toStatus: 'approved',
         actor: ACTOR_ALICE,
         expectedVersion: 3,

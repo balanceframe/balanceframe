@@ -1,128 +1,29 @@
-/**
- * POST /api/findings/:id/supersede — supersede a finding, marking it as
- * replaced by another finding.
- *
- * No-mutation contract: only changes finding state, never mutates ledger.
- * Reads finding ID from URL param, expectedVersion, supersededBy, and
- * reason from JSON body.
- *
- * Request body: { expectedVersion: number, supersededBy: string, reason: string }
- * Response envelope: Finding
- */
-
-import { defineEventHandler, readBody, getRouterParam, setResponseStatus } from 'h3';
-import { canReadFinancialFinding } from '../../../utils/liquidity-service';
+import { z } from 'zod';
 import {
-  getWorkflowStore,
-  okEnvelope,
-  errorEnvelope,
-  buildAuthorizationInfo,
-  getActorId,
-  requireAuthorization,
-  sanitizeError,
-} from '../../../utils/workflow-store';
+  findFindingInBudget,
+  findingTransitionRoute,
+  projectFinancialFinding,
+} from '../../../utils/liquidity-service';
 
-export default defineEventHandler(async (event) => {
-  const authCheck = await requireAuthorization(event, 'finding:transition');
-  if (!authCheck.ok) return authCheck.response;
-  const authInfo = authCheck.info;
-  const requestId = crypto.randomUUID();
-  const findingId = getRouterParam(event, 'id') ?? '';
+const Body = z.object({
+  expectedVersion: z.number().int().nonnegative(),
+  supersededBy: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
 
-  if (!findingId) {
-    setResponseStatus(event, 400);
-    return errorEnvelope(
-      'MISSING_FINDING_ID',
-      'Finding ID is required.',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = (await readBody(event)) ?? {};
-  } catch {
-    setResponseStatus(event, 400);
-    return errorEnvelope(
-      'INVALID_BODY',
-      'Request body must be valid JSON.',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
-
-  const expectedVersion = typeof body.expectedVersion === 'number' ? body.expectedVersion : -1;
-  if (expectedVersion < 0) {
-    setResponseStatus(event, 400);
-    return errorEnvelope(
-      'MISSING_VERSION',
-      'expectedVersion is required and must be a non-negative number.',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
-
-  const supersededBy = typeof body.supersededBy === 'string' ? body.supersededBy.trim() : '';
-  if (!supersededBy) {
-    setResponseStatus(event, 400);
-    return errorEnvelope(
-      'MISSING_SUPERSEDED_BY',
-      'supersededBy is required and must reference the replacing finding ID.',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
-
-  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-  if (!reason) {
-    setResponseStatus(event, 400);
-    return errorEnvelope(
-      'MISSING_REASON',
-      'Supersession reason is required.',
-      authInfo,
-      false,
-      requestId,
-    );
-  }
-
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
-    setResponseStatus(event, 503);
-    return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
-  }
-
-  try {
-    const current = await wf.store.getFinding(findingId);
-    const replacement = await wf.store.getFinding(supersededBy);
-    if (
-      (current && !(await canReadFinancialFinding(wf.store, getActorId(event), current))) ||
-      (replacement && !(await canReadFinancialFinding(wf.store, getActorId(event), replacement)))
-    ) {
-      setResponseStatus(event, 403);
-      return errorEnvelope(
-        'FINDING_DENIED',
-        'Finding unavailable or not authorized.',
-        authInfo,
-        false,
-        requestId,
-      );
-    }
-    const finding = await wf.store.supersedeFinding({
-      findingId,
-      actorId: getActorId(event),
-      supersededBy,
-      reason,
-      expectedVersion,
+export default findingTransitionRoute(
+  Body,
+  async ({ store, actor, finding, body }) => {
+    const replacement = await findFindingInBudget(store, actor.budgetId, body.supersededBy);
+    if (!replacement || !projectFinancialFinding(store, actor, replacement))
+      throw new Error('Replacement finding unavailable in the selected space');
+    return store.supersedeFinding({
+      findingId: finding.id,
+      actorId: actor.actorId,
+      supersededBy: replacement.id,
+      reason: body.reason,
+      expectedVersion: body.expectedVersion,
     });
-    return okEnvelope(finding, authInfo, requestId);
-  } catch (error) {
-    const safe = sanitizeError(error, requestId, 'SUPERSEDE_FAILED', false);
-    setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
-    return errorEnvelope(safe.code, safe.message, authInfo, safe.retryable, requestId);
-  }
-});
+  },
+  'SUPERSEDE_FAILED',
+);

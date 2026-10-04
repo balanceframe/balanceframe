@@ -1,32 +1,45 @@
-/**
- * TDD: Tests for the mutation composition executor factory.
- *
- * The executor factory (createDefaultExecutorFactory) now constructs a
- * CategorizationMutationService bridge that creates proposals and approvals
- * in the workflow store, then calls the service's execute() path.
- *
- * Tests:
- * - Observe-mode default returns null (no executor).
- * - reviewAndApply opt-in creates an executor.
- * - The executor uses a scoped connection that is always disposed after execution.
- * - It creates a proposal and approval in the workflow store.
- * - The executor returns apply_failed when connection restoration throws.
- * - Existing interfaces remain type-safe.
- */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterAll, describe, it, expect, vi } from 'vitest';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-
-import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
+import { createNativeCategorizationMutationProtocol } from '@balanceframe/application';
+import type { ConnectionManager, ConnectionUseOptions } from '@balanceframe/application';
 import type { EventWithContext } from '../../server/utils/workflow-store';
 import type { ReviewItem } from '@balanceframe/workflow-store';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
+import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import fixture from '../../../../protocol/fixtures/representative.json';
+let providerStore: SqliteWorkflowStore | null = null;
+let bootstrapInitialized = false;
+let fixtureSequence = 0;
+
+afterAll(() => providerStore?.close());
+
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 const TEST_ACTOR = 'test-actor';
-const TEST_TX_ID = 'txn-001';
+const canonicalFixture = canonicalProtocolSnapshotSchema.parse(fixture);
+const nativeTransaction = canonicalFixture.transactions.find((candidate) => candidate.categoryId !== null);
+if (!nativeTransaction?.categoryId) throw new Error('Native fixture transaction is missing a current category');
+const nativeTargetCategory = canonicalFixture.categories.find(
+  (category) => category.id !== nativeTransaction.categoryId && !category.deleted,
+);
+if (!nativeTargetCategory) throw new Error('Native fixture target category is missing');
+const TEST_TX_ID = nativeTransaction.id;
+const sourceAmount = BigInt(nativeTransaction.amount.minorUnits);
+const sourceTransaction = {
+  id: nativeTransaction.id,
+  accountId: nativeTransaction.accountId,
+  categoryId: nativeTransaction.categoryId,
+  direction: sourceAmount < 0n ? 'outgoing' as const : 'incoming' as const,
+  amount: {
+    minorUnits: (sourceAmount < 0n ? -sourceAmount : sourceAmount).toString(),
+    currency: nativeTransaction.amount.currency,
+  },
+};
 
 function mockEvent(config?: Record<string, unknown>): EventWithContext {
   return {
@@ -37,54 +50,6 @@ function mockEvent(config?: Record<string, unknown>): EventWithContext {
   };
 }
 
-function fakeConnectionManager(overrides?: {
-  restoreResult?: {
-    budget?: { id: string; groupId: string; name: string; encrypted: boolean };
-    connector?: Record<string, unknown>;
-    synchronization?: unknown;
-  };
-}) {
-  const defaultConnector = {
-    connect: vi.fn(),
-    selectBudget: vi.fn(),
-    synchronize: vi.fn().mockResolvedValue({
-      snapshot: {
-        transactions: [{ id: TEST_TX_ID, categoryId: 'cat-food-verified' }],
-      },
-    }),
-    setTransactionCategory: vi.fn().mockResolvedValue({
-      success: true,
-      transactionId: TEST_TX_ID,
-      previousCategoryId: 'cat-food',
-    }),
-  };
-
-  const restoreResult = overrides?.restoreResult ?? {};
-  const connector = (restoreResult.connector ?? defaultConnector) as typeof defaultConnector;
-
-  const connected = {
-    budget: restoreResult.budget ?? {
-      id: 'budget-1',
-      groupId: 'group-1',
-      name: 'Test Budget',
-      encrypted: false,
-    },
-    connector,
-    synchronization: restoreResult.synchronization ?? null,
-  };
-  const restore = vi.fn().mockResolvedValue(connected);
-  const manager = {
-    restore,
-    withConnection: vi.fn(async (operation: (connection: typeof connected) => Promise<unknown>) =>
-      operation(await restore()),
-    ),
-    connect: vi.fn(),
-    listBudgets: vi.fn(),
-    loadConfig: vi.fn(),
-  };
-
-  return { manager, connector: connector as typeof defaultConnector };
-}
 
 function fakeReviewItem(
   overrides: Partial<{
@@ -116,6 +81,7 @@ function fakeReviewItem(
     reviewersRequired: 1,
     priority: 0,
     evidence: {},
+    sourceTransaction,
     provenance: 'test',
     supersededBy: null,
     supersededReason: null,
@@ -125,6 +91,118 @@ function fakeReviewItem(
     updatedAt: new Date(),
     ...overrides,
   };
+}
+
+const TEST_BUDGET_ID = 'budget-native-proposal';
+const TEST_ACCOUNT_ID = nativeTransaction.accountId;
+const TEST_CURRENT_CATEGORY = nativeTransaction.categoryId;
+const TEST_TARGET_CATEGORY = nativeTargetCategory.id;
+const TEST_SPACE_OWNER = 'space-owner';
+
+async function createGovernedExecutorFixture(withProposalGrants = true) {
+  const now = new Date().toISOString();
+  const ownerAuth = {
+    method: 'human-session' as const,
+    actorId: TEST_SPACE_OWNER,
+    sessionId: `session:${TEST_SPACE_OWNER}`,
+    reauthenticatedAt: now,
+  };
+  const responseHeaders = new Map<string, string>();
+  const requestEvent = {
+    node: {
+      req: { headers: {} as Record<string, string> },
+      res: {
+        statusCode: 200,
+        setHeader: (name: string, value: string) => responseHeaders.set(name.toLowerCase(), value),
+        getHeader: (name: string) => responseHeaders.get(name.toLowerCase()),
+      },
+    },
+    context: {
+      auth: {
+        authenticated: true,
+        actorId: TEST_ACTOR,
+        method: 'session' as const,
+        principalType: 'human' as const,
+        sessionId: `session:${TEST_ACTOR}`,
+        user: { id: TEST_ACTOR },
+      },
+      runtimeConfig: { workflowDbPath: ':memory:', reviewAndApply: true },
+    },
+  };
+  const workflow = getWorkflowStore(requestEvent as unknown as EventWithContext);
+  if ('error' in workflow) throw new Error(workflow.error);
+  const store = workflow.store;
+  providerStore = store;
+  if (!bootstrapInitialized) {
+    await store.claimBootstrap({
+      name: 'Space owner',
+      email: 'owner@example.test',
+      claimId: 'mutation-executor-native-fixture',
+    });
+    await store.finalizeBootstrap({
+      claimId: 'mutation-executor-native-fixture',
+      ownerUserId: TEST_SPACE_OWNER,
+    });
+    bootstrapInitialized = true;
+  }
+
+  const budgetId = `${TEST_BUDGET_ID}-${++fixtureSequence}`;
+  const space = store.governance.createSpace({
+    actorId: TEST_SPACE_OWNER,
+    name: 'Native mutation proposal',
+    kind: 'shared',
+    now,
+    auth: ownerAuth,
+  });
+  store.governance.bindBudget({ spaceId: space.id, budgetId, now, auth: ownerAuth });
+  await store.upsertActorMembership(TEST_ACTOR, 'active', [], '');
+  const membership = store.governance.addMembership({
+    spaceId: space.id,
+    actorId: TEST_ACTOR,
+    validFrom: now,
+    now,
+    auth: ownerAuth,
+  });
+  if (withProposalGrants) {
+    for (const resource of [
+      { resourceKind: 'budget' as const, resourceId: budgetId },
+      { resourceKind: 'transaction' as const, resourceId: TEST_TX_ID },
+      { resourceKind: 'account' as const, resourceId: TEST_ACCOUNT_ID },
+      { resourceKind: 'category' as const, resourceId: TEST_CURRENT_CATEGORY },
+      { resourceKind: 'category' as const, resourceId: TEST_TARGET_CATEGORY },
+    ]) {
+      store.governance.provisionResourceGrant({
+        spaceId: space.id,
+        actorId: TEST_ACTOR,
+        membershipId: membership.id,
+        budgetId,
+        capability: 'categorization:propose',
+        ...resource,
+        granted: true,
+        now,
+      });
+    }
+  }
+  requestEvent.node.req.headers['x-balanceframe-space'] = space.id;
+  const synchronize = vi.fn().mockResolvedValue({
+    snapshot: structuredClone(canonicalFixture),
+  });
+  const connected = {
+    config: { budgetId },
+    budget: { id: budgetId },
+    connector: { synchronize },
+  };
+  const manager = {
+    loadConfig: vi.fn().mockResolvedValue({ budgetId }),
+    withConnection: vi.fn(async (
+      operation: (connection: typeof connected) => Promise<unknown>,
+      _options?: ConnectionUseOptions,
+    ) => operation(connected)),
+  };
+  const factory = createDefaultExecutorFactory(manager as unknown as ConnectionManager);
+  const executor = factory(requestEvent as unknown as EventWithContext);
+  if (!executor) throw new Error('Review-and-apply executor was not configured');
+  return { store, space, budgetId, manager, synchronize, executor };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,154 +224,134 @@ describe('createDefaultExecutorFactory', () => {
     expect(executor).toBeNull();
   });
 
-  it('creates an executor when reviewAndApply is true', () => {
-    const { manager } = fakeConnectionManager();
-    const factory = createDefaultExecutorFactory(manager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev);
-    expect(executor).not.toBeNull();
-  });
 
-  it('uses a disposable scoped connection to get the ledger', async () => {
-    const store = new SqliteWorkflowStore(':memory:');
-    const { manager } = fakeConnectionManager();
-    const factory = createDefaultExecutorFactory(manager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev)!;
 
-    await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-1' },
-      store,
-      fakeReviewItem(),
-    );
-
-    expect(manager.withConnection).toHaveBeenCalledWith(expect.any(Function), { dispose: true });
-  });
-
-  it('persists and consumes an exact approval for a scoped authorized reviewer', async () => {
-    const store = new SqliteWorkflowStore(':memory:');
-    await store.upsertActorMembership(
-      TEST_ACTOR,
-      'active',
-      ['categorization:execute'],
-      'budget:budget-1',
-    );
-    const { manager } = fakeConnectionManager();
-    const factory = createDefaultExecutorFactory(manager);
-    const executor = factory(mockEvent({ reviewAndApply: true }))!;
-    const createApprovalSpy = vi.spyOn(store, 'createApproval');
-    try {
-      await executor(
-        { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-2' },
-        store,
-        fakeReviewItem(),
-      );
-      const proposal = await store.findActiveProposal('budget-1', TEST_TX_ID, 'set_category');
-      expect(proposal).not.toBeNull();
-      const issued = await createApprovalSpy.mock.results[0].value;
-      expect(await store.getApproval(issued.id)).toMatchObject({
-        proposalId: proposal!.id,
-        payloadHash: proposal!.payloadHash,
-        actorId: TEST_ACTOR,
-        status: 'consumed',
-      });
-    } finally {
-      store.close();
-    }
-  });
-
-  it('rethrows a missing-selection connection error for the route recovery layer', async () => {
-    const store = new SqliteWorkflowStore(':memory:');
+  it('rethrows connection-selection errors after current scope authorization', async () => {
+    const fixture = await createGovernedExecutorFixture();
     const missingSelection = Object.assign(new Error('No BalanceFrame connection configured.'), {
       code: 'not_connected',
     });
-    const brokenManager = {
-      restore: vi.fn().mockRejectedValue(missingSelection),
-      withConnection: vi.fn().mockRejectedValue(missingSelection),
-      connect: vi.fn(),
-      listBudgets: vi.fn(),
-      loadConfig: vi.fn(),
-    };
-
-    const factory = createDefaultExecutorFactory(brokenManager);
-    const executor = factory(mockEvent({ reviewAndApply: true }))!;
+    fixture.manager.withConnection.mockRejectedValue(missingSelection);
+    const item = fakeReviewItem({
+      transactionId: TEST_TX_ID,
+      budgetId: fixture.budgetId,
+      categoryId: TEST_TARGET_CATEGORY,
+    });
 
     await expect(
-      executor(
-        { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-5' },
-        store,
-        fakeReviewItem(),
+      fixture.executor(
+        { reviewId: item.id, actorId: TEST_ACTOR, requestId: 'connection-selection-error' },
+        fixture.store,
+        item,
       ),
     ).rejects.toBe(missingSelection);
   });
 
-  it('returns apply_failed when restoration encounters an ordinary operational failure', async () => {
-    const store = new SqliteWorkflowStore(':memory:');
-    const operationalFailure = new Error('Could not read Actual configuration.');
-    const brokenManager = {
-      restore: vi.fn().mockRejectedValue(operationalFailure),
-      withConnection: vi.fn().mockRejectedValue(operationalFailure),
-      connect: vi.fn(),
-      listBudgets: vi.fn(),
-      loadConfig: vi.fn(),
-    };
-
-    const factory = createDefaultExecutorFactory(brokenManager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev)!;
-
-    const result = await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-6' },
-      store,
-      fakeReviewItem(),
-    );
-
-    expect(result.success).toBe(false);
-    expect(result.mutationStatus).toBe('apply_failed');
-    expect(result.error).toBe('Could not read Actual configuration.');
-  });
-
-  it('construction without connectionManager returns a working factory (production path)', () => {
-    // In production, no connectionManager is passed. The factory now constructs
-    // a real connection manager internally rather than returning null.
-    const factory = createDefaultExecutorFactory();
-    expect(factory).toBeInstanceOf(Function);
-
-    const ev = mockEvent({});
-    const executor = factory(ev);
-    // Observe mode should still return null
-    expect(executor).toBeNull();
-
-    // reviewAndApply mode creates an executor (even though it will fail at
-    // runtime without real Actual credentials — the point is it doesn't
-    // unconditionally return null)
-    const raaEv = mockEvent({ reviewAndApply: true });
-    const raaExecutor = factory(raaEv);
-    expect(raaExecutor).not.toBeNull();
-  });
-
-  it('prefers evidence.currentCategory over item.categoryId as currentCategoryId in the proposal preconditions', async () => {
-    const store = new SqliteWorkflowStore(':memory:');
-    const { manager } = fakeConnectionManager();
-    const factory = createDefaultExecutorFactory(manager);
-    const ev = mockEvent({ reviewAndApply: true });
-    const executor = factory(ev)!;
-
+  it('returns a safe failure result for ordinary connection errors', async () => {
+    const fixture = await createGovernedExecutorFixture();
+    fixture.manager.withConnection.mockRejectedValue(new Error('Could not read Actual configuration.'));
     const item = fakeReviewItem({
-      categoryId: 'cat-corrected-by-reviewer',
-      evidence: { currentCategory: 'cat-original-from-classifier' },
+      transactionId: TEST_TX_ID,
+      budgetId: fixture.budgetId,
+      categoryId: TEST_TARGET_CATEGORY,
     });
 
-    const createProposalSpy = vi.spyOn(store, 'createProposal');
-    await executor(
-      { reviewId: 'review-001', actorId: TEST_ACTOR, requestId: 'req-override' },
-      store,
+    const result = await fixture.executor(
+      { reviewId: item.id, actorId: TEST_ACTOR, requestId: 'ordinary-connection-error' },
+      fixture.store,
       item,
     );
 
-    // The proposal preconditions should contain the evidence.currentCategory
-    const proposalInput = createProposalSpy.mock.calls[0][0];
-    const preconditions = JSON.parse(proposalInput.preconditions);
-    expect(preconditions.currentCategoryId).toBe('cat-original-from-classifier');
+    expect(result).toMatchObject({
+      disposition: 'failed',
+      mutationStatus: 'denied',
+      success: false,
+      error: 'Native proposal could not be created',
+    });
+  });
+
+  it('creates an exact native proposal only with current grants in the selected scope', async () => {
+    const fixture = await createGovernedExecutorFixture();
+    let item = await fixture.store.createReviewItem({
+      transactionId: TEST_TX_ID,
+      budgetId: fixture.budgetId,
+      categoryId: TEST_TARGET_CATEGORY,
+      classifier: 'fixture',
+      provenance: 'canonical-fixture',
+      evidence: { currentCategory: 'untrusted-review-evidence' },
+      sourceTransaction,
+    });
+    for (const toStatus of ['suggestion_generated', 'pending_review'] as const) {
+      item = await fixture.store.transitionInternalReviewItem(item.id, {
+        toStatus,
+        actor: 'trusted-fixture',
+        expectedVersion: item.version,
+      });
+    }
+    const native = await createNativeCategorizationMutationProtocol();
+    const nativePlan = native.planSetCategory(nativeTransaction, nativeTargetCategory);
+    const result = await fixture.executor(
+      { reviewId: item.id, actorId: TEST_ACTOR, requestId: 'native-proposal-request' },
+      fixture.store,
+      item,
+    );
+
+    expect(result.error).toBeNull();
+    expect(result).toMatchObject({
+      disposition: 'approval_required',
+      mutationStatus: 'approval_required',
+      applied: false,
+      verified: false,
+    });
+    expect(fixture.manager.withConnection).toHaveBeenCalledWith(expect.any(Function), {
+      expectedBudgetId: fixture.budgetId,
+      dispose: true,
+    });
+    const proposal = await fixture.store.findActiveProposal(fixture.budgetId, TEST_TX_ID, 'set_category');
+    if (!proposal) throw new Error('Native proposal was not persisted');
+    expect(proposal).toMatchObject({
+      spaceId: fixture.space.id,
+      payload: {
+        kind: 'set_category',
+        transactionId: TEST_TX_ID,
+        categoryId: TEST_TARGET_CATEGORY,
+        composite: { nativePayloadHash: nativePlan.hash },
+      },
+    });
+    expect(JSON.parse(proposal.preconditions)).toMatchObject({
+      reviewId: item.id,
+      currentCategoryId: TEST_CURRENT_CATEGORY,
+      transaction: {
+        id: TEST_TX_ID,
+        accountId: TEST_ACCOUNT_ID,
+        categoryId: TEST_CURRENT_CATEGORY,
+      },
+      nativePlan,
+    });
+    expect(await fixture.store.getReviewItem(item.id)).toMatchObject({
+      id: item.id,
+      status: 'pending_review',
+      version: item.version,
+    });
+  });
+
+  it('denies a selected budget without its explicit grant before reading native ledger data', async () => {
+    const fixture = await createGovernedExecutorFixture(false);
+    const item = fakeReviewItem({
+      transactionId: TEST_TX_ID,
+      budgetId: fixture.budgetId,
+      categoryId: TEST_TARGET_CATEGORY,
+    });
+    const result = await fixture.executor(
+      { reviewId: item.id, actorId: TEST_ACTOR, requestId: 'hidden-budget-request' },
+      fixture.store,
+      item,
+    );
+
+    expect(result.disposition).toBe('denied');
+    expect(fixture.manager.withConnection).not.toHaveBeenCalled();
+    expect(fixture.synchronize).not.toHaveBeenCalled();
+    expect(await fixture.store.findActiveProposal(fixture.budgetId, TEST_TX_ID, 'set_category'))
+      .toBeNull();
   });
 });

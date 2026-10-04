@@ -125,13 +125,45 @@ export class LiquidityService {
     kind: ResourceKind,
     id: string,
     capability: ResourceCapability,
+    phase?: 'read' | 'propose' | 'approve' | 'execute',
   ): void {
     this.options.store.liquidity.requireResource({
       ...actor,
       resourceKind: kind,
       resourceId: id,
       capability,
+      ...(phase ? { phase } : {}),
     });
+  }
+  private requireControl(actor: LiquidityActor, capability: 'grant:manage' | 'policy:manage'): void {
+    if (!actor.spaceId) throw new Error('Space authorization unavailable');
+    this.require(actor, 'space', actor.spaceId, capability);
+  }
+  private requirePolicyManagement(actor: LiquidityActor): void {
+    this.requireControl(actor, 'policy:manage');
+    this.require(actor, 'budget', actor.budgetId, 'policy');
+  }
+  private requireHumanControl(actor: LiquidityActor) {
+    const auth = actor.auth;
+    if (auth?.method !== 'human-session' || auth.actorId !== actor.actorId)
+      throw new Error('Fresh human-session authorization required');
+    return auth;
+  }
+  private hasCurrentHumanPrincipal(actor: LiquidityActor): boolean {
+    const auth = actor.auth;
+    return !!auth && auth.actorId === actor.actorId &&
+      (auth.method === 'session' || auth.method === 'human-session') &&
+      auth.sessionId.trim().length > 0 &&
+      actor.agentId === undefined && actor.delegationId === undefined;
+  }
+  private hasFreshHumanControl(actor: LiquidityActor, now: string): boolean {
+    const auth = actor.auth;
+    if (auth?.method !== 'human-session' || !this.hasCurrentHumanPrincipal(actor))
+      return false;
+    const nowMillis = Date.parse(now);
+    const reauthenticatedAt = Date.parse(auth.reauthenticatedAt);
+    return Number.isFinite(nowMillis) && Number.isFinite(reauthenticatedAt) &&
+      reauthenticatedAt <= nowMillis && nowMillis - reauthenticatedAt <= 5 * 60_000;
   }
   private authorizeIntent(
     actor: LiquidityActor,
@@ -139,7 +171,21 @@ export class LiquidityService {
     accountId?: string | null,
   ): void {
     const workflow = this.options.store.liquidity;
-    if (workflow.isOwner(actor)) return;
+    const budgetConclusion =
+      workflow.isAuthorized({
+        ...actor,
+        resourceKind: 'budget',
+        resourceId: actor.budgetId,
+        capability: 'conclusion',
+        visibility: 'resource',
+      }) ||
+      workflow.isAuthorized({
+        ...actor,
+        resourceKind: 'budget',
+        resourceId: actor.budgetId,
+        capability: 'conclusion',
+        visibility: 'aggregate',
+      });
     if (categoryId) {
       this.require(actor, 'category', categoryId, 'existence');
       if (
@@ -148,10 +194,11 @@ export class LiquidityService {
           resourceKind: 'category',
           resourceId: categoryId,
           capability: 'conclusion',
-        })
+        }) &&
+        !budgetConclusion
       )
-        this.require(actor, 'budget', actor.budgetId, 'conclusion');
-    } else this.require(actor, 'budget', actor.budgetId, 'conclusion');
+        throw new Error('Resource authorization denied');
+    } else if (!budgetConclusion) throw new Error('Resource authorization denied');
     if (accountId) this.require(actor, 'account', accountId, 'existence');
   }
   private async capture<T>(
@@ -163,11 +210,10 @@ export class LiquidityService {
     const config = await manager.loadConfig();
     if (!config || config.budgetId !== actor.budgetId)
       throw new Error('Selected budget unavailable');
-    if (!this.options.store.liquidity.isOwner(actor))
-      this.options.store.liquidity.loadEvaluationState({
-        ...actor,
-        now: this.clock().toISOString(),
-      });
+    this.options.store.liquidity.loadEvaluationState({
+      ...actor,
+      now: this.clock().toISOString(),
+    });
     return manager.withConnection(async (connected) => {
       if (connected.config.budgetId !== actor.budgetId)
         throw new Error('Selected budget unavailable');
@@ -179,36 +225,6 @@ export class LiquidityService {
       const base = financialSnapshotSchema.parse(synchronization.financialSnapshot);
       if (base.source.budgetId !== actor.budgetId && base.source.ledgerId !== actor.budgetId)
         throw new Error('Selected budget unavailable');
-      if (this.options.store.liquidity.isOwner(actor)) {
-        const resources = [
-          ...base.legacySnapshot.accounts.map((account) => ({
-            resourceKind: 'account' as const,
-            resourceId: account.id,
-          })),
-          ...base.legacySnapshot.categories.map((category) => ({
-            resourceKind: 'category' as const,
-            resourceId: category.id,
-          })),
-        ];
-        const missing = resources.filter(
-          (resource) =>
-            !this.options.store.liquidity.isAuthorized({
-              ...actor,
-              ...resource,
-              capability: 'existence',
-            }),
-        );
-        if (
-          missing.length ||
-          !this.options.store.liquidity.isAuthorized({
-            ...actor,
-            resourceKind: 'budget',
-            resourceId: actor.budgetId,
-            capability: 'conclusion',
-          })
-        )
-          this.options.store.liquidity.provisionOwnerAccess({ ...actor, resources: missing, now });
-      }
       if (
         this.options.store.liquidity.isAuthorized({
           ...actor,
@@ -266,7 +282,7 @@ export class LiquidityService {
         snapshot,
         state,
         now,
-        projector: new LiquidityProjector(this.options.store, actor, snapshot),
+        projector: new LiquidityProjector(this.options.store, { ...actor, now }, snapshot),
         records: completeRecords ? (synchronization.transferSettlementRecords ?? null) : null,
       };
       if (!raw) {
@@ -274,7 +290,10 @@ export class LiquidityService {
         capture.state = this.options.store.liquidity.loadEvaluationState({ ...actor, now });
       }
       return operation(capture, connected);
-    }, { dispose: manager !== this.options.connectionManager });
+    }, {
+      expectedBudgetId: actor.budgetId,
+      dispose: manager !== this.options.connectionManager,
+    });
   }
   private items(
     actor: LiquidityActor,
@@ -289,7 +308,6 @@ export class LiquidityService {
         now: capture.now,
       });
     return input.map((item) => {
-      this.authorizeIntent(actor, item.categoryId, item.accountId ?? accountId);
       if (
         !capture.snapshot.legacySnapshot.categories.some(
           (category) => category.id === item.categoryId,
@@ -620,8 +638,7 @@ export class LiquidityService {
     );
   }
   async configuration(actor: LiquidityActor): Promise<PublicLiquidityConfiguration> {
-    if (!this.options.store.liquidity.isOwner(actor))
-      this.require(actor, 'budget', actor.budgetId, 'policy');
+    this.requirePolicyManagement(actor);
     return this.capture(actor, async (capture) => this.configurationProjection(capture), true);
   }
   /** Actual row references are global; bank import identifiers belong to the outer account. */
@@ -643,6 +660,7 @@ export class LiquidityService {
                 transaction.accountId,
                 'existence',
                 'history',
+                'source',
               );
               accounts.set(transaction.accountId, readable);
             }
@@ -667,7 +685,15 @@ export class LiquidityService {
       );
     };
     const categoryReadable = (id: string) =>
-      capture.projector.allowed('category', id, 'existence', 'balance', 'history', 'liquidity');
+      capture.projector.allowed(
+        'category',
+        id,
+        'existence',
+        'balance',
+        'history',
+        'liquidity',
+        'policy',
+      );
     return observations.filter(
       (observation) =>
         capture.projector.allowed(
@@ -677,6 +703,7 @@ export class LiquidityService {
           'policy',
           'balance',
           'history',
+          'source',
           'liquidity',
         ) &&
         (observation.obligations ?? []).every(
@@ -694,6 +721,7 @@ export class LiquidityService {
             'policy',
             'balance',
             'history',
+            'source',
             'liquidity',
           ) &&
             categoryReadable(observation.credit.paymentCategoryId))) &&
@@ -769,7 +797,7 @@ export class LiquidityService {
         : observation.credit,
     }));
     const fullConfiguration =
-      this.options.store.liquidity.isOwner(capture.projector.actor) &&
+      capture.projector.allowed('budget', capture.projector.actor.budgetId, 'full-read') &&
       (capture.state.policy?.policy.accounts ?? []).every(
         (account) =>
           accountReadable(account.accountId) && account.eligibleCategoryIds.every(categoryReadable),
@@ -792,37 +820,49 @@ export class LiquidityService {
       canConfigure: view.canConfigure,
     };
   }
+  private requirePolicyScopes(
+    actor: LiquidityActor,
+    policy: {
+      readonly accounts: readonly { readonly accountId: string; readonly eligibleCategoryIds: readonly string[] }[];
+      readonly transferRoutes: readonly { readonly sourceAccountId: string; readonly destinationAccountId: string }[];
+      readonly categoryPolicies?: readonly { readonly categoryId: string }[];
+    },
+  ): void {
+    for (const account of policy.accounts) {
+      this.require(actor, 'account', account.accountId, 'policy');
+      for (const categoryId of account.eligibleCategoryIds)
+        this.require(actor, 'category', categoryId, 'policy');
+    }
+    for (const route of policy.transferRoutes) {
+      this.require(actor, 'account', route.sourceAccountId, 'policy');
+      this.require(actor, 'account', route.destinationAccountId, 'policy');
+    }
+    for (const category of policy.categoryPolicies ?? [])
+      this.require(actor, 'category', category.categoryId, 'policy');
+  }
   async savePolicy(actor: LiquidityActor, value: unknown): Promise<PublicLiquidityConfiguration> {
     const intent = liquidityPolicyInputSchema.parse(value);
-    if (!this.options.store.liquidity.isOwner(actor))
-      this.require(actor, 'budget', actor.budgetId, 'policy');
-    return this.capture(
-      actor,
-      async (capture) => {
+    this.requirePolicyManagement(actor);
+    const auth = this.requireHumanControl(actor);
+    if (!actor.spaceId) throw new Error('Space authorization unavailable');
+    const prior = this.options.store.liquidity.loadEvaluationState({
+      ...actor,
+      now: this.clock().toISOString(),
+    });
+    const expectedGovernancePolicyVersion =
+      actor.governancePolicyVersion ??
+      this.options.store.governance.getPolicy({ spaceId: actor.spaceId })?.version ??
+      null;
+    if (prior.policy) this.requirePolicyScopes(actor, prior.policy.policy);
+    this.requirePolicyScopes(actor, intent);
+    return this.capture(actor, async (capture) => {
         this.future(intent.expiresAt, capture.now, 366 * 86400000);
-        for (const account of [
-          ...(capture.state.policy?.policy.accounts ?? []),
-          ...intent.accounts,
-        ]) {
-          this.require(actor, 'account', account.accountId, 'policy');
-          for (const categoryId of account.eligibleCategoryIds)
-            this.require(actor, 'category', categoryId, 'policy');
-        }
-        for (const route of [
-          ...(capture.state.policy?.policy.transferRoutes ?? []),
-          ...intent.transferRoutes,
-        ]) {
-          this.require(actor, 'account', route.sourceAccountId, 'policy');
-          this.require(actor, 'account', route.destinationAccountId, 'policy');
-        }
+        if (capture.state.policy) this.requirePolicyScopes(actor, capture.state.policy.policy);
+        this.requirePolicyScopes(actor, intent);
         const categoryPolicies =
           intent.categoryPolicies ?? capture.state.policy?.policy.categoryPolicies ?? [];
         const seen = new Set<string>();
-        for (const categoryPolicy of [
-          ...(capture.state.policy?.policy.categoryPolicies ?? []),
-          ...categoryPolicies,
-        ]) {
-          this.require(actor, 'category', categoryPolicy.categoryId, 'policy');
+        for (const categoryPolicy of categoryPolicies) {
           if (
             !capture.snapshot.legacySnapshot.categories.some(
               ({ id }) => id === categoryPolicy.categoryId,
@@ -859,23 +899,34 @@ export class LiquidityService {
               source: 'user_attested',
               observedAt: capture.now,
               expiresAt: intent.expiresAt,
-              reasons: ['owner_attested_transfer_timing'],
+              reasons: ['human_attested_transfer_timing'],
             },
           })),
           categoryPolicies,
         };
         policy.policyHash = `sha256:${createHash('sha256').update(canonical(policy)).digest('hex')}`;
-        this.options.store.liquidity.savePolicy({
+        const savedPolicy = this.options.store.liquidity.savePolicy({
           ...actor,
           expectedVersion: intent.expectedVersion,
+          expectedGovernancePolicyVersion,
+          auth,
           policy,
           approvalPolicy: intent.approvalPolicy,
           now: capture.now,
         });
-        capture.state = this.options.store.liquidity.loadEvaluationState({
+        if (!savedPolicy.governancePolicyVersion)
+          throw new Error('Governance policy unavailable');
+        const currentActor = {
           ...actor,
+          governancePolicyVersion: savedPolicy.governancePolicyVersion,
           now: capture.now,
-        });
+        };
+        capture.projector = new LiquidityProjector(
+          this.options.store,
+          currentActor,
+          capture.snapshot,
+        );
+        capture.state = this.options.store.liquidity.loadEvaluationState(currentActor);
         return this.configurationProjection(capture);
       },
       true,
@@ -886,11 +937,22 @@ export class LiquidityService {
     value: unknown,
   ): Promise<PublicLiquidityConfiguration> {
     const intent = liquidityObservationInputSchema.parse(value);
-    if (!this.options.store.liquidity.isOwner(actor))
-      this.require(actor, 'budget', actor.budgetId, 'policy');
-    for (const observation of intent.observations)
-      if (!this.options.store.liquidity.isOwner(actor))
-        this.require(actor, 'account', observation.accountId, 'policy');
+    this.requirePolicyManagement(actor);
+    this.requireHumanControl(actor);
+    const prior = this.options.store.liquidity.loadEvaluationState({
+      ...actor,
+      now: this.clock().toISOString(),
+    });
+    for (const observation of [...(prior.supplemental?.observations ?? []), ...intent.observations]) {
+      this.require(actor, 'account', observation.accountId, 'policy');
+      for (const obligation of observation.obligations ?? [])
+        if (obligation.categoryId !== null)
+          this.require(actor, 'category', obligation.categoryId, 'policy');
+      if (observation.credit) {
+        this.require(actor, 'account', observation.credit.paymentAccountId, 'policy');
+        this.require(actor, 'category', observation.credit.paymentCategoryId, 'policy');
+      }
+    }
     return this.capture(
       actor,
       async (capture) => {
@@ -927,7 +989,11 @@ export class LiquidityService {
           now: capture.now,
         });
         capture.snapshot = mergeUserAttestedLiquidityObservations(capture.snapshot, observations);
-        capture.projector = new LiquidityProjector(this.options.store, actor, capture.snapshot);
+        capture.projector = new LiquidityProjector(
+          this.options.store,
+          { ...actor, now: capture.now },
+          capture.snapshot,
+        );
         capture.state = this.options.store.liquidity.loadEvaluationState({
           ...actor,
           now: capture.now,
@@ -943,32 +1009,69 @@ export class LiquidityService {
       throw new Error('Invalid expiry; choose a future time within the allowed horizon');
   }
   async grants(actor: LiquidityActor): Promise<PublicLiquidityGrants> {
-    if (!this.options.store.liquidity.isOwner(actor)) throw new Error('Owner authorization denied');
-    return this.capture(
-      actor,
-      async (capture) => ({
-        ...this.options.store.liquidity.getResourceGrantCatalog(actor),
-        capabilities: [...liquidityCapabilities],
-        resources: [
-          { resourceKind: 'budget', resourceId: actor.budgetId },
-          ...capture.snapshot.legacySnapshot.accounts.map((account) => ({
-            resourceKind: 'account' as const,
-            resourceId: account.id,
-            name: account.name,
-          })),
-          ...capture.snapshot.legacySnapshot.categories.map((category) => ({
-            resourceKind: 'category' as const,
-            resourceId: category.id,
-            name: category.name,
-          })),
-        ],
-      }),
-      true,
-    );
+    this.requireControl(actor, 'grant:manage');
+    return this.capture(actor, async (capture) => {
+      const catalog = this.options.store.liquidity.getResourceGrantCatalog(actor);
+      const resources: PublicLiquidityGrants['resources'] = [
+        { resourceKind: 'budget', resourceId: actor.budgetId },
+        ...(actor.spaceId ? [{ resourceKind: 'space' as const, resourceId: actor.spaceId }] : []),
+        ...catalog.grants
+          .filter((grant) => grant.resourceKind === 'session')
+          .map((grant) => ({ resourceKind: grant.resourceKind, resourceId: grant.resourceId })),
+      ];
+      for (const account of capture.snapshot.legacySnapshot.accounts) {
+        if (!capture.projector.allowed('account', account.id, 'existence')) continue;
+        resources.push({
+          resourceKind: 'account',
+          resourceId: account.id,
+          ...(capture.projector.allowed('account', account.id, 'name')
+            ? { name: account.name }
+            : {}),
+        });
+      }
+      for (const category of capture.snapshot.legacySnapshot.categories) {
+        if (!capture.projector.allowed('category', category.id, 'existence')) continue;
+        resources.push({
+          resourceKind: 'category',
+          resourceId: category.id,
+          ...(capture.projector.allowed('category', category.id, 'name')
+            ? { name: category.name }
+            : {}),
+        });
+      }
+      const evidenceIds = new Set<string>();
+      for (const observation of capture.snapshot.observations) {
+        const readable =
+          observation.scope.kind === 'global'
+            ? capture.projector.allowed('budget', actor.budgetId, 'history', 'source')
+            : (observation.scope.kind === 'account' ||
+                  observation.scope.kind === 'category') &&
+              capture.projector.allowed(observation.scope.kind, observation.scope.id, 'history', 'source');
+        if (readable)
+          for (const reference of observation.evidence) evidenceIds.add(reference.evidenceId);
+      }
+      for (const resourceId of evidenceIds) resources.push({ resourceKind: 'evidence', resourceId });
+      if (
+        this.options.store.liquidity.isAuthorized({
+          ...actor,
+          resourceKind: 'budget',
+          resourceId: actor.budgetId,
+          capability: 'liquidity',
+        })
+      )
+        for (const proposal of this.options.store.liquidity.listTransferProposals({
+          ...actor,
+          now: capture.now,
+        }))
+          if (LiquidityProjector.planAuthorized(this.options.store, actor, proposal.payload.plan, 'liquidity', 'read'))
+            resources.push({ resourceKind: 'transfer', resourceId: proposal.id });
+      return { ...catalog, capabilities: [...liquidityCapabilities], resources };
+    }, true);
   }
   async saveGrants(actor: LiquidityActor, value: unknown): Promise<PublicLiquidityGrants> {
     const intent = liquidityGrantInputSchema.parse(value);
-    if (!this.options.store.liquidity.isOwner(actor)) throw new Error('Owner authorization denied');
+    this.requireControl(actor, 'grant:manage');
+    const auth = this.requireHumanControl(actor);
     const catalog = await this.grants(actor);
     for (const grant of intent.grants)
       if (
@@ -984,8 +1087,10 @@ export class LiquidityService {
     for (const grant of intent.grants)
       this.options.store.liquidity.manageResourceGrant({
         ...grant,
+        spaceId: actor.spaceId,
         budgetId: actor.budgetId,
         managerId: actor.actorId,
+        auth,
         now,
       });
     return this.grants(actor);
@@ -1057,6 +1162,15 @@ export class LiquidityService {
     for (const threshold of intent.warningThresholds ?? [])
       if (threshold.basis === 'category_charge')
         this.require(actor, 'category', threshold.categoryId, 'category');
+    if (
+      id &&
+      !this.options.store.liquidity.getSpendSession({
+        ...actor,
+        id,
+        now: this.clock().toISOString(),
+      })
+    )
+      throw new Error('Session unavailable');
     return this.capture(actor, async (capture) => {
       this.future(intent.expiresAt, capture.now, 30 * 86400000);
       const items = this.items(actor, capture, intent.items, intent.accountId);
@@ -1081,6 +1195,14 @@ export class LiquidityService {
   }
   async session(actor: LiquidityActor, id: string): Promise<PublicSpendSession> {
     this.require(actor, 'budget', actor.budgetId, 'session');
+    if (
+      !this.options.store.liquidity.getSpendSession({
+        ...actor,
+        id,
+        now: this.clock().toISOString(),
+      })
+    )
+      throw new Error('Session unavailable');
     return this.capture(actor, async (capture) => {
       const session = this.options.store.liquidity.getSpendSession({
         ...actor,
@@ -1118,7 +1240,49 @@ export class LiquidityService {
     const current = this.withoutSessionProspectiveClaims(actor, capture, session);
     const items = this.sessionItems(actor, current, session);
     const card = this.decisionCard(current, items, session.expiresAt, session);
-    const linkedTransfers = capture.projector.allowed('budget', actor.budgetId, 'proposal')
+    const accountReadable = (id: string) =>
+      capture.projector.allowed('account', id, 'existence', 'balance', 'history', 'liquidity');
+    const categoryReadable = (id: string) =>
+      capture.projector.allowed('category', id, 'existence', 'balance', 'history', 'liquidity');
+    const publicItems = session.items
+      .filter((item) => {
+        const accountId = item.accountId ?? session.accountId;
+        return (
+          categoryReadable(item.categoryId) &&
+          (accountId === null || accountReadable(accountId)) &&
+          (item.categoryAllocations ?? []).every((allocation) =>
+            categoryReadable(allocation.categoryId),
+          )
+        );
+      })
+      .map((item) => {
+        const accountId = item.accountId ?? session.accountId;
+        const sourceReadable =
+          capture.projector.allowed('category', item.categoryId, 'source') &&
+          (accountId === null || capture.projector.allowed('account', accountId, 'source'));
+        return {
+          id: item.id,
+          categoryId: item.categoryId,
+          amount: item.amount,
+          purchaseAt: item.purchaseAt,
+          requiredBy: item.requiredBy,
+          accountId: item.accountId,
+          ...(item.quantity === undefined ? {} : { quantity: item.quantity }),
+          ...(item.priority === undefined ? {} : { priority: item.priority }),
+          ...(item.categoryAllocations ? { categoryAllocations: item.categoryAllocations } : {}),
+          priceProvenance: sourceReadable ? item.priceProvenance ?? null : null,
+          ...(item.barcode && sourceReadable ? { barcode: item.barcode } : {}),
+        };
+      });
+    const adjustments = (session.adjustments ?? []).filter((adjustment) =>
+      categoryReadable(adjustment.categoryId),
+    );
+    const warningThresholds = (session.warningThresholds ?? []).filter((threshold) =>
+      threshold.basis === 'cart_total'
+        ? capture.projector.allowed('budget', actor.budgetId, 'balance', 'history')
+        : categoryReadable(threshold.categoryId),
+    );
+    const linkedTransfers = capture.projector.allowed('budget', actor.budgetId, 'liquidity')
       ? this.options.store.liquidity
           .listTransferProposals(actor)
           .filter((proposal) => proposal.payload.sessionId === session.id)
@@ -1131,24 +1295,18 @@ export class LiquidityService {
     return {
       id: session.id,
       version: session.version,
-      accountId: session.accountId,
+      spaceId: session.spaceId,
+      membershipId: session.membershipId,
+      governancePolicyVersion: session.governancePolicyVersion,
+      accountId:
+        session.accountId && capture.projector.allowed('account', session.accountId, 'existence')
+          ? session.accountId
+          : null,
       expiresAt: session.expiresAt,
       createdAt: session.createdAt,
-      items: session.items.map((item) => ({
-        id: item.id,
-        categoryId: item.categoryId,
-        amount: item.amount,
-        purchaseAt: item.purchaseAt,
-        requiredBy: item.requiredBy,
-        accountId: item.accountId,
-        ...(item.quantity === undefined ? {} : { quantity: item.quantity }),
-        ...(item.priority === undefined ? {} : { priority: item.priority }),
-        ...(item.categoryAllocations ? { categoryAllocations: item.categoryAllocations } : {}),
-        priceProvenance: item.priceProvenance ?? null,
-        ...(item.barcode ? { barcode: item.barcode } : {}),
-      })),
-      adjustments: session.adjustments ?? [],
-      warningThresholds: session.warningThresholds ?? [],
+      items: publicItems,
+      adjustments,
+      warningThresholds,
       card,
       canEdit:
         session.actorId === actor.actorId &&
@@ -1177,8 +1335,13 @@ export class LiquidityService {
   ): Promise<StoredProspectiveClaim> {
     const intent = prospectiveClaimInputSchema.parse(value);
     this.require(actor, 'budget', actor.budgetId, 'liquidity');
-    this.require(actor, intent.scope.kind, intent.scope.id,
-      intent.scope.kind === 'category' ? 'category' : 'liquidity');
+    this.require(actor, intent.scope.kind, intent.scope.id, 'liquidity');
+    this.require(actor, 'budget', actor.budgetId, 'session');
+    const admittedSession = this.options.store.liquidity.getSpendSession({
+      ...actor, id: intent.sessionId, now: this.clock().toISOString(),
+    });
+    if (!admittedSession || admittedSession.version !== intent.expectedSessionVersion)
+      throw new Error('Session version conflict');
     return this.capture(actor, async (capture) => {
       const replay = this.options.store.liquidity.replayProspectiveClaim({
         ...actor,
@@ -1249,6 +1412,9 @@ export class LiquidityService {
   /** Lists visible and redacted BalanceFrame-side claims without inventing ledger transactions. */
   async prospectiveClaims(actor: LiquidityActor): Promise<StoredProspectiveClaim[]> {
     this.require(actor, 'budget', actor.budgetId, 'liquidity');
+    this.options.store.liquidity.listProspectiveClaims({
+      ...actor, now: this.clock().toISOString(),
+    });
     return this.capture(actor, async (capture) =>
       this.options.store.liquidity.listProspectiveClaims({ ...actor, now: capture.now }));
   }
@@ -1259,6 +1425,13 @@ export class LiquidityService {
     value: unknown,
   ): Promise<StoredProspectiveClaim> {
     const intent = prospectiveClaimReleaseInputSchema.parse(value);
+    this.require(actor, 'budget', actor.budgetId, 'liquidity');
+    const claim = this.options.store.liquidity.listProspectiveClaims({
+      ...actor, now: this.clock().toISOString(),
+    }).find((candidate) => candidate.claimId === claimId);
+    if (!claim || (claim.scope.kind !== 'account' && claim.scope.kind !== 'category') ||
+        claim.scope.id === null) throw new Error('Prospective claim unavailable');
+    this.require(actor, claim.scope.kind, claim.scope.id, 'liquidity');
     return this.capture(actor, async (capture) =>
       this.options.store.liquidity.transitionProspectiveClaim({
         ...actor,
@@ -1292,6 +1465,22 @@ export class LiquidityService {
         },
       },
     };
+  }
+  private requireCompletionResources(
+    actor: LiquidityActor,
+    payload: SessionCompletionPayload,
+    capability: ResourceCapability,
+  ): void {
+    const currentActor = { ...actor, now: this.clock().toISOString() };
+    // Resource admission precedes the native atomic quorum/acquisition check; it is not execution consent.
+    const phase = capability === 'initiation-report' || capability === 'confirmation' ? 'read' : undefined;
+    this.require(currentActor, 'budget', actor.budgetId, capability, phase);
+    this.require(currentActor, 'account', payload.manualInput.accountId, 'liquidity');
+    this.require(currentActor, 'account', payload.manualInput.accountId, capability, phase);
+    for (const categoryId of new Set(payload.categoryCharges.map(({ categoryId }) => categoryId))) {
+      this.require(currentActor, 'category', categoryId, 'liquidity');
+      this.require(currentActor, 'category', categoryId, capability, phase);
+    }
   }
 
   private completionCard(
@@ -1350,9 +1539,23 @@ export class LiquidityService {
     allowImportedCandidateReview = false,
   ) {
     return (context: ClaimValidationContext): { valid: boolean; reason?: string } => {
-      if (!context.session || context.session.id !== payload.sessionId ||
-          context.session.version !== payload.sessionVersion)
+      const session = context.session;
+      if (
+        !session ||
+        session.id !== payload.sessionId ||
+        session.version !== payload.sessionVersion
+      )
         return { valid: false, reason: 'Session version changed' };
+      if (
+        !actor.spaceId ||
+        !actor.membershipId ||
+        !actor.governancePolicyVersion ||
+        actor.auth?.actorId !== actor.actorId ||
+        session.budgetId !== actor.budgetId ||
+        session.spaceId !== actor.spaceId ||
+        session.governancePolicyVersion !== actor.governancePolicyVersion
+      )
+        return { valid: false, reason: 'Current session authorization changed' };
       const importedCandidateReview =
         allowImportedCandidateReview &&
         this.completionImportedCandidates(
@@ -1361,15 +1564,19 @@ export class LiquidityService {
           payload.categoryCharges[0]?.amount.currency ?? '',
         ).length > 0;
       try {
-        const owner = { actorId: context.session.actorId, budgetId: actor.budgetId };
+        const currentActor = { ...actor, now: context.now };
         const freshCapture: Capture = {
           ...capture,
-          projector: new LiquidityProjector(this.options.store, owner, capture.snapshot),
+          projector: new LiquidityProjector(
+            this.options.store,
+            currentActor,
+            capture.snapshot,
+          ),
           now: context.now,
           state: { ...capture.state, policy: context.policy, claimSet: context.claimSet },
         };
         const { card, intentHash, materialHash } = this.completionCard(
-          owner, freshCapture, context.session, context.ownClaimId,
+          currentActor, freshCapture, session, context.ownClaimId,
         );
         if (intentHash !== payload.intentHash || materialHash !== payload.materialHash ||
             canonical(card.cart?.categoryCharges) !== canonical(payload.categoryCharges) ||
@@ -1394,6 +1601,14 @@ export class LiquidityService {
   ): Promise<PublicSessionCompletion> {
     const intent = sessionCompletionProposalInputSchema.parse(value);
     this.require(actor, 'budget', actor.budgetId, 'proposal');
+    this.require(actor, 'budget', actor.budgetId, 'session');
+    const session = this.options.store.liquidity.getSpendSession({
+      ...actor,
+      id: sessionId,
+      now: this.clock().toISOString(),
+    });
+    if (!session || session.version !== intent.expectedSessionVersion)
+      throw new Error('Session version conflict');
     return this.capture(actor, async (capture) => {
       const replay = this.options.store.liquidity.replaySessionCompletion({
         ...actor, sessionId, expectedSessionVersion: intent.expectedSessionVersion,
@@ -1513,11 +1728,21 @@ export class LiquidityService {
       capture.projector.allowed('account', accountId, 'existence', 'balance', 'liquidity', 'proposal') &&
       categories.every((id) =>
         capture.projector.allowed('category', id, 'existence', 'liquidity', 'proposal'));
-    const authorized = (capability: ResourceCapability) =>
+    const historyVisible =
       visible &&
-      capture.projector.allowed('budget', actor.budgetId, capability) &&
-      capture.projector.allowed('account', accountId, capability) &&
-      categories.every((id) => capture.projector.allowed('category', id, capability));
+      capture.projector.allowed('budget', actor.budgetId, 'history') &&
+      capture.projector.allowed('account', accountId, 'history') &&
+      categories.every((id) => capture.projector.allowed('category', id, 'history'));
+    const authorized = (capability: ResourceCapability, phase?: 'read') => {
+      const allowed = (kind: ResourceKind, id: string) =>
+        phase === 'read'
+          ? capture.projector.allowedAtPhase(kind, id, capability, phase)
+          : capture.projector.allowed(kind, id, capability);
+      return visible &&
+        allowed('budget', actor.budgetId) &&
+        allowed('account', accountId) &&
+        categories.every((id) => allowed('category', id));
+    };
     return {
       id: proposal.id,
       version: proposal.version,
@@ -1526,19 +1751,29 @@ export class LiquidityService {
       expiresAt: proposal.expiresAt,
       cooldownUntil: visible ? payload.cooldownUntil : null,
       payloadHash: visible ? proposal.payloadHash : null,
+      ...(visible ? {
+        approvalMetadata: {
+          requesterActorId: proposal.actorId,
+          requesterMembershipId: proposal.requesterMembershipId,
+          governancePolicyVersion: proposal.governancePolicyVersion,
+          financialPolicyVersion: proposal.policyVersion,
+          approvers: proposal.approvers,
+        },
+      } : {}),
       requiredApprovals: proposal.requiredApprovals,
       approvalCount: proposal.approvalCount,
-      canApprove: authorized('approval') && proposal.state.phase === 'proposed' &&
+      canApprove: this.hasCurrentHumanPrincipal(actor) && authorized('approval', 'read') &&
+        proposal.state.phase === 'proposed' &&
         (!payload.cooldownUntil || payload.cooldownUntil <= capture.now),
       canExecute: authorized('initiation-report') && authorized('confirmation') &&
-        proposal.state.phase === 'approved' &&
+        proposal.state.phase === 'approved' && proposal.approvalCount >= proposal.requiredApprovals &&
         (!payload.cooldownUntil || payload.cooldownUntil <= capture.now),
       debit: visible ? {
         accountId,
         amount: payload.manualInput.amount,
         date: payload.manualInput.date,
-        payeeName: payload.manualInput.payeeName ?? null,
-        notes: payload.manualInput.notes ?? null,
+        payeeName: historyVisible ? payload.manualInput.payeeName ?? null : null,
+        notes: historyVisible ? payload.manualInput.notes ?? null : null,
         categoryCharges: payload.categoryCharges.map((charge) => ({
           categoryId: charge.categoryId,
           amount: charge.amount,
@@ -1561,6 +1796,11 @@ export class LiquidityService {
     value: unknown,
   ): Promise<PublicSessionCompletion> {
     const intent = transferActionInputSchema.parse(value);
+    this.requireHumanControl(actor);
+    const preflight = this.options.store.liquidity.getSessionCompletionProposal({
+      ...actor, proposalId, now: this.clock().toISOString(),
+    });
+    this.requireCompletionResources(actor, preflight.payload, 'approval');
     return this.capture(actor, async (capture) => {
       const original = this.options.store.liquidity.getSessionCompletionProposal({
         ...actor, proposalId, now: capture.now,
@@ -1577,6 +1817,10 @@ export class LiquidityService {
     actor: LiquidityActor,
     proposalId: string,
   ): Promise<PublicSessionCompletion> {
+    const preflight = this.options.store.liquidity.getSessionCompletionProposal({
+      ...actor, proposalId, now: this.clock().toISOString(),
+    });
+    this.requireCompletionResources(actor, preflight.payload, 'proposal');
     return this.capture(actor, async (capture) =>
       this.completionProjection(actor, capture,
         this.options.store.liquidity.getSessionCompletionProposal({
@@ -1589,6 +1833,13 @@ export class LiquidityService {
     actor: LiquidityActor,
     sessionId: string,
   ): Promise<PublicSessionCompletion[]> {
+    this.require(actor, 'budget', actor.budgetId, 'proposal');
+    this.require(actor, 'budget', actor.budgetId, 'session');
+    const proposals = this.options.store.liquidity.listSessionCompletionProposals({
+      ...actor, sessionId, now: this.clock().toISOString(),
+    });
+    for (const proposal of proposals)
+      this.requireCompletionResources(actor, proposal.payload, 'proposal');
     return this.capture(actor, async (capture) =>
       this.options.store.liquidity.listSessionCompletionProposals({
         ...actor, sessionId, now: capture.now,
@@ -1607,6 +1858,12 @@ export class LiquidityService {
     const manager = this.options.mutationConnectionManager;
     if (!manager) throw new Error('Mutation connection unavailable');
     const intent = transferActionInputSchema.parse(value);
+    this.requireHumanControl(actor);
+    const preflight = this.options.store.liquidity.getSessionCompletionProposal({
+      ...actor, proposalId, now: this.clock().toISOString(),
+    });
+    this.requireCompletionResources(actor, preflight.payload, 'initiation-report');
+    this.requireCompletionResources(actor, preflight.payload, 'confirmation');
     return this.capture(actor, async (capture, connected) => {
       const writable = connected.connector as typeof connected.connector & {
         createManualTransaction?: (input: ManualTransactionInput) => Promise<ManualTransactionResult>;
@@ -1744,6 +2001,10 @@ export class LiquidityService {
     value: unknown,
   ): Promise<PublicSessionCompletion> {
     const intent = transferActionInputSchema.parse(value);
+    const preflight = this.options.store.liquidity.getSessionCompletionProposal({
+      ...actor, proposalId, now: this.clock().toISOString(),
+    });
+    this.requireCompletionResources(actor, preflight.payload, 'confirmation');
     return this.capture(actor, async (capture) => {
       const proposal = this.options.store.liquidity.getSessionCompletionProposal({
         ...actor, proposalId, now: capture.now,
@@ -1807,7 +2068,14 @@ export class LiquidityService {
     const intent = transferPreviewInputSchema.parse(value);
     if (intent.kind === 'purchase')
       this.authorizeIntent(actor, intent.categoryId, intent.accountId);
-    else this.require(actor, 'budget', actor.budgetId, 'session');
+    else {
+      this.require(actor, 'budget', actor.budgetId, 'session');
+      const session = this.options.store.liquidity.getSpendSession({
+        ...actor, id: intent.sessionId, now: this.clock().toISOString(),
+      });
+      if (!session || session.version !== intent.expectedSessionVersion)
+        throw new Error('Session version conflict');
+    }
     return this.capture(actor, async (capture) => {
       let session: SpendSession | null = null;
       let plan: TransferPlan | undefined;
@@ -1887,7 +2155,6 @@ export class LiquidityService {
     if (!preview || preview.plan.payloadHash !== intent.payloadHash)
       throw new Error('Preview unavailable or changed; refresh transfer preview');
     return this.capture(actor, async (capture) => {
-      capture.projector.transferPlan(preview.plan);
       const proposal = this.options.store.liquidity.admitTransferProposal(
         {
           ...actor,
@@ -1923,8 +2190,8 @@ export class LiquidityService {
     proposal: TransferProposal,
   ): Promise<PublicTransferDetail> {
     const plan = proposal.payload.plan;
-    const visible = capture.projector.planAuthorized(plan);
-    const { requiredApprovals, approvalCount, actorHasApproved } =
+    const visible = capture.projector.planAuthorized(plan, 'liquidity', 'read');
+    const { requiredApprovals, approvalCount, actorHasApproved, approvers } =
       this.options.store.liquidity.getTransferApprovalSummary({
         ...actor,
         proposalId: proposal.id,
@@ -1943,7 +2210,17 @@ export class LiquidityService {
     return {
       id: proposal.id,
       version: proposal.version,
-      ...(visible ? { payloadHash: proposal.payloadHash } : {}),
+      ...(visible ? {
+        payloadHash: proposal.payloadHash,
+        expiresAt: proposal.expiresAt,
+        approvalMetadata: {
+          requesterActorId: proposal.actorId,
+          requesterMembershipId: proposal.requesterMembershipId,
+          governancePolicyVersion: proposal.governancePolicyVersion,
+          financialPolicyVersion: proposal.policyVersion,
+          approvers,
+        },
+      } : {}),
       phase: proposal.state.phase,
       sourceObserved: proposal.state.sourceObserved,
       destinationObserved: proposal.state.destinationObserved,
@@ -1954,11 +2231,12 @@ export class LiquidityService {
       plan: visible ? capture.projector.transferPlan(plan) : null,
       conclusion: capture.projector.transferConclusion(plan),
       canApprove:
+        this.hasCurrentHumanPrincipal(actor) &&
         visible &&
         live &&
         ['proposed', 'awaiting_approval', 'approved'].includes(proposal.state.phase) &&
         !actorHasApproved &&
-        capture.projector.planAuthorized(plan, 'approval'),
+        capture.projector.planAuthorized(plan, 'approval', 'read'),
       canGetInstructions: instructions,
       canReportInitiated: instructions,
       canReconcile:
@@ -1984,7 +2262,14 @@ export class LiquidityService {
     value: unknown,
   ): Promise<PublicTransferDetail> {
     const intent = transferActionInputSchema.parse(value);
-    const current = this.options.store.liquidity.getTransferProposal({ ...actor, proposalId: id });
+    if (!['approve', 'instructions', 'report-initiated', 'reconcile', 'cancel'].includes(action))
+      throw new Error('Unsupported transfer action');
+    const capability = action === 'approve' ? 'approval'
+      : action === 'reconcile' ? 'confirmation'
+        : action === 'cancel' ? 'proposal' : 'initiation-report';
+    const current = this.options.store.liquidity.getTransferProposalIntent({
+      ...actor, proposalId: id, capability,
+    });
     return this.capture(
       actor,
       async (capture) => {
@@ -2006,7 +2291,7 @@ export class LiquidityService {
             { ...command, idempotencyKey: `revalidate:${action}:${intent.idempotencyKey}` },
             validator,
           );
-          await this.finding(actor, rechecked);
+          await this.finding(actor, rechecked, capture.now);
           if (rechecked.state.outcome) return this.transferProjection(actor, capture, rechecked);
           command.expectedVersion = rechecked.version;
         }
@@ -2016,9 +2301,8 @@ export class LiquidityService {
             break;
           case 'instructions':
             this.options.store.liquidity.getTransferInstructions(command, validator);
-            proposal = this.options.store.liquidity.getTransferProposal({
-              ...actor,
-              proposalId: id,
+            proposal = this.options.store.liquidity.getTransferProposalIntent({
+              ...actor, proposalId: id, capability,
             });
             break;
           case 'report-initiated':
@@ -2048,9 +2332,9 @@ export class LiquidityService {
         }
         if (action === 'report-initiated') {
           await this.reconcileCapture(actor, capture);
-          proposal = this.options.store.liquidity.getTransferProposal({ ...actor, proposalId: id });
+          proposal = this.options.store.liquidity.getTransferProposalIntent({ ...actor, proposalId: id, capability });
         }
-        await this.finding(actor, proposal);
+        await this.finding(actor, proposal, capture.now);
         return this.transferProjection(actor, capture, proposal);
       },
       action === 'reconcile' || action === 'cancel',
@@ -2071,10 +2355,11 @@ export class LiquidityService {
   private async reconcileCapture(actor: LiquidityActor, capture: Capture): Promise<void> {
     if (
       capture.records === null ||
-      !capture.projector.allowed('budget', actor.budgetId, 'proposal', 'confirmation')
+      !this.hasFreshHumanControl(actor, capture.now) ||
+      !capture.projector.allowed('budget', actor.budgetId, 'confirmation')
     )
       return;
-    const proposals = this.options.store.liquidity.listTransferProposals(actor);
+    const proposals = this.options.store.liquidity.listTransferProposalIntents({ ...actor, capability: 'confirmation' });
     for (const proposal of proposals) {
       if (
         proposal.state.phase !== 'initiated' ||
@@ -2104,10 +2389,10 @@ export class LiquidityService {
             ),
           ),
       );
-      await this.finding(actor, updated);
+      await this.finding(actor, updated, capture.now);
     }
   }
-  private async finding(actor: LiquidityActor, proposal: TransferProposal): Promise<void> {
+  private async finding(actor: LiquidityActor, proposal: TransferProposal, now: string): Promise<void> {
     const findings = await this.options.store.listFindings({
       budgetId: actor.budgetId,
       classification: 'transfer_needs_attention',
@@ -2128,54 +2413,74 @@ export class LiquidityService {
           budgetId: actor.budgetId,
           classification: 'transfer_needs_attention',
           description: 'A transfer needs authorized review. An acknowledgement is not settlement.',
-          evidence: { transferId: proposal.id },
+          evidence: {
+            transferId: proposal.id,
+            spaceId: proposal.spaceId,
+            requesterMembershipId: proposal.requesterMembershipId,
+            governancePolicyVersion: proposal.governancePolicyVersion,
+          },
           evidenceRefs: [],
           severity: 'medium',
           actorId: proposal.actorId,
         }));
-      const savedPolicy = await this.options.store.getNotificationPolicy(
-        actor.budgetId,
-        'notification',
-      );
-      if (!savedPolicy) return;
+      const spaceId = proposal.spaceId;
+      const savedPolicy = spaceId && spaceId === actor.spaceId
+        ? await this.options.store.getNotificationPolicy(spaceId, 'notification')
+        : null;
+      if (!spaceId || !savedPolicy) return;
       const policy = JSON.parse(savedPolicy.policy) as NotificationPolicy;
       const runtime = new NotificationRuntime(this.options.store, policy, [
         new InAppChannelAdapter(),
-      ]);
-      runtime.setReAuthorizationHook(async (recipientId, capability, scope) => {
-        const member = await this.options.store.getActorMembership(recipientId);
-        if (
-          !member ||
-          member.status !== 'active' ||
-          !member.capabilities.includes(capability) ||
-          (member.scope !== '*' && member.scope !== scope)
-        )
-          return false;
-        try {
-          this.options.store.liquidity.getTransferProposal({
-            actorId: recipientId,
-            budgetId: actor.budgetId,
-            proposalId: proposal.id,
-          });
-          return true;
-        } catch {
-          return false;
-        }
-      });
+      ], () => now);
       const rule = policy.eligibility.find((rule) =>
         rule.classifications.includes('transfer_needs_attention'),
       );
       if (!rule) return;
+      const requiredScope = rule.requiredScope || `budget:${actor.budgetId}`;
+      const requiredCapability = rule.requiredCapability ?? 'notification:receive';
+      const resource = requiredScope === `budget:${actor.budgetId}`
+        ? { resourceKind: 'budget' as const, resourceId: actor.budgetId }
+        : requiredScope.startsWith('category:')
+          ? { resourceKind: 'category' as const, resourceId: requiredScope.slice('category:'.length) }
+          : null;
+      if (!resource?.resourceId) return;
+      runtime.setReAuthorizationHook(async (recipientId, capability, scope) => {
+        if (scope !== requiredScope || capability !== requiredCapability) return false;
+        const membership = this.options.store.governance.getCurrentMembership({
+          spaceId,
+          actorId: recipientId,
+          now,
+        });
+        const currentPolicy = this.options.store.governance.getPolicy({ spaceId });
+        if (!membership || !currentPolicy) return false;
+        const recipientActor: LiquidityActor = {
+          actorId: recipientId,
+          budgetId: actor.budgetId,
+          spaceId,
+          membershipId: membership.id,
+          governancePolicyVersion: currentPolicy.version,
+          now,
+        };
+        return this.options.store.liquidity.isAuthorized({
+          ...recipientActor,
+          ...resource,
+          capability,
+        }) &&
+          LiquidityProjector.transferConclusion(
+            this.options.store,
+            recipientActor,
+            proposal.payload.plan,
+          ) !== null;
+      });
       for (const recipient of policy.recipients) {
         try {
           await runtime.create({
             budgetId: actor.budgetId,
+            correlationId: `liquidity-finding:${finding.id}`,
             classification: 'transfer_needs_attention',
             severity: 'normal',
             recipientId: recipient.actorId,
-            scope: rule.requiredScope,
-            correlationId: `liquidity-finding:${finding.id}`,
-            dedupKey: `transfer-finding:${finding.id}:${finding.version}:${recipient.actorId}`,
+            scope: requiredScope,
             redactionClass: 'restricted',
             payload: {
               title: 'A transfer needs authorized review',
@@ -2210,7 +2515,7 @@ export class LiquidityService {
         ...actor,
         resourceKind: 'budget',
         resourceId: actor.budgetId,
-        capability: 'proposal',
+        capability: 'liquidity',
       })
     )
       return [];

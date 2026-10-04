@@ -199,6 +199,53 @@ describe('enforceDemoBoundary', () => {
     expect(enforceDemoBoundary(event)).toBeUndefined();
   });
 
+  it.each(['setup', 'ready'])('admits only private loopback proof and selected-space transport in %s phase', (phase) => {
+    writeManifest({ phase, ...(phase === 'setup' ? { budgetId: null, actorIds: [] } : {}) });
+    for (const path of ['/api/reauth', '/api/spaces/space-demo/select']) {
+      expect(enforceDemoBoundary(makeEvent(path, 'POST', {
+        'x-balanceframe-demo-internal': INTERNAL,
+      }))).toBeUndefined();
+      for (const secret of [undefined, 'incorrect-internal-secret']) {
+        const untrusted = makeEvent(path, 'POST', { 'x-balanceframe-demo-internal': secret });
+        expect(enforceDemoBoundary(untrusted)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+        expect(untrusted.status).toBe(403);
+      }
+      const remote = makeEvent(path, 'POST', { 'x-balanceframe-demo-internal': INTERNAL });
+      remote.node.req.socket.remoteAddress = '192.0.2.10';
+      expect(enforceDemoBoundary(remote)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(remote.status).toBe(403);
+    }
+  });
+
+  it('allows only the exact private space setup writes, not public or ready-phase governance controls', () => {
+    for (const [path, method] of [
+      ['/api/spaces', 'POST'],
+      ['/api/spaces/space-demo/grants', 'PUT'],
+    ] as const) {
+      writeManifest({ phase: 'setup', budgetId: null, actorIds: [] });
+      expect(enforceDemoBoundary(makeEvent(path, method, {
+        'x-balanceframe-demo-internal': INTERNAL,
+      }))).toBeUndefined();
+      const external = makeEvent(path, method);
+      expect(enforceDemoBoundary(external)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(external.status).toBe(403);
+      writeManifest();
+      const ready = makeEvent(path, method, { 'x-balanceframe-demo-internal': INTERNAL });
+      expect(enforceDemoBoundary(ready)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(ready.status).toBe(403);
+    }
+    writeManifest({ phase: 'setup', budgetId: null, actorIds: [] });
+    for (const [path, method] of [
+      ['/api/spaces/space-demo/memberships', 'POST'],
+      ['/api/spaces/space-demo/policy', 'PUT'],
+      ['/api/spaces/space-demo/agents', 'POST'],
+    ] as const) {
+      const event = makeEvent(path, method, { 'x-balanceframe-demo-internal': INTERNAL });
+      expect(enforceDemoBoundary(event)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(event.status).toBe(403);
+    }
+  });
+
   it('requires the configured Host and Origin for unsafe requests', async () => {
     const event = makeEvent('/api/liquidity/preferences', 'PUT', { origin: undefined });
 

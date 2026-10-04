@@ -13,19 +13,32 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Mock } from 'vitest';
+import type * as WorkflowUtils from '../../server/utils/workflow-store';
+import type * as Reauthentication from '../../server/utils/reauthentication';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks — hoisted so they are available inside vi.mock factories
 // ---------------------------------------------------------------------------
 
-const { mockReadBody, mockSetResponseStatus, mockCreateUser, mockListUsers, mockGetWorkflowStore } =
-  vi.hoisted(() => ({
-    mockReadBody: vi.fn(),
-    mockSetResponseStatus: vi.fn(),
-    mockCreateUser: vi.fn(),
-    mockListUsers: vi.fn(),
-    mockGetWorkflowStore: vi.fn(),
-  }));
+const {
+  mockReadBody,
+  mockSetResponseStatus,
+  mockSetHeader,
+  mockCreateUser,
+  mockListUsers,
+  mockGetWorkflowStore,
+  mockAuthenticateInvitationHuman,
+  mockHasTrustedRequestOrigin,
+} = vi.hoisted(() => ({
+  mockReadBody: vi.fn(),
+  mockSetResponseStatus: vi.fn(),
+  mockSetHeader: vi.fn(),
+  mockCreateUser: vi.fn(),
+  mockListUsers: vi.fn(),
+  mockGetWorkflowStore: vi.fn(),
+  mockAuthenticateInvitationHuman: vi.fn(),
+  mockHasTrustedRequestOrigin: vi.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Mock h3 — defineEventHandler unwraps so we get the raw handler function
@@ -35,26 +48,32 @@ vi.mock('h3', () => ({
   defineEventHandler: <T>(handler: T) => handler,
   readBody: mockReadBody,
   setResponseStatus: mockSetResponseStatus,
+  setHeader: mockSetHeader,
 }));
 
 // ---------------------------------------------------------------------------
-// Mock lib/auth — heavy native bindings; expose only createUser
+// Mock lib/auth — used by the legacy bootstrap endpoint, never invitation redemption.
 vi.mock('../../lib/auth', () => ({
-  auth: {
-    api: {
-      createUser: mockCreateUser,
-      listUsers: mockListUsers,
-    },
-  },
+  auth: { api: { createUser: mockCreateUser, listUsers: mockListUsers } },
 }));
 
 // ---------------------------------------------------------------------------
 // Mock workflow-store — provides getWorkflowStore (per-test store injection)
 // ---------------------------------------------------------------------------
 
-vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: mockGetWorkflowStore,
-}));
+vi.mock('../../server/utils/workflow-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof WorkflowUtils>();
+  return { ...actual, getWorkflowStore: mockGetWorkflowStore };
+});
+
+vi.mock('../../server/utils/reauthentication', async (importOriginal) => {
+  const actual = await importOriginal<typeof Reauthentication>();
+  return {
+    ...actual,
+    authenticateInvitationHuman: mockAuthenticateInvitationHuman,
+    hasTrustedRequestOrigin: mockHasTrustedRequestOrigin,
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Import handlers (after all mocks are in place)
@@ -62,8 +81,6 @@ vi.mock('../../server/utils/workflow-store', () => ({
 
 import configHandler from '../../server/api/auth/config.get';
 import bootstrapHandler from '../../server/api/registration/bootstrap.post';
-import createInviteHandler from '../../server/api/invitations/index.post';
-import revokeHandler from '../../server/api/invitations/[id]/revoke.post';
 import redeemHandler from '../../server/api/invitations/redeem.post';
 
 // ---------------------------------------------------------------------------
@@ -481,306 +498,255 @@ describe('POST /api/registration/bootstrap', () => {
 });
 
 // ---------------------------------------------------------------
-// POST /api/invitations
-// ---------------------------------------------------------------
-
-describe('POST /api/invitations', () => {
-  const OWNER_ID = 'owner-user-id-42';
-
-  beforeEach(() => {
-    mockStore.getRegistrationState.mockResolvedValue({
-      mode: 'complete',
-      ownerUserId: OWNER_ID,
-      bootstrappedAt: '2025-01-01T00:00:00.000Z',
-    });
-  });
-
-  it('rejects invitation creation by non-owner', async () => {
-    const event = mockEvent({
-      auth: { authenticated: true, actorId: 'other-user-99' },
-    });
-
-    const response = (await createInviteHandler(event)) as ResponseEnvelope;
-
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 403);
-    expect(response.error!.code).toBe('FORBIDDEN');
-    expect(response.error!.message).toBe('Only the instance owner can perform this action');
-    expect(mockStore.createInvitation).not.toHaveBeenCalled();
-  });
-
-  it('returns raw token only inside the inviteUrl fragment', async () => {
-    const rawToken = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
-    const inviteUrl = `http://localhost:3000/invite#token=${rawToken}`;
-    const invitationId = 'invitation-abc-001';
-    const expiresAt = '2025-01-08T00:00:00.000Z';
-
-    mockStore.createInvitation.mockResolvedValue({
-      invitation: { id: invitationId, expiresAt, status: 'active' },
-      inviteUrl,
-    });
-
-    const event = mockEvent({
-      auth: { authenticated: true, actorId: OWNER_ID },
-    });
-
-    const response = (await createInviteHandler(event)) as ResponseEnvelope;
-
-    expect(response.status).toBe('ok');
-    // The raw token must only appear in the inviteUrl fragment
-    expect(response.result).toHaveProperty('inviteUrl');
-    expect((response.result as Record<string, unknown>).inviteUrl).toMatch(/#token=.+$/);
-    expect((response.result as Record<string, unknown>).inviteUrl).toContain(rawToken);
-    // Other response fields must NOT contain the raw token
-    expect(JSON.stringify((response.result as Record<string, unknown>).invitation)).not.toContain(
-      rawToken,
-    );
-    expect(response.result).not.toHaveProperty('token');
-  });
-});
-
-// ---------------------------------------------------------------
 // POST /api/invitations/redeem
 // ---------------------------------------------------------------
 
 describe('POST /api/invitations/redeem', () => {
+  const token = 'ab'.repeat(32);
+  const humanAuth = {
+    method: 'human-session' as const,
+    actorId: 'existing-user-42',
+    sessionId: 'session-42',
+    reauthenticatedAt: '2025-06-01T12:00:00.000Z',
+  };
+
   beforeEach(() => {
-    mockStore.getRegistrationState.mockResolvedValue({
-      mode: 'complete',
-      ownerUserId: 'owner-user-id-42',
-      bootstrappedAt: '2025-01-01T00:00:00.000Z',
+    mockHasTrustedRequestOrigin.mockReset();
+    mockAuthenticateInvitationHuman.mockReset();
+    mockCreateUser.mockReset();
+    mockListUsers.mockReset();
+    mockHasTrustedRequestOrigin.mockReturnValue(true);
+    mockAuthenticateInvitationHuman.mockResolvedValue({
+      auth: humanAuth,
+      email: 'verified@example.com',
     });
-  });
-
-  it('rejects invalid token with neutral generic error', async () => {
-    mockReadBody.mockResolvedValue({
-      token: 'invalid-token-value',
-      name: 'New User',
-      email: 'newuser@example.com',
-      password: 'password12345678',
+    mockStore.claimInvitation.mockResolvedValue({
+      claimId: 'claim-42',
+      email: 'verified@example.com',
+      spaceId: 'space-42',
     });
-    mockStore.claimInvitation.mockRejectedValue(new Error('Invitation not found'));
-
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
-
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
-    expect(response.error!.code).toBe('INVITATION_FAILED');
-    // Must not leak reasonCodes or lifecycle/state information — neutral contract
-    expect(response.error!.reasonCodes).toBeUndefined();
-    // Invalid tokens are terminal failures — never retryable
-    expect(response.error!.retryable).toBe(false);
-    expect(JSON.stringify(response)).not.toContain('invalid-token-value');
-    // Must not leak the raw token value
-  });
-
-  it('rejects malformed email before claiming invitation', async () => {
-    mockReadBody.mockResolvedValue({
-      token: 'some-valid-token-value',
-      name: 'New User',
-      email: 'a@b',
-      password: 'password12345678',
-    });
-
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
-
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
-    // claimInvitation must NOT be called — email rejected before claim
-    expect(mockStore.claimInvitation).not.toHaveBeenCalled();
-    expect(response.error!.code).toBe('INVITATION_FAILED');
-    // Validation errors are user-correctable (reasonCode starts with validation.)
-    expect(response.error!.retryable).toBe(true);
-    // Must not leak the email value
-    expect(JSON.stringify(response)).not.toContain('a@b');
-    expect(JSON.stringify(response)).not.toContain('invalid');
-  });
-
-  it('grants redeemed members read-only observe access', async () => {
-    const claimId = 'claim-for-redeem-01';
-    const redeemedUserId = 'redeemed-user-abc-456';
-    const validToken = 'valid-token-sixty-four-chars-for-test-purposes-0123456789abcdef';
-    mockReadBody.mockResolvedValue({
-      token: validToken,
-      name: 'Redeemed User',
-      email: 'redeemed@example.com',
-      password: 'long-enough-password',
-    });
-    mockStore.claimInvitation.mockResolvedValue({ claimId });
-    mockCreateUser.mockResolvedValue({
-      user: { id: redeemedUserId },
-    });
-    mockStore.upsertActorMembership.mockResolvedValue(undefined);
     mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
+  });
 
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
+  it('redeems only an existing verified human identity and passes the fresh proof to the store', async () => {
+    const event = mockEvent();
+    mockReadBody.mockResolvedValue({
+      token,
+      name: 'Existing invited member',
+      email: 'verified@example.com',
+      password: 'correct horse battery staple',
+    });
 
-    // Membership provisioning is atomic with redemption inside the workflow store.
-    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
-    // Verify redemption was completed with the correct IDs and requestId
+    const response = (await redeemHandler(event)) as ResponseEnvelope;
+
+    expect(response.status).toBe('ok');
+    expect(mockHasTrustedRequestOrigin).toHaveBeenCalledWith(event);
+    expect(mockStore.claimInvitation).toHaveBeenCalledWith({
+      token,
+      email: 'verified@example.com',
+      requestId: expect.any(String),
+      correlationId: expect.any(String),
+    });
+    expect(mockAuthenticateInvitationHuman).toHaveBeenCalledWith(
+      event,
+      'verified@example.com',
+      'correct horse battery staple',
+    );
+    expect(mockStore.claimInvitation.mock.invocationCallOrder[0]).toBeLessThan(
+      mockAuthenticateInvitationHuman.mock.invocationCallOrder[0],
+    );
     expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
-      claimId,
-      redeemedUserId,
+      'claim-42',
+      'existing-user-42',
       expect.objectContaining({
+        auth: humanAuth,
+        email: 'verified@example.com',
         requestId: expect.any(String),
-        provisionReadOnlyMembership: true,
       }),
     );
-    // Route must NOT produce its own audit — store handles it
+    expect(mockCreateUser).not.toHaveBeenCalled();
+    expect(mockListUsers).not.toHaveBeenCalled();
+    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
     expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
-    // Verify the raw token never appears in the response
-    expect(response.status).toBe('ok');
-    expect(JSON.stringify(response)).not.toContain(validToken);
+    expect(JSON.stringify(response)).not.toContain(token);
+    expect(JSON.stringify(response)).not.toContain('correct horse battery staple');
     expect(response.result).not.toHaveProperty('token');
+    expect(mockSetHeader).toHaveBeenCalledWith(event, 'cache-control', 'no-store');
   });
 
-  it('rejects revoked token with same generic error as invalid token', async () => {
+  it('uses the protected claim email for account sign-in after canonicalizing submitted email', async () => {
     mockReadBody.mockResolvedValue({
-      token: 'some-revoked-token',
+      token,
+      name: 'Existing invited member',
+      email: ' VERIFIED@example.com ',
+      password: 'correct horse battery staple',
+    });
+
+    await redeemHandler(mockEvent());
+
+    expect(mockStore.claimInvitation).toHaveBeenCalledWith(
+      expect.objectContaining({ email: 'verified@example.com' }),
+    );
+    expect(mockAuthenticateInvitationHuman).toHaveBeenCalledWith(
+      expect.anything(),
+      'verified@example.com',
+      'correct horse battery staple',
+    );
+  });
+
+  it('creates an invited account only after a valid claim and then authenticates its real session', async () => {
+    const createdAuth = {
+      method: 'human-session' as const,
+      actorId: 'new-user-42',
+      sessionId: 'new-session-42',
+      reauthenticatedAt: '2025-06-01T12:00:00.000Z',
+    };
+    mockReadBody.mockResolvedValue({
+      token,
+      name: 'New invited member',
+      email: 'verified@example.com',
+      password: 'correct horse battery staple',
+    });
+    mockAuthenticateInvitationHuman
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ auth: createdAuth, email: 'verified@example.com' });
+    mockCreateUser.mockResolvedValue({
+      user: { id: 'new-user-42', email: 'verified@example.com' },
+    });
+
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
+
+    expect(response.status).toBe('ok');
+    expect(mockStore.claimInvitation.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateUser.mock.invocationCallOrder[0],
+    );
+    expect(mockCreateUser).toHaveBeenCalledWith({
+      body: {
+        name: 'New invited member',
+        email: 'verified@example.com',
+        password: 'correct horse battery staple',
+      },
+    });
+    expect(mockAuthenticateInvitationHuman).toHaveBeenCalledTimes(2);
+    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
+      'claim-42',
+      'new-user-42',
+      expect.objectContaining({ auth: createdAuth, email: 'verified@example.com' }),
+    );
+    expect(mockListUsers).not.toHaveBeenCalled();
+    expect(JSON.stringify(response)).not.toContain(token);
+    expect(JSON.stringify(response)).not.toContain('correct horse battery staple');
+  });
+
+  it('does not adopt an existing account without its actual password session', async () => {
+    mockAuthenticateInvitationHuman.mockResolvedValue(null);
+    mockCreateUser.mockRejectedValue(new Error('User with this email already exists'));
+    mockReadBody.mockResolvedValue({
+      token,
+      name: 'Existing invited member',
+      email: 'verified@example.com',
+      password: 'wrong-password',
+    });
+
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
+
+    expect(response.status).toBe('error');
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    expect(mockStore.claimInvitation.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateUser.mock.invocationCallOrder[0],
+    );
+    expect(mockStore.completeInvitationRedemption).not.toHaveBeenCalled();
+    expect(mockListUsers).not.toHaveBeenCalled();
+    expect(JSON.stringify(response)).not.toContain(token);
+  });
+
+  it('does not switch an already authenticated human to a different invitation identity', async () => {
+    mockReadBody.mockResolvedValue({
+      token,
+      name: 'Other invited member',
+      email: 'verified@example.com',
+      password: 'correct horse battery staple',
+    });
+    const event = mockEvent({ auth: { authenticated: true, actorId: 'signed-in-user' } });
+
+    const response = (await redeemHandler(event)) as ResponseEnvelope;
+
+    expect(response.status).toBe('error');
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    expect(mockStore.claimInvitation).toHaveBeenCalledOnce();
+    expect(mockCreateUser).not.toHaveBeenCalled();
+    expect(mockStore.completeInvitationRedemption).not.toHaveBeenCalled();
+  });
+
+  it('rejects body-supplied identity fields before authenticating or claiming', async () => {
+    mockReadBody.mockResolvedValue({
+      token,
       name: 'Attacker',
-      email: 'attacker@example.com',
-      password: 'password12345678',
+      email: 'verified@example.com',
+      password: 'correct horse battery staple',
+      actorId: 'attacker-controlled-user',
+    });
+
+    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
+
+    expect(response.status).toBe('error');
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    expect(mockAuthenticateInvitationHuman).not.toHaveBeenCalled();
+    expect(mockStore.claimInvitation).not.toHaveBeenCalled();
+    expect(mockCreateUser).not.toHaveBeenCalled();
+    expect(mockListUsers).not.toHaveBeenCalled();
+  });
+
+  it('rejects an untrusted browser origin before reading credentials', async () => {
+    const event = mockEvent();
+    mockHasTrustedRequestOrigin.mockReturnValue(false);
+
+    const response = (await redeemHandler(event)) as ResponseEnvelope;
+
+    expect(response.status).toBe('error');
+    expect(mockReadBody).not.toHaveBeenCalled();
+    expect(mockAuthenticateInvitationHuman).not.toHaveBeenCalled();
+    expect(mockStore.claimInvitation).not.toHaveBeenCalled();
+  });
+
+  it('returns one generic failure for invalid, revoked, or replayed invitation tokens', async () => {
+    mockReadBody.mockResolvedValue({
+      token,
+      name: 'Invited member',
+      email: 'verified@example.com',
+      password: 'correct horse battery staple',
     });
     mockStore.claimInvitation.mockRejectedValue(new Error('Invitation has been revoked'));
 
     const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
-    expect(response.error!.code).toBe('INVITATION_FAILED');
-    // Must not distinguish revoked from invalid
-    expect(JSON.stringify(response)).not.toContain('revoked');
-  });
-
-  it('rejects replayed token with same generic error', async () => {
-    mockReadBody.mockResolvedValue({
-      token: 'replayed-token-value',
-      name: 'Replayer',
-      email: 'replayer@example.com',
-      password: 'password12345678',
-    });
-    // claimInvitation throws on replayed (already claimed/redeemed) tokens
-    mockStore.claimInvitation.mockRejectedValue(new Error('Invitation already claimed'));
-
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
-
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
-    expect(response.error!.code).toBe('INVITATION_FAILED');
-    // Must not leak the token value or distinguish the failure reason
-    expect(JSON.stringify(response)).not.toContain('replayed-token-value');
-    expect(JSON.stringify(response)).not.toContain('claimed');
-  });
-
-  it('fails with 400 when createUser fails (non-duplicate) — does not redeem invitation', async () => {
-    const claimId = 'claim-nonrecoverable-001';
-    mockReadBody.mockResolvedValue({
-      token: 'some-token-value-here',
-      name: 'New User',
-      email: 'newuser@example.com',
-      password: 'password12345678',
-    });
-    mockStore.claimInvitation.mockResolvedValue({ claimId });
-    // createUser fails with a non-duplicate error
-    mockCreateUser.mockRejectedValue(new Error('Database connection error'));
-
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
-
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 400);
-    expect(response.error!.code).toBe('INVITATION_FAILED');
-    // completeInvitationRedemption must NOT be called — invitation stays claimed
-    expect(mockStore.completeInvitationRedemption).not.toHaveBeenCalled();
-    // The claim is left stranded; no permanent state change
-    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
-    // No redemption audit should be produced
-    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
     expect(response.status).toBe('error');
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    expect(response.error!.retryable).toBe(false);
+    expect(JSON.stringify(response)).not.toContain(token);
+    expect(JSON.stringify(response)).not.toContain('revoked');
+    expect(mockStore.completeInvitationRedemption).not.toHaveBeenCalled();
+    expect(mockAuthenticateInvitationHuman).not.toHaveBeenCalled();
+    expect(mockCreateUser).not.toHaveBeenCalled();
+    expect(mockListUsers).not.toHaveBeenCalled();
   });
 
-  it('recovers via listUsers when createUser fails due to duplicate email', async () => {
-    const claimId = 'claim-recovery-002';
-    const existingUserId = 'recovered-user-789';
+  it('does not complete a claim when atomic redemption fails', async () => {
     mockReadBody.mockResolvedValue({
-      token: 'another-valid-token',
-      name: 'Existing User',
-      email: 'existing@example.com',
-      password: 'password12345678',
+      token,
+      name: 'Invited member',
+      email: 'verified@example.com',
+      password: 'correct horse battery staple',
     });
-    mockStore.claimInvitation.mockResolvedValue({ claimId });
-    // createUser throws duplicate email error
-    mockCreateUser.mockRejectedValue(new Error('User with this email already exists'));
-    mockListUsers.mockResolvedValue({
-      users: [{ id: existingUserId, email: 'existing@example.com' }],
-    });
-    mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
-    mockStore.upsertActorMembership.mockResolvedValue(undefined);
-
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
-
-    // Should have called listUsers to find the existing user
-    expect(mockListUsers).toHaveBeenCalledTimes(1);
-    // Should complete redemption with the recovered user ID
-    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
-      claimId,
-      existingUserId,
-      expect.objectContaining({
-        requestId: expect.any(String),
-        provisionReadOnlyMembership: false,
-      }),
-    );
-    expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
-    expect(response.status).toBe('ok');
-    // No route-level audit — store handles it
-    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
-  });
-
-  it('returns 500 when completeInvitationRedemption fails after createUser', async () => {
-    const claimId = 'claim-finalize-fail-004';
-    const redeemedUserId = 'finalize-fail-user';
-    mockReadBody.mockResolvedValue({
-      token: 'finalize-fail-token',
-      name: 'Finalize Fail',
-      email: 'finalize-fail@example.com',
-      password: 'password12345678',
-    });
-    mockStore.claimInvitation.mockResolvedValue({ claimId });
-    mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
-    // completeInvitationRedemption throws
     mockStore.completeInvitationRedemption.mockRejectedValue(new Error('Update failed'));
 
     const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
 
-    expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 500);
-    expect(response.error!.code).toBe('INVITATION_FAILED');
     expect(response.status).toBe('error');
-    // upsertActorMembership should not be called since finalization failed
+    expect(response.error!.code).toBe('INVITATION_FAILED');
+    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledOnce();
     expect(mockStore.upsertActorMembership).not.toHaveBeenCalled();
-    // No route-level audit
     expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
-  });
-
-  it('produces exactly one redemption audit via store (no route-level audit)', async () => {
-    const claimId = 'claim-audit-005';
-    const redeemedUserId = 'audit-check-user';
-    mockReadBody.mockResolvedValue({
-      token: 'audit-check-token',
-      name: 'Audit Check',
-      email: 'audit-check@example.com',
-      password: 'password12345678',
-    });
-    mockStore.claimInvitation.mockResolvedValue({ claimId });
-    mockCreateUser.mockResolvedValue({ user: { id: redeemedUserId } });
-    mockStore.completeInvitationRedemption.mockResolvedValue(undefined);
-    mockStore.upsertActorMembership.mockResolvedValue(undefined);
-
-    const response = (await redeemHandler(mockEvent())) as ResponseEnvelope;
-
-    expect(response.status).toBe('ok');
-    // CompleteInvitationRedemption was called — its internal audit is the only one
-    expect(mockStore.completeInvitationRedemption).toHaveBeenCalledWith(
-      claimId,
-      redeemedUserId,
-      expect.objectContaining({
-        requestId: expect.any(String),
-        provisionReadOnlyMembership: true,
-      }),
-    );
-    // Route must NOT produce its own audit record
-    expect(mockStore.appendAuditRecord).not.toHaveBeenCalled();
+    expect(JSON.stringify(response)).not.toContain(token);
   });
 });

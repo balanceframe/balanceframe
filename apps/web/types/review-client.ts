@@ -7,7 +7,61 @@
  * the sole state authority.
  */
 
-import type { ReviewQueueItem, ReviewSurfaceState, ReviewActionBindings } from '../src/review.js';
+import type { ProposalApprovalView } from '../server/utils/proposal-approval-view';
+import type { ReviewSurfaceState } from '../src/review.js';
+
+/** A server-created proposal bound to the exact review item that produced it. */
+export interface PendingProposalApproval {
+  readonly reviewId: string;
+  readonly proposal: ProposalApprovalView;
+}
+
+/** Runtime boundary check for exact proposal views received from the server. */
+export function isProposalApprovalView(value: unknown): value is ProposalApprovalView {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const view = value as Record<string, unknown>;
+  const approvers = view.approvers;
+  return (
+    (view.operation === 'set_category' ||
+      view.operation === 'create_rule' ||
+      view.operation === 'update_rule' ||
+      view.operation === 'delete_rule') &&
+    typeof view.spaceId === 'string' &&
+    typeof view.budgetId === 'string' &&
+    typeof view.requesterActorId === 'string' &&
+    typeof view.requesterMembershipId === 'string' &&
+    typeof view.governancePolicyVersion === 'string' &&
+    typeof view.currentGovernancePolicyVersion === 'string' &&
+    typeof view.requesterMembershipCurrent === 'boolean' &&
+    typeof view.policyVersion === 'string' &&
+    typeof view.payloadHash === 'string' &&
+    /^[a-f0-9]{64}$/i.test(view.payloadHash) &&
+    typeof view.privateEnvelopeVisible === 'boolean' &&
+    (view.privateEnvelopeVisible
+      ? view.payload !== null && typeof view.payload === 'object' && !Array.isArray(view.payload) &&
+        view.preconditions !== null && typeof view.preconditions === 'object' && !Array.isArray(view.preconditions)
+      : view.payload === null && view.preconditions === null && view.canApprove === false) &&
+    typeof view.expiresAt === 'string' &&
+    typeof view.requiredApprovers === 'number' &&
+    Number.isInteger(view.requiredApprovers) &&
+    view.requiredApprovers > 0 &&
+    Array.isArray(approvers) &&
+    approvers.every((approver) => {
+      if (!approver || typeof approver !== 'object' || Array.isArray(approver)) return false;
+      const vote = approver as Record<string, unknown>;
+      return (
+        typeof vote.actorId === 'string' &&
+        typeof vote.issuedAt === 'string' &&
+        typeof vote.expiresAt === 'string'
+      );
+    }) &&
+    (view.disposition === 'authorized_without_approval' ||
+      view.disposition === 'approval_required' ||
+      view.disposition === 'denied') &&
+    typeof view.canApprove === 'boolean' &&
+    typeof view.canExecute === 'boolean'
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Web-visible proposal result
@@ -18,6 +72,7 @@ export interface WebActionResult {
   readonly itemId: string;
   readonly success: boolean;
   readonly error: string | null;
+  readonly approvalRequired?: boolean;
 }
 
 /** Result of a bulk action with per-item outcomes. */
@@ -43,6 +98,8 @@ export interface ReviewControllerAdapter {
   /** Reactive snapshot of the current review surface state. */
   readonly state: Readonly<ReviewSurfaceState>;
 
+  readonly proposalApprovalViews?: readonly PendingProposalApproval[];
+
   /** True while an async load or transition is in flight. */
   readonly loading: boolean;
 
@@ -58,6 +115,8 @@ export interface ReviewControllerAdapter {
   refresh(): Promise<void>;
 
 
+  /** Remove one or all exact proposal views after discard or verified execution. */
+  clearProposalApprovalViews?(proposalId?: string): void;
   // ── Single-item actions ────────────────────────────────────────────
   
   /** Approve the current item. Returns the action result. */
@@ -123,4 +182,10 @@ export interface ReviewControllerAdapter {
 
   /** Clear the current error. */
   clearError(): void;
+}
+
+/** API-backed adapter that retains server proposal snapshots for explicit consent. */
+export interface ApiReviewControllerAdapter extends ReviewControllerAdapter {
+  readonly proposalApprovalViews: readonly PendingProposalApproval[];
+  clearProposalApprovalViews(proposalId?: string): void;
 }

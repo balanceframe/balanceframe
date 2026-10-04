@@ -8,7 +8,7 @@ import { requireFullRead } from '../../utils/legacy-financial-read';
  * Response envelope: { entries: ReportHistoryEntry[], total: number }
  */
 
-import { defineEventHandler, getQuery, setResponseStatus } from 'h3';
+import { defineEventHandler, getQuery, setHeader, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -17,6 +17,7 @@ import {
 } from '../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
+  setHeader(event, 'Cache-Control', 'private, no-store');
   const fullRead = await requireFullRead(event);
   if (!fullRead.ok) return fullRead.response;
   const authInfo = fullRead.info;

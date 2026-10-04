@@ -1,179 +1,133 @@
-/**
- * POST /api/invitations/redeem — claim and redeem a one-time invitation.
- *
- * Public route (no auth required).  Accepts a token (from the URL fragment),
- * name, email, and password.  Invalid, revoked, expired, already-claimed,
- * and already-redeemed tokens all return the same generic error.
- *
- * The store's claimInvitation validates the token and claims the slot.
- * The route then creates the Better Auth user and completes redemption.
- *
- * On interruption (crash between claim and redemption), same-email retries
- * recover deterministically using the durable claim ID and, if the Better
- * Auth user was already created, the admin plugin's listUsers API.
- *
- * Auditing is handled by the store's completeInvitationRedemption — the route
- * does not produce a separate redemption audit record.
- */
-
-import { readBody, defineEventHandler, setResponseStatus } from 'h3';
+import { readBody, defineEventHandler, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
 import { auth } from '../../../lib/auth';
-import { getWorkflowStore } from '../../utils/workflow-store';
-import { normalizeEmail, validateEmail, invitationError } from '../../utils/registration';
+import { getWorkflowStore, okEnvelope } from '../../utils/workflow-store';
+import type { EventWithContext } from '../../utils/workflow-store';
+import { invitationError, normalizeEmail } from '../../utils/registration';
+import {
+  authenticateInvitationHuman,
+  hasTrustedRequestOrigin,
+} from '../../utils/reauthentication';
+import type { ReauthenticationEvent } from '../../utils/reauthentication';
+
+const RedemptionBody = z.object({
+  token: z.string().trim().regex(/^[a-f0-9]{64}$/),
+  name: z.string().trim().min(1).max(120),
+  email: z.string().trim().email().max(254).transform(normalizeEmail),
+  password: z.string().min(8).max(128),
+}).strict();
+
+const failureMessage = 'Invitation could not be redeemed.';
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
+  setHeader(event, 'cache-control', 'no-store');
 
-  // 1. Parse body
-  let body: Record<string, unknown>;
-  try {
-    body = (await readBody(event)) ?? {};
-  } catch {
-    setResponseStatus(event, 400);
-    return invitationError('Invalid request body', requestId, 'validation.invalid_body');
+  if (!hasTrustedRequestOrigin(event as unknown as ReauthenticationEvent)) {
+    setResponseStatus(event, 403);
+    return invitationError(failureMessage, requestId, 'origin.untrusted');
   }
 
-  const token = typeof body.token === 'string' ? body.token.trim() : '';
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  const emailRaw = typeof body.email === 'string' ? body.email.trim() : '';
-  const password = typeof body.password === 'string' ? body.password : '';
-
-  // 2. Validate required fields
-  if (!token || !name || !emailRaw || !password) {
+  const body = RedemptionBody.safeParse(await readBody<unknown>(event).catch(() => null));
+  if (!body.success) {
     setResponseStatus(event, 400);
-    return invitationError('All fields are required', requestId, 'validation.missing_fields');
+    return invitationError(failureMessage, requestId, 'validation.invalid');
   }
 
-  if (password.length < 8) {
-    setResponseStatus(event, 400);
-    return invitationError(
-      'Password must be at least 8 characters',
-      requestId,
-      'validation.password_too_short',
-    );
-  }
-  const email = normalizeEmail(emailRaw);
-  if (!validateEmail(email)) {
-    setResponseStatus(event, 400);
-    return invitationError('Invalid email address', requestId, 'validation.invalid_email');
-  }
+  const currentAuth = (event as unknown as EventWithContext).context.auth;
+  const priorActorId = currentAuth?.authenticated
+    ? currentAuth.actorId ?? (typeof currentAuth.user?.id === 'string' ? currentAuth.user.id : undefined)
+    : undefined;
+  const priorEmail = currentAuth?.authenticated && typeof currentAuth.user?.email === 'string'
+    ? normalizeEmail(currentAuth.user.email)
+    : undefined;
 
-  // 3. Access store
-  const wf = getWorkflowStore(event);
-  if ('error' in wf) {
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
     setResponseStatus(event, 503);
-    return invitationError('Store unavailable', requestId, 'store.unavailable');
+    return invitationError(failureMessage, requestId, 'store.unavailable');
   }
 
-  // 4. Claim invitation — store validates token, computes digest internally,
-  //    checks expiry, and returns a claimId for cross-database recovery.
-  let claimResult;
+  let claim: Awaited<ReturnType<typeof workflow.store.claimInvitation>>;
   try {
-    claimResult = await wf.store.claimInvitation({ token, email });
+    claim = await workflow.store.claimInvitation({
+      token: body.data.token,
+      email: body.data.email,
+      requestId,
+      correlationId: requestId,
+    });
   } catch {
     setResponseStatus(event, 400);
-    return invitationError('Invalid or expired invitation', requestId, 'invitation.invalid');
+    return invitationError(failureMessage, requestId, 'invitation.invalid');
+  }
+  if (currentAuth?.authenticated &&
+      (currentAuth.method !== 'session' || currentAuth.principalType !== 'human' || currentAuth.impersonatedBy)) {
+    setResponseStatus(event, 400);
+    return invitationError(failureMessage, requestId, 'identity.mismatch');
+  }
+  if (priorActorId && priorEmail !== claim.email) {
+    setResponseStatus(event, 400);
+    return invitationError(failureMessage, requestId, 'identity.mismatch');
   }
 
-  // 5. Create the Better Auth user (trusted server call — no headers forwarded)
-  let redeemedUserId: string;
-  try {
-    const result = await auth.api.createUser({
-      body: {
-        name,
-        email,
-        password,
-      },
-    });
-    const baUser = result.user;
-    if (typeof baUser !== 'object' || baUser === null) {
-      throw new Error('Unexpected user response shape');
-    }
-    if (!('id' in baUser) || typeof baUser.id !== 'string') {
-      throw new Error('Unexpected user response shape');
-    }
-    redeemedUserId = baUser.id;
-  } catch (err) {
-    // Attempt recovery: if the user was already created in a prior attempt,
-    // listUsers can find the existing user so we can finalize.
-    const errMsg = err instanceof Error ? err.message.toLowerCase() : '';
-    const isDuplicateEmail =
-      errMsg.includes('email') &&
-      (errMsg.includes('already') || errMsg.includes('exists') || errMsg.includes('duplicate'));
+  let identity = await authenticateInvitationHuman(
+    event as unknown as ReauthenticationEvent,
+    claim.email,
+    body.data.password,
+  );
+  if (identity && (identity.email !== claim.email || (priorActorId && identity.auth.actorId !== priorActorId))) {
+    setResponseStatus(event, 400);
+    return invitationError(failureMessage, requestId, 'identity.mismatch');
+  }
 
-    if (isDuplicateEmail) {
-      try {
-        const listResult = await auth.api.listUsers({ query: {} });
-        const existing = listResult.users?.find(
-          (u: { email?: string }) => u.email?.toLowerCase() === email,
-        );
-        if (existing?.id) {
-          redeemedUserId = existing.id;
-          // Existing-user recovery preserves the current authorization record.
-          try {
-            await wf.store.completeInvitationRedemption(claimResult.claimId, redeemedUserId, {
-              requestId,
-              provisionReadOnlyMembership: false,
-            });
-          } catch {
-            setResponseStatus(event, 500);
-            return invitationError(
-              'Could not complete registration',
-              requestId,
-              'invitation.finalization_failed',
-            );
-          }
-          return {
-            schemaVersion: '1',
-            requestId,
-            status: 'ok',
-            dataFreshness: null,
-            authorization: null,
-            result: {
-              message: 'Account created. You can now sign in.',
-            },
-            error: null,
-          };
-        }
-      } catch {
-        // listUsers failed — fall through to generic error
+  if (!identity) {
+    if (priorActorId) {
+      setResponseStatus(event, 400);
+      return invitationError(failureMessage, requestId, 'identity.mismatch');
+    }
+
+    try {
+      const created = await auth.api.createUser({
+        body: {
+          name: body.data.name,
+          email: claim.email,
+          password: body.data.password,
+        },
+      });
+      const user = created.user;
+      if (!user || typeof user.id !== 'string' || !user.id ||
+          (typeof user.email === 'string' && normalizeEmail(user.email) !== claim.email)) {
+        throw new Error('Invitation account creation returned an invalid identity');
       }
-    }
 
-    // Could not recover — invitation remains claimed for same-email retry
+      identity = await authenticateInvitationHuman(
+        event as unknown as ReauthenticationEvent,
+        claim.email,
+        body.data.password,
+      );
+      if (!identity || identity.email !== claim.email || identity.auth.actorId !== user.id) {
+        throw new Error('Invitation account could not establish its verified session');
+      }
+    } catch {
+      setResponseStatus(event, 400);
+      return invitationError(failureMessage, requestId, 'identity.invalid');
+    }
+  }
+  if (!identity) {
     setResponseStatus(event, 400);
-    return invitationError(
-      'Could not create account',
-      requestId,
-      'invitation.user_creation_failed',
-    );
+    return invitationError(failureMessage, requestId, 'identity.invalid');
   }
 
-  // 6. Atomically complete redemption and provision the read-only membership.
-  //    On failure the invitation stays claimed (recoverable by same-email retry).
   try {
-    await wf.store.completeInvitationRedemption(claimResult.claimId, redeemedUserId, {
+    await workflow.store.completeInvitationRedemption(claim.claimId, identity.auth.actorId, {
+      auth: identity.auth,
+      email: claim.email,
       requestId,
-      provisionReadOnlyMembership: true,
     });
   } catch {
-    setResponseStatus(event, 500);
-    return invitationError(
-      'Could not complete registration',
-      requestId,
-      'invitation.finalization_failed',
-    );
+    setResponseStatus(event, 400);
+    return invitationError(failureMessage, requestId, 'invitation.invalid');
   }
 
-  return {
-    schemaVersion: '1',
-    requestId,
-    status: 'ok',
-    dataFreshness: null,
-    authorization: null,
-    result: {
-      message: 'Account created. You can now sign in.',
-    },
-    error: null,
-  };
+  return okEnvelope({ redeemed: true, spaceId: claim.spaceId }, null, requestId);
 });

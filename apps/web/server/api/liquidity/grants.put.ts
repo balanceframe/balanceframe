@@ -1,5 +1,6 @@
 import { readBody } from 'h3';
 import { liquidityRoute } from '../../utils/liquidity-service';
-export default liquidityRoute(async (event, service, actor) =>
-  service.saveGrants(actor, await readBody(event)),
+export default liquidityRoute(
+  async (event, service, actor) => service.saveGrants(actor, await readBody(event)),
+  { capability: 'grant:manage', humanControl: true },
 );

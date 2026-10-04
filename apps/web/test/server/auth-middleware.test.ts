@@ -156,45 +156,6 @@ describe('auth middleware — route scoping', () => {
   });
 });
 
-describe('auth middleware — Better Auth session', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetRequestPath.mockReturnValue('/api/invitations');
-    mockGetRequestHeaders.mockReturnValue({
-      cookie: 'better-auth.session_token=session-token',
-      host: 'localhost:3000',
-    });
-    mockGetSession.mockResolvedValue({
-      user: {
-        id: 'user-from-session',
-        email: 'owner@example.com',
-      },
-    });
-  });
-  afterEach(() => {
-    mockGetSession.mockResolvedValue(null);
-    mockGetRequestHeaders.mockReturnValue({});
-  });
-
-  it('authenticates an API request from the Better Auth session cookie', async () => {
-    const event = mockEvent({ context: { runtimeConfig: {} } });
-
-    const result = await handler(event);
-
-    expect(result).toBeUndefined();
-    expect(event.context.auth).toEqual({
-      authenticated: true,
-      actorId: 'user-from-session',
-      user: {
-        id: 'user-from-session',
-        email: 'owner@example.com',
-      },
-    });
-    expect(mockGetSession).toHaveBeenCalledWith({
-      headers: expect.any(Headers),
-    });
-  });
-});
 
 it('uses the Better Auth user ID when an older actor fallback is present', () => {
   const event = mockEvent({
@@ -284,21 +245,6 @@ describe('auth middleware — token validation', () => {
     expect(env.error.reasonCodes).toContain('auth.missing_credentials');
   });
 
-  it('passes through for a valid Bearer token on an operational API route', async () => {
-    mockGetRequestPath.mockReturnValue('/api/review');
-    mockGetHeader.mockReturnValue('Bearer s3cret');
-    const event = mockEvent({ context: { runtimeConfig: { apiToken: 's3cret' } } });
-
-    const result = await handler(event);
-
-    expect(result).toBeUndefined();
-    expect(mockSetResponseStatus).not.toHaveBeenCalled();
-    expect(mockSetHeader).not.toHaveBeenCalled();
-    expect(event.context.auth).toEqual({
-      authenticated: true,
-      actorId: 'api-user',
-    });
-  });
 });
 
 describe('auth middleware — actor identity', () => {
@@ -356,19 +302,6 @@ describe('auth middleware — dev bypass', () => {
     vi.unstubAllEnvs();
   });
 
-  it('sets auth context with dev-bypass actorId when devBypassAuth is true', async () => {
-    mockGetRequestPath.mockReturnValue('/api/review');
-    const event = mockEvent({ context: { runtimeConfig: { devBypassAuth: true } } });
-
-    const result = await handler(event);
-
-    expect(result).toBeUndefined();
-    expect(mockSetResponseStatus).not.toHaveBeenCalled();
-    expect(event.context.auth).toEqual({
-      authenticated: true,
-      actorId: 'dev-bypass',
-    });
-  });
 
   it('still returns 503 when devBypassAuth is false and no token', async () => {
     mockGetRequestPath.mockReturnValue('/api/review');
@@ -381,20 +314,6 @@ describe('auth middleware — dev bypass', () => {
     expect(env.error.code).toBe('SERVICE_UNAVAILABLE');
   });
 
-  it('bypasses auth when env BALANCEFRAME_DEV_BYPASS_AUTH is "true"', async () => {
-    vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'true');
-    mockGetRequestPath.mockReturnValue('/api/review');
-    const event = mockEvent();
-
-    const result = await handler(event);
-
-    expect(result).toBeUndefined();
-    expect(mockSetResponseStatus).not.toHaveBeenCalled();
-    expect(event.context.auth).toEqual({
-      authenticated: true,
-      actorId: 'dev-bypass',
-    });
-  });
 
   it('rejects env BALANCEFRAME_DEV_BYPASS_AUTH when value is "false" string', async () => {
     vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'false');

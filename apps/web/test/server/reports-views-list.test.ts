@@ -1,131 +1,144 @@
-/**
- * TDD: GET /api/reports/views delegates to savedViewsListAnalysis.
- *
- * Must fail against the current hardcoded stub.
- */
-
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
 
-// ---------------------------------------------------------------------------
-// Mock h3
-// ---------------------------------------------------------------------------
-
+const { loadConfig } = vi.hoisted(() => ({ loadConfig: vi.fn() }));
 vi.mock('h3', () => ({
   defineEventHandler: <T>(handler: T) => handler,
+  getCookie: (event: { cookies?: Record<string, string> }, name: string) => event.cookies?.[name],
+  getHeader: (event: { headers?: Record<string, string> }, name: string) => event.headers?.[name.toLowerCase()],
+  setHeader: vi.fn(),
   setResponseStatus: vi.fn(),
 }));
-
-// ---------------------------------------------------------------------------
-// Mock workflow-store helpers
-// ---------------------------------------------------------------------------
-
-vi.mock('../../server/utils/workflow-store', () => ({
-  getWorkflowStore: vi.fn(() => ({ store: undefined as unknown as SqliteWorkflowStore })),
-  buildAuthorizationInfo: vi.fn(() => ({
-    actorId: 'test-actor',
-    capability: 'observe',
-    allowed: true,
-  })),
-  getActorId: vi.fn(() => 'test-actor'),
-  sanitizeError: vi.fn((err, requestId, code, retryable) => ({
-    code,
-    message: String(err),
-    retryable,
-  })),
-  okEnvelope: (result: unknown, _auth: unknown, requestId?: string) => ({
-    schemaVersion: '1',
-    requestId: requestId ?? 'test-req',
-    status: 'ok' as const,
-    dataFreshness: null,
-    authorization: null,
-    result,
-    error: null,
-  }),
-  errorEnvelope: (
-    code: string,
-    message: string,
-    _auth: unknown,
-    retryable?: boolean,
-    requestId?: string,
-  ) => ({
-    schemaVersion: '1',
-    requestId: requestId ?? 'test-req',
-    status: 'error' as const,
-    dataFreshness: null,
-    authorization: null,
-    result: null,
-    error: { code, message, retryable: retryable ?? false },
-  }),
+vi.mock('@balanceframe/application', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  createDefaultConnectionManager: () => ({ loadConfig }),
 }));
 
 import handler from '../../server/api/reports/views.get';
 
-describe('GET /api/reports/views', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(getWorkflowStore).mockReset();
-    vi.mocked(getWorkflowStore).mockReturnValue({
-      store: undefined as unknown as SqliteWorkflowStore,
-    });
-  });
+const actorId = 'saved-view-reader';
+const ownerId = 'saved-view-owner';
+const now = '2098-01-01T12:00:00.000Z';
+const controlAuth = {
+  method: 'human-session' as const,
+  actorId: ownerId,
+  sessionId: `session:${ownerId}`,
+  reauthenticatedAt: now,
+};
+let store: SqliteWorkflowStore;
+let selectedBudgetId = '';
+let fixtureSequence = 0;
 
-  it('lists persisted views without restoring the external ledger', async () => {
-    const listSavedViews = vi.fn().mockResolvedValue([
-      {
-        viewId: 'v1',
-        name: 'Monthly',
-        viewType: 'pending_review',
-        scope: {},
-        sort: null,
-        createdAt: '2026-07-01T00:00:00Z',
+function event(spaceId: string): EventWithContext {
+  return {
+    headers: { 'x-balanceframe-space': spaceId },
+    context: {
+      runtimeConfig: { workflowDbPath: ':memory:' },
+      auth: {
+        authenticated: true,
+        actorId,
+        principalType: 'human',
+        method: 'session',
+        sessionId: `session:${actorId}`,
+        user: { id: actorId },
       },
-    ]);
-    vi.mocked(getWorkflowStore).mockReturnValue({
-      store: { listSavedViews } as unknown as SqliteWorkflowStore,
-    });
+    },
+  };
+}
 
-    const r = await handler({ context: { auth: { authenticated: true } } });
-
-    expect(r.status).toBe('ok');
-    expect(r.result.views).toEqual([
-      {
-        viewId: 'v1',
-        name: 'Monthly',
-        viewType: 'pending_review',
-        scope: {},
-        createdAt: '2026-07-01T00:00:00Z',
-      },
-    ]);
-    expect(listSavedViews).toHaveBeenCalledWith('test-actor');
+async function selectedScope(budgetId: string) {
+  const governance = store.governance;
+  const unbound = governance.createSpace({
+    actorId: ownerId,
+    name: budgetId,
+    kind: 'shared',
+    now,
+    auth: controlAuth,
   });
-
-  it('returns a retryable store failure when view persistence fails', async () => {
-    const listSavedViews = vi.fn().mockRejectedValue(new Error('database is locked'));
-    vi.mocked(getWorkflowStore).mockReturnValue({
-      store: { listSavedViews } as unknown as SqliteWorkflowStore,
-    });
-
-    const r = await handler({ context: { auth: { authenticated: true } } });
-
-    expect(r.status).toBe('error');
-    expect(r.error.code).toBe('store_failed');
-    expect(r.error.retryable).toBe(true);
+  const space = governance.bindBudget({
+    spaceId: unbound.id,
+    budgetId,
+    now,
+    auth: controlAuth,
   });
+  const membership = governance.addMembership({
+    spaceId: space.id,
+    actorId,
+    validFrom: now,
+    now,
+    auth: controlAuth,
+  });
+  for (const capability of ['observe', 'full-read']) {
+    governance.provisionResourceGrant({
+      spaceId: space.id,
+      actorId,
+      membershipId: membership.id,
+      budgetId,
+      capability,
+      resourceKind: 'budget',
+      resourceId: budgetId,
+      granted: true,
+      now,
+      auth: controlAuth,
+    });
+  }
+  return { actorId, spaceId: space.id, budgetId, membershipId: membership.id };
+}
+
+beforeAll(async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(now));
+  const workflow = getWorkflowStore(event('') as EventWithContext);
+  if ('error' in workflow) throw new Error(workflow.error);
+  store = workflow.store;
+  await store.claimBootstrap({ name: 'Owner', email: 'owner@example.test', claimId: 'saved-view-list' });
+  await store.finalizeBootstrap({ claimId: 'saved-view-list', ownerUserId: ownerId });
+  await store.upsertActorMembership(actorId, 'active', [], '');
 });
 
-// These behavior fixtures explicitly represent an authorized legacy full-read request.
-// Real membership, revocation and resource denial are covered in legacy-financial-read.test.ts.
-vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  requireFullRead: vi.fn(async () => ({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'liquidity:full-read', allowed: true },
-    budgetId: 'budget_test',
-  })),
-  requireRegisteredOwner: vi.fn(async () => ({
-    ok: true,
-    info: { actorId: 'test-actor', capability: 'owner:financial-discovery', allowed: true },
-  })),
-}));
+beforeEach(() => {
+  vi.clearAllMocks();
+  fixtureSequence += 1;
+  selectedBudgetId = `saved-view-selected-budget-${fixtureSequence}`;
+  loadConfig.mockImplementation(async () => ({ budgetId: selectedBudgetId }));
+});
+
+afterAll(() => {
+  store.close();
+  vi.useRealTimers();
+});
+
+describe('GET /api/reports/views', () => {
+  it('lists persisted views only from the currently selected space and budget', async () => {
+    const selected = await selectedScope(selectedBudgetId);
+    const foreign = await selectedScope(`saved-view-foreign-budget-${fixtureSequence}`);
+    await store.createSavedView({
+      authority: selected,
+      name: 'Selected Monthly',
+      viewType: 'pending_review',
+      scope: { monthRange: '2098-01', privateFilter: 'selected-space-filter' },
+    });
+    await store.createSavedView({
+      authority: foreign,
+      name: 'Foreign Monthly',
+      viewType: 'pending_review',
+      scope: { privateFilter: 'foreign-space-filter' },
+    });
+
+    const response = await handler(event(selected.spaceId));
+
+    expect(response.status).toBe('ok');
+    expect(response.result).toMatchObject({
+      total: 1,
+      views: [{
+        name: 'Selected Monthly',
+        viewType: 'pending_review',
+        scope: { monthRange: '2098-01', privateFilter: 'selected-space-filter' },
+      }],
+    });
+    expect(JSON.stringify(response)).not.toContain('Foreign Monthly');
+    expect(JSON.stringify(response)).not.toContain('foreign-space-filter');
+  });
+});

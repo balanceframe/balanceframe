@@ -139,12 +139,12 @@ export default defineEventHandler(async (event) => {
       });
 
       // Transition through required lifecycle to pending_review
-      const sg = await store.transitionReviewItem(item.id, {
+      const sg = await store.transitionInternalReviewItem(item.id, {
         toStatus: 'suggestion_generated',
         actor: 'seed',
         expectedVersion: item.version,
       });
-      const pr = await store.transitionReviewItem(sg.id, {
+      const pr = await store.transitionInternalReviewItem(sg.id, {
         toStatus: 'pending_review',
         actor: 'seed',
         expectedVersion: sg.version,

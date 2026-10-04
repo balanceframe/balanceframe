@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import type { ReviewQueueItem, ReviewStatus } from '../../src/review';
+import type { ProposalApprovalView } from '../../server/utils/proposal-approval-view';
 import ReviewPage from '../../app/pages/review.vue';
 import ReviewQueue from '../../app/components/ReviewQueue.vue';
 import ReviewItem from '../../app/components/ReviewItem.vue';
 import ReviewActions from '../../app/components/ReviewActions.vue';
 import CategoryCorrectModal from '../../app/components/CategoryCorrectModal.vue';
-
+import ProposedRulesModal from '../../app/components/ProposedRulesModal.vue';
 const stubs = {
   UContainer: { template: '<main><slot /></main>' },
   UCard: { template: '<section><slot name="header" /><slot /><slot name="footer" /></section>' },
@@ -33,7 +34,6 @@ const stubs = {
   },
   SavedViewPicker: true,
   ReviewMetrics: true,
-  ProposedRulesModal: true,
 };
 
 function item(
@@ -115,6 +115,44 @@ function response(result: unknown) {
   return new Response(JSON.stringify({ status: 'ok', result, error: null }), { status: 200 });
 }
 
+function approvalProposal(reviewId: string, categoryId: string): ProposalApprovalView {
+  return {
+    id: `proposal-${reviewId}`,
+    operation: 'set_category',
+    spaceId: 'space-test',
+    budgetId: 'budget-test',
+    requesterActorId: 'requester-test',
+    requesterMembershipId: 'membership-test',
+    governancePolicyVersion: 'governance-1',
+    currentGovernancePolicyVersion: 'governance-1',
+    requesterMembershipCurrent: true,
+    policyVersion: 'policy-1',
+    payloadHash: 'b'.repeat(64),
+    privateEnvelopeVisible: true,
+    payload: { kind: 'set_category', transactionId: `tx-${reviewId}`, categoryId },
+    preconditions: { reviewId, transactionVersion: 1 },
+    expiresAt: '2026-10-03T12:00:00.000Z',
+    requiredApprovers: 1,
+    approvers: [],
+    disposition: 'approval_required',
+    canApprove: true,
+    canExecute: true,
+  };
+}
+
+function approvalRequired(reviewId: string, categoryId: string) {
+  return response({
+    itemId: reviewId,
+    success: false,
+    approvalRequired: true,
+    applied: false,
+    verified: false,
+    categorizationExecuted: false,
+    disposition: 'approval_required',
+    proposal: approvalProposal(reviewId, categoryId),
+  });
+}
+
 function failure(message: string) {
   return new Response(
     JSON.stringify({
@@ -150,7 +188,10 @@ function queueRow(page: VueWrapper, merchant: string) {
 function mountPage() {
   const page = mount(ReviewPage, {
     attachTo: document.body,
-    global: { components: { ReviewQueue, ReviewItem, ReviewActions, CategoryCorrectModal }, stubs },
+    global: {
+      components: { ReviewQueue, ReviewItem, ReviewActions, CategoryCorrectModal, ProposedRulesModal },
+      stubs,
+    },
   });
   pages.push(page);
   return page;
@@ -181,27 +222,12 @@ beforeEach(() => {
       categoryId?: string;
     };
     if (url === '/api/review/correct') {
-      stored = stored.map((entry): ReviewQueueItem =>
-        entry.reviewItem.id !== body.reviewId
-          ? entry
-          : {
-              ...entry,
-              reviewItem: {
-                ...entry.reviewItem,
-                categoryId: body.categoryId!,
-                status: 'correcting',
-              },
-              evidence: {
-                ...entry.evidence,
-                suggestedCategory: body.categoryId!,
-                categoryNames: { ...entry.evidence.categoryNames, 'cat-fuel': 'Fuel' },
-                changePreview: { ...entry.evidence.changePreview, toCategory: body.categoryId! },
-              },
-            },
-      );
-      return response({ itemId: body.reviewId, success: true, error: null });
+      return approvalRequired(body.reviewId, body.categoryId ?? '');
     }
-    if (['/api/review/approve', '/api/review/reject', '/api/review/skip'].includes(url)) {
+    if (url === '/api/review/approve') {
+      return approvalRequired(body.reviewId, 'cat-groceries');
+    }
+    if (['/api/review/reject', '/api/review/skip'].includes(url)) {
       stored = stored.filter((entry) => entry.reviewItem.id !== body.reviewId);
       total = stored.length;
       return response({ itemId: body.reviewId, success: true, error: null });
@@ -251,7 +277,7 @@ describe('real review queue, evidence and actions', () => {
     expect(mutations()).toEqual([]);
   });
 
-  it('locks mutation controls during approval and keeps a rejected approval retryable without removing the item', async () => {
+  it('locks controls during approval and opens the exact proposal after a retry without consuming the item', async () => {
     const page = mountPage();
     await flushPromises();
     const pending = deferred<Response>();
@@ -271,8 +297,10 @@ describe('real review queue, evidence and actions', () => {
     expect(button(page, 'Approve').attributes('disabled')).toBeUndefined();
     await button(page, 'Approve').trigger('click');
     await flushPromises();
-    expect(page.findComponent(ReviewQueue).text()).not.toContain('Corner Grocer');
-    expect(page.findComponent(ReviewItem).get('h2').text()).toBe('Morning Cafe');
+    expect(page.findComponent(ReviewQueue).text()).toContain('Corner Grocer');
+    expect(page.findComponent(ReviewItem).get('h2').text()).toBe('Corner Grocer');
+    expect(page.text()).toContain('Displayed payload hash:');
+    expect(page.text()).toContain('b'.repeat(64));
   });
 
   it('skips the selected transaction through the visible action and advances the queue', async () => {
@@ -296,7 +324,7 @@ describe('real review queue, evidence and actions', () => {
     expect(page.findComponent(ReviewItem).exists()).toBe(false);
   });
 
-  it('opens real correction options, cancels without mutation, then preserves a rejected choice for retry', async () => {
+  it('opens correction options and retains the selected category in a proposal without changing the item', async () => {
     const page = mountPage();
     await flushPromises();
     await button(page, 'Edit').trigger('click');
@@ -331,9 +359,12 @@ describe('real review queue, evidence and actions', () => {
     expect((page.get('select').element as HTMLSelectElement).value).toBe('cat-fuel');
     await button(page, 'Confirm').trigger('click');
     await flushPromises();
-    expect(page.find('[role="dialog"]').exists()).toBe(false);
-    expect(page.findComponent(ReviewItem).text()).toContain('Edited');
-    expect(page.findComponent(ReviewItem).text()).toContain('Fuel');
+    expect(page.findAll('[role="dialog"]')).toHaveLength(1);
+    expect(page.findComponent(ProposedRulesModal).props('open')).toBe(true);
+    expect(page.text()).toContain('Displayed payload hash:');
+    expect(page.text()).toContain('"categoryId": "cat-fuel"');
+    expect(page.findComponent(ReviewItem).get('h2').text()).toBe('Corner Grocer');
+    expect(page.findComponent(ReviewItem).text()).toContain('Groceries');
     expect(page.findComponent(ReviewQueue).text()).toContain('Corner Grocer');
   });
 

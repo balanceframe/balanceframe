@@ -78,6 +78,18 @@
         Approvals {{ completion.approvalCount }} / {{ completion.requiredApprovals }} · Proposal
         version {{ completion.version }}
       </p>
+      <p class="text-sm">Proposal expires {{ completion.expiresAt }}</p>
+      <p
+        v-if="completion.debit && completion.payloadHash"
+        class="break-all text-sm"
+        data-testid="completion-payload-hash"
+      >
+        Immutable payload hash: <code>{{ completion.payloadHash }}</code>
+      </p>
+      <ApprovalMetadata
+        v-if="completion.debit && completion.payloadHash && completion.approvalMetadata"
+        :metadata="completion.approvalMetadata"
+      />
       <p v-if="completion.outcome" role="status" class="text-amber-700">
         Outcome: {{ humanize(completion.outcome) }}. Refresh and review the current evidence before
         taking any further action.
@@ -195,6 +207,17 @@
           />
           I reviewed the exact account, debit, date, payee, notes, and category splits above.
         </label>
+        <label class="grid gap-1 text-sm">
+          <span>{{ confirmationLabel }}</span>
+          <input
+            v-model="reauthPasswords[completion.id]"
+            :data-testid="`completion-password-${completion.id}`"
+            type="password"
+            autocomplete="current-password"
+            class="rounded border px-2 py-1"
+            :disabled="confirmationDisabled(completion) || Boolean(error)"
+          />
+        </label>
         <UButton
           data-testid="completion-approve"
           :disabled="approveDisabled(completion)"
@@ -213,6 +236,17 @@
           Approved, but not executed. No ledger transaction is written until you explicitly confirm
           execution below.
         </p>
+        <label class="grid gap-1 text-sm">
+          <span>{{ confirmationLabel }}</span>
+          <input
+            v-model="reauthPasswords[completion.id]"
+            :data-testid="`completion-password-${completion.id}`"
+            type="password"
+            autocomplete="current-password"
+            class="rounded border px-2 py-1"
+            :disabled="confirmationDisabled(completion) || Boolean(error)"
+          />
+        </label>
         <label class="flex items-start gap-2 text-sm">
           <input
             v-model="executeConfirmations[completion.id]"
@@ -231,11 +265,22 @@
         </UButton>
       </div>
 
+      <label v-if="reconcileAllowed(completion)" class="mb-2 grid gap-1 text-sm">
+        <span>{{ confirmationLabel }}</span>
+        <input
+          v-model="reauthPasswords[completion.id]"
+          :data-testid="`completion-password-${completion.id}`"
+          type="password"
+          autocomplete="current-password"
+          class="rounded border px-2 py-1"
+          :disabled="busy || saving || sessionChanged || Boolean(error)"
+        />
+      </label>
       <UButton
         v-if="reconcileAllowed(completion)"
         data-testid="completion-reconcile"
         variant="ghost"
-        :disabled="busy || saving || sessionChanged"
+        :disabled="busy || saving || sessionChanged || !reauthPasswords[completion.id] || Boolean(error)"
         @click="reconcile(completion)"
       >
         Check Actual reconciliation
@@ -261,11 +306,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { PublicSessionCompletion, PublicSpendSession } from '@balanceframe/application';
+import ApprovalMetadata from './ApprovalMetadata.vue';
 import type { Amount } from './types';
 import SemanticAmount from './SemanticAmount.vue';
 import { liquidityError, liquidityRequest } from '../utils/liquidity-client';
+import { reauthenticateHuman } from '../utils/reauthentication';
 
 const props = defineProps<{ session: PublicSpendSession; saving?: boolean }>();
+const confirmationLabel = typeof useRuntimeConfig === 'function' && useRuntimeConfig().public.demoMode === true
+  ? 'Disposable-demo confirmation (type CONFIRM)' : 'Account password';
 
 type CompletionDebit = NonNullable<PublicSessionCompletion['debit']>;
 type CompletionSplit = CompletionDebit['splits'][number];
@@ -275,6 +324,7 @@ const busy = ref(false);
 const error = ref('');
 const payeeName = ref('');
 const notes = ref('');
+const reauthPasswords = ref<Record<string, string>>({});
 const approveConfirmations = ref<Record<string, boolean>>({});
 const executeConfirmations = ref<Record<string, boolean>>({});
 const initialSessionId = props.session.id;
@@ -378,14 +428,18 @@ function approveDisabled(completion: PublicSessionCompletion) {
     confirmationDisabled(completion) ||
     !completion.canApprove ||
     cooldownActive(completion) ||
-    !approveConfirmations.value[completion.id]
+    !approveConfirmations.value[completion.id] ||
+    !reauthPasswords.value[completion.id] ||
+    Boolean(error.value)
   );
 }
 function executeDisabled(completion: PublicSessionCompletion) {
   return (
     confirmationDisabled(completion) ||
     !completion.canExecute ||
-    !executeConfirmations.value[completion.id]
+    !executeConfirmations.value[completion.id] ||
+    !reauthPasswords.value[completion.id] ||
+    Boolean(error.value)
   );
 }
 function reconcileAllowed(completion: PublicSessionCompletion) {
@@ -453,10 +507,18 @@ async function propose() {
   }
 }
 async function act(completion: PublicSessionCompletion, action: 'approve' | 'execute' | 'reconcile') {
+  const proposalId = completion.id;
+  const sessionId = props.session.id;
+  const payloadHash = completion.payloadHash;
+  const expectedVersion = completion.version;
+  const passwordValue = reauthPasswords.value[proposalId];
   if (
     busy.value ||
     saving.value ||
     sessionChanged.value ||
+    Boolean(error.value) ||
+    !payloadHash ||
+    !passwordValue ||
     (action === 'reconcile'
       ? !reconcileAllowed(completion)
       : action === 'approve'
@@ -464,26 +526,33 @@ async function act(completion: PublicSessionCompletion, action: 'approve' | 'exe
         : executeDisabled(completion))
   )
     return;
+  let passwordSnapshot = passwordValue;
+  const idempotencyKey = attemptKey(action, expectedVersion);
   busy.value = true;
   error.value = '';
+  reauthPasswords.value[proposalId] = '';
   touchClock();
   try {
+    await reauthenticateHuman(passwordSnapshot);
+    passwordSnapshot = '';
+    if (sessionChanged.value || props.session.id !== sessionId) {
+      error.value = 'Session changed. Reload the current saved session before acting on it.';
+      return;
+    }
     const updated = await liquidityRequest<PublicSessionCompletion>(
-      pathFor(props.session.id, completion.id, action),
+      pathFor(sessionId, proposalId, action),
       'POST',
-      {
-        payloadHash: completion.payloadHash,
-        expectedVersion: completion.version,
-        idempotencyKey: attemptKey(action, completion.version),
-      },
+      { payloadHash, expectedVersion, idempotencyKey },
     );
     upsertCompletion(updated);
     await reloadList(updated);
-    approveConfirmations.value[completion.id] = false;
-    executeConfirmations.value[completion.id] = false;
+    approveConfirmations.value[proposalId] = false;
+    executeConfirmations.value[proposalId] = false;
   } catch (failure) {
     error.value = liquidityError(failure);
   } finally {
+    passwordSnapshot = '';
+    reauthPasswords.value[proposalId] = '';
     busy.value = false;
   }
 }

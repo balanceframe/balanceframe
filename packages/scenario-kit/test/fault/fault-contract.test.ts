@@ -16,6 +16,7 @@ import {
   decisionCardRequestSchema,
 } from '@balanceframe/protocol-generated/validators';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { HumanControlContext, LiquidityActor } from '@balanceframe/workflow-store';
 
 import { actualLiquidityRequest } from '../../../../tests/contract/fixtures/actual-liquidity.js';
 import { materializeScenario, SCENARIO_CATALOG_VERSION } from '../../src/catalog.js';
@@ -263,9 +264,12 @@ function createServiceManager(
   });
 }
 
+/** Creates exact fixture grants under current Native space membership and fresh human control. */
 async function createCompletionService(): Promise<{
   store: SqliteWorkflowStore;
   snapshot: FinancialSnapshot;
+  actor: LiquidityActor;
+  approver: LiquidityActor;
 }> {
   const source = actualLiquidityRequest(true);
   const snapshot = source.financialSnapshot;
@@ -276,28 +280,110 @@ async function createCompletionService(): Promise<{
     claimId: 'fault-bootstrap',
   });
   await store.finalizeBootstrap({ claimId: 'fault-bootstrap', ownerUserId: ACTOR.actorId });
-  await store.upsertActorMembership(
-    ACTOR.actorId,
-    'active',
-    ['observe'],
-    `budget:${ACTOR.budgetId}`,
-  );
-  store.liquidity.provisionOwnerAccess({
-    ...ACTOR,
+  // Registration identifies the connection owner; it supplies no financial authority.
+  await store.upsertActorMembership(ACTOR.actorId, 'active', [], '');
+  const auth: HumanControlContext = {
+    method: 'human-session',
+    actorId: ACTOR.actorId,
+    sessionId: 'fault-owner-session',
+    reauthenticatedAt: SERVICE_NOW,
+  };
+  const space = store.governance.createSpace({
+    actorId: ACTOR.actorId,
+    name: 'Completion crash fault fixture',
+    kind: 'shared',
     now: SERVICE_NOW,
-    resources: [
-      { resourceKind: 'account', resourceId: 'cash' },
-      { resourceKind: 'category', resourceId: 'food' },
-    ],
+    auth,
   });
-  store.liquidity.savePolicy({
-    ...ACTOR,
-    expectedVersion: null,
+  store.governance.bindBudget({
+    spaceId: space.id,
+    budgetId: ACTOR.budgetId,
     now: SERVICE_NOW,
+    auth,
+  });
+  const membership = store.governance.getCurrentMembership({
+    spaceId: space.id,
+    actorId: ACTOR.actorId,
+    now: SERVICE_NOW,
+  });
+  const governancePolicy = store.governance.getPolicy({ spaceId: space.id });
+  if (!membership || !governancePolicy)
+    throw new Error('Completion fault fixture membership and policy unavailable');
+  const actor = {
+    ...ACTOR,
+    spaceId: space.id,
+    membershipId: membership.id,
+    governancePolicyVersion: governancePolicy.version,
+    now: SERVICE_NOW,
+    auth,
+  };
+  const grants = [
+    ['budget', ACTOR.budgetId, [
+      'conclusion', 'balance', 'history', 'liquidity', 'session',
+      'proposal', 'approval', 'initiation-report', 'confirmation',
+    ]],
+    ['account', 'cash', [
+      'existence', 'balance', 'history', 'liquidity',
+      'proposal', 'approval', 'initiation-report', 'confirmation',
+    ]],
+    ['category', 'food', [
+      'existence', 'balance', 'history', 'liquidity', 'category',
+      'proposal', 'approval', 'initiation-report', 'confirmation',
+    ]],
+    // The canonical source includes this category in the Card baseline, not the debit.
+    ['category', 'income', ['existence', 'balance', 'history', 'liquidity']],
+  ] as const;
+  for (const [resourceKind, resourceId, capabilities] of grants)
+    for (const capability of capabilities)
+      store.governance.setResourceGrant({
+        ...actor,
+        resourceKind,
+        resourceId,
+        capability,
+        granted: true,
+      });
+  store.liquidity.savePolicy({
+    ...actor,
+    expectedVersion: null,
+    expectedGovernancePolicyVersion: governancePolicy.version,
     policy: source.liquidityPolicy,
     approvalPolicy: { minimumApprovers: 1 },
   });
-  return { store, snapshot };
+  const currentPolicy = store.governance.getPolicy({ spaceId: space.id });
+  if (!currentPolicy) throw new Error('Completion fault fixture policy unavailable');
+  actor.governancePolicyVersion = currentPolicy.version;
+  const approverId = 'fault-coapprover';
+  await store.upsertActorMembership(approverId, 'active', [], '');
+  const approverMembership = store.governance.addMembership({
+    spaceId: space.id,
+    actorId: approverId,
+    validFrom: SERVICE_NOW,
+    now: SERVICE_NOW,
+    auth,
+  });
+  const approver = {
+    ...actor,
+    actorId: approverId,
+    membershipId: approverMembership.id,
+    auth: { ...auth, actorId: approverId, sessionId: 'fault-coapprover-session' },
+  };
+  // Completion quorum excludes the requester; this independent human has no private baseline or execution grants.
+  const approvalGrants = [
+    ['budget', ACTOR.budgetId, ['conclusion', 'liquidity', 'session', 'proposal', 'approval']],
+    ['account', 'cash', ['liquidity', 'proposal', 'approval']],
+    ['category', 'food', ['liquidity', 'proposal', 'approval']],
+  ] as const;
+  for (const [resourceKind, resourceId, capabilities] of approvalGrants)
+    for (const capability of capabilities)
+      store.governance.setResourceGrant({
+        ...approver,
+        resourceKind,
+        resourceId,
+        capability,
+        granted: true,
+        auth,
+      });
+  return { store, snapshot, actor, approver };
 }
 
 describe('fault-contract native/service scenarios', () => {
@@ -464,7 +550,7 @@ describe('fault-contract native/service scenarios', () => {
     const catalog = materializeScenario('commitment-overlap', REFERENCE_ANCHOR);
     const sourceItem = catalog.sessions.origin?.items[0];
     if (!sourceItem) throw new Error('Commitment-overlap catalog must contain an origin item');
-    const { store, snapshot } = await createCompletionService();
+    const { store, snapshot, actor, approver } = await createCompletionService();
     const writeAttempts: ManualTransactionInput[] = [];
     const faultManager = createServiceManager(snapshot, writeAttempts);
     const faultService = new LiquidityService({
@@ -475,7 +561,7 @@ describe('fault-contract native/service scenarios', () => {
       clock: () => new Date(SERVICE_NOW),
     });
     try {
-      const session = await faultService.saveSession(ACTOR, null, {
+      const session = await faultService.saveSession(actor, null, {
         accountId: 'cash',
         expiresAt: SERVICE_EXPIRY,
         items: [
@@ -489,19 +575,43 @@ describe('fault-contract native/service scenarios', () => {
         ],
       });
       expect(session.card).toMatchObject({ outcome: 'funded_now' });
-      const proposed = await faultService.proposeSessionCompletion(ACTOR, session.id, {
+      const proposed = await faultService.proposeSessionCompletion(actor, session.id, {
         expectedSessionVersion: session.version,
         idempotencyKey: 'fault-completion-propose',
       });
-      expect(proposed).toMatchObject({ phase: 'proposed', debit: { amount: -1500 } });
-      const approved = await faultService.approveSessionCompletion(ACTOR, proposed.id, {
+      expect(proposed).toMatchObject({
+        phase: 'proposed',
+        debit: { amount: -1500 },
+        requiredApprovals: 1,
+        approvalCount: 0,
+      });
+      const coapproved = await faultService.approveSessionCompletion(approver, proposed.id, {
         payloadHash: proposed.payloadHash!,
         expectedVersion: proposed.version,
         idempotencyKey: 'fault-completion-approve',
       });
-      expect(approved.phase).toBe('approved');
+      expect(coapproved).toMatchObject({
+        phase: 'approved',
+        requiredApprovals: 1,
+        approvalCount: 1,
+        debit: null,
+        canExecute: false,
+      });
+      expect(coapproved.approvalMetadata).toBeUndefined();
+      const approved = await faultService.sessionCompletion(actor, proposed.id);
+      expect(approved).toMatchObject({
+        phase: 'approved',
+        requiredApprovals: 1,
+        approvalCount: 1,
+        approvalMetadata: {
+          requesterActorId: actor.actorId,
+          requesterMembershipId: actor.membershipId,
+          governancePolicyVersion: actor.governancePolicyVersion,
+          approvers: [expect.objectContaining({ actorId: approver.actorId })],
+        },
+      });
 
-      const interrupted = await faultService.executeSessionCompletion(ACTOR, proposed.id, {
+      const interrupted = await faultService.executeSessionCompletion(actor, proposed.id, {
         payloadHash: proposed.payloadHash!,
         expectedVersion: approved.version,
         idempotencyKey: 'fault-completion-execute',
@@ -518,7 +628,7 @@ describe('fault-contract native/service scenarios', () => {
         accountId: 'cash',
         categoryId: 'food',
       });
-      const held = store.liquidity.getClaimSet({ ...ACTOR, now: SERVICE_NOW }).bundles;
+      const held = store.liquidity.getClaimSet({ ...actor, now: SERVICE_NOW }).bundles;
       expect(held).toHaveLength(1);
       expect(held[0]).toMatchObject({ state: 'initiated', initiated: true });
       expect(held[0]?.effects).toEqual(
@@ -531,7 +641,7 @@ describe('fault-contract native/service scenarios', () => {
         ]),
       );
 
-      const retry = await faultService.executeSessionCompletion(ACTOR, interrupted.id, {
+      const retry = await faultService.executeSessionCompletion(actor, interrupted.id, {
         payloadHash: proposed.payloadHash!,
         expectedVersion: interrupted.version,
         idempotencyKey: 'fault-completion-retry',
@@ -539,7 +649,7 @@ describe('fault-contract native/service scenarios', () => {
       expect(retry.phase).toBe('review_required');
       expect(writeAttempts).toHaveLength(1);
 
-      const unresolved = await faultService.reconcileSessionCompletion(ACTOR, interrupted.id, {
+      const unresolved = await faultService.reconcileSessionCompletion(actor, interrupted.id, {
         payloadHash: proposed.payloadHash!,
         expectedVersion: retry.version,
         idempotencyKey: 'fault-completion-reconcile',
@@ -551,7 +661,7 @@ describe('fault-contract native/service scenarios', () => {
         manualTransactionId: null,
       });
       expect(writeAttempts).toHaveLength(1);
-      expect(store.liquidity.getClaimSet({ ...ACTOR, now: SERVICE_NOW }).bundles[0]).toMatchObject({
+      expect(store.liquidity.getClaimSet({ ...actor, now: SERVICE_NOW }).bundles[0]).toMatchObject({
         state: 'initiated',
         initiated: true,
       });

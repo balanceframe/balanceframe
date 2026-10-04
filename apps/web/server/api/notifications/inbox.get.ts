@@ -8,51 +8,25 @@
  * Requires notification:receive capability.
  */
 
-import { defineEventHandler, setResponseStatus, getQuery } from 'h3';
-import { canReadFinancialNotification } from '../../utils/liquidity-service';
-import { hasLegacyFullRead } from '../../utils/legacy-financial-read';
+import { defineEventHandler, getQuery, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
+import { canReadFinancialNotification, selectedLiquidityActor } from '../../utils/liquidity-service';
+import { createNotificationRuntime } from '../../utils/notification-runtime';
+import { requireSelectedSpace } from '../../utils/space-context';
 import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
   requireAuthorization,
-  getActorId,
 } from '../../utils/workflow-store';
-import type { OutboxStatus } from '@balanceframe/workflow-store';
-import {
-  NotificationRuntime,
-  InAppChannelAdapter,
-  createDefaultConnectionManager,
-  type NotificationPolicy,
-} from '@balanceframe/application';
+import type { EventWithContext } from '../../utils/workflow-store';
 
-// Module-level singleton (lazy-initialised)
-let runtime: NotificationRuntime | null = null;
-
-function getRuntime(store: ReturnType<typeof getWorkflowStore>): NotificationRuntime {
-  if (runtime) return runtime;
-  if ('error' in store) throw new Error('Workflow store not available');
-  const defaultPolicy: NotificationPolicy = {
-    policyVersion: 'v1',
-    eligibility: [],
-    recipients: [],
-    channels: [
-      { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
-    ],
-    redaction: { public: { visibleFields: ['title', 'summary'] } },
-    maxRetries: 3,
-    defaultRedactionClass: 'public',
-  };
-  runtime = new NotificationRuntime(store.store, defaultPolicy, [new InAppChannelAdapter()]);
-  return runtime;
-}
-
-interface InboxQuery {
-  status?: string;
-  channel?: string;
-  limit?: string;
-  offset?: string;
-}
+const InboxQuery = z.object({
+  status: z.enum(['pending', 'delivering', 'delivered', 'failed', 'suppressed']).optional(),
+  channel: z.enum(['in_app', 'email', 'webhook']).optional(),
+  limit: z.coerce.number().int().min(0).max(500).optional(),
+  offset: z.coerce.number().int().min(0).max(1_000_000).optional(),
+}).strict();
 
 const EVENT_METADATA_FIELDS = [
   'id',
@@ -186,68 +160,58 @@ function sanitizeNotificationItem(item: NotificationItem) {
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-
-  if (!event.context.auth?.authenticated) {
-    const auth = await requireAuthorization(event, 'notification:receive');
-    setResponseStatus(event, 403);
-    return auth.ok
-      ? errorEnvelope('AUTHORIZATION_REQUIRED', 'Authentication is required.', null)
-      : auth.response;
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  const budgetId = selected.space.budgetId;
+  if (!budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget.', null, false, requestId);
   }
-  let authInfo: Parameters<typeof errorEnvelope>[2] = null;
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'notification:receive',
+    `budget:${budgetId}`,
+  );
+  if (!authorization.ok) return authorization.response;
+  const query = InboxQuery.safeParse(getQuery(event));
+  if (!query.success) {
+    setResponseStatus(event, 400);
+    return errorEnvelope('INVALID_QUERY', 'Notification inbox query is invalid.', authorization.info, false, requestId);
+  }
+
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
+    setResponseStatus(event, 503);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Notification inbox is unavailable.', authorization.info, false, requestId);
+  }
+  const actor = selectedLiquidityActor(workflow.store, selected);
+  if (!actor) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Current selected-space authorization is unavailable.', authorization.info, false, requestId);
+  }
 
   try {
-    const wf = getWorkflowStore(event);
-    if ('error' in wf) {
-      setResponseStatus(event, 503);
-      return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
-    }
-    const manager = createDefaultConnectionManager({
-      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
-    });
-    const config = await manager.loadConfig();
-    if (!config?.budgetId) throw new Error('Selected budget unavailable');
-    const auth = await requireAuthorization(
-      event,
-      'notification:receive',
-      `budget:${config.budgetId}`,
-    );
-    if (!auth.ok) return auth.response;
-    authInfo = auth.info;
-
-    const rt = getRuntime(wf);
-    const actorId = getActorId(event);
-    const query = getQuery(event) as InboxQuery;
-
-    const validStatuses: OutboxStatus[] = [
-      'pending',
-      'delivering',
-      'delivered',
-      'failed',
-      'suppressed',
-    ];
-    const statusFilter: OutboxStatus | undefined =
-      query.status && validStatuses.includes(query.status as OutboxStatus)
-        ? (query.status as OutboxStatus)
-        : undefined;
-
-    const storedItems = await rt.listOutbox(actorId, {
-      budgetId: config.budgetId,
-      canReadEvent: (notification) =>
-        notification.classification === 'transfer_needs_attention'
-          ? canReadFinancialNotification(wf.store, actorId, notification)
-          : hasLegacyFullRead(wf.store, actorId, notification.budgetId),
-      status: statusFilter,
-      channelType: query.channel || undefined,
-      limit: query.limit ? parseInt(query.limit, 10) : undefined,
-      offset: query.offset ? parseInt(query.offset, 10) : undefined,
+    const { runtime } = await createNotificationRuntime(workflow.store, selected.space.id);
+    const storedItems = await runtime.listOutbox(selected.auth.actorId, {
+      budgetId,
+      status: query.data.status,
+      channelType: query.data.channel,
+      limit: query.data.limit,
+      offset: query.data.offset,
+      canReadEvent: async (notification) => {
+        if (notification.spaceId !== selected.space.id || notification.budgetId !== budgetId ||
+            notification.recipientId !== selected.auth.actorId ||
+            notification.recipientMembershipId !== selected.membership.id)
+          return false;
+        return notification.classification !== 'transfer_needs_attention' ||
+          canReadFinancialNotification(workflow.store, actor, notification);
+      },
     });
     const items = storedItems.map(sanitizeNotificationItem);
-
-    return okEnvelope({ items, count: items.length }, auth.info, requestId);
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    return okEnvelope({ items, count: items.length }, authorization.info, requestId);
+  } catch {
     setResponseStatus(event, 503);
-    return errorEnvelope('INBOX_UNAVAILABLE', errorMessage, authInfo, false, requestId);
+    return errorEnvelope('INBOX_UNAVAILABLE', 'Notification inbox is unavailable.', authorization.info, false, requestId);
   }
 });

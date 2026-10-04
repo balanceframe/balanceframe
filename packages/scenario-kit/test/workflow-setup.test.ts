@@ -56,11 +56,14 @@ async function request(
   init: RequestInit = {},
   persona = 'owner',
 ): Promise<{ response: Response; body: unknown }> {
-  const cookieHeader = context.initialized.personas[persona]?.cookieHeader;
+  const credential = context.initialized.personas[persona];
+  if (!credential) throw new Error('Unknown scenario persona');
+  const cookieHeader = credential.cookieHeader;
   const response = await fetch(`${context.processes.webUrl}${path}`, {
     ...init,
     headers: {
       ...publicHeaders(cookieHeader),
+      'x-balanceframe-space': credential.spaceId,
       ...(init.body ? { 'content-type': 'application/json' } : {}),
       ...(init.headers ?? {}),
     },
@@ -112,7 +115,6 @@ async function load(id: MaterializedScenario['id']): Promise<RuntimeContext> {
       webUrl: processes.webUrl,
       publicOrigin,
       bootstrapSecret: processes.bootstrapSecret,
-      workflowDbPath: processes.workflowDbPath,
     });
     return { scenario, seeded, processes, initialized };
   } catch (error) {
@@ -190,6 +192,8 @@ describe('scenario workflow setup', () => {
     expect(owner.actorId).toMatch(/^[a-z0-9-]+$/i);
     expect(owner.password).toHaveLength(32);
     expect(owner.cookieHeader).toContain('=');
+    expect(owner.spaceId).toBe(funded.initialized.spaceId);
+    expect(owner.membershipId).toEqual(expect.any(String));
     expect(owner.cookieHeader).not.toMatch(/password|secret/i);
 
     const session = await request(funded, '/api/auth/get-session');
@@ -257,6 +261,11 @@ describe('scenario workflow setup', () => {
         }),
       ]),
     );
+    expect(funded.seeded.readResources).toEqual(expect.arrayContaining([
+      { resourceKind: 'account', resourceId: funded.seeded.accountIds['acct-checking'] },
+    ]));
+    const realTransactions = funded.seeded.readResources.filter(({ resourceKind }) => resourceKind === 'transaction');
+    expect(realTransactions.length).toBeGreaterThan(0);
   }, 120_000);
 
   it('initializes scoped peer/restricted memberships and keeps restricted financial data private', async () => {
@@ -264,6 +273,19 @@ describe('scenario workflow setup', () => {
     const restricted = coapproval.initialized.personas.restricted;
     expect(peer.actorId).not.toBe(coapproval.initialized.personas.owner.actorId);
     expect(restricted.actorId).not.toBe(peer.actorId);
+    expect(peer.password === coapproval.initialized.personas.owner.password).toBe(false);
+    expect(peer.password === restricted.password).toBe(false);
+    expect(peer.spaceId).toBe(coapproval.initialized.spaceId);
+    expect(peer.membershipId).not.toBe(coapproval.initialized.personas.owner.membershipId);
+    const membershipsResponse = await request(
+      coapproval, `/api/spaces/${coapproval.initialized.spaceId}/memberships`,
+    );
+    expect(result<{ memberships: readonly unknown[] }>(membershipsResponse.body).memberships).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: peer.membershipId, actorId: peer.actorId, revokedAt: null }),
+        expect.objectContaining({ id: restricted.membershipId, actorId: restricted.actorId, revokedAt: null }),
+      ]),
+    );
 
     const grantsResponse = await request(coapproval, '/api/liquidity/grants');
     const grants = result<GrantsResult>(grantsResponse.body);

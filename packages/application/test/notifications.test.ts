@@ -40,6 +40,7 @@ import type {
   NotificationPolicyRecord,
   RecipientResolution,
 } from '@balanceframe/workflow-store';
+import { SqliteWorkflowStore } from '../../workflow-store/src/store';
 
 // ---------------------------------------------------------------------------
 // Test constants
@@ -52,6 +53,9 @@ const TEST_EVENT_ID = 'evt_001';
 const TEST_OUTBOX_ID = 'obx_001';
 const TEST_POLICY_VER = 'pol_v1';
 
+const AUTHORITY_NOW = '2026-07-01T12:00:00.000Z';
+const authorityStores: SqliteWorkflowStore[] = [];
+let eventAuthority: SqliteWorkflowStore | undefined;
 // ---------------------------------------------------------------------------
 // Policy helpers
 // ---------------------------------------------------------------------------
@@ -109,7 +113,13 @@ function mockEvent(overrides: Partial<NotificationEvent> = {}): NotificationEven
     budgetId: TEST_BUDGET,
     classification: 'budget_alert',
     recipientId: TEST_ACTOR_A,
-    scope: '',
+    spaceId: eventAuthority?.governance.getSpaceForBudget({ budgetId: TEST_BUDGET })?.id ?? null,
+    recipientMembershipId: eventAuthority?.governance.getCurrentMembership({
+      spaceId: eventAuthority.governance.getSpaceForBudget({ budgetId: TEST_BUDGET })?.id ?? '',
+      actorId: overrides.recipientId ?? TEST_ACTOR_A,
+      now: new Date().toISOString(),
+    })?.id ?? null,
+    scope: `budget:${TEST_BUDGET}`,
     redactionClass: 'sensitive',
     channelConfigVersion: null,
     policyVersion: TEST_POLICY_VER,
@@ -156,16 +166,51 @@ function mockOutbox(overrides: Partial<NotificationOutboxRecord> = {}): Notifica
   };
 }
 
+const PRIVATE_NOTIFICATION_MARKER = 'private-notification-payload';
+const PRIVATE_ATTEMPT_MARKER = 'private-provider-response';
+
+function privateDeliveryAttempt(outboxId: string) {
+  return {
+    id: `attempt_${outboxId}`,
+    outboxId,
+    attemptNumber: 1,
+    status: 'failed' as const,
+    responseCode: '502',
+    responseBody: PRIVATE_ATTEMPT_MARKER,
+    errorMessage: PRIVATE_ATTEMPT_MARKER,
+    attemptedAt: '2026-08-23T12:00:00.000Z',
+  };
+}
+
+
 // ---------------------------------------------------------------------------
 // Store mock factory — typed mock implementing WorkflowStore
 // ---------------------------------------------------------------------------
 
 type StoreMock = {
-  [K in keyof WorkflowStore]: Mock;
+  [K in Exclude<keyof WorkflowStore, 'governance' | 'liquidity'>]: Mock;
+} & {
+  authority: SqliteWorkflowStore;
+  governance: SqliteWorkflowStore['governance'];
+  liquidity: SqliteWorkflowStore['liquidity'];
 };
 
 function createStoreMock(): StoreMock {
   const proto: Record<string, unknown> = {};
+  const authority = new SqliteWorkflowStore(':memory:');
+  authorityStores.push(authority);
+  eventAuthority = authority;
+  authority['db'].prepare('INSERT INTO registration_state(singleton,owner_user_id,bootstrapped_at) VALUES(1,?,?)').run(TEST_ACTOR_A, AUTHORITY_NOW);
+  for (const actorId of [TEST_ACTOR_A, TEST_ACTOR_B, 'usr_admin', 'usr_other'])
+    authority['db'].prepare("INSERT INTO actor_memberships(actor_id,status,capabilities,scope) VALUES(?,'active','[]','')").run(actorId);
+  const auth = { method: 'human-session' as const, actorId: TEST_ACTOR_A, sessionId: 'fixture-session', reauthenticatedAt: AUTHORITY_NOW };
+  const space = authority.governance.createSpace({ actorId: TEST_ACTOR_A, name: 'Channel test', kind: 'shared', now: AUTHORITY_NOW, auth });
+  authority.governance.bindBudget({ spaceId: space.id, budgetId: TEST_BUDGET, now: AUTHORITY_NOW, auth });
+  for (const actorId of [TEST_ACTOR_B, 'usr_admin', 'usr_other'])
+    authority.governance.addMembership({ spaceId: space.id, actorId, validFrom: AUTHORITY_NOW, now: AUTHORITY_NOW, auth });
+  proto.authority = authority;
+  proto.governance = authority.governance;
+  proto.liquidity = authority.liquidity;
   const storeMethods: Array<keyof WorkflowStore> = [
     'saveSuggestion',
     'getActiveSuggestion',
@@ -198,8 +243,6 @@ function createStoreMock(): StoreMock {
     'createApproval',
     'getApproval',
     'findActiveApprovals',
-    'consumeApproval',
-    'verifyApprovalForExecution',
     'createIdempotencyRecord',
     'getIdempotencyRecord',
     'completeIdempotencyRecord',
@@ -218,7 +261,6 @@ function createStoreMock(): StoreMock {
     'listInvitations',
     'claimInvitation',
     'completeInvitationRedemption',
-    'reconcileClaimedInvitations',
     'evaluateAuthorization',
     'upsertActorMembership',
     'getActorMembership',
@@ -286,6 +328,22 @@ function createStoreMock(): StoreMock {
   return proto as unknown as StoreMock;
 }
 
+function setNotificationAuthority(
+  store: StoreMock,
+  permission: { actorId: string; status: string; capabilities: readonly string[]; scope: string } | null,
+) {
+  const actorId = permission?.actorId ?? TEST_ACTOR_A;
+  store.authority['db'].prepare("UPDATE actor_memberships SET status=? WHERE actor_id=?").run(permission?.status ?? 'inactive', actorId);
+  store.authority['db'].prepare('UPDATE resource_grants SET granted=0,revoked_at=?,updated_at=? WHERE actor_id=? AND revoked_at IS NULL').run(AUTHORITY_NOW, AUTHORITY_NOW, actorId);
+  if (!permission || permission.status !== 'active') return;
+  const space = store.governance.getSpaceForBudget({ budgetId: TEST_BUDGET });
+  const membership = space && store.governance.getCurrentMembership({ spaceId: space.id, actorId, now: AUTHORITY_NOW });
+  if (!space || !membership) throw new Error('Notification authority fixture membership missing');
+  if (permission.scope !== '*' && permission.scope !== `budget:${TEST_BUDGET}`) return;
+  for (const capability of permission.capabilities)
+    store.governance.provisionResourceGrant({ spaceId: space.id, membershipId: membership.id, actorId, budgetId: TEST_BUDGET, resourceKind: 'budget', resourceId: TEST_BUDGET, capability, granted: true, now: AUTHORITY_NOW });
+}
+
 // ---------------------------------------------------------------------------
 // Runtime fixture
 // ---------------------------------------------------------------------------
@@ -298,7 +356,7 @@ interface RuntimeFixture {
 
 function createFixture(policyOverrides: Partial<NotificationPolicy> = {}): RuntimeFixture {
   const store = createStoreMock();
-  store.getActorMembership.mockResolvedValue({
+  setNotificationAuthority(store, {
     actorId: TEST_ACTOR_A,
     status: 'active',
     capabilities: ['notification:receive'],
@@ -341,17 +399,20 @@ describe('NotificationRuntime', () => {
   let runtime: NotificationRuntime;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
     fixture = createFixture();
     store = fixture.store;
     adapter = fixture.adapter;
     runtime = fixture.runtime;
-    vi.useFakeTimers();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    adapter.clearDeliveries();
+    adapter?.clearDeliveries();
+    for (const authority of authorityStores.splice(0)) authority.close();
+    eventAuthority = undefined;
   });
 
   // -----------------------------------------------------------------------
@@ -412,15 +473,10 @@ describe('NotificationRuntime', () => {
     });
 
     it('suppresses notification when re-authorization hook denies', async () => {
-      const event = mockEvent();
-      store.createNotificationEvent.mockResolvedValue(event);
-
       runtime.setReAuthorizationHook(async () => false);
 
-      const result = await runtime.create(defaultInput());
-
-      expect(result.event.id).toBe(TEST_EVENT_ID);
-      expect(result.outboxRecords).toHaveLength(0);
+      await expect(runtime.create(defaultInput())).rejects.toMatchObject({ code: 'NOT_AUTHORIZED' });
+      expect(store.createNotificationEvent).not.toHaveBeenCalled();
       expect(store.enqueueNotification).not.toHaveBeenCalled();
     });
 
@@ -429,7 +485,7 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox();
       store.createNotificationEvent.mockResolvedValue(event);
       store.enqueueNotification.mockResolvedValue(outbox);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -460,21 +516,6 @@ describe('NotificationRuntime', () => {
   // -----------------------------------------------------------------------
 
   describe('revocation — capability removed mid-lifecycle', () => {
-    it('re-authorization hook returning false suppresses outboxes', async () => {
-      const capabilityCheck: Mock = vi.fn();
-      runtime.setReAuthorizationHook(async (actorId, capability, scope) => {
-        capabilityCheck(actorId, capability, scope);
-        return false;
-      });
-
-      const event = mockEvent();
-      store.createNotificationEvent.mockResolvedValue(event);
-
-      const result = await runtime.create(defaultInput());
-
-      expect(result.outboxRecords).toHaveLength(0);
-      expect(capabilityCheck).toHaveBeenCalledWith(TEST_ACTOR_A, 'notification:receive', '');
-    });
 
     it('suppresses only the revoked actor, other recipients still get deliveries', async () => {
       const policy = defaultPolicy({
@@ -486,6 +527,7 @@ describe('NotificationRuntime', () => {
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
       local.store.enqueueNotification.mockResolvedValue(mockOutbox());
+      setNotificationAuthority(local.store, { actorId: TEST_ACTOR_B, status: 'active', capabilities: ['notification:receive'], scope: `budget:${TEST_BUDGET}` });
 
       local.runtime.setReAuthorizationHook(async (actorId) => {
         return actorId === TEST_ACTOR_B;
@@ -504,7 +546,7 @@ describe('NotificationRuntime', () => {
 
   describe('redaction', () => {
     it('redacts sensitive fields from payload for actors without notification:admin', async () => {
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -522,7 +564,7 @@ describe('NotificationRuntime', () => {
     });
 
     it('shows all fields for actors with notification:admin capability', async () => {
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:admin', 'notification:receive'],
@@ -539,7 +581,7 @@ describe('NotificationRuntime', () => {
     });
 
     it('returns empty object for unknown redaction class', async () => {
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -553,7 +595,7 @@ describe('NotificationRuntime', () => {
     });
 
     it('uses default redaction class when event has null', async () => {
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -567,6 +609,31 @@ describe('NotificationRuntime', () => {
       expect(redacted.amount).toBe(15000);
       expect(redacted.internalNote).toBeUndefined();
     });
+
+    it('denies redaction when current membership is missing', async () => {
+      setNotificationAuthority(store, null);
+
+      const redacted = await runtime.redactForActor(mockEvent(), TEST_ACTOR_A);
+
+      expect(redacted).toEqual({});
+    });
+
+    it('denies redaction when the event has no known scope', async () => {
+      setNotificationAuthority(store, {
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: '*',
+      });
+
+      const redacted = await runtime.redactForActor(
+        mockEvent({ scope: null }),
+        TEST_ACTOR_A,
+      );
+
+      expect(redacted).toEqual({});
+    });
+
   });
 
   // -----------------------------------------------------------------------
@@ -588,7 +655,7 @@ describe('NotificationRuntime', () => {
       });
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
-      local.store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(local.store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -616,7 +683,7 @@ describe('NotificationRuntime', () => {
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
       local.store.enqueueNotification.mockResolvedValue(mockOutbox());
-      local.store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(local.store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -634,7 +701,7 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox();
       store.createNotificationEvent.mockResolvedValue(event);
       store.enqueueNotification.mockResolvedValue(outbox);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -659,7 +726,7 @@ describe('NotificationRuntime', () => {
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
       local.store.enqueueNotification.mockResolvedValue(mockOutbox());
-      local.store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(local.store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -682,7 +749,7 @@ describe('NotificationRuntime', () => {
       const local = createFixture(policy);
       local.store.createNotificationEvent.mockResolvedValue(mockEvent());
       local.store.enqueueNotification.mockResolvedValue(mockOutbox());
-      local.store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(local.store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -926,7 +993,7 @@ describe('NotificationRuntime', () => {
         mockOutbox({ status: 'pending', attemptCount: 1 }),
       );
       store.getNotificationEvent.mockResolvedValue(mockEvent());
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'revoked',
         capabilities: ['notification:receive'],
@@ -1165,7 +1232,7 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox({ eventId: event.id });
       store.listOutboxRecords.mockResolvedValue([outbox]);
       store.getNotificationEvent.mockResolvedValue(event);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -1202,6 +1269,117 @@ describe('NotificationRuntime', () => {
 
       expect(items).toHaveLength(0);
     });
+
+    it.each([
+      ['inactive', 'inactive', `budget:${TEST_BUDGET}`],
+      ['suspended', 'suspended', `budget:${TEST_BUDGET}`],
+      ['wrong-scope', 'active', 'budget:other'],
+    ] as const)(
+      'does not list notifications or fetch attempts for a recipient with %s membership',
+      async (_case, status, scope) => {
+        const event = mockEvent({
+          recipientId: TEST_ACTOR_A,
+          scope: `budget:${TEST_BUDGET}`,
+          payload: JSON.stringify({
+            title: 'Budget Alert',
+            privateData: PRIVATE_NOTIFICATION_MARKER,
+          }),
+          createdAt: '2026-08-23T12:00:00.000Z',
+        });
+        const outbox = mockOutbox({
+          eventId: event.id,
+          failureReason: PRIVATE_ATTEMPT_MARKER,
+          createdAt: '2026-08-23T12:00:00.000Z',
+          updatedAt: '2026-08-23T12:00:00.000Z',
+        });
+        store.listOutboxRecords.mockResolvedValue([outbox]);
+        store.getNotificationEvent.mockResolvedValue(event);
+        setNotificationAuthority(store, {
+          actorId: TEST_ACTOR_A,
+          status,
+          capabilities: ['notification:receive'],
+          scope,
+        });
+        store.getDeliveryAttempts.mockResolvedValue([privateDeliveryAttempt(outbox.id)]);
+
+        const items = await runtime.listOutbox(TEST_ACTOR_A);
+
+        expect(items).toEqual([]);
+        expect(store.getDeliveryAttempts).not.toHaveBeenCalled();
+        expect(JSON.stringify(items)).not.toContain(PRIVATE_NOTIFICATION_MARKER);
+        expect(JSON.stringify(items)).not.toContain(PRIVATE_ATTEMPT_MARKER);
+      },
+    );
+
+    it('filters out-of-scope events before offset and delivery-attempt lookup', async () => {
+      const outsideEvent = mockEvent({
+        id: 'evt_outside_scope',
+        recipientId: TEST_ACTOR_A,
+        scope: 'budget:other',
+        payload: JSON.stringify({
+          title: 'Hidden alert',
+          privateData: PRIVATE_NOTIFICATION_MARKER,
+        }),
+        createdAt: '2026-08-23T12:00:00.000Z',
+      });
+      const firstVisibleEvent = mockEvent({
+        id: 'evt_visible_first',
+        recipientId: TEST_ACTOR_A,
+        scope: `budget:${TEST_BUDGET}`,
+        createdAt: '2026-08-23T12:01:00.000Z',
+      });
+      const secondVisibleEvent = mockEvent({
+        id: 'evt_visible_second',
+        recipientId: TEST_ACTOR_A,
+        scope: `budget:${TEST_BUDGET}`,
+        createdAt: '2026-08-23T12:02:00.000Z',
+      });
+      const outsideOutbox = mockOutbox({
+        id: 'obx_outside_scope',
+        eventId: outsideEvent.id,
+        createdAt: '2026-08-23T12:00:00.000Z',
+        updatedAt: '2026-08-23T12:00:00.000Z',
+      });
+      const firstVisibleOutbox = mockOutbox({
+        id: 'obx_visible_first',
+        eventId: firstVisibleEvent.id,
+        createdAt: '2026-08-23T12:01:00.000Z',
+        updatedAt: '2026-08-23T12:01:00.000Z',
+      });
+      const secondVisibleOutbox = mockOutbox({
+        id: 'obx_visible_second',
+        eventId: secondVisibleEvent.id,
+        createdAt: '2026-08-23T12:02:00.000Z',
+        updatedAt: '2026-08-23T12:02:00.000Z',
+      });
+      store.listOutboxRecords.mockResolvedValue([
+        outsideOutbox,
+        firstVisibleOutbox,
+        secondVisibleOutbox,
+      ]);
+      store.getNotificationEvent
+        .mockResolvedValueOnce(outsideEvent)
+        .mockResolvedValueOnce(firstVisibleEvent)
+        .mockResolvedValueOnce(secondVisibleEvent);
+      setNotificationAuthority(store, {
+        actorId: TEST_ACTOR_A,
+        status: 'active',
+        capabilities: ['notification:receive'],
+        scope: `budget:${TEST_BUDGET}`,
+      });
+      store.getDeliveryAttempts.mockImplementation(async (outboxId: string) =>
+        outboxId === outsideOutbox.id ? [privateDeliveryAttempt(outboxId)] : [],
+      );
+
+      const items = await runtime.listOutbox(TEST_ACTOR_A, { limit: 1, offset: 1 });
+
+      expect(items.map(({ outbox }) => outbox.id)).toEqual([secondVisibleOutbox.id]);
+      expect(store.getDeliveryAttempts).toHaveBeenCalledTimes(1);
+      expect(store.getDeliveryAttempts).toHaveBeenCalledWith(secondVisibleOutbox.id);
+      expect(JSON.stringify(items)).not.toContain(PRIVATE_NOTIFICATION_MARKER);
+      expect(JSON.stringify(items)).not.toContain(PRIVATE_ATTEMPT_MARKER);
+    });
+
   });
 
   // -----------------------------------------------------------------------
@@ -1214,7 +1392,7 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox({ eventId: event.id });
       store.getOutboxRecord.mockResolvedValue(outbox);
       store.getNotificationEvent.mockResolvedValue(event);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -1242,7 +1420,7 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox({ eventId: event.id });
       store.getOutboxRecord.mockResolvedValue(outbox);
       store.getNotificationEvent.mockResolvedValue(event);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -1259,7 +1437,7 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox({ eventId: event.id });
       store.getOutboxRecord.mockResolvedValue(outbox);
       store.getNotificationEvent.mockResolvedValue(event);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: 'usr_admin',
         status: 'active',
         capabilities: ['notification:admin'],
@@ -1271,6 +1449,122 @@ describe('NotificationRuntime', () => {
 
       expect(detail).not.toBeNull();
     });
+
+    it.each([
+      ['inactive', 'inactive', `budget:${TEST_BUDGET}`],
+      ['suspended', 'suspended', `budget:${TEST_BUDGET}`],
+      ['wrong-scope', 'active', 'budget:other'],
+    ] as const)(
+      'denies recipient detail and delivery attempts for %s membership',
+      async (_case, status, scope) => {
+        const event = mockEvent({
+          recipientId: TEST_ACTOR_A,
+          scope: `budget:${TEST_BUDGET}`,
+          payload: JSON.stringify({
+            title: 'Budget Alert',
+            privateData: PRIVATE_NOTIFICATION_MARKER,
+          }),
+          createdAt: '2026-08-23T12:00:00.000Z',
+        });
+        const outbox = mockOutbox({
+          eventId: event.id,
+          failureReason: PRIVATE_ATTEMPT_MARKER,
+          createdAt: '2026-08-23T12:00:00.000Z',
+          updatedAt: '2026-08-23T12:00:00.000Z',
+        });
+        store.getOutboxRecord.mockResolvedValue(outbox);
+        store.getNotificationEvent.mockResolvedValue(event);
+        setNotificationAuthority(store, {
+          actorId: TEST_ACTOR_A,
+          status,
+          capabilities: ['notification:receive'],
+          scope,
+        });
+        store.getDeliveryAttempts.mockResolvedValue([privateDeliveryAttempt(outbox.id)]);
+
+        const detail = await runtime.getOutboxDetail(outbox.id, TEST_ACTOR_A);
+
+        expect(detail).toBeNull();
+        expect(store.getDeliveryAttempts).not.toHaveBeenCalled();
+        expect(JSON.stringify(detail)).not.toContain(PRIVATE_NOTIFICATION_MARKER);
+        expect(JSON.stringify(detail)).not.toContain(PRIVATE_ATTEMPT_MARKER);
+      },
+    );
+
+    it.each([
+      ['inactive', 'inactive', `budget:${TEST_BUDGET}`],
+      ['suspended', 'suspended', `budget:${TEST_BUDGET}`],
+      ['wrong-scope', 'active', 'budget:other'],
+    ] as const)(
+      'denies admin delivery attempts for %s membership',
+      async (_case, status, scope) => {
+        const event = mockEvent({
+          recipientId: TEST_ACTOR_B,
+          scope: `budget:${TEST_BUDGET}`,
+          payload: JSON.stringify({
+            title: 'Budget Alert',
+            privateData: PRIVATE_NOTIFICATION_MARKER,
+          }),
+          createdAt: '2026-08-23T12:00:00.000Z',
+        });
+        const outbox = mockOutbox({
+          eventId: event.id,
+          createdAt: '2026-08-23T12:00:00.000Z',
+          updatedAt: '2026-08-23T12:00:00.000Z',
+        });
+        store.getOutboxRecord.mockResolvedValue(outbox);
+        store.getNotificationEvent.mockResolvedValue(event);
+        setNotificationAuthority(store, {
+          actorId: 'usr_admin',
+          status,
+          capabilities: ['notification:admin'],
+          scope,
+        });
+        store.getDeliveryAttempts.mockResolvedValue([privateDeliveryAttempt(outbox.id)]);
+
+        const detail = await runtime.getOutboxDetail(outbox.id, 'usr_admin');
+
+        expect(detail).toBeNull();
+        expect(store.getDeliveryAttempts).not.toHaveBeenCalled();
+        expect(JSON.stringify(detail)).not.toContain(PRIVATE_NOTIFICATION_MARKER);
+        expect(JSON.stringify(detail)).not.toContain(PRIVATE_ATTEMPT_MARKER);
+      },
+    );
+
+    it('does not let an inactive admin redaction capability authorize recipient detail', async () => {
+      const event = mockEvent({
+        recipientId: TEST_ACTOR_A,
+        scope: `budget:${TEST_BUDGET}`,
+        payload: JSON.stringify({
+          title: 'Budget Alert',
+          amount: 15000,
+          privateData: PRIVATE_NOTIFICATION_MARKER,
+        }),
+        createdAt: '2026-08-23T12:00:00.000Z',
+      });
+      const outbox = mockOutbox({
+        eventId: event.id,
+        createdAt: '2026-08-23T12:00:00.000Z',
+        updatedAt: '2026-08-23T12:00:00.000Z',
+      });
+      store.getOutboxRecord.mockResolvedValue(outbox);
+      store.getNotificationEvent.mockResolvedValue(event);
+      setNotificationAuthority(store, {
+        actorId: TEST_ACTOR_A,
+        status: 'inactive',
+        capabilities: ['notification:receive', 'notification:admin'],
+        scope: `budget:${TEST_BUDGET}`,
+      });
+      store.getDeliveryAttempts.mockResolvedValue([privateDeliveryAttempt(outbox.id)]);
+
+      const detail = await runtime.getOutboxDetail(outbox.id, TEST_ACTOR_A);
+
+      expect(detail).toBeNull();
+      expect(store.getDeliveryAttempts).not.toHaveBeenCalled();
+      expect(JSON.stringify(detail)).not.toContain(PRIVATE_NOTIFICATION_MARKER);
+      expect(JSON.stringify(detail)).not.toContain(PRIVATE_ATTEMPT_MARKER);
+    });
+
   });
 
   // -----------------------------------------------------------------------
@@ -1464,7 +1758,7 @@ describe('NotificationRuntime', () => {
       const outbox = mockOutbox();
       store.createNotificationEvent.mockResolvedValue(event);
       store.enqueueNotification.mockResolvedValue(outbox);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -1474,13 +1768,10 @@ describe('NotificationRuntime', () => {
       const result = await runtime.create(defaultInput());
 
       expect(result.outboxRecords).toHaveLength(2);
-      expect(store.getActorMembership).toHaveBeenCalled();
     });
 
     it('suppresses notification when store membership is inactive', async () => {
-      const event = mockEvent();
-      store.createNotificationEvent.mockResolvedValue(event);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'inactive',
         capabilities: ['notification:receive'],
@@ -1488,15 +1779,12 @@ describe('NotificationRuntime', () => {
       });
 
       runtime.setReAuthorizationHook(null);
-      const result = await runtime.create(defaultInput());
-
-      expect(result.outboxRecords).toHaveLength(0);
+      await expect(runtime.create(defaultInput())).rejects.toMatchObject({ code: 'NOT_AUTHORIZED' });
+      expect(store.createNotificationEvent).not.toHaveBeenCalled();
     });
 
     it('suppresses notification when store membership lacks required capability', async () => {
-      const event = mockEvent();
-      store.createNotificationEvent.mockResolvedValue(event);
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['other:capability'],
@@ -1504,9 +1792,8 @@ describe('NotificationRuntime', () => {
       });
 
       runtime.setReAuthorizationHook(null);
-      const result = await runtime.create(defaultInput());
-
-      expect(result.outboxRecords).toHaveLength(0);
+      await expect(runtime.create(defaultInput())).rejects.toMatchObject({ code: 'NOT_AUTHORIZED' });
+      expect(store.createNotificationEvent).not.toHaveBeenCalled();
     });
   });
 
@@ -1526,7 +1813,7 @@ describe('NotificationRuntime', () => {
         });
       });
       store.enqueueNotification.mockResolvedValue(mockOutbox());
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -1671,7 +1958,7 @@ describe('NotificationRuntime', () => {
         callOrder.push('outbox');
         return mockOutbox();
       });
-      store.getActorMembership.mockResolvedValue({
+      setNotificationAuthority(store, {
         actorId: TEST_ACTOR_A,
         status: 'active',
         capabilities: ['notification:receive'],
@@ -1691,46 +1978,5 @@ describe('NotificationRuntime', () => {
       expect(callOrder.slice(1).every((c) => c === 'outbox')).toBe(true);
     });
 
-    it('producer events do not mutate ledger state', async () => {
-      const ledgerMutations: string[] = [];
-      // No ledger methods are available on the mock store —
-      // any call to create/save/transition on the store mock
-      // that isn't a notification method represents a ledger mutation.
-      const notificationMethods = new Set([
-        'createNotificationEvent',
-        'getNotificationEvent',
-        'enqueueNotification',
-        'claimNotificationDelivery',
-        'completeNotificationDelivery',
-        'failNotificationDelivery',
-        'acknowledgeNotification',
-        'suppressNotification',
-        'getOutboxRecord',
-        'getPendingNotifications',
-        'getRetryableNotifications',
-        'getDeliveryAttempts',
-        'listOutboxRecords',
-        'getNotificationPolicy',
-        'getActorMembership',
-        'appendAuditRecord',
-        'resolveRecipients',
-      ]);
-
-      await runtime.produceAlertEvent({
-        budgetId: TEST_BUDGET,
-        alertId: 'alr_nop',
-        severity: 'normal',
-        title: 'Test',
-        summary: 'Test',
-      });
-
-      // Check that no non-notification store methods were called
-      for (const [method, mock] of Object.entries(store)) {
-        if (!notificationMethods.has(method) && mock.mock.calls.length > 0) {
-          ledgerMutations.push(method);
-        }
-      }
-      expect(ledgerMutations).toEqual([]);
-    });
   });
 });

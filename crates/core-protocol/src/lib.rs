@@ -965,6 +965,9 @@ pub fn find_categorization_candidates(
             payee_name: tx.payee_name,
             date: tx.date,
             reasons: vec![],
+            proposed_category_id: None,
+            proposed_category_name: None,
+            rule_ids: None,
         })
         .collect()
 }
@@ -1211,7 +1214,7 @@ pub fn plan_set_category(transaction: &Transaction, category: &Category) -> Muta
     }
 }
 
-/// Verify that a mutation plan is still valid against a snapshot.
+/// Verify the applied category and declared postconditions against a fresh snapshot.
 pub fn verify_mutation(plan: &MutationPlan, snapshot: &ProtocolSnapshot) -> VerificationResult {
     let mut reason_codes: Vec<String> = Vec::new();
     // Collect *failure* reason codes separately so that diagnostic
@@ -1219,7 +1222,7 @@ pub fn verify_mutation(plan: &MutationPlan, snapshot: &ProtocolSnapshot) -> Veri
     // false `verified: false` result.
     let mut failure_codes: Vec<String> = Vec::new();
 
-    // Transaction still exists and still has the expected current category
+    // The written transaction must still exist.
     let tx = match snapshot
         .transactions
         .iter()
@@ -1239,9 +1242,9 @@ pub fn verify_mutation(plan: &MutationPlan, snapshot: &ProtocolSnapshot) -> Veri
         }
     };
 
-    // Precondition: current category in snapshot matches plan expectation
-    if tx.category_id != plan.current_category_id {
-        failure_codes.push("category_changed".into());
+    // Postcondition: the fresh ledger must show the approved target category.
+    if tx.category_id.as_deref() != Some(plan.proposed_category_id.as_str()) {
+        failure_codes.push("category_not_applied".into());
     }
 
     // Proposed category already matches — diagnostic observation, not an error
@@ -1343,63 +1346,78 @@ pub fn plan_create_rule(
     }
 }
 
-/// Verify that a rule creation plan does not conflict with existing rules.
+/// Verify the complete category-rule creation postcondition in a fresh Actual snapshot.
 ///
-/// Returns `verified: false` with reason code `rule_already_exists` when the
-/// snapshot already contains a rule whose trigger and actions match the plan.
+/// Requires an active post-stage AND rule with the planned merchant condition
+/// and sole category-set action; absence or changed content is never verified.
 pub fn verify_rule_mutation(
     plan: &CreateRulePlan,
     snapshot: &ProtocolSnapshot,
 ) -> VerificationResult {
-    use fc::normalize_merchant;
+    let planned_payee = plan.trigger.get("value").and_then(|value| value.as_str());
+    let planned_category = extract_action_value(&plan.actions);
+    let verified = plan.conditions.len() == 1
+        && snapshot.rules.iter().any(|rule| {
+            !rule.inactive
+                && rule.trigger.get("stage").and_then(|value| value.as_str()) == Some("post")
+                && rule
+                    .trigger
+                    .get("conditionsOp")
+                    .and_then(|value| value.as_str())
+                    == Some("and")
+                && matches!((planned_payee, rule_payee_name(&rule.trigger, &snapshot.payees)),
+            (Some(planned), Some(actual)) if planned.trim().eq_ignore_ascii_case(actual.trim()))
+                && rule.actions.as_array().is_some_and(|actions| {
+                    actions.len() == 1
+                        && actions[0].get("op").and_then(|value| value.as_str()) == Some("set")
+                        && actions[0].get("field").and_then(|value| value.as_str())
+                            == Some("category")
+                })
+                && planned_category.is_some_and(|category| {
+                    extract_action_value(&rule.actions) == Some(category)
+                        && snapshot
+                            .categories
+                            .iter()
+                            .any(|current| current.id == category && !current.deleted)
+                })
+        });
+    VerificationResult {
+        verified,
+        reason_codes: vec![if verified {
+            "rule_creation_verified"
+        } else {
+            "rule_creation_not_verified"
+        }
+        .into()],
+        message: (!verified)
+            .then(|| "Created rule is absent or differs from the approved plan.".into()),
+    }
+}
 
-    // Normalize both sides for payee_is comparison — plan_create_rule
-    // already normalizes the payee name to lowercase, but existing rules
-    // may have original casing.
-    let plan_trigger_value = plan
-        .trigger
-        .get("value")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let plan_norm = normalize_merchant(plan_trigger_value);
-
-    let exists = snapshot.rules.iter().any(|existing| {
-        // Compare actions exactly
-        if existing.actions != plan.actions {
-            return false;
-        }
-        // Compare triggers with normalization for payee_is type
-        if existing.trigger == plan.trigger {
-            return true;
-        }
-        // Allow normalized match for payee_is triggers
-        if existing.trigger.get("type").and_then(|v| v.as_str()) == Some("payee_is") {
-            let existing_val = existing
-                .trigger
-                .get("value")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let existing_norm = normalize_merchant(existing_val);
-            return existing_norm == plan_norm;
-        }
-        false
-    });
-
-    if exists {
-        VerificationResult {
-            verified: false,
-            reason_codes: vec!["rule_already_exists".into()],
-            message: Some(format!(
-                "A rule with trigger {:?} and actions {:?} already exists",
-                plan.trigger, plan.actions
-            )),
-        }
-    } else {
-        VerificationResult {
-            verified: true,
-            reason_codes: vec!["rule_creation_verified".into()],
-            message: None,
-        }
+fn rule_payee_name<'a>(trigger: &'a serde_json::Value, payees: &'a [fc::Payee]) -> Option<&'a str> {
+    if trigger.get("type").and_then(|value| value.as_str()) == Some("payee_is") {
+        return trigger
+            .get("value")?
+            .as_str()
+            .filter(|name| !name.trim().is_empty());
+    }
+    fc::ActualRuleConditions::parse(trigger)?;
+    let conditions = trigger.get("conditions")?.as_array()?;
+    if conditions.len() != 1 {
+        return None;
+    }
+    let condition = &conditions[0];
+    if condition.get("op")?.as_str()? != "is" {
+        return None;
+    }
+    let value = condition.get("value")?.as_str()?;
+    match condition.get("field")?.as_str()? {
+        "payee_name" => Some(value),
+        "payee" => payees
+            .iter()
+            .find(|payee| payee.id == value)
+            .map(|payee| payee.name.as_str()),
+        _ => None,
     }
 }
 
@@ -1428,6 +1446,7 @@ pub fn simulate_rule(rule: &Rule, transactions: &[Transaction]) -> RuleSimulatio
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let trigger_value = rule.trigger.get("value");
+    let actual_conditions = fc::ActualRuleConditions::parse(&rule.trigger);
 
     // Extract target category ID from the actions, if present.
     let target_category = extract_action_value(&rule.actions);
@@ -1440,6 +1459,9 @@ pub fn simulate_rule(rule: &Rule, transactions: &[Transaction]) -> RuleSimulatio
 
     for tx in transactions {
         let matches = match trigger_type {
+            "" => actual_conditions
+                .as_ref()
+                .is_some_and(|conditions| conditions.matches(tx)),
             "payee_is" => {
                 let raw = trigger_value.and_then(|v| v.as_str()).unwrap_or("");
                 let norm_trigger = normalize_merchant(raw);
@@ -1464,14 +1486,11 @@ pub fn simulate_rule(rule: &Rule, transactions: &[Transaction]) -> RuleSimulatio
 
             // Determine if the category would change:
             // if we know the target, compare; otherwise fall back to uncategorized check.
-            let would_change = if let Some(target) = &target_category {
-                tx.category_id.as_deref() != Some(target.as_str())
+            let would_change = if let Some(target) = target_category {
+                tx.category_id.as_deref() != Some(target)
             } else {
                 tx.category_id.is_none() || tx.category_id.as_deref() == Some("")
             };
-
-            let dist_key = target_category.clone().unwrap_or_default();
-            *category_distribution.entry(dist_key).or_insert(0) += 1;
 
             examples.push(SimulationExample {
                 tx_id: tx.id.clone(),
@@ -1481,6 +1500,9 @@ pub fn simulate_rule(rule: &Rule, transactions: &[Transaction]) -> RuleSimulatio
                 would_change,
             });
         }
+    }
+    if matched != 0 {
+        category_distribution.insert(target_category.unwrap_or_default().to_owned(), matched);
     }
 
     RuleSimulationResult {
@@ -1515,32 +1537,17 @@ pub fn simulate_create_rule_plan(
     result.rule_id = plan.plan_id.clone();
 
     // Detect overlaps with existing rules in the snapshot
-    let normalized_trigger_value = plan
-        .trigger
-        .get("value")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_lowercase());
-    let planned_category = plan
-        .actions
-        .get(0)
-        .and_then(|a| a.get("value"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let planned_payee = plan.trigger.get("value").and_then(|value| value.as_str());
+    let planned_category = extract_action_value(&plan.actions);
 
     for existing in &snapshot.rules {
         if existing.inactive {
             continue;
         }
-        let existing_trigger_value = existing
-            .trigger
-            .get("value")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_lowercase());
-        let existing_category = extract_action_value(&existing.actions);
-        let same_trigger = matches!((&normalized_trigger_value, existing_trigger_value),
-            (Some(a), Some(b)) if *a == b);
-        let same_category = matches!((&planned_category, existing_category),
-            (Some(a), Some(b)) if *a == b);
+        let existing_payee = rule_payee_name(&existing.trigger, &snapshot.payees);
+        let same_trigger = matches!((planned_payee, existing_payee),
+            (Some(planned), Some(actual)) if planned.trim().eq_ignore_ascii_case(actual.trim()));
+        let same_category = planned_category == extract_action_value(&existing.actions);
         if same_trigger && same_category {
             result.conflicts.push(format!(
                 "Rule '{}' already matches this payee and sets the same category",
@@ -1557,21 +1564,22 @@ pub fn simulate_create_rule_plan(
     result
 }
 
-/// Extract the `value` field (category ID) from a set-category action.
-/// Actions are a JSON array of `{"type":"set_category","value":"cat-id"}`.
-fn extract_action_value(actions: &serde_json::Value) -> Option<String> {
-    if let Some(arr) = actions.as_array() {
-        for action in arr {
-            if let Some(obj) = action.as_object() {
-                if let Some(cat) = obj.get("value").and_then(|v| v.as_str()) {
-                    if !cat.is_empty() {
-                        return Some(cat.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
+/// Borrow the target of a native plan or an Actual category-set action.
+fn extract_action_value(actions: &serde_json::Value) -> Option<&str> {
+    actions.as_array()?.iter().find_map(|action| {
+        let category_set = action.get("type").and_then(|value| value.as_str())
+            == Some("set_category")
+            || (action.get("op").and_then(|value| value.as_str()) == Some("set")
+                && action.get("field").and_then(|value| value.as_str()) == Some("category"));
+        category_set
+            .then(|| {
+                action
+                    .get("value")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+            })
+            .flatten()
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -44,6 +44,7 @@ describe('disposable scenario loader', () => {
           Host: new URL(publicOrigin).host,
           Origin: publicOrigin,
           Cookie: loaded.initialized.personas.owner!.cookieHeader,
+          'x-balanceframe-space': loaded.initialized.spaceId,
         },
       });
       expect(response.status).toBe(200);

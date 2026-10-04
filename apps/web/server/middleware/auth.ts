@@ -31,7 +31,26 @@ import { timingSafeEqual, createHmac } from 'node:crypto';
 import { auth } from '../../lib/auth';
 import { enforceDemoBoundary } from '../utils/demo-boundary';
 import { authMigrationFailed, authMigrationMessage } from '../utils/auth-migration-status';
+import type { TrustedAuthContext } from '../utils/reauthentication';
+import { getWorkflowStore } from '../utils/workflow-store';
 import type { EventWithContext } from '../utils/workflow-store';
+
+interface ResolvedCredentialPrincipal {
+  principalType: 'human' | 'agent';
+  actorId: string;
+  credentialId: string;
+  credentialOwnerId: string;
+  delegationId?: string;
+  delegationVersion?: string;
+}
+
+interface CredentialPrincipalAuthority {
+  resolveCredentialPrincipal(input: {
+    credentialId: string;
+    referenceId: string;
+    now: string;
+  }): ResolvedCredentialPrincipal | null | Promise<ResolvedCredentialPrincipal | null>;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -109,23 +128,18 @@ function readConfig(event: EventWithContext): Record<string, unknown> {
 
 function setAuthContext(
   event: EventWithContext,
-  actorId: string,
-  user?: Record<string, unknown>,
+  context: Omit<TrustedAuthContext, 'authenticated'>,
 ): void {
-  // Better Auth's user ID is the canonical workflow/notification member key.
-  // Keep legacy actor IDs for token and dev-bypass flows, but never let a
-  // stale fallback replace the identity carried by an authenticated session.
-  const canonicalActorId = typeof user?.id === 'string' && user.id.length > 0 ? user.id : actorId;
-  const ctx: {
-    authenticated: true;
-    actorId: string;
-    user?: Record<string, unknown>;
-  } = {
+  const canonicalActorId =
+    typeof context.user?.id === 'string' && context.user.id.length > 0
+      ? context.user.id
+      : context.actorId;
+  const authContext: TrustedAuthContext = {
+    ...context,
     authenticated: true,
     actorId: canonicalActorId,
   };
-  if (user) ctx.user = user;
-  event.context.auth = ctx;
+  event.context.auth = authContext;
 }
 
 function validateSessionToken(token: string, apiToken: string): Record<string, unknown> | null {
@@ -161,12 +175,14 @@ export default defineEventHandler(async (event) => {
   const demoBoundaryResponse = enforceDemoBoundary(event as unknown as EventWithContext);
   if (demoBoundaryResponse) return demoBoundaryResponse;
   const path = getRequestPath(event);
-  // 1. Public allowlist — always pass through without auth.
+  // Keep auth lifecycle routes reachable while attributing existing sessions for handler guards.
+  const isAuthPath = path === '/api/auth' || path.startsWith('/api/auth/');
   const isPublic = PUBLIC_API_ALLOWLIST.some((p) => path === p || path.startsWith(p + '/'));
-  if (isPublic) return;
+  if (isPublic && !isAuthPath) return;
 
   // 2. Non-API routes pass through (Nuxt pages, static assets, etc.).
   if (!path.startsWith('/api/')) return;
+  delete event.context.auth;
 
   // 3. Auth migration check — if migrations failed, reject all API
   //    requests with 503 to prevent serving degraded auth state.
@@ -182,13 +198,117 @@ export default defineEventHandler(async (event) => {
   const config = readConfig(event);
   const legacyToken = (config.apiToken as string) || process.env.BALANCEFRAME_API_TOKEN || '';
 
-  // 4. Dev bypass (local development only).
+  // An explicit credential never falls back to a different cookie principal.
+  const authHeader = getHeader(event, 'authorization');
+  if (authHeader !== undefined) {
+    const bearer = /^Bearer[ \t]+(\S+)[ \t]*$/i.exec(authHeader);
+    if (!bearer) {
+      setHeader(event, 'WWW-Authenticate', 'Bearer');
+      setResponseStatus(event, 401);
+      return unauthorized('Authentication required', 'auth.missing_credentials');
+    }
+    const token = bearer[1]!;
+    let verifiedKey: { id: string; referenceId: string } | null = null;
+    try {
+      const headers = fromNodeHeaders(getRequestHeaders(event));
+      const result = await auth.api.verifyApiKey({ body: { key: token }, headers });
+      const key = result?.key;
+      if (
+        result?.valid &&
+        typeof key?.id === 'string' &&
+        key.id.length > 0 &&
+        typeof key.referenceId === 'string' &&
+        key.referenceId.length > 0
+      ) {
+        verifiedKey = { id: key.id, referenceId: key.referenceId };
+      }
+    } catch {
+      // An invalid explicit key must not fall through to a session cookie.
+    }
+
+    if (verifiedKey) {
+      const workflow = getWorkflowStore(event);
+      if ('error' in workflow) {
+        setResponseStatus(event, 503);
+        return serviceUnavailable('Authentication authority is unavailable.');
+      }
+      // Core owns the binding; a missing resolver must never infer a human from the key owner.
+      const governanceStore = workflow.store as unknown as {
+        governance?: CredentialPrincipalAuthority;
+      };
+      const authority = governanceStore.governance;
+      if (typeof authority?.resolveCredentialPrincipal !== 'function') {
+        setResponseStatus(event, 503);
+        return serviceUnavailable('Authentication authority is unavailable.');
+      }
+
+      let principal: ResolvedCredentialPrincipal | null;
+      try {
+        principal = await authority.resolveCredentialPrincipal({
+          credentialId: verifiedKey.id,
+          referenceId: verifiedKey.referenceId,
+          now: new Date().toISOString(),
+        });
+      } catch {
+        setResponseStatus(event, 503);
+        return serviceUnavailable('Authentication authority is unavailable.');
+      }
+      if (
+        !principal ||
+        principal.credentialId !== verifiedKey.id ||
+        principal.credentialOwnerId !== verifiedKey.referenceId ||
+        typeof principal.actorId !== 'string' ||
+        principal.actorId.length === 0 ||
+        (principal.principalType !== 'human' && principal.principalType !== 'agent') ||
+        (principal.principalType === 'human' && principal.actorId !== verifiedKey.referenceId) ||
+        (principal.principalType === 'agent' &&
+          (typeof principal.delegationId !== 'string' ||
+            principal.delegationId.length === 0 ||
+            typeof principal.delegationVersion !== 'string' ||
+            principal.delegationVersion.length === 0))
+      ) {
+        setHeader(event, 'WWW-Authenticate', 'Bearer');
+        setResponseStatus(event, 401);
+        return unauthorized('Authentication required', 'auth.invalid_credentials');
+      }
+      setAuthContext(event, {
+        actorId: principal.actorId,
+        credentialId: principal.credentialId,
+        credentialOwnerId: principal.credentialOwnerId,
+        delegationId: principal.delegationId,
+        delegationVersion: principal.delegationVersion,
+        method: 'api-key',
+        principalType: principal.principalType,
+      });
+      return;
+    }
+
+    if (legacyToken && safeEqual(token, legacyToken)) {
+      setAuthContext(event, {
+        actorId: (config.authActorId as string) || 'api-user',
+        method: 'legacy-token',
+        principalType: 'human',
+      });
+      return;
+    }
+    if (!legacyToken) {
+      setResponseStatus(event, 503);
+      return serviceUnavailable(
+        'API token not configured. Set apiToken (NUXT_API_TOKEN) or ' +
+          'BALANCEFRAME_API_TOKEN, or enable devBypassAuth for local development.',
+      );
+    }
+    setHeader(event, 'WWW-Authenticate', 'Bearer');
+    setResponseStatus(event, 401);
+    return unauthorized('Authentication required', 'auth.missing_credentials');
+  }
+
+  // 5. Dev bypass (local development only).
   const nodeEnv = process.env.NODE_ENV;
   const bypassRequested =
     config.devBypassAuth === true || process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
 
   if (bypassRequested) {
-    // Never honor bypass in production — guard against misconfiguration.
     if (!nodeEnv || (nodeEnv !== 'development' && nodeEnv !== 'test')) {
       setResponseStatus(event, 503);
       return serviceUnavailable(
@@ -197,62 +317,73 @@ export default defineEventHandler(async (event) => {
       );
     }
     const actorId = (config.authActorId as string) || 'dev-bypass';
-    setAuthContext(event, actorId);
+    setAuthContext(event, { actorId, method: 'development', principalType: 'human' });
     return;
   }
 
-  // 5. Try Better Auth session.
+  // 6. Try the authoritative Better Auth session.
   try {
     const headers = fromNodeHeaders(getRequestHeaders(event));
     const session = await auth.api.getSession({ headers });
     if (session?.user) {
-      setAuthContext(event, session.user.id, session.user as Record<string, unknown>);
-      return;
+      const actorId = session.user.id;
+      const sessionId = session.session?.id;
+      if (
+        typeof actorId === 'string' &&
+        actorId.length > 0 &&
+        typeof sessionId === 'string' &&
+        sessionId.length > 0 &&
+        session.session?.userId === actorId
+      ) {
+        const impersonatedBy =
+          typeof session.session.impersonatedBy === 'string'
+            ? session.session.impersonatedBy
+            : null;
+        setAuthContext(event, {
+          actorId,
+          user: session.user as Record<string, unknown>,
+          method: 'session',
+          sessionId,
+          principalType: 'human',
+          impersonatedBy,
+        });
+        if (impersonatedBy && !isAuthPath) {
+          setResponseStatus(event, 403);
+          return unauthorized(
+            'Impersonated sessions cannot access governed resources',
+            'auth.impersonation_forbidden',
+          );
+        }
+        return;
+      }
     }
   } catch {
     // Fall through to legacy auth.
   }
 
-  // 6. Try Bearer token.
-  const authHeader = getHeader(event, 'authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-
-    // 6a. Try Better Auth API key.
-    try {
-      const headers = fromNodeHeaders(getRequestHeaders(event));
-      const result = await auth.api.verifyApiKey({ body: { key: token }, headers });
-      if (result?.valid && result.user?.id) {
-        setAuthContext(event, result.user.id, result.user as Record<string, unknown>);
-        return;
-      }
-    } catch {
-      // Fall through to legacy token check.
-    }
-
-    // 6b. Legacy token fallback.
-    if (legacyToken && safeEqual(token, legacyToken)) {
-      setAuthContext(event, (config.authActorId as string) || 'api-user');
-      return;
-    }
-  }
-
-  // 7. Try session cookie (legacy HMAC / plain match fallback).
+  // 7. Try the legacy session cookie only when no explicit Bearer was supplied.
   const sessionCookie = getCookie(event, 'balanceframe_session');
   if (sessionCookie && legacyToken) {
     if (safeEqual(sessionCookie, legacyToken)) {
-      setAuthContext(event, (config.authActorId as string) || 'api-user');
+      setAuthContext(event, {
+        actorId: (config.authActorId as string) || 'api-user',
+        method: 'legacy-token',
+        principalType: 'human',
+      });
       return;
     }
     const payload = validateSessionToken(sessionCookie, legacyToken);
     if (payload) {
-      setAuthContext(
-        event,
-        (payload.actorId as string) || (config.authActorId as string) || 'api-user',
-      );
+      setAuthContext(event, {
+        actorId: (payload.actorId as string) || (config.authActorId as string) || 'api-user',
+        method: 'legacy-token',
+        principalType: 'human',
+      });
       return;
     }
   }
+
+  if (isAuthPath) return;
 
   // 8. No token or session configured — fail closed.
   if (!legacyToken) {

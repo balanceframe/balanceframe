@@ -52,6 +52,7 @@ export type {
   SetCategoryResult,
   AutomationRule,
   RuleProposal,
+  RuleDeletePrecondition,
   BudgetInfo,
   HealthReport,
   HealthState,

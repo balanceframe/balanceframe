@@ -11,9 +11,11 @@
  *   recovery — the same token always yields the same result.
  */
 
-import type { TransferPlan } from '@balanceframe/protocol-generated';
+import type { CategoryReallocation, TransferPlan } from '@balanceframe/protocol-generated';
 import type { TransferState } from './liquidity-types.js';
 import type { LiquidityWorkflow } from './liquidity.js';
+import type { SpaceGovernance } from './governance.js';
+import type { GovernanceDisposition, HumanControlContext, OperationalAuth } from './governance-types.js';
 
 // ---------------------------------------------------------------------------
 // Suggestion — immutable candidate output from a classifier
@@ -83,10 +85,20 @@ export interface CandidateJob {
   readonly updatedAt: string;
 }
 
-/** Input to enqueue a new candidate job. */
+/** Exact selected space, budget, and acting human for lifecycle operations. */
+export interface LifecycleScope {
+  readonly spaceId: string;
+  readonly budgetId: string;
+  readonly actorId: string;
+}
+
+/** Input to enqueue a new candidate job. Omitted scope marks legacy/unscoped work. */
 export interface EnqueueJobInput {
   readonly jobType: string;
   readonly candidateId: string;
+  readonly spaceId?: string;
+  readonly budgetId?: string;
+  readonly actorId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +145,8 @@ export interface ReviewItem {
   readonly suggestionId: string | null;
   readonly budgetId: string;
   readonly transactionId: string;
+  /** Canonical source-ledger authority; classifier evidence never supplies these facts. */
+  readonly sourceTransaction: ReviewActionAuthorization['transaction'] | null;
   /** The proposed (or applied) category. */
   readonly categoryId: string;
   /** Classifier identity that produced the suggestion. */
@@ -177,6 +191,8 @@ export interface CreateReviewItemInput {
   readonly suggestionId?: string;
   readonly budgetId: string;
   readonly transactionId: string;
+  /** Trusted synchronized source facts, separate from arbitrary classifier evidence. */
+  readonly sourceTransaction?: ReviewActionAuthorization['transaction'];
   readonly categoryId: string;
   readonly classifier: string;
   readonly promptVersion?: string;
@@ -197,6 +213,28 @@ export interface CreateReviewItemInput {
   readonly freshnessExpiresAt?: string;
 }
 
+/** Trusted source-ledger facts and verified identity for an atomic non-ledger review action. */
+export interface ReviewActionAuthorization {
+  readonly spaceId: string;
+  readonly policyVersion: string;
+  readonly auth: OperationalAuth;
+  readonly transaction: {
+    readonly id: string;
+    readonly accountId: string;
+    readonly categoryId: string | null;
+    readonly direction: 'outgoing' | 'incoming';
+    readonly amount: { readonly minorUnits: string; readonly currency: string };
+  };
+}
+
+/** Verified human context and current selected-space policy for atomic intent cancellation. */
+export interface DiscardProposalAuthorization {
+  readonly spaceId: string;
+  readonly governancePolicyVersion: string;
+  readonly now: string;
+  readonly auth: OperationalAuth;
+}
+
 /** Input describing a single status transition. */
 export interface TransitionReviewInput {
   /** Target status. */
@@ -214,6 +252,8 @@ export interface TransitionReviewInput {
    * supersedes this one (establishes the successor link).
    */
   readonly supersededBy?: string;
+  /** Optional for trusted internal workflows; required by public reject/skip/undo inputs. */
+  readonly authorization?: ReviewActionAuthorization;
   // ── Correction evidence fields ─────────────────────────────────────────
   // These are captured as structured history when transitioning to
   // `approved` or `correcting`.
@@ -232,6 +272,15 @@ export interface TransitionReviewInput {
   /** Human-readable category name assigned by the correction. */
   readonly categoryName?: string;
 }
+
+/** Public reject, skip, and undo operations with the current trusted human context. */
+export type AuthorizedReviewTransitionInput = Pick<
+  TransitionReviewInput,
+  'actor' | 'reason' | 'metadata' | 'expectedVersion'
+> & {
+  readonly toStatus: 'rejected' | 'skipped' | 'pending_review';
+  readonly authorization: ReviewActionAuthorization;
+};
 
 /** An audited action recording a review-item status transition. */
 export interface ReviewAction {
@@ -301,16 +350,14 @@ export interface NotificationEvent {
   readonly budgetId: string;
   /** Classification label (e.g. 'budget_alert', 'review_complete'). */
   readonly classification: string;
-  /**
-   * Intended recipient identifier.
-   * Nullable for extensibility — Phase 7 will supply typed recipient/scope.
-   */
+  /** Intended recipient; unbound legacy events cannot authorize reads or delivery. */
   readonly recipientId: string | null;
-  /**
-   * Scope the event applies to.
-   * Nullable — Phase 7 will provide typed scope resolution.
-   */
+  /** Exact bound budget scope captured by the notification producer. */
   readonly scope: string | null;
+  /** Original selected space, or null for inert legacy or unbound events. */
+  readonly spaceId: string | null;
+  /** Original recipient period; replacement memberships never inherit private notifications. */
+  readonly recipientMembershipId: string | null;
   /** Security / redaction class hint (e.g. 'public', 'internal', 'sensitive'). */
   readonly redactionClass: string | null;
   /** Version of the channel/provider config active when the event was created. */
@@ -335,7 +382,10 @@ export interface CreateNotificationEventInput {
   readonly scope?: string | null;
   readonly redactionClass?: string | null;
   readonly channelConfigVersion?: string | null;
+  /** Correlates the immutable event with its attributable producer operation. */
   readonly correlationId?: string | null;
+  /** Operation time used to bind recipient provenance to the current membership epoch. */
+  readonly now?: string;
 }
 
 /** Input to atomically create or retrieve a deduplicated notification event. */
@@ -501,9 +551,17 @@ export interface RecordPolicyVersionInput {
 // ---------------------------------------------------------------------------
 
 /**
- * A saved view configuration persisted for Phase 8.
- * Each view belongs to a single actor.
+ * Verified selected-space authority for saved-view persistence.
+ * The membership ID pins the view to one immutable membership period.
  */
+export interface SavedViewAuthority {
+  readonly actorId: string;
+  readonly spaceId: string;
+  readonly budgetId: string;
+  readonly membershipId: string;
+}
+
+/** A saved view configuration persisted for one selected space and membership period. */
 export interface SavedViewResult {
   /** Stable unique identifier (UUID v4). */
   readonly viewId: string;
@@ -517,44 +575,37 @@ export interface SavedViewResult {
   readonly sort: string | null;
   /** Actor who owns this view. */
   readonly actorId: string;
+  /** Immutable originating space and budget. */
+  readonly spaceId: string;
+  readonly budgetId: string;
   /** ISO-8601 creation timestamp. */
   readonly createdAt: string;
   /** ISO-8601 timestamp of last use, or null if never used since creation. */
   readonly lastUsedAt: string | null;
 }
 
-/** Input to create a new saved view. */
+/** Input to create a saved view in the verified selected space. */
 export interface CreateSavedViewInput {
-  /** Human-readable name for this view. */
+  readonly authority: SavedViewAuthority;
   readonly name: string;
-  /** View type identifier. */
   readonly viewType: string;
-  /** Scope/filter configuration. */
   readonly scope: Record<string, unknown>;
-  /** Optional user-defined sort expression. */
   readonly sort?: string;
-  /** Actor who owns this view. */
-  readonly actorId: string;
 }
 
-/** Input to update an existing saved view (rename, re-scope, re-sort). */
+/** Input to update an existing saved view without changing its provenance. */
 export interface UpdateSavedViewInput {
-  /** Human-readable name for this view. */
+  readonly authority: SavedViewAuthority;
   readonly name?: string;
-  /** Scope/filter configuration. */
   readonly scope?: Record<string, unknown>;
-  /** Optional user-defined sort expression (null to clear). */
   readonly sort?: string | null;
 }
 
-/** Input to duplicate an existing saved view under a new name. */
+/** Input to duplicate a view within the same verified selected scope. */
 export interface DuplicateSavedViewInput {
-  /** Source view ID to copy. */
   readonly sourceViewId: string;
-  /** New name for the duplicated view. */
   readonly name: string;
-  /** Actor who will own the new view. */
-  readonly actorId: string;
+  readonly authority: SavedViewAuthority;
 }
 
 // ---------------------------------------------------------------------------
@@ -910,6 +961,32 @@ export interface ListNotificationPoliciesOptions {
   readonly offset?: number;
 }
 
+/** Exact governed binding for local rule annotations. */
+export interface RuleOverrideScope {
+  readonly spaceId: string;
+  readonly budgetId: string;
+}
+
+/** Versioned local inactive-state override; null is a retained tombstone. */
+export interface RuleOverride {
+  readonly ruleId: string;
+  readonly inactive: boolean | null;
+  readonly version: number;
+}
+
+export interface GetRuleOverrideInput extends RuleOverrideScope {
+  readonly ruleId: string;
+}
+
+export interface SetRuleOverrideInput extends GetRuleOverrideInput {
+  readonly inactive: boolean;
+  readonly expectedVersion: number | null;
+}
+
+export interface RemoveRuleOverrideInput extends GetRuleOverrideInput {
+  readonly expectedVersion: number;
+}
+
 // ---------------------------------------------------------------------------
 // WorkflowStore — public persistence contract
 // ---------------------------------------------------------------------------
@@ -922,6 +999,7 @@ export interface ListNotificationPoliciesOptions {
  * All methods are async (the implementation wraps synchronous better-sqlite3).
  */
 export interface WorkflowStore {
+  readonly governance: SpaceGovernance;
   readonly liquidity: LiquidityWorkflow;
   // ── Suggestion lifecycle ───────────────────────────────────────────
 
@@ -1031,6 +1109,12 @@ export interface WorkflowStore {
 
   /** Retrieve a single review item by ID, or null. */
   getReviewItem(id: string): Promise<ReviewItem | null>;
+  /** Check a linked categorization proposal against its captured review row. */
+  isProposalReviewProvenanceCurrent(proposalId: string): Promise<boolean>;
+
+  /** Atomically apply a verified categorization result to its linked review. */
+  completeVerifiedCategorizationReview(idempotencyKey: string): Promise<ReviewItem | null>;
+
 
   /**
    * Find the active (non-superseded) review item for the given issue
@@ -1058,26 +1142,14 @@ export interface WorkflowStore {
   /** Return all review items sharing a correlation ID. */
   listReviewItemsByCorrelation(correlationId: string): Promise<ReviewItem[]>;
 
-  /**
-   * Transition a single review item to a new status.
-   *
-   * The transition is validated against the allowed state machine. If the
-   * current status equals `toStatus`, the call is idempotent.
-   *
-   * @throws If the transition is not allowed or the expectedVersion
-   *         optimistic lock fails.
-   */
-  transitionReviewItem(id: string, input: TransitionReviewInput): Promise<ReviewItem>;
+  /** Executes a current-authorized human reject, skip, or undo action. */
+  transitionReviewItem(id: string, input: AuthorizedReviewTransitionInput): Promise<ReviewItem>;
 
-  /**
-   * Bulk-transition multiple review items to the same target status.
-   *
-   * All items MUST have the same current status (heterogeneous groups are
-   * rejected). Each item is transitioned atomically; results report
-   * per-item success or failure. Version conflicts are reported per-item
-   * without aborting the batch.
-   */
-  transitionReviewItems(
+  /** Internal lifecycle primitive for trusted synchronization and verified workflows. */
+  transitionInternalReviewItem(id: string, input: TransitionReviewInput): Promise<ReviewItem>;
+
+  /** Internal batch lifecycle primitive; callers must be trusted workflow code. */
+  transitionInternalReviewItems(
     ids: string[],
     toStatus: ReviewStatus,
     actor: string,
@@ -1098,15 +1170,17 @@ export interface WorkflowStore {
     expectedVersion: number,
   ): Promise<ReviewItem>;
 
-  /**
-   * Undo the last reversible transition.
-   *
-   * Reversible transitions: `approved -> pending_review`,
-   * `correcting -> pending_review`. Creates an audit action for the undo.
-   *
-   * @throws If the current status does not have a reversible transition.
-   */
+  /** Public undo requires current trusted human context for each reversible transition. */
   undoReviewTransition(
+    id: string,
+    actor: string,
+    reason: string | undefined,
+    expectedVersion: number | undefined,
+    authorization: ReviewActionAuthorization,
+  ): Promise<ReviewItem>;
+
+  /** Internal undo primitive for trusted workflow code. */
+  undoInternalReviewTransition(
     id: string,
     actor: string,
     reason?: string,
@@ -1119,17 +1193,18 @@ export interface WorkflowStore {
   // ── Categorization proposal lifecycle ─────────────────────────────────
 
   /**
-   * Create a new categorization proposal.
-   *
-   * Idempotent: if a proposal with the same `(budgetId, transactionId, operation,
-   * payloadHash)` already exists, the existing record is returned unchanged.
+   * Persist an exact proposal after checking its authenticated proposer and
+   * current space/resource authority. The store computes the canonical hash.
    */
-  createProposal(
-    input: CreateProposalInput,
-  ): Promise<Exclude<ActionProposal, { operation: 'transfer' }>>;
+  createProposal(input: CreateProposalInput): Promise<GenericActionProposal>;
 
   /** Retrieve a single proposal by ID, or null. */
   getProposal(id: string): Promise<ActionProposal | null>;
+
+  /** Return current scope-authorized human approval eligibility without consuming approvals or exposing payload. */
+  getProposalApprovalSummary(
+    input: GetProposalApprovalSummaryInput,
+  ): Promise<ProposalApprovalSummary>;
 
   /**
    * Find the active (non-superseded) proposal for a given target, or null.
@@ -1158,8 +1233,8 @@ export interface WorkflowStore {
    */
   supersedeProposal(id: string): Promise<ActionProposal>;
 
-  /** Atomically discard a legacy proposal after current operation/budget authorization; deny missing or inaccessible IDs with null. */
-  discardProposal(id: string, actorId: string): Promise<ActionProposal | null>;
+  /** Discard an exact intent under current complete-resource human authority; unavailable or unauthorized intents return null. */
+  discardProposal(id: string, actorId: string, authorization: DiscardProposalAuthorization): Promise<ActionProposal | null>;
 
   // ── Proposal approval lifecycle ───────────────────────────────────
 
@@ -1172,6 +1247,17 @@ export interface WorkflowStore {
    */
   createApproval(input: CreateApprovalInput): Promise<ProposalApproval>;
 
+  /** Atomically grant the same reauthenticated human approval to exact proposals in one space. */
+  createApprovals(input: CreateApprovalsInput): Promise<ProposalApproval[]>;
+
+  /**
+   * Atomically authorize and acquire the one generic proposal write intent,
+   * consuming its complete distinct human approval set with durable audit.
+   */
+  acquireProposalExecution(
+    input: AcquireProposalExecutionInput,
+  ): Promise<ProposalExecutionAcquisition>;
+
   /** Retrieve a single approval by ID, or null. */
   getApproval(id: string): Promise<ProposalApproval | null>;
 
@@ -1181,24 +1267,6 @@ export interface WorkflowStore {
    */
   findActiveApprovals(proposalId: string): Promise<ProposalApproval[]>;
 
-  /**
-   * Consume an approval (one-time use).
-   *
-   * Atomically reauthorizes the issuer against the proposal's operation/budget
-   * and verifies the exact hash and lifecycle before consuming.
-   * @throws If authorization is revoked, the hash differs, or the approval or
-   *         proposal is consumed, expired or superseded.
-   */
-  consumeApproval(id: string): Promise<ProposalApproval>;
-
-  /**
-   * Verify that a proposal has an active exact-hash approval from a currently
-   * authorized issuer. Consumption repeats these checks atomically.
-   *
-   * @returns null if the proposal can be executed, or an error string
-   *          describing the reason it cannot.
-   */
-  verifyApprovalForExecution(proposalId: string, payloadHash: string): Promise<string | null>;
 
   // ── Idempotency records ───────────────────────────────────────────
 
@@ -1227,11 +1295,13 @@ export interface WorkflowStore {
    * @param key            The idempotency key.
    * @param errorMessage   Optional error message if the execution failed.
    * @param isRetryable    Whether a failed execution is safe to retry.
+   * @param serialisedResult The actual verified output; failed and legacy records remain null.
    */
   completeIdempotencyRecord(
     key: string,
     errorMessage?: string | null,
     isRetryable?: boolean,
+    serialisedResult?: string | null,
   ): Promise<IdempotencyRecord>;
 
   /**
@@ -1311,37 +1381,14 @@ export interface WorkflowStore {
    */
   finalizeBootstrap(input: FinalizeBootstrapInput): Promise<FinalizeBootstrapResult>;
 
-  /**
-   * Create a new invitation for self-hosted account creation.
-   * Persists only a SHA-256 digest of the bearer token.
-   * Returns the stable metadata plus a copyable invite URL containing
-   * the raw token in the fragment.
-   *
-   * @param creatorUserId The authenticated user creating the invitation.
-   * @param auditContext Optional request/correlation IDs for audit records.
-   */
-  createInvitation(
-    creatorUserId: string,
-    auditContext?: { requestId?: string; correlationId?: string },
-  ): Promise<CreateInvitationResult>;
+  /** Creates a membership-only invitation under current scoped human control. */
+  createInvitation(input: InvitationControlInput): Promise<CreateInvitationResult>;
 
-  /**
-   * Revoke an active invitation by its stable ID.
-   * Idempotent on already-revoked invitations.
-   *
-   * @param actorId  The authenticated actor performing the revocation
-   *                 (stored in the audit record).  Defaults to 'system'.
-   * @param requestId Correlation ID for the request (stored in the audit).
-   *
-   * @throws If the invitation is not found or is in a non-revocable state.
-   */
-  revokeInvitation(invitationId: string, actorId?: string, requestId?: string): Promise<void>;
+  /** Revokes only an invitation in the selected space, preserving attribution. */
+  revokeInvitation(input: InvitationControlInput & { readonly invitationId: string }): Promise<void>;
 
-  /**
-   * List all invitations ordered by creation time descending.
-   * Returns public metadata only — no token digest or raw token.
-   */
-  listInvitations(): Promise<InvitationMetadata[]>;
+  /** Lists public invitation metadata only within the authorized selected space. */
+  listInvitations(input: InvitationControlInput): Promise<InvitationMetadata[]>;
 
   /**
    * Claim an invitation by presenting the bearer token.
@@ -1358,28 +1405,21 @@ export interface WorkflowStore {
   claimInvitation(input: ClaimInvitationInput): Promise<ClaimInvitationResult>;
 
   /**
-   * Complete invitation redemption after identity creation.
-   * Atomically transitions the invitation from 'claimed' to 'redeemed' and
-   * records the created user ID. Membership provisioning is explicit so
-   * existing-user recovery cannot widen current authorization.
-   *
-   * @throws If the claim ID is not found, the invitation is not in the
-   *         'claimed' state, or provisioning targets a non-active membership.
+   * Atomically completes the canonical claim and creates a membership-only join.
+   * Fresh target identity and verified email must match; stale issuer consent
+   * never revives on rejoin, and failure creates no identity or membership.
    */
   completeInvitationRedemption(
     claimId: string,
     userId: string,
     options: {
+      readonly auth: HumanControlContext;
+      readonly email: string;
+      readonly now?: string;
       readonly requestId?: string;
-      readonly provisionReadOnlyMembership: boolean;
     },
   ): Promise<void>;
 
-  /**
-   * Find stranded 'claimed' invitations whose redemption was interrupted.
-   * Returns a count for reconciliation reporting.
-   */
-  reconcileClaimedInvitations(): Promise<number>;
   /**
    * Evaluate whether an actor is authorized for a given capability/scope.
    *
@@ -1418,11 +1458,8 @@ export interface WorkflowStore {
 
   // ── Lifecycle / administrative operations ─────────────────────────
 
-  /**
-   * Cancel all pending (unclaimed) jobs. Returns count cancelled.
-   * Processing and completed jobs are left untouched.
-   */
-  cancelPendingJobs(): Promise<number>;
+  /** Cancel pending jobs in one exact selected scope; legacy unscoped jobs are retained. */
+  cancelPendingJobs(scope: LifecycleScope, options?: { actorOnly?: boolean }): Promise<number>;
 
   /**
    * Delete an actor's membership record. Returns true if a
@@ -1430,25 +1467,23 @@ export interface WorkflowStore {
    */
   deleteActorMembership(actorId: string): Promise<boolean>;
 
-  /**
-   * Record an export event for export-before-delete tracking.
-   * Overwrites any previous export record (only the most recent
-   * export is tracked).
-   */
-  recordExport(input: {
+  /** Record export provenance for this exact actor/space/budget. */
+  recordExport(input: LifecycleScope & {
     budgetName: string;
     exportPath: string;
+    sha256Hash: string;
+    byteSize: number;
     accountCount: number;
     transactionCount: number;
   }): Promise<void>;
 
-  /**
-   * Get the most recent export record, or null if none exists.
-   */
-  getLastExport(): Promise<{
+  /** Get the latest export for one exact actor/space/budget. */
+  getLastExport(scope: LifecycleScope): Promise<{
     exportedAt: string;
     budgetName: string;
     exportPath: string;
+    sha256Hash: string;
+    byteSize: number;
     accountCount: number;
     transactionCount: number;
   } | null>;
@@ -1465,27 +1500,23 @@ export interface WorkflowStore {
   // ── Rule overrides ────────────────────────────────────────────
 
   /**
-   * Persist or clear a local override for a rule's inactive state.
-   * This is the source of truth for rule toggling since the Actual
-   * sync protocol does not support updating rule fields.
+   * Read active local rule overrides for one exact space/budget binding.
+   * Tombstones are omitted; never-created overrides are absent.
    */
-  setRuleOverride(ruleId: string, inactive: boolean): Promise<void>;
+  getRuleOverrides(scope: RuleOverrideScope): Promise<Map<string, RuleOverride>>;
 
-  /**
-   * Return all active rule overrides as a Map<ruleId, inactive>.
-   */
-  getRuleOverrides(): Promise<Map<string, boolean>>;
+  /** Read one active override or retained tombstone; null means never created. */
+  getRuleOverride(input: GetRuleOverrideInput): Promise<RuleOverride | null>;
 
-  /**
-   * Remove a local override for a rule's inactive state.
-   * Called after the Actual ledger has been successfully updated or when
-   * cleaning up stale local annotations.
-   */
-  removeRuleOverride(ruleId: string): Promise<void>;
+  /** Compare-and-swap the local inactive state, retaining a monotonically versioned row. */
+  setRuleOverride(input: SetRuleOverrideInput): Promise<RuleOverride>;
+
+  /** Compare-and-swap an active override to a retained tombstone. */
+  removeRuleOverride(input: RemoveRuleOverrideInput): Promise<void>;
 
   deleteScopeData(
     scope: string,
-    options?: { actorId?: string },
+    lifecycleScope: LifecycleScope,
   ): Promise<{
     deleted: Record<string, number>;
     retained: { count: number; reasons: string[] };
@@ -1682,51 +1713,26 @@ export interface WorkflowStore {
 
   // ── Saved view lifecycle (Phase 8) ──────────────────────────────
 
-  /**
-   * List all saved views for the given actor.
-   * Views are scoped per-actor; each actor sees only their own saved views.
-   */
-  listSavedViews(actorId: string): Promise<SavedViewResult[]>;
+  /** List saved views originating in this current selected membership period. */
+  listSavedViews(authority: SavedViewAuthority): Promise<SavedViewResult[]>;
 
-  /**
-   * Create a new saved view for the given actor.
-   *
-   * @returns The newly created saved view with a stable ID and timestamp.
-   */
+  /** Create a saved view tied to the verified selected space, budget, and membership. */
   createSavedView(input: CreateSavedViewInput): Promise<SavedViewResult>;
 
-  /**
-   * Update an existing saved view (rename, re-scope, re-sort).
-   * Only the provided fields are changed.
-   *
-   * @throws If the view is not found.
-   */
+  /** Update a view only while the originating space and membership period remain current. */
   updateSavedView(viewId: string, input: UpdateSavedViewInput): Promise<SavedViewResult>;
 
-  /**
-   * Duplicate an existing saved view under a new name for the given actor.
-   * Copies scope, viewType, and sort; generates a fresh ID.
-   *
-   * @throws If the source view is not found.
-   */
+  /** Duplicate a view only within its originating current scope. */
   duplicateSavedView(input: DuplicateSavedViewInput): Promise<SavedViewResult>;
 
-  /**
-   * Delete a saved view by ID.
-   * Returns true if the view existed and was deleted.
-   */
-  deleteSavedView(viewId: string): Promise<boolean>;
+  /** Delete a view only within its originating current scope. */
+  deleteSavedView(viewId: string, authority: SavedViewAuthority): Promise<boolean>;
 
-  /**
-   * Record last-used metadata for a saved view.
-   * Updates the lastUsedAt timestamp to the current time.
-   */
-  recordSavedViewUsage(viewId: string): Promise<SavedViewResult>;
+  /** Record usage only within the originating current scope. */
+  recordSavedViewUsage(viewId: string, authority: SavedViewAuthority): Promise<SavedViewResult>;
 
-  /**
-   * Retrieve a single saved view by ID, or null.
-   */
-  getSavedView(viewId: string): Promise<SavedViewResult | null>;
+  /** Retrieve a view by ID only within its originating current scope. */
+  getSavedView(viewId: string, authority: SavedViewAuthority): Promise<SavedViewResult | null>;
 
   // ── Finding lifecycle (Phase 8.5) ────────────────────────────────
 
@@ -1859,7 +1865,20 @@ export interface WorkflowStore {
 // ---------------------------------------------------------------------------
 
 /** Supported workflow action proposal operations. */
-export type ProposalOperation = 'set_category' | 'create_rule' | 'transfer' | 'session_completion';
+export type ProposalOperation =
+  | 'set_category'
+  | 'create_rule'
+  | 'update_rule'
+  | 'delete_rule'
+  | 'transfer'
+  | 'session_completion';
+
+/** Operations admitted by the native generic proposal lifecycle. */
+export type GenericProposalOperation =
+  | 'set_category'
+  | 'create_rule'
+  | 'update_rule'
+  | 'delete_rule';
 
 /** Exact signed amount accepted by the Actual manual-transaction boundary. */
 export interface SessionCompletionMoney {
@@ -1944,6 +1963,11 @@ export interface ActionProposalBase<State = TransferState> {
   readonly id: string;
   /** Budget this proposal targets. */
   readonly budgetId: string;
+  /** Server-selected space that authorized the proposer. */
+  readonly spaceId: string | null;
+  /** Original requester membership period, or the original agent delegation issuer period. */
+  readonly requesterMembershipId: string | null;
+  readonly governancePolicyVersion: string | null;
   /** Hex-encoded SHA-256 hash of the full proposal content. */
   readonly payloadHash: string;
   /** Policy version active when the proposal was created. */
@@ -1968,17 +1992,62 @@ export interface ActionProposalBase<State = TransferState> {
   readonly state: State;
 }
 
+/** Recursively JSON-safe value stored in a generic proposal envelope. */
+export type ProposalJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly ProposalJsonValue[]
+  | ProposalJsonObject;
+
+/** JSON object persisted as part of an exact generic proposal component. */
+export interface ProposalJsonObject {
+  readonly [key: string]: ProposalJsonValue;
+}
+
+/** Complete frozen composite envelope; each component array participates in hashing and authorization. */
+export interface GenericProposalComposite {
+  readonly operations: readonly ProposalJsonObject[];
+  readonly reallocations: readonly (ProposalJsonObject | CategoryReallocation)[];
+  readonly transferRecommendations: readonly (ProposalJsonObject | TransferPlan)[];
+  readonly ledgerProjections: readonly ProposalJsonObject[];
+  readonly evidenceReferences: readonly ProposalJsonObject[];
+  readonly nativePayloadHash?: string;
+}
+
+/** Exact set-category mutation plus its optional complete composite envelope. */
 export interface CategoryActionPayload {
   readonly kind: 'set_category';
   readonly transactionId: string;
   readonly categoryId: string;
+  readonly composite?: GenericProposalComposite;
 }
+
+/** Exact rule mutation plus its optional complete composite envelope. */
 export interface RuleActionPayload {
   readonly kind: 'create_rule';
   readonly transactionId: string | null;
   readonly categoryId: string;
   readonly rule: Record<string, unknown>;
+  readonly composite?: GenericProposalComposite;
 }
+
+/** Exact local inactive override mutation plus its complete generic envelope. */
+export interface UpdateRuleActionPayload {
+  readonly kind: 'update_rule';
+  readonly ruleId: string;
+  readonly inactive: boolean;
+  readonly composite?: GenericProposalComposite;
+}
+
+/** Exact Actual rule deletion plus its complete generic envelope. */
+export interface DeleteRuleActionPayload {
+  readonly kind: 'delete_rule';
+  readonly ruleId: string;
+  readonly composite?: GenericProposalComposite;
+}
+
 /** All proposal variants, including the specialized completion operation. */
 export type ActionProposal =
   | (
@@ -1986,6 +2055,8 @@ export type ActionProposal =
         (
           | { readonly operation: 'set_category'; readonly payload: CategoryActionPayload }
           | { readonly operation: 'create_rule'; readonly payload: RuleActionPayload }
+          | { readonly operation: 'update_rule'; readonly payload: UpdateRuleActionPayload }
+          | { readonly operation: 'delete_rule'; readonly payload: DeleteRuleActionPayload }
           | {
               readonly operation: 'transfer';
               readonly payload: {
@@ -2005,22 +2076,107 @@ export type ActionProposal =
 /** Specialized completion proposal extracted from the shared action union. */
 export type SessionCompletionProposal = Extract<ActionProposal, { operation: 'session_completion' }>;
 
-/** Input to create a new categorization proposal. */
+/** Input to create a new authenticated generic proposal; the store computes its hash. */
 export interface CreateProposalInput {
-  readonly operation: 'set_category' | 'create_rule';
+  readonly operation: GenericProposalOperation;
   readonly budgetId: string;
-  readonly payload: CategoryActionPayload | RuleActionPayload;
-  /** Hex-encoded SHA-256 hash of the full proposal content. */
-  readonly payloadHash: string;
+  readonly spaceId: string;
+  readonly payload: CategoryActionPayload | RuleActionPayload | UpdateRuleActionPayload | DeleteRuleActionPayload;
+  /** Current generic mutation algorithm version. */
   readonly policyVersion: string;
-  /** JSON-encoded preconditions for execution. */
+  /** JSON-encoded, server-derived facts and execution preconditions. */
   readonly preconditions: string;
   /** ISO-8601 expiry timestamp. */
   readonly expiresAt: string;
   readonly actorId: string;
+  /** Trusted server credential metadata; never accepted from an HTTP body. */
+  readonly auth: OperationalAuth;
   readonly provenance: string;
   readonly providerModel?: string | null;
   readonly correlationId?: string | null;
+}
+
+/** Hash input covering every immutable generic proposal field. */
+export interface CanonicalProposalEnvelope {
+  readonly operation: string;
+  readonly budgetId: string;
+  readonly payload: unknown;
+  readonly preconditions: unknown;
+  readonly actorId: string;
+  readonly policyVersion: string;
+  readonly expiresAt: string;
+}
+
+/** Classified failure codes exposed by the generic proposal acquisition boundary. */
+export type ProposalAcquisitionReasonCode =
+  | 'approval_required'
+  | 'policy_version_mismatch'
+  | 'payload_hash_mismatch'
+  | 'approval_consumed'
+  | 'idempotency_in_progress'
+  | 'authorization_denied'
+  | 'proposal_expired'
+  | 'proposal_superseded'
+  | 'idempotency_replay_mismatch';
+
+/** Input to the one-shot generic proposal execution acquisition. */
+export interface AcquireProposalExecutionInput {
+  readonly actorId: string;
+  readonly proposalId: string;
+  readonly payloadHash: string;
+  readonly governancePolicyVersion: string;
+  readonly idempotencyKey: string;
+  readonly serialisedEffect: string;
+  readonly approvalId?: string;
+  readonly auth: OperationalAuth;
+  readonly now?: string;
+  readonly requestId?: string;
+  readonly correlationId?: string;
+}
+
+/** Atomic authorization, idempotency claim, approval consumption and audit result. */
+export interface ProposalExecutionAcquisition {
+  readonly claim: IdempotencyClaim;
+  readonly approvals: readonly ProposalApproval[];
+  readonly auditRecord: AuditRecord | null;
+}
+
+/** The only operations accepted by the generic mutation acquisition boundary. */
+export type GenericActionProposal = Extract<ActionProposal, { operation: GenericProposalOperation }>;
+
+/** Exact eligible human-approval projection safe to return without session credentials. */
+export interface CurrentHumanApproval {
+  readonly actorId: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+}
+
+/** Input to query a current governance-bound approval summary for one selected space. */
+export interface GetProposalApprovalSummaryInput {
+  readonly proposalId: string;
+  readonly spaceId: string;
+  readonly actorId: string;
+  readonly auth: OperationalAuth;
+  readonly now: string;
+  /** Trusted adapter correlation identifier; generated by Native when omitted. */
+  readonly requestId?: string;
+}
+
+/** Current native governance state and caller capabilities for an exact generic proposal. */
+export interface ProposalApprovalSummary {
+  readonly currentGovernancePolicyVersion: string;
+  readonly requesterMembershipCurrent: boolean;
+  /** Independent private-read authority for the complete server-owned envelope. */
+  readonly privateEnvelopeVisible: boolean;
+  /** Exact current approval-operation rights, independent of proposal liveness or private-envelope reads. */
+  readonly approvalAuthorized: boolean;
+  /** Exact current execution-operation rights, independent of quorum or mutable execution baselines. */
+  readonly executionAuthorized: boolean;
+  readonly requiredApprovers: number;
+  readonly approvers: readonly CurrentHumanApproval[];
+  readonly disposition: GovernanceDisposition;
+  readonly canApprove: boolean;
+  readonly canExecute: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -2040,8 +2196,16 @@ export interface ProposalApproval {
   readonly payloadHash: string;
   /** The actor who granted this approval. */
   readonly actorId: string;
-  /** Current status: 'active', 'consumed', 'expired', or 'superseded'. */
-  readonly status: string;
+  /** Current approval lifecycle status. */
+  readonly status: ApprovalStatus;
+  /** Current original membership period of the approver, or null for legacy rows. */
+  readonly membershipId: string | null;
+  /** Governance version under which human consent was recorded. */
+  readonly governancePolicyVersion: string | null;
+  /** Reauthenticated session that granted consent; null for legacy rows. */
+  readonly reauthenticatedSessionId: string | null;
+  /** Reauthentication time captured at approval issuance; null for legacy rows. */
+  readonly reauthenticatedAt: string | null;
   /** ISO-8601 expiry timestamp. */
   readonly expiresAt: string;
   /** ISO-8601 timestamp when consumed, or null. */
@@ -2052,15 +2216,35 @@ export interface ProposalApproval {
   readonly createdAt: string;
 }
 
-/** Input to create a new proposal approval. */
+/** Input to create a fresh, reauthenticated human approval. */
 export interface CreateApprovalInput {
   readonly proposalId: string;
-  /** Must match the proposal's payload hash exactly. */
+  /** Must match the displayed proposal hash exactly. */
   readonly payloadHash: string;
   readonly actorId: string;
   /** ISO-8601 expiry timestamp (must be in the future). */
   readonly expiresAt: string;
+  /** Trusted server-verified human session and fresh reauthentication. */
+  readonly auth: HumanControlContext;
+  /** Trusted operation time; server time in production. */
+  readonly now: string;
 }
+
+/** Input to issue approvals for multiple exact proposals atomically. */
+export interface CreateApprovalsInput {
+  readonly spaceId: string;
+  readonly approvals: readonly {
+    readonly proposalId: string;
+    /** Must match the hash the human displayed for this proposal. */
+    readonly payloadHash: string;
+  }[];
+  readonly auth: HumanControlContext;
+  /** Trusted operation time; server time in production. */
+  readonly now?: string;
+  readonly requestId?: string;
+  readonly correlationId?: string;
+}
+
 
 // ---------------------------------------------------------------------------
 // IdempotencyRecord — at-most-once execution tracking
@@ -2081,6 +2265,8 @@ export interface IdempotencyRecord {
   readonly leaseExpiresAt: string | null;
   /** Serialised effect of the execution. */
   readonly serialisedEffect: string;
+  /** Nullable verified output; null legacy/failed writes are never inferred as success. */
+  readonly serialisedResult: string | null;
   readonly errorMessage: string | null;
   readonly updatedAt: string;
 }
@@ -2200,8 +2386,8 @@ export interface AppendAuditInput {
 // ---------------------------------------------------------------------------
 
 /**
- * Structured evidence captured when a review item transitions to
- * `approved` or `correcting`.  Immutable once written.
+ * Structured evidence captured when a review item is approved/corrected or
+ * when a verified categorization is applied.  Immutable once written.
  */
 export interface CorrectionRecord {
   /** Stable unique identifier (UUID v4). */
@@ -2226,6 +2412,14 @@ export interface CorrectionRecord {
   readonly date: string | null;
   /** The category that was approved or assigned. */
   readonly categoryId: string;
+  /** Category before verified categorization, or null for legacy corrections. */
+  readonly previousCategoryId: string | null;
+  /** Proposal and immutable execution envelope for verified categorization. */
+  readonly proposalId: string | null;
+  readonly proposalActorId: string | null;
+  readonly payloadHash: string | null;
+  readonly idempotencyKey: string | null;
+  readonly verified: boolean;
   /** Human-readable category name, or null. */
   readonly categoryName: string | null;
   /** Actor who performed the approval or correction. */
@@ -2278,7 +2472,6 @@ export interface CorrectionHistoryOptions {
  */
 export type AuthorizationDisposition =
   | { kind: 'authorized_without_approval' }
-  | { kind: 'authorized_expired' }
   | { kind: 'approval_required' }
   | { kind: 'denied'; reason: string };
 
@@ -2352,6 +2545,15 @@ export interface FinalizeBootstrapResult {
   readonly bootstrappedAt: string;
 }
 
+/** Current scoped human authority for invitation management. */
+export interface InvitationControlInput {
+  readonly spaceId: string;
+  readonly auth: HumanControlContext;
+  readonly now?: string;
+  readonly requestId?: string;
+  readonly correlationId?: string;
+}
+
 /**
  * Input to claim an invitation by presenting the bearer token.
  * Optional request/correlation IDs are propagated to audit records.
@@ -2382,6 +2584,9 @@ export interface Invitation {
   readonly tokenDigest: string;
   readonly status: InvitationStatus;
   readonly createdByUserId: string;
+  readonly spaceId: string | null;
+  readonly issuerMembershipId: string | null;
+  readonly governancePolicyVersion: string | null;
   readonly expiresAt: string;
   readonly claimedEmail: string | null;
   readonly claimId: string | null;
@@ -2399,6 +2604,9 @@ export interface InvitationMetadata {
   readonly id: string;
   readonly status: InvitationStatus;
   readonly createdByUserId: string;
+  readonly spaceId: string;
+  readonly issuerMembershipId: string;
+  readonly governancePolicyVersion: string;
   readonly expiresAt: string;
   readonly claimedEmail: string | null;
   readonly redeemedUserId: string | null;
@@ -2428,6 +2636,7 @@ export interface CreateInvitationResult {
 export interface ClaimInvitationResult {
   readonly claimId: string;
   readonly email: string;
+  readonly spaceId: string;
 }
 
 /**

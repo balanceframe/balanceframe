@@ -17,7 +17,18 @@ import type {
   TransferSettlementResult,
   TrustedRoute,
 } from '@balanceframe/protocol-generated';
-import type { ActionProposal, SessionCompletionPayload, SessionCompletionProposal } from './types.js';
+import type {
+  ActionProposal,
+  CurrentHumanApproval,
+  SessionCompletionPayload,
+  SessionCompletionProposal,
+} from './types.js';
+import type {
+  GovernanceResourceKind,
+  HumanControlContext,
+  OperationalAuth,
+  ResourceGrantRestrictions,
+} from './governance-types.js';
 
 export type ResourceCapability =
   | 'conclusion'
@@ -35,8 +46,17 @@ export type ResourceCapability =
   | 'audit'
   | 'policy'
   | 'session'
-  | 'full-read';
-export type ResourceKind = 'budget' | 'account' | 'category' | 'session';
+  | 'full-read'
+  | 'summary'
+  | 'transaction.view'
+  | 'evidence'
+  | 'raw-document'
+  | 'normalized-evidence'
+  | 'ledger-effect'
+  | 'ingest'
+  | 'resolve'
+  | (string & {});
+export type ResourceKind = GovernanceResourceKind;
 export interface ResourceRef {
   resourceKind: ResourceKind;
   resourceId: string;
@@ -44,10 +64,24 @@ export interface ResourceRef {
 export interface LiquidityActor {
   actorId: string;
   budgetId: string;
+  /** Expected server-selected space; omitted callers resolve the unique budget binding. */
+  spaceId?: string;
+  /** Expected current membership period; omitted callers resolve it for this actor. */
+  membershipId?: string;
+  /** Trusted operation time for deterministic evaluation. */
+  now?: string;
+  /** Independent agent principal and live delegation for trusted server execution. */
+  agentId?: string;
+  delegationId?: string;
+  /** Verified server auth metadata; never supplied by HTTP clients. */
+  auth?: OperationalAuth;
+  /** Optional current governance version captured by an exact operation. */
+  governancePolicyVersion?: string;
 }
 export interface ResourceGrant extends LiquidityActor, ResourceRef {
   capability: ResourceCapability;
   granted: boolean;
+  restrictions?: ResourceGrantRestrictions;
   now: string;
 }
 export interface TransferState {
@@ -84,6 +118,7 @@ export interface LiquidityPolicyRecord {
   budgetId: string;
   policy: GovernedLiquidityPolicy;
   approvalPolicy: TransferApprovalPolicy;
+  governancePolicyVersion: string | null;
   createdAt: string;
   actorId: string;
 }
@@ -103,6 +138,9 @@ export type SpendSessionItem = Omit<
 /** Pre-8.6 normalized items remain accepted for replay and migration. */
 export type SpendSessionItemInput = SpendSessionItem | LiquidityPurchaseItem;
 export interface SpendSession extends LiquidityActor {
+  spaceId: string;
+  membershipId: string;
+  governancePolicyVersion: string;
   id: string;
   version: number;
   items: SpendSessionItem[];
@@ -201,6 +239,13 @@ export interface TransferCommand extends LiquidityActor {
 export interface RecheckTransferCommand extends TransferCommand {
   expectedClaimSetRevision: string;
 }
+/** Current eligible human consent facts from the transfer authority filter. */
+export interface TransferApprovalSummary {
+  readonly requiredApprovals: number;
+  readonly approvalCount: number;
+  readonly actorHasApproved: boolean;
+  readonly approvers: readonly CurrentHumanApproval[];
+}
 export type SessionCompletionApprovalStatus =
   | 'none'
   | 'active'
@@ -211,6 +256,7 @@ export type SessionCompletionProposalView = SessionCompletionProposal & {
   readonly approvalId: string | null;
   readonly approvalCount: number;
   readonly requiredApprovals: number;
+  readonly approvers: readonly CurrentHumanApproval[];
   readonly approvalStatus: SessionCompletionApprovalStatus;
   readonly manualTransactionId: string | null;
   readonly importedTransactionId: string | null;
@@ -296,7 +342,9 @@ export interface SaveSpendSessionInput extends LiquidityActor {
 }
 export interface SavePolicyInput extends LiquidityActor {
   expectedVersion: string | null;
+  expectedGovernancePolicyVersion: string | null;
   now: string;
+  auth: HumanControlContext;
   policy: GovernedLiquidityPolicy;
   approvalPolicy: TransferApprovalPolicy;
 }
@@ -314,12 +362,17 @@ export type UserAttestedLiquidityObservation = Pick<AccountLiquidityFact, 'accou
     credit?: Omit<NonNullable<AccountLiquidityFact['credit']>, 'evidence'> | null;
   };
 export interface SupplementalFactsRecord extends LiquidityActor {
+  spaceId: string;
+  membershipId: string;
   version: number;
   observations: UserAttestedLiquidityObservation[];
   expiresAt: string;
   createdAt: string;
 }
 export interface PaymentPreferenceRecord extends LiquidityActor {
+  spaceId: string;
+  membershipId: string;
+  governancePolicyVersion: string;
   id: string;
   version: number;
   categoryId: string;

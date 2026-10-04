@@ -12,7 +12,6 @@ import {
   cashFlowProjectionAnalysis,
   targetHealthAnalysis,
   reportGenerateAnalysis,
-  savedViewsListAnalysis,
   savedViewCreateAnalysis,
   attentionHomeAnalysis,
   dataQualityAnalysis,
@@ -31,8 +30,6 @@ import type {
   CashFlowProjectionResult,
   TargetHealthResult,
   ReportGenerationResult,
-  SavedViewsListResult,
-  CreateSavedViewResult,
   AttentionHomeResult,
 } from '../src/commands';
 import { ReasonCodes } from '../src/errors';
@@ -110,21 +107,6 @@ function createMockProtocol(): {
       };
     },
 
-    async listSavedViews(): Promise<SavedViewsListResult> {
-      return { views: [], total: 0 };
-    },
-
-    async createSavedView(): Promise<CreateSavedViewResult> {
-      return {
-        view: {
-          viewId: 'view_001',
-          name: 'My View',
-          viewType: 'attention',
-          scope: {},
-          createdAt: '2026-07-27T12:00:00Z',
-        },
-      };
-    },
 
     async attentionHome(): Promise<AttentionHomeResult> {
       return {
@@ -352,74 +334,34 @@ describe('reportGenerateAnalysis — scope persistence', () => {
   });
 });
 
-describe('savedViewCreateAnalysis — scope persistence', () => {
+describe('savedViewCreateAnalysis — input validation', () => {
+  const authority = {
+    actorId: 'usr_test',
+    spaceId: 'test-space',
+    budgetId: 'test-budget',
+    membershipId: 'test-membership',
+  };
+
   it('fails when name is missing', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ analysisProtocol: protocol });
-    const envelope = await savedViewCreateAnalysis(input, {
+    const envelope = await savedViewCreateAnalysis(baseInput(), {
       name: '',
       viewType: 'attention',
       scope: {},
-    });
+    }, authority);
 
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('view_params_required');
   });
 
   it('fails when viewType is missing', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ analysisProtocol: protocol });
-    const envelope = await savedViewCreateAnalysis(input, {
+    const envelope = await savedViewCreateAnalysis(baseInput(), {
       name: 'My View',
       viewType: '',
       scope: {},
-    });
+    }, authority);
 
     expect(envelope.status).toBe('error');
     expect(envelope.error!.code).toBe('view_params_required');
-  });
-
-  it('persists view params in result on success', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ analysisProtocol: protocol });
-    const envelope = await savedViewCreateAnalysis(input, {
-      name: 'My View',
-      viewType: 'attention',
-      scope: { month: '2026-07', detailed: true },
-    });
-
-    expect(envelope.status).toBe('ok');
-    expect(envelope.result.view.name).toBe('My View');
-    expect(envelope.result.view.viewType).toBe('attention');
-  });
-});
-
-describe('savedViewsListAnalysis — basic guards', () => {
-  it('fails when freshness is stale', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({
-      analysisProtocol: protocol,
-      freshness: {
-        actualDownloadedAt: null,
-        bankSyncedAt: null,
-        pendingTransactionsIncluded: false,
-        stalenessDays: 0,
-        isStale: true,
-      },
-    });
-    const envelope = await savedViewsListAnalysis(input);
-
-    expect(envelope.status).toBe('error');
-    expect(envelope.error!.code).toBe('stale_budget_intelligence');
-  });
-
-  it('fails when ledger is null', async () => {
-    const { protocol } = createMockProtocol();
-    const input = baseInput({ ledger: null, analysisProtocol: protocol });
-    const envelope = await savedViewsListAnalysis(input);
-
-    expect(envelope.status).toBe('error');
-    expect(envelope.error!.code).toBe('not_connected');
   });
 });
 

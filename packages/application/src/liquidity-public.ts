@@ -28,6 +28,8 @@ import type {
   TransferState,
   SpendSessionItem,
   UserAttestedLiquidityObservation,
+  Finding,
+  CurrentHumanApproval,
 } from '@balanceframe/workflow-store';
 
 /** Financial detail on an authorized card, without internal evidence and integrity hashes. */
@@ -106,7 +108,7 @@ export interface PublicLiquidityAccount {
   deductions?: { reason: string; amount: Money }[];
   quality?: {
     state: FactState;
-    source: FactSource;
+    source?: FactSource;
     observedAt: string | null;
     expiresAt: string | null;
     reasons: string[];
@@ -134,10 +136,21 @@ export interface PublicTransferConclusion {
   estimatedArrival?: string;
   authorizedHolderRequired: boolean;
 }
-export interface PublicPurchaseLiquidity {
+export interface PublicLiquidityFinding {
   id: string;
+  budgetId: string;
+  classification: string;
+  severity: Finding['severity'];
+  status: Finding['status'];
+  createdAt: string;
+  updatedAt: string;
+  description: string;
+  transferConclusion: PublicTransferConclusion | null;
+}
+export interface PublicPurchaseLiquidity {
+  id?: string;
   categoryId: string;
-  amount: Money;
+  amount?: Money;
   selectedAccountId: string | null;
   routeOrigin: string | null;
   fundingStatus: BudgetFundingStatus | null;
@@ -200,10 +213,20 @@ export interface PublicTransferPreview {
   payloadHash: string;
   plan: PublicTransferPlan;
 }
+/** Captured proposal authority and current eligible human votes, only with authorized exact terms. */
+export interface PublicApprovalMetadata {
+  readonly requesterActorId: string;
+  readonly requesterMembershipId: string | null;
+  readonly governancePolicyVersion: string | null;
+  readonly financialPolicyVersion: string;
+  readonly approvers: readonly CurrentHumanApproval[];
+}
 export interface PublicTransferDetail {
   id: string;
   version: number;
   payloadHash?: string;
+  expiresAt?: string;
+  approvalMetadata?: PublicApprovalMetadata;
   phase: TransferState['phase'];
   sourceObserved: boolean;
   destinationObserved: boolean;
@@ -224,6 +247,9 @@ export interface PublicTransferDetail {
 export interface PublicSpendSession {
   id: string;
   version: number;
+  spaceId: string;
+  membershipId: string;
+  governancePolicyVersion: string;
   accountId: string | null;
   expiresAt: string;
   createdAt: string;
@@ -247,6 +273,7 @@ export interface PublicSessionCompletion {
   expiresAt: string;
   cooldownUntil: string | null;
   payloadHash: string | null;
+  approvalMetadata?: PublicApprovalMetadata;
   requiredApprovals: number;
   approvalCount: number;
   canApprove: boolean;

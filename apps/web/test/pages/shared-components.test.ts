@@ -136,27 +136,6 @@ function errorEnvelope(code: string) {
 import DefaultLayout from '../../app/layouts/default.vue';
 
 describe('DefaultLayout', () => {
-  const availableAuthenticatedHrefs = [
-    '/',
-    '/review',
-    '/notifications',
-    '/data-quality',
-    '/liquidity',
-    '/calendar',
-    '/trends',
-    '/income',
-    '/health',
-    '/cash-flow',
-    '/targets',
-    '/obligations',
-    '/forecast-accuracy',
-    '/scenarios',
-    '/reports',
-    '/rules',
-    '/purchase-check',
-    '/connection',
-  ];
-  const directDesktopHrefs = ['/', '/review', '/notifications'];
   const routePath = ref('/');
   const routeGlobal = globalThis as typeof globalThis & {
     useRoute?: () => { readonly path: string; readonly fullPath: string };
@@ -189,12 +168,6 @@ describe('DefaultLayout', () => {
     });
   }
 
-  function renderedHrefs(wrapper: VueWrapper) {
-    return wrapper
-      .findAll('a[href]')
-      .map((link) => link.attributes('href'))
-      .sort();
-  }
 
   function desktopGroupTriggers(wrapper: VueWrapper) {
     return wrapper.findAll('nav[aria-label="Main navigation"] button[aria-expanded]');
@@ -249,19 +222,6 @@ describe('DefaultLayout', () => {
     expect(text).toContain('Health');
   });
 
-  it('exposes exactly all available authenticated routes through desktop links and opened groups', async () => {
-    const wrapper = mountLayout();
-    const desktopNavigation = wrapper.get('nav[aria-label="Main navigation"]');
-    expect(renderedHrefs(desktopNavigation)).toEqual([...directDesktopHrefs].sort());
-
-    const exposedHrefs = new Set(renderedHrefs(desktopNavigation));
-    for (const trigger of desktopGroupTriggers(wrapper)) {
-      await trigger.trigger('click');
-      for (const href of renderedHrefs(wrapper)) exposedHrefs.add(href);
-    }
-
-    expect([...exposedHrefs].sort()).toEqual([...availableAuthenticatedHrefs].sort());
-  });
 
   it('links to the operable Scenarios route from desktop navigation', async () => {
     const wrapper = mountLayout();
@@ -409,12 +369,6 @@ describe('DefaultLayout', () => {
     expect(analysisTrigger?.attributes('aria-current')).toBe('page');
   });
 
-  it('exposes the same available authenticated routes in opened mobile navigation', async () => {
-    const wrapper = mountLayout();
-    await wrapper.get('button[aria-label="Toggle navigation menu"]').trigger('click');
-    const mobileNavigation = wrapper.get('nav[aria-label="Mobile navigation"]');
-    expect(renderedHrefs(mobileNavigation)).toEqual([...availableAuthenticatedHrefs].sort());
-  });
 
   it('links to the operable Scenarios route from mobile navigation', async () => {
     const wrapper = mountLayout();

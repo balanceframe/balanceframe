@@ -4,10 +4,8 @@
  * Verifies:
  * - Session credential header propagation
  * - Malformed / non-JSON envelope rejection
- * - Result-level failure propagation
- * - No-current-item early rejection
- * - Successful state refresh (item removed from queue)
- * - Unsupported operations return explicit failures
+ * - Exact proposal snapshots retained without consuming pending queue items
+ * - Failed transitions preserve queue items; confirmed reject/skip refresh state
  *
  * All tests mock fetch; no Nitro runtime or WorkflowStore needed.
  */
@@ -16,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 
 import { useApiReviewController } from '../composables/useApiReviewController';
-import type { ReviewControllerAdapter } from '../types/review-client';
+import type { ApiReviewControllerAdapter, ReviewControllerAdapter } from '../types/review-client';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -178,7 +176,7 @@ describe('useApiReviewController', () => {
       // Second call: action request that should NOT include actorId
       fetchMock.mockResolvedValueOnce({
         ok: true,
-        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
+        json: () => Promise.resolve(okEnvelope(failureResult('item-001', 'No exact proposal returned'))),
       });
 
       await adapter.approve();
@@ -292,6 +290,213 @@ describe('useApiReviewController', () => {
       expect(adapter.error).toContain('Server error');
     });
   });
+  describe('explicit proposal review', () => {
+    const proposalApproval = {
+      id: 'proposal-001',
+      operation: 'set_category',
+      spaceId: 'space-001',
+      budgetId: 'budget-001',
+      requesterActorId: 'requester-001',
+      requesterMembershipId: 'membership-001',
+      governancePolicyVersion: 'governance-4',
+      currentGovernancePolicyVersion: 'governance-4',
+      requesterMembershipCurrent: true,
+      policyVersion: 'financial-7',
+      payloadHash: 'a'.repeat(64),
+      privateEnvelopeVisible: true,
+      payload: { kind: 'set_category', transactionId: 'transaction-001', categoryId: 'cat-food' },
+      preconditions: { transactionVersion: 3, currentCategoryId: 'cat-other' },
+      expiresAt: '2026-10-03T12:00:00.000Z',
+      requiredApprovers: 2,
+      approvers: [{ actorId: 'reviewer-002', issuedAt: '2026-10-02T11:00:00.000Z', expiresAt: '2026-10-03T12:00:00.000Z' }],
+      disposition: 'approval_required',
+      canApprove: true,
+      canExecute: true,
+    };
+
+    async function setupWithOneItem(): Promise<ApiReviewControllerAdapter> {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items: [makeItem()], total: 1 })),
+      });
+      const adapter = useApiReviewController('http://test.local');
+      await adapter.loadNextPage();
+      return adapter;
+    }
+
+    it('retains the exact proposal without consuming or resolving the pending review item', async () => {
+      const adapter = await setupWithOneItem();
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            okEnvelope({
+              itemId: 'item-001',
+              mutationStatus: 'approval_required',
+              success: false,
+              approvalRequired: true,
+              applied: false,
+              verified: false,
+              categorizationExecuted: false,
+              disposition: 'approval_required',
+              proposal: proposalApproval,
+            }),
+          ),
+      });
+      const result = await adapter.approve();
+
+      expect(result.success).toBe(false);
+      expect(result.approvalRequired).toBe(true);
+      expect(adapter.state.items.map((item) => item.reviewItem.id)).toEqual(['item-001']);
+      expect(adapter.state.currentItem?.reviewItem.id).toBe('item-001');
+      expect(adapter.state.metrics.resolvedCount).toBe(0);
+      expect(adapter.proposalApprovalViews).toEqual([{ reviewId: 'item-001', proposal: proposalApproval }]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('retains a category-correction proposal instead of recording an accepted correction', async () => {
+      const adapter = await setupWithOneItem();
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            okEnvelope({
+              itemId: 'item-001',
+              mutationStatus: 'approval_required',
+              success: false,
+              approvalRequired: true,
+              applied: false,
+              verified: false,
+              categorizationExecuted: false,
+              disposition: 'approval_required',
+              proposal: { ...proposalApproval, payload: { ...proposalApproval.payload, categoryId: 'cat-new' } },
+            }),
+          ),
+      });
+      const result = await adapter.correct('cat-new');
+
+      expect(result.success).toBe(false);
+      expect(result.approvalRequired).toBe(true);
+      expect(adapter.state.items.map((item) => item.reviewItem.id)).toEqual(['item-001']);
+      expect(adapter.state.metrics.resolvedCount).toBe(0);
+      expect(adapter.proposalApprovalViews[0]?.proposal.payload).toMatchObject({
+        transactionId: 'transaction-001',
+        categoryId: 'cat-new',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    it('starts bulk review proposals in selected order and retains every pending review item', async () => {
+      const reviewIds = ['item-001', 'item-002'];
+      const items = reviewIds.map((id) => makeItem({ id }));
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items, total: items.length })),
+      });
+      const adapter = useApiReviewController('http://test.local');
+      await adapter.loadNextPage();
+      adapter.toggleSelection(0);
+      adapter.toggleSelection(1);
+      const proposalViews = reviewIds.map((reviewId, index) => ({
+        ...proposalApproval,
+        id: `proposal-00${index + 1}`,
+        payloadHash: String(index + 1).repeat(64),
+        preconditions: { reviewId },
+      }));
+      for (const proposal of proposalViews) {
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve(
+              okEnvelope({
+                itemId: proposal.preconditions.reviewId,
+                success: false,
+                approvalRequired: true,
+                applied: false,
+                verified: false,
+                categorizationExecuted: false,
+                disposition: 'approval_required',
+                proposal,
+              }),
+            ),
+        });
+      }
+
+      const result = await adapter.bulkApprove();
+
+      expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+        'http://test.local/api/review/approve',
+        'http://test.local/api/review/approve',
+      ]);
+      expect(fetchMock.mock.calls.slice(1).map(([, options]) => JSON.parse(options.body as string))).toEqual([
+        { reviewId: 'item-001' },
+        { reviewId: 'item-002' },
+      ]);
+      expect(adapter.proposalApprovalViews).toEqual(
+        proposalViews.map((proposal, index) => ({ reviewId: reviewIds[index]!, proposal })),
+      );
+      expect(adapter.state.items.map((item) => item.reviewItem.id)).toEqual(['item-001', 'item-002']);
+      expect(adapter.state.metrics.resolvedCount).toBe(0);
+      expect(result.consumedCount).toBe(0);
+    });
+    it('starts ordered bulk correction proposals without changing either pending review item', async () => {
+      const reviewIds = ['item-001', 'item-002'];
+      const items = reviewIds.map((id) => makeItem({ id }));
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items, total: items.length })),
+      });
+      const adapter = useApiReviewController('http://test.local');
+      await adapter.loadNextPage();
+      adapter.toggleSelection(1);
+      adapter.toggleSelection(0);
+      const selectedIds = [reviewIds[1]!, reviewIds[0]!];
+      for (const [index, reviewId] of selectedIds.entries()) {
+        const proposal = {
+          ...proposalApproval,
+          id: `correction-${index}`,
+          payloadHash: `${index + 3}`.repeat(64),
+          payload: { ...proposalApproval.payload, categoryId: 'cat-target' },
+          preconditions: { reviewId },
+        };
+        fetchMock.mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve(
+              okEnvelope({
+                itemId: reviewId,
+                success: false,
+                approvalRequired: true,
+                applied: false,
+                verified: false,
+                categorizationExecuted: false,
+                disposition: 'approval_required',
+                proposal,
+              }),
+            ),
+        });
+      }
+
+      const result = await adapter.bulkCorrect('cat-target');
+
+      expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+        'http://test.local/api/review/correct',
+        'http://test.local/api/review/correct',
+      ]);
+      expect(fetchMock.mock.calls.slice(1).map(([, options]) => JSON.parse(options.body as string))).toEqual([
+        { reviewId: 'item-002', categoryId: 'cat-target' },
+        { reviewId: 'item-001', categoryId: 'cat-target' },
+      ]);
+      expect(adapter.proposalApprovalViews.map((entry) => entry.reviewId)).toEqual([
+        'item-002',
+        'item-001',
+      ]);
+      expect(adapter.state.items.map((item) => item.reviewItem.id)).toEqual(['item-001', 'item-002']);
+      expect(adapter.state.metrics.resolvedCount).toBe(0);
+      expect(result.consumedCount).toBe(0);
+    });
+
+  });
+
 
   // ── No-current-item guard ───────────────────────────────────────
 
@@ -332,121 +537,76 @@ describe('useApiReviewController', () => {
     });
   });
 
-  // ── Successful state refresh ────────────────────────────────────
+  describe('bulk non-model review transitions', () => {
+    it('refreshes after confirmed rejects and keeps failed items in the queue', async () => {
+      const items = [makeItem({ id: 'item-001' }), makeItem({ id: 'item-002' })];
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items, total: items.length })),
+      });
+      const adapter = useApiReviewController('http://test.local');
+      await adapter.loadNextPage();
+      adapter.toggleSelection(0);
+      adapter.toggleSelection(1);
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope(failureResult('item-002', 'Reject was denied'))),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve(okEnvelope({ items: [items[1]], total: 1 })),
+      });
 
-  describe('state refresh after successful action', () => {
-    async function setupWithOneItem(): Promise<ReviewControllerAdapter> {
+      const result = await adapter.bulkReject();
+
+      expect(result.consumedCount).toBe(1);
+      expect(result.errorCount).toBe(1);
+      expect(result.results).toEqual([
+        { itemId: 'item-001', success: true, error: null },
+        { itemId: 'item-002', success: false, error: 'Reject was denied' },
+      ]);
+      expect(adapter.state.items.map((item) => item.reviewItem.id)).toEqual(['item-002']);
+    });
+
+    it('consumes a skipped item only after its server transition succeeds', async () => {
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve(okEnvelope({ items: [makeItem()], total: 1 })),
       });
-
       const adapter = useApiReviewController('http://test.local');
       await adapter.loadNextPage();
-      return adapter;
-    }
-
-    it('removes the approved item from the local queue', async () => {
-      const adapter = await setupWithOneItem();
-
-      expect(adapter.state.items).toHaveLength(1);
-
-      // Mock the POST approve response
+      adapter.toggleSelection(0);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
       });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(okEnvelope({ items: [], total: 0 })),
+      });
 
-      const result = await adapter.approve();
+      const result = await adapter.bulkSkip();
 
-      expect(result.success).toBe(true);
-      expect(result.error).toBeNull();
-
-      // The item should be removed from the queue
-      expect(adapter.state.items).toHaveLength(0);
+      expect(result.consumedCount).toBe(1);
+      expect(result.errorCount).toBe(0);
+      expect(adapter.state.items).toEqual([]);
       expect(adapter.state.currentItem).toBeNull();
-      expect(adapter.state.currentIndex).toBe(-1);
-    });
-
-    it('advances to the next item after approving the first of two', async () => {
-      // Return two items on initial load
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve(
-            okEnvelope({
-              items: [makeItem({ id: 'item-001' }), makeItem({ id: 'item-002' })],
-              total: 2,
-            }),
-          ),
-      });
-
-      const adapter = useApiReviewController('http://test.local');
-      await adapter.loadNextPage();
-
-      expect(adapter.state.items).toHaveLength(2);
-      expect(adapter.state.currentItem?.reviewItem.id).toBe('item-001');
-
-      // Approve the first item
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(okEnvelope(successResult('item-001'))),
-      });
-
-      await adapter.approve();
-
-      expect(adapter.state.items).toHaveLength(1);
-      expect(adapter.state.currentItem?.reviewItem.id).toBe('item-002');
-      expect(adapter.state.currentIndex).toBe(0);
     });
   });
 
-  // ── Unsupported operations ──────────────────────────────────────
-
-  describe('unsupported operations', () => {
-    it('undo returns failure when no item has been acted on', async () => {
+  describe('undo without an acted item', () => {
+    it('returns failure when no item has been acted on', async () => {
       const adapter = useApiReviewController('http://test.local');
       const result = await adapter.undo();
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Act on an item first');
       expect(adapter.error).toContain('Act on an item first');
-    });
-
-    it('bulkApprove returns explicit failure', async () => {
-      const adapter = useApiReviewController('http://test.local');
-      const result = await adapter.bulkApprove();
-
-      expect(result.results).toHaveLength(1);
-      expect(result.results[0].success).toBe(false);
-      expect(result.results[0].error).toContain('not supported');
-      expect(result.consumedCount).toBe(0);
-      expect(result.errorCount).toBe(1);
-    });
-
-    it('bulkCorrect returns explicit failure', async () => {
-      const adapter = useApiReviewController('http://test.local');
-      const result = await adapter.bulkCorrect('cat-office');
-
-      expect(result.results).toHaveLength(1);
-      expect(result.results[0].success).toBe(false);
-      expect(result.errorCount).toBe(1);
-    });
-
-    it('bulkReject returns explicit failure', async () => {
-      const adapter = useApiReviewController('http://test.local');
-      const result = await adapter.bulkReject();
-
-      expect(result.results[0].success).toBe(false);
-      expect(result.errorCount).toBe(1);
-    });
-
-    it('bulkSkip returns explicit failure', async () => {
-      const adapter = useApiReviewController('http://test.local');
-      const result = await adapter.bulkSkip();
-
-      expect(result.results[0].success).toBe(false);
-      expect(result.errorCount).toBe(1);
     });
   });
 });

@@ -564,6 +564,7 @@ describe('claims and cart scenario acceptance', () => {
           `/api/spend-sessions/${sessionId}/completions/${encodeURIComponent(completionId)}/approve`,
           {
             method: 'POST',
+            personaId: 'approver',
             body: {
               payloadHash: proposed.payloadHash,
               expectedVersion: proposed.version,
@@ -575,6 +576,7 @@ describe('claims and cart scenario acceptance', () => {
       );
       expect(approved.phase).toBe('approved');
       expect(approved.debit?.amount).toBe(-1500);
+      expect(approved.canExecute).toBe(false);
       const executed = resultOf<PublicSessionCompletion>(
         await scenarioRequest<unknown>(
           handle,

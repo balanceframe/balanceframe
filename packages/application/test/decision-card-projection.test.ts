@@ -8,6 +8,7 @@ import type {
 } from '@balanceframe/protocol-generated';
 import { decisionCardRequestSchema, decisionCardSchema } from '@balanceframe/protocol-generated/validators';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { ResourceCapability, ResourceKind } from '@balanceframe/workflow-store';
 import { actualLiquidityRequest } from '../../../tests/contract/fixtures/actual-liquidity.js';
 import { LiquidityProjector } from '../src/liquidity-projector.js';
 
@@ -30,11 +31,54 @@ type CanonicalCardFixture = {
   validUntil: string;
 };
 
+type SpaceActor = {
+  actorId: string;
+  budgetId: string;
+  spaceId: string;
+  membershipId: string;
+  governancePolicyVersion: string;
+  now: string;
+  auth: {
+    readonly method: 'human-session';
+    readonly actorId: string;
+    readonly sessionId: string;
+    readonly reauthenticatedAt: string;
+  };
+};
 type GrantResource = {
   resourceKind: 'budget' | 'account' | 'category';
   resourceId: string;
 };
 
+const actorAuth = (actorId: string, now: string) => ({
+  method: 'human-session' as const,
+  actorId,
+  sessionId: `session:${actorId}`,
+  reauthenticatedAt: now,
+});
+
+function setGrant(
+  store: SqliteWorkflowStore,
+  actor: SpaceActor,
+  resourceKind: ResourceKind,
+  resourceId: string,
+  capability: ResourceCapability,
+  now: string,
+  granted = true,
+): void {
+  store.governance.setResourceGrant({
+    spaceId: actor.spaceId,
+    actorId: actor.actorId,
+    budgetId: actor.budgetId,
+    membershipId: actor.membershipId,
+    resourceKind,
+    resourceId,
+    capability,
+    granted,
+    now,
+    auth: actorAuth(actor.actorId, now),
+  });
+}
 const native = createRequire(import.meta.url)('@balanceframe/native') as NativeCardBinding;
 const cardFixture = JSON.parse(
   readFileSync(new URL('../../../protocol/fixtures/account-aware-liquidity.json', import.meta.url), 'utf8'),
@@ -178,22 +222,52 @@ async function grantResources(
   actor: { actorId: string; budgetId: string },
   resources: GrantResource[],
   now: string,
-): Promise<void> {
-  await store.upsertActorMembership(
-    actor.actorId,
-    'active',
-    ['observe', ...cardCapabilities.map((capability) => `liquidity:${capability}`)],
-    `budget:${actor.budgetId}`,
-  );
+): Promise<SpaceActor> {
+  const claimId = `claim:${actor.actorId}`;
+  await store.claimBootstrap({
+    name: actor.actorId,
+    email: `${actor.actorId}@example.test`,
+    claimId,
+  });
+  await store.finalizeBootstrap({ claimId, ownerUserId: actor.actorId });
+  await store.upsertActorMembership(actor.actorId, 'active', ['observe'], `budget:${actor.budgetId}`);
+  const auth = actorAuth(actor.actorId, now);
+  const space = store.governance.createSpace({
+    actorId: actor.actorId,
+    name: `${actor.actorId} fixture`,
+    kind: 'personal',
+    now,
+    auth,
+  });
+  const currentPolicy = store.governance.getPolicy({ spaceId: space.id });
+  if (!currentPolicy) throw new Error('Fixture governance policy required');
+  store.governance.setPolicy({
+    spaceId: space.id,
+    expectedVersion: currentPolicy.version,
+    policy: { minimumApprovers: 1 },
+    now,
+    auth,
+  });
+  store.governance.bindBudget({ spaceId: space.id, budgetId: actor.budgetId, now, auth });
+  const membership = store.governance.getCurrentMembership({
+    spaceId: space.id,
+    actorId: actor.actorId,
+    now,
+  });
+  const governancePolicy = store.governance.getPolicy({ spaceId: space.id });
+  if (!membership || !governancePolicy) throw new Error('Fixture governance context required');
+  const scopedActor = {
+    ...actor,
+    spaceId: space.id,
+    membershipId: membership.id,
+    governancePolicyVersion: governancePolicy.version,
+    now,
+    auth,
+  };
   for (const resource of resources)
     for (const capability of cardCapabilities)
-      store.liquidity.setResourceGrant({
-        ...actor,
-        ...resource,
-        capability,
-        granted: true,
-        now,
-      });
+      setGrant(store, scopedActor, resource.resourceKind, resource.resourceId, capability, now);
+  return scopedActor;
 }
 
 function expectRestrictedProjection(publicCard: unknown, rawCard: DecisionCard): void {
@@ -234,6 +308,7 @@ function expectRestrictedProjection(publicCard: unknown, rawCard: DecisionCard):
     'savings',
     unauthorizedEvidenceId,
     redactedEvidenceId,
+    ...rawCard.evidence.map(({ evidenceId }) => evidenceId),
     'private_savings_activity_unknown',
   ])
     expect(serialized).not.toContain(hidden);
@@ -248,14 +323,14 @@ describe('Decision Card public projection', () => {
     expect(card.paymentLiquidityStatus).toBe('transfer_required');
 
     const store = new SqliteWorkflowStore(':memory:');
-    const actor = { actorId: 'card-reader', budgetId: request.financialSnapshot.source.budgetId };
+    const actorIdentity = { actorId: 'card-reader', budgetId: request.financialSnapshot.source.budgetId };
     const now = request.context.evaluatedAt;
     try {
-      await grantResources(
+      const actor = await grantResources(
         store,
-        actor,
+        actorIdentity,
         [
-          { resourceKind: 'budget', resourceId: actor.budgetId },
+          { resourceKind: 'budget', resourceId: actorIdentity.budgetId },
           { resourceKind: 'category', resourceId: 'food' },
           { resourceKind: 'account', resourceId: 'checking' },
           { resourceKind: 'account', resourceId: 'savings' },
@@ -314,14 +389,7 @@ describe('Decision Card public projection', () => {
       expect(projectedSerialized).not.toContain(unauthorizedEvidenceId);
       expect(projectedSerialized).not.toContain(redactedEvidenceId);
 
-      store.liquidity.setResourceGrant({
-        ...actor,
-        resourceKind: 'account',
-        resourceId: 'savings',
-        capability: 'liquidity',
-        granted: false,
-        now,
-      });
+      setGrant(store, actor, 'account', 'savings', 'liquidity', now, false);
       expectRestrictedProjection(projector.card(card), card);
     } finally {
       store.close();
@@ -351,18 +419,18 @@ describe('Decision Card public projection', () => {
     );
 
     const store = new SqliteWorkflowStore(':memory:');
-    const actor = {
+    const actorIdentity = {
       actorId: 'restricted-card-reader',
       budgetId: request.financialSnapshot.source.budgetId,
     };
     try {
       // The requested category and destination account are visible; the private
       // savings source is deliberately not granted any resource capability.
-      await grantResources(
+      const actor = await grantResources(
         store,
-        actor,
+        actorIdentity,
         [
-          { resourceKind: 'budget', resourceId: actor.budgetId },
+          { resourceKind: 'budget', resourceId: actorIdentity.budgetId },
           { resourceKind: 'category', resourceId: 'food' },
           { resourceKind: 'account', resourceId: 'checking' },
         ],
@@ -370,6 +438,55 @@ describe('Decision Card public projection', () => {
       );
       const projector = new LiquidityProjector(store, actor, request.financialSnapshot);
       expectRestrictedProjection(projector.card(blockedCard), blockedCard);
+    } finally {
+      store.close();
+    }
+  });
+  it('separates raw-document, normalized-evidence, and ledger-effect grants from account history', async () => {
+    const request = composeRequest();
+    const observation = request.financialSnapshot.observations.find(
+      ({ scope }) => scope.kind === 'account' && scope.id === 'checking',
+    );
+    if (!observation) throw new Error('Checking source observation required');
+    const references = [
+      { evidenceId: 'raw-receipt-raw-only-991', kind: 'receipt', authorized: true, redaction: 'visible' as const },
+      { evidenceId: 'normalized-receipt-only-992', kind: 'normalized_receipt', authorized: true, redaction: 'visible' as const },
+      { evidenceId: 'ledger-effect-only-993', kind: 'transaction', authorized: true, redaction: 'visible' as const },
+    ];
+    observation.evidence = references;
+    const card = evaluate(request);
+    const store = new SqliteWorkflowStore(':memory:');
+    const actorIdentity = {
+      actorId: 'evidence-reader',
+      budgetId: request.financialSnapshot.source.budgetId,
+    };
+    const now = request.context.evaluatedAt;
+    try {
+      const actor = await grantResources(
+        store,
+        actorIdentity,
+        [
+          { resourceKind: 'budget', resourceId: actorIdentity.budgetId },
+          { resourceKind: 'category', resourceId: 'food' },
+          { resourceKind: 'account', resourceId: 'checking' },
+          { resourceKind: 'account', resourceId: 'savings' },
+        ],
+        now,
+      );
+      const projector = new LiquidityProjector(store, actor, request.financialSnapshot);
+      setGrant(store, actor, 'evidence', references[1]!.evidenceId, 'normalized-evidence', now);
+      expect(projector.card(card).evidence.map(({ evidenceId }) => evidenceId)).toEqual([
+        references[1]!.evidenceId,
+      ]);
+
+      setGrant(store, actor, 'evidence', references[0]!.evidenceId, 'raw-document', now);
+      setGrant(store, actor, 'evidence', references[2]!.evidenceId, 'ledger-effect', now);
+      expect(projector.card(card).evidence.map(({ evidenceId }) => evidenceId)).toEqual(
+        references.map(({ evidenceId }) => evidenceId),
+      );
+
+      setGrant(store, actor, 'account', 'checking', 'history', now, false);
+      expectRestrictedProjection(projector.card(card), card);
     } finally {
       store.close();
     }

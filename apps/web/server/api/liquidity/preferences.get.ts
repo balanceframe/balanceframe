@@ -1,2 +1,5 @@
 import { liquidityRoute } from '../../utils/liquidity-service';
-export default liquidityRoute((_event, service, actor) => service.preferences(actor));
+export default liquidityRoute(
+  (_event, service, actor) => service.preferences(actor),
+  { capability: 'liquidity' },
+);

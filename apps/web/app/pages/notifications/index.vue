@@ -454,9 +454,7 @@ onMounted(async () => {
     const [statusRes, inboxRes, policyRes] = await Promise.all([
       $fetch<Envelope<RuntimeStatus>>('/api/notifications/status'),
       $fetch<Envelope<{ items: InboxItem[]; count: number }>>('/api/notifications/inbox'),
-      $fetch<Envelope<NotificationPolicy>>('/api/notifications/policy', {
-        query: { spaceId: 'default', policyKey: 'delivery' },
-      }).catch(() => null),
+      $fetch<Envelope<NotificationPolicy>>('/api/notifications/policy').catch(() => null),
     ]);
     if (statusRes.status === 'ok' && statusRes.result) {
       runtimeStatus.value = statusRes.result;

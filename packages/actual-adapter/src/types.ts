@@ -361,20 +361,31 @@ export type SetCategoryErrorCode =
 export interface AutomationRule {
   id: LedgerId;
   name: string;
-  /** Order of evaluation (lower runs first). */
+  /** Canonical index in Actual's ranked rule list. */
   order: number;
+  /** Original Actual conditions, before BalanceFrame local overrides. */
   trigger: unknown;
   actions: unknown;
   inactive: boolean;
+  /** Actual stores null as a distinct rule stage. */
+  stage: 'pre' | 'post' | null;
+  conditionsOp: 'and' | 'or';
+}
+
+/** Exact rule state required for an immediate Actual deletion check. */
+export interface RuleDeletePrecondition {
+  readonly rule: AutomationRule;
+  readonly actualVersion: string;
 }
 
 export interface RuleProposal {
   name: string;
-  stage?: 'pre' | 'post';
+  stage?: 'pre' | 'post' | null;
   conditionsOp?: 'and' | 'or';
   conditions: unknown[];
   actions: unknown[];
 }
+
 
 // ---------------------------------------------------------------------------
 // Budget discovery
@@ -427,6 +438,7 @@ export interface BudgetLedger {
   listCategories(): Promise<Category[]>;
   listPayees(): Promise<Payee[]>;
   listRules(): Promise<AutomationRule[]>;
+  getRuleCategoryGroupMembers(): Promise<Readonly<Record<string, readonly string[]>>>;
   listSchedules(): Promise<Schedule[]>;
 
   // ---- Mutation stubs (rejected in Observe mode) ----
@@ -444,6 +456,9 @@ export interface BudgetLedger {
   ): Promise<MutationResult>;
 
   createRule(proposal: RuleProposal, precondition?: MutationPrecondition): Promise<MutationResult>;
+
+  /** Delete only the exact current Actual rule and verify its synchronized absence. */
+  deleteRule(ruleId: LedgerId, precondition: RuleDeletePrecondition): Promise<void>;
 
   setBudgetAmount(
     month: string,

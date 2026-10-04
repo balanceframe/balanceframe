@@ -149,6 +149,7 @@
     <ProposedRulesModal
       :open="showProposalsModal"
       :proposals="activeProposals"
+      :proposal-approval-views="adapter.proposalApprovalViews ?? []"
       @close="showProposalsModal = false"
       @accepted="handleProposalAccepted"
       @discarded="handleProposalDiscarded"
@@ -158,6 +159,7 @@
 </template>
 
 <script setup lang="ts">
+import { watch } from 'vue';
 interface SavedView {
   viewId: string;
   name: string;
@@ -303,6 +305,12 @@ const showCorrectModal = ref(false);
 const correcting = ref(false);
 const showProposalsModal = ref(false);
 const modalOpen = computed(() => showCorrectModal.value || showProposalsModal.value);
+watch(
+  () => adapter.proposalApprovalViews,
+  (views) => {
+    if (views?.length) showProposalsModal.value = true;
+  },
+);
 const interactiveControlSelector =
   'a, button, input, textarea, select, summary, [contenteditable], [role="button"], [role="link"], [role="menuitem"]';
 
@@ -410,8 +418,9 @@ async function onCorrectConfirm(categoryId: string): Promise<void> {
   correcting.value = true;
   try {
     const result = await adapter.correct(categoryId);
-    if (result?.success) {
+    if (result?.success || result?.approvalRequired) {
       showCorrectModal.value = false;
+      showProposalsModal.value = result.approvalRequired === true;
       await nextTick();
       keyboardInput.value?.focus();
     }
@@ -451,20 +460,22 @@ async function promptProposeRule(): Promise<void> {
   }
 }
 
-async function handleProposalAccepted(_proposalId: string) {
+async function handleProposalAccepted(proposalId: string) {
+  adapter.clearProposalApprovalViews?.(proposalId);
   showProposalsModal.value = false;
   await adapter.refresh();
   await fetchProposals();
 }
 
-async function handleProposalDiscarded(_proposalId: string) {
+async function handleProposalDiscarded(proposalId: string) {
+  adapter.clearProposalApprovalViews?.(proposalId);
   await fetchProposals();
 }
 
 function handleProposalError(message: string, retryable: boolean): void {
   const toast = useToast();
   toast.add({
-    title: 'Rule activation failed',
+    title: 'Proposal action failed',
     description: retryable ? `${message} Try again after fixing the connection.` : message,
     color: 'error',
     duration: 10000,

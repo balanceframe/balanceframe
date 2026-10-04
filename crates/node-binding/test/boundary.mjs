@@ -37,6 +37,7 @@ for (const name of [
   'verifyMutation',
   'simulateRule',
   'planCreateRule',
+  'simulateCreateRulePlan',
   'verifyRuleMutation',
   'analyzeRuleCandidates',
   'evaluatePurchase',
@@ -107,17 +108,15 @@ const stale = call('validateProviderSuggestion', {
 assert.ok(stale.reasonCodes.includes('stale_transaction_version'));
 
 const plan = call('planSetCategory', { transaction, category });
-assert.equal(call('verifyMutation', { plan, snapshot }).verified, true);
+assert.equal(call('verifyMutation', { plan, snapshot }).verified, false);
 const changed = { ...snapshot, transactions: [{ ...transaction, categoryId: category.id }] };
-assert.ok(
-  call('verifyMutation', { plan, snapshot: changed }).reasonCodes.includes('category_changed'),
-);
+assert.equal(call('verifyMutation', { plan, snapshot: changed }).verified, true);
 const postcondition = {
   ...plan,
   postconditions: [{ type: 'CategoryExists', categoryId: 'missing' }],
 };
 assert.ok(
-  call('verifyMutation', { plan: postcondition, snapshot }).reasonCodes.includes(
+  call('verifyMutation', { plan: postcondition, snapshot: changed }).reasonCodes.includes(
     'postcondition_not_met',
   ),
 );
@@ -128,18 +127,22 @@ const rulePlan = call('planCreateRule', {
   categoryId: category.id,
   snapshot,
 });
-assert.equal(call('verifyRuleMutation', { plan: rulePlan, snapshot }).verified, true);
+assert.equal(call('verifyRuleMutation', { plan: rulePlan, snapshot }).verified, false);
 const rule = {
   id: 'rule',
   name: 'Groceries',
   order: 0,
-  trigger: rulePlan.trigger,
-  actions: rulePlan.actions,
+  trigger: {
+    stage: 'post',
+    conditionsOp: 'and',
+    conditions: [{ field: 'payee_name', op: 'is', value: rulePlan.trigger.value }],
+  },
+  actions: [{ op: 'set', field: 'category', value: category.id }],
   inactive: false,
 };
 assert.equal(
   call('verifyRuleMutation', { plan: rulePlan, snapshot: { ...snapshot, rules: [rule] } }).verified,
-  false,
+  true,
 );
 assert.deepEqual(call('simulateRule', { rule, transactions: [transaction] }).transactionsAffected, [
   transaction.id,

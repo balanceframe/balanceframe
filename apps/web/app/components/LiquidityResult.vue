@@ -20,15 +20,15 @@
       "
       reason="Required evidence is incomplete. Missing amounts are unknown, not zero."
     />
-    <UCard v-for="purchase in view.purchases" :key="purchase.id">
+    <UCard v-for="(purchase, index) in view.purchases" :key="purchase.id ?? index">
       <template #header
         ><h2 class="font-semibold">
-          {{ categoryName(purchase.categoryId) }} · <SemanticAmount :amount="purchase.amount" /></h2
+          {{ categoryName(purchase.categoryId) }} · <SemanticAmount :amount="purchase.amount ?? null" :state="purchase.amount ? 'known' : 'redacted'" /></h2
       ></template>
       <div class="grid gap-4 sm:grid-cols-2">
         <section>
           <h3 class="font-medium">Category funding</h3>
-          <p :data-testid="`funding-${purchase.id}`">{{ statusLabel(purchase.fundingStatus) }}</p>
+          <p :data-testid="purchase.id ? `funding-${purchase.id}` : undefined">{{ statusLabel(purchase.fundingStatus) }}</p>
           <p class="text-xs text-gray-500">
             Category funding does not establish payment-account readiness.
           </p>
@@ -42,7 +42,7 @@
                 : 'No payment account selected'
             }}
           </p>
-          <p :data-testid="`payment-${purchase.id}`" class="font-semibold">
+          <p :data-testid="purchase.id ? `payment-${purchase.id}` : undefined" class="font-semibold">
             {{ statusLabel(purchase.paymentStatus) }}
           </p>
           <p v-if="purchase.routeOrigin" class="text-xs text-gray-500">
@@ -55,7 +55,7 @@
         </section>
         <section>
           <h3 class="font-medium">Safe capacity after purchase</h3>
-          <span :data-testid="`capacity-after-${purchase.id}`"
+          <span :data-testid="purchase.id ? `capacity-after-${purchase.id}` : undefined"
             ><SemanticAmount :amount="purchase.safeCapacityAfter ?? null"
           /></span>
         </section>
@@ -97,7 +97,7 @@
               >{{ route.accountName ?? accountName(route.accountId) }} —
               {{ statusLabel(route.status) }}</span
             ><UButton
-              v-if="selectable && !expired"
+              v-if="selectable && !expired && purchase.id && purchase.amount"
               :data-testid="`route-${route.accountId}`"
               size="xs"
               variant="outline"
@@ -124,7 +124,7 @@
             move funds.
           </p>
           <UButton
-            v-if="purchase.canPlanTransfer && !expired"
+            v-if="purchase.canPlanTransfer && !expired && purchase.id && purchase.amount"
             :data-testid="`plan-transfer-${purchase.id}`"
             class="mt-2"
             variant="outline"
@@ -267,7 +267,7 @@ const emit = defineEmits<{
   planTransfer: [purchaseId: string];
 }>();
 const expired = computed(() => Date.parse(props.view.expiresAt) <= Date.now());
-function statusLabel(value: string | null) {
+function statusLabel(value: string | null | undefined) {
   if (!value) return 'Unavailable';
   return value.charAt(0).toUpperCase() + value.slice(1).replaceAll('_', ' ');
 }

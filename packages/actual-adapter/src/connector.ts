@@ -70,6 +70,7 @@ import type {
   SetCategoryResult,
   AutomationRule,
   RuleProposal,
+  RuleDeletePrecondition,
   HealthReport,
   HealthState,
   Freshness,
@@ -95,6 +96,7 @@ import {
   normalizeCategories,
   normalizePayees,
   normalizeRules,
+  normalizeRule,
   normalizeSchedules,
   normalizeBudgetMonth,
   buildPayeeNameMap,
@@ -378,6 +380,20 @@ function canonicalJson(value: unknown): string {
   return serialized;
 }
 
+function normalizeAutomationRule(rule: RuleEntity, index: number): AutomationRule {
+  const normalized = normalizeRule(rule, index);
+  return {
+    id: normalized.id,
+    name: normalized.name,
+    order: normalized.order,
+    trigger: rule.conditions,
+    actions: rule.actions,
+    inactive: normalized.inactive,
+    stage: rule.stage,
+    conditionsOp: rule.conditionsOp,
+  };
+}
+
 function sha256(value: unknown): string {
   return createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
@@ -432,7 +448,6 @@ export interface ActualClient {
   createAccount(account: Omit<APIAccountEntity, 'id'>, initialBalance?: number): Promise<string>;
   updateTransaction(id: string, fields: Record<string, unknown>): Promise<unknown>;
   createRule(rule: Record<string, unknown>): Promise<{ id: string }>;
-  updateRule(id: string, rule: Record<string, unknown>): Promise<unknown>;
   deleteRule(id: string): Promise<boolean>;
   setBudgetAmount(month: string, categoryId: string, value: number): Promise<void>;
 }
@@ -493,8 +508,6 @@ export async function createDefaultActualClient(): Promise<ActualClient> {
     createAccount: (account, initialBalance) => actual.createAccount(account, initialBalance),
     updateTransaction: (id, fields) => actual.updateTransaction(id, fields),
     createRule: (rule) => actual.createRule(rule as Parameters<typeof actual.createRule>[0]),
-    updateRule: (id, rule) =>
-      actual.updateRule({ id, ...rule } as Parameters<typeof actual.updateRule>[0]),
     deleteRule: (id) => actual.deleteRule(id),
     setBudgetAmount: (month, categoryId, value) => actual.setBudgetAmount(month, categoryId, value),
   };
@@ -733,14 +746,36 @@ export class ActualConnector implements BudgetLedger {
   async listRules(): Promise<AutomationRule[]> {
     this.assertInitialized();
     const rules = await this.client.getRules();
-    return normalizeRules(rules).map((r) => ({
-      id: r.id,
-      name: r.name,
-      order: r.order,
-      trigger: r.trigger,
-      actions: r.actions,
-      inactive: r.inactive,
-    }));
+    return rules.map(normalizeAutomationRule);
+  }
+
+  async getRuleCategoryGroupMembers(): Promise<Readonly<Record<string, readonly string[]>>> {
+    this.assertInitialized();
+    const [rawCategories, groups] = await Promise.all([
+      this.client.getCategories(),
+      this.client.getCategoryGroups(),
+    ]);
+    const categories = rawCategories.filter(
+      (category): category is APICategoryEntity => 'group_id' in category,
+    );
+    const groupIds = new Set(groups.map((group) => group.id));
+    const members = Object.fromEntries(
+      groups.map((group) => [group.id, [] as string[]]),
+    ) as Record<string, string[]>;
+
+    for (const category of categories) {
+      const groupId = category.group_id;
+      if (groupId === null || groupId === undefined) continue;
+      if (typeof groupId !== 'string' || !groupIds.has(groupId))
+        throw new Error(`Category references an unavailable Actual group: ${String(groupId)}`);
+      const groupMembers = members[groupId];
+      if (!groupMembers)
+        throw new Error(`Actual category group has no membership entry: ${groupId}`);
+      groupMembers.push(category.id);
+    }
+
+    for (const groupMembers of Object.values(members)) groupMembers.sort();
+    return members;
   }
 
   async listSchedules(): Promise<Schedule[]> {
@@ -1191,7 +1226,7 @@ export class ActualConnector implements BudgetLedger {
 
       // Build the rule object for the Actual API
       const ruleRecord: Record<string, unknown> = {
-        stage: proposal.stage ?? 'post',
+        stage: proposal.stage === undefined ? 'post' : proposal.stage,
         conditionsOp: proposal.conditionsOp ?? 'and',
         conditions: proposal.conditions,
         actions: proposal.actions,
@@ -1227,59 +1262,6 @@ export class ActualConnector implements BudgetLedger {
     });
   }
 
-  async updateRule(
-    id: string,
-    fields: Record<string, unknown>,
-    precondition?: MutationPrecondition,
-  ): Promise<MutationResult> {
-    this.assertMutationAllowed('updateRule');
-    if (!this._budgetInfo) {
-      return {
-        success: false,
-        error: 'No budget selected.',
-        code: 'BUDGET_NOT_SELECTED',
-      } as MutationResult;
-    }
-    return this.withCacheLock(this._budgetInfo.id, async () => {
-      try {
-        const allRaw = await this.client.getRules();
-        const currentRaw = allRaw.find((r) => r.id === id);
-        if (!currentRaw) {
-          return {
-            success: false,
-            error: `Rule not found: ${id}`,
-            code: 'RULE_NOT_FOUND',
-          } as MutationResult;
-        }
-        const merged: Record<string, unknown> = {
-          id: currentRaw.id,
-          stage: currentRaw.stage,
-          conditionsOp: currentRaw.conditionsOp,
-          conditions: JSON.stringify(currentRaw.conditions),
-          actions: JSON.stringify(currentRaw.actions),
-          tombstone:
-            fields.inactive !== undefined ? fields.inactive : (currentRaw.tombstone ?? false),
-        };
-        await this.client.updateRule(id, merged);
-      } catch (err) {
-        return {
-          success: false,
-          error: `Failed to update rule: ${err instanceof Error ? err.message : String(err)}`,
-          code: 'RULE_UPDATE_FAILED',
-        } as MutationResult;
-      }
-      try {
-        await this.client.sync();
-      } catch {
-        return {
-          success: false,
-          error: 'Sync failed after updating rule',
-          code: 'SYNC_FAILED',
-        } as MutationResult;
-      }
-      return { success: true } as MutationResult;
-    });
-  }
 
   async setBudgetAmount(
     _month: string,
@@ -1294,42 +1276,31 @@ export class ActualConnector implements BudgetLedger {
     );
   }
 
-  async deleteRule(id: string, precondition?: MutationPrecondition): Promise<MutationResult> {
+  async deleteRule(id: LedgerId, precondition: RuleDeletePrecondition): Promise<void> {
     this.assertMutationAllowed('deleteRule');
-    if (!this._budgetInfo) {
-      return {
-        success: false,
-        error: 'No budget selected.',
-        code: 'BUDGET_NOT_SELECTED',
-      } as MutationResult;
-    }
+    if (!this._budgetInfo) throw new Error('No budget selected.');
+
     return this.withCacheLock(this._budgetInfo.id, async () => {
-      try {
-        const result = await this.client.deleteRule(id);
-        if (result === false) {
-          return {
-            success: false,
-            error: 'Rule is referenced by a schedule and cannot be deleted.',
-            code: 'RULE_HAS_SCHEDULE',
-          } as MutationResult;
-        }
-      } catch (err) {
-        return {
-          success: false,
-          error: `Failed to delete rule: ${err instanceof Error ? err.message : String(err)}`,
-          code: 'RULE_DELETE_FAILED',
-        } as MutationResult;
-      }
-      try {
-        await this.client.sync();
-      } catch {
-        return {
-          success: false,
-          error: 'Sync failed after deleting rule',
-          code: 'SYNC_FAILED',
-        } as MutationResult;
-      }
-      return { success: true } as MutationResult;
+      if (precondition.rule.id !== id)
+        throw new Error('Rule delete precondition identifies a different rule');
+      if (precondition.actualVersion !== this._serverVersion)
+        throw new Error('Actual server version changed since the rule was displayed');
+
+      const currentRules = await this.client.getRules();
+      const currentIndex = currentRules.findIndex((rule) => rule.id === id);
+      if (currentIndex < 0) throw new Error(`Rule not found: ${id}`);
+      const currentRule = normalizeAutomationRule(currentRules[currentIndex]!, currentIndex);
+      if (canonicalJson(currentRule) !== canonicalJson(precondition.rule))
+        throw new Error('Actual rule changed since it was displayed');
+
+      const deleted = await this.client.deleteRule(id);
+      if (!deleted)
+        throw new Error('Rule is referenced by a schedule and cannot be deleted');
+      await this.client.sync();
+
+      const remainingRules = await this.client.getRules();
+      if (remainingRules.some((rule) => rule.id === id))
+        throw new Error('Actual rule remains present after deletion synchronization');
     });
   }
 

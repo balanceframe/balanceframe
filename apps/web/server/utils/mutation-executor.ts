@@ -1,48 +1,29 @@
-/**
- * Mutation executor factory — uses ConnectionManager.withConnection() to hold
- * the selected Actual budget for the complete mutation and dispose it afterward.
- *
- * This module contains only pure functions and types; the Nitro plugin
- * registration lives in server/plugins/mutation-composition.ts.
- *
- * The production factory constructs a CategorizationMutationService bridge
- * that creates proposals and approvals in the workflow store, then calls
- * the service's execute() path for the full mutation lifecycle (idempotency,
- * approval consumption, Rust protocol planning, stale checks, audit trails).
- */
-
-import crypto from 'node:crypto';
-import { ConnectionManager, CategorizationMutationService } from '@balanceframe/application';
-import type { BudgetLedger } from '@balanceframe/actual-adapter';
-import type {
-  MutationPlan,
-  RustMutationProtocol,
-  VerificationResult,
+import {
+  ConnectionManager,
+  createNativeCategorizationMutationProtocol,
 } from '@balanceframe/application';
+import type { RustMutationProtocol } from '@balanceframe/application';
+import type { BudgetLedger } from '@balanceframe/actual-adapter';
 import {
   ActualConnector,
   createDefaultActualClient,
   EnvCredentialStore,
 } from '@balanceframe/actual-adapter';
-import type {
-  EventWithContext,
-  ReviewMutationExecutor,
-  ReviewMutationExecutorFactory,
-  MutationStatus,
-} from './workflow-store';
-import { classifyConnectionError } from './workflow-store';
+import {
+  GENERIC_MUTATION_POLICY_VERSION,
+  deriveProposalAuthorizationFacts,
+  requiredProposalApprovers,
+} from '@balanceframe/workflow-store';
+import type { EventWithContext, ReviewMutationExecutor, ReviewMutationExecutorFactory, ReviewMutationResult } from './workflow-store';
+import { classifyConnectionError, requireProposalAuthorization, reviewAndApplyEnabled } from './workflow-store';
+import { requireSelectedSpace } from './space-context';
+import { buildCategorizationProposalIntent } from './categorization-proposal';
 import type { ReviewItem } from '@balanceframe/workflow-store';
+import { hasReviewScopeAdmission } from './review-scope-admission';
 
-// ---------------------------------------------------------------------------
-// Production helpers
-// ---------------------------------------------------------------------------
-
-/** Create a production ConnectionManager configured for mutation (reviewAndApply) mode. */
-export function createMutationConnectionManager(options?: {
-  configPath?: string;
-}): ConnectionManager {
+export function createMutationConnectionManager(options?: { configPath?: string }): ConnectionManager {
   return new ConnectionManager({
-    configPath: options?.configPath,
+    configPath: options?.configPath ?? process.env.BALANCEFRAME_CONFIG_PATH,
     credentialStore: new EnvCredentialStore(),
     connectorFactory: async () =>
       new ActualConnector({
@@ -53,194 +34,184 @@ export function createMutationConnectionManager(options?: {
   });
 }
 
-/**
- * Extract the original Actual category from classifier evidence.
- *
- * When a reviewer corrects a suggestion, the workflow item's categoryId is
- * updated to the corrected category.  The mutation precondition must
- * reference the original Actual category (evidence.currentCategory) so the
- * Actual API can verify the transaction is still in the expected category
- * before applying.  Falls back to null (no precondition check) when
- * evidence does not carry currentCategory.
- */
-function originalCategory(item: ReviewItem): string | null {
-  const ev = item.evidence as Record<string, unknown> | undefined;
-  // Prefer evidence.currentCategory when present and non-empty
-  if (ev && typeof ev.currentCategory === 'string' && ev.currentCategory) {
-    return ev.currentCategory as string;
-  }
-  // Fall back to item.categoryId so the precondition check uses the
-  // item's current category even when evidence doesn't carry currentCategory.
-  // Map empty/null categoryId to null (no precondition check).
-  return item.categoryId || null;
-}
 
-/**
- * Attempt to create a native RustMutationProtocol.
- * Uses lazy dynamic import so it can fail gracefully in non-native environments.
- */
-async function tryCreateNativeRustProtocol(): Promise<RustMutationProtocol | null> {
-  try {
-    const { createNativeCategorizationMutationProtocol } =
-      await import('@balanceframe/application');
-    return await createNativeCategorizationMutationProtocol();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Create a fallback RustMutationProtocol that skips verification when
- * the native addon is not available.
- */
-function createFallbackRustProtocol(): RustMutationProtocol {
+function deniedResult(
+  item: ReviewItem,
+  disposition: Exclude<ReviewMutationResult['disposition'], 'approval_required'>,
+  error: string,
+): ReviewMutationResult {
   return {
-    planSetCategory(transaction, category): MutationPlan {
-      return {
-        planId: crypto.randomUUID(),
-        transactionId: transaction.id,
-        currentCategoryId: transaction.categoryId ?? null,
-        proposedCategoryId: category.id,
-        hash: '',
-        postconditions: [{ type: 'CategoryExists', categoryId: category.id }],
-      };
-    },
-    verifyMutation(_plan, _snapshot): VerificationResult {
-      return { verified: true, reasonCodes: ['noop'], message: null };
-    },
+    disposition,
+    mutationStatus: disposition === 'stale' ? 'stale' : 'denied',
+    success: false,
+    applied: false,
+    verified: false,
+    stale: disposition === 'stale',
+    transactionId: item.transactionId,
+    previousCategoryId: item.categoryId,
+    newCategoryId: null,
+    proposalId: null,
+    payloadHash: null,
+    governancePolicyVersion: null,
+    requiredApprovers: null,
+    error,
   };
 }
 
-/**
- * Create a default executor factory.
- *
- * In production (no connectionManager passed), constructs a CategorizationMutationService
- * bridge that creates proposals and approvals in the workflow store and calls
- * the service's execute() path for the full mutation lifecycle.
- *
- * Accepts an optional ConnectionManager for test injection.
- *
- * The factory returns null in Observe mode (no reviewAndApply config).
- * In reviewAndApply mode, each executor call creates a proposal and approval,
- * then delegates to CategorizationMutationService.execute().
- */
+/** Creates an exact native proposal only; approval and execution use separate routes. */
 export function createDefaultExecutorFactory(
   connectionManager?: ConnectionManager,
 ): ReviewMutationExecutorFactory {
   const manager = connectionManager ?? createMutationConnectionManager();
 
   return (event: EventWithContext): ReviewMutationExecutor | null => {
-    const config = event.context.runtimeConfig as Record<string, unknown> | undefined;
-    if (!config?.reviewAndApply) return null;
+    if (!reviewAndApplyEnabled(event)) return null;
 
     return async (input, store, item) => {
-      try {
-        return await manager.withConnection(
-          async ({ connector }) => {
-            const ledger = connector as unknown as BudgetLedger;
+      const selected = await requireSelectedSpace(event);
+      if (!selected.ok) return deniedResult(item, 'denied', 'Selected space authorization failed');
+      if (
+        !selected.space.budgetId ||
+        selected.space.budgetId !== item.budgetId ||
+        input.actorId !== selected.auth.actorId
+      ) {
+        return deniedResult(item, 'denied', 'Review item is outside the selected space');
+      }
 
-            // Create RustMutationProtocol (try native first, fallback to noop)
-            const rust = (await tryCreateNativeRustProtocol()) ?? createFallbackRustProtocol();
+      const policy = store.governance.getPolicy({ spaceId: selected.space.id });
+      if (!policy || !hasReviewScopeAdmission({
+        store,
+        selected,
+        item,
+        capability: 'categorization:propose',
+        phase: 'propose',
+        operation: 'set_category',
+        policyVersion: policy.version,
+        targetCategoryId: input.categoryId ?? item.categoryId,
+      }))
+        return deniedResult(item, 'denied', 'Exact review source authorization is unavailable');
 
-            // Build proposal content hash
-            const payloadContent = {
-              payload: {
-                kind: 'set_category',
-                transactionId: item.transactionId,
-                categoryId: input.categoryId ?? item.categoryId,
-              },
-
-              budgetId: item.budgetId,
-              operation: 'set_category',
-            };
-            const payloadHash = crypto
-              .createHash('sha256')
-              .update(JSON.stringify(payloadContent))
-              .digest('hex');
-
-            const preconditions = JSON.stringify({
-              currentCategoryId: originalCategory(item),
-            });
-
-            // Create proposal in the workflow store
-            const proposal = await store.createProposal({
-              operation: 'set_category',
-              budgetId: item.budgetId,
-              payload: {
-                kind: 'set_category',
-                transactionId: item.transactionId,
-                categoryId: input.categoryId ?? item.categoryId,
-              },
-
-              payloadHash,
-              policyVersion: '1.0',
-              preconditions,
-              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-              actorId: input.actorId,
-              provenance: 'review-and-apply',
-              providerModel: null,
-              correlationId: input.correlationId ?? undefined,
-            });
-
-            // Create approval for the acting reviewer
-            const approval = await store.createApproval({
-              proposalId: proposal.id,
-              payloadHash,
-              actorId: input.actorId,
-              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-            });
-
-            // Construct CategorizationMutationService and execute
-            const service = new CategorizationMutationService(store, ledger, rust);
-            const result = await service.execute({
-              requestId: input.requestId,
-              actorId: input.actorId,
-              proposalId: proposal.id,
-              approvalId: approval.id,
-              idempotencyKey: `review-${item.id}-${input.requestId}`,
-              correlationId: input.correlationId ?? undefined,
-            });
-
-            // Map ExecuteCategorizationResult to ReviewMutationResult
-            let mutationStatus: MutationStatus;
-            if (result.verified) {
-              mutationStatus = 'verified';
-            } else if (result.reasonCodes.includes('stale_snapshot')) {
-              mutationStatus = 'stale';
-            } else {
-              mutationStatus = 'apply_failed';
-            }
-
-            return {
-              mutationStatus,
-              success: result.success,
-              applied: result.verified,
-              verified: result.verified,
-              stale: result.reasonCodes.includes('stale_snapshot'),
-              transactionId: result.transactionId ?? item.transactionId,
-              previousCategoryId: result.previousCategoryId ?? item.categoryId,
-              newCategoryId: result.newCategoryId ?? null,
-              error: result.message ?? null,
-            };
-          },
-          { dispose: true },
+      const budgetAuthorization = await requireProposalAuthorization(
+        event,
+        'categorization:propose',
+        `budget:${selected.space.budgetId}`,
+        'set_category',
+      );
+      if (!budgetAuthorization.ok)
+        return deniedResult(item, 'denied', 'Selected budget authorization is unavailable');
+      for (const scope of [
+        `transaction:${item.transactionId}`,
+        `category:${input.categoryId ?? item.categoryId}`,
+      ]) {
+        const resourceAuthorization = await requireProposalAuthorization(
+          event, 'categorization:propose', scope, 'set_category',
         );
-      } catch (error) {
-        if (classifyConnectionError(error)) {
-          throw error;
-        }
+        if (!resourceAuthorization.ok)
+          return deniedResult(item, 'denied', 'Exact review resource authorization is unavailable');
+      }
 
-        return {
-          mutationStatus: 'apply_failed' as MutationStatus,
-          success: false,
-          applied: false,
-          verified: false,
-          stale: false,
-          transactionId: item.transactionId,
-          previousCategoryId: item.categoryId,
-          newCategoryId: null,
-          error: error instanceof Error ? error.message : String(error),
-        };
+      let rust: RustMutationProtocol | null;
+      try {
+        rust = await createNativeCategorizationMutationProtocol();
+      } catch {
+        rust = null;
+      }
+      if (!rust) return deniedResult(item, 'native_unavailable', 'Native mutation planning is unavailable');
+
+      const config = await manager.loadConfig();
+      if (!config || config.budgetId !== selected.space.budgetId)
+        return deniedResult(item, 'denied', 'Configured budget does not match the selected space');
+
+      try {
+        return await manager.withConnection(async (connected) => {
+          if (
+            connected.config.budgetId !== selected.space.budgetId ||
+            connected.budget.id !== selected.space.budgetId
+          ) {
+            return deniedResult(item, 'denied', 'Connected budget does not match the selected space');
+          }
+
+          const ledger = connected.connector as unknown as BudgetLedger;
+          const synchronized = await ledger.synchronize();
+          const transaction = synchronized.snapshot.transactions.find((row) => row.id === item.transactionId);
+          const categoryId = input.categoryId ?? item.categoryId;
+          const category = synchronized.snapshot.categories.find((row) => row.id === categoryId);
+          if (!transaction || !category)
+            return deniedResult(item, 'stale', 'Native transaction or category is unavailable');
+
+          const intent = buildCategorizationProposalIntent({
+            protocol: rust,
+            snapshot: synchronized.snapshot,
+            transaction,
+            category,
+            review: item,
+          });
+          const { payload, preconditions: nativeFacts, nativePlan: plan } = intent;
+          const facts = deriveProposalAuthorizationFacts('set_category', payload, nativeFacts);
+          const now = new Date().toISOString();
+          const proposal = await store.createProposal({
+            operation: 'set_category',
+            budgetId: selected.space.budgetId,
+            spaceId: selected.space.id,
+            payload,
+            policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+            preconditions: JSON.stringify(nativeFacts),
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            actorId: selected.auth.actorId,
+            auth: selected.auth,
+            provenance: 'review-and-apply-proposal',
+            providerModel: null,
+            correlationId: input.correlationId ?? null,
+          });
+          if (!proposal.governancePolicyVersion)
+            return deniedResult(item, 'failed', 'Proposal has no captured governance policy version');
+
+          const required = [
+            { resourceKind: 'budget' as const, resourceId: selected.space.budgetId, capability: 'categorization:propose' },
+            ...facts.resources.map((resource) => ({ ...resource, capability: 'categorization:propose' })),
+          ];
+          const agent = selected.auth.method === 'api-key' && selected.auth.principalType === 'agent'
+            ? selected.auth
+            : null;
+          const authorization = store.governance.authorize({
+            actorId: selected.auth.actorId,
+            spaceId: selected.space.id,
+            expectedPolicyVersion: proposal.governancePolicyVersion,
+            phase: 'propose',
+            operation: 'set_category',
+            required,
+            payload: { operations: facts.operations, proposal: payload },
+            now,
+            auth: selected.auth,
+            ...(agent ? {
+              agentId: agent.actorId,
+              delegationId: agent.delegationId,
+              delegationVersion: agent.delegationVersion,
+            } : {}),
+          });
+          if (!authorization.allowed)
+            return deniedResult(item, 'denied', 'Current proposal authorization is unavailable');
+
+          return {
+            disposition: 'approval_required',
+            mutationStatus: 'approval_required',
+            success: false,
+            applied: false,
+            verified: false,
+            stale: false,
+            transactionId: transaction.id,
+            previousCategoryId: plan.currentCategoryId,
+            newCategoryId: category.id,
+            proposalId: proposal.id,
+            payloadHash: proposal.payloadHash,
+            governancePolicyVersion: proposal.governancePolicyVersion,
+            requiredApprovers: requiredProposalApprovers(authorization),
+            error: null,
+          };
+        }, { expectedBudgetId: selected.space.budgetId, dispose: true });
+      } catch (error) {
+        if (classifyConnectionError(error)) throw error;
+        return deniedResult(item, 'failed', 'Native proposal could not be created');
       }
     };
   };

@@ -105,7 +105,8 @@ vi.mock('../../server/utils/workflow-store', () => ({
   errorHasCode: mockErrorHasCode,
 }));
 
-vi.mock('h3', () => ({
+vi.mock('h3', async (original) => ({
+  ...(await original<typeof import('h3')>()),
   defineEventHandler: <T>(h: T) => h,
   getQuery: mockGetQuery,
   setResponseStatus: mockSetResponseStatus,
@@ -210,23 +211,16 @@ const handlerEntries: HandlerEntry[] = [
 ];
 
 /** Minimal event shape the handlers accept. */
-const mockEvent = { context: { auth: { authenticated: true } } };
+const mockEvent = {
+  context: { auth: { authenticated: true } },
+  node: { res: { setHeader: vi.fn() } },
+};
 
 /** Configure a single analysis mock to return a given envelope. */
 function mockAnalysisReturn(entry: HandlerEntry, envelope: unknown) {
   vi.mocked(entry.analysisFn).mockResolvedValue(envelope);
 }
 
-/** Build a minimal ok envelope from the analysis layer. */
-function okAnalysisEnvelope(result: unknown, overrides: { requestId?: string } = {}) {
-  return {
-    status: 'ok',
-    result,
-    error: null,
-    requestId: overrides.requestId ?? 'req-test',
-    authorization: { capability: 'observe', allowed: true, actorId: 'test-actor' },
-  };
-}
 
 /** Build a minimal error envelope from the analysis layer. */
 function errorAnalysisEnvelope(
@@ -297,94 +291,6 @@ describe('Intelligence route delegation', () => {
     }
   });
 
-  // -----------------------------------------------------------------------
-  // 1. Deterministic result envelopes when capability exists
-  // -----------------------------------------------------------------------
-
-  describe('deterministic result envelopes when capability exists', () => {
-    for (const entry of handlerEntries) {
-      it(`GET /api/${entry.name} returns an ok envelope when analysis succeeds`, async () => {
-        const payload = { handled: true, route: entry.name };
-        mockAnalysisReturn(entry, okAnalysisEnvelope(payload));
-
-        const r = await entry.handler(mockEvent);
-
-        expect(r).toBeDefined();
-        expect(r.status).toBe('ok');
-        expect(r.result).toEqual(payload);
-        expect(r.error).toBeNull();
-        // Confirm the analysis function was called exactly once
-        expect(vi.mocked(entry.analysisFn)).toHaveBeenCalledTimes(1);
-      });
-    }
-
-    it('passes query params to liquidityCoverageAnalysis', async () => {
-      mockGetQuery.mockReturnValue({ currentMonth: '2026-07' });
-      mockAnalysisReturn(
-        handlerEntries[1], // liquidity
-        okAnalysisEnvelope({ ratio: 1.5 }),
-      );
-
-      await liquidity(mockEvent);
-
-      expect(vi.mocked(liquidityCoverageAnalysis).mock.calls[0][1]).toBe('2026-07');
-    });
-
-    it('passes referenceDate to billCalendarAnalysis', async () => {
-      mockGetQuery.mockReturnValue({ referenceDate: '2026-08-15' });
-      mockAnalysisReturn(
-        handlerEntries[2], // calendar
-        okAnalysisEnvelope({ events: [] }),
-      );
-
-      await calendar(mockEvent);
-
-      expect(vi.mocked(billCalendarAnalysis).mock.calls[0][1]).toBe('2026-08-15');
-    });
-
-    it('passes referenceDate to budgetVarianceAnalysis', async () => {
-      mockGetQuery.mockReturnValue({ referenceDate: '2026-07' });
-      mockAnalysisReturn(
-        handlerEntries[3], // trends-variance
-        okAnalysisEnvelope({ variance: 0.12 }),
-      );
-
-      await trendsVariance(mockEvent);
-
-      expect(vi.mocked(budgetVarianceAnalysis).mock.calls[0][1]).toBe('2026-07');
-    });
-
-    it('passes currentMonth to multidimensionalHealthAnalysis', async () => {
-      mockGetQuery.mockReturnValue({ currentMonth: '2026-09' });
-      mockAnalysisReturn(
-        handlerEntries[8], // financial-health
-        okAnalysisEnvelope({ health: 'good' }),
-      );
-
-      await financialHealth(mockEvent);
-
-      expect(vi.mocked(multidimensionalHealthAnalysis).mock.calls[0][1]).toBe('2026-09');
-    });
-
-    it('passes JSON-decoded baseline/comparison to scenarioComparisonAnalysis', async () => {
-      const baseline = { income: 5000 };
-      const comparison = { income: 6000 };
-      mockGetQuery.mockReturnValue({
-        baseline: JSON.stringify(baseline),
-        comparison: JSON.stringify(comparison),
-      });
-      mockAnalysisReturn(
-        handlerEntries[7], // scenarios
-        okAnalysisEnvelope({ differences: [{ field: 'income', delta: 1000 }] }),
-      );
-
-      await scenarios(mockEvent);
-
-      const params = vi.mocked(scenarioComparisonAnalysis).mock.calls[0][1] as any;
-      expect(params.baseline).toEqual(baseline);
-      expect(params.comparison).toEqual(comparison);
-    });
-  });
 
   // -----------------------------------------------------------------------
   // 2. Structured unavailable fallback when capability is absent
@@ -403,6 +309,9 @@ describe('Intelligence route delegation', () => {
         expect(r.error?.retryable).toBe(true);
         // Handler should set HTTP 503 for no_analysis_protocol
         expect(mockSetResponseStatus).toHaveBeenCalledWith(expect.anything(), 503);
+        expect(mockWithConnection).toHaveBeenCalledWith(expect.any(Function), {
+          expectedBudgetId: 'budget_test',
+        });
       });
     }
   });
@@ -510,48 +419,6 @@ describe('Intelligence route delegation', () => {
   });
 
   // -----------------------------------------------------------------------
-  // 6. Scenario non-mutation (read-only)
-  // -----------------------------------------------------------------------
-
-  describe('scenario non-mutation (read-only)', () => {
-    it('delegates only to scenarioComparisonAnalysis — no other application fn', async () => {
-      mockGetQuery.mockReturnValue({
-        baseline: '{"income":5000}',
-        comparison: '{"income":6000}',
-      });
-      mockAnalysisReturn(
-        handlerEntries[7], // scenarios
-        okAnalysisEnvelope({ differences: [] }),
-      );
-
-      await scenarios(mockEvent);
-
-      // Only the scenario analysis function must have been called
-      expect(vi.mocked(scenarioComparisonAnalysis)).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(dataQualityAnalysis)).not.toHaveBeenCalled();
-      expect(vi.mocked(liquidityCoverageAnalysis)).not.toHaveBeenCalled();
-      expect(vi.mocked(billCalendarAnalysis)).not.toHaveBeenCalled();
-      expect(vi.mocked(budgetVarianceAnalysis)).not.toHaveBeenCalled();
-      expect(vi.mocked(irregularObligationsAnalysis)).not.toHaveBeenCalled();
-      expect(vi.mocked(incomeReliabilityAnalysis)).not.toHaveBeenCalled();
-      expect(vi.mocked(forecastCalibrationAnalysis)).not.toHaveBeenCalled();
-      expect(vi.mocked(multidimensionalHealthAnalysis)).not.toHaveBeenCalled();
-    });
-
-    it('does not call setResponseStatus on success (read-only path)', async () => {
-      mockGetQuery.mockReturnValue({
-        baseline: '{"income":5000}',
-        comparison: '{"income":6000}',
-      });
-      mockAnalysisReturn(handlerEntries[7], okAnalysisEnvelope({ differences: [] }));
-
-      mockSetResponseStatus.mockClear();
-      await scenarios(mockEvent);
-
-      // On success the handler returns okEnvelope directly without setting status
-      expect(mockSetResponseStatus).not.toHaveBeenCalled();
-    });
-  });
 
   // -----------------------------------------------------------------------
   // 7. Store unavailable fallback

@@ -9,7 +9,7 @@ import { requireFullRead } from '../../../utils/legacy-financial-read';
  * Response envelope: SavedViewResult
  */
 
-import { defineEventHandler, getRouterParam, setResponseStatus } from 'h3';
+import { defineEventHandler, getRouterParam, setHeader, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
   okEnvelope,
@@ -18,6 +18,7 @@ import {
 } from '../../../utils/workflow-store';
 
 export default defineEventHandler(async (event) => {
+  setHeader(event, 'Cache-Control', 'private, no-store');
   const fullRead = await requireFullRead(event);
   if (!fullRead.ok) return fullRead.response;
   const authInfo = fullRead.info;
@@ -35,9 +36,15 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
+  const authority = {
+    actorId: fullRead.info.actorId,
+    spaceId: fullRead.spaceId,
+    budgetId: fullRead.budgetId,
+    membershipId: fullRead.actor.membershipId!,
+  };
   try {
-    const view = await wf.store.getSavedView(viewId);
-    if (!view || view.actorId !== fullRead.info.actorId) {
+    const view = await wf.store.getSavedView(viewId, authority);
+    if (!view) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'VIEW_NOT_FOUND',

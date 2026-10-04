@@ -42,7 +42,7 @@ export async function withScenario<T>(
   }
 }
 
-/** Calls the ordinary web endpoint as a real fictional Better Auth user. */
+/** Calls Source in the persona's selected space, renewing human proof before each mutation. */
 export async function scenarioRequest<T = unknown>(
   handle: LoadedScenario,
   path: string,
@@ -52,12 +52,38 @@ export async function scenarioRequest<T = unknown>(
     throw new Error('Expected an application-relative path');
   const persona = handle.initialized.personas[options.personaId ?? 'owner'];
   if (!persona) throw new Error('Unknown fictional persona');
+  let cookieHeader = persona.cookieHeader;
+  if (options.method && options.method !== 'GET') {
+    const proof = await fetch(new URL('/api/reauth', handle.processes.webUrl), {
+      method: 'POST',
+      headers: {
+        host: new URL(PUBLIC_ORIGIN).host,
+        origin: PUBLIC_ORIGIN,
+        cookie: cookieHeader,
+        'x-balanceframe-space': persona.spaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ password: persona.password }),
+    });
+    if (!proof.ok) throw new Error(`Scenario human reauthentication failed with status ${proof.status}`);
+    const cookies = new Map(cookieHeader.split('; ').map((pair) => {
+      const separator = pair.indexOf('=');
+      return [pair.slice(0, separator), pair.slice(separator + 1)] as const;
+    }));
+    for (const value of proof.headers.getSetCookie()) {
+      const pair = value.split(';', 1)[0]!;
+      const separator = pair.indexOf('=');
+      cookies.set(pair.slice(0, separator), pair.slice(separator + 1));
+    }
+    cookieHeader = [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
+  }
   const response = await fetch(new URL(path, handle.processes.webUrl), {
     method: options.method ?? 'GET',
     headers: {
       host: new URL(PUBLIC_ORIGIN).host,
       origin: PUBLIC_ORIGIN,
-      cookie: persona.cookieHeader,
+      cookie: cookieHeader,
+      'x-balanceframe-space': persona.spaceId,
       ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),

@@ -233,7 +233,11 @@
             </details>
           </div>
         </fieldset>
-        <UButton :disabled="busy" @click="save">{{
+        <label class="grid gap-1 text-sm">
+          {{ demoMode ? 'Disposable-demo confirmation (type CONFIRM)' : 'Account password' }}
+          <input v-model="password" type="password" autocomplete="current-password" required class="rounded border bg-transparent p-2" />
+        </label>
+        <UButton :disabled="busy || !password" @click="save">{{
           busy ? 'Saving observations…' : 'Save user-attested observations'
         }}</UButton>
       </fieldset>
@@ -255,6 +259,9 @@ import type {
   UnsettledFlow,
 } from '@balanceframe/protocol-generated';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
+import { reauthenticateHuman } from '../utils/reauthentication';
+const password = ref('');
+const demoMode = useRuntimeConfig().public.demoMode === true;
 interface ObservationRow {
   accountId: string;
   enabled: boolean;
@@ -353,11 +360,15 @@ function addFlow(row: ObservationRow) {
   });
 }
 async function save() {
-  if (busy.value || !props.configuration.canConfigure) return;
+  if (busy.value || !props.configuration.canConfigure || !password.value) return;
   busy.value = true;
   error.value = '';
   saved.value = false;
+  let passwordSnapshot = password.value;
+  password.value = '';
   try {
+    await reauthenticateHuman(passwordSnapshot);
+    passwordSnapshot = '';
     const observations: PublicUserAttestedObservation[] = rows.value
       .filter((row) => row.enabled)
       .map((row) => ({
@@ -413,6 +424,7 @@ async function save() {
   } catch (e) {
     error.value = liquidityError(e);
   } finally {
+    passwordSnapshot = '';
     busy.value = false;
   }
 }

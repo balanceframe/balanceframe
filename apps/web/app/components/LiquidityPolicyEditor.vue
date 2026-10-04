@@ -364,7 +364,11 @@
             Add approval threshold
           </button>
         </fieldset>
-        <UButton :disabled="busy" @click="save">{{
+        <label class="grid gap-1 text-sm">
+          {{ demoMode ? 'Disposable-demo confirmation (type CONFIRM)' : 'Account password' }}
+          <input v-model="password" type="password" autocomplete="current-password" required class="rounded border bg-transparent p-2" />
+        </label>
+        <UButton :disabled="busy || !password" @click="save">{{
           busy ? 'Saving policy…' : 'Save account policy and timing'
         }}</UButton>
       </fieldset>
@@ -382,6 +386,9 @@ import type {
 } from '@balanceframe/application';
 import type { AccountRole } from '@balanceframe/protocol-generated';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
+import { reauthenticateHuman } from '../utils/reauthentication';
+const password = ref('');
+const demoMode = useRuntimeConfig().public.demoMode === true;
 const props = defineProps<{ configuration: PublicLiquidityConfiguration }>();
 const emit = defineEmits<{ saved: [configuration: PublicLiquidityConfiguration] }>();
 const roles: AccountRole[] = [
@@ -579,11 +586,15 @@ function categoryPolicyForSave(policy: CategoryPolicy): CategoryPolicy {
 }
 
 async function save() {
-  if (busy.value || !props.configuration.canConfigure) return;
+  if (busy.value || !props.configuration.canConfigure || !password.value) return;
   busy.value = true;
   error.value = '';
   saved.value = false;
+  let passwordSnapshot = password.value;
+  password.value = '';
   try {
+    await reauthenticateHuman(passwordSnapshot);
+    passwordSnapshot = '';
     const input: PublicLiquidityPolicyInput = {
       expectedVersion: props.configuration.policy?.version ?? null,
       expiresAt: new Date(`${expiresAt.value}Z`).toISOString(),
@@ -606,6 +617,7 @@ async function save() {
   } catch (e) {
     error.value = liquidityError(e);
   } finally {
+    passwordSnapshot = '';
     busy.value = false;
   }
 }

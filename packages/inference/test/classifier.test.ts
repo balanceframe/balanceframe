@@ -7,7 +7,7 @@
  * endpoint safeguards, idempotency/deduplication, and immutable output.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { Orchestrator } from '../src/orchestrator';
+import { Orchestrator, type OrchestratorConfig } from '../src/orchestrator';
 import { createPolicyEngine } from '../src/policy';
 import { createRedactor } from '../src/redactor';
 import type {
@@ -47,8 +47,26 @@ function makeCandidate(overrides: Partial<UnresolvedCandidate> = {}): Unresolved
     categoryId: null,
     importedId: 'imp_001',
     deterministicEvidence: { reasonCodes: ['uncategorized'] },
+    allowedCategoryIds: [
+      'cat_food_dining',
+      'cat_groceries',
+      'cat_other',
+      'cat_food',
+      'cat_housing',
+      'cat_transport',
+      'cat_a',
+    ],
     ...overrides,
   };
+}
+
+function createAuthorizedOrchestrator(
+  config: Omit<OrchestratorConfig, 'authorizeCandidate'>,
+): Orchestrator {
+  return new Orchestrator({
+    ...config,
+    authorizeCandidate: (candidate) => candidate,
+  });
 }
 
 function defaultPolicies(overrides: Partial<CapabilityPolicies> = {}): CapabilityPolicies {
@@ -122,6 +140,389 @@ function createFakeLayer(
 }
 
 // ---------------------------------------------------------------------------
+// Candidate authorization boundary
+// ---------------------------------------------------------------------------
+
+describe('candidate authorization boundary', () => {
+  it('fails closed without authorization before layers or providers', async () => {
+    const provider = createFakeLocalProvider();
+    const layer = createFakeLayer('rules', { outcome: 'resolved', categoryId: 'cat_housing' });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+
+    const [suggestion] = await orchestrator.classify([makeCandidate()]);
+
+    expect(suggestion.proposedCategoryId).toBe('');
+    expect(suggestion.errors).toContain('Candidate authorization denied');
+    expect(layer.resolve).not.toHaveBeenCalled();
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it.each(['local', 'external'] as const)(
+    'passes only the authorized projection to layers and the strict %s provider request',
+    async (locality) => {
+      const original = makeCandidate({
+        budgetId: 'private-budget-account',
+        spaceId: 'private-space',
+        connectionId: 'private-connection',
+        rawMerchant: 'private-raw-merchant',
+        normalizedMerchant: 'private-normalized-merchant',
+        description: 'private-description',
+        notes: 'private-notes',
+        importedPayee: 'private-payee',
+        importedId: 'private-import',
+        deterministicEvidence: { privateEvidence: 'private-evidence' },
+        allowedCategoryIds: ['cat_visible', 'cat_private'],
+        categoryNames: {
+          cat_visible: 'Visible Category',
+          cat_private: 'Private Category Name',
+        },
+        categoryGroups: { cat_visible: 'visible-group', cat_private: 'private-group' },
+      });
+      const projected: UnresolvedCandidate = {
+        ...original,
+        budgetId: 'authorized-budget',
+        spaceId: 'authorized-space',
+        connectionId: 'authorized-connection',
+        rawMerchant: 'authorized-merchant',
+        normalizedMerchant: 'authorized-merchant',
+        description: 'authorized-description',
+        notes: null,
+        importedPayee: null,
+        importedId: null,
+        deterministicEvidence: { reasonCodes: ['authorized'] },
+        allowedCategoryIds: ['cat_visible'],
+        categoryNames: { cat_visible: 'Visible Category' },
+        categoryGroups: { cat_visible: 'visible-group' },
+      };
+      const authorizeCandidate = vi.fn(async (_candidate: UnresolvedCandidate) => projected);
+      const classify = vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_visible' }));
+      const provider = locality === 'local'
+        ? createFakeLocalProvider({ classify })
+        : createFakeExternalProvider({ classify });
+      const layer = createFakeLayer('rules', { outcome: 'unresolved' });
+      const orchestrator = new Orchestrator({
+        providers: [provider],
+        layers: [layer],
+        authorizeCandidate,
+        policy: createPolicyEngine({
+          capabilities: defaultPolicies({
+            classification: locality === 'local' ? 'local-only' : 'external-allowed',
+          }),
+          providerAllowlists: [{ capability: 'classification', allowedProviderIds: [provider.providerId] }],
+          policyVersion: '1.0',
+        }),
+        redactor: createRedactor(),
+        promptVersion: 'prompt-v1',
+      });
+
+      const [suggestion] = await orchestrator.classify([original]);
+      expect(suggestion.proposedCategoryId).toBe('cat_visible');
+      expect(suggestion.errors).toHaveLength(0);
+
+      expect(authorizeCandidate).toHaveBeenCalledTimes(1);
+      expect(authorizeCandidate).toHaveBeenCalledWith(original);
+      expect(layer.resolve).toHaveBeenCalledTimes(1);
+      expect(layer.resolve).toHaveBeenCalledWith(projected);
+      const request = classify.mock.calls[0]![0]!;
+      expect(request).toMatchObject({
+        transactionId: projected.transactionId,
+        description: locality === 'local' ? 'authorized-description' : '[REDACTED]',
+        notes: null,
+        rawMerchant: locality === 'local' ? 'authorized-merchant' : '[REDACTED]',
+        normalizedMerchant: locality === 'local' ? 'authorized-merchant' : '[REDACTED]',
+        importedPayee: null,
+        allowedCategoryIds: ['cat_visible'],
+        categoryNames: { cat_visible: 'Visible Category' },
+        categoryGroups: { cat_visible: 'visible-group' },
+      });
+      expect(Object.keys(request).sort()).toEqual([
+        'transactionId',
+        'description',
+        'notes',
+        'rawMerchant',
+        'normalizedMerchant',
+        'importedPayee',
+        'amountMinorUnits',
+        'currency',
+        'date',
+        'categoryId',
+        'allowedCategoryIds',
+        'categoryNames',
+        'categoryGroups',
+        'signal',
+      ].sort());
+
+      const providerInput = JSON.stringify(request);
+      for (const hiddenValue of [
+        'private-budget-account',
+        'private-space',
+        'private-connection',
+        'private-raw-merchant',
+        'private-normalized-merchant',
+        'private-description',
+        'private-notes',
+        'private-payee',
+        'private-import',
+        'private-evidence',
+        'Private Category Name',
+        'private-group',
+      ]) {
+        expect(providerInput).not.toContain(hiddenValue);
+      }
+    },
+  );
+
+  it('rechecks authorization on each classify call and stops after revocation', async () => {
+    let authorized = true;
+    const authorizeCandidate = vi.fn((candidate: UnresolvedCandidate) =>
+      authorized ? candidate : null,
+    );
+    const provider = createFakeLocalProvider();
+    const layer = createFakeLayer('rules', { outcome: 'unresolved' });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      authorizeCandidate,
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+    const candidate = makeCandidate();
+
+    const [authorizedSuggestion] = await orchestrator.classify([candidate]);
+    authorized = false;
+    const [revokedSuggestion] = await orchestrator.classify([candidate]);
+
+    expect(authorizeCandidate).toHaveBeenCalledTimes(2);
+    expect(authorizedSuggestion.errors).toHaveLength(0);
+    expect(revokedSuggestion.proposedCategoryId).toBe('');
+    expect(revokedSuggestion.errors).toContain('Candidate authorization denied');
+    expect(layer.resolve).toHaveBeenCalledTimes(1);
+    expect(provider.classify).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let provider output use a category removed by authorization', async () => {
+    const authorizeCandidate = vi.fn((candidate: UnresolvedCandidate) => ({
+      ...candidate,
+      allowedCategoryIds: ['cat_visible'],
+      categoryNames: { cat_visible: 'Visible Category' },
+      categoryGroups: { cat_visible: 'visible-group' },
+    }));
+    const classify = vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_private' }));
+    const provider = createFakeLocalProvider({ classify });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      authorizeCandidate,
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+
+    const [suggestion] = await orchestrator.classify([makeCandidate({
+      allowedCategoryIds: ['cat_visible', 'cat_private'],
+      categoryNames: {
+        cat_visible: 'Visible Category',
+        cat_private: 'Private Category Name',
+      },
+      categoryGroups: { cat_visible: 'visible-group', cat_private: 'private-group' },
+    })]);
+
+    expect(classify.mock.calls[0]![0]!.allowedCategoryIds).toEqual(['cat_visible']);
+    expect(classify.mock.calls[0]![0]!.categoryNames).toEqual({ cat_visible: 'Visible Category' });
+    expect(suggestion.proposedCategoryId).toBe('');
+    expect(suggestion.errors).not.toHaveLength(0);
+  });
+
+  it('does not accept a layer category removed by authorization', async () => {
+    const authorizeCandidate = vi.fn((candidate: UnresolvedCandidate) => ({
+      ...candidate,
+      allowedCategoryIds: ['cat_visible'],
+      categoryNames: { cat_visible: 'Visible Category' },
+      categoryGroups: { cat_visible: 'visible-group' },
+    }));
+    const provider = createFakeLocalProvider();
+    const layer = createFakeLayer('rules', {
+      outcome: 'resolved',
+      categoryId: 'cat_private',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      authorizeCandidate,
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+
+    const [suggestion] = await orchestrator.classify([makeCandidate({
+      allowedCategoryIds: ['cat_visible', 'cat_private'],
+      categoryNames: {
+        cat_visible: 'Visible Category',
+        cat_private: 'Private Category Name',
+      },
+      categoryGroups: { cat_visible: 'visible-group', cat_private: 'private-group' },
+    })]);
+
+    expect(layer.resolve).toHaveBeenCalledWith(expect.objectContaining({
+      allowedCategoryIds: ['cat_visible'],
+      categoryNames: { cat_visible: 'Visible Category' },
+      categoryGroups: { cat_visible: 'visible-group' },
+    }));
+    expect(suggestion.proposedCategoryId).toBe('');
+    expect(suggestion.errors).not.toHaveLength(0);
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when authorization projects no allowed categories', async () => {
+    const authorizeCandidate = vi.fn((candidate: UnresolvedCandidate) => ({
+      ...candidate,
+      allowedCategoryIds: [],
+      categoryNames: {},
+      categoryGroups: {},
+    }));
+    const provider = createFakeLocalProvider();
+    const layer = createFakeLayer('rules', { outcome: 'resolved', categoryId: 'cat_food_dining' });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      authorizeCandidate,
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+
+    const [suggestion] = await orchestrator.classify([makeCandidate({
+      allowedCategoryIds: ['cat_food_dining'],
+      categoryNames: { cat_food_dining: 'Food & Dining' },
+      categoryGroups: { cat_food_dining: 'living' },
+    })]);
+
+    expect(suggestion.proposedCategoryId).toBe('');
+    expect(suggestion.errors).toContain('Candidate authorization denied');
+    expect(layer.resolve).not.toHaveBeenCalled();
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+});
+
+describe('authorization callback failure', () => {
+  it('fails closed with the stable denial suggestion when authorization rejects', async () => {
+    const authorizeCandidate = vi.fn(async (_candidate: UnresolvedCandidate) => {
+      throw new Error('private authorization failure');
+    });
+    const provider = createFakeLocalProvider();
+    const layer = createFakeLayer('rules', {
+      outcome: 'resolved',
+      categoryId: 'cat_housing',
+    });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      layers: [layer],
+      authorizeCandidate,
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+
+    const [suggestion] = await orchestrator.classify([makeCandidate()]);
+
+    expect(suggestion.proposedCategoryId).toBe('');
+    expect(suggestion.categoryId).toBe('');
+    expect(suggestion.reasonCodes).toEqual(['CANDIDATE_AUTHORIZATION_DENIED']);
+    expect(suggestion.errors).toEqual([
+      'CANDIDATE_AUTHORIZATION_DENIED',
+      'Candidate authorization denied',
+    ]);
+    expect(suggestion.errors).not.toContain('private authorization failure');
+    expect(layer.resolve).not.toHaveBeenCalled();
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+});
+
+describe('authorized suggestion projection', () => {
+  it('builds suggestion metadata and evidence only from the authorized projection', async () => {
+    const original = makeCandidate({
+      rawMerchant: 'private-raw-merchant',
+      normalizedMerchant: 'private-normalized-merchant',
+      deterministicEvidence: { privateEvidence: 'private-evidence' },
+      allowedCategoryIds: ['cat_visible', 'cat_private'],
+      categoryNames: {
+        cat_visible: 'Visible Category',
+        cat_private: 'Private Category Name',
+      },
+      categoryGroups: { cat_visible: 'visible-group', cat_private: 'private-group' },
+    });
+    const projected: UnresolvedCandidate = {
+      ...original,
+      rawMerchant: 'authorized-raw-merchant',
+      normalizedMerchant: 'authorized-normalized-merchant',
+      deterministicEvidence: { reasonCodes: ['authorized'] },
+      allowedCategoryIds: ['cat_visible'],
+      categoryNames: { cat_visible: 'Visible Category' },
+      categoryGroups: { cat_visible: 'visible-group' },
+    };
+    const authorizeCandidate = vi.fn(() => projected);
+    const classify = vi.fn().mockResolvedValue(classifyResult({
+      categoryId: 'cat_visible',
+      alternatives: [],
+    }));
+    const provider = createFakeLocalProvider({ classify });
+    const orchestrator = new Orchestrator({
+      providers: [provider],
+      authorizeCandidate,
+      policy: createPolicyEngine({
+        capabilities: defaultPolicies(),
+        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
+        policyVersion: '1.0',
+      }),
+      redactor: createRedactor(),
+      promptVersion: 'prompt-v1',
+    });
+
+    const [suggestion] = await orchestrator.classify([original]);
+
+    expect(suggestion.rawMerchant).toBe('authorized-raw-merchant');
+    expect(suggestion.normalizedMerchant).toBe('authorized-normalized-merchant');
+    expect(suggestion.deterministicEvidence).toEqual({ reasonCodes: ['authorized'] });
+    const output = JSON.stringify(suggestion);
+    expect(output).not.toContain('private-raw-merchant');
+    expect(output).not.toContain('private-normalized-merchant');
+    expect(output).not.toContain('private-evidence');
+    expect(output).not.toContain('Private Category Name');
+    expect(output).not.toContain('private-group');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Orchestrator accepts unresolved candidates
 // ---------------------------------------------------------------------------
 
@@ -130,7 +531,7 @@ describe('accepts unresolved candidates', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -151,7 +552,7 @@ describe('accepts unresolved candidates', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -176,7 +577,7 @@ describe('calls providers only for candidates', () => {
   it('calls provider for each unresolved candidate', async () => {
     const classify = vi.fn().mockResolvedValue(classifyResult());
     const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -195,7 +596,7 @@ describe('calls providers only for candidates', () => {
   it('does not call provider when classification is disabled', async () => {
     const classify = vi.fn().mockResolvedValue(classifyResult());
     const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: { classification: 'disabled', merchantResearch: 'disabled', conversation: 'disabled', telemetry: 'disabled' },
@@ -221,7 +622,7 @@ describe('validates provider output with Zod', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -245,7 +646,7 @@ describe('validates provider output with Zod', () => {
         model: 'test-model',
       } as unknown as ClassificationResult),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -270,7 +671,7 @@ describe('validates provider output with Zod', () => {
         model: 'test-model',
       } as unknown as ClassificationResult),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -294,7 +695,7 @@ describe('timeout/outage safety', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockRejectedValue(new Error('Provider timeout after 10s')),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -314,7 +715,7 @@ describe('timeout/outage safety', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockRejectedValue(new Error('NetworkError: fetch failed')),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -335,7 +736,7 @@ describe('timeout/outage safety', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockRejectedValue(new Error('Provider timeout')),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -362,7 +763,7 @@ describe('produces immutable structured suggestion data', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -395,7 +796,7 @@ describe('produces immutable structured suggestion data', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -418,7 +819,7 @@ describe('produces immutable structured suggestion data', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -444,7 +845,7 @@ describe('provenance tracking', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -462,7 +863,7 @@ describe('provenance tracking', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ model: 'gpt-4-turbo' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -480,7 +881,7 @@ describe('provenance tracking', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -498,7 +899,7 @@ describe('provenance tracking', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -516,7 +917,7 @@ describe('provenance tracking', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -546,7 +947,7 @@ describe('local-only routing', () => {
     const externalProv = createFakeExternalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_other' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [localProv, externalProv],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -578,7 +979,7 @@ describe('external-allowed routing', () => {
     const externalProv = createFakeExternalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_other' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [localProv, externalProv],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'external-allowed' }),
@@ -604,7 +1005,7 @@ describe('redaction before external routing', () => {
   it('redacts description containing injection before sending to external provider', async () => {
     const classify = vi.fn().mockResolvedValue(classifyResult());
     const provider = createFakeExternalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'external-allowed' }),
@@ -624,7 +1025,7 @@ describe('redaction before external routing', () => {
   it('does not redact description before sending to local provider', async () => {
     const classify = vi.fn().mockResolvedValue(classifyResult());
     const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -651,7 +1052,7 @@ describe('external denial', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies({ classification: 'local-only' }),
@@ -696,7 +1097,7 @@ describe('ProviderAdapter interface', () => {
 describe('candidate eligibility', () => {
   it('rejects candidate with empty transactionId', async () => {
     const provider = createFakeLocalProvider();
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -713,7 +1114,7 @@ describe('candidate eligibility', () => {
 
   it('rejects candidate with zero-length transactionVersion', async () => {
     const provider = createFakeLocalProvider();
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -730,7 +1131,7 @@ describe('candidate eligibility', () => {
 
   it('rejects candidate with empty budgetId', async () => {
     const provider = createFakeLocalProvider();
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -755,7 +1156,7 @@ describe('deterministic idempotency', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_food' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -779,7 +1180,7 @@ describe('deterministic idempotency', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_food' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -798,7 +1199,7 @@ describe('deterministic idempotency', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_food' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -825,7 +1226,7 @@ describe('provider deadlines / cancellation', () => {
       return classifyResult();
     });
     const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -856,7 +1257,7 @@ describe('provider deadlines / cancellation', () => {
       return classifyResult();
     });
     const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -881,34 +1282,11 @@ describe('provider deadlines / cancellation', () => {
 // ---------------------------------------------------------------------------
 
 describe('category context in classify request', () => {
-  it('includes category context fields in request with defaults', async () => {
-    const classify = vi.fn().mockResolvedValue(classifyResult());
-    const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
-      providers: [provider],
-      policy: createPolicyEngine({
-        capabilities: defaultPolicies(),
-        providerAllowlists: [{ capability: 'classification', allowedProviderIds: ['test-local'] }],
-        policyVersion: '1.0',
-      }),
-      redactor: createRedactor(),
-      promptVersion: 'prompt-v1',
-    });
-    await orchestrator.classify([makeCandidate()]);
-    const requestArg = classify.mock.calls[0][0];
-    expect(requestArg).toHaveProperty('allowedCategoryIds');
-    expect(requestArg).toHaveProperty('categoryNames');
-    expect(requestArg).toHaveProperty('categoryGroups');
-    // Defaults when candidate has no category context
-    expect(requestArg.allowedCategoryIds).toEqual([]);
-    expect(requestArg.categoryNames).toEqual({});
-    expect(requestArg.categoryGroups).toEqual({});
-  });
 
   it('propagates category context from candidate to request', async () => {
     const classify = vi.fn().mockResolvedValue(classifyResult());
     const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -945,7 +1323,7 @@ describe('authoritative layer resolution', () => {
       categoryId: 'cat_housing',
       rationale: 'Rent payment detected by rules engine',
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       layers: [layer],
       policy: createPolicyEngine({
@@ -972,7 +1350,7 @@ describe('authoritative layer resolution', () => {
     const layer = createFakeLayer('rules', {
       outcome: 'unresolved',
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       layers: [layer],
       policy: createPolicyEngine({
@@ -996,7 +1374,7 @@ describe('authoritative layer resolution', () => {
       outcome: 'blocked',
       error: 'Transaction blocked by compliance rule',
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       layers: [layer],
       policy: createPolicyEngine({
@@ -1025,7 +1403,7 @@ describe('authoritative layer resolution', () => {
     const layer2 = createFakeLayer('rules', {
       outcome: 'unresolved',
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       layers: [layer1, layer2],
       policy: createPolicyEngine({
@@ -1055,7 +1433,7 @@ describe('authoritative layer resolution', () => {
       outcome: 'resolved',
       categoryId: 'cat_transport',
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       layers: [layer1, layer2],
       policy: createPolicyEngine({
@@ -1075,7 +1453,7 @@ describe('authoritative layer resolution', () => {
   it('no layers configured works identically', async () => {
     const classify = vi.fn().mockResolvedValue(classifyResult());
     const provider = createFakeLocalProvider({ classify });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1096,7 +1474,7 @@ describe('authoritative layer resolution', () => {
       layerId: 'faulty',
       resolve: vi.fn().mockRejectedValue(new Error('Layer crash')),
     };
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       layers: [layer],
       policy: createPolicyEngine({
@@ -1120,7 +1498,7 @@ describe('authoritative layer resolution', () => {
       outcome: 'blocked',
       error: 'High-risk category blocked',
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       layers: [layer],
       policy: createPolicyEngine({
@@ -1150,7 +1528,7 @@ describe('immutable suggestion output', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1170,7 +1548,7 @@ describe('immutable suggestion output', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1196,7 +1574,7 @@ describe('immutable suggestion output', () => {
         alternatives: Object.freeze([{ categoryId: 'cat_a', reason: 'test' }]),
       })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1222,7 +1600,7 @@ describe('backward-compatible convenience fields', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_food_dining' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1241,7 +1619,7 @@ describe('backward-compatible convenience fields', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockRejectedValue(new Error('Provider failure')),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1260,7 +1638,7 @@ describe('backward-compatible convenience fields', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult()),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1279,7 +1657,7 @@ describe('backward-compatible convenience fields', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockRejectedValue(new Error('Timeout')),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1306,7 +1684,7 @@ describe('error suggestion for manual-review routing', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockRejectedValue(new Error('Provider failure')),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1327,7 +1705,7 @@ describe('error suggestion for manual-review routing', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockRejectedValue(new Error('Timeout')),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1360,7 +1738,7 @@ describe('full provenance on suggestion output', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ model: 'gpt-4' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),
@@ -1383,7 +1761,7 @@ describe('full provenance on suggestion output', () => {
     const provider = createFakeLocalProvider({
       classify: vi.fn().mockResolvedValue(classifyResult({ categoryId: 'cat_food', model: 'v1' })),
     });
-    const orchestrator = new Orchestrator({
+    const orchestrator = createAuthorizedOrchestrator({
       providers: [provider],
       policy: createPolicyEngine({
         capabilities: defaultPolicies(),

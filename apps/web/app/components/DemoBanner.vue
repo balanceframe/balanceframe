@@ -12,6 +12,10 @@
       <p v-else>Scenario unavailable</p>
       <p v-if="personaLabel">Persona: {{ personaLabel }}</p>
       <p class="font-medium">Fictional data — changes affect this shared demo instance</p>
+      <p class="basis-full font-medium">
+        For guarded actions as this fictional persona, type CONFIRM in the confirmation field.
+        This is disposable-demo confirmation, not your account password; fictional passwords stay private.
+      </p>
       <p v-if="state?.status === 'failed'" role="alert" class="basis-full">
         This demo scenario could not be prepared.
         <NuxtLink
@@ -70,6 +74,8 @@ const personaLabel = computed(() => {
   switch (state.value?.personaId) {
     case 'owner':
       return 'Fictional owner';
+    case 'approver':
+      return 'Fictional independent approver';
     case 'coapprover':
       return 'Fictional co-approver';
     case 'restricted':

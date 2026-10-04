@@ -4,7 +4,6 @@ import type {
   LiquidityPurchaseIntent,
   SpendSessionIntent,
 } from '@balanceframe/application';
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 
 import type {
   MaterializedScenario,
@@ -36,9 +35,11 @@ type CompletionResponse = {
 
 export interface ScenarioPersonaCredentials {
   readonly actorId: string;
+  readonly spaceId: string;
+  readonly membershipId: string;
   readonly email: string;
   readonly password: string;
-  /** Cookie name/value pairs obtained from Better Auth sign-in. */
+  /** Current Better Auth, selected-space and human-proof cookie name/value pairs. */
   readonly cookieHeader: string;
 }
 
@@ -54,6 +55,7 @@ export type ScenarioMappedEntry =
     };
 
 export interface ScenarioInitialized {
+  readonly spaceId: string;
   readonly budgetId: string;
   readonly groupId: string;
   readonly ids: SeededEntityIds;
@@ -200,31 +202,43 @@ export class ScenarioHttpClient {
   private readonly publicOrigin: URL;
   private readonly internalSecret: string | undefined;
   private readonly cookies = new Map<string, string>();
+  private selectedSpaceId: string | undefined;
 
+  /** Creates an origin-bound client with an independent cookie jar. */
   constructor(webUrl: string, publicOrigin: string, internalSecret?: string) {
     this.webUrl = assertLoopbackHttpUrl(webUrl, 'webUrl');
     this.publicOrigin = assertPublicOrigin(publicOrigin);
     this.internalSecret = internalSecret;
   }
 
+  /** Returns current session, selection and reauthentication cookies. */
   get cookieHeader(): string {
     return [...this.cookies].map(([name, value]) => `${name}=${value}`).join('; ');
   }
 
+  /** Reads a selected-space endpoint as this client's signed-in persona. */
   async get(path: string): Promise<unknown> {
     return this.request('GET', path);
   }
 
+  /** Posts an application request without client-supplied authority overrides. */
   async post(path: string, body: JsonObject): Promise<unknown> {
     return this.request('POST', path, body);
   }
 
+  /** Replaces application state inside the server-verified selected space. */
   async put(path: string, body: JsonObject): Promise<unknown> {
     return this.request('PUT', path, body);
   }
 
+  /** Signs in independently and returns the server-verified actor ID. */
   async signIn(email: string, password: string): Promise<string> {
     await this.post('/api/auth/sign-in/email', { email, password });
+    return this.currentActorId();
+  }
+
+  /** Resolves the authenticated Source session established by sign-in or invitation redemption. */
+  async currentActorId(): Promise<string> {
     const body = await this.get('/api/auth/get-session');
     const candidate = object(body, 'Better Auth get-session response');
     const sessionData = candidate.data === null ? candidate : object(candidate.data ?? candidate, 'session data');
@@ -233,7 +247,22 @@ export class ScenarioHttpClient {
     return actorId;
   }
 
-  private async request(method: string, path: string, body?: JsonObject): Promise<unknown> {
+  /** Obtains a fresh human control proof using this persona's own password. */
+  async reauthenticate(password: string): Promise<void> {
+    await this.post('/api/reauth', { password });
+  }
+
+  /** Selects a current membership through Source and retains its selection cookie. */
+  async selectSpace(spaceId: string): Promise<void> {
+    const selected = resultObject(
+      await this.request('POST', `/api/spaces/${spaceId}/select`, {}, spaceId), 'space selection',
+    );
+    if (string(object(selected.space, 'selected space').id, 'selected space ID') !== spaceId)
+      throw new Error('Source selected a different scenario space');
+    this.selectedSpaceId = spaceId;
+  }
+
+  private async request(method: string, path: string, body?: JsonObject, spaceId = this.selectedSpaceId): Promise<unknown> {
     if (!path.startsWith('/') || path.startsWith('//')) throw new Error('Scenario HTTP path must be relative');
     const headers: Record<string, string> = {
       accept: 'application/json',
@@ -243,6 +272,7 @@ export class ScenarioHttpClient {
       'x-forwarded-proto': this.publicOrigin.protocol.slice(0, -1),
     };
     if (this.internalSecret) headers['x-balanceframe-demo-internal'] = this.internalSecret;
+    if (spaceId) headers['x-balanceframe-space'] = spaceId;
     const cookie = this.cookieHeader;
     if (cookie) headers.cookie = cookie;
     if (body !== undefined) headers['content-type'] = 'application/json';
@@ -526,78 +556,39 @@ function invitationToken(value: unknown): string {
   return token;
 }
 
-async function provisionMemberships(
-  workflowDbPath: string,
-  budgetId: string,
-  personas: readonly ScenarioPersona[],
-  credentials: Readonly<Record<string, ScenarioPersonaCredentials>>,
-  ownerPersonaId: string,
-): Promise<void> {
-  const store = new SqliteWorkflowStore(workflowDbPath);
-  try {
-    const ownerPersona = personas.find(
-      (persona) => persona.id === ownerPersonaId || persona.role === 'owner',
-    );
-    if (!ownerPersona) throw new Error('Scenario must define an owner persona');
-    const owner = credentials[ownerPersona.id];
-    if (!owner) throw new Error('Missing credentials for owner persona');
-    await store.upsertActorMembership(
-      owner.actorId,
-      'active',
-      [
-        'observe',
-        'finding:transition',
-        'notification:receive',
-        'notification:admin',
-        'categorization:execute',
-        'rule:execute',
-        ...ownerPersona.membership.capabilities.map((capability) => `liquidity:${capability}`),
-      ],
-      '*',
-    );
-    const actorIds = new Set([owner.actorId]);
-    for (const persona of personas) {
-      if (persona.id === ownerPersonaId || persona.role === 'owner') continue;
-      const actor = credentials[persona.id];
-      if (!actor) throw new Error(`Missing credentials for persona ${persona.id}`);
-      if (actorIds.has(actor.actorId))
-        throw new Error(`Persona ${persona.id} resolved to a duplicate actor`);
-      actorIds.add(actor.actorId);
-      const capabilities = [
-        'observe',
-        ...persona.membership.capabilities.map((capability) => `liquidity:${capability}`),
-      ];
-      await store.upsertActorMembership(
-        actor.actorId,
-        persona.membership.status,
-        [...new Set(capabilities)],
-        `budget:${budgetId}`,
-      );
-    }
-  } finally {
-    store.close();
-  }
-}
 
 async function saveScenarioGrants(
   client: ScenarioHttpClient,
   scenario: MaterializedScenario,
   credentials: Readonly<Record<string, ScenarioPersonaCredentials>>,
-  ids: SeededEntityIds,
+  ids: SeededActualBudget,
   budgetId: string,
 ): Promise<void> {
-  const grants = scenario.personas.flatMap((persona) => {
+  for (const persona of scenario.personas) {
     const actor = credentials[persona.id];
     if (!actor) throw new Error(`Missing credentials for grant persona ${persona.id}`);
-    return persona.grants.map((grant) => ({
-      actorId: actor.actorId,
-      resourceKind: grant.resourceKind,
-      resourceId: mapGrantResource(grant.resourceKind, grant.resourceId, ids, budgetId),
-      capability: grant.capability,
-      granted: grant.granted,
+    const grants = persona.grants.map((grant) => ({
+      ...grant, resourceId: mapGrantResource(grant.resourceKind, grant.resourceId, ids, budgetId),
     }));
-  });
-  if (grants.length > 0) await client.put('/api/liquidity/grants', { grants });
+    if (persona.grants.some((grant) => grant.resourceKind === 'budget' && grant.capability === 'full-read' && grant.granted)) {
+      // Full-read covers the real selected-budget baseline, never generated-resource write authority.
+      const readCapabilities = ['full-read', 'conclusion', 'existence', 'name', 'balance', 'history', 'source', 'liquidity', 'category'] as const;
+      const explicit = new Set(grants.map((grant) => `${grant.resourceKind}:${grant.resourceId}:${grant.capability}`));
+      for (const resource of ids.readResources)
+        for (const capability of readCapabilities)
+          if (!explicit.has(`${resource.resourceKind}:${resource.resourceId}:${capability}`))
+            grants.push({ ...resource, capability, granted: true });
+    }
+    for (const grant of grants) {
+      await client.put(`/api/spaces/${actor.spaceId}/grants`, {
+        membershipId: actor.membershipId,
+        resourceKind: grant.resourceKind,
+        resourceId: grant.resourceId,
+        capability: grant.capability,
+        granted: grant.granted,
+      });
+    }
+  }
 }
 
 async function initializePersonas(
@@ -609,6 +600,7 @@ async function initializePersonas(
   internalSecret?: string,
 ): Promise<{
   readonly ownerPersonaId: string;
+  readonly spaceId: string;
   readonly clients: Readonly<Record<string, ScenarioHttpClient>>;
   readonly credentials: Readonly<Record<string, ScenarioPersonaCredentials>>;
 }> {
@@ -622,10 +614,18 @@ async function initializePersonas(
     bootstrapSecret,
   });
   const ownerActorId = await ownerClient.signIn(ownerCredentials.email, ownerCredentials.password);
+  await ownerClient.reauthenticate(ownerCredentials.password);
+  const created = resultObject(await ownerClient.post('/api/spaces', {
+    name: `Scenario ${scenario.id}`,
+    kind: scenario.personas.length === 1 ? 'personal' : 'shared',
+  }), 'scenario space creation');
+  const spaceId = string(object(created.space, 'scenario space').id, 'scenario space ID');
+  await ownerClient.selectSpace(spaceId);
   const clients: Record<string, ScenarioHttpClient> = { [ownerPersona.id]: ownerClient };
-  const credentials: Record<string, ScenarioPersonaCredentials> = {
+  const identities: Record<string, Omit<ScenarioPersonaCredentials, 'membershipId'>> = {
     [ownerPersona.id]: {
       actorId: ownerActorId,
+      spaceId,
       email: ownerCredentials.email,
       password: ownerCredentials.password,
       cookieHeader: ownerClient.cookieHeader,
@@ -634,27 +634,48 @@ async function initializePersonas(
 
   for (const persona of scenario.personas) {
     if (persona.id === ownerPersona.id) continue;
+    await ownerClient.reauthenticate(ownerCredentials.password);
     const invited = await ownerClient.post('/api/invitations', {});
     const token = invitationToken(invited);
     const personaCredentials = credentialsFor(persona, scenario.id);
     const anonymousClient = new ScenarioHttpClient(webUrl, publicOrigin, internalSecret);
-    await anonymousClient.post('/api/invitations/redeem', {
+    const redeemed = resultObject(await anonymousClient.post('/api/invitations/redeem', {
       token,
       name: persona.displayName,
       email: personaCredentials.email,
       password: personaCredentials.password,
-    });
-    const client = new ScenarioHttpClient(webUrl, publicOrigin, internalSecret);
-    const actorId = await client.signIn(personaCredentials.email, personaCredentials.password);
+    }), 'scenario invitation redemption');
+    if (redeemed.spaceId !== spaceId) throw new Error('Invitation redeemed into a different scenario space');
+    const client = anonymousClient;
+    const actorId = await client.currentActorId();
+    await client.selectSpace(spaceId);
     clients[persona.id] = client;
-    credentials[persona.id] = {
+    identities[persona.id] = {
       actorId,
+      spaceId,
       email: personaCredentials.email,
       password: personaCredentials.password,
       cookieHeader: client.cookieHeader,
     };
   }
-  return { ownerPersonaId: ownerPersona.id, clients, credentials };
+  const membershipResult = resultObject(
+    await ownerClient.get(`/api/spaces/${spaceId}/memberships`), 'scenario memberships',
+  );
+  if (!Array.isArray(membershipResult.memberships)) throw new Error('Scenario memberships must be an array');
+  const actorIds = new Set<string>();
+  const credentials: Record<string, ScenarioPersonaCredentials> = {};
+  for (const persona of scenario.personas) {
+    const credential = identities[persona.id]!;
+    if (actorIds.has(credential.actorId)) throw new Error(`Persona ${persona.id} resolved to a duplicate actor`);
+    actorIds.add(credential.actorId);
+    const membership = membershipResult.memberships.map((value) => object(value, 'scenario membership'))
+      .find((member) => member.actorId === credential.actorId && member.revokedAt === null &&
+        typeof member.validFrom === 'string' && Date.parse(member.validFrom) <= Date.now() &&
+        (member.validUntil === null || (typeof member.validUntil === 'string' && Date.parse(member.validUntil) > Date.now())));
+    if (!membership) throw new Error(`Persona ${persona.id} has no current scenario membership`);
+    credentials[persona.id] = { ...credential, membershipId: string(membership.id, 'scenario membership ID') };
+  }
+  return { ownerPersonaId: ownerPersona.id, spaceId, clients, credentials };
 }
 
 async function initializeSessions(
@@ -705,6 +726,7 @@ async function initializeClaims(
 async function initializeCompletions(
   ownerClient: ScenarioHttpClient,
   clients: Readonly<Record<string, ScenarioHttpClient>>,
+  credentials: Readonly<Record<string, ScenarioPersonaCredentials>>,
   scenario: MaterializedScenario,
   sessions: Readonly<Record<string, string>>,
   versions: Readonly<Record<string, number>>,
@@ -733,6 +755,7 @@ async function initializeCompletions(
     if (recipe.stage !== 'proposed') {
       completion = await approveCompletion(
         clients,
+        credentials,
         scenario,
         recipe,
         completionKey,
@@ -743,6 +766,9 @@ async function initializeCompletions(
     if (recipe.stage === 'verified') {
       if (!completion.payloadHash)
         throw new Error(`Completion ${completionKey} has no payload hash before execution`);
+      const owner = scenario.personas.find((persona) => persona.role === 'owner');
+      if (!owner) throw new Error('Scenario must define an owner persona');
+      await ownerClient.reauthenticate(credentials[owner.id]!.password);
       completion = assertCompletionResponse(
         await ownerClient.post(
           `/api/spend-sessions/${sessionId}/completions/${completion.id}/execute`,
@@ -766,6 +792,7 @@ async function initializeCompletions(
 
 async function approveCompletion(
   clients: Readonly<Record<string, ScenarioHttpClient>>,
+  credentials: Readonly<Record<string, ScenarioPersonaCredentials>>,
   scenario: MaterializedScenario,
   recipe: ScenarioCompletionRecipe,
   completionKey: string,
@@ -778,6 +805,9 @@ async function approveCompletion(
     const client = clients[approverId];
     if (!client) throw new Error(`Completion ${completionKey} references unknown approver ${approverId}`);
     if (!current.payloadHash) throw new Error(`Completion ${completionKey} has no payload hash`);
+    const credential = credentials[approverId];
+    if (!credential) throw new Error(`Missing credentials for approver ${approverId}`);
+    await client.reauthenticate(credential.password);
     current = assertCompletionResponse(
       await client.post(`/api/spend-sessions/${sessionId}/completions/${current.id}/approve`, {
         payloadHash: current.payloadHash,
@@ -790,13 +820,13 @@ async function approveCompletion(
   return current;
 }
 
+/** Initializes real scenario identities, exact Native grants and live Actual-backed workflows. */
 export async function initializeScenarioWorkflow(options: {
   readonly scenario: MaterializedScenario;
   readonly seeded: SeededActualBudget;
   readonly webUrl: string;
   readonly publicOrigin: string;
   readonly bootstrapSecret: string;
-  readonly workflowDbPath: string;
   readonly internalSecret?: string;
 }): Promise<ScenarioInitialized> {
   const client = new ScenarioHttpClient(options.webUrl, options.publicOrigin, options.internalSecret);
@@ -809,13 +839,8 @@ export async function initializeScenarioWorkflow(options: {
     options.webUrl,
     options.internalSecret,
   );
-  await provisionMemberships(
-    options.workflowDbPath,
-    seeded.budgetId,
-    scenario.personas,
-    personas.credentials,
-    personas.ownerPersonaId,
-  );
+  const ownerCredential = personas.credentials[personas.ownerPersonaId]!;
+  await client.reauthenticate(ownerCredential.password);
   const connection = resultObject(
     await client.post('/api/connection', { budgetId: seeded.budgetId }),
     'Actual connection',
@@ -827,6 +852,10 @@ export async function initializeScenarioWorkflow(options: {
   )
     throw new Error('Actual connection returned a different seeded budget');
 
+  await client.reauthenticate(ownerCredential.password);
+  await saveScenarioGrants(client, scenario, personas.credentials, seeded, seeded.budgetId);
+
+  await client.reauthenticate(ownerCredential.password);
   const policy = mapPolicy(scenario.policy, seeded);
   const policyResult = assertConfiguration(
     await client.put('/api/liquidity/policy', { expectedVersion: null, ...policy }),
@@ -836,6 +865,7 @@ export async function initializeScenarioWorkflow(options: {
     policyResult.observationVersion,
     'liquidity policy observationVersion',
   );
+  await client.reauthenticate(ownerCredential.password);
   assertConfiguration(
     await client.put('/api/liquidity/observations', {
       expectedVersion: observationVersion,
@@ -846,7 +876,6 @@ export async function initializeScenarioWorkflow(options: {
 
   const ownerClient = personas.clients[personas.ownerPersonaId];
   if (!ownerClient) throw new Error('Owner client unavailable');
-  await saveScenarioGrants(ownerClient, scenario, personas.credentials, seeded, seeded.budgetId);
   resultObject(await ownerClient.get('/api/liquidity/grants'), 'liquidity grants');
   const sessionState = await initializeSessions(ownerClient, scenario, seeded);
   const claims = await initializeClaims(
@@ -859,16 +888,20 @@ export async function initializeScenarioWorkflow(options: {
   const completions = await initializeCompletions(
     ownerClient,
     personas.clients,
+    personas.credentials,
     scenario,
     sessionState.sessions,
     sessionState.versions,
   );
 
   return {
+    spaceId: personas.spaceId,
     budgetId: seeded.budgetId,
     groupId: seeded.groupId,
     ids: seeded,
-    personas: personas.credentials,
+    personas: Object.fromEntries(Object.entries(personas.credentials).map(([id, credential]) => [
+      id, { ...credential, cookieHeader: personas.clients[id]!.cookieHeader },
+    ])),
     sessions: sessionState.sessions,
     claims,
     completions,

@@ -188,6 +188,10 @@ pnpm demo --scenario rich-cart
 
 Scenario account attestations are explicit, fictional source evidence, not bank imports; missing or expired attestations keep the Card at `insufficient_data`. Reset regenerates only the active instance's credentials, budget, sessions and attestations; another runner is independent.
 
+Scenario setup creates a real personal/shared space, accepts space-scoped invitations into current membership periods, and installs the catalog's exact resource grants. An explicit selected-budget full-read grant is resolved into finite read-only scopes for the real Actual baseline, including generated balances and default categories; it grants no extra write/control authority. Every persona has independent Better Auth credentials and selected-space cookies, and completions use independent scoped approvers rather than the requester. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this explicitly renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.
+
+Scoped completion approvers have explicit selected-budget liquidity admission for Native Card revalidation and exact grants for their completion's canonical accounts and categories. Persona roles infer no private history/source/full-read, execution, or control authority.
+
 ### Release
 
 ```bash

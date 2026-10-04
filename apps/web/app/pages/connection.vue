@@ -28,12 +28,20 @@
         class="mb-4"
       />
 
+      <form class="mb-4 space-y-3" @submit.prevent="loadBudgets">
+        <label class="grid gap-1 text-sm">
+          {{ demoMode ? 'Disposable-demo confirmation (type CONFIRM)' : 'Account password' }}
+          <input v-model="password" type="password" autocomplete="current-password" required class="rounded border bg-transparent p-2" />
+        </label>
+        <UButton type="button" label="Load available budgets" :disabled="loading || saving || !password" @click="loadBudgets" />
+      </form>
+
       <div v-if="loading" class="text-sm text-gray-500">Loading Actual budgets…</div>
-      <div v-else-if="budgets.length === 0" class="text-sm text-gray-500">
+      <div v-else-if="loaded && budgets.length === 0" class="text-sm text-gray-500">
         No Actual budgets were returned. Check ACTUAL_SERVER_URL and ACTUAL_SECRET_KEY in the
         container environment.
       </div>
-      <div v-else class="space-y-3">
+      <div v-else-if="budgets.length" class="space-y-3">
         <label
           v-for="budget in budgets"
           :key="budget.id || budget.groupId"
@@ -54,7 +62,7 @@
         </label>
         <UButton
           :loading="saving"
-          :disabled="!selectedBudgetId || saving"
+          :disabled="!selectedBudgetId || loading || saving"
           label="Save connection"
           @click="saveConnection"
         />
@@ -64,6 +72,12 @@
 </template>
 
 <script setup lang="ts">
+import { reauthenticateHuman } from '../utils/reauthentication';
+
+const demoMode = useRuntimeConfig().public.demoMode === true;
+const password = ref('');
+const loaded = ref(false);
+
 interface Budget {
   id: string;
   groupId: string;
@@ -78,30 +92,40 @@ interface Envelope<T> {
 
 const budgets = ref<Budget[]>([]);
 const selectedBudgetId = ref('');
-const loading = ref(true);
+const loading = ref(false);
 const saving = ref(false);
 const connected = ref(false);
 const error = ref('');
 
 async function loadBudgets(): Promise<void> {
+  if (loading.value || saving.value || !password.value) return;
   loading.value = true;
   error.value = '';
+  loaded.value = false;
+  connected.value = false;
+  budgets.value = [];
+  selectedBudgetId.value = '';
+  let passwordSnapshot = password.value;
+  password.value = '';
   try {
+    await reauthenticateHuman(passwordSnapshot);
+    passwordSnapshot = '';
     const response = await $fetch<Envelope<{ budgets: Budget[] }>>('/api/connection/budgets');
     if (response.status !== 'ok' || !response.result) {
       throw new Error(response.error?.message ?? 'Unable to list Actual budgets.');
     }
     budgets.value = response.result.budgets;
-    selectedBudgetId.value = budgets.value[0]?.id || budgets.value[0]?.groupId || '';
+    loaded.value = true;
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
+    passwordSnapshot = '';
     loading.value = false;
   }
 }
 
 async function saveConnection(): Promise<void> {
-  if (!selectedBudgetId.value || saving.value) return;
+  if (!selectedBudgetId.value || loading.value || saving.value) return;
   saving.value = true;
   connected.value = false;
   error.value = '';
@@ -121,7 +145,4 @@ async function saveConnection(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void loadBudgets();
-});
 </script>

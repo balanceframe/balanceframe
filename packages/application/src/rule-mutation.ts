@@ -1,35 +1,25 @@
 /**
- * RuleMutationService — orchestrates the proposal-driven rule creation flow.
- *
- * Follows the same pattern as CategorizationMutationService but for
- * rule creation via ledger.createRule().
- *
- * Flow summary:
- *   1. Load proposal — verifies existence, not superseded, not expired
- *   2. Authorization — membership, capability, scope
- *   3. Idempotency claim — create record; completed -> replay;
- *      in-flight -> conflict; else proceed
- *   4. Load approval — exact proposalId + payloadHash binding,
- *      operation check, status checks (active, not consumed/expired/superseded)
- *   5. Consume approval — one-time lock preventing concurrent execution
- *   6. Audit: execution started
- *   7. Latest snapshot via ledger.synchronize()
- *   8. Plan via Rust planCreateRule
- *   9. Stale precondition check
- *  10. Write via ledger.createRule
- *  11. Reread + Rust verifyRuleMutation
- *  12. Complete idempotency record (error if verification failed)
- *  13. Append completion/failure audit
- *  14. Return result — success = verified
+ * Executes governed rule proposals through atomic approval acquisition, fresh
+ * native planning, Actual writes, and postcondition verification.
  */
 
+import { createRequire } from 'node:module';
+import {
+  canonicalProposalJson,
+  deriveActualRuleCategoryGroupReferences,
+  GENERIC_MUTATION_POLICY_VERSION,
+  ProposalAcquisitionError,
+} from '@balanceframe/workflow-store';
 import type {
   WorkflowStore,
   ActionProposal,
-  IdempotencyClaim,
   IdempotencyRecord,
   AuditRecord,
-  AuthorizationResult,
+  AuthorizationDisposition,
+  ProposalExecutionAcquisition,
+  OperationalAuth,
+  RuleOverride,
+  RuleOverrideScope,
 } from '@balanceframe/workflow-store';
 
 import type {
@@ -39,43 +29,179 @@ import type {
   RuleProposal,
 } from '@balanceframe/actual-adapter';
 
+import type {
+  AutomationRule,
+  RuleDeletePrecondition,
+} from '@balanceframe/actual-adapter';
+import { z } from 'zod';
 import type { ProtocolSnapshot } from '@balanceframe/protocol-generated';
 
-import { VerificationResult } from './mutation.js';
+import type { VerificationResult } from './mutation.js';
 
 // ---------------------------------------------------------------------------
 // Rule proposal input / plan types
 // ---------------------------------------------------------------------------
 
-/** Input to plan a rule mutation (pre-execution planning). */
+/** Input to plan the one supported Actual categorization-rule form. */
 export interface RuleProposalInput {
-  /** Human-readable rule name. */
   name: string;
-  /** Rule trigger conditions. */
   conditions: unknown[];
-  /** Rule actions to execute when triggered. */
   actions: unknown[];
-  /** Budget this rule belongs to. */
   budgetId: string;
+  stage?: 'pre' | 'post' | null;
+  conditionsOp?: 'and' | 'or';
 }
 
-/** Plan produced by the Rust protocol for a rule mutation. */
+export interface RuleMutationCondition {
+  field: string;
+  operation: string;
+  value: string;
+}
+
+/** Exact CreateRulePlan JSON produced by the compiled native binding. */
 export interface RuleMutationPlan {
-  /** Stable plan identifier. */
   planId: string;
-  /** Name of the rule to create. */
   ruleName: string;
-  /** Preconditions that must hold for safe execution. */
-  preconditions: {
-    /** Whether the rule name is available (no collision). */
-    ruleNameAvailable: boolean;
+  trigger: Record<string, unknown>;
+  actions: Array<Record<string, unknown>>;
+  hash: string;
+  conditions: RuleMutationCondition[];
+}
+
+const ruleMutationPlanSchema = z
+  .object({
+    planId: z.string().min(1),
+    ruleName: z.string(),
+    trigger: z.record(z.unknown()),
+    actions: z.array(z.record(z.unknown())),
+    hash: z.string().min(1),
+    conditions: z
+      .array(
+        z
+          .object({
+            field: z.string(),
+            operation: z.string(),
+            value: z.string(),
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict();
+
+function rulePlanIntent(plan: RuleMutationPlan): Omit<RuleMutationPlan, 'planId'> {
+  return {
+    ruleName: plan.ruleName,
+    trigger: plan.trigger,
+    actions: plan.actions,
+    hash: plan.hash,
+    conditions: plan.conditions,
   };
-  /** Expected outcome of the mutation. */
-  expectedOutcome: {
-    name: string;
-    trigger: unknown;
-    actions: unknown;
+}
+
+const ruleSimulationResultSchema = z
+  .object({
+    ruleId: z.string(),
+    name: z.string(),
+    transactionsMatched: z.number().int().nonnegative(),
+    transactionsAffected: z.array(z.string()),
+    categoryDistribution: z.record(z.number().int().nonnegative()),
+    conflicts: z.array(z.string()),
+    examples: z.array(
+      z
+        .object({
+          txId: z.string(),
+          payee: z.string().nullable(),
+          amount: z.object({ minorUnits: z.string(), currency: z.string() }).strict(),
+          currentCategory: z.string().nullable(),
+          wouldChange: z.boolean(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+const verificationResultSchema = z
+  .object({
+    verified: z.boolean(),
+    reasonCodes: z.array(z.string()),
+    message: z.string().nullable(),
+  })
+  .strict();
+
+interface RuleLifecycleSnapshot extends AutomationRule {
+  stage: 'pre' | 'post' | null;
+  conditionsOp: 'and' | 'or';
+}
+
+const ruleLifecycleSnapshotSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string(),
+    order: z.number().int().nonnegative(),
+    trigger: z.array(z.unknown()),
+    actions: z.array(z.unknown()),
+    inactive: z.boolean(),
+    stage: z.enum(['pre', 'post']).nullable(),
+    conditionsOp: z.enum(['and', 'or']),
+  })
+  .strict();
+
+const ruleOverrideStateSchema = z
+  .object({
+    ruleId: z.string().min(1),
+    inactive: z.boolean().nullable(),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const ruleLifecyclePreconditionsSchema = z
+  .object({
+    rule: ruleLifecycleSnapshotSchema,
+    override: ruleOverrideStateSchema.nullable(),
+    actualVersion: z.string().min(1),
+    categoryGroupMembers: z.record(z.array(z.string())).optional(),
+  })
+  .strict();
+
+type RuleLifecyclePreconditions = z.infer<typeof ruleLifecyclePreconditionsSchema>;
+
+function toRuleLifecycleSnapshot(rule: AutomationRule): RuleLifecycleSnapshot {
+  return {
+    id: rule.id,
+    name: rule.name,
+    order: rule.order,
+    trigger: rule.trigger,
+    actions: rule.actions,
+    inactive: rule.inactive,
+    stage: rule.stage,
+    conditionsOp: rule.conditionsOp,
   };
+}
+
+function assertCategoryGroupBaseline(
+  groups: readonly string[],
+  captured: Readonly<Record<string, readonly string[]>> | undefined,
+  current: Readonly<Record<string, readonly string[]>>,
+): void {
+  const capturedGroupIds = captured ? Object.keys(captured).sort() : [];
+  if (canonicalProposalJson(capturedGroupIds) !== canonicalProposalJson(groups))
+    throw new Error('Category-group preconditions do not match the displayed rule');
+
+  for (const groupId of groups) {
+    const expected = captured?.[groupId];
+    const observed = current[groupId];
+    if (!expected || !observed)
+      throw new Error(`Current category-group membership is unavailable: ${groupId}`);
+    const expectedSorted = [...expected].sort();
+    const observedSorted = [...observed].sort();
+    if (
+      canonicalProposalJson(expected) !== canonicalProposalJson(expectedSorted) ||
+      new Set(expected).size !== expected.length ||
+      canonicalProposalJson(expected) !== canonicalProposalJson(observedSorted)
+    )
+      throw new Error(`Category-group membership changed: ${groupId}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,17 +245,9 @@ export interface RuleSimulationResult {
 // ---------------------------------------------------------------------------
 
 export interface RustRuleMutationProtocol {
-  /** Plan a rule creation mutation against the current snapshot. */
   planCreateRule(input: RuleProposalInput, snapshot: ProtocolSnapshot): RuleMutationPlan;
-
-  /** Verify that a rule mutation was applied correctly. */
+  simulateCreateRulePlan(plan: RuleMutationPlan, snapshot: ProtocolSnapshot): RuleSimulationResult;
   verifyRuleMutation(plan: RuleMutationPlan, snapshot: ProtocolSnapshot): VerificationResult;
-
-  /** Simulate a rule against snapshot transactions and return evidence. */
-  simulateRule(
-    rule: { name: string; trigger: unknown; actions: unknown },
-    snapshot: ProtocolSnapshot,
-  ): RuleSimulationResult;
 }
 
 // Native implementation (calls @balanceframe/native N-API bindings at runtime)
@@ -141,84 +259,111 @@ export interface RustRuleMutationProtocol {
 // We avoid a static import because the package does not ship standard
 // TypeScript declarations — load the binary at runtime via createRequire.
 
-/** Shape of the @balanceframe/native module used at runtime. */
 interface NativeBindings {
   planCreateRule(input: string): string;
+  simulateCreateRulePlan(input: string): string;
   verifyRuleMutation(input: string): string;
-  planSetCategory(input: string): string;
-  verifyMutation(input: string): string;
-  simulateRule(input: string): string;
 }
 
 let nativeBin: NativeBindings | null = null;
 
 async function getNative(): Promise<NativeBindings> {
   if (!nativeBin) {
-    const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
     nativeBin = require('@balanceframe/native') as NativeBindings;
   }
   return nativeBin;
 }
 
-function getConditionValue(conditions: unknown[] | undefined): string {
-  const c = conditions?.[0];
-  if (c && typeof c === 'object' && 'value' in c) {
-    const v = (c as Record<string, unknown>).value;
-    return typeof v === 'string' ? v : '';
-  }
-  return '';
+const supportedConditionSchema = z
+  .object({
+    field: z.literal('payee_name'),
+    op: z.literal('is'),
+    value: z.string().min(1).refine((value) => value.trim() === value),
+  })
+  .passthrough();
+
+const supportedActionSchema = z
+  .object({
+    type: z.literal('set-category'),
+    field: z.literal('category'),
+    value: z.string().min(1).refine((value) => value.trim() === value),
+  })
+  .passthrough();
+
+function supportedRuleTerms(input: RuleProposalInput) {
+  if (input.conditions.length !== 1 || input.actions.length !== 1)
+    throw new Error('Native rule planning supports one merchant condition and one category action');
+  return {
+    condition: supportedConditionSchema.parse(input.conditions[0]),
+    action: supportedActionSchema.parse(input.actions[0]),
+  };
 }
 
-function getActionValue(actions: unknown[] | undefined): string {
-  const a = actions?.[0];
-  if (a && typeof a === 'object' && 'value' in a) {
-    const v = (a as Record<string, unknown>).value;
-    return typeof v === 'string' ? v : '';
-  }
-  return '';
+function parseNativeResult<T extends z.ZodTypeAny>(json: string, schema: T): z.infer<T> {
+  const result: unknown = JSON.parse(json);
+  return schema.parse(result);
+}
+
+function assertPlanMatchesApprovedTerms(
+  plan: RuleMutationPlan,
+  ruleName: string,
+  condition: z.infer<typeof supportedConditionSchema>,
+  action: z.infer<typeof supportedActionSchema>,
+): void {
+  const planCondition = plan.conditions[0];
+  const planAction = plan.actions[0];
+  if (
+    plan.conditions.length !== 1 ||
+    !planCondition ||
+    plan.ruleName !== ruleName ||
+    planCondition.field !== 'payee' ||
+    planCondition.operation !== condition.op ||
+    planCondition.value !== condition.value ||
+    plan.trigger.type !== 'payee_is' ||
+    plan.trigger.value !== condition.value.trim().toLowerCase() ||
+    plan.actions.length !== 1 ||
+    !planAction ||
+    planAction.type !== 'set_category' ||
+    planAction.value !== action.value
+  )
+    throw new Error('Native rule plan does not preserve the approved condition and action');
 }
 
 /**
- * Create a RustRuleMutationProtocol backed by the native @balanceframe/native addon.
- * Uses lazy dynamic import so it can be stubbed in non-native environments.
- * Throws if the native addon is not available.
+ * Create a RustRuleMutationProtocol backed by the compiled native addon.
+ * Load the optional N-API binary only when the protocol is requested.
  */
 export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutationProtocol> {
   const native = await getNative();
   return {
     planCreateRule(input, snapshot) {
-      const payeeName = getConditionValue(input.conditions) || input.name;
-      const categoryId = getActionValue(input.actions);
-      const json = native.planCreateRule(
-        JSON.stringify({
-          ruleName: input.name,
-          payeeName,
-          categoryId,
-          snapshot,
-        }),
+      const { condition, action } = supportedRuleTerms(input);
+      const plan = parseNativeResult(
+        native.planCreateRule(
+          JSON.stringify({
+            ruleName: input.name,
+            payeeName: condition.value,
+            categoryId: action.value,
+            snapshot,
+          }),
+        ),
+        ruleMutationPlanSchema,
       );
-      return JSON.parse(json) as RuleMutationPlan;
+      assertPlanMatchesApprovedTerms(plan, input.name, condition, action);
+      return plan;
+    },
+    simulateCreateRulePlan(plan, snapshot) {
+      return parseNativeResult(
+        native.simulateCreateRulePlan(JSON.stringify({ plan, snapshot })),
+        ruleSimulationResultSchema,
+      );
     },
     verifyRuleMutation(plan, snapshot) {
-      const json = native.verifyRuleMutation(JSON.stringify({ plan, snapshot }));
-      return JSON.parse(json) as VerificationResult;
-    },
-    simulateRule(rule, snapshot) {
-      const json = native.simulateRule(
-        JSON.stringify({
-          rule: {
-            id: '',
-            name: rule.name,
-            order: 0,
-            trigger: rule.trigger,
-            actions: rule.actions,
-            inactive: false,
-          },
-          transactions: snapshot.transactions,
-        }),
+      return parseNativeResult(
+        native.verifyRuleMutation(JSON.stringify({ plan, snapshot })),
+        verificationResultSchema,
       );
-      return JSON.parse(json) as RuleSimulationResult;
     },
   };
 }
@@ -231,10 +376,12 @@ export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutati
 export interface ExecuteRuleInput {
   /** The proposal to execute. */
   proposalId: string;
-  /** The approval granting authorization for this execution. */
-  approvalId: string;
+  /** Optional selected approval hint; the store checks the full threshold. */
+  approvalId?: string;
   /** Actor performing the execution. */
   actorId: string;
+  /** Trusted server-supplied operational identity. */
+  auth: OperationalAuth;
   /** Unique request identifier for idempotency. */
   requestId: string;
   /** Idempotency key for at-most-once execution. */
@@ -264,12 +411,6 @@ export interface ExecuteRuleResult {
   /** Simulation evidence from the Rust simulateRule call, or null on early rejection. */
   simulation: RuleSimulationResult | null;
 }
-
-// ---------------------------------------------------------------------------
-// Default capability / scope values
-// ---------------------------------------------------------------------------
-
-const CAPABILITY_EXECUTE = 'rule:execute';
 
 // ---------------------------------------------------------------------------
 // Staleness / freshness thresholds (ms)
@@ -305,14 +446,14 @@ export function planRuleMutation(
 /**
  * RuleMutationService — orchestrates the proposal-driven rule mutation flow.
  *
- * Flow: load-proposal -> auth -> idempotency -> approval -> consume ->
- * execute (ledger.createRule) -> verify -> audit.
+ * Flow: load proposal -> acquire its current approval-bound write intent ->
+ * synchronize -> plan/simulate -> write -> verify -> audit.
  */
 export class RuleMutationService {
   constructor(
     private readonly store: WorkflowStore,
-    private readonly ledger: BudgetLedger,
-    private readonly rust: RustRuleMutationProtocol,
+    private readonly ledger: BudgetLedger | null,
+    private readonly rust: RustRuleMutationProtocol | null,
   ) {}
 
   /**
@@ -324,6 +465,8 @@ export class RuleMutationService {
    *          verification may fail.
    */
   async execute(input: ExecuteRuleInput): Promise<ExecuteRuleResult> {
+    const executionDependencies =
+      this.ledger && this.rust ? { ledger: this.ledger, rust: this.rust } : null;
     const baseResult: ExecuteRuleResult = {
       success: false,
       ruleId: null,
@@ -362,82 +505,96 @@ export class RuleMutationService {
       return this.fail(baseResult, 'proposal_not_found', 'Proposal not found', input);
     }
 
-    if (proposal.supersededAt) {
-      await this.appendFailureAudit(input, proposal, null, 'proposal_superseded');
-      return this.fail(baseResult, 'proposal_superseded', 'Proposal has been superseded', input);
+    if (
+      proposal.operation !== 'create_rule' &&
+      proposal.operation !== 'update_rule' &&
+      proposal.operation !== 'delete_rule'
+    )
+      return this.fail(baseResult, 'unsupported_operation', 'Unsupported proposal operation', input);
+
+    if (proposal.policyVersion !== GENERIC_MUTATION_POLICY_VERSION) {
+      await this.appendFailureAudit(input, proposal, null, 'policy_version_mismatch');
+      return this.fail(
+        baseResult,
+        'policy_version_mismatch',
+        'Generic mutation algorithm version changed',
+        input,
+      );
     }
 
-    // Check proposal expiry
-    if (new Date(proposal.expiresAt).getTime() <= Date.now()) {
-      await this.appendFailureAudit(input, proposal, null, 'proposal_expired');
-      return this.fail(baseResult, 'proposal_expired', 'Proposal has expired', input);
-    }
+    const composite = proposal.payload.composite;
+    if (
+      composite &&
+      (composite.operations.length > 0 ||
+        composite.reallocations.length > 0 ||
+        composite.transferRecommendations.length > 0 ||
+        composite.ledgerProjections.length > 0)
+    )
+      return this.fail(baseResult, 'unsupported_composite', 'Mutation cannot apply composite proposal operations', input);
 
-    // =====================================================================
-    // 2. Authorization — membership, capability, scope
-    // =====================================================================
-
-    const auth = await this.store.evaluateAuthorization(
-      input.actorId,
-      CAPABILITY_EXECUTE,
-      'budget:' + proposal.budgetId,
-      proposal.policyVersion,
-    );
-
-    if (!auth.allowed) {
-      const code = this.deniedReasonCode(auth);
-      let reasonMsg = 'Authorization denied';
-      if (auth.disposition.kind === 'denied') {
-        reasonMsg = auth.disposition.reason;
-      }
-      await this.appendFailureAudit(input, proposal, auth, code);
-      return this.fail(baseResult, code, reasonMsg, input);
-    }
-
-    // =====================================================================
-    // 3. Idempotency claim (atomic check-and-create)
-    // =====================================================================
     let serialisedEffect: string;
     try {
       serialisedEffect = JSON.stringify({
-        ruleName: this.extractRuleName(proposal),
+        operation: proposal.operation,
+        payload: proposal.payload,
+        preconditions: JSON.parse(proposal.preconditions) as unknown,
       });
-    } catch (e) {
-      await this.appendFailureAudit(input, proposal, auth, 'invalid_preconditions');
-      return this.fail(
-        baseResult,
-        'invalid_preconditions',
-        e instanceof Error ? e.message : 'Proposal preconditions are invalid',
-        input,
-      );
+    } catch {
+      return this.fail(baseResult, 'payload_hash_mismatch', 'Proposal envelope is invalid', input);
     }
 
-    let idemClaim: IdempotencyClaim;
+    if (!proposal.spaceId || !proposal.governancePolicyVersion)
+      return this.fail(baseResult, 'authorization_denied', 'Governed proposal provenance unavailable', input);
+
+    if (!executionDependencies) {
+      let existing: IdempotencyRecord | null;
+      try {
+        existing = await this.store.getIdempotencyRecord(input.idempotencyKey);
+      } catch {
+        return this.fail(
+          baseResult,
+          'idempotency_lookup_failed',
+          'Prior rule execution could not be verified',
+          input,
+        );
+      }
+      if (
+        !existing ||
+        !existing.completed ||
+        (existing.status !== 'succeeded' && existing.status !== 'terminal_failed')
+      )
+        return this.fail(
+          baseResult,
+          'dependencies_unavailable',
+          'Actual rule execution dependencies are unavailable',
+          input,
+        );
+    }
+    let acquisition: ProposalExecutionAcquisition;
     try {
-      idemClaim = await this.store.createIdempotencyRecord({
-        idempotencyKey: input.idempotencyKey,
+      acquisition = await this.store.acquireProposalExecution({
+        actorId: input.actorId,
         proposalId: input.proposalId,
-        operation: proposal.operation,
+        payloadHash: proposal.payloadHash,
+        governancePolicyVersion: proposal.governancePolicyVersion,
+        idempotencyKey: input.idempotencyKey,
         serialisedEffect,
+        ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+        auth: input.auth,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
       });
     } catch (err) {
-      await this.appendFailureAudit(input, proposal, auth, 'idempotency_replay_mismatch');
-      return this.fail(
-        baseResult,
-        'idempotency_replay_mismatch',
-        err instanceof Error ? err.message : 'Idempotency record creation failed',
-        input,
-      );
+      const code = err instanceof ProposalAcquisitionError ? err.reasonCode : 'execution_acquisition_failed';
+      const message = err instanceof ProposalAcquisitionError
+        ? err.message
+        : 'Execution authorization could not be acquired';
+      return this.fail(baseResult, code, message, input);
     }
 
-    if (!idemClaim.isOwner) {
-      // Replay if the record is already in a terminal state
-      if (idemClaim.record.status !== 'in_progress') {
-        return this.replayResult(idemClaim.record, input);
-      }
-      // In-flight: another execution is using this key — or previous run crashed
-      // and the lease hasn't expired yet. The caller should retry later.
-      await this.appendFailureAudit(input, proposal, auth, 'idempotency_in_progress');
+    if (!acquisition.claim.isOwner) {
+      if (acquisition.claim.record.status !== 'in_progress')
+        return this.replayResult(acquisition.claim.record, input, proposal);
       return this.fail(
         baseResult,
         'idempotency_in_progress',
@@ -446,126 +603,53 @@ export class RuleMutationService {
       );
     }
 
-    // We own the claim — proceed with execution
-
-    // =====================================================================
-    // 4. Load approval — verify binding, payload hash, operation, status
-    // =====================================================================
-
-    const approval = await this.store.getApproval(input.approvalId);
-    if (!approval) {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_not_found');
-      return this.fail(baseResult, 'approval_not_found', 'Approval not found', input);
-    }
-
-    // Bind approval to the exact proposal ID
-    if (approval.proposalId !== input.proposalId) {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_proposal_mismatch');
+    if (!executionDependencies) {
+      await this.store.completeIdempotencyRecord(
+        input.idempotencyKey,
+        'Rule execution dependencies are unavailable',
+        false,
+      );
       return this.fail(
         baseResult,
-        'approval_proposal_mismatch',
-        'Approval proposal ID does not match the input proposal',
+        'dependencies_unavailable',
+        'Actual rule execution dependencies are unavailable',
         input,
       );
     }
-
-    // Bind approval payload hash to proposal payload hash
-    if (approval.payloadHash !== proposal.payloadHash) {
-      await this.appendFailureAudit(input, proposal, auth, 'payload_hash_mismatch');
-      return this.fail(
-        baseResult,
-        'payload_hash_mismatch',
-        'Approval payload hash does not match proposal',
-        input,
+    const { ledger, rust } = executionDependencies;
+    const auditStarted = acquisition.auditRecord;
+    if (!auditStarted) {
+      await this.store.completeIdempotencyRecord(
+        input.idempotencyKey,
+        'Acquisition did not return its durable audit record',
+        false,
       );
+      return this.fail(baseResult, 'execution_audit_missing', 'Execution audit record is unavailable', input);
     }
-
-    // Verify operation is supported
-    if (proposal.operation !== 'create_rule') {
-      await this.appendFailureAudit(input, proposal, auth, 'unsupported_operation');
-      return this.fail(
-        baseResult,
-        'unsupported_operation',
-        `Proposal operation "${proposal.operation}" is not supported`,
-        input,
+    const authorizationDisposition = auditStarted.authorizationDisposition;
+    if (!authorizationDisposition) {
+      await this.store.completeIdempotencyRecord(
+        input.idempotencyKey,
+        'Acquisition audit record omitted authorization disposition',
+        false,
       );
+      return this.fail(baseResult, 'execution_audit_invalid', 'Execution audit record is invalid', input);
     }
-
-    if (approval.status === 'consumed') {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_consumed');
-      return this.fail(
-        baseResult,
-        'approval_consumed',
-        'Approval has already been consumed',
-        input,
-      );
-    }
-
-    if (approval.status === 'expired' || new Date(approval.expiresAt).getTime() <= Date.now()) {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_expired');
-      return this.fail(baseResult, 'approval_expired', 'Approval has expired', input);
-    }
-
-    if (approval.status === 'superseded') {
-      await this.appendFailureAudit(input, proposal, auth, 'approval_superseded');
-      return this.fail(baseResult, 'approval_superseded', 'Approval has been superseded', input);
-    }
-
-    // =====================================================================
-    // 5. Consume approval BEFORE mutation — one-time lock
-    // =====================================================================
-
-    try {
-      await this.store.consumeApproval(input.approvalId);
-    } catch (err) {
-      await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth, 'approval_consumption_failed');
-      return this.fail(
-        baseResult,
-        'approval_consumption_failed',
-        err instanceof Error ? err.message : 'Failed to consume approval',
-        input,
-      );
-    }
-
-    // =====================================================================
-    // 6. Audit: execution started
-    // =====================================================================
-
-    let auditStarted: AuditRecord | null = null;
-    try {
-      auditStarted = await this.store.appendAuditRecord({
-        classification: 'execution_started',
-        actorId: input.actorId,
-        operation: proposal.operation,
-        proposalId: input.proposalId,
-        payloadHash: proposal.payloadHash,
-        budgetId: proposal.budgetId,
-        policyVersion: proposal.policyVersion,
-        idempotencyKey: input.idempotencyKey,
-        authorizationDisposition: auth.disposition,
-        correlationId: input.correlationId ?? null,
-        requestId: input.requestId,
-        result: 'started',
-        isError: false,
-      });
-    } catch {
-      // Non-fatal
-    }
-
+    const consumedApprovalId =
+      input.approvalId ?? acquisition.approvals[0]?.id ?? null;
     // =====================================================================
     // 7. Latest snapshot via ledger.synchronize()
     // =====================================================================
 
     let snapshotResult: LedgerSnapshotResult;
     try {
-      snapshotResult = await this.ledger.synchronize();
+      snapshotResult = await ledger.synchronize();
     } catch (err) {
       await this.recordFailure(input, err);
       await this.appendFailureAudit(
         input,
         proposal,
-        auth,
+        authorizationDisposition,
         err instanceof Error ? err.message : 'sync_failed',
       );
       return this.fail(
@@ -581,8 +665,21 @@ export class RuleMutationService {
     // Staleness check
     if (Date.now() - new Date(snapshot.snapshotDate).getTime() > STALE_SNAPSHOT_MS) {
       await this.recordFailure(input, new Error('Snapshot data is stale'));
-      await this.appendFailureAudit(input, proposal, auth, 'stale_snapshot');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'stale_snapshot');
       return this.fail(baseResult, 'stale_snapshot', 'Snapshot data is stale', input);
+    }
+
+    if (proposal.operation === 'update_rule' || proposal.operation === 'delete_rule') {
+      return this.executeRuleLifecycle(
+        input,
+        proposal,
+        snapshotResult,
+        baseResult,
+        consumedApprovalId,
+        auditStarted,
+        authorizationDisposition,
+        ledger,
+      );
     }
 
     // =====================================================================
@@ -591,14 +688,25 @@ export class RuleMutationService {
     // =====================================================================
 
     let ruleInput: RuleProposalInput;
+    let approvedActualVersion: string;
+    let approvedNativePlan: RuleMutationPlan;
     try {
       ruleInput = this.extractRuleInput(proposal);
+      const preconditions = JSON.parse(proposal.preconditions) as Record<string, unknown>;
+      approvedActualVersion = ruleLifecyclePreconditionsSchema.shape.actualVersion.parse(preconditions.actualVersion);
+      approvedNativePlan = ruleMutationPlanSchema.parse(preconditions.nativePlan);
+      const approvedNativePayloadHash = proposal.payload.composite?.nativePayloadHash;
+      if (typeof approvedNativePayloadHash !== 'string' || approvedNativePayloadHash !== approvedNativePlan.hash)
+        throw new Error('Native rule payload hash does not match its captured plan');
+      const approvedRule = z.record(z.unknown()).parse(preconditions.nativeRule);
+      if (canonicalProposalJson(approvedRule) !== canonicalProposalJson(proposal.payload.rule))
+        throw new Error('Native rule facts do not match the executable rule payload');
     } catch (e) {
       await this.recordFailure(input, e);
       await this.appendFailureAudit(
         input,
         proposal,
-        auth,
+        authorizationDisposition,
         e instanceof Error ? e.message : 'invalid_preconditions',
       );
       return this.fail(
@@ -608,16 +716,21 @@ export class RuleMutationService {
         input,
       );
     }
+    if (approvedActualVersion !== snapshot.actualVersion) {
+      await this.recordFailure(input, new Error('Displayed Actual version is stale'));
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'precondition_mismatch');
+      return this.fail(baseResult, 'precondition_mismatch', 'Displayed Actual version is stale', input);
+    }
 
     let plan: RuleMutationPlan;
     try {
-      plan = this.rust.planCreateRule(ruleInput, snapshot);
+      plan = rust.planCreateRule(ruleInput, snapshot);
     } catch (err) {
       await this.recordFailure(input, err);
       await this.appendFailureAudit(
         input,
         proposal,
-        auth,
+        authorizationDisposition,
         err instanceof Error ? err.message : 'plan_failed',
       );
       return this.fail(
@@ -628,41 +741,42 @@ export class RuleMutationService {
       );
     }
 
-    // =====================================================================
-    // 10. Precondition check — verify rule name availability
-    // =====================================================================
-
-    if (!plan.preconditions.ruleNameAvailable) {
-      await this.recordFailure(input, new Error('Rule name is not available'));
-      await this.appendFailureAudit(input, proposal, auth, 'rule_name_conflict');
+    let writeProposal: RuleProposal;
+    try {
+      if (
+        canonicalProposalJson(rulePlanIntent(plan)) !==
+        canonicalProposalJson(rulePlanIntent(approvedNativePlan))
+      )
+        throw new Error('Native rule plan differs from the captured approved intent');
+      writeProposal = this.buildRuleProposal(ruleInput, plan);
+    } catch (error) {
+      await this.recordFailure(input, error);
+      await this.appendFailureAudit(
+        input,
+        proposal,
+        authorizationDisposition,
+        error instanceof Error ? error.message : 'plan_mismatch',
+      );
       return this.fail(
         baseResult,
-        'rule_name_conflict',
-        `A rule with the name "${plan.ruleName}" already exists`,
+        'plan_mismatch',
+        error instanceof Error ? error.message : 'Native rule plan changed the approved terms',
         input,
       );
     }
-
     // =====================================================================
     // 11. Simulate the planned rule — must produce evidence, no conflicts
     // =====================================================================
 
     let simulation: RuleSimulationResult;
     try {
-      simulation = this.rust.simulateRule(
-        {
-          name: plan.ruleName,
-          trigger: plan.expectedOutcome.trigger,
-          actions: plan.expectedOutcome.actions,
-        },
-        snapshot,
-      );
+      simulation = rust.simulateCreateRulePlan(plan, snapshot);
     } catch (err) {
       await this.recordFailure(input, err);
       await this.appendFailureAudit(
         input,
         proposal,
-        auth,
+        authorizationDisposition,
         err instanceof Error ? err.message : 'simulation_failed',
       );
       return this.fail(
@@ -677,7 +791,7 @@ export class RuleMutationService {
     if (simulation.transactionsMatched === 0) {
       baseResult.simulation = simulation;
       await this.recordFailure(input, new Error('Rule would match zero transactions'));
-      await this.appendFailureAudit(input, proposal, auth, 'simulation_no_matches');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'simulation_no_matches');
       return this.fail(
         baseResult,
         'simulation_no_matches',
@@ -690,7 +804,7 @@ export class RuleMutationService {
     if (simulation.conflicts.length > 0) {
       baseResult.simulation = simulation;
       await this.recordFailure(input, new Error('Simulation revealed conflicts'));
-      await this.appendFailureAudit(input, proposal, auth, 'simulation_conflicts');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'simulation_conflicts');
       return this.fail(
         baseResult,
         'simulation_conflicts',
@@ -705,10 +819,10 @@ export class RuleMutationService {
 
     let writeResult: MutationResult;
     try {
-      writeResult = await this.ledger.createRule(this.buildRuleProposal(proposal));
+      writeResult = await ledger.createRule(writeProposal);
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.auditFailure(input, proposal, auth, err);
+      await this.auditFailure(input, proposal, authorizationDisposition, err);
       return this.fail(
         baseResult,
         'write_failed',
@@ -719,7 +833,7 @@ export class RuleMutationService {
 
     if (!writeResult.success) {
       await this.recordFailure(input, new Error(writeResult.error));
-      await this.auditFailure(input, proposal, auth, new Error(writeResult.error));
+      await this.auditFailure(input, proposal, authorizationDisposition, new Error(writeResult.error));
       return this.fail(baseResult, 'write_failed', writeResult.error, input);
     }
 
@@ -731,12 +845,12 @@ export class RuleMutationService {
 
     let rereadSnapshot: ProtocolSnapshot;
     try {
-      const rereadResult = await this.ledger.synchronize();
+      const rereadResult = await ledger.synchronize();
       rereadSnapshot = rereadResult.snapshot;
     } catch (err) {
       // Write happened but we can't verify
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, auth, 'reread_failed');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'reread_failed');
       return this.fail(
         baseResult,
         'reread_failed',
@@ -750,7 +864,11 @@ export class RuleMutationService {
     let verifyMessage: string | null = null;
 
     try {
-      const verification = this.rust.verifyRuleMutation(plan, rereadSnapshot);
+      const createdRules = rereadSnapshot.rules.filter((rule) => rule.id === ruleId);
+      const verification = rust.verifyRuleMutation(plan, {
+        ...rereadSnapshot,
+        rules: createdRules.length === 1 ? createdRules : [],
+      });
       verified = verification.verified;
       verifyReasonCodes = verification.reasonCodes;
       verifyMessage = verification.message;
@@ -762,9 +880,8 @@ export class RuleMutationService {
     // =====================================================================
     // 13. Complete idempotency record
     //
-    // Post-write failures are terminal (the write may have happened externally
-    // even if verification failed).  Pre-write failures are handled above via
-    // recordFailure (retryable).
+    // Acquired approvals remain consumed on every failure. Post-write failures
+    // are terminal because the external write may already have happened.
     // =====================================================================
 
     if (!verified) {
@@ -777,7 +894,9 @@ export class RuleMutationService {
       }
     } else {
       try {
-        await this.store.completeIdempotencyRecord(input.idempotencyKey, null);
+        await this.store.completeIdempotencyRecord(
+          input.idempotencyKey, null, false, JSON.stringify({ verified: true, ruleId }),
+        );
       } catch {
         // Non-fatal
       }
@@ -804,7 +923,7 @@ export class RuleMutationService {
         budgetId: proposal.budgetId,
         backendIds: '',
         policyVersion: proposal.policyVersion,
-        authorizationDisposition: auth.disposition,
+        authorizationDisposition,
         idempotencyKey: input.idempotencyKey,
         expectedPriorState: proposal.preconditions,
         observedResultState: obsState,
@@ -823,7 +942,7 @@ export class RuleMutationService {
       ruleId,
       verified,
       idempotencyKey: input.idempotencyKey,
-      approvalId: input.approvalId,
+      approvalId: consumedApprovalId,
       auditRecordId: auditCompleted?.id ?? auditStarted?.id ?? null,
       reasonCodes: allReasonCodes,
       message: verified ? undefined : (verifyMessage ?? 'Postcondition verification failed'),
@@ -831,85 +950,212 @@ export class RuleMutationService {
     };
   }
 
-  /**
-   * Extract rule name from proposal preconditions.
-   * Supports both flat format ({ name }) and nativeRule-nested ({ nativeRule: { name } }).
-   * Throws when the name is missing or empty.
-   */
-  private extractRuleName(proposal: ActionProposal): string {
-    let parsed: Record<string, unknown>;
+  private async executeRuleLifecycle(
+    input: ExecuteRuleInput,
+    proposal: Extract<ActionProposal, { operation: 'update_rule' | 'delete_rule' }>,
+    snapshotResult: LedgerSnapshotResult,
+    baseResult: ExecuteRuleResult,
+    consumedApprovalId: string | null,
+    auditStarted: AuditRecord,
+    authorizationDisposition: AuthorizationDisposition,
+    ledger: BudgetLedger,
+  ): Promise<ExecuteRuleResult> {
+    const terminalFailure = async (code: string, error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.recordFailure(input, new Error(message));
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, message);
+      return this.fail(baseResult, code, message, input);
+    };
+    if (!proposal.spaceId)
+      return terminalFailure('authorization_denied', new Error('Governed space unavailable'));
+
+
+    let preconditions: RuleLifecyclePreconditions;
     try {
-      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
-    } catch {
-      throw new Error('Proposal preconditions are not valid JSON');
+      const parsed: unknown = JSON.parse(proposal.preconditions);
+      preconditions = ruleLifecyclePreconditionsSchema.parse(parsed);
+      if (
+        preconditions.rule.id !== proposal.payload.ruleId ||
+        (preconditions.override && preconditions.override.ruleId !== proposal.payload.ruleId)
+      )
+        throw new Error('Rule preconditions identify a different rule');
+    } catch (error) {
+      return terminalFailure('invalid_preconditions', error);
     }
 
-    // Support both flat format and nativeRule-nested format
-    const ruleData: Record<string, unknown> =
-      parsed.nativeRule && typeof parsed.nativeRule === 'object'
-        ? (parsed.nativeRule as Record<string, unknown>)
-        : parsed;
-
-    const name = ruleData.name;
-    if (typeof name !== 'string' || name.trim().length === 0) {
-      throw new Error('Rule name is required and must be a non-empty string');
-    }
-    return name.trim();
-  }
-  /**
-   * Extract rule input from proposal preconditions.
-   * Supports both flat format ({ name, conditions, actions }) and nativeRule-nested
-   * format ({ nativeRule: { name, conditions, actions } }).
-   * Throws when required fields are missing or degenerate.
-   */
-  private extractRuleInput(proposal: ActionProposal): RuleProposalInput {
-    let parsed: Record<string, unknown>;
+    const scope: RuleOverrideScope = {
+      spaceId: proposal.spaceId,
+      budgetId: proposal.budgetId,
+    };
+    let actualRule: RuleLifecycleSnapshot;
+    let currentOverride: RuleOverride | null;
     try {
-      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
+      if (
+        !scope.spaceId.trim() ||
+        !scope.budgetId.trim() ||
+        snapshotResult.snapshot.actualVersion !== preconditions.actualVersion
+      )
+        throw new Error('Displayed Actual version is stale');
+
+      const currentRule = (await ledger.listRules()).find(
+        (rule) => rule.id === proposal.payload.ruleId,
+      );
+      if (!currentRule)
+        throw new Error('Displayed Actual rule is no longer present');
+      actualRule = ruleLifecycleSnapshotSchema.parse(toRuleLifecycleSnapshot(currentRule));
+      if (canonicalProposalJson(actualRule) !== canonicalProposalJson(preconditions.rule))
+        throw new Error('Displayed Actual rule has changed');
+
+      currentOverride = await this.store.getRuleOverride({
+        ...scope,
+        ruleId: proposal.payload.ruleId,
+      });
+      if (canonicalProposalJson(currentOverride) !== canonicalProposalJson(preconditions.override))
+        throw new Error('Displayed BalanceFrame rule state has changed');
+
+      const groupIds = deriveActualRuleCategoryGroupReferences(preconditions.rule.trigger);
+      const categoryGroupMembers = groupIds.length
+        ? await ledger.getRuleCategoryGroupMembers()
+        : {};
+      assertCategoryGroupBaseline(
+        groupIds,
+        preconditions.categoryGroupMembers,
+        categoryGroupMembers,
+      );
+    } catch (error) {
+      return terminalFailure('precondition_mismatch', error);
+    }
+
+    if (proposal.operation === 'update_rule') {
+      let writtenOverride: RuleOverride;
+      try {
+        writtenOverride = await this.store.setRuleOverride({
+          ...scope,
+          ruleId: proposal.payload.ruleId,
+          inactive: proposal.payload.inactive,
+          expectedVersion: currentOverride?.version ?? null,
+        });
+        const expectedOverride: RuleOverride = {
+          ruleId: proposal.payload.ruleId,
+          inactive: proposal.payload.inactive,
+          version: (currentOverride?.version ?? 0) + 1,
+        };
+        if (canonicalProposalJson(writtenOverride) !== canonicalProposalJson(expectedOverride))
+          throw new Error('BalanceFrame rule state write did not match the approved change');
+
+        const observedOverride = await this.store.getRuleOverride({
+          ...scope,
+          ruleId: proposal.payload.ruleId,
+        });
+        if (canonicalProposalJson(observedOverride) !== canonicalProposalJson(expectedOverride))
+          throw new Error('BalanceFrame rule state could not be verified');
+      } catch (error) {
+        return terminalFailure('rule_override_failed', error);
+      }
+    } else {
+      try {
+        const deletePrecondition: RuleDeletePrecondition = {
+          rule: actualRule,
+          actualVersion: preconditions.actualVersion,
+        };
+        await ledger.deleteRule(proposal.payload.ruleId, deletePrecondition);
+        await ledger.synchronize();
+        const remainingRules = await ledger.listRules();
+        if (remainingRules.some((rule) => rule.id === proposal.payload.ruleId))
+          throw new Error('Deleted Actual rule is still present after synchronization');
+        if (currentOverride && currentOverride.inactive !== null) {
+          await this.store.removeRuleOverride({
+            ...scope,
+            ruleId: proposal.payload.ruleId,
+            expectedVersion: currentOverride.version,
+          });
+        }
+      } catch (error) {
+        return terminalFailure('rule_delete_failed', error);
+      }
+    }
+
+    try {
+      await this.store.completeIdempotencyRecord(
+        input.idempotencyKey, null, false,
+        JSON.stringify({ verified: true, ruleId: proposal.payload.ruleId }),
+      );
     } catch {
-      throw new Error('Proposal preconditions are not valid JSON');
+      // The Actual/local postcondition is already verified; the audit remains authoritative.
     }
 
-    // Support both flat format and nativeRule-nested format
-    const ruleData: Record<string, unknown> =
-      parsed.nativeRule && typeof parsed.nativeRule === 'object'
-        ? (parsed.nativeRule as Record<string, unknown>)
-        : parsed;
-
-    const name = ruleData.name;
-    if (typeof name !== 'string' || name.trim().length === 0) {
-      throw new Error('Rule name is required and must be a non-empty string');
-    }
-
-    const conditions = ruleData.conditions;
-    if (!Array.isArray(conditions) || conditions.length === 0) {
-      throw new Error('Rule conditions are required and must be a non-empty array');
-    }
-
-    const actions = ruleData.actions;
-    if (!Array.isArray(actions) || actions.length === 0) {
-      throw new Error('Rule actions are required and must be a non-empty array');
+    const ruleId = proposal.payload.ruleId;
+    const observedResultState = canonicalProposalJson({
+      ruleId,
+      ...(proposal.operation === 'update_rule'
+        ? { inactive: proposal.payload.inactive }
+        : { deleted: true }),
+    });
+    let auditCompleted: AuditRecord | null = null;
+    try {
+      auditCompleted = await this.store.appendAuditRecord({
+        classification: 'execution_completed',
+        actorId: input.actorId,
+        operation: proposal.operation,
+        proposalId: input.proposalId,
+        payloadHash: proposal.payloadHash,
+        budgetId: proposal.budgetId,
+        backendIds: proposal.operation === 'delete_rule' ? ruleId : '',
+        policyVersion: proposal.policyVersion,
+        authorizationDisposition,
+        idempotencyKey: input.idempotencyKey,
+        expectedPriorState: proposal.preconditions,
+        observedResultState,
+        providerModel: proposal.providerModel ?? undefined,
+        correlationId: input.correlationId ?? null,
+        requestId: input.requestId,
+        result: 'completed',
+        isError: false,
+      });
+    } catch {
+      // Non-fatal
     }
 
     return {
-      name: name.trim(),
-      conditions,
-      actions,
-      budgetId: proposal.budgetId,
+      ...baseResult,
+      success: true,
+      ruleId,
+      verified: true,
+      approvalId: consumedApprovalId,
+      auditRecordId: auditCompleted?.id ?? auditStarted.id,
     };
   }
 
-  /**
-   * Map an authorization disposition to a reason code.
-   */
-  private deniedReasonCode(auth: AuthorizationResult): string {
-    if (auth.membershipStatus !== 'active') return 'member_inactive';
-    if (auth.disposition.kind === 'denied') {
-      if (auth.disposition.reason.startsWith('Missing capability'))
-        return 'insufficient_capability';
-      if (auth.disposition.reason.startsWith('Scope')) return 'insufficient_scope';
-    }
-    return 'authorization_denied';
+  private ruleData(proposal: ActionProposal): Record<string, unknown> {
+    if (proposal.operation !== 'create_rule')
+      throw new Error('Unsupported proposal operation');
+    return proposal.payload.rule;
+  }
+
+  private extractRuleInput(proposal: ActionProposal): RuleProposalInput {
+    const rule = this.ruleData(proposal);
+    const name = rule.name;
+    if (typeof name !== 'string' || !name.trim() || name !== name.trim())
+      throw new Error('Rule name must be non-empty and normalized');
+    if (!Array.isArray(rule.conditions) || !Array.isArray(rule.actions))
+      throw new Error('Rule conditions and actions must be arrays');
+
+    const stage = z.enum(['pre', 'post']).nullable().optional().parse(rule.stage);
+    const conditionsOp = z.enum(['and', 'or']).optional().parse(rule.conditionsOp);
+    const terms = supportedRuleTerms({
+      name,
+      conditions: rule.conditions,
+      actions: rule.actions,
+      budgetId: proposal.budgetId,
+    });
+    return {
+      name,
+      conditions: [terms.condition],
+      actions: [terms.action],
+      budgetId: proposal.budgetId,
+      ...(stage === undefined ? {} : { stage }),
+      ...(conditionsOp === undefined ? {} : { conditionsOp }),
+    };
   }
 
   /**
@@ -935,8 +1181,8 @@ export class RuleMutationService {
   private async recordFailure(input: ExecuteRuleInput, err: unknown): Promise<void> {
     try {
       const errMsg = err instanceof Error ? err.message : String(err);
-      // Transient errors before the write are retryable
-      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, true);
+      // Acquired proposal authority is never returned to the approval pool.
+      await this.store.completeIdempotencyRecord(input.idempotencyKey, errMsg, false);
     } catch {
       // Non-fatal
     }
@@ -948,7 +1194,7 @@ export class RuleMutationService {
   private async auditFailure(
     input: ExecuteRuleInput,
     proposal: ActionProposal,
-    auth: AuthorizationResult,
+    authorizationDisposition: AuthorizationDisposition,
     err: unknown,
   ): Promise<void> {
     try {
@@ -960,7 +1206,7 @@ export class RuleMutationService {
         payloadHash: proposal.payloadHash,
         budgetId: proposal.budgetId,
         policyVersion: proposal.policyVersion,
-        authorizationDisposition: auth.disposition,
+        authorizationDisposition,
         idempotencyKey: input.idempotencyKey,
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
@@ -978,7 +1224,7 @@ export class RuleMutationService {
   private async appendFailureAudit(
     input: ExecuteRuleInput,
     proposal: ActionProposal | null,
-    auth: AuthorizationResult | null,
+    authorizationDisposition: AuthorizationDisposition | null,
     result: string,
   ): Promise<void> {
     try {
@@ -990,7 +1236,7 @@ export class RuleMutationService {
         payloadHash: proposal?.payloadHash ?? null,
         budgetId: proposal?.budgetId ?? null,
         policyVersion: proposal?.policyVersion ?? null,
-        authorizationDisposition: auth?.disposition ?? null,
+        authorizationDisposition,
         idempotencyKey: input.idempotencyKey,
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
@@ -1002,19 +1248,30 @@ export class RuleMutationService {
     }
   }
 
-  /**
-   * Build a replay result from a previously completed idempotency record.
-   */
-  private replayResult(idem: IdempotencyRecord, input: ExecuteRuleInput): ExecuteRuleResult {
+  private replayResult(
+    idem: IdempotencyRecord,
+    input: ExecuteRuleInput,
+    proposal: ActionProposal,
+  ): ExecuteRuleResult {
     let ruleId: string | null = null;
-    try {
-      const effect = JSON.parse(idem.serialisedEffect);
-      ruleId = effect.ruleId ?? effect.ruleName ?? null;
-    } catch {
-      // Ignore parse failures
+    if (idem.status === 'succeeded') {
+      try {
+        const parsed = z.object({
+          verified: z.literal(true),
+          ruleId: z.string().min(1),
+        }).strict().safeParse(JSON.parse(idem.serialisedResult ?? 'null') as unknown);
+        if (
+          parsed.success &&
+          (proposal.operation === 'create_rule' ||
+            ((proposal.operation === 'update_rule' || proposal.operation === 'delete_rule') &&
+              parsed.data.ruleId === proposal.payload.ruleId))
+        )
+          ruleId = parsed.data.ruleId;
+      } catch {
+        // An absent or invalid durable result cannot prove an external write.
+      }
     }
-
-    const succeeded = idem.status === 'succeeded';
+    const succeeded = ruleId !== null;
     return {
       success: succeeded,
       ruleId,
@@ -1022,59 +1279,22 @@ export class RuleMutationService {
       idempotencyKey: input.idempotencyKey,
       approvalId: null,
       auditRecordId: null,
-      reasonCodes: ['idempotency_replay'],
+      reasonCodes: [idem.status === 'succeeded' && !succeeded
+        ? 'idempotency_result_mismatch' : 'idempotency_replay'],
       message: idem.errorMessage ?? undefined,
       simulation: null,
     };
   }
 
-  /**
-   * Build a RuleProposal for ledger.createRule from proposal preconditions,
-   * supporting both flat format ({ name, conditions, actions, conditionsOp, stage })
-   * and nativeRule-nested format ({ nativeRule: { name, conditions, actions, conditionsOp, stage } }).
-   *
-   * Throws when required fields are missing or degenerate, ensuring no
-   * default/unnamed rule reaches the ledger.
-   */
-  private buildRuleProposal(proposal: ActionProposal): RuleProposal {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(proposal.preconditions) as Record<string, unknown>;
-    } catch {
-      throw new Error('Proposal preconditions are not valid JSON');
-    }
-
-    // Support both flat format and nativeRule-nested format
-    const ruleData: Record<string, unknown> =
-      parsed.nativeRule && typeof parsed.nativeRule === 'object'
-        ? (parsed.nativeRule as Record<string, unknown>)
-        : parsed;
-
-    const name = ruleData.name;
-    if (typeof name !== 'string' || name.trim().length === 0) {
-      throw new Error('Rule name is required and must be a non-empty string');
-    }
-
-    const conditions = ruleData.conditions;
-    if (!Array.isArray(conditions) || conditions.length === 0) {
-      throw new Error('Rule conditions are required and must be a non-empty array');
-    }
-
-    const actions = ruleData.actions;
-    if (!Array.isArray(actions) || actions.length === 0) {
-      throw new Error('Rule actions are required and must be a non-empty array');
-    }
-
-    const stageVal = ruleData.stage;
-    const stage: 'pre' | 'post' | undefined =
-      stageVal === 'pre' ? 'pre' : stageVal === 'post' ? 'post' : undefined;
-
+  private buildRuleProposal(input: RuleProposalInput, plan: RuleMutationPlan): RuleProposal {
+    const { condition, action } = supportedRuleTerms(input);
+    assertPlanMatchesApprovedTerms(plan, input.name, condition, action);
     return {
-      name: name.trim(),
-      conditions,
-      actions,
-      conditionsOp: (ruleData.conditionsOp as 'and' | 'or') ?? 'and',
-      stage,
+      name: plan.ruleName,
+      ...(input.stage === undefined ? {} : { stage: input.stage }),
+      ...(input.conditionsOp === undefined ? {} : { conditionsOp: input.conditionsOp }),
+      conditions: [{ field: condition.field, op: condition.op, value: condition.value }],
+      actions: [{ op: 'set', field: 'category', value: action.value }],
     };
   }
 }

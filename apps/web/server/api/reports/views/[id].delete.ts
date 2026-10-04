@@ -34,9 +34,15 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
   }
 
+  const authority = {
+    actorId: fullRead.info.actorId,
+    spaceId: fullRead.spaceId,
+    budgetId: fullRead.budgetId,
+    membershipId: fullRead.actor.membershipId!,
+  };
   try {
-    const existing = await wf.store.getSavedView(viewId);
-    if (!existing || existing.actorId !== fullRead.info.actorId) {
+    const existing = await wf.store.getSavedView(viewId, authority);
+    if (!existing) {
       setResponseStatus(event, 404);
       return errorEnvelope(
         'VIEW_NOT_FOUND',
@@ -47,7 +53,7 @@ export default defineEventHandler(async (event) => {
       );
     }
 
-    const deleted = await wf.store.deleteSavedView(viewId);
+    const deleted = await wf.store.deleteSavedView(viewId, authority);
     return okEnvelope({ deleted }, authInfo, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'DELETE_FAILED', false);

@@ -7,147 +7,70 @@
  * active WorkflowStore and its persisted per-space policy.
  */
 
-import { defineEventHandler, setResponseStatus } from 'h3';
+import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
+import { createNotificationRuntime } from '../../utils/notification-runtime';
+import { canReadFinancialNotification, selectedLiquidityActor } from '../../utils/liquidity-service';
+import { requireSelectedSpace } from '../../utils/space-context';
 import {
-  getWorkflowStore,
-  getActorId,
-  okEnvelope,
   errorEnvelope,
-  buildAuthorizationInfo,
+  getWorkflowStore,
+  okEnvelope,
   requireAuthorization,
 } from '../../utils/workflow-store';
-import {
-  NotificationRuntime,
-  InAppChannelAdapter,
-  createDefaultConnectionManager,
-  type NotificationPolicy,
-} from '@balanceframe/application';
-import type { WorkflowStore } from '@balanceframe/workflow-store';
-import { canReadFinancialNotification } from '../../utils/liquidity-service';
-import { hasLegacyFullRead } from '../../utils/legacy-financial-read';
+import type { EventWithContext } from '../../utils/workflow-store';
 
-/**
- * Build a NotificationRuntime from the active workflow store.
- * Loads the persisted per-space policy and wires store-backed
- * re-authorization using the store's membership data.
- */
-function buildRuntime(wfStore: WorkflowStore, spaceId: string): NotificationRuntime {
-  const defaultPolicy: NotificationPolicy = {
-    policyVersion: 'v1',
-    eligibility: [
-      {
-        classifications: [
-          'budget_alert',
-          'review_complete',
-          'security_alert',
-          'data_quality',
-          'alert',
-          'recurrence',
-          'target_risk',
-          'proposal_transition',
-          'workflow_result',
-        ],
-        minSeverity: 'normal',
-        requiredCapability: 'notification:receive',
-      },
-    ],
-    recipients: [],
-    channels: [
-      { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
-    ],
-    redaction: {
-      sensitive: { visibleFields: ['title', 'summary'] },
-      public: { visibleFields: ['title', 'summary', 'amount', 'account'] },
-      restricted: { visibleFields: ['title'] },
-    },
-    maxRetries: 3,
-    defaultRedactionClass: 'public',
-  };
-
-  const adapter = new InAppChannelAdapter();
-  const runtime = new NotificationRuntime(wfStore, defaultPolicy, [adapter]);
-
-  // Wire store-backed re-authorization using the store's membership data.
-  runtime.setReAuthorizationHook(async (actorId: string, capability: string, _scope: string) => {
-    try {
-      const membership = await wfStore.getActorMembership(actorId);
-      return membership?.capabilities.includes(capability) ?? false;
-    } catch {
-      return false;
-    }
-  });
-
-  return runtime;
-}
 
 export default defineEventHandler(async (event) => {
-  const authInfo = buildAuthorizationInfo(event, 'observe');
   const requestId = crypto.randomUUID();
-
-  // Authorization gate
-  const auth = await requireAuthorization(event, 'notification:receive');
-  if (!auth.ok) {
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  const budgetId = selected.space.budgetId;
+  if (!budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget.', null, false, requestId);
+  }
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'notification:receive',
+    `budget:${budgetId}`,
+  );
+  if (!authorization.ok) return authorization.response;
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
+    setResponseStatus(event, 503);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Notification runtime is unavailable.', authorization.info, false, requestId);
+  }
+  const actor = selectedLiquidityActor(workflow.store, selected);
+  if (!actor) {
     setResponseStatus(event, 403);
-    return auth.response;
+    return errorEnvelope('FORBIDDEN', 'Current selected-space authorization is unavailable.', authorization.info, false, requestId);
   }
 
   try {
-    const wf = getWorkflowStore(event);
-    if ('error' in wf) {
-      setResponseStatus(event, 503);
-      return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
-    }
-    const actorId = getActorId(event);
-    const manager = createDefaultConnectionManager({
-      configPath: process.env.BALANCEFRAME_CONFIG_PATH,
-    });
-    const config = await manager.loadConfig();
-    if (!config?.budgetId) throw new Error('Selected budget unavailable');
-
-    // Build runtime per-request from the active store (no singleton)
-    const rt = buildRuntime(wf.store, 'default');
-
-    // Load persisted per-space policy from the store
-    let activePolicyVersion = 'v1';
-    try {
-      const storedPolicy = await rt.loadPersistedPolicy('default');
-      activePolicyVersion = storedPolicy.policyVersion;
-    } catch {
-      // Use default version when store lookup fails
-    }
-
-    const status = await rt.getStatus({
-      actorId,
-      budgetId: config.budgetId,
-      canReadEvent: (notification) =>
-        notification.classification === 'transfer_needs_attention'
-          ? canReadFinancialNotification(wf.store, actorId, notification)
-          : hasLegacyFullRead(wf.store, actorId, notification.budgetId),
-    });
-
-    // Count recipients from persisted policy
-    const policy = await rt.loadPersistedPolicy('default');
-    const recipientCount = policy.recipients.filter(
-      (recipient) => recipient.actorId === actorId,
-    ).length;
-
-    return okEnvelope(
-      {
-        ...status,
-        policyVersion: activePolicyVersion,
-        recipientCount,
+    const { runtime, policy } = await createNotificationRuntime(workflow.store, selected.space.id);
+    const status = await runtime.getStatus({
+      actorId: selected.auth.actorId,
+      budgetId,
+      canReadEvent: async (notification) => {
+        if (notification.spaceId !== selected.space.id || notification.budgetId !== budgetId ||
+            notification.recipientId !== selected.auth.actorId ||
+            notification.recipientMembershipId !== selected.membership.id)
+          return false;
+        return notification.classification !== 'transfer_needs_attention' ||
+          canReadFinancialNotification(workflow.store, actor, notification);
       },
-      auth.info,
-      requestId,
-    );
-  } catch (err) {
+    });
+    const recipientCount = policy.recipients.filter(
+      (recipient) => recipient.actorId === selected.auth.actorId,
+    ).length;
+    return okEnvelope({
+      ...status,
+      policyVersion: policy.policyVersion,
+      recipientCount,
+    }, authorization.info, requestId);
+  } catch {
     setResponseStatus(event, 503);
-    return errorEnvelope(
-      'RUNTIME_UNAVAILABLE',
-      'Notification runtime not available',
-      authInfo,
-      false,
-      requestId,
-    );
+    return errorEnvelope('RUNTIME_UNAVAILABLE', 'Notification runtime not available.', authorization.info, false, requestId);
   }
 });

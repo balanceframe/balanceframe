@@ -165,6 +165,9 @@ describe('GET /api/review/categories', () => {
     expect(mockSetHeader).toHaveBeenCalledOnce();
     expect(mockSetHeader).toHaveBeenCalledWith(event, 'Cache-Control', 'private, no-store');
     expect(mockWithConnection).toHaveBeenCalledTimes(1);
+    expect(mockWithConnection).toHaveBeenCalledWith(expect.any(Function), {
+      expectedBudgetId: selection.budgetId,
+    });
   });
 
   it('reuses the configured budget catalog across sequential requests', async () => {

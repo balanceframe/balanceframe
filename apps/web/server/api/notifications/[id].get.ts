@@ -9,41 +9,20 @@
  * an admin can view a notification.
  */
 
-import { defineEventHandler, setResponseStatus, getRouterParam } from 'h3';
-import { canReadFinancialNotification } from '../../utils/liquidity-service';
+import { defineEventHandler, getRouterParam, setHeader, setResponseStatus } from 'h3';
+import { z } from 'zod';
+import { canReadFinancialNotification, selectedLiquidityActor } from '../../utils/liquidity-service';
+import { createNotificationRuntime } from '../../utils/notification-runtime';
+import { requireSelectedSpace } from '../../utils/space-context';
 import {
   getWorkflowStore,
   okEnvelope,
   errorEnvelope,
   requireAuthorization,
-  getActorId,
 } from '../../utils/workflow-store';
-import {
-  NotificationRuntime,
-  InAppChannelAdapter,
-  type NotificationPolicy,
-} from '@balanceframe/application';
+import type { EventWithContext } from '../../utils/workflow-store';
 
-// Module-level singleton (lazy-initialised)
-let runtime: NotificationRuntime | null = null;
-
-function getRuntime(store: ReturnType<typeof getWorkflowStore>): NotificationRuntime {
-  if (runtime) return runtime;
-  if ('error' in store) throw new Error('Workflow store not available');
-  const defaultPolicy: NotificationPolicy = {
-    policyVersion: 'v1',
-    eligibility: [],
-    recipients: [],
-    channels: [
-      { type: 'in_app' as const, enabled: true, rateLimitPerMinute: 60, displayName: 'In-App' },
-    ],
-    redaction: { public: { visibleFields: ['title', 'summary'] } },
-    maxRetries: 3,
-    defaultRedactionClass: 'public',
-  };
-  runtime = new NotificationRuntime(store.store, defaultPolicy, [new InAppChannelAdapter()]);
-  return runtime;
-}
+const OutboxId = z.string().trim().min(1).max(200);
 
 const EVENT_METADATA_FIELDS = [
   'id',
@@ -177,80 +156,50 @@ function sanitizeNotificationDetail(detail: NotificationDetail) {
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
-
-  // Authorization gate
-  const auth = await requireAuthorization(event, 'notification:receive');
-  if (!auth.ok) {
-    setResponseStatus(event, 403);
-    return auth.response;
+  setHeader(event, 'Cache-Control', 'private, no-store');
+  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  if (!selected.ok) return selected.response;
+  const budgetId = selected.space.budgetId;
+  if (!budgetId) {
+    setResponseStatus(event, 409);
+    return errorEnvelope('SPACE_BUDGET_REQUIRED', 'The selected space has no bound budget.', null, false, requestId);
   }
-  const authInfo = auth.info;
+  const authorization = await requireAuthorization(
+    event as unknown as EventWithContext,
+    'notification:receive',
+    `budget:${budgetId}`,
+  );
+  if (!authorization.ok) return authorization.response;
+  const parsedId = OutboxId.safeParse(getRouterParam(event, 'id'));
+  if (!parsedId.success) {
+    setResponseStatus(event, 404);
+    return errorEnvelope('MISSING_ID', 'Notification not found.', authorization.info, false, requestId);
+  }
+  const workflow = getWorkflowStore(event as unknown as EventWithContext);
+  if ('error' in workflow) {
+    setResponseStatus(event, 503);
+    return errorEnvelope('STORE_UNAVAILABLE', 'Notification detail is unavailable.', authorization.info, false, requestId);
+  }
+  const actor = selectedLiquidityActor(workflow.store, selected);
+  if (!actor) {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Current selected-space authorization is unavailable.', authorization.info, false, requestId);
+  }
 
   try {
-    const wf = getWorkflowStore(event);
-    if ('error' in wf) {
-      setResponseStatus(event, 503);
-      return errorEnvelope('STORE_UNAVAILABLE', wf.error, authInfo, false, requestId);
-    }
-
-    const rt = getRuntime(wf);
-    const actorId = getActorId(event);
-    const outboxId = getRouterParam(event, 'id');
-
-    if (!outboxId) {
-      setResponseStatus(event, 400);
-      return errorEnvelope(
-        'MISSING_ID',
-        'Notification outbox ID is required.',
-        authInfo,
-        false,
-        requestId,
-      );
-    }
-
-    const detail = await rt.getOutboxDetail(outboxId, actorId);
-
-    if (!detail || !(await canReadFinancialNotification(wf.store, actorId, detail.event))) {
+    const { runtime } = await createNotificationRuntime(workflow.store, selected.space.id);
+    const detail = await runtime.getOutboxDetail(parsedId.data, selected.auth.actorId);
+    if (!detail || detail.event.spaceId !== selected.space.id || detail.event.budgetId !== budgetId ||
+        detail.event.recipientId !== selected.auth.actorId ||
+        detail.event.recipientMembershipId !== selected.membership.id ||
+        (detail.event.classification === 'transfer_needs_attention' &&
+          !(await canReadFinancialNotification(workflow.store, actor, detail.event)))) {
       setResponseStatus(event, 404);
-      return errorEnvelope(
-        'NOT_FOUND',
-        'Notification not found or access denied.',
-        authInfo,
-        false,
-        requestId,
-      );
+      return errorEnvelope('NOT_FOUND', 'Notification not found or access denied.', authorization.info, false, requestId);
     }
-
-    if (detail.event.recipientId !== undefined && detail.event.recipientId !== actorId) {
-      const scope = typeof detail.event.scope === 'string' ? detail.event.scope.trim() : '';
-      if (!scope) {
-        setResponseStatus(event, 404);
-        return errorEnvelope(
-          'NOT_FOUND',
-          'Notification not found or access denied.',
-          authInfo,
-          false,
-          requestId,
-        );
-      }
-
-      const adminAuth = await requireAuthorization(event, 'notification:admin', scope);
-      if (!adminAuth.ok) {
-        setResponseStatus(event, 404);
-        return errorEnvelope(
-          'NOT_FOUND',
-          'Notification not found or access denied.',
-          authInfo,
-          false,
-          requestId,
-        );
-      }
-    }
-
-    return okEnvelope(sanitizeNotificationDetail(detail), auth.info, requestId);
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    return okEnvelope(sanitizeNotificationDetail(detail), authorization.info, requestId);
+  } catch {
     setResponseStatus(event, 503);
-    return errorEnvelope('DETAIL_UNAVAILABLE', errorMessage, authInfo, false, requestId);
+    return errorEnvelope('DETAIL_UNAVAILABLE', 'Notification detail is unavailable.', authorization.info, false, requestId);
   }
 });

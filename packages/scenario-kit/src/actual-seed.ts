@@ -1,6 +1,7 @@
 import * as actualApiModule from '@actual-app/api';
 import type { ProtocolSnapshot, Transaction } from '@balanceframe/protocol-generated';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import type { ResourceRef } from '@balanceframe/workflow-store';
 import { randomUUID } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -22,6 +23,8 @@ export interface SeededEntityIds {
 }
 
 export interface SeededActualBudget extends SeededEntityIds {
+  /** Finite Actual baseline scopes, including generated balances, default categories and rules. */
+  readonly readResources: readonly ResourceRef[];
   /** The remote budget/file id (not the sync group id). */
   readonly budgetId: string;
   /** The Actual sync group id used by downloadBudget. */
@@ -72,6 +75,7 @@ type ActualApi = {
   ): Promise<unknown>;
   updateTransaction(id: string, fields: Record<string, unknown>): Promise<unknown>;
   getTransactions(accountId: string): Promise<unknown[]>;
+  getRules(): Promise<unknown[]>;
   setBudgetAmount(month: string, categoryId: string, amount: number): Promise<unknown>;
   setBudgetCarryover?(month: string, categoryId: string, carriesOver: boolean): Promise<unknown>;
   getBudgetMonth(month: string): Promise<unknown>;
@@ -1216,6 +1220,17 @@ export async function seedActualBudget(
       throw new Error(`Created budget ${JSON.stringify(options.budgetName)} has no remote id`);
 
     const ids = await populatePrepared(prepared);
+    const categories = (await actualApi.getCategories()).map((row) => row as ActualRow)
+      .filter((row) => actualCategoryGroup(row) !== null);
+    const transactions = await readTransactionRows(Object.values(ids.accountIds));
+    const rules = (await actualApi.getRules()).map((row) => row as ActualRow);
+    const readResources: ResourceRef[] = [
+      ...Object.values(ids.accountIds).map((resourceId) => ({ resourceKind: 'account' as const, resourceId })),
+      ...categories.map((row) => ({ resourceKind: 'category' as const, resourceId: readString(row.id, 'Actual category ID') })),
+      ...transactions.flatMap((parent) => [parent, ...flattenSubtransactions(parent)])
+        .map((row) => ({ resourceKind: 'transaction' as const, resourceId: row.id })),
+      ...rules.map((row) => ({ resourceKind: 'rule' as const, resourceId: readString(row.id, 'Actual rule ID') })),
+    ];
     // Initial create-budget uploads an empty archive. Publish the populated
     // SQLite snapshot before another Actual client downloads the new budget.
     const publication = await client.send('upload-budget');
@@ -1224,6 +1239,7 @@ export async function seedActualBudget(
     }
     return {
       ...ids,
+      readResources,
       budgetId,
       groupId,
       budgetName: options.budgetName,
