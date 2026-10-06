@@ -42,13 +42,14 @@ export default defineEventHandler(async (event) => {
 
     let view: ProposalApprovalView | null;
     try {
-      view = await buildProposalApprovalView({
+      view = buildProposalApprovalView({
         store: workflow.store,
         proposal,
         actorId: selected.auth.actorId,
         auth: selected.auth,
         now: new Date().toISOString(),
         requestId,
+        privateProjection: 'detail',
       });
     } catch {
       setResponseStatus(event, 404);
@@ -67,9 +68,10 @@ export default defineEventHandler(async (event) => {
       proposal.supersededAt !== null ||
       view.governancePolicyVersion !== view.currentGovernancePolicyVersion ||
       !view.requesterMembershipCurrent;
-    const simulation = view.preconditions !== null &&
-      Object.prototype.hasOwnProperty.call(view.preconditions, 'simulation')
-      ? view.preconditions.simulation ?? null
+    const simulation = view.preconditions
+      ? (view.operation === 'create_rule'
+        ? view.preconditions.reviewedSimulation ?? view.preconditions.simulation
+        : view.preconditions.simulation) ?? null
       : null;
     const simulationStatus = simulation === null ? 'missing' : stale ? 'stale' : 'present';
 

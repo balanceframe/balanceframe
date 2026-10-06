@@ -1,5 +1,7 @@
 /** Shared read-only DTOs for the API-backed review surface. */
 import type { ReviewItem, ReviewStatus } from '@balanceframe/workflow-store';
+import type { Money } from '@balanceframe/protocol-generated';
+import type { MerchantPublicSuggestion, MerchantPublicRecurrence } from '@balanceframe/application';
 export type { ReviewStatus };
 
 // ---------------------------------------------------------------------------
@@ -11,6 +13,10 @@ export interface ClassificationHistoryEntry {
   readonly categoryId: string;
   readonly count: number;
   readonly lastClassified: string;
+  readonly firstDate?: string;
+  readonly lastDate?: string;
+  readonly ledgerCount?: number;
+  readonly correctionCount?: number;
 }
 
 /** A candidate for automatic rule creation derived from classification history. */
@@ -18,7 +24,11 @@ export interface RuleCandidate {
   readonly merchant: string;
   readonly currentCategory: string;
   readonly matchCount: number;
-  readonly consistency: number;
+  readonly payeeId: string;
+  readonly categoryId: string;
+  readonly supportCount: number;
+  readonly consistencyNumerator: number;
+  readonly consistencyDenominator: number;
 }
 
 /** What accepting the suggested category would change. */
@@ -33,7 +43,17 @@ export interface ReviewEvidence {
   readonly originalImportedName: string;
   readonly normalizedMerchant: string;
   readonly account: string;
-  readonly amount: number;
+  /** Legacy display only; absent when exact Money cannot safely become a number. */
+  readonly amount?: number;
+  /** Authoritative native amount, never classifier display arithmetic. */
+  readonly money?: Money;
+  readonly currency?: string;
+  readonly merchantEvidence?: MerchantPublicSuggestion;
+  readonly merchantRecurrences?: readonly MerchantPublicRecurrence[];
+  readonly source?: 'native-rule' | 'merchant-inferred' | 'uncategorized';
+  readonly merchantAsOfDate?: string;
+  readonly merchantNormalizationVersion?: string;
+  readonly merchantExpiresAt?: string;
   readonly currentCategory: string;
   readonly suggestedCategory: string;
   readonly alternatives: readonly string[];

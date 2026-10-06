@@ -201,6 +201,21 @@ describe('space governance persistence and authorization', () => {
     });
   }
 
+  it('reads an exact current grant without widening actor, membership, budget, resource, or capability', () => {
+    const space = createSpace('owner', 'shared', 'budget');
+    const membership = governance.getCurrentMembership({ spaceId: space.id, actorId: 'owner', now })!;
+    const exact = { actorId: 'owner', spaceId: space.id, membershipId: membership.id, budgetId: 'budget',
+      resourceKind: 'budget' as const, resourceId: 'budget', capability: 'source' };
+    const granted = grant({ ...exact, restrictions: { accountIds: ['checking'] } });
+    expect(governance.currentResourceGrant(exact)).toEqual(granted);
+    for (const changed of [
+      { actorId: 'other' }, { spaceId: 'other' }, { membershipId: 'other' }, { budgetId: 'other' },
+      { resourceKind: 'account' as const }, { resourceId: 'other' }, { capability: 'rule:view' },
+    ]) expect(governance.currentResourceGrant({ ...exact, ...changed })).toBeNull();
+    governance.setResourceGrant({ ...exact, granted: false, now, auth: auth('owner') });
+    expect(governance.currentResourceGrant(exact)).toBeNull();
+  });
+
   it('creates spaces unbound and binds at most one budget through the owner operation', () => {
     const personal = createSpace('owner', 'personal');
     const shared = createSpace('owner', 'shared');

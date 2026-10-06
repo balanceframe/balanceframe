@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { ConnectionManager, createDefaultConnectionManager } from '../src/connection-manager.js';
+import { ActualConnector, type ActualClient } from '@balanceframe/actual-adapter';
 
 function fakeConnector() {
   return {
@@ -69,6 +70,38 @@ function managerWithDisconnect(disconnect: (connectorNumber: number) => Promise<
 }
 
 describe('ConnectionManager', () => {
+  it('restores and reuses a merchant connection without broad synchronization before source admission', async () => {
+    const client: ActualClient = {
+      init: vi.fn(), shutdown: vi.fn(), sync: vi.fn(), loadBudget: vi.fn(), downloadBudget: vi.fn(),
+      getBudgets: async () => [{ id: 'budget-1', groupId: 'group-1', name: 'Test', state: 'remote', encrypted: false }],
+      getServerVersion: async () => ({ version: '26.10.0' }), getAccounts: vi.fn(async () => []),
+      getAccountBalance: async () => 0, getTransactions: vi.fn(async () => []),
+      getPayees: async () => [], getCategories: async () => [], getCategoryGroups: async () => [],
+      getRules: async () => [], getSchedules: async () => [], getBudgetMonths: async () => [],
+      getBudgetMonth: vi.fn(), getTags: async () => [], runBankSync: vi.fn(),
+      addTransactions: vi.fn(), createAccount: vi.fn(), updateTransaction: vi.fn(),
+      createRule: vi.fn(), deleteRule: vi.fn(), setBudgetAmount: vi.fn(),
+    };
+    const connector = new ActualConnector({ client, currency: 'USD' });
+    const manager = new ConnectionManager({
+      readFile: async () => JSON.stringify({ version: 1, serverUrl: 'http://actual', budgetId: 'budget-1', budgetName: 'Test', groupId: 'group-1' }),
+      writeFile: async () => {},
+      credentialStore: { load: async () => ({ serverUrl: 'http://actual', secretKey: 'synthetic' }), store: async () => {} },
+      connectorFactory: async () => connector,
+    });
+    try {
+      for (let index = 0; index < 2; index++) {
+        await manager.withConnection(async (connected) => {
+          expect(connected.connector).toBe(connector);
+          expect(connected.synchronization).toBeNull();
+          expect(client.getAccounts).not.toHaveBeenCalled();
+          expect(client.getTransactions).not.toHaveBeenCalled();
+        }, { expectedBudgetId: 'budget-1', synchronize: false });
+      }
+      await manager.withConnection(async (connected) => { expect(connected.synchronization).not.toBeNull(); });
+      expect(client.getAccounts).toHaveBeenCalled();
+    } finally { await manager.disconnect(); }
+  });
   it('persists selected budget metadata without persisting secrets', async () => {
     const expectedConfig = {
       version: 1,

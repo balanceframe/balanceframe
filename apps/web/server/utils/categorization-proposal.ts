@@ -48,6 +48,8 @@ export function buildCategorizationProposalIntent(input: {
   const preconditions: Record<string, unknown> = {
     ...(input.review ? {
       reviewId: input.review.id,
+      ...(typeof input.review.evidence.sourceRevision === 'string'
+        ? { reviewSourceRevision: input.review.evidence.sourceRevision } : {}),
       reviewProvenance: {
         budgetId: input.review.budgetId,
         transactionId: input.review.transactionId,

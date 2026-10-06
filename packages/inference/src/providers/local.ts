@@ -15,8 +15,8 @@
  * Never reads credentials from the environment; all configuration is
  * injected via the constructor.
  */
-import type { ProviderAdapter } from './types';
-import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types';
+import type { ProviderAdapter } from './types.js'
+import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types.js'
 
 /** Configuration for the local provider adapter. */
 export interface LocalProviderConfig {

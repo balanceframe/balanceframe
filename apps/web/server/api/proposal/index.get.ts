@@ -1,8 +1,5 @@
 import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
-import { ProposalAcquisitionError } from '@balanceframe/workflow-store';
 import type { ActionProposal, GenericProposalOperation } from '@balanceframe/workflow-store';
-import { buildProposalApprovalView } from '../../utils/proposal-approval-view';
-import type { ProposalApprovalView } from '../../utils/proposal-approval-view';
 import { requireSelectedSpace } from '../../utils/space-context';
 import type { EventWithContext } from '../../utils/workflow-store';
 import { errorEnvelope, getWorkflowStore, okEnvelope, sanitizeError } from '../../utils/workflow-store';
@@ -48,35 +45,27 @@ export default defineEventHandler(async (event) => {
       operations: ['set_category', 'create_rule', 'update_rule', 'delete_rule'],
       limit: -1,
     });
-    const items: ActionProposalListItem[] = [];
-    const now = new Date().toISOString();
-    for (const proposal of proposals) {
-      if (proposal.spaceId !== selected.space.id ||
-          (proposal.operation !== 'set_category' && proposal.operation !== 'create_rule' &&
-           proposal.operation !== 'update_rule' && proposal.operation !== 'delete_rule')) continue;
-      let view: ProposalApprovalView | null;
-      try {
-        view = await buildProposalApprovalView({
-          store: workflow.store, proposal, actorId: selected.auth.actorId, auth: selected.auth, now,
-          requestId,
-        });
-      } catch (error) {
-        if (error instanceof ProposalAcquisitionError &&
-            (error.reasonCode === 'authorization_denied' ||
-             error.reasonCode === 'policy_version_mismatch' ||
-             error.reasonCode === 'payload_hash_mismatch')) continue;
-        throw error;
-      }
-      if (!view) continue;
-      const payload = view.payload;
-      items.push({
+    const reads = workflow.store.getProposalApprovalReads({
+      proposalIds: proposals
+        .filter((proposal) => proposal.spaceId === selected.space.id)
+        .map((proposal) => proposal.id),
+      spaceId: selected.space.id,
+      actorId: selected.auth.actorId,
+      auth: selected.auth,
+      now: new Date().toISOString(),
+      requestId,
+      privateProjection: 'preconditions',
+    });
+    const items: ActionProposalListItem[] = reads.map(({ proposal, summary, preconditions }) => {
+      const payload = summary.privateEnvelopeVisible ? proposal.payload : null;
+      return {
         id: proposal.id,
         operation: proposal.operation,
         budgetId: proposal.budgetId,
         transactionId: payload && 'transactionId' in payload ? payload.transactionId : null,
         categoryId: payload && 'categoryId' in payload ? payload.categoryId : null,
         ruleId: payload && 'ruleId' in payload ? payload.ruleId : null,
-        preconditions: JSON.stringify(view.preconditions),
+        preconditions: JSON.stringify(preconditions),
         expiresAt: proposal.expiresAt,
         actorId: proposal.actorId,
         provenance: proposal.provenance,
@@ -84,9 +73,9 @@ export default defineEventHandler(async (event) => {
         correlationId: proposal.correlationId,
         supersededAt: proposal.supersededAt,
         createdAt: proposal.createdAt,
-        simulationStatus: computeSimulationStatus(proposal),
-      });
-    }
+        simulationStatus: computeSimulationStatus(proposal, preconditions),
+      };
+    });
     return okEnvelope({ proposals: items, total: items.length }, null, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'LIST_FAILED', false);
@@ -95,18 +84,13 @@ export default defineEventHandler(async (event) => {
   }
 });
 
-function computeSimulationStatus(proposal: ActionProposal): 'present' | 'missing' | 'stale' {
-  let preconditions: unknown;
-  try {
-    preconditions = JSON.parse(proposal.preconditions) as unknown;
-  } catch {
-    return 'missing';
-  }
-  if (!preconditions || typeof preconditions !== 'object' || Array.isArray(preconditions))
-    return 'missing';
-  const simulation = Object.prototype.hasOwnProperty.call(preconditions, 'simulation')
-    ? (preconditions as Record<string, unknown>).simulation
-    : null;
+function computeSimulationStatus(
+  proposal: ActionProposal,
+  preconditions: Readonly<Record<string, unknown>> | null,
+): 'present' | 'missing' | 'stale' {
+  const simulation = preconditions && (proposal.operation === 'create_rule'
+    ? preconditions.reviewedSimulation ?? preconditions.simulation
+    : preconditions.simulation);
   if (!simulation || typeof simulation !== 'object' || Array.isArray(simulation))
     return 'missing';
   const expiry = Date.parse(proposal.expiresAt);

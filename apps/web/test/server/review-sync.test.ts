@@ -13,6 +13,7 @@ const {
   mockRequireFullRead,
   mockReconcileActive,
   mockGetHumanControlAuth,
+  mockMerchantWithAnalysis,
   workflowStore,
   reviewItems,
   config,
@@ -26,8 +27,9 @@ const {
   };
   const reviewItems: Array<{ id: string; version: number; status: string }> = [];
   const workflowStore = {
-    listReviewItems: vi.fn(async ({ status }: { budgetId: string; status: string }) =>
-      reviewItems.filter((item) => item.status === status).map(({ id, version }) => ({ id, version })),
+    governance: { authorize: vi.fn(() => ({ allowed: false, disposition: { kind: 'denied' } })) },
+    listReviewItems: vi.fn(async ({ status, limit = 50, offset = 0 }: { budgetId: string; status: string; limit?: number; offset?: number }) =>
+      reviewItems.filter((item) => item.status === status).slice(offset, offset + limit).map(({ id, version }) => ({ id, version })),
     ),
     transitionInternalReviewItem: vi.fn(async (id: string, input: {
       toStatus: string;
@@ -92,6 +94,7 @@ const {
       };
     }),
     mockReconcileActive: vi.fn(async () => {}),
+    mockMerchantWithAnalysis: vi.fn(),
     mockGetHumanControlAuth: vi.fn(async (event: {
       context: { auth: { actorId: string; method: string; sessionId?: string } };
     }) => {
@@ -121,6 +124,7 @@ vi.mock('@balanceframe/application', async (importOriginal) => ({
   createNativeAnalysisProtocol: mockCreateNativeAnalysisProtocol,
   persistPendingReviewResult: mockPersistPendingReviewResult,
   createLiquidityService: async () => ({ reconcileActive: mockReconcileActive }),
+  createMerchantIntelligenceService: async () => ({ withAnalysis: mockMerchantWithAnalysis }),
 }));
 
 vi.mock('../../server/utils/workflow-store', async (importOriginal) => ({
@@ -140,6 +144,7 @@ vi.mock('../../server/utils/review-category-catalog', () => ({
 vi.mock('../../server/utils/legacy-financial-read', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requireFullRead: mockRequireFullRead,
+  hasLegacyFullRead: () => true,
 }));
 
 import handler from '../../server/api/review/sync.post';
@@ -178,6 +183,8 @@ beforeEach(() => {
     item.version += 1;
     return item;
   });
+  workflowStore.governance.authorize.mockReturnValue({ allowed: false, disposition: { kind: 'denied' } });
+  mockMerchantWithAnalysis.mockReset();
   mockPendingReview.mockResolvedValue({ candidates: [] });
   mockReconcileActive.mockResolvedValue(undefined);
   mockWithConnection.mockImplementation(async (operation) =>
@@ -248,6 +255,14 @@ describe('POST /api/review/sync', () => {
     expect(response.status).toBe('ok');
   });
 
+  it('transitions every newly discovered issue, beyond the store default page of fifty', async () => {
+    reviewItems.push(...Array.from({ length: 1135 }, (_, index) => ({ id: `discovered-${index}`, version: 1, status: 'discovered' })));
+    const response = await handler(event());
+    expect(response.status).toBe('ok');
+    expect(response.result?.transitioned).toBe(1135);
+    expect(reviewItems.every((item) => item.status === 'pending_review')).toBe(true);
+  });
+
   it('reports successful, conflicting and failed review transitions independently', async () => {
     reviewItems.push(
       ...['ready', 'conflict', 'invalid', 'failed'].map((id) => ({
@@ -305,4 +320,5 @@ describe('POST /api/review/sync', () => {
     expect(mockCreateNativeAnalysisProtocol).not.toHaveBeenCalled();
     expect(mockPersistPendingReviewResult).not.toHaveBeenCalled();
   });
+
 });

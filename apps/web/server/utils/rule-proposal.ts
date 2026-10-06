@@ -179,34 +179,34 @@ export async function proposeRuleMutation(
     const config = await manager.loadConfig();
     if (!config || config.budgetId !== budgetId)
       return fail(event, requestId, 409, 'SPACE_CONNECTION_MISMATCH', 'The configured budget does not match the selected space.', authorizationInfo);
-    return await manager.withConnection(async (connected) => {
+    const captured = await manager.withConnection(async (connected) => {
       if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId)
-        return fail(event, requestId, 409, 'SPACE_CONNECTION_MISMATCH', 'The connected budget does not match the selected space.', authorizationInfo);
+        return { kind: 'response' as const, response: fail(event, requestId, 409, 'SPACE_CONNECTION_MISMATCH', 'The connected budget does not match the selected space.', authorizationInfo) };
 
       const ledger = connected.connector as unknown as BudgetLedger;
       const version = z.object({ snapshot: z.object({ actualVersion: z.string().min(1) }) })
         .safeParse(connected.synchronization);
       if (!version.success)
-        return fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'The current Actual version is unavailable.', authorizationInfo);
+        return { kind: 'response' as const, response: fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'The current Actual version is unavailable.', authorizationInfo) };
       const rules = await ledger.listRules();
       const current = rules.find((rule) => rule.id === ruleId);
       if (!current)
-        return fail(event, requestId, 404, 'RULE_NOT_FOUND', 'Rule not found.', authorizationInfo);
+        return { kind: 'response' as const, response: fail(event, requestId, 404, 'RULE_NOT_FOUND', 'Rule not found.', authorizationInfo) };
       const rule = snapshotRule(current);
       if (!rule)
-        return fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'The current rule snapshot is incomplete.', authorizationInfo);
+        return { kind: 'response' as const, response: fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'The current rule snapshot is incomplete.', authorizationInfo) };
 
       let groupIds: string[];
       try {
         groupIds = deriveActualRuleCategoryGroupReferences(rule.trigger);
       } catch {
-        return fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'The current rule predicates are incomplete.', authorizationInfo);
+        return { kind: 'response' as const, response: fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'The current rule predicates are incomplete.', authorizationInfo) };
       }
       let categoryGroupMembers: Record<string, readonly string[]> | null = {};
       if (groupIds.length > 0) {
         categoryGroupMembers = await currentCategoryGroupMembers(ledger, groupIds);
         if (!categoryGroupMembers)
-          return fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'Current category-group membership is unavailable.', authorizationInfo);
+          return { kind: 'response' as const, response: fail(event, requestId, 409, 'RULE_SNAPSHOT_INCOMPLETE', 'Current category-group membership is unavailable.', authorizationInfo) };
       }
 
       const payload = mutation === 'update_rule'
@@ -232,24 +232,27 @@ export async function proposeRuleMutation(
         provenance: 'rule-route',
         correlationId: requestId,
       });
-      const proposalView = await buildProposalApprovalView({
-        store: workflow.store,
-        proposal,
-        actorId: selected.auth.actorId,
-        auth: selected.auth,
-        now: new Date().toISOString(),
-        requestId,
-      });
-      if (!proposalView)
-        return fail(event, requestId, 409, 'PROPOSAL_UNAVAILABLE', 'A current rule proposal could not be read.', authorizationInfo);
-
-      return okEnvelope({
-        proposal: proposalView,
-        state: 'approval_required' as const,
-        applied: false as const,
-        verified: false as const,
-      }, authorizationInfo, requestId);
+      return { kind: 'proposal' as const, proposal };
     }, { expectedBudgetId: budgetId, dispose: true });
+    if (captured.kind === 'response') return captured.response;
+    // SDK cleanup is the last await; private fields require current synchronous admission.
+    const proposalView = buildProposalApprovalView({
+      store: workflow.store,
+      proposal: captured.proposal,
+      actorId: selected.auth.actorId,
+      auth: selected.auth,
+      now: new Date().toISOString(),
+      requestId,
+    });
+    if (!proposalView)
+      return fail(event, requestId, 409, 'PROPOSAL_UNAVAILABLE', 'A current rule proposal could not be read.', authorizationInfo);
+
+    return okEnvelope({
+      proposal: proposalView,
+      state: 'approval_required' as const,
+      applied: false as const,
+      verified: false as const,
+    }, authorizationInfo, requestId);
   } catch (error) {
     if (event.node.res.headersSent) throw error;
     const connectionError = classifyConnectionError(error);

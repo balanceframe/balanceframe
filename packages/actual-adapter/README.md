@@ -13,6 +13,73 @@ exact parent and split children, including category, payee, notes, and absence o
 split errors. Ambiguous existing imports and uncertain writes require review;
 the adapter never retries an uncertain write or claims that Actual reconciled it.
 
+## Merchant source capture
+
+`ActualConnector.captureMerchantSource(options, consume)` reads raw Actual 26.10
+collections sequentially before legacy normalization, then calls `consume` under
+the existing budget lock. The trusted application supplies server-computed
+admission, horizon, expiry, and a whole-occurrence transaction
+cap. It must authorize the complete source dependency closure; admission is not
+a client permission grant. Final evidence publication belongs inside the callback.
+
+Capture uses the connector's configured ledger currency (default `USD`), not
+Actual display symbols, locale, or merchant-research billing currency. Trusted
+capture callers may explicitly override `options.currency`; the standalone
+normalizer still requires currency. Readonly `ActualConnector.sourceCurrency`
+exposes the configured currency for empty-source zero Money without inventing a
+ledger denomination.
+
+`admission.transactionIds` scopes admitted ledger rows; independently,
+`admission.sourceTransactionIds` admits raw `imported_payee`, `notes`, and
+`imported_id` only for exact listed transaction IDs, and `admission.sourceAccountIds`
+must independently admit each transaction's actual account ID. An empty array
+in either mask denies raw fields; omitted/null retains compatibility for privileged
+full-source callers. The application always supplies its server-computed masks. Denied raw
+properties are not read or validated, and are masked before duplicate comparisons,
+source hashing, or derived evidence: imported payee/notes become
+`{state: 'unavailable', value: null}`, and imported ID becomes null. Native payee
+IDs, native payee names, amounts, and other independently admitted ledger facts
+remain available. Raw fields on rows outside ledger admission/horizon are also
+never read, even for privileged raw-source masks. Admitted malformed raw text
+still fails validation.
+
+Text `unavailable` means the field was not admitted and says nothing about its
+existence or contents. It differs from `unsupported` (no SDK evidence field),
+`absent` (admitted but no value), `empty` (admitted empty string), and `present`
+(admitted nonempty string); only null is valid for unavailable/unsupported/absent.
+
+`admission.ruleIds` independently admits native rule content by exact rule ID.
+Omitted/null is reserved for proven full-rule-namespace authority and retains SDK
+completeness. Explicit arrays are scoped: empty means unavailable rule content;
+nonempty means partial coverage (or unavailable when the SDK read is unavailable),
+even if all currently known rules match. Coverage and hashes therefore cannot
+reveal whether denied rules exist. Denied rule terms, names, and other content
+are never read, validated, compared, or hashed. Account/category-incompatible
+admitted rules are excluded and cannot assert complete coverage. Rule and raw
+transaction/account masks are trusted internal input, not fields or authority
+assertions in canonical `sourceAdmission`.
+
+`normalizeActualMerchantSource` preserves stable IDs, exact safe-integer minor
+units, raw imported payee/notes availability, tombstones, native starting-balance
+flags, transfers, and distinct unavailable/partial collection coverage. Nested
+and flat split children deduplicate; missing, hidden, ineligible, or capped
+siblings cannot establish a complete recurring occurrence. Title/description
+are unsupported SDK evidence; uncleared is not pending. Source hashes exclude
+capture/expiry timestamps and incidental collection order, but preserve native
+rule execution order. Scheduled expectations reuse the liquidity normalizer
+without inventing observed amounts or cadence.
+
+Merchant holiday lookup is offline and explicitly configured by budget/account.
+It uses checked-in `packages/application/src/merchant-calendar-data.json` from
+MIT `python-holidays==0.105`, covering national and official US/CA/GB subdivisions
+for 2020–2035 with public observed holidays. Regenerate using
+`scripts/merchant-intelligence/generate-calendars.py --sdist <holidays-0.105.tar.gz>`
+inside the pinned Python environment; the generator checks the source archive
+SHA-256 and installed source and embeds full license/contributor attribution.
+No Python, subprocess, network, locale inference, or bank-closure assertion is
+part of runtime lookup. An explicit null account override disables the calendar;
+unsupported selections/years stay unknown instead of falling back nationally.
+
 ## Account-aware liquidity
 
 `ActualConnector.synchronize()` adds normalized `FinancialSnapshot.liquidity`. Current

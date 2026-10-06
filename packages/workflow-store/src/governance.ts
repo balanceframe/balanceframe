@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Database } from 'better-sqlite3';
+import type { Database, Statement } from 'better-sqlite3';
 import type {
   AddMembershipInput,
   AcceptInvitedMembershipInput,
@@ -8,6 +8,7 @@ import type {
   BindBudgetInput,
   CreateSpaceInput,
   CredentialBinding,
+  CredentialLifetime,
   CredentialPrincipal,
   DelegateAgentInput,
   DelegatedRight,
@@ -17,6 +18,7 @@ import type {
   GovernanceDisposition,
   GovernanceOperation,
   GovernancePolicy,
+  GovernanceReadDisclosureLimits,
   GovernanceResourceGrant,
   GovernanceResourceKind,
   GovernanceResourceRef,
@@ -39,6 +41,8 @@ import type {
 
 const MAX_I64 = 9_223_372_036_854_775_807n;
 const REAUTH_WINDOW_MS = 5 * 60_000;
+const CURRENT_GRANT_SQL = `SELECT * FROM resource_grants WHERE actor_id=? AND space_id=? AND membership_id=?
+  AND capability=? AND resource_kind=? AND resource_id=? AND granted=1 AND revoked_at IS NULL`;
 const CONTROL_CAPABILITIES = [
   'space:manage',
   'identity:manage',
@@ -73,6 +77,20 @@ function isoTime(value: string): number {
   return parsed;
 }
 
+/** Shared live credential fence; trusted local callers may omit lifetime metadata. */
+export function credentialLifetimeValid(auth: CredentialLifetime, now: string): boolean {
+  try {
+    const current = isoTime(now);
+    if (auth.credentialExpiresAt !== undefined && auth.credentialExpiresAt !== null &&
+        (typeof auth.credentialExpiresAt !== 'string' || isoTime(auth.credentialExpiresAt) <= current))
+      return false;
+    return auth.isCredentialValid === undefined ||
+      typeof auth.isCredentialValid === 'function' && auth.isCredentialValid(now) === true;
+  } catch {
+    return false;
+  }
+}
+
 
 function requireText(value: string, label: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`Invalid ${label}`);
@@ -91,6 +109,21 @@ function safeCount(value: unknown, minimum = 1): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum)
     throw new Error('Invalid governance count');
   return value;
+}
+
+function validateFinancialDisclosure(value: unknown): void {
+  const totals = record(value);
+  if (!totals) throw new Error('Invalid financial disclosure');
+  safeCount(totals.operationCount, 0);
+  const gross = record(totals.grossOutgoing);
+  if (!gross) throw new Error('Invalid disclosure gross outgoing');
+  const prototype = Object.getPrototypeOf(gross);
+  if (prototype !== Object.prototype && prototype !== null)
+    throw new Error('Invalid disclosure gross outgoing');
+  for (const [currency, amount] of Object.entries(gross)) {
+    if (!/^[A-Z]{3}$/.test(currency) || typeof amount !== 'bigint' || amount < 0n || amount > MAX_I64)
+      throw new Error('Invalid or overflowing disclosure gross outgoing');
+  }
 }
 
 function isCurrentAt(from: string, until: string | null, now: string): boolean {
@@ -390,6 +423,59 @@ function financialTotals(operations: readonly GovernanceOperation[]): Record<str
   }
 }
 
+interface PreparedAuthorizationPayload {
+  readonly operationCount: number;
+  readonly operationNames: ReadonlySet<string>;
+  readonly accountIds: ReadonlySet<string>;
+  readonly categoryIds: ReadonlySet<string>;
+  readonly ruleOperationNames: ReadonlySet<string>;
+  readonly ruleAccountIds: ReadonlySet<string>;
+  readonly invalidRuleScope: boolean;
+  readonly gross: Readonly<Record<string, bigint>>;
+  /** The batch overlay is exactly one operation/resource, never a union of subjects. */
+  readonly subjectOperation?: GovernanceOperation;
+}
+
+function ruleOperation(name: string): boolean {
+  return name === 'create_rule' || name === 'update_rule' || name === 'delete_rule';
+}
+
+function prepareAuthorizationPayload(
+  input: GovernanceAuthorizationInput,
+  operations: readonly GovernanceOperation[],
+  resources: readonly GovernanceResourceRef[],
+  gross: Readonly<Record<string, bigint>>,
+): PreparedAuthorizationPayload {
+  const operationNames = new Set([input.operation]);
+  const accountIds = new Set<string>();
+  const categoryIds = new Set<string>();
+  const ruleOperationNames = new Set<string>();
+  const ruleAccountIds = new Set<string>();
+  let invalidRuleScope = false;
+  for (const resource of resources) {
+    if (resource.resourceKind === 'account') accountIds.add(resource.resourceId);
+    if (resource.resourceKind === 'category') categoryIds.add(resource.resourceId);
+  }
+  for (const operation of operations) {
+    operationNames.add(operation.operation);
+    if (!ruleOperation(operation.operation)) continue;
+    ruleOperationNames.add(operation.operation);
+    const scope = operation.accountScope;
+    if (!scope || scope.kind !== 'accounts' || scope.accountIds.length === 0) {
+      invalidRuleScope = true;
+      continue;
+    }
+    for (const accountId of scope.accountIds) {
+      ruleAccountIds.add(accountId);
+      if (!accountIds.has(accountId)) invalidRuleScope = true;
+    }
+  }
+  return {
+    operationCount: operations.length, operationNames, accountIds, categoryIds,
+    ruleOperationNames, ruleAccountIds, invalidRuleScope, gross,
+  };
+}
+
 
 /** Append-only ordered migration for Phase 7 governance and provenance. */
 export function migrateGovernance(db: Database): void {
@@ -535,7 +621,8 @@ export class SpaceGovernance {
     if (
       auth.method !== 'human-session' || auth.actorId !== actorId ||
       typeof auth.sessionId !== 'string' || !auth.sessionId.trim() ||
-      reauth > current || current - reauth > REAUTH_WINDOW_MS || !this.activeIdentity(actorId)
+      reauth > current || current - reauth > REAUTH_WINDOW_MS || !this.activeIdentity(actorId) ||
+      !credentialLifetimeValid(auth, now)
     ) throw new Error('Recent reauthenticated human session required');
   }
 
@@ -1081,6 +1168,17 @@ export class SpaceGovernance {
     return rows.map(rowToGrant);
   }
 
+  /** Reads one current scoped grant for trusted callers; membership, delegation, and operation authorization remain separate. */
+  currentResourceGrant(input: GovernanceResourceRef & {
+    readonly actorId: string;
+    readonly spaceId: string;
+    readonly membershipId: string;
+    readonly budgetId: string;
+    readonly capability: string;
+  }): GovernanceResourceGrant | null {
+    return this.currentGrant(input.actorId, input.spaceId, input.membershipId, input.budgetId, input);
+  }
+
   /** Registers an independent active agent in one explicitly selected space. */
   registerAgent(input: RegisterAgentInput): GovernanceAgent {
     this.controlAuth(input.auth, input.auth.actorId, input.now);
@@ -1351,48 +1449,20 @@ export class SpaceGovernance {
   }
 
   private currentGrant(actorId: string, spaceId: string, membershipId: string, budgetId: string | null,
-    required: GovernanceResourceRef & { capability: string }): GovernanceResourceGrant | null {
-    const row = this.db.prepare(`SELECT * FROM resource_grants WHERE actor_id=? AND space_id=? AND membership_id=?
-      AND capability=? AND resource_kind=? AND resource_id=? AND granted=1 AND revoked_at IS NULL`)
-      .get(actorId, spaceId, membershipId, required.capability, required.resourceKind, required.resourceId) as Row | undefined;
+    required: GovernanceResourceRef & { capability: string }, statement?: Statement): GovernanceResourceGrant | null {
+    const query = statement ?? this.db.prepare(CURRENT_GRANT_SQL);
+    const row = query.get(actorId, spaceId, membershipId, required.capability, required.resourceKind, required.resourceId) as Row | undefined;
     if (!row || (required.resourceKind !== 'space' && budgetId !== null && row.budget_id !== budgetId))
       return null;
     return rowToGrant(row);
   }
 
-  private restrictionsAllow(
+  private financialRestrictionsAllow(
     restrictions: ResourceGrantRestrictions,
-    input: GovernanceAuthorizationInput,
-    operations: readonly GovernanceOperation[],
-    resources: readonly GovernanceResourceRef[],
-    visibility: 'aggregate' | 'resource' | undefined,
+    operationCount: number,
     gross: Readonly<Record<string, bigint>>,
-    purpose: 'operation' | 'rule_inspection',
   ): boolean {
-    if (restrictions.aggregateOnly && (visibility !== 'aggregate' || input.phase !== 'read')) return false;
-    if (restrictions.proposalOnly && input.phase !== 'propose') return false;
-    const operationNames = [input.operation, ...operations.map((operation) => operation.operation)];
-    if (restrictions.operations && operationNames.some((operation) => !restrictions.operations!.includes(operation))) return false;
-    if (restrictions.accountIds) {
-      const ruleOperations = operations.filter(({ operation }) =>
-        operation === 'create_rule' || operation === 'update_rule' || operation === 'delete_rule');
-      if (purpose === 'operation' && (
-        ((input.operation === 'create_rule' || input.operation === 'update_rule' ||
-          input.operation === 'delete_rule') &&
-          !ruleOperations.some(({ operation }) => operation === input.operation)) ||
-        ruleOperations.some(({ accountScope }) =>
-          !accountScope || accountScope.kind !== 'accounts' || accountScope.accountIds.length === 0 ||
-          accountScope.accountIds.some((accountId) =>
-            !restrictions.accountIds!.includes(accountId) ||
-            !resources.some((resource) =>
-              resource.resourceKind === 'account' && resource.resourceId === accountId)))
-      )) return false;
-      if (resources.some((resource) => resource.resourceKind === 'account' &&
-        !restrictions.accountIds!.includes(resource.resourceId))) return false;
-    }
-    if (restrictions.categoryIds && resources.some((resource) => resource.resourceKind === 'category' &&
-      !restrictions.categoryIds!.includes(resource.resourceId))) return false;
-    if (restrictions.maxOperationCount !== undefined && operations.length > restrictions.maxOperationCount) return false;
+    if (restrictions.maxOperationCount !== undefined && operationCount > restrictions.maxOperationCount) return false;
     if (restrictions.maxGrossOutgoing) {
       for (const limit of restrictions.maxGrossOutgoing) {
         if ((gross[limit.currency] ?? 0n) > BigInt(limit.minorUnits)) return false;
@@ -1403,6 +1473,44 @@ export class SpaceGovernance {
       }
     }
     return true;
+  }
+
+  private restrictionsAllow(
+    restrictions: ResourceGrantRestrictions,
+    input: GovernanceAuthorizationInput,
+    payload: PreparedAuthorizationPayload,
+    visibility: 'aggregate' | 'resource' | undefined,
+    purpose: 'operation' | 'rule_inspection',
+  ): boolean {
+    if (restrictions.aggregateOnly && (visibility !== 'aggregate' || input.phase !== 'read')) return false;
+    if (restrictions.proposalOnly && input.phase !== 'propose') return false;
+    // A global future rule is not bounded by the reviewed historical matches.
+    if (purpose === 'operation' && input.phase !== 'read' &&
+        payload.ruleOperationNames.has('create_rule') &&
+        (restrictions.categoryIds !== undefined || restrictions.maxOperationCount !== undefined ||
+          restrictions.maxGrossOutgoing !== undefined))
+      return false;
+    if (restrictions.operations) {
+      const allowed = new Set(restrictions.operations);
+      for (const operation of payload.operationNames) if (!allowed.has(operation)) return false;
+    }
+    if (restrictions.accountIds) {
+      const allowed = new Set(restrictions.accountIds);
+      if (purpose === 'operation' && (
+        (ruleOperation(input.operation) && !payload.ruleOperationNames.has(input.operation) &&
+          payload.subjectOperation?.operation !== input.operation) ||
+        payload.invalidRuleScope ||
+        (payload.subjectOperation !== undefined && ruleOperation(payload.subjectOperation.operation))
+      )) return false;
+      if (purpose === 'operation')
+        for (const accountId of payload.ruleAccountIds) if (!allowed.has(accountId)) return false;
+      for (const accountId of payload.accountIds) if (!allowed.has(accountId)) return false;
+    }
+    if (restrictions.categoryIds) {
+      const allowed = new Set(restrictions.categoryIds);
+      for (const categoryId of payload.categoryIds) if (!allowed.has(categoryId)) return false;
+    }
+    return this.financialRestrictionsAllow(restrictions, payload.operationCount, payload.gross);
   }
 
   private denied(input: GovernanceAuthorizationInput, reason: string, policyVersion: string | null = null,
@@ -1467,9 +1575,51 @@ export class SpaceGovernance {
     return this.authorizeForPurpose(input, 'operation');
   }
 
+  /** Adds emitted-output numerical caps without changing complete local source/effect authority. */
+  authorizeReadDisclosure(
+    input: GovernanceAuthorizationInput,
+    limits: GovernanceReadDisclosureLimits,
+  ): GovernanceAuthorizationResult {
+    try {
+      if (input.phase !== 'read') return this.denied(input, 'Read disclosure limits require read phase');
+      const disclosure = record(limits);
+      if (!disclosure) return this.denied(input, 'Malformed read disclosure limits');
+      validateFinancialDisclosure(disclosure.collection);
+      validateFinancialDisclosure(disclosure.subject);
+      return this.authorizeForPurpose(input, 'operation', undefined, limits);
+    } catch {
+      return this.denied(input, 'Malformed read disclosure limits');
+    }
+  }
+
+  /** Admits independently granted evidence subjects against one complete read source payload. */
+  authorizeReadEvidenceSubjects(input: GovernanceAuthorizationInput, evidenceKeys: readonly string[]): string[] {
+    try {
+      if (input.phase !== 'read' || !Array.isArray(evidenceKeys) || evidenceKeys.length === 0) return [];
+      const uniqueKeys = new Set<string>();
+      for (const key of evidenceKeys) {
+        if (typeof key !== 'string' || !key.trim() || uniqueKeys.has(key)) return [];
+        uniqueKeys.add(key);
+      }
+      if (!Array.isArray(input.payload?.operations)) return [];
+      for (const operation of input.payload.operations) {
+        if (!record(operation) || typeof operation.operation !== 'string' || !operation.operation.trim()) return [];
+      }
+      return this.db.transaction(() => {
+        const batch = { keys: evidenceKeys, admitted: [] as string[] };
+        const result = this.authorizeForPurpose(input, 'operation', batch);
+        return result.allowed ? batch.admitted : [];
+      }).immediate();
+    } catch {
+      return [];
+    }
+  }
+
   private authorizeForPurpose(
     input: GovernanceAuthorizationInput,
     purpose: 'operation' | 'rule_inspection',
+    batch?: { readonly keys: readonly string[]; readonly admitted: string[] },
+    readDisclosure?: GovernanceReadDisclosureLimits,
   ): GovernanceAuthorizationResult {
     try {
       isoTime(input.now);
@@ -1489,6 +1639,8 @@ export class SpaceGovernance {
       const currentOperations = operationList(input.payload.operations);
       if (input.auth && input.auth.actorId !== input.actorId)
         return this.denied(input, 'Verified operation identity does not match actor', policy.version);
+      if (input.auth && !credentialLifetimeValid(input.auth, input.now))
+        return this.denied(input, 'Verified operation credential is no longer current', policy.version);
       const agentAuth = input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
         ? input.auth
         : null;
@@ -1526,11 +1678,12 @@ export class SpaceGovernance {
         return this.denied(input, 'Malformed or incomplete authorization payload', policy.version);
       const totals = financialTotals(currentOperations);
       if (!totals) return this.denied(input, 'Malformed or overflowing gross outgoing amount', policy.version);
+      const preparedPayload = prepareAuthorizationPayload(input, currentOperations, resources, totals);
       let requiredApprovers = policy.minimumApprovers;
       for (const threshold of policy.approvalThresholds)
         if ((totals[threshold.currency] ?? 0n) >= BigInt(threshold.amountMinorUnits))
           requiredApprovers = Math.max(requiredApprovers, threshold.requiredApprovers);
-      for (const operation of [input.operation, ...currentOperations.map((item) => item.operation)]) {
+      for (const operation of preparedPayload.operationNames) {
         const approvers = policy.operationApprovers &&
           Object.prototype.hasOwnProperty.call(policy.operationApprovers, operation)
           ? policy.operationApprovers[operation]
@@ -1559,6 +1712,7 @@ export class SpaceGovernance {
         entry.capability === 'full-read' &&
         entry.resourceKind === 'budget' &&
         entry.visibility === 'resource');
+      const uncoveredEvidence = new Set<string>();
       for (const resource of resources) {
         if (requiredKeys[`${resource.resourceKind}:${resource.resourceId}`] === true) continue;
         if (
@@ -1579,6 +1733,10 @@ export class SpaceGovernance {
             resource.resourceKind === 'rule')
         )
           continue;
+        if (batch && resource.resourceKind === 'evidence') {
+          uncoveredEvidence.add(resource.resourceId);
+          continue;
+        }
         return this.denied(input, `Payload resource omitted from authorization: ${resource.resourceKind}`, policy.version);
       }
       const isAgent = agentAuth !== null;
@@ -1612,20 +1770,89 @@ export class SpaceGovernance {
       }
       if (!member || !grantMembershipId) return this.denied(input, 'Membership unavailable', policy.version);
       const budgetId = space.budgetId;
+      const grantStatement = this.db.prepare(CURRENT_GRANT_SQL);
+      const delegatedRights = new Map<string, DelegatedRight>();
+      for (const right of delegation?.rights ?? []) {
+        const key = JSON.stringify([right.resourceKind, right.resourceId, right.capability]);
+        // Preserve the existing first matching delegated right.
+        if (!delegatedRights.has(key)) delegatedRights.set(key, right);
+      }
+      const commonRestrictions = new Map<string, {
+        restrictions: ResourceGrantRestrictions;
+        visibility: 'aggregate' | 'resource' | undefined;
+      }>();
       for (const required of expectedRefs) {
-        const delegatedRight = isAgent
-          ? delegation?.rights.find((right) => capabilityMatches(required, [right]))
-          : undefined;
+        const delegatedRight = delegatedRights.get(JSON.stringify([
+          required.resourceKind, required.resourceId, required.capability,
+        ]));
         if (isAgent && !delegatedRight)
           return this.denied(input, 'Requested right exceeds delegation', policy.version, member.id, requiredApprovers);
-        const grant = this.currentGrant(principalActorId, input.spaceId, grantMembershipId, budgetId, required);
+        const grant = this.currentGrant(principalActorId, input.spaceId, grantMembershipId, budgetId, required, grantStatement);
         if (!grant) return this.denied(input, 'Current scoped grant unavailable', policy.version, member.id, requiredApprovers);
-        const relevantVisibility = required.visibility ?? (input.phase === 'read' ? undefined : 'resource');
-        if (!this.restrictionsAllow(grant.restrictions, input, currentOperations, resources,
-          relevantVisibility, totals, purpose) ||
-          (delegatedRight?.restrictions && !this.restrictionsAllow(delegatedRight.restrictions, input,
-            currentOperations, resources, relevantVisibility, totals, purpose)))
-          return this.denied(input, 'Grant restrictions deny complete payload', policy.version, member.id, requiredApprovers);
+        const visibility = required.visibility ?? (input.phase === 'read' ? undefined : 'resource');
+        const disclosure = readDisclosure
+          ? required.resourceKind === 'budget' || required.resourceKind === 'account' ||
+            required.resourceKind === 'category' || required.resourceKind === 'transaction' ||
+            required.resourceKind === 'rule'
+            ? readDisclosure.collection
+            : readDisclosure.subject
+          : undefined;
+        for (const restrictions of [grant.restrictions, delegatedRight?.restrictions]) {
+          if (restrictions === undefined) continue;
+          // Check each resource's numeric scope before deduplicating its unchanged local restrictions.
+          if (disclosure && !this.financialRestrictionsAllow(
+            restrictions, disclosure.operationCount, disclosure.grossOutgoing,
+          ))
+            return this.denied(input, 'Grant restrictions deny disclosed output', policy.version, member.id, requiredApprovers);
+          const key = JSON.stringify([visibility, restrictions]);
+          if (commonRestrictions.has(key)) continue;
+          if (!batch && !this.restrictionsAllow(restrictions, input, preparedPayload, visibility, purpose))
+            return this.denied(input, 'Grant restrictions deny complete payload', policy.version, member.id, requiredApprovers);
+          commonRestrictions.set(key, { restrictions, visibility });
+        }
+      }
+      if (batch) {
+        for (const evidenceId of batch.keys) {
+          if (uncoveredEvidence.size > 1 ||
+              uncoveredEvidence.size === 1 && !uncoveredEvidence.has(evidenceId)) continue;
+          const subjectPayload: PreparedAuthorizationPayload = {
+            ...preparedPayload,
+            operationCount: preparedPayload.operationCount + 1,
+            subjectOperation: { operation: input.operation, evidenceId },
+          };
+          const checkedRestrictions = new Map<string, boolean>();
+          let allowed = true;
+          for (const [key, { restrictions, visibility }] of commonRestrictions) {
+            const permits = this.restrictionsAllow(restrictions, input, subjectPayload, visibility, purpose);
+            checkedRestrictions.set(key, permits);
+            if (!permits) {
+              allowed = false;
+              break;
+            }
+          }
+          if (!allowed) continue;
+          for (const capability of ['evidence', 'normalized-evidence']) {
+            const required = { resourceKind: 'evidence' as const, resourceId: evidenceId, capability };
+            const delegatedRight = delegatedRights.get(JSON.stringify(['evidence', evidenceId, capability]));
+            const grant = this.currentGrant(principalActorId, input.spaceId, grantMembershipId, budgetId, required, grantStatement);
+            if (!grant || isAgent && !delegatedRight) {
+              allowed = false;
+              break;
+            }
+            for (const restrictions of [grant.restrictions, delegatedRight?.restrictions]) {
+              if (restrictions === undefined) continue;
+              const key = JSON.stringify(['resource', restrictions]);
+              let permits = checkedRestrictions.get(key);
+              if (permits === undefined) {
+                permits = this.restrictionsAllow(restrictions, input, subjectPayload, 'resource', purpose);
+                checkedRestrictions.set(key, permits);
+              }
+              if (!permits) allowed = false;
+            }
+            if (!allowed) break;
+          }
+          if (allowed) batch.admitted.push(evidenceId);
+        }
       }
       const needsApproval = (input.phase === 'propose' || input.phase === 'execute') &&
         requiredApprovers > 0 && input.verifiedHumanApproval !== true;

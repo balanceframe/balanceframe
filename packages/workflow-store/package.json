@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@balanceframe/protocol-generated": "workspace:*",
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "^13.0.3",
+    "zod": "^3.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

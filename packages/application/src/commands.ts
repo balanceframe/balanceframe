@@ -12,9 +12,13 @@ import { ApplicationError, ObserveWriteError, ReasonCodes } from './errors.js';
 import type {
   DecisionIssue,
   Money,
+  MerchantNativeRuleBlock,
+  MerchantNativeRulePart,
+  MerchantNativeRuleSet,
 } from '@balanceframe/protocol-generated';
 import type { FindingStatus, RuleOverrideScope, WorkflowStore } from '@balanceframe/workflow-store';
 import type { LiquidityService } from './liquidity-service.js';
+import type { MerchantPublicSuggestion, MerchantReviewProof } from './merchant-service.js';
 
 // ---------------------------------------------------------------------------
 // Analysis protocol — Rust-backed analysis interface
@@ -510,6 +514,12 @@ export function routeCommand(input: CommandInput): CommandResult {
 // ---------------------------------------------------------------------------
 
 export interface CategorizationCandidate {
+  /** Classifier identity is separate from the proposed category and evidence authority. */
+  source: 'native-rule' | 'merchant-inferred' | 'uncategorized';
+  /** Mandatory authority for merchant-inferred targets, independent of explanation pages. */
+  merchantProof?: MerchantReviewProof;
+  /** Optional currently authorized full explanation of the same compact target. */
+  merchantEvidence?: MerchantPublicSuggestion;
   transactionId: string;
   amount: Money;
   payeeName: string | null;
@@ -517,7 +527,7 @@ export interface CategorizationCandidate {
   reasons: Array<{ kind: string; details: string }>;
   proposedCategoryId?: string;
   proposedCategoryName?: string;
-  ruleIds?: string[];
+  ruleSetIndex?: number;
 }
 
 export interface Blocker {
@@ -527,6 +537,9 @@ export interface Blocker {
 }
 
 export interface PendingReviewResult {
+  nativeRuleBlocks: MerchantNativeRuleBlock[];
+  nativeRuleParts: MerchantNativeRulePart[];
+  nativeRuleSets: MerchantNativeRuleSet[];
   uncategorizedCount: number;
   totalUncategorizedAmount: Money;
   candidates: CategorizationCandidate[];

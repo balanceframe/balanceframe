@@ -241,6 +241,32 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 afterAll(() => store.close());
 
 describe('governed rule proposal routes', () => {
+  it.each(['update', 'delete'] as const)('never releases private %s proposal fields admitted before SDK cleanup revokes only full-read', async (mutation) => {
+    const connect = withConnection.getMockImplementation();
+    if (!connect) throw new Error('Rule fixture lifecycle unavailable');
+    withConnection.mockImplementationOnce(async (operation, options) => {
+      const response = await connect(operation, options);
+      store.governance.setResourceGrant({
+        spaceId, budgetId, actorId, membershipId, capability: 'full-read',
+        resourceKind: 'budget', resourceId: budgetId, granted: false, now, auth: controlAuth,
+      });
+      return response;
+    });
+    const response = mutation === 'update' ? await patch(event({ inactive: true })) : await remove(event());
+    const proposal = response.result?.proposal;
+    if (proposal && typeof proposal === 'object')
+      expect(proposal).toMatchObject({ payload: null, preconditions: null });
+    else expect(response.result).toBeNull();
+    expect(store.liquidity.isAuthorized({
+      actorId, budgetId, spaceId, membershipId, now,
+      governancePolicyVersion: store.governance.getPolicy({ spaceId })!.version,
+      auth: { method: 'session', actorId, sessionId: `session:${actorId}` },
+      resourceKind: 'budget', resourceId: budgetId, capability: 'rule:propose',
+    })).toBe(true);
+    expect(ledger.updateRule).not.toHaveBeenCalled();
+    expect(ledger.deleteRule).not.toHaveBeenCalled();
+  });
+
   it('requires exact selected-space rule and budget proposal grants before reading rule fields', async () => {
     store.governance.setResourceGrant({
       spaceId,

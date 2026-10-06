@@ -4,6 +4,26 @@ Application orchestration layer.
 
 Coordinates classification, workflow management, and persistence operations.
 
+## Shared native Review rule sets
+
+Pending Review results require complete `nativeRuleBlocks`, `nativeRuleParts` and
+`nativeRuleSets` tables, including empty collections. Blocks own scalar-sorted native
+IDs once; parts own shared literal block postings. Each set combines a category
+filter with an OR union and four fixed AND operand-unions (payee ID/name, account
+ID and category ID). Empty AND contributes nothing. Native candidates carry only
+`ruleSetIndex`; overlapping unequal outcomes share postings without bulk union
+expansion or inline candidate provenance. Native outcomes remain available
+independently of merchant inference and explanation pagination.
+`persistPendingReviewResult(store,budgetId,result,source,{scope,authorize})` forwards
+all three tables through the workflow store's atomic batch, with canonical recursive
+transaction indexing. Native persistence requires the trusted selected
+space/budget/connection and a synchronous final authority callback. The generic
+parser checks actual source IDs and structural/nonempty references, without imposing
+merchant-only rule-count or ID-byte caps; merchant-specific contracts retain their
+existing bounds. Analysis-only callers do not need a connection namespace.
+Durable references and compact namespace metadata never grant disclosure authority.
+
+
 ## Account-aware spendability
 
 `LiquidityService` is the injected application boundary for current account capacity,

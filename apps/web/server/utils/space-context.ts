@@ -9,7 +9,7 @@ export type SelectedSpaceResult =
   | { readonly ok: false; readonly response: ApiEnvelope<null> };
 
 /** Resolves only explicit selection using current, server-verified membership or delegation. */
-export async function requireSelectedSpace(event: EventWithContext): Promise<SelectedSpaceResult> {
+export function requireSelectedSpace(event: EventWithContext): SelectedSpaceResult {
   const request = event as unknown as H3Event;
   const deny = (code = 'FORBIDDEN', status = 403): SelectedSpaceResult => {
     setResponseStatus(request, status);
@@ -29,11 +29,20 @@ export async function requireSelectedSpace(event: EventWithContext): Promise<Sel
     const space = governance.getSpace({ spaceId });
     if (!space) return deny();
     const now = new Date().toISOString();
+    const lifetime = {
+      ...(identity.credentialExpiresAt !== undefined ? { credentialExpiresAt: identity.credentialExpiresAt } : {}),
+      ...(identity.isCredentialValid !== undefined ? { isCredentialValid: identity.isCredentialValid } : {}),
+    };
+    if ((lifetime.credentialExpiresAt !== undefined && lifetime.credentialExpiresAt !== null &&
+         (!Number.isFinite(Date.parse(lifetime.credentialExpiresAt)) || Date.parse(lifetime.credentialExpiresAt) <= Date.parse(now))) ||
+        (lifetime.isCredentialValid !== undefined &&
+         (typeof lifetime.isCredentialValid !== 'function' || lifetime.isCredentialValid(now) !== true)))
+      return deny('AUTHORIZATION_REQUIRED', 401);
     let auth: OperationalAuth;
     let membershipActorId = actorId;
     let issuerMembershipId: string | undefined;
     if (identity.method === 'session' && identity.principalType !== 'agent' && identity.sessionId) {
-      auth = { method: 'session', actorId, sessionId: identity.sessionId };
+      auth = { method: 'session', actorId, sessionId: identity.sessionId, ...lifetime };
     } else if (identity.method === 'api-key' && identity.credentialId && identity.credentialOwnerId) {
       const principal = governance.resolveCredentialPrincipal({
         credentialId: identity.credentialId,
@@ -43,7 +52,7 @@ export async function requireSelectedSpace(event: EventWithContext): Promise<Sel
       });
       if (!principal || principal.actorId !== actorId || principal.principalType !== identity.principalType)
         return deny();
-      auth = { method: 'api-key', ...principal };
+      auth = { method: 'api-key', ...principal, ...lifetime };
       if (principal.principalType === 'agent') {
         if (identity.delegationId !== principal.delegationId || identity.delegationVersion !== principal.delegationVersion)
           return deny();

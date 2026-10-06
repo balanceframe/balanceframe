@@ -29,6 +29,7 @@ import type {
 import type { Transaction, Category, ProtocolSnapshot } from '@balanceframe/protocol-generated';
 import { moneySchema } from '@balanceframe/protocol-generated/validators';
 import { z } from 'zod';
+import { indexCanonicalTransactions } from './review-persistence.js';
 
 const categoryPreconditionsSchema = z.object({
   transactionId: z.string().optional(),
@@ -429,8 +430,14 @@ export class CategorizationMutationService {
       return this.fail(baseResult, 'stale_snapshot', 'Snapshot data is stale', input);
     }
 
-    // Find transaction in snapshot
-    const tx = snapshot.transactions.find((t) => t.id === proposal.payload.transactionId);
+    let tx: Transaction | undefined;
+    try {
+      tx = indexCanonicalTransactions(snapshot.transactions).get(proposal.payload.transactionId);
+    } catch {
+      await this.recordFailure(input, new Error('Canonical transaction identity conflict'));
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'transaction_identity_conflict');
+      return this.fail(baseResult, 'transaction_identity_conflict', 'Canonical transaction identity conflict', input);
+    }
     if (!tx) {
       await this.recordFailure(input, new Error('Transaction not found in latest snapshot'));
       await this.appendFailureAudit(input, proposal, authorizationDisposition, 'transaction_not_found');

@@ -5,16 +5,21 @@ import {
   RuleMutationService,
   createNativeCategorizationMutationProtocol,
   createNativeRuleMutationProtocol,
+  createMerchantIntelligenceService,
+  ruleReviewContextSchema,
 } from '@balanceframe/application';
 import type {
   RustMutationProtocol,
   ExecuteCategorizationResult,
   ExecuteRuleResult,
   RustRuleMutationProtocol,
+  ResolveRuleReplayPublicationAuthority,
 } from '@balanceframe/application';
 import type { ConnectionConfig } from '@balanceframe/application';
 import type { BudgetLedger } from '@balanceframe/actual-adapter';
 import { createMutationConnectionManager } from '../../../utils/mutation-executor';
+import { selectedLiquidityActor } from '../../../utils/liquidity-service';
+import { hasNativeRuleSourceAdmission } from '../../../utils/rule-create';
 import { hasTrustedRequestOrigin } from '../../../utils/reauthentication';
 import type { ReauthenticationEvent } from '../../../utils/reauthentication';
 import { requireSelectedSpace } from '../../../utils/space-context';
@@ -55,7 +60,7 @@ function executionError(reasonCodes: readonly string[]): {
     return { status: 409, code: 'EXECUTION_CONFLICT', retryable: false };
   if (reasonCodes.some((code) => ['sync_failed', 'reread_failed', 'stale_snapshot'].includes(code)))
     return { status: 503, code: 'LEDGER_SYNC_FAILED', retryable: true };
-  if (reasonCodes.includes('rule_name_conflict') || reasonCodes.includes('precondition_mismatch') || reasonCodes.includes('simulation_conflicts') || reasonCodes.includes('simulation_no_matches'))
+  if (reasonCodes.some((code) => ['rule_name_conflict','precondition_mismatch','simulation_conflicts','simulation_no_matches','simulation_mismatch','invalid_preconditions','plan_mismatch'].includes(code)))
     return { status: 409, code: 'PRECONDITION_FAILED', retryable: false };
   return { status: 500, code: 'EXECUTION_FAILED', retryable: true };
 }
@@ -118,6 +123,37 @@ export default defineEventHandler(async (event) => {
   };
   let result: ServiceResult | null;
   let terminalReplay: boolean;
+  let publicationAuthority: (() => boolean) | undefined;
+  let publicationRequired = false;
+  const assertPublicationCurrent = () => {
+    if (publicationRequired && !publicationAuthority)
+      throw new Error('Current rule publication authority is unavailable');
+    if (publicationAuthority && publicationAuthority() !== true)
+      throw new Error('Current rule publication authority changed');
+  };
+  const withholdPublication = () => {
+    setResponseStatus(event, 403);
+    return errorEnvelope(
+      'PUBLICATION_WITHHELD',
+      'Authorized Actual rule creation was dispatched; private result withheld, not rolled back',
+      authorization.info, false, requestId,
+    );
+  };
+  const resolveReplayPublicationAuthority: ResolveRuleReplayPublicationAuthority = async (current) => {
+    const sourceActor = selectedLiquidityActor(workflow.store, selected);
+    if (!sourceActor || current.actorId !== selected.auth.actorId ||
+        current.auth !== selected.auth || current.spaceId !== selected.space.id ||
+        current.budgetId !== selected.space.budgetId)
+      throw new Error('Current merchant replay actor or scope changed');
+    const manager = createMutationConnectionManager({ configPath: process.env.BALANCEFRAME_CONFIG_PATH });
+    const sourceService = await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager });
+    const authorize = await sourceService.getRuleReplayPublicationAuthority({
+      ...sourceActor, spaceId: selected.space.id, auth: selected.auth,
+    }, current.context);
+    publicationRequired = true;
+    publicationAuthority = authorize;
+    return authorize;
+  };
   try {
     const record = await workflow.store.getIdempotencyRecord(idempotencyKey);
     terminalReplay = record?.status === 'succeeded' || record?.status === 'terminal_failed';
@@ -128,8 +164,17 @@ export default defineEventHandler(async (event) => {
   if (terminalReplay) {
     result = proposal.operation === 'set_category'
       ? await new CategorizationMutationService(workflow.store, null, null).execute(executionInput)
-      : await new RuleMutationService(workflow.store, null, null).execute(executionInput);
+      : await new RuleMutationService(workflow.store, null, null, async () => {
+          throw new Error('Current rule source resolution is unavailable during no-ledger replay');
+        }, resolveReplayPublicationAuthority).execute(executionInput);
   } else {
+  publicationRequired = proposal.operation === 'create_rule';
+  const sourceActor = selectedLiquidityActor(workflow.store,selected);
+  if (proposal.operation === 'create_rule' && (!sourceActor ||
+      !await hasNativeRuleSourceAdmission(workflow.store,sourceActor,'rule:execute'))) {
+    setResponseStatus(event,403);
+    return errorEnvelope('FORBIDDEN','Complete global rule and source authority is unavailable.',authorization.info,false,requestId);
+  }
 
 
   const manager = createMutationConnectionManager({
@@ -182,7 +227,20 @@ export default defineEventHandler(async (event) => {
         });
       }
       if (!ruleProtocol) throw new Error('Native rule protocol is unavailable');
-      const service = new RuleMutationService(workflow.store, ledger, ruleProtocol);
+      const service = new RuleMutationService(workflow.store,ledger,ruleProtocol,async (current) => {
+        if (!sourceActor || current.actorId !== selected.auth.actorId ||
+            current.auth !== selected.auth || current.spaceId !== selected.space.id ||
+            current.budgetId !== selected.space.budgetId)
+          throw new Error('Current rule source actor or selected scope changed');
+        const sourceService = await createMerchantIntelligenceService({store:workflow.store,connectionManager:manager});
+        return sourceService.getCurrentRuleReviewContext({
+          ...sourceActor,spaceId:selected.space.id,auth:selected.auth,
+        },{evidenceKey:current.evidenceKey,connected,snapshot:current.snapshot,sourceAvailability:current.sourceAvailability,
+          capturePublicationAuthority: (authorize) => {
+            publicationAuthority = authorize;
+            current.capturePublicationAuthority?.(authorize);
+          }});
+      }, resolveReplayPublicationAuthority);
       return service.execute({
         requestId,
         actorId,
@@ -191,7 +249,7 @@ export default defineEventHandler(async (event) => {
         idempotencyKey,
         correlationId: requestId,
       });
-    }, { expectedBudgetId: selected.space.budgetId, dispose: true });
+    }, { expectedBudgetId: selected.space.budgetId, dispose: true, synchronize:false });
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'LEDGER_UNAVAILABLE', true);
     setResponseStatus(event, safe.code === 'not_connected' ? 503 : 500);
@@ -200,15 +258,41 @@ export default defineEventHandler(async (event) => {
   }
 
   if (!result.success || !result.verified) {
+    if (result.reasonCodes.includes('publication_withheld')) return withholdPublication();
     const { status, code, retryable } = executionError(result.reasonCodes);
     setResponseStatus(event, status);
     return errorEnvelope(code, 'Proposal execution did not complete.', authorization.info, retryable, requestId);
+  }
+
+  if (proposal.operation === 'create_rule' && result.reasonCodes.includes('idempotency_replay')) {
+    try {
+      const preconditions = z.record(z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
+      const context = ruleReviewContextSchema.parse(preconditions.reviewContext);
+      if (context.scope.spaceId !== proposal.spaceId || context.scope.budgetId !== proposal.budgetId)
+        throw new Error('Ordinary rule replay scope differs from its governed proposal');
+      // Exact acquisition proved this durable ordinary replay; no fresh source capture occurred.
+      if (context.evidenceKey === null) publicationRequired = false;
+    } catch {
+      return withholdPublication();
+    }
+  }
+
+  try {
+    assertPublicationCurrent();
+  } catch {
+    return withholdPublication();
   }
 
   try {
     await workflow.store.supersedeProposal(proposal.id);
   } catch {
     // The verified financial result remains authoritative if cleanup fails.
+  }
+
+  try {
+    assertPublicationCurrent();
+  } catch {
+    return withholdPublication();
   }
 
   const response = 'transactionId' in result

@@ -4,6 +4,8 @@ import { resolve } from 'path';
 
 const workflowStoreSrcDir = resolve(import.meta.dirname, '../../packages/workflow-store/src');
 const applicationSrcDir = resolve(import.meta.dirname, '../../packages/application/src');
+const actualAdapterSrcDir = resolve(import.meta.dirname, '../../packages/actual-adapter/src');
+const protocolGeneratedSrcDir = resolve(import.meta.dirname, '../../packages/protocol-generated/src');
 
 export default defineConfig({
   plugins: [vue()],
@@ -13,6 +15,10 @@ export default defineConfig({
       '@balanceframe/workflow-store/*': resolve(workflowStoreSrcDir, '*'),
       '@balanceframe/application': applicationSrcDir,
       '@balanceframe/application/*': resolve(applicationSrcDir, '*'),
+      '@balanceframe/actual-adapter': actualAdapterSrcDir,
+      '@balanceframe/actual-adapter/*': resolve(actualAdapterSrcDir, '*'),
+      '@balanceframe/protocol-generated': protocolGeneratedSrcDir,
+      '@balanceframe/protocol-generated/*': resolve(protocolGeneratedSrcDir, '*'),
       // Nuxt virtual modules — tests supply their runtime exports with vi.mock.
       '#app': resolve(import.meta.dirname, 'test/nuxt-app-shim.ts'),
       '#imports': resolve(import.meta.dirname, 'test/nuxt-app-shim.ts'),

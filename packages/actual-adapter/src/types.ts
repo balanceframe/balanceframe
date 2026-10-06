@@ -20,6 +20,21 @@ import type {
   TransferSettlementRecord,
 } from '@balanceframe/protocol-generated';
 export type { Money } from '@balanceframe/protocol-generated';
+import type { ActualMerchantSource, ActualMerchantSourceInput } from './merchant-normalizer.js';
+
+/** Trusted server admission; optional currency overrides connector configuration, never a client grant. */
+export type ActualMerchantCaptureOptions = Pick<ActualMerchantSourceInput,
+  'expiresAt' | 'admission' | 'startDate' | 'endDate' | 'maxTransactions'> & { currency?: string };
+
+/** The callback executes while the Actual budget lock is still held, including final publication. */
+export interface ActualMerchantSourceCapture {
+  /** Configured ledger currency for empty-source Money; independent of research billing. */
+  readonly sourceCurrency: string;
+  captureMerchantSource<T>(
+    options: ActualMerchantCaptureOptions,
+    consume: (source: ActualMerchantSource) => T | Promise<T>,
+  ): Promise<T>;
+}
 
 // ---------------------------------------------------------------------------
 // Connection mode
@@ -376,10 +391,17 @@ export interface AutomationRule {
 export interface RuleDeletePrecondition {
   readonly rule: AutomationRule;
   readonly actualVersion: string;
+  /** Synchronous trusted acquired-token fence; must throw when live execution authority changes. */
+  readonly assertExecutionCurrent: () => void;
 }
 
+/** Live acquired execution and same-capture source authority for native creation. */
+export interface RuleCreatePrecondition {
+  readonly assertExecutionCurrent: () => void;
+}
+
+/** Exact Actual rule payload; human display labels belong to proposal metadata, not the SDK. */
 export interface RuleProposal {
-  name: string;
   stage?: 'pre' | 'post' | null;
   conditionsOp?: 'and' | 'or';
   conditions: unknown[];
@@ -455,7 +477,7 @@ export interface BudgetLedger {
     precondition?: MutationPrecondition,
   ): Promise<MutationResult>;
 
-  createRule(proposal: RuleProposal, precondition?: MutationPrecondition): Promise<MutationResult>;
+  createRule(proposal: RuleProposal, precondition: RuleCreatePrecondition): Promise<MutationResult>;
 
   /** Delete only the exact current Actual rule and verify its synchronized absence. */
   deleteRule(ruleId: LedgerId, precondition: RuleDeletePrecondition): Promise<void>;
@@ -507,6 +529,20 @@ export interface LedgerSnapshotResult {
   };
   /** Canonical, source-qualified snapshot produced from the same synchronization. */
   financialSnapshot: FinancialSnapshot;
+  /** Trusted SDK read availability for full-ledger native rule planning; omission is unavailable. */
+  rulePlanningSourceAvailability?: {
+    accounts: 'complete' | 'unavailable';
+    payees: 'complete' | 'unavailable';
+    categories: 'complete' | 'unavailable';
+    categoryGroups: 'complete' | 'unavailable';
+    rules: 'complete' | 'unavailable';
+    history: Array<{
+      accountId: string;
+      state: 'complete' | 'unavailable';
+      startDate: string;
+      endDate: string;
+    }>;
+  };
   /** Trusted normalized source records. Omission means unavailable; completeness follows financialSnapshot coverage. */
   transferSettlementRecords?: TransferSettlementRecord[];
   health: HealthReport;

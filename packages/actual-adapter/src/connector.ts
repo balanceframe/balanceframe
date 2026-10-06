@@ -71,6 +71,7 @@ import type {
   AutomationRule,
   RuleProposal,
   RuleDeletePrecondition,
+  RuleCreatePrecondition,
   HealthReport,
   HealthState,
   Freshness,
@@ -84,6 +85,7 @@ import type {
   LedgerSnapshotResult,
   SynchronizeOptions,
   VersionRange,
+  ActualMerchantCaptureOptions,
 } from './types.js';
 import { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from './types.js';
 
@@ -109,6 +111,12 @@ import {
   withLiquidityFacts,
 } from './liquidity-normalizer.js';
 import type { ActualLiquidityBudgetMonth } from './liquidity-normalizer.js';
+import {
+  normalizeActualMerchantSource,
+  type ActualMerchantCollection,
+  type ActualMerchantSource,
+  type ActualMerchantSourceInput,
+} from './merchant-normalizer.js';
 
 type CollectionRead<T> = { available: true; items: T[] } | { available: false; items: [] };
 
@@ -146,7 +154,7 @@ function healthCoverageFor(accountRead: CollectionRead<APIAccountEntity>): Cover
 
 type SnapshotBuildResult = Pick<
   LedgerSnapshotResult,
-  'snapshot' | 'financialSnapshot' | 'transferSettlementRecords'
+  'snapshot' | 'financialSnapshot' | 'transferSettlementRecords' | 'rulePlanningSourceAvailability'
 > & {
   accountRead: CollectionRead<APIAccountEntity>;
 };
@@ -573,6 +581,11 @@ export class ActualConnector implements BudgetLedger {
     this.compatibilityRange = config.compatibilityRange;
   }
 
+  /** Configured ledger currency (default USD), never inferred from Actual symbols or billing policy. */
+  get sourceCurrency(): string {
+    return this.currency;
+  }
+
   // -------------------------------------------------------------------------
   // Capabilities
   // -------------------------------------------------------------------------
@@ -633,7 +646,7 @@ export class ActualConnector implements BudgetLedger {
     const budgetId = this._budgetInfo!.id;
     const groupId = this._budgetInfo!.groupId;
 
-    await this.withCacheLock(budgetId, async () => {
+    return this.withCacheLock(budgetId, async () => {
       const cache = this.getOrCreateCache(budgetId);
       // Calculate overlap start from watermark for safe re-processing
       const watermark = this.getWatermark(budgetId);
@@ -667,15 +680,61 @@ export class ActualConnector implements BudgetLedger {
       if (this.watermarkStore) {
         await this.watermarkStore.save(budgetId, { ...cache.watermark });
       }
+
+      const capturedAt = new Date().toISOString();
+      const { snapshot, financialSnapshot, transferSettlementRecords, rulePlanningSourceAvailability, accountRead } =
+        await this.buildSnapshot(capturedAt);
+      const health = await this.buildHealthReport(accountRead);
+      const completedWatermark = this.getWatermark(budgetId);
+
+      return { snapshot, financialSnapshot, transferSettlementRecords, rulePlanningSourceAvailability, health, watermark: completedWatermark };
     });
+  }
 
-    const capturedAt = new Date().toISOString();
-    const { snapshot, financialSnapshot, transferSettlementRecords, accountRead } =
-      await this.buildSnapshot(capturedAt);
-    const health = await this.buildHealthReport(accountRead);
-    const watermark = this.getWatermark(budgetId);
-
-    return { snapshot, financialSnapshot, transferSettlementRecords, health, watermark };
+  /** Trusted raw-source capture and final publication share the Actual budget lock. */
+  async captureMerchantSource<T>(
+    options: ActualMerchantCaptureOptions,
+    consume: (source: ActualMerchantSource) => T | Promise<T>,
+  ): Promise<T> {
+    this.assertInitialized();
+    if (!this._budgetInfo) throw new Error('No budget selected');
+    return this.withCacheLock(this._budgetInfo.id, async () => {
+      const capturedAt = new Date().toISOString();
+      const merchantRead = async <Entity>(
+        read: () => Promise<Entity[]>,
+      ): Promise<ActualMerchantCollection<Entity>> => {
+        const collection = await readCollection(read);
+        return collection.available
+          ? { state: 'complete', items: collection.items }
+          : { state: 'unavailable', items: [] };
+      };
+      const accounts = await merchantRead(() => this.client.getAccounts());
+      const payees = await merchantRead(() => this.client.getPayees());
+      const categoryRead = await merchantRead(() => this.client.getCategories());
+      const groups = await merchantRead(() => this.client.getCategoryGroups());
+      const rules = await merchantRead(() => this.client.getRules());
+      const schedules = await merchantRead(() => this.client.getSchedules());
+      const transactions: ActualMerchantSourceInput['transactions'] = [];
+      const admittedAccounts = new Set(options.admission.accountIds);
+      for (const account of accounts.items) {
+        if (!admittedAccounts.has(account.id)) continue;
+        transactions.push({
+          accountId: account.id, startDate: '0001-01-01', endDate: '9999-12-31',
+          read: await merchantRead(() => this.client.getTransactions(account.id, '0001-01-01', '9999-12-31')),
+        });
+      }
+      const categories: ActualMerchantCollection<APICategoryEntity> = categoryRead.state === 'unavailable'
+        ? { state: 'unavailable', items: [] }
+        : {
+            state: groups.state === 'unavailable' ? 'partial' : categoryRead.state,
+            items: categoryRead.items.filter((entity): entity is APICategoryEntity => 'group_id' in entity),
+          };
+      const source = normalizeActualMerchantSource({
+        ...options, currency: options.currency ?? this.currency, capturedAt, accounts: accounts.items, transactions, payees, categories,
+        categoryGroups: groups.items, rules, schedules,
+      });
+      return consume(source);
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1204,7 +1263,7 @@ export class ActualConnector implements BudgetLedger {
   }
   async createRule(
     proposal: RuleProposal,
-    precondition?: MutationPrecondition,
+    precondition: RuleCreatePrecondition,
   ): Promise<MutationResult> {
     this.assertMutationAllowed('createRule');
 
@@ -1217,12 +1276,9 @@ export class ActualConnector implements BudgetLedger {
       } as MutationResult;
     }
 
-    return this.withCacheLock(this._budgetInfo.id, async (): Promise<MutationResult> => {
-      // If a backup precondition is set, the caller is responsible for the backup.
-      // Actual's createRule doesn't have native precondition support, so we just log it.
-      if (precondition?.requireBackup) {
-        // Backup requirement noted — caller should have handled it upstream
-      }
+    const budgetId = this._budgetInfo.id;
+    return this.withCacheLock(budgetId, async (): Promise<MutationResult> => {
+      precondition.assertExecutionCurrent();
 
       // Build the rule object for the Actual API
       const ruleRecord: Record<string, unknown> = {
@@ -1233,6 +1289,10 @@ export class ActualConnector implements BudgetLedger {
       };
 
       // Call Actual API to create the rule
+      this.assertMutationAllowed('createRule');
+      if (this._budgetInfo?.id !== budgetId)
+        throw new Error('Selected Actual budget changed before rule creation');
+      precondition.assertExecutionCurrent();
       let createResult: { id: string };
       try {
         createResult = await this.client.createRule(ruleRecord);
@@ -1244,6 +1304,12 @@ export class ActualConnector implements BudgetLedger {
         } as MutationResult;
       }
 
+      try {
+        precondition.assertExecutionCurrent();
+      } catch (error) {
+        throw new Error('Actual rule creation was dispatched; private result withheld, not rolled back', { cause: error });
+      }
+
       // Persist changes to the server — if sync fails, the rule may not be persisted
       try {
         await this.client.sync();
@@ -1253,6 +1319,12 @@ export class ActualConnector implements BudgetLedger {
           error: 'Sync failed after creating rule: the mutation may not have been persisted',
           code: 'SYNC_FAILED',
         } as MutationResult;
+      }
+
+      try {
+        precondition.assertExecutionCurrent();
+      } catch (error) {
+        throw new Error('Actual rule creation was dispatched; private result withheld, not rolled back', { cause: error });
       }
 
       return {
@@ -1279,26 +1351,36 @@ export class ActualConnector implements BudgetLedger {
   async deleteRule(id: LedgerId, precondition: RuleDeletePrecondition): Promise<void> {
     this.assertMutationAllowed('deleteRule');
     if (!this._budgetInfo) throw new Error('No budget selected.');
+    const budgetId = this._budgetInfo.id;
 
-    return this.withCacheLock(this._budgetInfo.id, async () => {
+    return this.withCacheLock(budgetId, async () => {
+      precondition.assertExecutionCurrent();
       if (precondition.rule.id !== id)
         throw new Error('Rule delete precondition identifies a different rule');
       if (precondition.actualVersion !== this._serverVersion)
         throw new Error('Actual server version changed since the rule was displayed');
 
       const currentRules = await this.client.getRules();
+      precondition.assertExecutionCurrent();
       const currentIndex = currentRules.findIndex((rule) => rule.id === id);
       if (currentIndex < 0) throw new Error(`Rule not found: ${id}`);
       const currentRule = normalizeAutomationRule(currentRules[currentIndex]!, currentIndex);
       if (canonicalJson(currentRule) !== canonicalJson(precondition.rule))
         throw new Error('Actual rule changed since it was displayed');
 
+      this.assertMutationAllowed('deleteRule');
+      if (this._budgetInfo?.id !== budgetId || precondition.actualVersion !== this._serverVersion)
+        throw new Error('Selected Actual budget or server version changed before rule deletion');
+      precondition.assertExecutionCurrent();
       const deleted = await this.client.deleteRule(id);
+      precondition.assertExecutionCurrent();
       if (!deleted)
         throw new Error('Rule is referenced by a schedule and cannot be deleted');
       await this.client.sync();
+      precondition.assertExecutionCurrent();
 
       const remainingRules = await this.client.getRules();
+      precondition.assertExecutionCurrent();
       if (remainingRules.some((rule) => rule.id === id))
         throw new Error('Actual rule remains present after deletion synchronization');
     });
@@ -1898,15 +1980,17 @@ export class ActualConnector implements BudgetLedger {
     const transferAcctMap = buildTransferAcctMap(payees);
 
     const activeAccounts = accountRead.items.filter((account) => !account.closed);
+    const activeAccountIds = new Set(activeAccounts.map((account) => account.id));
     const transactionReads: Array<{
       accountId: string;
       read: CollectionRead<TransactionEntity>;
     }> = [];
-    for (const account of activeAccounts) {
+    // GLOBAL native rules need the entire SDK history, including closed accounts.
+    for (const account of accountRead.items) {
       transactionReads.push({
         accountId: account.id,
         read: await readCollection(() =>
-          this.client.getTransactions(account.id, '1970-01-01', '2099-12-31'),
+          this.client.getTransactions(account.id, '0001-01-01', '9999-12-31'),
         ),
       });
     }
@@ -1914,7 +1998,7 @@ export class ActualConnector implements BudgetLedger {
     const transactions: Transaction[] = [];
     for (const transactionRead of transactionReads) {
       if (!transactionRead.read.available) continue;
-      allRawTransactions.push(...transactionRead.read.items);
+      if (activeAccountIds.has(transactionRead.accountId)) allRawTransactions.push(...transactionRead.read.items);
       transactions.push(
         ...normalizeTransactions(
           transactionRead.read.items,
@@ -1925,6 +2009,18 @@ export class ActualConnector implements BudgetLedger {
         ),
       );
     }
+    const activeTransactionReads = transactionReads.filter(({ accountId }) => activeAccountIds.has(accountId));
+    const rulePlanningSourceAvailability: NonNullable<LedgerSnapshotResult['rulePlanningSourceAvailability']> = {
+      accounts: accountRead.available ? 'complete' : 'unavailable',
+      payees: payeeRead.available ? 'complete' : 'unavailable',
+      categories: categoryRead.available ? 'complete' : 'unavailable',
+      categoryGroups: categoryGroupRead.available ? 'complete' : 'unavailable',
+      rules: ruleRead.available ? 'complete' : 'unavailable',
+      history: transactionReads.map(({ accountId, read }) => ({
+        accountId, state: read.available ? 'complete' as const : 'unavailable' as const,
+        startDate: '0001-01-01', endDate: '9999-12-31',
+      })).sort((a, b) => a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0),
+    };
 
     const budgets: BudgetMonth[] = [];
     const liquidityBudgetMonths: ActualLiquidityBudgetMonth[] = [];
@@ -1981,7 +2077,7 @@ export class ActualConnector implements BudgetLedger {
     } else if (activeAccounts.length === 0) {
       transactionCoverage = 'empty';
     } else {
-      const readableAccounts = transactionReads.filter(({ read }) => read.available).length;
+      const readableAccounts = activeTransactionReads.filter(({ read }) => read.available).length;
       if (readableAccounts === 0) {
         transactionCoverage = 'unknown';
       } else if (readableAccounts < activeAccounts.length) {
@@ -2204,7 +2300,7 @@ export class ActualConnector implements BudgetLedger {
           ? { available: true, items: rawCategories }
           : { available: false, items: [] },
         budgetMonths: liquidityBudgetMonths,
-        transactions: transactionReads,
+        transactions: activeTransactionReads,
         schedules: scheduleRead,
       }),
     );
@@ -2214,6 +2310,6 @@ export class ActualConnector implements BudgetLedger {
       capturedAt,
       this.currency,
     );
-    return { snapshot, financialSnapshot, transferSettlementRecords, accountRead };
+    return { snapshot, financialSnapshot, transferSettlementRecords, rulePlanningSourceAvailability, accountRead };
   }
 }

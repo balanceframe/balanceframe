@@ -12,14 +12,15 @@
 
 import { rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { pendingReviewAnalysis } from '../src/analysis';
+import type { ObserveComposition, NativeBindingShim } from '../src/composition';
 import { describe, it, expect, vi } from 'vitest';
+import canonicalFixture from '../../../protocol/fixtures/representative.json';
 import {
   createObserveComposition,
   createNativeAnalysisProtocol,
   createLifecycleCallbacks,
   CompositionConfigurationError,
-  type ObserveComposition,
-  type NativeBindingShim,
 } from '../src/composition';
 import type {
   AnalysisProtocol,
@@ -61,7 +62,7 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
   const shim: NativeBindingShim = {
     analyzeDeterministic(input: string): string {
       calls.push('analyzeDeterministic');
-      return JSON.stringify({ status: 'ok', requestId: 'stub', schemaVersion: '1' });
+      return JSON.stringify({ status: 'ok', requestId: 'stub', schemaVersion: '1', analysis: { nativeRuleBlocks: [], nativeRuleParts: [], nativeRuleSets: [], deterministicClassifications: [] } });
     },
     analyzeSnapshot(input: string): string {
       calls.push('analyzeSnapshot');
@@ -94,7 +95,7 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
     evaluateTargetHealth(input: string): string {
       calls.push('evaluateTargetHealth');
       return JSON.stringify({
-        categories: [
+        categoryHealth: [
           {
             categoryId: 'cat_1',
             categoryName: 'Shopping',
@@ -102,9 +103,6 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
             spent: { minorUnits: '15000', currency: 'USD' },
             remaining: { minorUnits: '35000', currency: 'USD' },
             healthLabel: 'healthy',
-            isSinkingFund: false,
-            targetAmount: null,
-            targetProgress: null,
           },
           {
             categoryId: 'cat_sink_1',
@@ -113,15 +111,9 @@ function stubNativeBindings(): { shim: NativeBindingShim; calls: string[] } {
             spent: { minorUnits: '80000', currency: 'USD' },
             remaining: { minorUnits: '40000', currency: 'USD' },
             healthLabel: 'healthy',
-            isSinkingFund: true,
-            targetAmount: { minorUnits: '120000', currency: 'USD' },
-            targetProgress: 0.6667,
           },
         ],
         overallLabel: 'healthy',
-        healthyCount: 2,
-        atRiskCount: 0,
-        sinkingFundCount: 1,
       });
     },
     evaluateFinancialState(input: string): string {
@@ -319,10 +311,14 @@ function mockProtocol(): {
     async pendingReview(_ledger, _freshness): Promise<PendingReviewResult> {
       calls.push('pendingReview');
       return {
+        nativeRuleBlocks: [],
+        nativeRuleParts: [],
+        nativeRuleSets: [],
         uncategorizedCount: 3,
         totalUncategorizedAmount: { minorUnits: '12000', currency: 'USD' },
         candidates: [
           {
+            source: 'uncategorized',
             transactionId: 'tx_test_001',
             amount: { minorUnits: '4000', currency: 'USD' },
             payeeName: 'Test Corp',
@@ -1011,6 +1007,224 @@ describe('createNativeAnalysisProtocol', () => {
     expect(result).toHaveProperty('healthState');
     expect(result).toHaveProperty('blockers');
   });
+
+  function sharedRuleResponse(ruleSetIndex: unknown = 0) {
+    return {
+      status: 'ok',
+      analysis: {
+        nativeRuleBlocks: [{ ruleIds: ['rule-a', 'rule-b', 'rule-c'] }],
+        nativeRuleParts: [{ blockIndexes: [0] }],
+        nativeRuleSets: [{ orPartIndexes: [0], andPartIndexes: [] as number[][], categoryPartIndex: 0 }],
+        uncategorizedBacklog: { count: 2, totalAmount: { minorUnits: '200', currency: 'USD' }, oldestDate: '2026-01-15' },
+        deterministicClassifications: ['transaction-a', 'transaction-b'].map((transactionId) => ({
+          transactionId, amount: { minorUnits: '100', currency: 'USD' },
+          payeeName: 'Fixture merchant', date: '2026-01-15',
+          reasons: [{ kind: 'uncategorized', details: 'Requires review' }],
+          proposedCategoryId: 'category-a', proposedCategoryName: 'Food', ruleSetIndex,
+        })),
+      },
+    };
+  }
+
+  function sharedRuleSnapshot() {
+    const category = canonicalFixture.categories.find((row) => !row.deleted)!;
+    return {
+      ...canonicalFixture,
+      categories: [{ ...category, id: 'category-a', name: 'Food' }],
+      rules: ['rule-a', 'rule-b', 'rule-c'].map((id) => ({
+        id, name: 'Fixture merchant', order: 0, inactive: false,
+        trigger: { stage: 'post', conditionsOp: 'and', conditions: [{ field: 'payee_name', op: 'is', value: 'Fixture merchant' }] },
+        actions: [{ field: 'category', op: 'set', value: 'category-a' }],
+      })),
+      transactions: ['transaction-a', 'transaction-b'].map((id) => ({ ...canonicalFixture.transactions[0]!, id, categoryId: null, categoryName: null, subtransactions: [] })),
+    };
+  }
+
+  it('consumes one complete native rule set by index without re-expanding candidate provenance', async () => {
+    const { shim } = stubNativeBindings();
+    shim.analyzeDeterministic = () => JSON.stringify(sharedRuleResponse());
+    const protocol = await createNativeAnalysisProtocol(async () => shim);
+    const result = await protocol.pendingReview(sharedRuleSnapshot(), null);
+    expect(result).toMatchObject({ nativeRuleBlocks: [{ ruleIds: ['rule-a', 'rule-b', 'rule-c'] }], nativeRuleParts: [{ blockIndexes: [0] }], nativeRuleSets: [{ orPartIndexes: [0], andPartIndexes: [], categoryPartIndex: 0 }] });
+    expect(result.candidates).toHaveLength(2);
+    for (const candidate of result.candidates) {
+      expect(candidate).toMatchObject({ source: 'native-rule', proposedCategoryId: 'category-a', ruleSetIndex: 0 });
+      expect(candidate).not.toHaveProperty('ruleIds');
+    }
+    expect(JSON.stringify(result).split('"rule-a"')).toHaveLength(2);
+  });
+
+  it('preserves ordinary uncategorized outcomes with an explicitly empty native rule-set table', async () => {
+    const { shim } = stubNativeBindings();
+    const response = sharedRuleResponse();
+    shim.analyzeDeterministic = () => JSON.stringify({
+      ...response, analysis: {
+        ...response.analysis, nativeRuleBlocks: [], nativeRuleParts: [], nativeRuleSets: [],
+        deterministicClassifications: response.analysis.deterministicClassifications.map((item) => ({
+          transactionId: item.transactionId, amount: item.amount, payeeName: item.payeeName, date: item.date, reasons: item.reasons,
+        })),
+      },
+    });
+    const protocol = await createNativeAnalysisProtocol(async () => shim);
+    const result = await protocol.pendingReview({ mock: true }, null);
+    expect(result).toMatchObject({ nativeRuleSets: [], uncategorizedCount: 2 });
+    expect(result.candidates).toHaveLength(2);
+    for (const candidate of result.candidates) {
+      expect(candidate.source).toBe('uncategorized');
+      expect(candidate).not.toHaveProperty('ruleSetIndex');
+      expect(candidate).not.toHaveProperty('ruleIds');
+    }
+  });
+
+  it.each([-1, 1, 0.5, '0', null, 4_294_967_296])('rejects invalid native ruleSetIndex %s instead of dropping or reclassifying the outcome', async (index) => {
+    const { shim } = stubNativeBindings();
+    shim.analyzeDeterministic = () => JSON.stringify(sharedRuleResponse(index));
+    const protocol = await createNativeAnalysisProtocol(async () => shim);
+    await expect(protocol.pendingReview(sharedRuleSnapshot(), null)).rejects.toThrow();
+  });
+
+  it.each(['missing-set', 'empty-set', 'duplicate-rule', 'duplicate-transaction', 'inline-rule-ids'] as const)(
+    'rejects malformed shared native provenance: %s', async (failure) => {
+      const response = sharedRuleResponse();
+      if (failure === 'missing-set') response.analysis.nativeRuleSets = [];
+      if (failure === 'empty-set') response.analysis.nativeRuleSets[0]!.orPartIndexes = [];
+      if (failure === 'duplicate-rule') response.analysis.nativeRuleBlocks[0]!.ruleIds = ['rule-a', 'rule-a'];
+      if (failure === 'duplicate-transaction') response.analysis.deterministicClassifications[1]!.transactionId = 'transaction-a';
+      const raw = failure === 'inline-rule-ids'
+        ? { ...response, analysis: { ...response.analysis, deterministicClassifications: response.analysis.deterministicClassifications.map((item) => ({ ...item, ruleIds: ['rule-a'] })) } }
+        : response;
+      const { shim } = stubNativeBindings();
+      shim.analyzeDeterministic = () => JSON.stringify(raw);
+      const protocol = await createNativeAnalysisProtocol(async () => shim);
+      await expect(protocol.pendingReview(sharedRuleSnapshot(), null)).rejects.toThrow();
+    },
+  );
+
+  it('consumes both disjoint rule blocks and unequal set indexes without expanding common native IDs', async () => {
+    const response = sharedRuleResponse();
+    const source = sharedRuleSnapshot();
+    source.rules.push({
+      ...source.rules[2]!, id: 'rule-d',
+      trigger: { ...source.rules[2]!.trigger, conditions: source.rules[2]!.trigger.conditions.map((condition) => ({ ...condition })) },
+    });
+    for (const [index, rule] of source.rules.entries()) {
+      rule.trigger.conditions[0]!.op = index < 2 ? 'contains' : 'is';
+      rule.trigger.conditions[0]!.value = index < 2 ? 'Fixture merchant' : `Fixture merchant ${index === 2 ? 'A' : 'B'}`;
+    }
+    for (const [index, transaction] of source.transactions.entries()) transaction.payeeName = `Fixture merchant ${index === 0 ? 'A' : 'B'}`;
+    const raw = {
+      ...response,
+      analysis: {
+        ...response.analysis,
+        nativeRuleBlocks: [{ ruleIds: ['rule-a', 'rule-b'] }, { ruleIds: ['rule-c'] }, { ruleIds: ['rule-d'] }],
+        nativeRuleParts: [{ blockIndexes: [0, 1] }, { blockIndexes: [0, 2] }],
+        nativeRuleSets: [0, 1].map((index) => ({ orPartIndexes: [index], andPartIndexes: [], categoryPartIndex: index })),
+        deterministicClassifications: response.analysis.deterministicClassifications.map((item, index) => ({
+          ...item, ruleSetIndex: index, payeeName: `Fixture merchant ${index === 0 ? 'A' : 'B'}`,
+        })),
+      },
+    };
+    const { shim } = stubNativeBindings();
+    shim.analyzeDeterministic = () => JSON.stringify(raw);
+    const protocol = await createNativeAnalysisProtocol(async () => shim);
+    const output = await protocol.pendingReview(source, null);
+    expect(output).toMatchObject({ nativeRuleBlocks: raw.analysis.nativeRuleBlocks, nativeRuleSets: raw.analysis.nativeRuleSets });
+    expect(output.candidates.map((candidate) => candidate.source)).toEqual(['native-rule', 'native-rule']);
+    expect(output.candidates.map((candidate) => candidate.ruleSetIndex)).toEqual([0, 1]);
+    expect(JSON.stringify(output).split('"rule-a"')).toHaveLength(2);
+    expect(output.candidates.every((candidate) => !('ruleIds' in candidate))).toBe(true);
+  });
+
+  function postingRuleResponse() {
+    const response = sharedRuleResponse();
+    return {
+      ...response, analysis: {
+        ...response.analysis,
+        nativeRuleBlocks: [{ ruleIds: ['rule-a', 'rule-b'] }, { ruleIds: ['rule-c'] }, { ruleIds: ['rule-d'] }],
+        nativeRuleParts: [{ blockIndexes: [0] }, { blockIndexes: [0, 1] }, { blockIndexes: [0, 2] }, { blockIndexes: [0, 1, 2] }],
+        nativeRuleSets: [0, 1].map((index) => ({ orPartIndexes: [0, index + 1], andPartIndexes: [] as number[][], categoryPartIndex: 3 })),
+        deterministicClassifications: response.analysis.deterministicClassifications.map((row, index) => ({ ...row, ruleSetIndex: index })),
+      },
+    };
+  }
+
+  it('consumes fixed posting expressions with intentional OR overlap without expanding bulk candidate IDs', async () => {
+    const raw = postingRuleResponse();
+    const source = sharedRuleSnapshot();
+    source.rules.push({ ...source.rules[2]!, id: 'rule-d' });
+    const { shim } = stubNativeBindings();
+    shim.analyzeDeterministic = () => JSON.stringify(raw);
+    const protocol = await createNativeAnalysisProtocol(async () => shim);
+    const output = await protocol.pendingReview(source, null);
+    expect(output).toMatchObject({
+      nativeRuleBlocks: raw.analysis.nativeRuleBlocks, nativeRuleParts: raw.analysis.nativeRuleParts, nativeRuleSets: raw.analysis.nativeRuleSets,
+    });
+    expect(output.candidates.map((row) => row.ruleSetIndex)).toEqual([0, 1]);
+    expect(output.candidates.every((row) => row.source === 'native-rule' && !('ruleIds' in row))).toBe(true);
+    expect(JSON.stringify(output).split('"rule-a"')).toHaveLength(2);
+  });
+
+  it.each(['empty-filter', 'empty-and', 'missing-part', 'duplicate-operand', 'missing-category', 'short-and'] as const)(
+    'rejects a native posting classification without a valid nonempty literal witness: %s', async (failure) => {
+      const raw = postingRuleResponse();
+      const source = sharedRuleSnapshot();
+      source.rules.push({ ...source.rules[2]!, id: 'rule-d' });
+      if (failure === 'empty-filter') {
+        raw.analysis.nativeRuleParts[1] = { blockIndexes: [1] };
+        raw.analysis.nativeRuleParts[2] = { blockIndexes: [2] };
+        raw.analysis.nativeRuleSets[0] = { orPartIndexes: [1], andPartIndexes: [], categoryPartIndex: 2 };
+      }
+      if (failure === 'empty-and') {
+        raw.analysis.nativeRuleParts[1] = { blockIndexes: [1] };
+        raw.analysis.nativeRuleParts[2] = { blockIndexes: [2] };
+        raw.analysis.nativeRuleSets[0] = { orPartIndexes: [], andPartIndexes: [[1], [2], [1], [2]], categoryPartIndex: 3 };
+      }
+      if (failure === 'missing-part') raw.analysis.nativeRuleSets[0]!.orPartIndexes = [0, 99];
+      if (failure === 'duplicate-operand') raw.analysis.nativeRuleSets[0]!.andPartIndexes = [[0, 0], [0], [0], [0]];
+      if (failure === 'missing-category') raw.analysis.nativeRuleSets[0]!.categoryPartIndex = 99;
+      if (failure === 'short-and') raw.analysis.nativeRuleSets[0]!.andPartIndexes = [[0], [0]];
+      const { shim } = stubNativeBindings();
+      shim.analyzeDeterministic = () => JSON.stringify(raw);
+      const protocol = await createNativeAnalysisProtocol(async () => shim);
+      await expect(protocol.pendingReview(source, null)).rejects.toThrow();
+    },
+  );
+
+  it('preserves generic legacy native source IDs longer than the merchant 256-byte limit', async () => {
+    const id = `legacy-rule-${'x'.repeat(300)}`;
+    const source = sharedRuleSnapshot();
+    source.rules = [{ ...source.rules[0]!, id }];
+    const response = sharedRuleResponse();
+    const raw = { ...response, analysis: { ...response.analysis,
+      nativeRuleBlocks: [{ ruleIds: [id] }], nativeRuleParts: [{ blockIndexes: [0] }],
+      nativeRuleSets: [{ orPartIndexes: [0], andPartIndexes: [], categoryPartIndex: 0 }],
+    } };
+    const { shim } = stubNativeBindings();
+    shim.analyzeDeterministic = () => JSON.stringify(raw);
+    const protocol = await createNativeAnalysisProtocol(async () => shim);
+    const output = await protocol.pendingReview(source, null);
+    expect(output.nativeRuleBlocks).toEqual([{ ruleIds: [id] }]);
+    expect(output.candidates).toHaveLength(2);
+    expect(output.candidates.every((row) => row.source === 'native-rule')).toBe(true);
+  });
+
+  it('derives generic legacy native membership bounds from its actual source rather than the merchant 100000-rule cap', async () => {
+    const source = sharedRuleSnapshot();
+    const template = source.rules[0]!;
+    const ids = Array.from({ length: 100001 }, (_, index) => `legacy-rule-${String(index).padStart(6, '0')}`);
+    source.rules = ids.map((id) => ({ ...template, id }));
+    const response = sharedRuleResponse();
+    const raw = { ...response, analysis: { ...response.analysis,
+      nativeRuleBlocks: [{ ruleIds: ids }], nativeRuleParts: [{ blockIndexes: [0] }],
+      nativeRuleSets: [{ orPartIndexes: [0], andPartIndexes: [], categoryPartIndex: 0 }],
+    } };
+    const { shim } = stubNativeBindings();
+    shim.analyzeDeterministic = () => JSON.stringify(raw);
+    const protocol = await createNativeAnalysisProtocol(async () => shim);
+    const output = await protocol.pendingReview(source, null);
+    expect(output.nativeRuleBlocks).toEqual([{ ruleIds: ids }]);
+    expect(output.candidates).toHaveLength(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1026,7 +1240,6 @@ describe('composition + pendingReviewAnalysis (integration)', () => {
     });
 
     // Simulate what the CLI main() does — build a commandInput
-    const { pendingReviewAnalysis } = await import('../src/analysis');
     const envelope = await pendingReviewAnalysis({
       args: ['transactions', 'pending-review', '--json'],
       mode: comp.mode,
@@ -1049,7 +1262,6 @@ describe('composition + pendingReviewAnalysis (integration)', () => {
       analysisProtocol: protocol,
     });
 
-    const { pendingReviewAnalysis } = await import('../src/analysis');
     const envelope = await pendingReviewAnalysis({
       args: ['transactions', 'pending-review', '--json'],
       mode: comp.mode,
@@ -1121,8 +1333,30 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(result.categories[0].budgeted.minorUnits).toBe('50000');
     expect(result.categories[0].spent.minorUnits).toBe('15000');
     expect(result.categories[0].healthLabel).toBe('healthy');
-    expect(result.sinkingFundCount).toBe(1);
+    expect(result.sinkingFundCount).toBe(0);
   });
+
+  it.each(['legacy categories field', 'malformed Money', 'overflowing Money', 'invented sinking metadata'])(
+    'rejects native target health with %s instead of fabricating financial defaults',
+    async (invalid) => {
+      const { shim } = stubNativeBindings();
+      const native = JSON.parse(shim.evaluateTargetHealth('{}')) as {
+        categoryHealth: Array<Record<string, unknown>>; overallLabel: string;
+      };
+      let result: unknown = native;
+      if (invalid === 'legacy categories field')
+        result = { categories: native.categoryHealth, overallLabel: native.overallLabel };
+      else if (invalid === 'malformed Money')
+        native.categoryHealth[0]!.remaining = { minorUnits: 'not-Money', currency: 'USD' };
+      else if (invalid === 'overflowing Money')
+        native.categoryHealth[0]!.remaining = { minorUnits: '9223372036854775808', currency: 'USD' };
+      else native.categoryHealth[0]!.isSinkingFund = true;
+      shim.evaluateTargetHealth = () => JSON.stringify(result);
+      const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
+
+      await expect(protocol.targetHealth!(mockLedger())).rejects.toThrow();
+    },
+  );
 
   it('targetHealth returns documented failure when ledger is null', async () => {
     const { shim, calls } = stubNativeBindings();
@@ -1137,7 +1371,7 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
     expect(result.categories).toEqual([]);
   });
 
-  it('sinkingFundHealth calls evaluateTargetHealth and filters sinking funds', async () => {
+  it('sinkingFundHealth does not invent metadata absent from the canonical native target contract', async () => {
     const { shim, calls } = stubNativeBindings();
     const protocol = await createNativeAnalysisProtocol(() => Promise.resolve(shim));
     const ledger = mockLedger();
@@ -1146,21 +1380,9 @@ describe('createNativeAnalysisProtocol — Phase 8 native delegation', () => {
 
     // Should use evaluateTargetHealth under the hood
     expect(calls).toContain('evaluateTargetHealth');
-    // Only sinking fund categories are returned
-    expect(result.sinkingFunds.length).toBeGreaterThan(0);
-    expect(
-      result.sinkingFunds.every((sf: unknown) => {
-        return (
-          typeof sf === 'object' &&
-          sf !== null &&
-          'isSinkingFund' in sf &&
-          (sf as Record<string, unknown>).isSinkingFund === true
-        );
-      }),
-    ).toBe(true);
+    expect(result.sinkingFunds).toEqual([]);
     expect(result.fullyFundedCount).toBe(0);
-    // progress 0.6667 is > 0 so it's partially funded
-    expect(result.partiallyFundedCount).toBeGreaterThanOrEqual(1);
+    expect(result.partiallyFundedCount).toBe(0);
   });
 
   it('sinkingFundHealth returns documented failure when ledger is null', async () => {

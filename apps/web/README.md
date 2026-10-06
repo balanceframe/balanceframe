@@ -34,6 +34,37 @@ Use the disposable Actual fixture for browser verification and disable the devel
 authentication bypass. A component test or successful API request alone does not
 verify the signed-in user path.
 
+### Local merchant evidence
+
+The existing `/review` surface includes an expandable merchant evidence and observed
+patterns panel, including patterns from already categorized transactions. Loading and
+refreshing it rechecks current selected-space source authority; failed refreshes clear
+the old evidence. Raw field availability is distinct from normalized text. Evidence
+tiers are uncalibrated, confirmation records human intent, and neither alias nor
+pattern decisions execute a financial write.
+
+Private/shared alias and pattern decisions require explicit password confirmation and
+the server's current evidence revision and decision version. Targets are exact Actual
+payee IDs. Rejection remains a persisted decision, not a client-only dismissal.
+Observed ranges, exact rational variance, civil dates, full distributions, bounded
+samples, source coverage, expiry and versions are shown separately from schedules.
+Money uses its currency exponent without converting large minor-unit strings to floats.
+
+Merchant policy and calendar controls are on the existing Rules surface. Jurisdiction,
+subdivision and IANA time zone are explicit; no locale or currency inference is used.
+Policy saves replace the complete authorized policy, preserving all account overrides;
+an unauthorized full read disables editing instead of overwriting hidden settings.
+Provider mode defaults to local-only/off, and billing quotas are separate from source
+transaction currencies. An external-allowed setting is not research consent: external
+dispatch is not part of these local controls and requires a separate authorized egress
+action. Sync never waits for a provider.
+
+Native rule review shows the exact stable-ID Actual payload, complete reviewed
+simulation and conflicts, and global future scope. Category differences are paged
+100 rows at a time without truncating the full reviewed IDs or simulation data.
+A standalone JSON download exports the native rule, not a BalanceFrame proposal
+wrapper. Approval and execution remain separate.
+
 ## Architecture
 
 The review surface is a **framework-neutral TypeScript controller** (`ReviewController` in `src/review.ts`) that consumes the shared `@balanceframe/workflow-store` persistence contract without duplicating it. It is designed to be adapted by any UI layer (React, Vue, Svelte, etc.) through state subscriptions and action bindings.
@@ -60,23 +91,26 @@ and execution; creating or approving a proposal does not apply these terminal tr
 
 ### Evidence model
 
-Each queue item carries rich evidence derived from the stored suggestion and review-item payload:
+Each queue item is projected from current independently authorized native source facts
+and freshly governed merchant evidence. Stored classifier JSON is not source authority.
 
 | Field | Source |
 |---|---|
-| `originalImportedName` | Suggestion payload or transaction ID |
-| `normalizedMerchant` | Suggestion payload or transaction ID |
-| `account` | Suggestion payload |
-| `amount` | Suggestion payload |
-| `currentCategory` | Current category from evidence |
-| `suggestedCategory` | Review item's category ID |
-| `alternatives` | Alternative categories from classifier |
-| `history` | Prior approved classifications |
-| `provenance` | Review item provenance |
-| `freshness` | Freshness expiry timestamp |
-| `changePreview` | Computed diff between current and suggested |
+| `originalImportedName` | Authorized native source text; explicit availability lives in merchant evidence |
+| `normalizedMerchant` | Current native display name or authorized normalized evidence |
+| `account` | Current authorized account name, otherwise restricted |
+| `money` | Exact canonical native Money, with its source currency |
+| `amount` | Optional legacy display value; never used for merchant calculations |
+| `currentCategory` | Current authorized native category |
+| `suggestedCategory` | Review item's admitted proposed category ID |
+| `alternatives` / `history` | Authorized evidence; bounded samples are not full aggregates |
+| `provenance` | Actual source/evidence producer metadata |
+| `freshness` | Current evidence expiry |
+| `merchantEvidence` | Typed current governed suggestion with raw availability and revision |
+| `changePreview` | Difference between current and proposed category |
 
-External enrichment (e.g. from a ledger connection) can be injected via the `enrichEvidence` config callback.
+Alias/pattern decisions and policy settings are persisted through the governed merchant
+API; the UI does not inject provider results or grant evidence access.
 
 ### Test coverage
 

@@ -69,3 +69,34 @@ try {
 
 /** Authentication instance, constructed only after the schema migration attempt. */
 export const auth = betterAuth(options);
+
+/** Final synchronous liveness fence over the same authoritative DB as Better Auth. */
+export function isAuthCredentialValid(
+  credential: { method: 'session' | 'api-key'; id: string; ownerId: string },
+  now: string,
+): boolean {
+  const time = Date.parse(now);
+  if (!Number.isFinite(time)) return false;
+  try {
+    // Select validity only: neither raw tokens nor API key values enter this boundary.
+    const row = db.prepare(credential.method === 'session'
+      ? `SELECT s.expiresAt, s.impersonatedBy, u.banned, u.banExpires
+         FROM session s JOIN user u ON u.id=s.userId WHERE s.id=? AND s.userId=?`
+      : `SELECT k.expiresAt, k.enabled, u.banned, u.banExpires
+         FROM apikey k JOIN user u ON u.id=k.referenceId WHERE k.id=? AND k.referenceId=? AND k.configId='default'`
+    ).get(credential.id, credential.ownerId) as {
+      expiresAt: string | null; enabled?: number; impersonatedBy?: string | null;
+      banned: number | null; banExpires: string | null;
+    } | undefined;
+    if (!row || (credential.method === 'api-key' && row.enabled !== 1) ||
+        (credential.method === 'session' && row.impersonatedBy)) return false;
+    if (row.banned !== null && row.banned !== 0 &&
+        (row.banned !== 1 || row.banExpires === null || !(Date.parse(row.banExpires) < time)))
+      return false;
+    return row.expiresAt === null
+      ? credential.method === 'api-key'
+      : Number.isFinite(Date.parse(row.expiresAt)) && Date.parse(row.expiresAt) > time;
+  } catch {
+    return false;
+  }
+}

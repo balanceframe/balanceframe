@@ -67,6 +67,100 @@ balanceframe proposals approve prop_123 --payload-hash DISPLAYED_HASH --json
 `--actor-id` is only an audit filter; it never selects the caller. Server responses are
 validated as versioned API envelopes, and server errors remain errors.
 
+Native rules target an exact, case-sensitive Actual payee ID, never a display name:
+
+```sh
+balanceframe rules create --name "Market groceries" \
+  --payee-id PAYEE_ID --category-id CATEGORY_ID --json
+```
+
+This creates a governed proposal; review its complete simulation and global future
+scope before independently approving the displayed hash and executing it.
+
+### Local merchant evidence
+
+```sh
+balanceframe merchant analyze --limit 200 --json
+balanceframe merchant evidence --transaction-id TRANSACTION_ID --json
+balanceframe merchant policy get --json
+balanceframe merchant calendar --account-id ACCOUNT_ID --year 2026 --json
+balanceframe merchant confirm --id DECISION_ID --kind alias \
+  --evidence-key EVIDENCE_KEY --evidence-revision CURRENT_REVISION \
+  --expected-version 0 --private --transaction-id TRANSACTION_ID \
+  --source-field importedPayee --target-payee-id PAYEE_ID --account-id ACCOUNT_ID --json
+balanceframe merchant reject --id DECISION_ID --kind pattern \
+  --pattern-id PATTERN_ID --evidence-key EVIDENCE_KEY \
+  --evidence-revision CURRENT_REVISION --expected-version VERSION --shared --json
+balanceframe merchant policy set --expected-version VERSION --policy 'FULL_POLICY_JSON' --json
+balanceframe merchant export --json
+balanceframe merchant delete --json
+```
+
+Evidence reads support `--cursor` and `--facts-hash`; these are optimistic selection
+tokens, not authority. Confirmation/rejection requires exactly one of `--private` or
+`--shared`, current evidence and decision versions, and a freshly reauthenticated human
+session. For an explicitly global alias match, use `--account-id null`; the server still
+requires global authority. Decisions never write Actual or consent to external research.
+Policy replacement includes every account calendar override; unauthorized full policy
+reads must not be used to assemble a partial overwrite. Calendar lookup reads only
+stored selections, with unsupported coverage reported as unknown. Export, deletion and
+policy writes have independent grants and fresh human checks. Machine JSON preserves
+canonical Money decimal strings and source currencies without display conversion.
+
+### Explicit public-business research
+
+Local analysis, source normalization, native rules and review never initiate external
+research. Enter a **standalone public business name manually**; do not copy or extract
+bank/import/payee/notes text. The declaration expresses your intent, not automatic
+identity verification or a guarantee that text contains no private information.
+
+```sh
+balanceframe merchant research policy --json
+balanceframe merchant space-policy get --json
+balanceframe merchant research preview --evidence-key EVIDENCE_KEY \
+  --evidence-revision CURRENT_REVISION --merchant 'Public Business Name' \
+  --public-business true --json
+# Review the exact merchant text, provider, fields, expiry, disclosure and cost first.
+balanceframe merchant research send --evidence-key EVIDENCE_KEY \
+  --evidence-revision CURRENT_REVISION --merchant 'Public Business Name' \
+  --public-business true --preview-token DISPLAYED_TOKEN --consent true \
+  --idempotency-key UNIQUE_OPERATION_ID --json
+balanceframe merchant research cache --evidence-key EVIDENCE_KEY \
+  --evidence-revision CURRENT_REVISION --merchant 'Public Business Name' \
+  --public-business true --json
+balanceframe merchant space-policy set --expected-version VERSION \
+  --policy 'COMPLETE_SPACE_POLICY_JSON' --json
+```
+
+Omit `--locale` to send no locale; only explicit `US`, `CA` or `GB` is supported.
+Preview is not consent and sends nothing to the provider. A separate send must match
+the exact preview query, locale and current evidence revision, carry the unexpired
+preview token, and explicitly declare consent. No retry or automatic send follows a
+preview, denial, pending result or uncertain failure. Uncertain billing can retain the
+maximum charge reservation even when no enrichment is returned.
+
+Costs remain decimal-string **atoms**, with 1,000,000 atoms per billing minor unit;
+they are not floating-point money and provider billing currency is independent of
+the source budget currency. Public search sends approved business text and optional
+coarse locale; the provider sees the server IP and may retain logs, with exact
+retention unknown. Sent requests cannot be recalled. App limits do not cap other
+credential usage or delete provider logs.
+
+Effective policy intersects independently versioned installation, space and budget
+layers; a child cannot override an ancestor denial. Space replacement uses its own
+optimistic version and complete value, forbids account calendars, and requires an
+existing freshly reauthenticated human session. Installation policy and credentials
+are server-owned, never CLI flags. Budget calendar replacement remains unchanged.
+Delegated API-key research still requires current server-enforced research/source
+rights and caps; local Actual credentials and actor environment labels confer none.
+
+Cache reads are explicit and freshly authorized. Results expose historical
+retrieval/expiry/provider/fields-sent provenance and uncalibrated confidence. Source
+titles, snippets and URLs are untrusted semantic observations, never financial
+category, identity, approval or execution proof. The CLI validates public response
+DTOs strictly and does not fetch source pages. Missing configuration, local-only
+policy and provider outage leave ordinary local review usable.
+
 ## Selected-space lifecycle controls
 
 The existing lifecycle commands use the same authenticated Source transport:

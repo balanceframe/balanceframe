@@ -22,6 +22,11 @@
       </div>
     </div>
 
+    <details class="mb-4 rounded border border-neutral-200 dark:border-neutral-700">
+      <summary class="cursor-pointer px-3 py-2 font-medium focus-visible:outline focus-visible:outline-2">Merchant policy and calendar settings</summary>
+      <MerchantPolicySettings class="p-3" />
+    </details>
+
     <!-- Error state -->
     <UAlert
       v-if="error"
@@ -83,6 +88,7 @@
 import { authClient } from '../../lib/auth-client';
 import { isProposalApprovalView } from '../../types/review-client';
 import type { ProposalApprovalView } from '../../server/utils/proposal-approval-view';
+import MerchantPolicySettings from '../components/MerchantPolicySettings.vue';
 interface RuleListItem {
   readonly id: string;
   readonly name: string;

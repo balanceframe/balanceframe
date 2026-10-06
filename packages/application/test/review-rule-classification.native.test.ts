@@ -41,11 +41,16 @@ describe('scoped native classification through persisted review', () => {
     const original = JSON.stringify(snapshot);
     const protocol = await createNativeAnalysisProtocol();
     const enabled = await protocol.pendingReview(snapshot, null, { store, scope });
-    await persistPendingReviewResult(store, budgetId, enabled, snapshot);
+    const persistenceScope = { ...scope, connectionId: 'actual-rule-review-fixture' };
+    await persistPendingReviewResult(store, budgetId, enabled, snapshot, { scope: persistenceScope, authorize: () => true });
     const rows = await store.listReviewItems({ budgetId });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ transactionId: transaction.id, categoryId: category.id, classifier: 'rule' });
-    expect(rows[0]?.evidence).toMatchObject({ ruleIds: [rule.id], proposedCategoryName: category.name });
+    expect(enabled.nativeRuleBlocks).toEqual([{ ruleIds: [rule.id] }]);
+    expect(enabled.nativeRuleParts.length).toBeGreaterThan(0);
+    expect(enabled.nativeRuleSets).toHaveLength(1);
+    expect(rows[0]?.evidence).toMatchObject({ ruleSetRef: { kind: 'scoped', scope: persistenceScope, id: expect.any(String) }, proposedCategoryName: category.name });
+    expect(rows[0]?.evidence.ruleIds).toBeUndefined();
     const signedAmount = BigInt(transaction.amount.minorUnits);
     expect(rows[0]?.sourceTransaction).toEqual({
       id: transaction.id, accountId: transaction.accountId, categoryId: null,
@@ -57,12 +62,47 @@ describe('scoped native classification through persisted review', () => {
     const paused = await store.setRuleOverride({ ...scope, ruleId: rule.id, inactive: true, expectedVersion: null });
     expect((await protocol.pendingReview(snapshot, null, { store, scope })).candidates).toEqual([]);
     expect((await protocol.pendingReview(snapshot, null, { store, scope: otherScope })).candidates[0]).toMatchObject({
-      proposedCategoryId: category.id, ruleIds: [rule.id],
+      proposedCategoryId: category.id, ruleSetIndex: 0,
     });
     await store.setRuleOverride({ ...scope, ruleId: rule.id, inactive: false, expectedVersion: paused.version });
     expect((await protocol.pendingReview(snapshot, null, { store, scope })).candidates[0]).toMatchObject({
-      proposedCategoryId: category.id, ruleIds: [rule.id],
+      proposedCategoryId: category.id, ruleSetIndex: 0,
     });
+    expect(JSON.stringify(snapshot)).toBe(original);
+  });
+
+  it('keeps every native outcome and matching ID shared when no merchant inference service is configured', async () => {
+    store = new SqliteWorkflowStore(':memory:');
+    const category = fixture.categories.find((entry) => !entry.deleted)!;
+    const transactions = Array.from({ length: 32 }, (_, index) => ({
+      ...fixture.transactions[0]!, id: `native-complete-${String(index).padStart(3, '0')}`,
+      payeeId: null, payeeName: 'Complete native fixture merchant',
+      categoryId: null, categoryName: null, subtransactions: [],
+    }));
+    const rules = Array.from({ length: 128 }, (_, index) => ({
+      id: `native-rule-${String(index).padStart(3, '0')}`, name: 'Complete native fixture merchant', order: index, inactive: false,
+      trigger: { stage: 'post', conditionsOp: 'and', conditions: [{ field: 'payee_name', op: 'is', value: 'Complete native fixture merchant' }] },
+      actions: [{ field: 'category', op: 'set', value: category.id }],
+    }));
+    const snapshot: ProtocolSnapshot = { ...fixture, transactions, rules };
+    const original = JSON.stringify(snapshot);
+    const protocol = await createNativeAnalysisProtocol();
+    const analysis = await protocol.pendingReview(snapshot, null);
+    expect(analysis.nativeRuleBlocks).toEqual([{ ruleIds: rules.map((rule) => rule.id) }]);
+    expect(analysis.nativeRuleParts.length).toBeGreaterThan(0);
+    expect(analysis.nativeRuleSets).toHaveLength(1);
+    expect(analysis.candidates).toHaveLength(32);
+    for (const candidate of analysis.candidates) {
+      expect(candidate).toMatchObject({ source: 'native-rule', proposedCategoryId: category.id, ruleSetIndex: 0 });
+      expect(candidate).not.toHaveProperty('ruleIds');
+    }
+    const scope = { spaceId: 'native-complete-space', budgetId: 'native-complete-budget', connectionId: 'actual-native-complete-fixture' };
+    await persistPendingReviewResult(store, scope.budgetId, analysis, snapshot, { scope, authorize: () => true });
+    const persisted = await store.listReviewItems({ budgetId: scope.budgetId, limit: 1000 });
+    expect(persisted).toHaveLength(32);
+    expect(new Set(persisted.map((row) => JSON.stringify(row.evidence.ruleSetRef))).size).toBe(1);
+    expect(persisted.every((row) => row.classifier === 'rule' && row.evidence.ruleIds === undefined)).toBe(true);
+    expect(store['db'].prepare('SELECT COUNT(*) AS count FROM review_rule_sets').get()).toEqual({ count: 1 });
     expect(JSON.stringify(snapshot)).toBe(original);
   });
 });

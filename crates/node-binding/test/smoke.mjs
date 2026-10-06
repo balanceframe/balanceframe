@@ -111,6 +111,7 @@ console.log('\n3. Exports');
 const expectedExports = [
   'analyzeDeterministic',
   'analyzeSnapshot',
+  'analyzeMerchantIntelligence',
   'findCategorizationCandidates',
   'validateSuggestion',
   'validateProviderSuggestion',
@@ -118,6 +119,7 @@ const expectedExports = [
   'verifyMutation',
   'simulateRule',
   'planCreateRule',
+  'simulateCreateRulePlan',
   'verifyRuleMutation',
   'analyzeRuleCandidates',
 ];

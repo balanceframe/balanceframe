@@ -3,9 +3,10 @@ use balanceframe_core_protocol::{
     evaluate_purchase, evaluate_target_health, find_categorization_candidates, plan_create_rule,
     plan_set_category, project_cash_flow, simulate_rule, validate_provider_suggestion,
     validate_suggestion, verify_mutation, verify_rule_mutation, AnalysisOptions, AnalysisRequest,
-    CashFlowProjectionRequest, DeterministicAnalysisRequest, FinancialStateRequest,
-    InferencePolicy, MutationPlan, PayeeCondition, Postcondition, PostconditionType,
-    ProtocolSnapshot, Provenance, PurchaseEvaluationRequest, Suggestion, TargetHealthRequest,
+    CashFlowProjectionRequest, CreateRuleRequest, DeterministicAnalysisRequest,
+    FinancialStateRequest, InferencePolicy, MerchantScope, MutationPlan, Postcondition,
+    PostconditionType, ProtocolSnapshot, Provenance, PurchaseEvaluationRequest, RulePlanningError,
+    RuleReviewContext, Suggestion, TargetHealthRequest,
 };
 use balanceframe_financial_core::{
     Account, CandidateStatus, CategorizationCandidate, Category, Evidence, EvidenceKind, Money,
@@ -1032,7 +1033,7 @@ fn sample_candidate(tx_id: &str, reasons: Vec<Evidence>) -> CategorizationCandid
         reasons,
         proposed_category_id: None,
         proposed_category_name: None,
-        rule_ids: None,
+        rule_set_index: None,
     }
 }
 
@@ -2452,58 +2453,98 @@ fn test_validate_provider_suggestion_local_only_no_provider() {
 // Plan create rule
 // ---------------------------------------------------------------------------
 
+fn rule_request(name: &str, payee_id: &str, category_id: &str) -> CreateRuleRequest {
+    CreateRuleRequest {
+        rule_name: name.into(),
+        payee_id: payee_id.into(),
+        category_id: category_id.into(),
+        review_context: RuleReviewContext {
+            scope: MerchantScope {
+                space_id: "space-fixture".into(),
+                budget_id: "budget-fixture".into(),
+                connection_id: "connection-fixture".into(),
+            },
+            source_facts_hash: "facts-1".into(),
+            evidence_key: None,
+            evidence_revision: "evidence-1".into(),
+            merchant_policy_version: "merchant-policy-1".into(),
+            visibility_hash: "visibility-1".into(),
+            expires_at: "2026-10-04T12:30:00Z".into(),
+        },
+    }
+}
+
 #[test]
 fn test_plan_create_rule() {
-    let snapshot = empty_snapshot();
-    let conditions = vec![PayeeCondition {
-        field: "imported_payee".into(),
-        operation: "is".into(),
-        value: "  Whole Foods  ".into(),
-    }];
-
-    let plan = plan_create_rule("Groceries", &conditions, "c1", &snapshot);
+    let snapshot = actual_rule_snapshot();
+    let payee_id = &snapshot.payees[0].id;
+    let category_id = &snapshot.categories[0].id;
+    let plan =
+        plan_create_rule(&rule_request("Groceries", payee_id, category_id), &snapshot).unwrap();
 
     assert_eq!(plan.rule_name, "Groceries");
-    assert_eq!(plan.trigger["type"], "payee_is");
-    // Value must be normalized (trimmed, lowercased)
-    assert_eq!(plan.trigger["value"], "whole foods");
-    assert_eq!(plan.actions[0]["type"], "set_category");
-    assert_eq!(plan.actions[0]["value"], "c1");
+    assert_eq!(
+        plan.trigger,
+        serde_json::json!({
+            "stage": "post", "conditionsOp": "and",
+            "conditions": [{"field": "payee", "op": "is", "value": payee_id}]
+        })
+    );
+    assert_eq!(
+        plan.actions,
+        serde_json::json!([{"op": "set", "field": "category", "value": category_id}])
+    );
     assert_eq!(plan.conditions.len(), 1);
-    assert_eq!(plan.conditions[0].field, "imported_payee");
+    assert_eq!(plan.conditions[0].field, "payee");
+    assert_eq!(plan.conditions[0].operation, "is");
+    assert_eq!(&plan.conditions[0].value, payee_id);
     assert!(!plan.plan_id.is_empty());
     assert!(!plan.hash.is_empty());
 }
 
 #[test]
-fn test_plan_create_rule_no_conditions() {
-    let snapshot = empty_snapshot();
-    let conditions: Vec<PayeeCondition> = vec![];
-
-    let plan = plan_create_rule("Empty", &conditions, "c1", &snapshot);
-
-    assert_eq!(plan.rule_name, "Empty");
-    // No conditions → empty-string normalized value
-    assert_eq!(plan.trigger["value"], "");
-    assert_eq!(plan.actions[0]["value"], "c1");
-    assert!(plan.conditions.is_empty());
+fn test_plan_create_rule_rejects_unavailable_targets() {
+    let mut snapshot = actual_rule_snapshot();
+    let payee_id = snapshot.payees[0].id.clone();
+    let category_id = snapshot.categories[0].id.clone();
+    assert_eq!(
+        plan_create_rule(
+            &rule_request("Missing payee", "missing", &category_id),
+            &snapshot
+        ),
+        Err(RulePlanningError::PayeeUnavailable)
+    );
+    assert_eq!(
+        plan_create_rule(
+            &rule_request("Missing category", &payee_id, "missing"),
+            &snapshot
+        ),
+        Err(RulePlanningError::CategoryUnavailable)
+    );
+    snapshot.categories[0].deleted = true;
+    assert_eq!(
+        plan_create_rule(
+            &rule_request("Deleted category", &payee_id, &category_id),
+            &snapshot
+        ),
+        Err(RulePlanningError::CategoryUnavailable)
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Plan-create rule idempotency: same inputs produce identical plan
+// Plan-create rule idempotency: same admitted facts produce identical plan
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_plan_create_rule_idempotent() {
-    let snapshot = empty_snapshot();
-    let conditions = vec![PayeeCondition {
-        field: "payee".into(),
-        operation: "contains".into(),
-        value: "Amazon".into(),
-    }];
-
-    let plan_a = plan_create_rule("Amazon", &conditions, "c4", &snapshot);
-    let plan_b = plan_create_rule("Amazon", &conditions, "c4", &snapshot);
+    let snapshot = actual_rule_snapshot();
+    let request = rule_request(
+        "Groceries",
+        &snapshot.payees[0].id,
+        &snapshot.categories[0].id,
+    );
+    let plan_a = plan_create_rule(&request, &snapshot).unwrap();
+    let plan_b = plan_create_rule(&request, &snapshot).unwrap();
 
     assert_eq!(plan_a.plan_id, plan_b.plan_id);
     assert_eq!(plan_a.hash, plan_b.hash);
@@ -3163,47 +3204,52 @@ fn test_financial_state_at_risk() {
 #[test]
 fn rule_plan_preview_detects_active_overlaps_without_mutating_transactions() {
     use balanceframe_core_protocol::simulate_create_rule_plan;
-    let mut snapshot = empty_snapshot();
-    snapshot.transactions = vec![
-        sample_transaction("uncategorized", None, -100),
-        sample_transaction("already", Some("food"), -200),
-    ];
-    let plan = plan_create_rule(
-        "Food rule",
-        &[PayeeCondition {
-            field: "payee".into(),
-            operation: "is".into(),
-            value: " Test Payee ".into(),
-        }],
-        "food",
-        &snapshot,
-    );
-    let rule = |id: &str, category: &str, inactive| Rule {
-        id: id.into(),
-        name: id.into(),
-        order: 0,
-        trigger: serde_json::json!({"type": "payee_is", "value": "TEST PAYEE"}),
-        actions: serde_json::json!([{"type": "set_category", "value": category}]),
-        inactive,
+    let mut snapshot = actual_rule_snapshot();
+    let payee_id = snapshot.payees[0].id.clone();
+    let category_id = snapshot.categories[0].id.clone();
+    let other_category_id = snapshot.categories[1].id.clone();
+    let mut uncategorized = snapshot.transactions[0].clone();
+    uncategorized.id = "uncategorized".into();
+    uncategorized.payee_id = Some(payee_id.clone());
+    uncategorized.category_id = None;
+    uncategorized.amount = Money::new(-100, "USD");
+    let mut already = uncategorized.clone();
+    already.id = "already".into();
+    already.category_id = Some(category_id.clone());
+    already.amount = Money::new(-200, "USD");
+    snapshot.transactions = vec![uncategorized, already];
+    let rule = |id: &str, category: &str, inactive| {
+        let mut rule = actual_category_rule(&payee_id, category);
+        rule.id = id.into();
+        rule.inactive = inactive;
+        rule
     };
     snapshot.rules = vec![
-        rule("same", "food", false),
-        rule("different", "travel", false),
-        rule("inactive", "food", true),
+        rule("same", &category_id, false),
+        rule("different", &other_category_id, false),
+        rule("inactive", &category_id, true),
     ];
+    let plan = plan_create_rule(
+        &rule_request("Food rule", &payee_id, &category_id),
+        &snapshot,
+    )
+    .unwrap();
     let original = snapshot.clone();
-    let result = simulate_create_rule_plan(&plan, &snapshot);
+    let result = simulate_create_rule_plan(&plan, &snapshot).unwrap();
     assert_eq!(
         result.transactions_affected,
-        vec!["uncategorized", "already"]
+        vec!["already", "uncategorized"]
     );
-    assert_eq!(result.category_distribution["food"], 2);
-    assert!(result.examples[0].would_change);
-    assert!(!result.examples[1].would_change);
-    assert_eq!(result.conflicts.len(), 2);
+    assert_eq!(result.category_distribution[&category_id], 2);
+    assert_eq!(result.examples[0].tx_id, "already");
+    assert!(!result.examples[0].would_change);
+    assert_eq!(result.examples[1].tx_id, "uncategorized");
+    assert!(result.examples[1].would_change);
+    assert_eq!(result.conflicts, vec!["different", "same"]);
     assert_eq!(snapshot, original);
     snapshot.rules.clear();
     assert!(simulate_create_rule_plan(&plan, &snapshot)
+        .unwrap()
         .conflicts
         .is_empty());
 }
@@ -3322,7 +3368,7 @@ fn actual_category_rule(payee: &str, category: &str) -> Rule {
         trigger: serde_json::json!({
             "stage": "post",
             "conditionsOp": "and",
-            "conditions": [{"field": "payee_name", "op": "is", "value": payee}]
+            "conditions": [{"field": "payee", "op": "is", "value": payee}]
         }),
         actions: serde_json::json!([{"op": "set", "field": "category", "value": category}]),
         inactive: false,
@@ -3340,24 +3386,20 @@ fn actual_rule_postcondition_requires_complete_created_presence() {
         .unwrap()
         .id
         .clone();
+    let payee_id = snapshot.payees[0].id.clone();
     let plan = plan_create_rule(
-        "Fixture rule",
-        &[PayeeCondition {
-            field: "payee".into(),
-            operation: "is".into(),
-            value: "Fixture Rule Merchant".into(),
-        }],
-        &category_id,
+        &rule_request("Fixture rule", &payee_id, &category_id),
         &snapshot,
-    );
+    )
+    .unwrap();
     assert!(!verify_rule_mutation(&plan, &snapshot).verified);
-    let expected = actual_category_rule("Fixture Rule Merchant", &category_id);
+    let expected = actual_category_rule(&payee_id, &category_id);
     snapshot.rules.push(expected.clone());
     assert!(verify_rule_mutation(&plan, &snapshot).verified);
     for changed in [
         serde_json::json!({"conditionsOp": "or"}),
         serde_json::json!({"stage": "pre"}),
-        serde_json::json!({"conditions": [{"field": "payee_name", "op": "is", "value": "Other merchant"}]}),
+        serde_json::json!({"conditions": [{"field": "payee", "op": "is", "value": snapshot.payees[1].id}]}),
     ] {
         let mut different = expected.clone();
         for (key, value) in changed.as_object().unwrap() {
@@ -3388,9 +3430,9 @@ fn actual_rule_postcondition_requires_complete_created_presence() {
 fn actual_rule_simulation_preserves_supported_conditions_and_null_stage() {
     let snapshot = actual_rule_snapshot();
     let mut transaction = snapshot.transactions[0].clone();
-    transaction.payee_name = Some("Fixture Rule Merchant".into());
+    transaction.payee_id = Some(snapshot.payees[0].id.clone());
     transaction.category_id = None;
-    let mut rule = actual_category_rule("Fixture Rule Merchant", &snapshot.categories[0].id);
+    let mut rule = actual_category_rule(&snapshot.payees[0].id, &snapshot.categories[0].id);
     rule.trigger["stage"] = serde_json::Value::Null;
     let result = simulate_rule(&rule, std::slice::from_ref(&transaction));
     assert_eq!(result.transactions_affected, vec![transaction.id.clone()]);
@@ -3412,38 +3454,38 @@ fn actual_rule_simulation_preserves_supported_conditions_and_null_stage() {
 fn actual_rule_plan_preview_detects_same_and_conflicting_wrapped_rules() {
     let mut snapshot = actual_rule_snapshot();
     let mut transaction = snapshot.transactions[0].clone();
-    transaction.payee_name = Some("Fixture Rule Merchant".into());
+    let payee_id = snapshot.payees[0].id.clone();
+    transaction.payee_id = Some(payee_id.clone());
     transaction.category_id = None;
     snapshot.transactions = vec![transaction];
     let category_id = snapshot.categories[0].id.clone();
-    let plan = plan_create_rule(
-        "Fixture rule",
-        &[PayeeCondition {
-            field: "payee".into(),
-            operation: "is".into(),
-            value: "Fixture Rule Merchant".into(),
-        }],
-        &category_id,
-        &snapshot,
-    );
     snapshot.rules = vec![
-        actual_category_rule("Fixture Rule Merchant", &category_id),
-        actual_category_rule("Fixture Rule Merchant", "other-category"),
+        actual_category_rule(&payee_id, &category_id),
+        actual_category_rule(&payee_id, &snapshot.categories[1].id),
     ];
     snapshot.rules[1].id = "conflicting-rule".into();
+    snapshot.rules[1].order = 1;
+    let plan = plan_create_rule(
+        &rule_request("Fixture rule", &payee_id, &category_id),
+        &snapshot,
+    )
+    .unwrap();
     let unchanged = snapshot.clone();
-    let result = balanceframe_core_protocol::simulate_create_rule_plan(&plan, &snapshot);
+    let result = balanceframe_core_protocol::simulate_create_rule_plan(&plan, &snapshot).unwrap();
     assert_eq!(
         result.transactions_affected,
         vec![snapshot.transactions[0].id.clone()]
     );
-    assert_eq!(result.conflicts.len(), 2);
+    assert_eq!(
+        result.conflicts,
+        vec!["created-actual-rule", "conflicting-rule"]
+    );
     assert_eq!(snapshot, unchanged);
     snapshot.rules[1].inactive = true;
     assert_eq!(
         balanceframe_core_protocol::simulate_create_rule_plan(&plan, &snapshot)
-            .conflicts
-            .len(),
-        1
+            .unwrap()
+            .conflicts,
+        vec!["created-actual-rule"]
     );
 }

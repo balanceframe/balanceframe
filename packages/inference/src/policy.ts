@@ -7,13 +7,11 @@
  * Fail-closed: missing capability states, invalid provider metadata, and
  * missing allowlists all result in denial (empty provider list).
  */
-import type {
-  Capability,
-  CapabilityState,
-  PolicyConfig,
-  PolicyEngine,
-  ProviderInfo,
-} from './types';
+import type { Capability,
+CapabilityState,
+PolicyConfig,
+PolicyEngine,
+ProviderInfo, } from './types.js'
 
 /** Default state for any capability not explicitly configured — disabled. */
 const DEFAULT_STATE: CapabilityState = 'disabled';

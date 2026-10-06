@@ -10,7 +10,14 @@
   </span>
 </template>
 
+<script lang="ts">
+const supportedCurrencyCodes = new Set(Intl.supportedValuesOf('currency'));
+// Bounded by the platform's public ISO currency catalog, never amount/source data.
+const currencyExponents = new Map<string, number>();
+</script>
+
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Amount, FinancialSemanticClass, SemanticAmountState } from './types';
 
 const props = defineProps<{
@@ -38,11 +45,22 @@ const isNegative = computed(
 const formattedAmount = computed(() => {
   if (resolvedState.value !== 'known' || !props.amount) return null;
 
-  const padded = absUnits.value.padStart(3, '0');
-  const dollars = padded.slice(0, -2) || '0';
-  const cents = absUnits.value.slice(-2).padStart(2, '0');
   const sign = isNegative.value ? '−' : '';
-  return `${sign}${dollars}.${cents} ${props.amount.currency}`;
+  if (!supportedCurrencyCodes.has(props.amount.currency))
+    return `${sign}${absUnits.value} minor units ${props.amount.currency} (currency exponent unknown)`;
+  let exponent = currencyExponents.get(props.amount.currency);
+  if (exponent === undefined) {
+    exponent = new Intl.NumberFormat('en', {
+      style: 'currency', currency: props.amount.currency,
+    }).resolvedOptions().maximumFractionDigits;
+    if (exponent === undefined)
+      return `${sign}${absUnits.value} minor units ${props.amount.currency} (currency exponent unknown)`;
+    currencyExponents.set(props.amount.currency, exponent);
+  }
+  const padded = absUnits.value.padStart(exponent + 1, '0');
+  const whole = exponent === 0 ? padded : padded.slice(0, -exponent);
+  const fraction = exponent === 0 ? '' : `.${padded.slice(-exponent)}`;
+  return `${sign}${whole}${fraction} ${props.amount.currency}`;
 });
 const stateLabel = computed(() => {
   switch (resolvedState.value) {

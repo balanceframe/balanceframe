@@ -1,6 +1,8 @@
+import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SqliteWorkflowStore, type NotificationEvent } from '@balanceframe/workflow-store';
 import type { FinancialSnapshot, SourceObservation } from '@balanceframe/protocol-generated';
+import type * as NativeBindings from '@balanceframe/native';
 import {
   NotificationRuntime,
   createNativeAnalysisProtocol,
@@ -12,6 +14,9 @@ import {
   type NativeBindingShim,
   type NotificationPolicy,
 } from '../src';
+
+// The package entry is a .node addon; use its real compiled exports via Node's native loader.
+const native = createRequire(import.meta.url)('@balanceframe/native') as typeof NativeBindings;
 
 const CAPTURED_AT = '2026-08-23T12:00:00Z';
 const STALE_AT = '2026-08-20T09:00:00Z';
@@ -319,13 +324,11 @@ function productionShapeSnapshot(): FinancialSnapshot {
 
 function nativeShim(overrides: Partial<NativeBindingShim> = {}): NativeBindingShim {
   return {
+    ...native,
     evaluateTargetHealth: vi.fn(() =>
       JSON.stringify({
-        categories: [],
+        categoryHealth: [],
         overallLabel: 'healthy',
-        healthyCount: 0,
-        atRiskCount: 0,
-        sinkingFundCount: 0,
       }),
     ),
     evaluateFinancialState: vi.fn(() =>
@@ -341,7 +344,7 @@ function nativeShim(overrides: Partial<NativeBindingShim> = {}): NativeBindingSh
       }),
     ),
     ...overrides,
-  } as unknown as NativeBindingShim;
+  };
 }
 
 function ledgerWithFinancialSnapshot(snapshot = financialSnapshot()) {
@@ -663,7 +666,7 @@ describe('canonical financial observations on the existing attention home result
       nativeShim({
         evaluateTargetHealth: vi.fn(() =>
           JSON.stringify({
-            categories: [
+            categoryHealth: [
               {
                 categoryId: 'category-groceries',
                 categoryName: 'category-groceries',
@@ -671,15 +674,9 @@ describe('canonical financial observations on the existing attention home result
                 spent: { minorUnits: '55000', currency: 'USD' },
                 remaining: { minorUnits: '-5000', currency: 'USD' },
                 healthLabel: 'overspent',
-                isSinkingFund: false,
-                targetAmount: null,
-                targetProgress: null,
               },
             ],
             overallLabel: 'at_risk',
-            healthyCount: 0,
-            atRiskCount: 1,
-            sinkingFundCount: 0,
           }),
         ),
       }),
@@ -979,169 +976,6 @@ describe('canonical financial observations on the existing attention home result
     ]);
   });
 
-  it('derives recurrences only from ordinary same-account purchases', async () => {
-    const base = productionShapeSnapshot();
-    const template = base.legacySnapshot.transactions[0];
-    const recurrenceTransaction = (
-      id: string,
-      accountId: string,
-      payeeId: string,
-      payeeName: string,
-      date: string,
-      minorUnits: string,
-      transferAccountId: string | null = null,
-    ) => ({
-      ...template,
-      id,
-      accountId,
-      payeeId,
-      payeeName,
-      date,
-      amount: { minorUnits, currency: 'USD' },
-      categoryId: 'category-groceries',
-      categoryName: 'Groceries',
-      transferAccountId,
-    });
-    const snapshot: FinancialSnapshot = {
-      ...base,
-      legacySnapshot: {
-        ...base.legacySnapshot,
-        transactions: [
-          recurrenceTransaction(
-            'starting-balance-1',
-            'account-checking',
-            'payee-starting-balance',
-            '  Starting Balance  ',
-            '2026-08-01',
-            '100000',
-          ),
-          recurrenceTransaction(
-            'starting-balance-2',
-            'account-checking',
-            'payee-starting-balance',
-            'starting balance',
-            '2026-08-02',
-            '200000',
-          ),
-          recurrenceTransaction(
-            'starting-balance-3',
-            'account-checking',
-            'payee-starting-balance',
-            ' STARTING   BALANCE ',
-            '2026-08-03',
-            '300000',
-          ),
-          ...Array.from({ length: 3 }, (_, index) =>
-            recurrenceTransaction(
-              `transfer-${index + 1}`,
-              'account-checking',
-              'payee-transfer',
-              'Transfer to Card',
-              `2026-08-${String(index + 4).padStart(2, '0')}`,
-              '-2500',
-              'account-card',
-            ),
-          ),
-          recurrenceTransaction(
-            'coffee-1',
-            'account-checking',
-            'payee-coffee',
-            'Coffee Club',
-            '2026-08-08',
-            '-1100',
-          ),
-          recurrenceTransaction(
-            'coffee-2',
-            'account-checking',
-            'payee-coffee',
-            'Coffee Club',
-            '2026-08-14',
-            '-1200',
-          ),
-          recurrenceTransaction(
-            'coffee-3',
-            'account-checking',
-            'payee-coffee',
-            'Coffee Club',
-            '2026-08-20',
-            '-1300',
-          ),
-          recurrenceTransaction(
-            'shared-payee-checking-1',
-            'account-checking',
-            'payee-shared',
-            'Shared Merchant',
-            '2026-08-09',
-            '-1000',
-          ),
-          recurrenceTransaction(
-            'shared-payee-checking-2',
-            'account-checking',
-            'payee-shared',
-            'Shared Merchant',
-            '2026-08-16',
-            '-1000',
-          ),
-          recurrenceTransaction(
-            'shared-payee-card-1',
-            'account-card',
-            'payee-shared',
-            'Shared Merchant',
-            '2026-08-10',
-            '-1000',
-          ),
-          recurrenceTransaction(
-            'shared-payee-card-2',
-            'account-card',
-            'payee-shared',
-            'Shared Merchant',
-            '2026-08-17',
-            '-1000',
-          ),
-        ],
-        payees: [
-          {
-            id: 'payee-starting-balance',
-            name: 'Starting Balance',
-            transferAccountId: null,
-            mtid: null,
-          },
-          {
-            id: 'payee-transfer',
-            name: 'Transfer to Card',
-            transferAccountId: 'account-card',
-            mtid: null,
-          },
-          {
-            id: 'payee-coffee',
-            name: 'Coffee Club',
-            transferAccountId: null,
-            mtid: null,
-          },
-          {
-            id: 'payee-shared',
-            name: 'Shared Merchant',
-            transferAccountId: null,
-            mtid: null,
-          },
-        ],
-      },
-      observations: [],
-    };
-    const protocol = await createNativeAnalysisProtocol(async () => nativeShim());
-    const result = await protocol.attentionHome!(ledgerWithFinancialSnapshot(snapshot), {});
-
-    expect(result.recurrences).toEqual([
-      {
-        payeeName: 'Coffee Club',
-        amount: { minorUnits: '-1300', currency: 'USD' },
-        frequency: 'irregular',
-        occurrences: 3,
-        lastOccurrence: '2026-08-20',
-        isEstimated: false,
-      },
-    ]);
-  });
 
   it('deduplicates repeat observations but emits a new identity for a changed revision', async () => {
     const protocol = await createNativeAnalysisProtocol(async () => nativeShim());

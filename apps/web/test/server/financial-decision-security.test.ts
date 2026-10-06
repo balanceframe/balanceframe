@@ -9,6 +9,8 @@ import type { ConnectionManager } from '@balanceframe/application';
 import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
 import type { EventWithContext } from '../../server/utils/workflow-store';
+import representative from '../../../../protocol/fixtures/representative.json';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 
 const mocks = vi.hoisted(() => ({
   manager: null as unknown,
@@ -152,9 +154,14 @@ beforeEach(() => {
     loadConfig: mocks.loadConfig,
     withConnection: mocks.withConnection,
   };
-  mocks.loadConfig.mockResolvedValue({ budgetId });
+  const config = { version: 1, serverUrl: 'https://actual-financial-security.test', budgetId,
+    budgetName: 'Financial attention fixture', groupId: 'financial-security-group' };
+  const snapshot = canonicalProtocolSnapshotSchema.parse({
+    ...representative, accounts: [], transactions: [], budgets: [], rules: [], schedules: [],
+  });
+  mocks.loadConfig.mockResolvedValue(config);
   mocks.withConnection.mockImplementation(async (operation) => operation({
-    config: { budgetId },
+    config, synchronization: { snapshot },
     budget: { id: budgetId },
     connector: { name: 'selected-budget-Actual-connector' },
   }));

@@ -28,7 +28,7 @@ import {
 } from 'h3';
 import { fromNodeHeaders } from 'better-auth/node';
 import { timingSafeEqual, createHmac } from 'node:crypto';
-import { auth } from '../../lib/auth';
+import { auth, isAuthCredentialValid } from '../../lib/auth';
 import { enforceDemoBoundary } from '../utils/demo-boundary';
 import { authMigrationFailed, authMigrationMessage } from '../utils/auth-migration-status';
 import type { TrustedAuthContext } from '../utils/reauthentication';
@@ -208,7 +208,7 @@ export default defineEventHandler(async (event) => {
       return unauthorized('Authentication required', 'auth.missing_credentials');
     }
     const token = bearer[1]!;
-    let verifiedKey: { id: string; referenceId: string } | null = null;
+    let verifiedKey: { id: string; referenceId: string; expiresAt: string | null } | null = null;
     try {
       const headers = fromNodeHeaders(getRequestHeaders(event));
       const result = await auth.api.verifyApiKey({ body: { key: token }, headers });
@@ -218,9 +218,10 @@ export default defineEventHandler(async (event) => {
         typeof key?.id === 'string' &&
         key.id.length > 0 &&
         typeof key.referenceId === 'string' &&
-        key.referenceId.length > 0
+        key.referenceId.length > 0 &&
+        (key.expiresAt === null || (key.expiresAt instanceof Date && Number.isFinite(key.expiresAt.getTime())))
       ) {
-        verifiedKey = { id: key.id, referenceId: key.referenceId };
+        verifiedKey = { id: key.id, referenceId: key.referenceId, expiresAt: key.expiresAt?.toISOString() ?? null };
       }
     } catch {
       // An invalid explicit key must not fall through to a session cookie.
@@ -279,6 +280,10 @@ export default defineEventHandler(async (event) => {
         delegationVersion: principal.delegationVersion,
         method: 'api-key',
         principalType: principal.principalType,
+        credentialExpiresAt: verifiedKey.expiresAt,
+        isCredentialValid: (now) => isAuthCredentialValid({
+          method: 'api-key', id: principal.credentialId, ownerId: principal.credentialOwnerId,
+        }, now),
       });
       return;
     }
@@ -333,7 +338,8 @@ export default defineEventHandler(async (event) => {
         actorId.length > 0 &&
         typeof sessionId === 'string' &&
         sessionId.length > 0 &&
-        session.session?.userId === actorId
+        session.session?.userId === actorId &&
+        session.session.expiresAt instanceof Date && Number.isFinite(session.session.expiresAt.getTime())
       ) {
         const impersonatedBy =
           typeof session.session.impersonatedBy === 'string'
@@ -346,6 +352,8 @@ export default defineEventHandler(async (event) => {
           sessionId,
           principalType: 'human',
           impersonatedBy,
+          credentialExpiresAt: session.session.expiresAt.toISOString(),
+          isCredentialValid: (now) => isAuthCredentialValid({ method: 'session', id: sessionId, ownerId: actorId }, now),
         });
         if (impersonatedBy && !isAuthPath) {
           setResponseStatus(event, 403);

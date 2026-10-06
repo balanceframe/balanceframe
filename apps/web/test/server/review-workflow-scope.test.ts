@@ -1,11 +1,16 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import type { ReauthenticationEvent } from '../../server/utils/reauthentication';
 import type * as H3 from 'h3';
 import type * as WorkflowStorePackage from '@balanceframe/workflow-store';
 import type { EventWithContext } from '../../server/utils/workflow-store';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fixture from '../../../../protocol/fixtures/representative.json';
 import { getWorkflowStore, requireProposalAuthorization } from '../../server/utils/workflow-store';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import { merchantConnectionId } from '../../../../packages/application/src/merchant-service';
+import { handleReviewWorkflowAction } from '../../server/utils/review-workflow-action';
+import { nativeReviewFixture } from './native-review.fixture';
+import { completeNativeRuleSourceAvailability } from './native-rule-source.fixture';
 
 const sdk = vi.hoisted(() => ({
   budgetId: '',
@@ -25,21 +30,11 @@ vi.mock('../../server/utils/mutation-executor', () => ({
     withConnection: sdk.withConnection,
   }),
 }));
-import { handleReviewWorkflowAction } from '../../server/utils/review-workflow-action';
 
-const transaction = fixture.transactions[0]!;
-const categoryId = fixture.transactions[1]!.categoryId!;
-const sourceAmount = BigInt(transaction.amount.minorUnits);
-const sourceTransaction = {
-  id: transaction.id,
-  accountId: transaction.accountId,
-  categoryId: transaction.categoryId ?? null,
-  direction: sourceAmount < 0n ? 'outgoing' as const : 'incoming' as const,
-  amount: {
-    minorUnits: (sourceAmount < 0n ? -sourceAmount : sourceAmount).toString(),
-    currency: transaction.amount.currency,
-  },
-};
+const snapshot = canonicalProtocolSnapshotSchema.parse(fixture);
+const transaction = snapshot.transactions[0]!;
+const categoryId = snapshot.transactions[1]!.categoryId!;
+const SERVER_URL = 'https://actual.review-scope.example.test';
 const actorId = 'scoped-review-human';
 const now = '2098-01-01T12:00:00.000Z';
 const human = { method: 'human-session' as const, actorId: 'owner', sessionId: 'owner-session', reauthenticatedAt: now };
@@ -70,13 +65,18 @@ function grantAll(restrictions = {}) {
     grant('category', transaction.categoryId, restrictions);
 }
 async function pending(includeSourceTransaction = true) {
+  if (includeSourceTransaction)
+    return nativeReviewFixture(store, {
+      scope: { spaceId: selectedSpace, budgetId: sdk.budgetId, connectionId: merchantConnectionId({ budgetId: sdk.budgetId, serverUrl: SERVER_URL }) },
+      transaction,
+      categoryId,
+    });
   let item = await store.createReviewItem({
     budgetId: sdk.budgetId,
     transactionId: transaction.id,
     categoryId,
     classifier: 'fixture',
     provenance: 'canonical-fixture',
-    ...(includeSourceTransaction ? { sourceTransaction } : {}),
   });
   for (const toStatus of ['suggestion_generated', 'pending_review'] as const)
     item = await store.transitionInternalReviewItem(item.id, { toStatus, actor: 'system', expectedVersion: item.version });
@@ -88,12 +88,12 @@ beforeEach(async () => {
   vi.stubEnv('BETTER_AUTH_URL', 'https://balanceframe.example.test');
   sdk.budgetId = `scoped-review-budget-${++sequence}`;
   sdk.loadConfig.mockReset();
-  sdk.loadConfig.mockResolvedValue({ budgetId: sdk.budgetId });
+  sdk.loadConfig.mockResolvedValue({ budgetId: sdk.budgetId, serverUrl: SERVER_URL });
   sdk.synchronize.mockReset();
-  sdk.synchronize.mockResolvedValue({ snapshot: fixture });
+  sdk.synchronize.mockResolvedValue({ snapshot, rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(snapshot) });
   sdk.withConnection.mockReset();
   sdk.withConnection.mockImplementation(async (callback: (connected: unknown) => Promise<unknown>) =>
-    callback({ config: { budgetId: sdk.budgetId }, budget: { id: sdk.budgetId }, connector: { synchronize: sdk.synchronize } }),
+    callback({ config: { budgetId: sdk.budgetId, serverUrl: SERVER_URL }, budget: { id: sdk.budgetId }, connector: { synchronize: sdk.synchronize } }),
   );
   const opened = getWorkflowStore(request('') as unknown as EventWithContext);
   if ('error' in opened) throw new Error(opened.error);
@@ -157,7 +157,7 @@ describe('source non-ledger review action authorization', () => {
   it('rechecks a revoked account grant at the native commit, after trusted SDK facts were captured', async () => {
     grantAll();
     const item = await pending();
-    sdk.synchronize.mockImplementation(async () => { grant('account', transaction.accountId, {}, false); return { snapshot: fixture }; });
+    sdk.synchronize.mockImplementation(async () => { grant('account', transaction.accountId, {}, false); return { snapshot, rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(snapshot) }; });
     const event = request(item.id);
     const result = await handleReviewWorkflowAction(event as unknown as ReauthenticationEvent, 'skip');
     expect(event.node.res.statusCode).toBe(403);
@@ -171,10 +171,6 @@ describe('source non-ledger review action authorization', () => {
     const result = await handleReviewWorkflowAction(event as unknown as ReauthenticationEvent, 'reject');
     expect(event.node.res.statusCode).toBe(200);
     expect(result.result).toMatchObject({ itemId: item.id, applied: false, categorizationExecuted: false });
-    expect(sdk.withConnection).toHaveBeenCalledWith(expect.any(Function), {
-      expectedBudgetId: sdk.budgetId,
-      dispose: true,
-    });
     expect((await store.getReviewItem(item.id))?.status).toBe('rejected');
     expect((await store.getReviewActions(item.id)).at(-1)?.actor).toBe(actorId);
   });

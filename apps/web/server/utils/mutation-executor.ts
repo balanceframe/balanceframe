@@ -1,6 +1,7 @@
 import {
   ConnectionManager,
   createNativeCategorizationMutationProtocol,
+  indexCanonicalTransactions,
 } from '@balanceframe/application';
 import type { RustMutationProtocol } from '@balanceframe/application';
 import type { BudgetLedger } from '@balanceframe/actual-adapter';
@@ -19,7 +20,7 @@ import { classifyConnectionError, requireProposalAuthorization, reviewAndApplyEn
 import { requireSelectedSpace } from './space-context';
 import { buildCategorizationProposalIntent } from './categorization-proposal';
 import type { ReviewItem } from '@balanceframe/workflow-store';
-import { hasReviewScopeAdmission } from './review-scope-admission';
+import { hasCurrentReviewNamespace, hasReviewScopeAdmission, matchesReviewTransaction, reviewConnectionScope } from './review-scope-admission';
 
 export function createMutationConnectionManager(options?: { configPath?: string }): ConnectionManager {
   return new ConnectionManager({
@@ -123,32 +124,71 @@ export function createDefaultExecutorFactory(
         return deniedResult(item, 'denied', 'Configured budget does not match the selected space');
 
       try {
-        return await manager.withConnection(async (connected) => {
-          if (
-            connected.config.budgetId !== selected.space.budgetId ||
-            connected.budget.id !== selected.space.budgetId
-          ) {
-            return deniedResult(item, 'denied', 'Connected budget does not match the selected space');
-          }
-
+        const captured = await manager.withConnection(async (connected) => {
+          const scope = reviewConnectionScope(selected.space.id, connected.config);
+          if (connected.config.budgetId !== selected.space.budgetId || connected.budget.id !== selected.space.budgetId ||
+              !hasReviewScopeAdmission({
+                store, selected, item, capability: 'categorization:propose', phase: 'propose',
+                operation: 'set_category', policyVersion: policy.version,
+                targetCategoryId: input.categoryId ?? item.categoryId, connectionId: scope.connectionId,
+              }))
+            throw new Error('Connected Review namespace or authority is unavailable');
           const ledger = connected.connector as unknown as BudgetLedger;
           const synchronized = await ledger.synchronize();
-          const transaction = synchronized.snapshot.transactions.find((row) => row.id === item.transactionId);
+          const transaction = indexCanonicalTransactions(synchronized.snapshot.transactions).get(item.transactionId);
           const categoryId = input.categoryId ?? item.categoryId;
           const category = synchronized.snapshot.categories.find((row) => row.id === categoryId);
-          if (!transaction || !category)
-            return deniedResult(item, 'stale', 'Native transaction or category is unavailable');
-
-          const intent = buildCategorizationProposalIntent({
+          if (!transaction || !category || category.deleted || !matchesReviewTransaction(item, transaction))
+            throw new Error('Current native Review transaction or category is unavailable');
+          return { scope, intent: buildCategorizationProposalIntent({
             protocol: rust,
             snapshot: synchronized.snapshot,
             transaction,
             category,
             review: item,
-          });
-          const { payload, preconditions: nativeFacts, nativePlan: plan } = intent;
+          }) };
+        }, { expectedBudgetId: selected.space.budgetId, dispose: true, synchronize: false });
+        const current = await store.getReviewItem(item.id);
+        const finalConfig = await manager.loadConfig();
+        if (!current || current.version !== item.version || current.evidence.sourceRevision !== item.evidence.sourceRevision ||
+            !finalConfig || reviewConnectionScope(selected.space.id, finalConfig).connectionId !== captured.scope.connectionId ||
+            finalConfig.budgetId !== captured.scope.budgetId ||
+            !hasReviewScopeAdmission({
+              store, selected, item: current, capability: 'categorization:propose', phase: 'propose',
+              operation: 'set_category', policyVersion: policy.version,
+              targetCategoryId: input.categoryId ?? item.categoryId, connectionId: captured.scope.connectionId,
+            }))
+          return deniedResult(item, 'denied', 'Current Review namespace or authority is unavailable');
+        const { payload, preconditions: nativeFacts, nativePlan: plan } = captured.intent;
           const facts = deriveProposalAuthorizationFacts('set_category', payload, nativeFacts);
-          const now = new Date().toISOString();
+
+          const required = [
+            { resourceKind: 'budget' as const, resourceId: selected.space.budgetId, capability: 'categorization:propose' },
+            ...facts.resources.map((resource) => ({ ...resource, capability: 'categorization:propose' })),
+          ];
+          const agent = selected.auth.method === 'api-key' && selected.auth.principalType === 'agent'
+            ? selected.auth
+            : null;
+          const authorize = () => store.governance.authorize({
+            actorId: selected.auth.actorId,
+            spaceId: selected.space.id,
+            membershipId: selected.membership.id,
+            expectedPolicyVersion: policy.version,
+            phase: 'propose',
+            operation: 'set_category',
+            required,
+            payload: { operations: facts.operations, proposal: payload },
+            now: new Date().toISOString(),
+            auth: selected.auth,
+            ...(agent ? {
+              agentId: agent.actorId,
+              delegationId: agent.delegationId,
+              delegationVersion: agent.delegationVersion,
+            } : {}),
+          });
+          let authorization = authorize();
+          if (!authorization.allowed)
+            return deniedResult(item, 'denied', 'Current proposal authorization is unavailable');
           const proposal = await store.createProposal({
             operation: 'set_category',
             budgetId: selected.space.budgetId,
@@ -165,32 +205,12 @@ export function createDefaultExecutorFactory(
           });
           if (!proposal.governancePolicyVersion)
             return deniedResult(item, 'failed', 'Proposal has no captured governance policy version');
-
-          const required = [
-            { resourceKind: 'budget' as const, resourceId: selected.space.budgetId, capability: 'categorization:propose' },
-            ...facts.resources.map((resource) => ({ ...resource, capability: 'categorization:propose' })),
-          ];
-          const agent = selected.auth.method === 'api-key' && selected.auth.principalType === 'agent'
-            ? selected.auth
-            : null;
-          const authorization = store.governance.authorize({
-            actorId: selected.auth.actorId,
-            spaceId: selected.space.id,
-            expectedPolicyVersion: proposal.governancePolicyVersion,
-            phase: 'propose',
-            operation: 'set_category',
-            required,
-            payload: { operations: facts.operations, proposal: payload },
-            now,
-            auth: selected.auth,
-            ...(agent ? {
-              agentId: agent.actorId,
-              delegationId: agent.delegationId,
-              delegationVersion: agent.delegationVersion,
-            } : {}),
-          });
-          if (!authorization.allowed)
-            return deniedResult(item, 'denied', 'Current proposal authorization is unavailable');
+          const publishedConfig = await manager.loadConfig();
+          authorization = authorize();
+          if (!publishedConfig || publishedConfig.budgetId !== captured.scope.budgetId ||
+              reviewConnectionScope(selected.space.id, publishedConfig).connectionId !== captured.scope.connectionId ||
+              !hasCurrentReviewNamespace(store, item, captured.scope) || !authorization.allowed)
+            return deniedResult(item, 'denied', 'Current proposal publication authority is unavailable');
 
           return {
             disposition: 'approval_required',
@@ -199,16 +219,15 @@ export function createDefaultExecutorFactory(
             applied: false,
             verified: false,
             stale: false,
-            transactionId: transaction.id,
+            transactionId: plan.transactionId,
             previousCategoryId: plan.currentCategoryId,
-            newCategoryId: category.id,
+            newCategoryId: plan.proposedCategoryId,
             proposalId: proposal.id,
             payloadHash: proposal.payloadHash,
             governancePolicyVersion: proposal.governancePolicyVersion,
             requiredApprovers: requiredProposalApprovers(authorization),
             error: null,
           };
-        }, { expectedBudgetId: selected.space.budgetId, dispose: true });
       } catch (error) {
         if (classifyConnectionError(error)) throw error;
         return deniedResult(item, 'failed', 'Native proposal could not be created');

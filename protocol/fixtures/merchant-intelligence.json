@@ -1,0 +1,202 @@
+{
+  "request": {
+    "schemaVersion": "1",
+    "scope": { "spaceId": "space-fixture", "budgetId": "budget-fixture", "connectionId": "connection-fixture" },
+    "snapshotId": "snapshot-fixture-1",
+    "asOfDate": "2024-12-31",
+    "normalizationVersion": "merchant/2",
+    "sourceAdmission": {
+      "capturedAt": "2024-12-31T12:00:00Z", "factsHash": "sha256:synthetic-facts-1",
+      "expiresAt": "2025-01-01T12:00:00Z",
+      "collections": { "transactions": "complete", "payees": "complete", "categories": "complete", "rules": "complete", "schedules": "complete" },
+      "accountCoverage": [
+        { "accountId": "account-checking", "state": "complete", "startDate": "2020-01-01", "endDate": "2024-12-31", "currencyState": "known" }
+      ],
+      "pendingState": "excluded", "originalTransactionCount": 1, "truncatedCount": 0,
+      "visibilityHash": "sha256:synthetic-visibility-1", "sourceAccountIds": ["account-checking"],
+      "sourceCategoryIds": ["category-food", "category-bills", "category-other"]
+    },
+    "transactions": [
+      {
+        "id": "tx-source",
+        "accountId": "account-checking",
+        "date": "2024-03-31",
+        "payeeId": "payee-market",
+        "payeeName": "Corner Market",
+        "categoryId": null,
+        "amount": { "minorUnits": "-100", "currency": "USD" },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "import-source",
+        "importedPayee": { "state": "present", "value": "  CORNER—MARKET  " },
+        "description": { "state": "unsupported", "value": null },
+        "verboseTitle": { "state": "absent", "value": null },
+        "notes": { "state": "empty", "value": "" },
+        "isSplitParent": false,
+        "isSplitChild": false,
+        "parentId": null,
+        "occurrenceId": "tx-source",
+        "occurrenceComplete": true,
+        "startingBalance": false,
+        "transferAccountId": null,
+        "deleted": false,
+        "pending": false
+      }
+    ],
+    "payees": [
+      { "id": "payee-market", "name": "Corner Market", "transferAccountId": null, "mtid": null },
+      { "id": "payee-other", "name": "Other Market", "transferAccountId": null, "mtid": null }
+    ],
+    "categories": [
+      { "id": "category-food", "name": "Food", "groupName": "Living", "isIncome": false, "mtid": null, "deleted": false },
+      { "id": "category-bills", "name": "Bills", "groupName": "Living", "isIncome": false, "mtid": null, "deleted": false },
+      { "id": "category-other", "name": "Other", "groupName": "Living", "isIncome": false, "mtid": null, "deleted": false }
+    ],
+    "rules": [
+      {
+        "id": "rule-inactive-fixture", "name": "Stable ID payload specimen", "order": 1, "inactive": true,
+        "trigger": {
+          "stage": null, "conditionsOp": "and",
+          "conditions": [{"field": "payee", "op": "is", "value": "payee-market", "type": "id"}]
+        },
+        "actions": [{"field": "category", "op": "set", "value": "category-food", "type": "id"}]
+      }
+    ],
+    "aliases": [],
+    "corrections": [],
+    "schedules": [],
+    "patternDecisions": [],
+    "calendars": [
+      {
+        "accountId": null,
+        "jurisdiction": "US",
+        "subdivision": null,
+        "timeZone": "America/New_York",
+        "version": "synthetic-calendar/1",
+        "coverageStart": "2020-01-01",
+        "coverageEnd": "2035-12-31",
+        "holidays": [ { "date": "2024-01-01", "name": "New Year's Day" } ]
+      }
+    ],
+    "horizonYears": 5,
+    "maxEvidence": 20
+  },
+  "result": {
+    "schemaVersion": "1",
+    "scope": { "spaceId": "space-fixture", "budgetId": "budget-fixture", "connectionId": "connection-fixture" },
+    "snapshotId": "snapshot-fixture-1",
+    "normalizationVersion": "merchant/2",
+    "sourceAdmission": {
+      "capturedAt": "2024-12-31T12:00:00Z", "factsHash": "sha256:synthetic-facts-1",
+      "expiresAt": "2025-01-01T12:00:00Z",
+      "collections": { "transactions": "complete", "payees": "complete", "categories": "complete", "rules": "complete", "schedules": "complete" },
+      "accountCoverage": [
+        { "accountId": "account-checking", "state": "complete", "startDate": "2020-01-01", "endDate": "2024-12-31", "currencyState": "known" }
+      ],
+      "pendingState": "excluded", "originalTransactionCount": 1, "truncatedCount": 0,
+      "visibilityHash": "sha256:synthetic-visibility-1", "sourceAccountIds": ["account-checking"],
+      "sourceCategoryIds": ["category-food", "category-bills", "category-other"]
+    },
+    "coverage": {
+      "startDate": "2024-03-31", "endDate": "2024-03-31", "inputCount": 1,
+      "eligibleCount": 1, "excludedCount": 0, "limited": false, "reasonCodes": []
+    },
+    "suggestions": [
+      {
+        "transactionId": "tx-source", "accountId": "account-checking", "payeeId": "payee-market",
+        "categoryId": null, "tier": "deterministic_match", "reasonCodes": ["stable_payee_identity"],
+        "evidence": [
+          {
+            "kind": "source_observation", "sourceId": "tx-source", "field": "importedPayee",
+            "rawText": "  CORNER—MARKET  ", "normalizedText": null, "sourceTime": "2024-03-31",
+            "version": "merchant/2", "reasonCode": "source_imported_payee"
+          }
+        ],
+        "contradictions": [], "supportCount": 1, "evidenceRevision": "synthetic-revision-1",
+        "categoryHistory": {"totalCount": 0, "categoryCount": 0, "entries": [], "truncated": false},
+        "alternatives": [], "ruleCandidates": []
+      }
+    ],
+    "recurrences": [],
+    "scheduledExpectations": [],
+    "nativeRuleBlocks": [],
+    "nativeRuleParts": [],
+    "nativeRuleSets": [],
+    "nativeRuleClassifications": [],
+    "categoryClassifications": []
+  },
+  "recurrenceResult": {
+    "schemaVersion": "1",
+    "scope": { "spaceId": "space-fixture", "budgetId": "budget-fixture", "connectionId": "connection-fixture" },
+    "snapshotId": "snapshot-fixture-month-end",
+    "normalizationVersion": "merchant/2",
+    "sourceAdmission": {
+      "capturedAt": "2024-12-31T12:00:00Z", "factsHash": "sha256:synthetic-month-end-facts",
+      "expiresAt": "2025-01-01T12:00:00Z",
+      "collections": { "transactions": "complete", "payees": "complete", "categories": "complete", "rules": "complete", "schedules": "complete" },
+      "accountCoverage": [
+        { "accountId": "account-checking", "state": "complete", "startDate": "2020-01-01", "endDate": "2024-12-31", "currencyState": "known" }
+      ],
+      "pendingState": "excluded", "originalTransactionCount": 3, "truncatedCount": 0,
+      "visibilityHash": "sha256:synthetic-visibility-1", "sourceAccountIds": ["account-checking"],
+      "sourceCategoryIds": ["category-food", "category-bills", "category-other"]
+    },
+    "coverage": {
+      "startDate": "2024-01-31", "endDate": "2024-03-31", "inputCount": 3,
+      "eligibleCount": 3, "excludedCount": 0, "limited": false, "reasonCodes": []
+    },
+    "suggestions": [],
+    "nativeRuleBlocks": [],
+    "nativeRuleParts": [],
+    "nativeRuleSets": [],
+    "nativeRuleClassifications": [],
+    "categoryClassifications": [],
+    "recurrences": [
+      {
+        "id": "synthetic-recurrence-month-end", "accountId": "account-checking", "payeeId": "payee-market",
+        "normalizedMerchant": "corner market", "currency": "USD", "direction": "outflow",
+        "tier": "inferred", "kind": "observed", "frequency": "monthly", "occurrences": 3,
+        "decisionState": "unreviewed",
+        "firstDate": "2024-01-31", "lastDate": "2024-03-31",
+        "transactionIds": ["tx-january", "tx-february", "tx-march"],
+        "dates": ["2024-01-31", "2024-02-29", "2024-03-31"], "intervalDays": [29, 31],
+        "intervalDistribution": {"29": 1, "31": 1},
+        "dayOfMonth": {"29": 1, "31": 2}, "dayOfWeek": {"3": 1, "4": 1, "7": 1},
+        "monthOfYear": {"1": 1, "2": 1, "3": 1}, "yearDistribution": {"2024": 3},
+        "occurrencesPerWeek": {
+          "periodCounts": {"2024-W05": 1, "2024-W06": 0, "2024-W07": 0, "2024-W08": 0, "2024-W09": 1, "2024-W10": 0, "2024-W11": 0, "2024-W12": 0, "2024-W13": 1},
+          "countDistribution": {"0": 6, "1": 3}, "averageNumerator": "1", "averageDenominator": "3"
+        },
+        "occurrencesPerMonth": {
+          "periodCounts": {"2024-01": 1, "2024-02": 1, "2024-03": 1},
+          "countDistribution": {"1": 3}, "averageNumerator": "1", "averageDenominator": "1"
+        },
+        "occurrencesPerYear": {
+          "periodCounts": {"2024": 3}, "countDistribution": {"3": 1},
+          "averageNumerator": "3", "averageDenominator": "1"
+        },
+        "minimumAmount": {"minorUnits": "-300", "currency": "USD"},
+        "maximumAmount": {"minorUnits": "-100", "currency": "USD"},
+        "varianceNumerator": "20000", "varianceDenominator": "3",
+        "reasonCodes": ["month_end"], "calendarVersion": "synthetic-calendar/1",
+        "evidenceRevision": "synthetic-recurrence-revision-1"
+      }
+    ],
+    "scheduledExpectations": [
+      {
+        "id": "schedule-fixture", "payeeId": "payee-market", "decisionState": "unreviewed", "reasonCodes": [],
+        "source": {
+          "id": "schedule-fixture", "accountId": "account-checking", "categoryId": "category-bills",
+          "ruleId": null, "dueDate": "2024-04-30", "certainty": "range", "amount": null,
+          "minimum": {"minorUnits": "-300", "currency": "USD"},
+          "maximum": {"minorUnits": "-100", "currency": "USD"},
+          "recurrence": {
+            "frequency": "monthly", "interval": 1, "patterns": [{"kind": "day", "value": -1}],
+            "start": "2024-01-31", "endMode": "never", "endOccurrences": null, "endDate": null,
+            "skipWeekend": true, "weekendSolveMode": "after"
+          }
+        }
+      }
+    ]
+  }
+}

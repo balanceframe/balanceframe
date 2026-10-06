@@ -13,6 +13,7 @@ pub mod financial_state;
 pub mod freshness;
 pub mod liquidity;
 pub mod merchant;
+pub mod merchant_intelligence;
 pub mod money;
 pub mod purchase;
 pub mod reconciliation;
@@ -61,6 +62,21 @@ pub use financial_state::{
 };
 pub use freshness::{CompatibilityMetadata, DataFreshness};
 pub use merchant::normalize_merchant;
+pub use merchant_intelligence::{
+    analyze_merchant_intelligence, normalize_merchant_intelligence, MerchantAccountCoverage,
+    MerchantAlias, MerchantAliasState, MerchantAlternative, MerchantAnalysisError,
+    MerchantAnalysisRequest, MerchantAnalysisResult, MerchantCalendar,
+    MerchantCategoryClassification, MerchantCategoryHistory, MerchantCategoryHistoryEntry,
+    MerchantCollectionState, MerchantCollections, MerchantCorrection, MerchantCorrectionState,
+    MerchantCoverage, MerchantCurrencyState, MerchantDecisionState, MerchantDirection,
+    MerchantEvidence, MerchantEvidenceKind, MerchantEvidenceTier, MerchantFrequency,
+    MerchantHoliday, MerchantNativeRuleBlock, MerchantNativeRuleClassification,
+    MerchantNativeRulePart, MerchantNativeRuleSet, MerchantOccurrenceDistribution,
+    MerchantPatternDecision, MerchantPatternState, MerchantPendingState, MerchantRecurrence,
+    MerchantRecurrenceKind, MerchantRuleCandidate, MerchantSchedule, MerchantScheduledExpectation,
+    MerchantScope, MerchantSourceAdmission, MerchantSuggestion, MerchantSuggestionPage,
+    MerchantSuggestionSelection, MerchantTextField, MerchantTextState, MerchantTransaction,
+};
 pub use money::{Money, MoneyError};
 pub use purchase::{
     evaluate_purchase, PurchaseDataBlocker, PurchaseEvidence, PurchaseOutcome, PurchaseOutcomeKind,

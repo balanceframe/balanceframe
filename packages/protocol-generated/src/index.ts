@@ -930,3 +930,5 @@ export interface ProspectiveDecisionEnvelope<T> {
 }
 
 export type * from './liquidity.js';
+
+export type * from './merchant-intelligence.js';

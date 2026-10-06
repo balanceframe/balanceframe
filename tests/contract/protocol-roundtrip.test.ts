@@ -493,3 +493,59 @@ describe("Phase 8 Budget Intelligence — FinancialStateLabel", () => {
     expect(financialStateLabelSchema.safeParse({}).success).toBe(false);
   });
 });
+
+describe("Shared native merchant JSON Schema contract", () => {
+  it("accepts complete shared provenance and denies missing tables, malformed references and inline IDs", () => {
+    const fixture = JSON.parse(fs.readFileSync(path.resolve(
+      __dirname, "../../protocol/fixtures/merchant-intelligence.json",
+    ), "utf-8")) as { result: Record<string, unknown>; recurrenceResult: Record<string, unknown> };
+    const schema = JSON.parse(fs.readFileSync(path.resolve(
+      __dirname, "../../protocol/json-schema/merchant-intelligence-v1.json",
+    ), "utf-8")) as Record<string, unknown>;
+    const validate = new Ajv({ strict: false }).compile({
+      ...schema, $ref: "#/$defs/MerchantAnalysisResult",
+    });
+    for (const empty of [fixture.result, fixture.recurrenceResult]) {
+      expect(validate(empty), JSON.stringify(validate.errors)).toBe(true);
+      for (const table of ["nativeRuleBlocks", "nativeRuleParts", "nativeRuleSets"]) {
+        const missing = structuredClone(empty);
+        delete missing[table];
+        expect(validate(missing)).toBe(false);
+      }
+    }
+    const grouped = {
+      ...fixture.result,
+      nativeRuleBlocks: [{ ruleIds: ["native-rule-a", "native-rule-b"] }],
+      nativeRuleParts: [{ blockIndexes: [0] }],
+      nativeRuleSets: [{ orPartIndexes: [0], andPartIndexes: [], categoryPartIndex: 0 }],
+      nativeRuleClassifications: [
+        { transactionId: "tx-source", accountId: "account-checking", categoryId: "category-bills", ruleSetIndex: 0 },
+        { transactionId: "tx-other", accountId: "account-checking", categoryId: "category-bills", ruleSetIndex: 0 },
+      ],
+    };
+    expect(validate(grouped), JSON.stringify(validate.errors)).toBe(true);
+    for (const ruleSetIndex of [null, -1, 0.5, "0", 4294967296, undefined]) {
+      const invalid = structuredClone(grouped);
+      Object.assign(invalid.nativeRuleClassifications[0], { ruleSetIndex });
+      expect(validate(invalid)).toBe(false);
+    }
+    expect(validate({
+      ...grouped, nativeRuleClassifications: [{
+        ...grouped.nativeRuleClassifications[0], ruleIds: ["native-rule-a", "native-rule-b"],
+      }],
+    })).toBe(false);
+    for (const ruleIds of [[], [""], ["native-rule-a", "native-rule-a"]]) {
+      expect(validate({ ...grouped, nativeRuleBlocks: [{ ruleIds }] })).toBe(false);
+    }
+    for (const blockIndexes of [[], [0, 0], [-1], [0.5], ["0"], [4294967296], null]) {
+      expect(validate({ ...grouped, nativeRuleParts: [{ blockIndexes }] })).toBe(false);
+    }
+    expect(validate({ ...grouped, nativeRuleSets: [{ ruleIds: ["native-rule-a"] }] })).toBe(false);
+    expect(validate({
+      ...grouped, nativeRuleSets: [{ ...grouped.nativeRuleSets[0], andPartIndexes: [[], [0], [0], [0]] }],
+    }), JSON.stringify(validate.errors)).toBe(true);
+    for (const andPartIndexes of [[[], [0]], [[], [0], [0]], [[], [0, 0], [0], [0]]]) {
+      expect(validate({ ...grouped, nativeRuleSets: [{ ...grouped.nativeRuleSets[0], andPartIndexes }] })).toBe(false);
+    }
+  });
+});

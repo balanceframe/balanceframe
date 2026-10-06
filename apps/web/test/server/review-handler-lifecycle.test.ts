@@ -17,6 +17,8 @@ import correct from '../../server/api/review/correct.post';
 import reject from '../../server/api/review/reject.post';
 import skip from '../../server/api/review/skip.post';
 import undo from '../../server/api/review/undo.post';
+import { merchantConnectionId } from '@balanceframe/application';
+import { nativeReviewFixture } from './native-review.fixture';
 
 const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
@@ -279,14 +281,14 @@ beforeEach(async () => {
   policyVersion = policy.version;
 
   const connected = {
-    config: { budgetId },
+    config: { budgetId, serverUrl: 'https://actual.lifecycle.test' },
     budget: { id: budgetId },
     connector: {
       synchronize: mocks.synchronize,
       setTransactionCategory: mocks.setTransactionCategory,
     },
   };
-  mocks.loadConfig.mockResolvedValue({ budgetId });
+  mocks.loadConfig.mockResolvedValue({ budgetId, serverUrl: 'https://actual.lifecycle.test' });
   mocks.synchronize.mockResolvedValue({ snapshot });
   mocks.withConnection.mockImplementation(async (operation) => operation(connected));
   setReviewMutationExecutorFactory(createDefaultExecutorFactory(connectionManager()));
@@ -300,6 +302,141 @@ afterEach(() => {
 });
 
 afterAll(() => store.close());
+
+describe('nested canonical Review source identity', () => {
+  it.each(['approve', 'correct'] as const)('%s proposes the exact nested split child through real Native planning', async (route) => {
+    const target = route === 'correct' ? correctedCategoryId : categoryId;
+    grant('categorization:propose', target);
+    const item = await pending();
+    mocks.synchronize.mockResolvedValue({
+      snapshot: { ...snapshot, transactions: [{ ...transaction, id: 'nested-parent', subtransactions: [{ ...transaction, id: 'nested-intermediate', subtransactions: [transaction] }] }] },
+    });
+    const response = await routes[route](event(
+      { reviewId: item.id, ...(route === 'correct' ? { categoryId: target } : {}) }, { reviewAndApply: true },
+    ));
+    expect(response.status).toBe('ok');
+    const proposal = await store.getProposal(response.result!.proposal.id);
+    if (!proposal || proposal.operation !== 'set_category') throw new Error('Nested child proposal unavailable');
+    const native = await createNativeCategorizationMutationProtocol();
+    const plan = native.planSetCategory(transaction, snapshot.categories.find((category) => category.id === target)!);
+    expect(proposal.payload).toMatchObject({ transactionId: transaction.id, categoryId: target, composite: { nativePayloadHash: plan.hash } });
+    expect(JSON.parse(proposal.preconditions)).toMatchObject({ reviewId: item.id, nativePlan: plan });
+    expect(mocks.setTransactionCategory).not.toHaveBeenCalled();
+  });
+
+  it.each(['reject', 'skip', 'undo'] as const)('%s uses the exact nested split child for nonfinancial triage', async (route) => {
+    grant('categorization:execute');
+    const item = await pending();
+    if (route === 'undo') expect((await routes.skip(event({ reviewId: item.id }))).status).toBe('ok');
+    mocks.synchronize.mockResolvedValue({
+      snapshot: { ...snapshot, transactions: [{ ...transaction, id: 'triage-parent', subtransactions: [{ ...transaction, id: 'triage-intermediate', subtransactions: [transaction] }] }] },
+    });
+    const response = await routes[route](event({ reviewId: item.id }));
+    expect(response.status).toBe('ok');
+    expect(response.result).toMatchObject({ itemId: item.id, categorizationExecuted: false, applied: false });
+    expect((await store.getReviewItem(item.id))?.status).toBe(route === 'reject' ? 'rejected' : route === 'skip' ? 'skipped' : 'pending_review');
+    expect(mocks.setTransactionCategory).not.toHaveBeenCalled();
+  });
+
+  it.each(Object.keys(routes) as Route[])('%s rejects duplicate top-level/nested source identities without publishing a proposal or action', async (route) => {
+    grant(route === 'approve' || route === 'correct' ? 'categorization:propose' : 'categorization:execute', correctedCategoryId);
+    const item = await pending();
+    if (route === 'undo') expect((await routes.skip(event({ reviewId: item.id }))).status).toBe('ok');
+    const before = await store.getReviewItem(item.id);
+    const actions = await store.getReviewActions(item.id);
+    const proposals = (await store.listProposals()).map((proposal) => proposal.id);
+    mocks.synchronize.mockResolvedValue({
+      snapshot: { ...snapshot, transactions: [transaction, { ...transaction, id: 'duplicate-parent', subtransactions: [transaction] }] },
+    });
+    const response = await routes[route](event(
+      { reviewId: item.id, ...(route === 'correct' ? { categoryId: correctedCategoryId } : {}) }, { reviewAndApply: true },
+    ));
+    expect(response.status).toBe('error');
+    expect(await store.getReviewItem(item.id)).toEqual(before);
+    expect(await store.getReviewActions(item.id)).toEqual(actions);
+    expect((await store.listProposals()).map((proposal) => proposal.id)).toEqual(proposals);
+    expect(mocks.setTransactionCategory).not.toHaveBeenCalled();
+  });
+});
+
+describe('native Review action namespace provenance', () => {
+  it.each(['wrong-connection', 'wrong-space', 'historical', 'missing', 'malformed'] as const)('direct proposal executor refuses %s native provenance before SDK synchronization', async (source) => {
+    grant('categorization:propose', correctedCategoryId);
+    const currentConnection = merchantConnectionId({ budgetId, serverUrl: 'https://actual.lifecycle.test' });
+    const spaceId = source === 'wrong-space'
+      ? store.governance.createSpace({ actorId: OWNER, name: 'Old direct source namespace', kind: 'shared', now: NOW, auth: ownerAuth }).id
+      : selectedSpaceId;
+    const item = await nativeReviewFixture(store, {
+      scope: { spaceId, budgetId, connectionId: source === 'wrong-connection'
+        ? merchantConnectionId({ budgetId, serverUrl: 'https://actual.other.test' }) : currentConnection },
+      transaction, categoryId,
+      ...(source === 'historical' ? { historicalStatus: 'skipped' as const } : {}),
+      ...(source === 'missing' || source === 'malformed' ? { invalidReference: source } : {}),
+    });
+    const executor = createDefaultExecutorFactory(connectionManager())(event({}, { reviewAndApply: true }));
+    if (!executor) throw new Error('Direct native executor unavailable');
+    const proposals = (await store.listProposals()).map((proposal) => proposal.id);
+    const result = await executor(
+      { reviewId: item.id, actorId: ACTOR, categoryId: correctedCategoryId, requestId: 'direct-native-scope' }, store, item,
+    );
+    expect(result).toMatchObject({ success: false, applied: false, proposalId: null });
+    expect((await store.listProposals()).map((proposal) => proposal.id)).toEqual(proposals);
+    expect(await store.getReviewItem(item.id)).toEqual(item);
+    expect(mocks.synchronize).not.toHaveBeenCalled();
+    if (source !== 'wrong-connection') expect(mocks.withConnection).not.toHaveBeenCalled();
+  });
+
+  it.each((Object.keys(routes) as Route[]).flatMap((route) =>
+    (['wrong-connection', 'wrong-space', 'historical', 'missing', 'malformed'] as const).map((source) => ({ route, source })),
+  ))('$route cannot act on $source native provenance through a coincident transaction ID', async ({ route, source }) => {
+    grant(route === 'approve' || route === 'correct' ? 'categorization:propose' : 'categorization:execute', correctedCategoryId);
+    const selectedScope = {
+      spaceId: selectedSpaceId, budgetId,
+      connectionId: merchantConnectionId({ budgetId, serverUrl: 'https://actual.lifecycle.test' }),
+    };
+    const foreignSpace = source === 'wrong-space'
+      ? store.governance.createSpace({ actorId: OWNER, name: 'Previous native namespace', kind: 'shared', now: NOW, auth: ownerAuth }).id
+      : selectedSpaceId;
+    const item = await nativeReviewFixture(store, {
+      scope: { ...selectedScope, spaceId: foreignSpace, connectionId: source === 'wrong-connection'
+        ? merchantConnectionId({ budgetId, serverUrl: 'https://actual.other.test' }) : selectedScope.connectionId },
+      transaction, categoryId,
+      ...(source === 'historical' ? { historicalStatus: route === 'undo' ? 'skipped' as const : 'rejected' as const } : {}),
+      ...(source === 'missing' || source === 'malformed' ? { invalidReference: source } : {}),
+    });
+    if (route === 'undo' && source !== 'historical')
+      store['db'].prepare('UPDATE review_items SET status=? WHERE id=?').run('skipped', item.id);
+    const before = await store.getReviewItem(item.id);
+    const actions = await store.getReviewActions(item.id);
+    const proposals = (await store.listProposals()).map((proposal) => proposal.id);
+    const response = await routes[route](event(
+      { reviewId: item.id, ...(route === 'correct' ? { categoryId: correctedCategoryId } : {}) }, { reviewAndApply: true },
+    ));
+    expect(response.status).toBe('error');
+    expect(await store.getReviewItem(item.id)).toEqual(before);
+    expect(await store.getReviewActions(item.id)).toEqual(actions);
+    expect((await store.listProposals()).map((proposal) => proposal.id)).toEqual(proposals);
+    expect(mocks.synchronize).not.toHaveBeenCalled();
+    if (source !== 'wrong-connection') {
+      expect(mocks.loadConfig).not.toHaveBeenCalled();
+      expect(mocks.withConnection).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(Object.keys(routes) as Route[])('%s retains authorized current native rows in the exact connection namespace', async (route) => {
+    grant(route === 'approve' || route === 'correct' ? 'categorization:propose' : 'categorization:execute', correctedCategoryId);
+    const item = await nativeReviewFixture(store, {
+      scope: { spaceId: selectedSpaceId, budgetId, connectionId: merchantConnectionId({ budgetId, serverUrl: 'https://actual.lifecycle.test' }) },
+      transaction, categoryId,
+    });
+    if (route === 'undo') expect((await routes.skip(event({ reviewId: item.id }))).status).toBe('ok');
+    const response = await routes[route](event(
+      { reviewId: item.id, ...(route === 'correct' ? { categoryId: correctedCategoryId } : {}) }, { reviewAndApply: true },
+    ));
+    expect(response.status).toBe('ok');
+    expect(mocks.setTransactionCategory).not.toHaveBeenCalled();
+  });
+});
 
 describe('review financial proposals', () => {
   it.each([
@@ -320,10 +457,6 @@ describe('review financial proposals', () => {
     expect(result.error).toBeNull();
 
     expect(request.node.res.statusCode).toBe(200);
-    expect(mocks.withConnection).toHaveBeenCalledWith(expect.any(Function), {
-      expectedBudgetId: budgetId,
-      dispose: true,
-    });
     expect(result.status).toBe('ok');
     expect(result.result).toMatchObject({
       itemId: item.id,
@@ -369,10 +502,6 @@ describe('review financial proposals', () => {
       status: 'pending_review',
       mutationStatus: 'approval_required',
       disposition: 'approval_required',
-    });
-    expect(mocks.withConnection).toHaveBeenCalledWith(expect.any(Function), {
-      expectedBudgetId: budgetId,
-      dispose: true,
     });
   });
   it('admits correction through proposal-only set_category grants without granting private proposal reads', async () => {

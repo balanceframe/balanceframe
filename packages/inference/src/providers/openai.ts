@@ -16,8 +16,8 @@
  * No hardcoded credentials. The caller injects the API key and endpoint
  * at construction time — secrets never leak into the adapter itself.
  */
-import type { ProviderAdapter } from './types';
-import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types';
+import type { ProviderAdapter } from './types.js'
+import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types.js'
 
 /**
  * Escape untrusted text for safe embedding in XML-style delimiters.

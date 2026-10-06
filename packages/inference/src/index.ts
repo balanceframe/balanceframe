@@ -5,19 +5,23 @@
  * types, and Zod validators.
  */
 
-export { Orchestrator } from './orchestrator';
-export type { OrchestratorConfig } from './orchestrator';
+export { Orchestrator } from './orchestrator.js'
+export type { OrchestratorConfig } from './orchestrator.js'
 
-export { createPolicyEngine } from './policy';
-export { createRedactor } from './redactor';
+export { createPolicyEngine } from './policy.js'
+export { createRedactor } from './redactor.js'
 
-export { LocalProvider } from './providers/local';
-export type { LocalProviderConfig } from './providers/local';
+export { LocalProvider } from './providers/local.js'
+export type { LocalProviderConfig } from './providers/local.js'
 
-export { OpenAIProvider } from './providers/openai';
-export type { OpenAIProviderConfig } from './providers/openai';
+export { OpenAIProvider } from './providers/openai.js'
+export type { OpenAIProviderConfig } from './providers/openai.js'
 
-export type { ProviderAdapter } from './providers/types';
+export type { ProviderAdapter } from './providers/types.js'
 
-export * from './types';
-export * from './validators';
+export * from './merchant-research.js';
+export { ValueSerpProvider } from './providers/valueserp.js';
+export type { ValueSerpProviderConfig } from './providers/valueserp.js';
+
+export * from './types.js'
+export * from './validators.js'

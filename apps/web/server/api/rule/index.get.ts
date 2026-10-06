@@ -1,6 +1,8 @@
 import type { BudgetLedger } from '@balanceframe/actual-adapter';
+import { merchantConnectionId } from '@balanceframe/application';
+import type { GovernanceOperation } from '@balanceframe/workflow-store';
 import { setHeader } from 'h3';
-import { requireFullRead } from '../../utils/legacy-financial-read';
+import { hasLegacyFullRead, requireFullRead } from '../../utils/legacy-financial-read';
 import { requireSelectedSpace } from '../../utils/space-context';
 import type { EventWithContext } from '../../utils/workflow-store';
 import {
@@ -31,12 +33,21 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 503);
     return errorEnvelope('STORE_UNAVAILABLE', 'Rule data is unavailable.', authInfo, false, requestId);
   }
+  const forbidden = () => {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Full financial read is not authorized.', { ...authInfo, allowed: false }, false, requestId);
+  };
+  let sourceOperations: GovernanceOperation[] = [];
+  let connectionId: string | undefined;
 
   try {
     const manager = createMutationConnectionManager();
-    return await manager.withConnection(async ({ connector, budget }) => {
+    const response = await manager.withConnection(async ({ connector, budget, config }) => {
       if (budget.id !== fullRead.budgetId) throw new Error('Selected budget changed');
+      connectionId = merchantConnectionId(config);
       const rules = await (connector as unknown as BudgetLedger).listRules();
+      sourceOperations = rules.map((rule) => ({ operation: 'full-read', ruleId: rule.id }));
+      if (!hasLegacyFullRead(workflow.store, fullRead.actor, sourceOperations)) return forbidden();
       const overrides = await workflow.store.getRuleOverrides({
         spaceId: selected.space.id,
         budgetId: fullRead.budgetId,
@@ -52,6 +63,13 @@ export default defineEventHandler(async (event) => {
       });
       return okEnvelope({ items, total: items.length }, authInfo, requestId);
     }, { expectedBudgetId: fullRead.budgetId, dispose: true });
+    const config = await manager.loadConfig();
+    if (!hasLegacyFullRead(workflow.store, fullRead.actor, sourceOperations)) return forbidden();
+    if (!config || config.budgetId !== fullRead.budgetId || merchantConnectionId(config) !== connectionId) {
+      setResponseStatus(event, 409);
+      return errorEnvelope('SPACE_CONNECTION_MISMATCH', 'The selected space connection is unavailable.', authInfo, false, requestId);
+    }
+    return response;
   } catch (err) {
     const connectionError = classifyConnectionError(err);
     if (connectionError) {

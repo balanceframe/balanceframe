@@ -176,7 +176,7 @@ function createAdapter(): ReviewControllerAdapter {
     skip: vi.fn<() => Promise<WebActionResult>>().mockResolvedValue(successfulAction()),
     undo: vi.fn<() => Promise<WebActionResult>>().mockResolvedValue(successfulAction()),
     proposeRule: vi
-      .fn<(reviewId: string, merchant: string, categoryId: string) => Promise<WebActionResult>>()
+      .fn<(reviewId: string, categoryId: string) => Promise<WebActionResult>>()
       .mockResolvedValue(successfulAction()),
     bulkApprove: vi.fn<() => Promise<WebBulkActionResult>>().mockResolvedValue(emptyBulkResult),
     bulkCorrect: vi

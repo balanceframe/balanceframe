@@ -57,6 +57,15 @@
       </template>
     </UAlert>
 
+    <details class="mb-4 shrink-0 rounded border border-neutral-200 dark:border-neutral-700">
+      <summary class="cursor-pointer px-3 py-2 font-medium focus-visible:outline focus-visible:outline-2">Merchant evidence and patterns — also available when the queue is empty</summary>
+      <MerchantReviewPanel
+        :transaction-id="adapter.state.currentItem?.reviewItem.transactionId"
+        :refresh-key="merchantRefreshKey"
+        class="max-h-[40dvh] overflow-y-auto p-3"
+      />
+    </details>
+
     <!-- Empty state -->
     <UCard v-if="!adapter.state.currentItem && !adapter.loading" class="text-center py-8">
       <p class="text-gray-500 dark:text-gray-400 text-lg">No items to review.</p>
@@ -159,7 +168,16 @@
 </template>
 
 <script setup lang="ts">
-import { watch } from 'vue';
+import { onScopeDispose, watch } from 'vue';
+import { authClient } from '../../lib/auth-client';
+
+const session = authClient.useSession();
+const identityKey = computed(() => {
+  const user = session.value?.data?.user;
+  return user ? user.id ?? user.email : null;
+});
+let privateLifetime = 0;
+let proposalListRequest = 0;
 interface SavedView {
   viewId: string;
   name: string;
@@ -188,10 +206,12 @@ function promptView(message: string, fallback: string) {
   return import.meta.client ? window.prompt(message, fallback)?.trim() || null : fallback;
 }
 async function loadViews() {
+  const requestLifetime = privateLifetime;
   viewsLoading.value = true;
   viewsError.value = null;
   try {
     const res = await $fetch<SavedViewEnvelope<{ views: SavedView[] }>>('/api/reports/views');
+    if (requestLifetime !== privateLifetime) return;
     if (res.status === 'ok' && res.result) savedViews.value = res.result.views;
     else
       viewsError.value = {
@@ -200,9 +220,10 @@ async function loadViews() {
         retryable: !!res.error?.retryable,
       };
   } catch (e) {
+    if (requestLifetime !== privateLifetime) return;
     viewsError.value = { code: 'FETCH_ERROR', message: String(e), retryable: true };
   } finally {
-    viewsLoading.value = false;
+    if (requestLifetime === privateLifetime) viewsLoading.value = false;
   }
 }
 async function viewAction(
@@ -211,11 +232,13 @@ async function viewAction(
   url = `/api/reports/views/${viewId}`,
   body?: Record<string, unknown>,
 ) {
+  const requestLifetime = privateLifetime;
   try {
     const res = await $fetch<SavedViewEnvelope<SavedView | { deleted: boolean }>>(url, {
       method,
       body,
     });
+    if (requestLifetime !== privateLifetime) return;
     if (res.status !== 'ok' || !res.result)
       throw new Error(res.error?.message ?? 'Saved view action failed.');
     if (method === 'DELETE')
@@ -228,6 +251,7 @@ async function viewAction(
       selectedViewId.value = view.viewId;
     }
   } catch (e) {
+    if (requestLifetime !== privateLifetime) return;
     viewsError.value = { code: 'VIEW_ACTION_FAILED', message: String(e), retryable: true };
   }
 }
@@ -277,6 +301,8 @@ import { createUnavailableAdapter } from '../../composables/createUnavailableAda
 import { useReviewActions } from '../../composables/useReviewActions';
 import ProposedRulesModal from '../components/ProposedRulesModal.vue';
 import type { CategorizationProposalListItem } from '../components/ProposedRulesModal.vue';
+import MerchantReviewPanel from '../components/MerchantReviewPanel.vue';
+const merchantRefreshKey = ref(0);
 
 // ── Mode selection ──────────────────────────────────────────────────
 // Use the configured API base, falling back to the current origin for
@@ -287,7 +313,9 @@ const apiBase = config.public.apiBase || (import.meta.client ? window.location.o
 
 // Session auth is provided by Better Auth's HttpOnly session cookie, sent
 // automatically with same-origin fetch requests — no Bearer token needed.
-const adapter = apiBase ? useApiReviewController(apiBase) : createUnavailableAdapter();
+const adapter = apiBase
+  ? useApiReviewController(apiBase, { getIdentityKey: () => identityKey.value })
+  : createUnavailableAdapter();
 const actions = useReviewActions(adapter, openCorrectModal);
 const reviewCategories = ref<ReviewCategoryOption[]>([]);
 const categoriesLoading = ref(false);
@@ -350,32 +378,74 @@ const currentCount = computed(() => adapter.state.items.length);
 
 async function load() {
   await adapter.loadNextPage();
-  keyboardInput.value?.focus();
+  const focused = document.activeElement;
+  if (!focused || focused === document.body || focused === keyboardInput.value)
+    keyboardInput.value?.focus();
 }
 
 const activeProposals = ref<CategorizationProposalListItem[]>([]);
 
+function clearPrivateState(): void {
+  privateLifetime += 1;
+  activeProposals.value = [];
+  showProposalsModal.value = false;
+  showCorrectModal.value = false;
+  reviewCategories.value = [];
+  categoriesLoaded.value = false;
+  categoriesLoading.value = false;
+  categoriesError.value = null;
+  categoryLoadPromise = null;
+  savedViews.value = [];
+  selectedViewId.value = '';
+  viewsLoading.value = false;
+  viewsError.value = null;
+  syncing.value = false;
+  correcting.value = false;
+}
+watch(identityKey, (identity, previousIdentity) => {
+  clearPrivateState();
+  if (!identity || previousIdentity !== null) return;
+  void load();
+  void loadViews();
+  void fetchProposals();
+  void loadReviewCategories();
+}, { flush: 'sync' });
+onScopeDispose(clearPrivateState);
+
 async function openProposalsModal(): Promise<void> {
+  const requestLifetime = privateLifetime;
   await fetchProposals();
-  showProposalsModal.value = true;
+  if (requestLifetime === privateLifetime) showProposalsModal.value = true;
 }
 
 async function fetchProposals(): Promise<void> {
+  const requestLifetime = privateLifetime;
+  const request = ++proposalListRequest;
   try {
     const res = await fetch('/api/proposal', {
       credentials: 'same-origin',
     });
-    if (!res.ok) return;
     const body = await res.json();
-    if (body.status === 'error') return;
-    activeProposals.value = body.result?.proposals ?? [];
-  } catch {
-    // Silently ignore fetch errors — the modal will show empty state
+    if (requestLifetime !== privateLifetime || request !== proposalListRequest) return;
+    if (!res.ok || body.status !== 'ok' || !Array.isArray(body.result?.proposals)) {
+      throw new Error(body.error?.message ?? `Failed to load proposals (HTTP ${res.status}).`);
+    }
+    activeProposals.value = body.result.proposals;
+  } catch (cause) {
+    if (requestLifetime !== privateLifetime || request !== proposalListRequest) return;
+    activeProposals.value = [];
+    showProposalsModal.value = false;
+    toast.add({
+      title: 'Proposals unavailable',
+      description: cause instanceof Error ? cause.message : 'Unable to load proposals.',
+      color: 'error',
+    });
   }
 }
 
 function loadReviewCategories(): Promise<void> {
   if (categoryLoadPromise) return categoryLoadPromise;
+  const requestLifetime = privateLifetime;
   categoriesLoading.value = true;
   categoriesError.value = null;
   categoryLoadPromise = (async () => {
@@ -386,18 +456,22 @@ function loadReviewCategories(): Promise<void> {
       const body = (await response.json()) as SavedViewEnvelope<{
         categories: ReviewCategoryOption[];
       }>;
+      if (requestLifetime !== privateLifetime) return;
       if (!response.ok || body.status !== 'ok' || !body.result) {
         throw new Error(body.error?.message ?? 'Unable to load Actual categories.');
       }
       reviewCategories.value = body.result.categories;
       categoriesLoaded.value = true;
     } catch (error) {
+      if (requestLifetime !== privateLifetime) return;
       categoriesLoaded.value = false;
       categoriesError.value =
         error instanceof Error ? error.message : 'Unable to load Actual categories.';
     } finally {
-      categoriesLoading.value = false;
-      categoryLoadPromise = null;
+      if (requestLifetime === privateLifetime) {
+        categoriesLoading.value = false;
+        categoryLoadPromise = null;
+      }
     }
   })();
   return categoryLoadPromise;
@@ -415,10 +489,12 @@ function onCorrectCancel() {
 }
 
 async function onCorrectConfirm(categoryId: string): Promise<void> {
+  const requestLifetime = privateLifetime;
   if (correcting.value) return;
   correcting.value = true;
   try {
     const result = await adapter.correct(categoryId);
+    if (requestLifetime !== privateLifetime) return;
     if (result?.success || result?.approvalRequired) {
       showCorrectModal.value = false;
       showProposalsModal.value = result.approvalRequired === true;
@@ -426,17 +502,19 @@ async function onCorrectConfirm(categoryId: string): Promise<void> {
       keyboardInput.value?.focus();
     }
   } finally {
-    correcting.value = false;
+    if (requestLifetime === privateLifetime) correcting.value = false;
   }
 }
 
 async function promptProposeRule(): Promise<void> {
+  const requestLifetime = privateLifetime;
   const current = adapter.state.currentItem;
   if (!current) return;
   const merchant = current.evidence.normalizedMerchant;
   const categoryId = current.reviewItem.categoryId;
-  if (merchant && categoryId) {
-    const result = await adapter.proposeRule(current.reviewItem.id, merchant, categoryId);
+  if (categoryId) {
+    const result = await adapter.proposeRule(current.reviewItem.id, categoryId);
+    if (requestLifetime !== privateLifetime) return;
     if (result.success) {
       toast.add({
         title: 'Rule proposal created',
@@ -449,6 +527,7 @@ async function promptProposeRule(): Promise<void> {
             label: 'Review proposal',
             color: 'neutral',
             onClick: () => {
+              if (requestLifetime !== privateLifetime) return;
               showProposalsModal.value = true;
             },
           },
@@ -461,9 +540,12 @@ async function promptProposeRule(): Promise<void> {
 }
 
 async function handleProposalAccepted(proposalId: string) {
+  const requestLifetime = privateLifetime;
   adapter.clearProposalApprovalViews?.(proposalId);
+  merchantRefreshKey.value += 1;
   showProposalsModal.value = false;
   await adapter.refresh();
+  if (requestLifetime !== privateLifetime) return;
   await fetchProposals();
 }
 
@@ -482,16 +564,21 @@ function handleProposalError(message: string, retryable: boolean): void {
 }
 
 async function handleSync() {
+  const requestLifetime = privateLifetime;
   if (syncing.value) return;
   syncing.value = true;
+  merchantRefreshKey.value += 1;
   try {
     const res = await fetch('/api/review/sync', { method: 'POST', credentials: 'same-origin' });
     const data = await res.json();
+    if (requestLifetime !== privateLifetime) return;
     if (data.status === 'ok') {
       toast.add({ title: 'Sync complete', color: 'success', duration: 5000 });
       await adapter.refresh();
+      if (requestLifetime !== privateLifetime) return;
       const pendingCategoryLoad = categoryLoadPromise;
       if (pendingCategoryLoad) await pendingCategoryLoad;
+      if (requestLifetime !== privateLifetime) return;
       await loadReviewCategories();
     } else {
       const error = data.error;
@@ -513,6 +600,7 @@ async function handleSync() {
       });
     }
   } catch (e) {
+    if (requestLifetime !== privateLifetime) return;
     toast.add({
       title: 'Sync failed',
       description: e instanceof Error ? e.message : 'Connection error',
@@ -520,7 +608,7 @@ async function handleSync() {
       duration: 10000,
     });
   } finally {
-    syncing.value = false;
+    if (requestLifetime === privateLifetime) syncing.value = false;
   }
 }
 </script>

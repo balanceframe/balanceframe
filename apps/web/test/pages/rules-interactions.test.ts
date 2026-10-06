@@ -6,7 +6,10 @@ import RulesPage from '../../app/pages/rules.vue';
 import RuleList from '../../app/components/RuleList.vue';
 import RuleDetail from '../../app/components/RuleDetail.vue';
 import ProposedRulesModal from '../../app/components/ProposedRulesModal.vue';
-const auth = vi.hoisted(() => ({ signOut: vi.fn() }));
+const auth = vi.hoisted(() => ({
+  signOut: vi.fn(),
+  useSession: () => ref({ data: { user: { id: 'reviewer-test' } } }),
+}));
 vi.mock('../../lib/auth-client', () => ({ authClient: auth }));
 
 const stubs = {
@@ -281,7 +284,6 @@ describe('rules page with real list and detail controls', () => {
     await flushPromises();
     expect(page.text()).toContain('No rules configured');
     expect(page.text()).not.toContain('Loading rules');
-    expect(page.findAll('button').map((control) => control.text())).toEqual(['Sign out']);
   });
 
   it.each([

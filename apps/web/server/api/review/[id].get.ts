@@ -1,9 +1,12 @@
-import { createDefaultConnectionManager } from '@balanceframe/application';
+import { createDefaultConnectionManager, createMerchantIntelligenceService, indexCanonicalTransactions } from '@balanceframe/application';
+import type { CanonicalReviewSource, MerchantAnalysisView } from '@balanceframe/application';
 import { defineEventHandler, getRouterParam, setHeader, setResponseStatus } from 'h3';
 import { z } from 'zod';
-import { projectReviewQueueItem, ReviewSynchronization } from '../../utils/review-projection';
+import { projectReviewQueueItem, reviewDisclosureOperations, ReviewSynchronization } from '../../utils/review-projection';
 import { selectedLiquidityActor } from '../../utils/liquidity-service';
 import { requireSelectedSpace } from '../../utils/space-context';
+import { merchantAnalysisAuthorized } from '../../utils/merchant-service';
+import { hasCurrentReviewNamespace, refreshReviewItems, reviewConnectionScope } from '../../utils/review-scope-admission';
 import {
   errorEnvelope,
   getWorkflowStore,
@@ -55,10 +58,11 @@ export default defineEventHandler(async (event) => {
       );
       if (review || items.length < 500) break;
     }
-    if (!review) {
+    if (!review || !hasCurrentReviewNamespace(workflow.store, review, { spaceId: selected.space.id, budgetId: selected.space.budgetId })) {
       setResponseStatus(event, 404);
       return errorEnvelope('NOT_FOUND', 'Review item not found.', authorization.info, false, requestId);
     }
+    const item = review;
 
     const actor = selectedLiquidityActor(workflow.store, selected);
     if (!actor) {
@@ -79,13 +83,43 @@ export default defineEventHandler(async (event) => {
         requestId,
       );
     }
-    const projected = await manager.withConnection(async (connected) => {
-      if (connected.config.budgetId !== selected.space.budgetId ||
-          connected.budget.id !== selected.space.budgetId)
+    const merchantActor = actor.auth && actor.spaceId ? { ...actor, auth: actor.auth, spaceId: actor.spaceId } : null;
+    const merchantEnabled = merchantActor !== null && merchantAnalysisAuthorized(workflow.store, merchantActor);
+    const captured = await manager.withConnection(async (connected) => {
+      const scope = reviewConnectionScope(selected.space.id, connected.config);
+      if (connected.config.budgetId !== selected.space.budgetId || connected.budget.id !== selected.space.budgetId)
         throw new Error('Selected budget changed');
-      const snapshot = ReviewSynchronization.parse(connected.synchronization).financialSnapshot.legacySnapshot;
-      return projectReviewQueueItem(workflow.store, actor, review, snapshot);
-    }, { expectedBudgetId: selected.space.budgetId, dispose: true });
+      if (!hasCurrentReviewNamespace(workflow.store, item, scope)) return { scope, snapshot: null };
+      const synchronized = await connected.connector.synchronize();
+      return { scope, snapshot: ReviewSynchronization.parse(synchronized).financialSnapshot.legacySnapshot };
+    }, { expectedBudgetId: selected.space.budgetId, dispose: true, synchronize: false });
+    const finalConfig = await manager.loadConfig();
+    const snapshot = captured.snapshot;
+    const currentNamespace = finalConfig && finalConfig.budgetId === selected.space.budgetId &&
+      reviewConnectionScope(selected.space.id, finalConfig).connectionId === captured.scope.connectionId;
+    const project = async (view?: MerchantAnalysisView, source?: CanonicalReviewSource) => {
+      if (!snapshot) return null;
+      const current = (await refreshReviewItems(workflow.store, [item]))[0];
+      const config = await manager.loadConfig();
+      if (!current || !config || config.budgetId !== selected.space.budgetId ||
+          reviewConnectionScope(selected.space.id, config).connectionId !== captured.scope.connectionId) return null;
+      return projectReviewQueueItem(workflow.store, actor, current, snapshot, view, source, 'observe', captured.scope);
+    };
+    const projected = !snapshot || !currentNamespace ? null : merchantEnabled && merchantActor
+      ? await (await (await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager }))
+        .withAnalysis(merchantActor, { transactionIds: [review.transactionId], limit: 1 },
+          async (view, source, authorize) => {
+            const transactions = indexCanonicalTransactions(source.transactions);
+            const disclose = async () => {
+              const projected = await project(view, source);
+              if (authorize(reviewDisclosureOperations(projected ? [projected] : [], transactions))) return projected;
+              authorize([]);
+              return null;
+            };
+            await disclose();
+            return disclose;
+          }))()
+      : await project();
     if (!projected) {
       setResponseStatus(event, 404);
       return errorEnvelope('NOT_FOUND', 'Review item not found.', authorization.info, false, requestId);

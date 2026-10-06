@@ -154,7 +154,7 @@ beforeEach(() => {
   vi.stubEnv('BETTER_AUTH_URL', 'http://localhost:3000');
   mockRequireAuthorization.mockResolvedValue(authorized());
   mockGetActorId.mockReturnValue('test-actor');
-  mockRequireSelectedSpace.mockImplementation(async (event: {
+  mockRequireSelectedSpace.mockImplementation((event: {
     context?: { auth?: { authenticated?: boolean; actorId?: string; spaceId?: string } };
   }) => {
     const auth = event.context?.auth;
@@ -223,7 +223,7 @@ describe('POST /api/notifications/acknowledge', () => {
   });
 
   it('rejects an anonymous request before reading credentials or touching notification state', async () => {
-    mockRequireSelectedSpace.mockResolvedValueOnce(forbidden());
+    mockRequireSelectedSpace.mockReturnValueOnce(forbidden());
 
     const anonymous = request();
     anonymous.context.auth.authenticated = false;
@@ -358,7 +358,7 @@ describe('POST /api/notifications/suppress', () => {
   });
 
   it('rejects an anonymous request before reading credentials or touching notification state', async () => {
-    mockRequireSelectedSpace.mockResolvedValueOnce(forbidden());
+    mockRequireSelectedSpace.mockReturnValueOnce(forbidden());
 
     const anonymous = request();
     anonymous.context.auth.authenticated = false;

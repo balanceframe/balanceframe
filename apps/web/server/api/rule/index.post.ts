@@ -1,4 +1,4 @@
-import { createNativeRuleMutationProtocol } from '@balanceframe/application';
+import { createMerchantIntelligenceService, createNativeRuleMutationProtocol } from '@balanceframe/application';
 import type { ConnectionConfig, RustRuleMutationProtocol } from '@balanceframe/application';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import { ProposalAcquisitionError } from '@balanceframe/workflow-store';
@@ -10,7 +10,7 @@ import { selectedLiquidityActor } from '../../utils/liquidity-service';
 import { hasTrustedRequestOrigin } from '../../utils/reauthentication';
 import type { ReauthenticationEvent } from '../../utils/reauthentication';
 import { buildProposalApprovalView } from '../../utils/proposal-approval-view';
-import { createRuleProposal } from '../../utils/rule-create';
+import { createRuleProposal, findRuleSourceTransaction, hasNativeRuleSourceAdmission } from '../../utils/rule-create';
 import { requireSelectedSpace } from '../../utils/space-context';
 import type { ApiEnvelope, EventWithContext } from '../../utils/workflow-store';
 import {
@@ -26,7 +26,7 @@ const Text = z.string().min(1).max(200).refine((value) => value.trim() === value
 const RuleCreateBody = z.object({
   operation: z.literal('create_rule').default('create_rule'),
   name: Text,
-  payee: Text,
+  payeeId: Text,
   categoryId: z.string().trim().min(1).max(200),
   transactionId: z.string().trim().min(1).max(200).optional(),
 }).strict();
@@ -64,7 +64,7 @@ export default defineEventHandler(async (event) => {
   const body = RuleCreateBody.safeParse(await readBody<unknown>(event).catch(() => null));
   if (!body.success) {
     setResponseStatus(event, 400);
-    return errorEnvelope('INVALID_RULE_PROPOSAL', 'A normalized rule name, payee, and category are required.', budgetAuthorization.info, false, requestId);
+    return errorEnvelope('INVALID_RULE_PROPOSAL', 'A rule label, exact payee ID, and category are required.', budgetAuthorization.info, false, requestId);
   }
 
   const categoryAuthorization = await requireProposalAuthorization(
@@ -107,6 +107,11 @@ export default defineEventHandler(async (event) => {
     if (!transactionReadAuthorization.ok) return transactionReadAuthorization.response;
   }
 
+  if (!await hasNativeRuleSourceAdmission(workflow.store,actor,'rule:propose')) {
+    setResponseStatus(event,403);
+    return errorEnvelope('FORBIDDEN','Complete global rule and source authority is unavailable.',budgetAuthorization.info,false,requestId);
+  }
+
   const manager = createMutationConnectionManager({
     configPath: process.env.BALANCEFRAME_CONFIG_PATH,
   });
@@ -132,11 +137,15 @@ export default defineEventHandler(async (event) => {
 
   let connectedResult: ConnectionResult;
   try {
+    const sourceService = await createMerchantIntelligenceService({ store:workflow.store,connectionManager:manager });
     connectedResult = await manager.withConnection(async (connected): Promise<ConnectionResult> => {
       if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId)
         return { kind: 'failure', status: 409, code: 'SPACE_CONNECTION_MISMATCH', message: 'The connected budget does not match the selected space.' };
 
-      const rawSynchronization = z.object({ snapshot: z.unknown() }).passthrough().safeParse(connected.synchronization);
+      const synchronization = await connected.connector.synchronize({ refresh:true });
+      const rawSynchronization = z.object({
+        snapshot:z.unknown(),rulePlanningSourceAvailability:z.unknown().optional(),
+      }).passthrough().safeParse(synchronization);
       if (!rawSynchronization.success)
         return { kind: 'failure', status: 409, code: 'RULE_SNAPSHOT_UNAVAILABLE', message: 'A current SDK snapshot is unavailable.' };
       const snapshot = canonicalProtocolSnapshotSchema.safeParse(rawSynchronization.data.snapshot);
@@ -149,15 +158,14 @@ export default defineEventHandler(async (event) => {
         return { kind: 'failure', status: 409, code: 'CATEGORY_UNAVAILABLE', message: 'The requested current category is unavailable.' };
 
       let transaction: typeof snapshot.data.transactions[number] | undefined;
-      let payee = body.data.payee;
       if (body.data.transactionId) {
-        const transactions = snapshot.data.transactions.filter((row) => row.id === body.data.transactionId);
-        if (transactions.length !== 1)
-          return { kind: 'failure', status: 409, code: 'TRANSACTION_UNAVAILABLE', message: 'The requested current transaction is unavailable or ambiguous.' };
-        transaction = transactions[0]!;
-        const transactionPayee = transaction.payeeName;
-        if (!transactionPayee || !transactionPayee.trim())
-          return { kind: 'failure', status: 409, code: 'MERCHANT_UNAVAILABLE', message: 'The current transaction has no normalized payee.' };
+        transaction = findRuleSourceTransaction(snapshot.data,body.data.transactionId);
+        if (!transaction)
+          return { kind:'failure',status:409,code:'TRANSACTION_UNAVAILABLE',message:'The requested current transaction is unavailable or ambiguous.' };
+        if (!transaction.payeeId)
+          return { kind:'failure',status:409,code:'MERCHANT_UNAVAILABLE',message:'The current transaction has no stable payee ID.' };
+        if (transaction.payeeId !== body.data.payeeId)
+          return { kind:'failure',status:409,code:'MERCHANT_MISMATCH',message:'The supplied payee ID differs from the current transaction.' };
 
         const accounts = snapshot.data.accounts.filter((account) => account.id === transaction!.accountId);
         if (accounts.length !== 1)
@@ -197,73 +205,26 @@ export default defineEventHandler(async (event) => {
             return { kind: 'response', response: currentCategoryReadAuthorization.response };
         }
 
-        const nativeInput = (merchant: string) => ({
-          name: body.data.name,
-          conditions: [{ field: 'payee_name', op: 'is', value: merchant }],
-          actions: [{ type: 'set-category', field: 'category', value: body.data.categoryId }],
-          budgetId,
-          stage: 'post' as const,
-          conditionsOp: 'and' as const,
-        });
-        const requestedPlan = native.planCreateRule(nativeInput(body.data.payee), snapshot.data);
-        const currentPlan = native.planCreateRule(nativeInput(transactionPayee), snapshot.data);
-        const requestedMerchant = requestedPlan.trigger.value;
-        const currentMerchant = currentPlan.trigger.value;
-        if (
-          typeof requestedMerchant !== 'string' ||
-          typeof currentMerchant !== 'string' ||
-          !requestedMerchant ||
-          requestedMerchant !== currentMerchant
-        )
-          return { kind: 'failure', status: 409, code: 'MERCHANT_MISMATCH', message: 'The supplied payee does not match the current transaction.' };
-        payee = transactionPayee;
-
-        const proposal = await createRuleProposal({
-          store: workflow.store,
-          spaceId: selected.space.id,
-          budgetId,
-          actorId: selected.auth.actorId,
-          auth: selected.auth,
-          origin: { kind: 'rule-route', transactionId: transaction.id },
-          correlationId: requestId,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-          actualVersion: snapshot.data.actualVersion,
-          snapshotSchemaVersion: snapshot.data.schemaVersion,
-          name: body.data.name,
-          payee,
-          categoryId: body.data.categoryId,
-          nativePlan: currentPlan,
-          transaction,
-        });
-        return { kind: 'proposal', proposal };
       }
 
+      const currentContext = await sourceService.getCurrentRuleReviewContext({ ...actor,spaceId:selected.space.id,auth:selected.auth }, {
+        evidenceKey:null,connected,snapshot:snapshot.data,sourceAvailability:rawSynchronization.data.rulePlanningSourceAvailability,
+      });
       const nativePlan = native.planCreateRule({
-        name: body.data.name,
-        conditions: [{ field: 'payee_name', op: 'is', value: payee }],
-        actions: [{ type: 'set-category', field: 'category', value: body.data.categoryId }],
-        budgetId,
-        stage: 'post',
-        conditionsOp: 'and',
-      }, snapshot.data);
+        name:body.data.name,conditions:[{field:'payee',op:'is',value:body.data.payeeId}],
+        actions:[{op:'set',field:'category',value:body.data.categoryId}],
+        budgetId,stage:'post',conditionsOp:'and',reviewContext:currentContext,
+      },snapshot.data);
+      const reviewedSimulation = native.simulateCreateRulePlan(nativePlan,snapshot.data);
       const proposal = await createRuleProposal({
-        store: workflow.store,
-        spaceId: selected.space.id,
-        budgetId,
-        actorId: selected.auth.actorId,
-        auth: selected.auth,
-        origin: { kind: 'rule-route' },
-        correlationId: requestId,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-        actualVersion: snapshot.data.actualVersion,
-        snapshotSchemaVersion: snapshot.data.schemaVersion,
-        name: body.data.name,
-        payee,
-        categoryId: body.data.categoryId,
-        nativePlan,
+        store:workflow.store,spaceId:selected.space.id,budgetId,actorId:selected.auth.actorId,auth:selected.auth,
+        origin:{kind:'rule-route',...(transaction ? {transactionId:transaction.id} : {})},
+        correlationId:requestId,expiresAt:currentContext.expiresAt,
+        name:body.data.name,payeeId:body.data.payeeId,categoryId:body.data.categoryId,
+        nativePlan,currentContext,reviewedSimulation,snapshot:snapshot.data,...(transaction ? {transaction} : {}),
       });
       return { kind: 'proposal', proposal };
-    }, { expectedBudgetId: budgetId, dispose: true });
+    }, { expectedBudgetId: budgetId, dispose: true, synchronize:false });
   } catch (error) {
     if (error instanceof ProposalAcquisitionError && error.reasonCode === 'authorization_denied') {
       setResponseStatus(event, 403);
@@ -286,7 +247,7 @@ export default defineEventHandler(async (event) => {
     return errorEnvelope(connectedResult.code, connectedResult.message, budgetAuthorization.info, false, requestId);
   }
 
-  const proposalView = await buildProposalApprovalView({
+  const proposalView = buildProposalApprovalView({
     store: workflow.store,
     proposal: connectedResult.proposal,
     actorId: selected.auth.actorId,
@@ -300,7 +261,7 @@ export default defineEventHandler(async (event) => {
   }
   return okEnvelope({
     proposal: proposalView,
-    simulationStatus: 'missing',
+    simulationStatus: 'present',
     simulationWarning: null,
   }, budgetAuthorization.info, requestId);
 });

@@ -13,9 +13,14 @@ import {
   createNativeAnalysisProtocol,
   attentionHomeAnalysis,
   LiquidityProjector,
+  ApplicationError,
+  merchantConnectionId,
+  createMerchantIntelligenceService,
 } from '@balanceframe/application';
 import type { CommandInput, AttentionHomeParams } from '@balanceframe/application';
-import { hasLegacyFullRead } from '../../utils/legacy-financial-read';
+import type { GovernanceOperation, LiquidityActor } from '@balanceframe/workflow-store';
+import { canonicalProtocolSnapshotSchema, financialSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import { hasLegacyFullRead, financialReadMoneyOperation, financialSourceReadOperations } from '../../utils/legacy-financial-read';
 import { defineEventHandler, getQuery, setHeader, setResponseStatus } from 'h3';
 import {
   getWorkflowStore,
@@ -28,6 +33,7 @@ import {
 import type { EventWithContext } from '../../utils/workflow-store';
 import { requireSelectedSpace } from '../../utils/space-context';
 import { selectedLiquidityActor } from '../../utils/liquidity-service';
+import { merchantAnalysisAuthorized } from '../../utils/merchant-service';
 import { z } from 'zod';
 
 /** Map an analysis error code to an HTTP status. */
@@ -97,6 +103,38 @@ function sanitizeCanonicalEvidence(value: unknown): unknown {
   return sanitized;
 }
 
+/** Count the complete returned Money collection; only known outflow roles carry outgoing direction. */
+function attentionDisclosureOperations(value: unknown): GovernanceOperation[] {
+  const operations: GovernanceOperation[] = [];
+  type Role = 'home' | 'blocker' | 'recurrence' | 'risk' | 'transfer' | 'unknown';
+  const moneyFields: Partial<Record<Role, Readonly<Record<string, 'balance' | 'directional' | 'outgoing'>>>> = {
+    recurrence: { amount: 'directional' },
+    risk: { remainingBudget: 'balance' },
+    transfer: { minimumAmount: 'outgoing' },
+  };
+  const childFields: Partial<Record<Role, Readonly<Record<string, Role>>>> = {
+    home: { blockers: 'blocker', recurrences: 'recurrence', categoryRisks: 'risk' },
+    blocker: { transferConclusion: 'transfer' },
+  };
+  const visit = (entry: unknown, role: Role): void => {
+    if (Array.isArray(entry)) {
+      for (const child of entry) visit(child, role);
+      return;
+    }
+    if (!isJsonObject(entry)) return;
+    if ('minorUnits' in entry || 'currency' in entry) throw new Error('Unknown attention Money role');
+    for (const [field, child] of Object.entries(entry)) {
+      const fields = moneyFields[role];
+      const children = childFields[role];
+      const moneyRole = fields && Object.hasOwn(fields, field) ? fields[field] : undefined;
+      if (moneyRole) operations.push(financialReadMoneyOperation(child, moneyRole));
+      else visit(child, children && Object.hasOwn(children, field) ? children[field]! : 'unknown');
+    }
+  };
+  visit(value, 'home');
+  return operations;
+}
+
 const HomeQuery = z.object({
   categoryGroup: z.string().trim().min(1).max(120).optional(),
   detailed: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
@@ -105,7 +143,7 @@ const HomeQuery = z.object({
 export default defineEventHandler(async (event) => {
   setHeader(event, 'Cache-Control', 'private, no-store');
   const requestId = crypto.randomUUID();
-  const selected = await requireSelectedSpace(event as unknown as EventWithContext);
+  const selected = requireSelectedSpace(event as unknown as EventWithContext);
   if (!selected.ok) return selected.response;
   const budgetId = selected.space.budgetId;
   if (!budgetId) {
@@ -138,6 +176,58 @@ export default defineEventHandler(async (event) => {
   const manager = createDefaultConnectionManager({
     configPath: process.env.BALANCEFRAME_CONFIG_PATH,
   });
+  const forbidden = () => {
+    setResponseStatus(event, 403);
+    return errorEnvelope('FORBIDDEN', 'Financial attention is unavailable.', authInfo, false, requestId);
+  };
+  const currentActor = (): LiquidityActor | null => {
+    const current = requireSelectedSpace(event as unknown as EventWithContext);
+    if (!current.ok || current.space.id !== selected.space.id || current.space.budgetId !== budgetId ||
+        current.membership.id !== selected.membership.id || current.auth.actorId !== selected.auth.actorId ||
+        current.auth.method !== selected.auth.method) return null;
+    if (current.auth.method === 'session' && (selected.auth.method !== 'session' ||
+        current.auth.sessionId !== selected.auth.sessionId)) return null;
+    if (current.auth.method === 'api-key') {
+      if (selected.auth.method !== 'api-key' ||
+          current.auth.credentialId !== selected.auth.credentialId ||
+          current.auth.credentialOwnerId !== selected.auth.credentialOwnerId ||
+          current.auth.principalType !== selected.auth.principalType) return null;
+      if (current.auth.principalType === 'agent' && (selected.auth.principalType !== 'agent' ||
+          current.auth.delegationId !== selected.auth.delegationId ||
+          current.auth.delegationVersion !== selected.auth.delegationVersion)) return null;
+    }
+    const live = selectedLiquidityActor(workflow.store, current);
+    return live && live.governancePolicyVersion === actor.governancePolicyVersion &&
+      workflow.store.liquidity.isAuthorized({
+        ...live, resourceKind: 'budget', resourceId: budgetId, capability: 'observe',
+        operation: 'observe', phase: 'read', visibility: 'resource',
+      }) ? live : null;
+  };
+  const transferBlockers = (live: LiquidityActor) => {
+    const scope = {
+      ...live, resourceKind: 'budget' as const, resourceId: budgetId,
+      capability: 'conclusion' as const, operation: 'transfer', phase: 'read' as const,
+    };
+    if (!workflow.store.liquidity.isAuthorized({ ...scope, visibility: 'resource' }) &&
+        !workflow.store.liquidity.isAuthorized({ ...scope, visibility: 'aggregate' })) return [];
+    const blockers = workflow.store.liquidity.listTransferProposalIntents({ ...live, capability: 'conclusion' })
+      .filter((proposal) => proposal.state.outcome && !['confirmed', 'closed'].includes(proposal.state.phase))
+      .flatMap((proposal) => {
+        const conclusion = LiquidityProjector.transferConclusion(workflow.store, live, proposal.payload.plan);
+        return conclusion ? [{
+          code: 'transfer_needs_attention',
+          classification: 'transfer_needs_attention',
+          severity: 'warning',
+          message: 'A transfer needs authorized review. Acknowledgement is not settlement.',
+          transferConclusion: conclusion,
+        }] : [];
+      });
+    const operations = blockers.map((blocker) => ({
+      ...financialReadMoneyOperation(blocker.transferConclusion.minimumAmount, 'outgoing'), operation: 'transfer',
+    }));
+    return workflow.store.liquidity.isAuthorized({ ...scope, visibility: 'resource', operations }) ||
+      workflow.store.liquidity.isAuthorized({ ...scope, visibility: 'aggregate', operations }) ? blockers : [];
+  };
 
   try {
     const config = await manager.loadConfig();
@@ -160,45 +250,13 @@ export default defineEventHandler(async (event) => {
       ...(Object.keys(context).length > 0 ? { context } : {}),
     };
 
-    const transferConclusionScope = {
-      ...actor,
-      resourceKind: 'budget' as const,
-      resourceId: budgetId,
-      capability: 'conclusion' as const,
-      operation: 'transfer',
-      phase: 'read' as const,
-    };
-    const activeTransfers = (
-      workflow.store.liquidity.isAuthorized({ ...transferConclusionScope, visibility: 'resource' }) ||
-      workflow.store.liquidity.isAuthorized({ ...transferConclusionScope, visibility: 'aggregate' })
-    )
-      ? workflow.store.liquidity
-          .listTransferProposalIntents({ ...actor, capability: 'conclusion' })
-          .filter((proposal) =>
-            proposal.state.outcome && !['confirmed', 'closed'].includes(proposal.state.phase),
-          )
-      : [];
-    const transferBlockers = activeTransfers.flatMap((proposal) => {
-      const transferConclusion = LiquidityProjector.transferConclusion(
-        workflow.store,
-        actor,
-        proposal.payload.plan,
-      );
-      return transferConclusion
-        ? [{
-            code: 'transfer_needs_attention',
-            classification: 'transfer_needs_attention',
-            severity: 'warning',
-            message: 'A transfer needs authorized review. Acknowledgement is not settlement.',
-            transferConclusion,
-          }]
-        : [];
-    });
+    const admitted = currentActor();
+    if (!admitted) return forbidden();
 
-    if (!(await hasLegacyFullRead(workflow.store, actor))) {
+    if (!hasLegacyFullRead(workflow.store, admitted)) {
       return okEnvelope(
         {
-          blockers: transferBlockers,
+          blockers: transferBlockers(admitted),
           alerts: [],
           recurrences: [],
           categoryRisks: [],
@@ -209,32 +267,61 @@ export default defineEventHandler(async (event) => {
       );
     }
 
-    const envelope = await manager.withConnection(async (connected) => {
-      if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId)
-        throw new Error('Selected budget changed');
-      const protocol = await createNativeAnalysisProtocol();
-      const input: CommandInput = {
-        args: [],
-        mode: 'observe',
-        actorId: selected.auth.actorId,
-        requestId,
-        ledger: connected.connector,
-        freshness: null,
-        analysisProtocol: protocol,
-      };
-      return attentionHomeAnalysis(input, params);
+    const connectionId = merchantConnectionId(config);
+    let sourceOperations: GovernanceOperation[] = [];
+    const captured = await manager.withConnection(async (connected) => {
+      if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId ||
+          merchantConnectionId(connected.config) !== connectionId) throw new Error('Selected budget changed');
+      const synchronization = z.object({
+        snapshot: z.unknown().optional(),
+        financialSnapshot: z.unknown().optional(),
+      }).parse(connected.synchronization);
+      const financialSnapshot = synchronization.financialSnapshot === undefined
+        ? undefined : financialSnapshotSchema.parse(synchronization.financialSnapshot);
+      const source = canonicalProtocolSnapshotSchema.parse(
+        synchronization.snapshot ?? financialSnapshot?.legacySnapshot,
+      );
+      sourceOperations = financialSourceReadOperations(source);
+      const captured = { snapshot: source, ...(financialSnapshot ? { financialSnapshot } : {}) };
+      const live = currentActor();
+      if (!live || !hasLegacyFullRead(workflow.store, live, sourceOperations))
+        throw new ApplicationError({ code: 'FORBIDDEN', message: 'Financial attention is unavailable.' });
+      return captured;
     }, { expectedBudgetId: budgetId, dispose: true });
+    const live = currentActor();
+    if (!live || !hasLegacyFullRead(workflow.store, live, sourceOperations))
+      throw new ApplicationError({ code: 'FORBIDDEN', message: 'Financial attention is unavailable.' });
+    let authorizeMerchant: (() => boolean) | undefined;
+    const merchantActor = live.auth && live.spaceId ? { ...live, auth: live.auth, spaceId: live.spaceId } : null;
+    const merchantOptions = merchantActor && merchantAnalysisAuthorized(workflow.store, merchantActor)
+      ? { merchantService: await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager }),
+        merchantActor, captureMerchantPublicationAuthority: (authorize: () => boolean) => { authorizeMerchant = authorize; } }
+      : undefined;
+    const protocol = await createNativeAnalysisProtocol(undefined, merchantOptions);
+    const ready = currentActor();
+    if (!ready || !hasLegacyFullRead(workflow.store, ready, sourceOperations))
+      throw new ApplicationError({ code: 'FORBIDDEN', message: 'Financial attention is unavailable.' });
+    const input: CommandInput = {
+      args: [], mode: 'observe', actorId: ready.actorId, requestId,
+      ledger: { getLatestSynchronization: () => captured }, freshness: null, analysisProtocol: protocol,
+    };
+    const envelope = await attentionHomeAnalysis(input, params);
+    const finalConfig = await manager.loadConfig();
+    const finalActor = currentActor();
+    if (!finalActor || !hasLegacyFullRead(workflow.store, finalActor, sourceOperations) ||
+        (authorizeMerchant && !authorizeMerchant())) return forbidden();
+    if (!finalConfig || finalConfig.budgetId !== budgetId || merchantConnectionId(finalConfig) !== connectionId) {
+      setResponseStatus(event, 409);
+      return errorEnvelope('SPACE_CONNECTION_MISMATCH', 'The selected connection changed.', authInfo, false, requestId);
+    }
 
     if (envelope.status === 'ok') {
       const sanitized = z.object({ blockers: z.array(z.unknown()) }).passthrough().parse(
         sanitizeCanonicalEvidence(envelope.result),
       );
-      return okEnvelope(
-        { ...sanitized, blockers: [...sanitized.blockers, ...transferBlockers] },
-        authInfo,
-        envelope.requestId,
-        envelopeMetadata(envelope),
-      );
+      const result = { ...sanitized, blockers: [...sanitized.blockers, ...transferBlockers(finalActor)] };
+      if (!hasLegacyFullRead(workflow.store, finalActor, attentionDisclosureOperations(result))) return forbidden();
+      return okEnvelope(result, authInfo, envelope.requestId, envelopeMetadata(envelope));
     }
 
     const status = httpStatusForCode(envelope.error.code);
@@ -248,6 +335,7 @@ export default defineEventHandler(async (event) => {
       envelopeMetadata(envelope),
     );
   } catch (error) {
+    if (errorHasCode(error, 'FORBIDDEN')) return forbidden();
     if (errorHasCode(error, 'not_connected')) {
       setResponseStatus(event, 503);
       return errorEnvelope(

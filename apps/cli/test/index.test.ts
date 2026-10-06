@@ -529,8 +529,8 @@ describe('parseArgs — rule commands', () => {
       'create',
       '--name',
       'My Rule',
-      '--payee',
-      'Amazon',
+      '--payee-id',
+      'payee-Amazon',
       '--category-id',
       'cat-food',
     ]);
@@ -539,7 +539,7 @@ describe('parseArgs — rule commands', () => {
     expect(result.cmd.command).toBe('rules.create');
     expect(result.cmd.options).toBeDefined();
     expect(result.cmd.options!['name']).toBe('My Rule');
-    expect(result.cmd.options!['payee']).toBe('Amazon');
+    expect(result.cmd.options!['payee-id']).toBe('payee-Amazon');
     expect(result.cmd.options!['category-id']).toBe('cat-food');
   });
 
@@ -549,23 +549,23 @@ describe('parseArgs — rule commands', () => {
       'create',
       '--name',
       'My Rule',
-      '--payee',
-      'Amazon',
+      '--payee-id',
+      'payee-Amazon',
       '--category-id',
       'cat-food',
       '--transaction-id',
       'txn-001',
       '--operation',
-      'categorize',
+      'create_rule',
     ]);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.cmd.command).toBe('rules.create');
     expect(result.cmd.options!['name']).toBe('My Rule');
-    expect(result.cmd.options!['payee']).toBe('Amazon');
+    expect(result.cmd.options!['payee-id']).toBe('payee-Amazon');
     expect(result.cmd.options!['category-id']).toBe('cat-food');
     expect(result.cmd.options!['transaction-id']).toBe('txn-001');
-    expect(result.cmd.options!['operation']).toBe('categorize');
+    expect(result.cmd.options!['operation']).toBe('create_rule');
   });
 
   it('parses rules.show with ruleId flag', () => {

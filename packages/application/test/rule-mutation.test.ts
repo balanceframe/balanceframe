@@ -11,18 +11,25 @@ import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generate
 import {
   RuleMutationService,
   createNativeRuleMutationProtocol,
+  requireCompleteRulePlanningSource,
   type ExecuteRuleInput,
   type ExecuteRuleResult,
   type RuleMutationPlan,
   type RuleSimulationResult,
+  type RuleReviewContext,
+  type ResolveCurrentRuleReviewContext,
 } from '../src/rule-mutation';
 import {
   SqliteWorkflowStore,
   canonicalProposalHash,
   canonicalProposalJson,
+  deriveProposalAuthorizationFacts,
   GENERIC_MUTATION_POLICY_VERSION,
   ProposalAcquisitionError,
 } from '@balanceframe/workflow-store';
+import { ActualConnector } from '../../actual-adapter/src/connector';
+import { NullCredentialStore } from '../../actual-adapter/src/credentials';
+import type { ActualClient } from '../../actual-adapter/src/connector';
 vi.mock('@balanceframe/workflow-store', async () =>
   await import('../../workflow-store/src/index'));
 import type {
@@ -37,7 +44,7 @@ import type {
   AuditRecord,
 } from '@balanceframe/workflow-store';
 
-import type { BudgetLedger, MutationResult, LedgerSnapshotResult } from '@balanceframe/actual-adapter';
+import type { BudgetLedger, MutationResult, LedgerSnapshotResult, RuleCreatePrecondition, RuleProposal } from '@balanceframe/actual-adapter';
 
 import type { ProtocolSnapshot, Rule } from '@balanceframe/protocol-generated';
 
@@ -80,24 +87,47 @@ const TEST_RULE_BEFORE = {
 };
 const TEST_RULE_SCOPE = { spaceId: 'space_main', budgetId: TEST_BUDGET_ID };
 const TEST_RULE_ACTUAL_VERSION = 'actual-rule-v1';
+const TEST_REVIEW_CONTEXT: RuleReviewContext = {
+  scope: { ...TEST_RULE_SCOPE, connectionId: 'connection-rule-current' },
+  sourceFactsHash: 'rule-source-facts-v1',
+  evidenceKey: null,
+  evidenceRevision: 'merchant-evidence-v1',
+  merchantPolicyVersion: 'merchant-policy-v1',
+  visibilityHash: 'executor-visibility-v1',
+  expiresAt: '2099-12-31T23:59:59Z',
+};
+// Independently admitted current facts, not a replay of the reviewed body.
+const TEST_CURRENT_CONTEXT: RuleReviewContext = {
+  scope: { spaceId: 'space_main', budgetId: TEST_BUDGET_ID, connectionId: 'connection-rule-current' },
+  sourceFactsHash: 'rule-source-facts-v1',
+  evidenceKey: null,
+  evidenceRevision: 'merchant-evidence-v1',
+  merchantPolicyVersion: 'merchant-policy-v1',
+  visibilityHash: 'executor-visibility-v1',
+  expiresAt: '2099-12-31T23:59:59Z',
+};
+const resolveTrustedCurrentContext: ResolveCurrentRuleReviewContext = async () => structuredClone(TEST_CURRENT_CONTEXT);
+const unavailableCurrentContext: ResolveCurrentRuleReviewContext = async () => {
+  throw new Error('Current Actual source and authority are unavailable');
+};
 const TEST_RULE = {
-  name: TEST_RULE_NAME,
-  conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
-  actions: [{ type: 'set-category', field: 'category', value: 'cat_groceries' }],
-  conditionsOp: 'and',
+  stage: 'post' as const,
+  conditionsOp: 'and' as const,
+  conditions: [{ field: 'payee' as const, op: 'is' as const, value: 'payee_groceries' }],
+  actions: [{ op: 'set' as const, field: 'category' as const, value: 'cat_groceries' }],
 };
 const TEST_NATIVE_PLAN: RuleMutationPlan = {
   planId: TEST_PLAN_ID,
   ruleName: TEST_RULE_NAME,
-  trigger: { type: 'payee_is', value: 'grocery store' },
-  actions: [{ type: 'set_category', value: 'cat_groceries' }],
+  trigger: { stage: TEST_RULE.stage, conditionsOp: TEST_RULE.conditionsOp, conditions: TEST_RULE.conditions },
+  actions: TEST_RULE.actions,
   hash: 'native-rule-plan-hash',
-  conditions: [{ field: 'payee', operation: 'is', value: 'Grocery Store' }],
+  conditions: [{ field: 'payee', operation: 'is', value: 'payee_groceries' }],
 };
 const TEST_RULE_PAYLOAD = {
   kind: 'create_rule' as const,
   transactionId: null,
-  categoryId: '__rule__',
+  categoryId: 'cat_groceries',
   rule: TEST_RULE,
   composite: {
     operations: [],
@@ -115,6 +145,15 @@ const TEST_RULE_PRECONDITIONS = {
   reviewId: 'review_001',
   nativeRule: TEST_RULE,
   nativePlan: TEST_NATIVE_PLAN,
+  ruleName: TEST_RULE_NAME,
+  reviewContext: TEST_REVIEW_CONTEXT,
+  reviewedSimulation: mockRuleSimulationResult(),
+  sourceAccounts: [{ accountId: 'account_rule_source' }],
+  sourceTransactions: [
+    { transactionId: 'tx_001', accountId: 'account_rule_source', categoryId: null },
+    { transactionId: 'tx_002', accountId: 'account_rule_source', categoryId: 'cat_dining' },
+    { transactionId: 'tx_003', accountId: 'account_rule_source', categoryId: null },
+  ],
 };
 const TEST_PAYLOAD_HASH = canonicalProposalHash({
   operation: 'create_rule',
@@ -129,12 +168,7 @@ const TEST_PAYLOAD_HASH = canonicalProposalHash({
 
 function mockRuleMutationPlan(overrides: Partial<RuleMutationPlan> = {}): RuleMutationPlan {
   return {
-    planId: TEST_PLAN_ID,
-    ruleName: TEST_RULE_NAME,
-    trigger: { type: 'payee_is', value: 'grocery store' },
-    actions: [{ type: 'set_category', value: 'cat_groceries' }],
-    hash: 'native-rule-plan-hash',
-    conditions: [{ field: 'payee', operation: 'is', value: 'Grocery Store' }],
+    ...TEST_NATIVE_PLAN,
     ...overrides,
   };
 }
@@ -144,8 +178,8 @@ function mockRule(overrides: Partial<Rule> = {}): Rule {
     id: TEST_RULE_ID,
     name: TEST_RULE_NAME,
     order: 0,
-    trigger: { type: 'transaction_added' },
-    actions: [{ type: 'set_category' }],
+    trigger: { stage: TEST_RULE.stage, conditionsOp: TEST_RULE.conditionsOp, conditions: TEST_RULE.conditions },
+    actions: TEST_RULE.actions,
     inactive: false,
     ...overrides,
   };
@@ -309,15 +343,35 @@ function mockExecutionAcquisition() {
   };
 }
 
+const canonicalSourceSnapshot = canonicalProtocolSnapshotSchema.parse(JSON.parse(readFileSync(
+  new URL('../../../protocol/fixtures/representative.json', import.meta.url), 'utf8',
+)));
+
+function completeRuleSource(accounts: ProtocolSnapshot['accounts']): NonNullable<LedgerSnapshotResult['rulePlanningSourceAvailability']> {
+  return {
+    accounts: 'complete', payees: 'complete', categories: 'complete', categoryGroups: 'complete', rules: 'complete',
+    history: accounts.map(({ id }) => ({ accountId: id, state: 'complete', startDate: '0001-01-01', endDate: '9999-12-31' })),
+  };
+}
+
 function mockProtocolSnapshot(overrides: Partial<ProtocolSnapshot> = {}): ProtocolSnapshot {
   return {
     schemaVersion: '1.0',
     actualVersion: '2026.07.01',
     snapshotDate: new Date().toISOString(),
-    accounts: [],
-    transactions: [],
-    categories: [],
-    payees: [],
+    accounts: [{ ...canonicalSourceSnapshot.accounts[0]!, id: 'account_rule_source' }],
+    transactions: ['tx_001', 'tx_002', 'tx_003'].map((id, index) => ({
+      ...canonicalSourceSnapshot.transactions[0]!,
+      id, accountId: 'account_rule_source', payeeId: 'payee_groceries', payeeName: 'Grocery Store',
+      amount: { minorUnits: index === 1 ? '1230' : '4500', currency: 'USD' },
+      categoryId: index === 1 ? 'cat_dining' : null,
+      categoryName: index === 1 ? 'Dining' : null,
+    })),
+    categories: [
+      { ...canonicalSourceSnapshot.categories[0]!, id: 'cat_groceries', name: 'Groceries' },
+      { ...canonicalSourceSnapshot.categories[0]!, id: 'cat_dining', name: 'Dining' },
+    ],
+    payees: [{ id: 'payee_groceries', name: 'Grocery Store', transferAccountId: null, mtid: null }],
     rules: [mockRule()],
     schedules: [],
     budgets: [],
@@ -391,6 +445,7 @@ interface StoreMock extends WorkflowStore {
   completeIdempotencyRecord: Mock;
   appendAuditRecord: Mock;
   acquireProposalExecution: Mock;
+  validateAcquiredProposalExecution: Mock;
   getRuleOverrides: Mock;
   getRuleOverride: Mock;
   setRuleOverride: Mock;
@@ -401,6 +456,7 @@ function createStoreMock(): StoreMock {
   return {
     getProposal: vi.fn(),
     acquireProposalExecution: vi.fn(),
+    validateAcquiredProposalExecution: vi.fn(),
     completeIdempotencyRecord: vi.fn(),
     appendAuditRecord: vi.fn(),
     getRuleOverrides: vi.fn(),
@@ -441,6 +497,52 @@ function createRustMock(): RustProtocolMock {
   };
 }
 
+const ruleSourceAccounts: ProtocolSnapshot['accounts'] = [
+  { ...canonicalSourceSnapshot.accounts[0]!, id: 'account_rule_source', isClosed: false },
+  { ...canonicalSourceSnapshot.accounts[0]!, id: 'account_closed_source', isClosed: true },
+];
+const completeRulePlanningSource = completeRuleSource(ruleSourceAccounts);
+const incompleteRulePlanningSources: Array<{ label: string; availability: unknown }> = [
+  { label: 'omitted trusted availability', availability: undefined },
+  { label: 'empty metadata', availability: {} },
+  ...(['accounts', 'payees', 'categories', 'categoryGroups', 'rules'] as const).flatMap((namespace) => {
+    const missing = { ...completeRulePlanningSource };
+    delete (missing as Partial<typeof missing>)[namespace];
+    return [
+      { label: `failed ${namespace} SDK read`, availability: { ...completeRulePlanningSource, [namespace]: 'unavailable' } },
+      { label: `missing ${namespace} namespace`, availability: missing },
+    ];
+  }),
+  { label: 'unknown namespace status', availability: { ...completeRulePlanningSource, rules: 'partial' } },
+  { label: 'unknown metadata field', availability: { ...completeRulePlanningSource, inferredComplete: true } },
+  { label: 'missing full account history', availability: { ...completeRulePlanningSource, history: [] } },
+  { label: 'missing closed account history', availability: { ...completeRulePlanningSource, history: completeRulePlanningSource.history.slice(0, 1) } },
+  { label: 'failed closed account SDK read', availability: { ...completeRulePlanningSource, history: completeRulePlanningSource.history.map((history) => history.accountId === 'account_closed_source' ? { ...history, state: 'unavailable' } : history) } },
+  { label: 'duplicate account history', availability: { ...completeRulePlanningSource, history: [completeRulePlanningSource.history[0], completeRulePlanningSource.history[0]] } },
+  { label: 'unrelated account history', availability: { ...completeRulePlanningSource, history: [...completeRulePlanningSource.history, { ...completeRulePlanningSource.history[0], accountId: 'other-account' }] } },
+  { label: 'truncated start date', availability: { ...completeRulePlanningSource, history: completeRulePlanningSource.history.map((history) => ({ ...history, startDate: '1970-01-01' })) } },
+  { label: 'truncated end date', availability: { ...completeRulePlanningSource, history: completeRulePlanningSource.history.map((history) => ({ ...history, endDate: '2099-12-31' })) } },
+  { label: 'unknown history field', availability: { ...completeRulePlanningSource, history: completeRulePlanningSource.history.map((history) => ({ ...history, assumedEmpty: true })) } },
+];
+
+describe('requireCompleteRulePlanningSource', () => {
+  it('admits explicit complete full-ledger history, including closed accounts', () => {
+    expect(() => requireCompleteRulePlanningSource({ accounts: ruleSourceAccounts }, completeRulePlanningSource)).not.toThrow();
+  });
+  it('admits an explicitly read empty account collection without inventing history', () => {
+    expect(() => requireCompleteRulePlanningSource({ accounts: [] }, completeRuleSource([]))).not.toThrow();
+  });
+  it.each(incompleteRulePlanningSources)('rejects $label', ({ availability }) => {
+    expect(() => requireCompleteRulePlanningSource({ accounts: ruleSourceAccounts }, availability))
+      .toThrow('Current rule planning source is incomplete');
+  });
+  it('rejects duplicate snapshot account IDs even with an apparently matching history count', () => {
+    const accounts = [ruleSourceAccounts[0]!, ruleSourceAccounts[0]!];
+    expect(() => requireCompleteRulePlanningSource({ accounts }, completeRuleSource(accounts)))
+      .toThrow('Current rule planning source is incomplete');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -450,22 +552,31 @@ describe('RuleMutationService', () => {
   let ledger: LedgerMock;
   let rust: RustProtocolMock;
   let service: RuleMutationService;
+  let resolveCurrentContext: Mock<ResolveCurrentRuleReviewContext>;
 
   beforeEach(() => {
     store = createStoreMock();
     ledger = createLedgerMock();
     rust = createRustMock();
-    service = new RuleMutationService(store, ledger, rust);
+    resolveCurrentContext = vi.fn(resolveTrustedCurrentContext);
+    service = new RuleMutationService(store, ledger, rust, resolveCurrentContext);
     store.getProposal.mockResolvedValue(mockProposal());
     store.acquireProposalExecution.mockResolvedValue(mockExecutionAcquisition());
     store.completeIdempotencyRecord.mockResolvedValue(
       mockIdempotencyRecord({ completed: true, status: 'succeeded' }),
     );
     store.appendAuditRecord.mockResolvedValue({ id: 'audit_completed_001' } as AuditRecord);
-    ledger.synchronize.mockResolvedValue({
+    ledger.synchronize.mockResolvedValueOnce({
+      snapshot: mockProtocolSnapshot({ actualVersion: TEST_RULE_ACTUAL_VERSION, rules: [] }),
+      rulePlanningSourceAvailability: completeRuleSource(mockProtocolSnapshot().accounts),
+    } as LedgerSnapshotResult).mockResolvedValue({
       snapshot: mockProtocolSnapshot({ actualVersion: TEST_RULE_ACTUAL_VERSION }),
+      rulePlanningSourceAvailability: completeRuleSource(mockProtocolSnapshot().accounts),
     } as LedgerSnapshotResult);
-    ledger.createRule.mockResolvedValue(mockMutationResult());
+    ledger.createRule.mockImplementation(async (_proposal: RuleProposal, precondition: RuleCreatePrecondition) => {
+      precondition.assertExecutionCurrent();
+      return mockMutationResult();
+    });
     store.getRuleOverride.mockResolvedValue(null);
     store.setRuleOverride.mockResolvedValue({
       ruleId: TEST_RULE_ID,
@@ -481,7 +592,7 @@ describe('RuleMutationService', () => {
     rust.verifyRuleMutation.mockReturnValue({ verified: true, reasonCodes: [], message: null });
   });
 
-  it('writes and verifies the normalized rule while ignoring the transient native plan ID', async () => {
+  it('writes and verifies the stable-ID rule while ignoring the transient native plan ID', async () => {
     rust.planCreateRule.mockReturnValue(mockRuleMutationPlan({ planId: 'new-plan-id' }));
     const result = await service.execute(defaultInput());
 
@@ -493,13 +604,111 @@ describe('RuleMutationService', () => {
       auditRecordId: 'audit_completed_001',
     });
     expect(ledger.createRule).toHaveBeenCalledWith({
-      name: TEST_RULE_NAME,
-      conditions: [{ field: 'payee_name', op: 'is', value: 'Grocery Store' }],
+      conditions: [{ field: 'payee', op: 'is', value: 'payee_groceries' }],
       actions: [{ op: 'set', field: 'category', value: 'cat_groceries' }],
       conditionsOp: 'and',
-    });
+      stage: 'post',
+    }, { assertExecutionCurrent: expect.any(Function) });
     expect(rust.verifyRuleMutation).toHaveBeenCalled();
     expect(ledger.createRule).toHaveBeenCalledTimes(1);
+    expect(resolveCurrentContext).toHaveBeenCalledTimes(2);
+    expect(resolveCurrentContext).toHaveBeenCalledWith({
+      spaceId: TEST_RULE_SCOPE.spaceId,
+      budgetId: TEST_BUDGET_ID,
+      evidenceKey: TEST_CURRENT_CONTEXT.evidenceKey,
+      actorId: TEST_ACTOR,
+      auth: defaultInput().auth,
+      snapshot: expect.objectContaining({ actualVersion: TEST_RULE_ACTUAL_VERSION }),
+      sourceAvailability: completeRuleSource(mockProtocolSnapshot().accounts),
+    });
+    expect(rust.planCreateRule).toHaveBeenCalledWith(
+      expect.objectContaining({ name: TEST_RULE_NAME, reviewContext: TEST_CURRENT_CONTEXT }),
+      expect.any(Object),
+    );
+  });
+
+  it.each(incompleteRulePlanningSources)(
+    'never plans or writes a create-rule from $label even when its trusted resolver accepts the context',
+    async ({ availability }) => {
+      const snapshot = mockProtocolSnapshot({
+        actualVersion: TEST_RULE_ACTUAL_VERSION, rules: [], accounts: ruleSourceAccounts,
+      });
+      ledger.synchronize.mockReset().mockResolvedValue({
+        snapshot, rulePlanningSourceAvailability: availability,
+      });
+      const result = await service.execute(defaultInput());
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Current rule planning source is incomplete');
+      expect(resolveCurrentContext).not.toHaveBeenCalled();
+      expect(rust.planCreateRule).not.toHaveBeenCalled();
+      expect(ledger.createRule).not.toHaveBeenCalled();
+      expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(TEST_NONCE, expect.any(String), false);
+      expect(store.appendAuditRecord).toHaveBeenCalledWith(expect.objectContaining({
+        classification: 'execution_failed', proposalId: TEST_PROPOSAL_ID, isError: true,
+      }));
+    },
+  );
+
+  it('allows a newly admitted current expiry without treating capture clocks as source drift', async () => {
+    resolveCurrentContext.mockResolvedValue({ ...TEST_CURRENT_CONTEXT, expiresAt: '2099-11-30T23:59:59Z' });
+    const result = await service.execute(defaultInput());
+    expect(result).toMatchObject({ success: true, verified: true });
+    expect(rust.planCreateRule).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewContext: { ...TEST_CURRENT_CONTEXT, expiresAt: '2099-11-30T23:59:59Z' } }),
+      expect.any(Object),
+    );
+  });
+
+  it.each([
+    ['sourceFactsHash', 'source-changed'],
+    ['evidenceRevision', 'evidence-changed'],
+    ['merchantPolicyVersion', 'policy-changed'],
+    ['visibilityHash', 'visibility-changed'],
+    ['expiresAt', '2000-01-01T00:00:00Z'],
+  ] as const)('rejects trusted current %s drift before planning or writing', async (field, value) => {
+    resolveCurrentContext.mockResolvedValue({ ...TEST_CURRENT_CONTEXT, [field]: value });
+    const result = await service.execute(defaultInput());
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+    expect(rust.planCreateRule).not.toHaveBeenCalled();
+    expect(ledger.createRule).not.toHaveBeenCalled();
+    expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(TEST_NONCE, expect.any(String), false);
+  });
+
+  it('rejects an expired reviewed context even if trusted current evidence is live', async () => {
+    store.getProposal.mockResolvedValue(mockProposal({
+      preconditions: JSON.stringify({
+        ...TEST_RULE_PRECONDITIONS,
+        reviewContext: { ...TEST_REVIEW_CONTEXT, expiresAt: '2000-01-01T00:00:00Z' },
+      }),
+    }));
+    const result = await service.execute(defaultInput());
+    expect(result.reasonCodes).toContain('invalid_preconditions');
+    expect(resolveCurrentContext).not.toHaveBeenCalled();
+    expect(ledger.createRule).not.toHaveBeenCalled();
+  });
+
+  it('rejects trusted authority revoked after simulation before the SDK write', async () => {
+    resolveCurrentContext.mockResolvedValueOnce(structuredClone(TEST_CURRENT_CONTEXT))
+      .mockRejectedValueOnce(new Error('Current source authorization revoked'));
+    const result = await service.execute(defaultInput());
+    expect(result.reasonCodes).toContain('write_failed');
+    expect(rust.simulateCreateRulePlan).toHaveBeenCalled();
+    expect(ledger.createRule).not.toHaveBeenCalled();
+    expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(TEST_NONCE, expect.any(String), false);
+  });
+
+  it.each([
+    { transactionsAffected: ['tx_001', 'tx_002', 'tx_unreviewed'] },
+    { transactionsMatched: 4 },
+    { categoryDistribution: { cat_groceries: 2, cat_other: 1 } },
+    { conflicts: ['existing-rule-unreviewed'] },
+    { examples: [{ ...mockRuleSimulationResult().examples[0]!, wouldChange: false }] },
+  ] satisfies Partial<RuleSimulationResult>[])('refuses exact reviewed simulation drift despite the same plan hash: %j', async (changed) => {
+    rust.simulateCreateRulePlan.mockReturnValue(mockRuleSimulationResult(changed));
+    const result = await service.execute(defaultInput());
+    expect(result.reasonCodes).toContain('simulation_failed');
+    expect(ledger.createRule).not.toHaveBeenCalled();
+    expect(store.completeIdempotencyRecord).toHaveBeenCalledWith(TEST_NONCE, expect.any(String), false);
   });
 
   it('rejects a legacy proposal without its space before acquiring execution or loading Actual', async () => {
@@ -536,45 +745,60 @@ describe('RuleMutationService', () => {
     vi.setSystemTime(new Date(canonical.snapshotDate));
     try {
       const categoryId = canonical.categories[0]!.id;
-      const terms = { ...TEST_RULE, actions: [{ type: 'set-category', field: 'category', value: categoryId }] };
+      const payeeId = canonical.transactions[0]!.payeeId!;
+      const before: ProtocolSnapshot = {
+        ...canonical, rules: [],
+        transactions: [{
+          ...canonical.transactions[0]!, categoryId: null, categoryName: null,
+        }],
+      };
+      const terms = {
+        ...TEST_RULE,
+        conditions: [{ field: 'payee' as const, op: 'is' as const, value: payeeId }],
+        actions: [{ op: 'set' as const, field: 'category' as const, value: categoryId }],
+      };
       const native = await createNativeRuleMutationProtocol();
       const nativePlan = native.planCreateRule({
-        name: terms.name,
-        conditions: terms.conditions,
-        actions: terms.actions,
+        name: TEST_RULE_NAME,
+        conditions: [terms.conditions[0]!],
+        actions: [terms.actions[0]!],
         budgetId: TEST_BUDGET_ID,
+        stage: 'post',
         conditionsOp: 'and',
-      }, canonical);
+        reviewContext: TEST_REVIEW_CONTEXT,
+      }, before);
       store.getProposal.mockResolvedValue(mockProposal({
         payload: {
           ...TEST_RULE_PAYLOAD,
+          categoryId,
           rule: terms,
           composite: { ...TEST_RULE_PAYLOAD.composite, nativePayloadHash: nativePlan.hash },
         },
         preconditions: JSON.stringify({
           ...TEST_RULE_PRECONDITIONS,
-          actualVersion: canonical.actualVersion,
+          actualVersion: before.actualVersion,
           nativeRule: terms,
           nativePlan,
+          reviewedSimulation: native.simulateCreateRulePlan(nativePlan, before),
+          sourceAccounts: before.accounts.map(({ id }) => ({ accountId: id })),
+          sourceTransactions: before.transactions.map(({ id, accountId, categoryId: currentCategoryId }) => ({
+            transactionId: id, accountId, categoryId: currentCategoryId,
+          })),
         }),
       }));
-      const before: ProtocolSnapshot = {
-        ...canonical, rules: [],
-        transactions: [{
-          ...canonical.transactions[0]!, payeeName: 'Grocery Store', payeeId: null,
-          categoryId: null, categoryName: null,
-        }],
-      };
       const matching: Rule = {
-        id: 'another-existing-rule', name: 'Grocery Store', order: 0, inactive: false,
+        id: 'another-existing-rule', name: 'Display label only', order: 0, inactive: false,
         trigger: { stage: 'post', conditionsOp: 'and', conditions: terms.conditions },
-        actions: [{ op: 'set', field: 'category', value: categoryId }],
+        actions: terms.actions,
       };
       const returned: Rule = { ...matching, id: TEST_RULE_ID, actions: [{ op: 'set', field: 'category', value: 'wrong-category' }] };
-      ledger.synchronize.mockResolvedValueOnce({ snapshot: before }).mockResolvedValueOnce({
+      ledger.synchronize.mockReset().mockResolvedValueOnce({
+        snapshot: before, rulePlanningSourceAvailability: completeRuleSource(before.accounts),
+      }).mockResolvedValueOnce({
         snapshot: { ...before, rules: [matching, returned] },
+        rulePlanningSourceAvailability: completeRuleSource(before.accounts),
       });
-      service = new RuleMutationService(store, ledger, native);
+      service = new RuleMutationService(store, ledger, native, resolveCurrentContext);
       const result = await service.execute(defaultInput());
       expect(result.success).toBe(false);
       expect(result.verified).toBe(false);
@@ -638,7 +862,7 @@ describe('RuleMutationService', () => {
 
   it('rejects a native plan that changes the approved category action before writing', async () => {
     rust.planCreateRule.mockReturnValue(
-      mockRuleMutationPlan({ actions: [{ type: 'set_category', value: 'cat_other' }] }),
+      mockRuleMutationPlan({ actions: [{ op: 'set', field: 'category', value: 'cat_other' }] }),
     );
 
     const result = await service.execute(defaultInput());
@@ -679,7 +903,7 @@ describe('RuleMutationService', () => {
       ...TEST_RULE_PRECONDITIONS,
       nativePlan: {
         ...TEST_NATIVE_PLAN,
-        trigger: { type: 'payee_is', value: 'tampered merchant' },
+        trigger: { ...TEST_NATIVE_PLAN.trigger, conditions: [{ field: 'payee', op: 'is', value: 'tampered-payee-id' }] },
       },
     };
     store.getProposal.mockResolvedValue(mockProposal({
@@ -733,7 +957,13 @@ describe('RuleMutationService', () => {
   });
 
   it('does not write when simulation matches no transactions', async () => {
-    rust.simulateCreateRulePlan.mockReturnValue(mockRuleSimulationResult({ transactionsMatched: 0 }));
+    const reviewedSimulation = mockRuleSimulationResult({
+      transactionsMatched: 0, transactionsAffected: [], categoryDistribution: {}, examples: [],
+    });
+    store.getProposal.mockResolvedValue(mockProposal({
+      preconditions: JSON.stringify({ ...TEST_RULE_PRECONDITIONS, reviewedSimulation }),
+    }));
+    rust.simulateCreateRulePlan.mockReturnValue(reviewedSimulation);
 
     const result = await service.execute(defaultInput());
 
@@ -742,9 +972,11 @@ describe('RuleMutationService', () => {
   });
 
   it('does not write when simulation finds conflicts', async () => {
-    rust.simulateCreateRulePlan.mockReturnValue(
-      mockRuleSimulationResult({ conflicts: ['overlaps another active rule'] }),
-    );
+    const reviewedSimulation = mockRuleSimulationResult({ conflicts: ['existing-rule-overlap'] });
+    store.getProposal.mockResolvedValue(mockProposal({
+      preconditions: JSON.stringify({ ...TEST_RULE_PRECONDITIONS, reviewedSimulation }),
+    }));
+    rust.simulateCreateRulePlan.mockReturnValue(reviewedSimulation);
     const result = await service.execute(defaultInput());
 
     expect(result.reasonCodes).toContain('simulation_conflicts');
@@ -1006,11 +1238,6 @@ describe('RuleMutationService', () => {
       const result = await service.execute(defaultInput());
 
       expect(result).toMatchObject({ success: true, verified: true, ruleId: TEST_RULE_ID });
-      expect(ledger.deleteRule).toHaveBeenCalledWith(TEST_RULE_ID, {
-        rule,
-        actualVersion: TEST_RULE_ACTUAL_VERSION,
-      });
-      expect(ledger.getRuleCategoryGroupMembers).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -1229,7 +1456,8 @@ describe('RuleMutationService with a Native SQLite replay', () => {
     });
     const unavailableKey = 'native-rule-replay-no-transport';
     const acquisition = vi.spyOn(nativeStore, 'acquireProposalExecution');
-    const unavailable = await new RuleMutationService(nativeStore, null, null).execute({
+    const resolveUnavailable = vi.fn(unavailableCurrentContext);
+    const unavailable = await new RuleMutationService(nativeStore, null, null, resolveUnavailable).execute({
       actorId: 'executor',
       proposalId: proposal.id,
       approvalId: approval.id,
@@ -1279,8 +1507,8 @@ describe('RuleMutationService with a Native SQLite replay', () => {
     const applyOverrideAgain = vi.spyOn(nativeStore, 'setRuleOverride');
     const ledger = createLedgerMock();
     const service = verified
-      ? new RuleMutationService(nativeStore, null, null)
-      : new RuleMutationService(nativeStore, ledger, createRustMock());
+      ? new RuleMutationService(nativeStore, null, null, resolveUnavailable)
+      : new RuleMutationService(nativeStore, ledger, createRustMock(), resolveUnavailable);
     const result = await service.execute({
       actorId: 'executor',
       proposalId: proposal.id,
@@ -1295,7 +1523,7 @@ describe('RuleMutationService with a Native SQLite replay', () => {
     expect(ledger.synchronize).not.toHaveBeenCalled();
     expect(applyOverrideAgain).not.toHaveBeenCalled();
     await nativeStore.supersedeProposal(proposal.id);
-    const terminalReplay = await new RuleMutationService(nativeStore, ledger, createRustMock()).execute({
+    const terminalReplay = await new RuleMutationService(nativeStore, ledger, createRustMock(), resolveUnavailable).execute({
       actorId: 'executor', proposalId: proposal.id, auth: human('executor'),
       requestId: 'native-rule-replay-after-supersession', idempotencyKey,
     });
@@ -1304,6 +1532,7 @@ describe('RuleMutationService with a Native SQLite replay', () => {
     });
     expect(ledger.synchronize).not.toHaveBeenCalled();
     expect(applyOverrideAgain).not.toHaveBeenCalled();
+    expect(resolveUnavailable).not.toHaveBeenCalled();
   });
   it.each(['oneOf', 'notOneOf'] as const)(
     'rechecks category-group member grants through Native SQLite for %s rules',
@@ -1447,7 +1676,7 @@ describe('RuleMutationService with a Native SQLite replay', () => {
       });
 
       const ledger = createLedgerMock();
-      const result = await new RuleMutationService(nativeStore, ledger, createRustMock()).execute({
+      const result = await new RuleMutationService(nativeStore, ledger, createRustMock(), unavailableCurrentContext).execute({
         actorId: 'executor',
         proposalId: proposal.id,
         approvalId: approval.id,
@@ -1466,4 +1695,231 @@ describe('RuleMutationService with a Native SQLite replay', () => {
       })).toBeNull();
     },
   );
+
+  it.each((['update_rule', 'delete_rule'] as const).flatMap((operation) =>
+    (operation === 'delete_rule'
+      ? ['source', 'rule', 'override', 'category groups', 'adapter final rules', 'delete verification']
+      : ['source', 'rule', 'override', 'category groups']
+    ).flatMap((boundary) => [
+      'unchanged', 'executor revoked', 'origin revoked', 'approver revoked', 'approval expired',
+      'consumed approval invalidated', 'superseded', 'policy changed', 'credential revoked',
+      'credential expired', 'credential check failed', 'executor changed',
+    ].map((change) => ({ operation, boundary, change }))),
+  ))('fences acquired lifecycle $operation at awaited $boundary after $change', async ({
+    operation, boundary, change,
+  }) => {
+    nativeStore = new SqliteWorkflowStore(':memory:');
+    await nativeStore.claimBootstrap({
+      name: 'Owner', email: 'owner@example.test', claimId: 'native-lifecycle-fence',
+    });
+    await nativeStore.finalizeBootstrap({ claimId: 'native-lifecycle-fence', ownerUserId: 'owner' });
+    const governance = nativeStore.governance;
+    const space = governance.bindBudget({
+      spaceId: governance.createSpace({
+        actorId: 'owner', name: 'Native lifecycle fence', kind: 'shared', now, auth: human('owner'),
+      }).id,
+      budgetId, now, auth: human('owner'),
+    });
+    const memberships: Record<string, string> = {};
+    for (const actorId of ['proposer', 'approver', 'executor']) {
+      await nativeStore.upsertActorMembership(actorId, 'active', [], 'native-lifecycle-fence');
+      memberships[actorId] = governance.addMembership({
+        spaceId: space.id, actorId, validFrom: now, now, auth: human('owner'),
+      }).id;
+    }
+    governance.setPolicy({
+      spaceId: space.id, expectedVersion: governance.getPolicy({ spaceId: space.id })!.version,
+      policy: { minimumApprovers: 1, approvalThresholds: [], operationApprovers: { [operation]: 1 } },
+      now, auth: human('owner'),
+    });
+    const rule = {
+      ...TEST_RULE_BEFORE, id: ruleId, order: 0,
+      name: boundary === 'adapter final rules' ? '' : TEST_RULE_NAME,
+      trigger: [{ field: 'category_group', op: 'is', value: 'group-food' }],
+      actions: [{ op: 'set', field: 'category', value: 'cat_groceries' }],
+    };
+    const scope = { spaceId: space.id, budgetId, ruleId };
+    const originalOverride = await nativeStore.setRuleOverride({
+      ...scope, inactive: true, expectedVersion: null,
+    });
+    const categoryGroupMembers = { 'group-food': ['cat_dining', 'cat_groceries'] };
+    const payload = operation === 'update_rule'
+      ? { kind: 'update_rule' as const, ruleId, inactive: false }
+      : { kind: 'delete_rule' as const, ruleId };
+    const preconditions = {
+      rule, override: originalOverride, actualVersion: '26.7.0', categoryGroupMembers,
+    };
+    const resources = [
+      { resourceKind: 'budget' as const, resourceId: budgetId },
+      ...deriveProposalAuthorizationFacts(operation, payload, preconditions).resources,
+    ];
+    const grant = (actorId: string, capability: string, granted = true) => {
+      for (const resource of resources) governance.setResourceGrant({
+        spaceId: space.id, budgetId, actorId, membershipId: memberships[actorId]!,
+        capability, ...resource, granted, now, auth: human('owner'),
+      });
+    };
+    grant('proposer', 'rule:propose');
+    grant('approver', 'rule:approve');
+    grant('executor', 'rule:execute');
+    // Changing the executor must invalidate this acquisition even if the new actor is authorized.
+    grant('approver', 'rule:execute');
+    const shortly = '2098-01-01T12:00:30.000Z';
+    const proposal = await nativeStore.createProposal({
+      spaceId: space.id, operation, budgetId, payload,
+      preconditions: JSON.stringify(preconditions), policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+      expiresAt, actorId: 'proposer', auth: human('proposer'), provenance: 'manual',
+    });
+    const approval = await nativeStore.createApproval({
+      proposalId: proposal.id, payloadHash: proposal.payloadHash, actorId: 'approver',
+      expiresAt: change === 'approval expired' ? shortly : expiresAt, now, auth: human('approver'),
+    });
+    let reached!: () => void;
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { reached = resolve; });
+    const resume = new Promise<void>((resolve) => { release = resolve; });
+    let didPause = false;
+    const pause = async (currentBoundary: string) => {
+      if (boundary === currentBoundary && !didPause) {
+        didPause = true;
+        reached();
+        await resume;
+      }
+    };
+    const snapshot = mockProtocolSnapshot({ snapshotDate: now, actualVersion: '26.7.0' });
+    const ledger = createLedgerMock();
+    let deleted = false;
+    ledger.synchronize.mockImplementation(async () => {
+      await pause(deleted ? 'delete verification' : 'source');
+      return { snapshot, warnings: [] };
+    });
+    ledger.listRules.mockImplementation(async () => {
+      await pause('rule');
+      return deleted ? [] : [rule];
+    });
+    ledger.getRuleCategoryGroupMembers.mockImplementation(async () => {
+      await pause('category groups');
+      return categoryGroupMembers;
+    });
+    const readOverride = nativeStore.getRuleOverride.bind(nativeStore);
+    const getOverride = vi.spyOn(nativeStore, 'getRuleOverride').mockImplementation(async (input) => {
+      const result = await readOverride(input);
+      await pause('override');
+      return result;
+    });
+    const writeOverride = vi.spyOn(nativeStore, 'setRuleOverride');
+    const removeOverride = vi.spyOn(nativeStore, 'removeRuleOverride');
+    ledger.deleteRule.mockImplementation(async () => { deleted = true; });
+    let connector: ActualConnector | undefined;
+    let sdk: ActualClient | undefined;
+    if (boundary === 'adapter final rules') {
+      const sdkRule = {
+        id: ruleId, stage: rule.stage, conditionsOp: rule.conditionsOp,
+        conditions: rule.trigger, actions: rule.actions, tombstone: false,
+      };
+      sdk = {
+        init: vi.fn().mockResolvedValue(undefined), shutdown: vi.fn().mockResolvedValue(undefined),
+        getBudgets: vi.fn().mockResolvedValue([{
+          id: budgetId, groupId: budgetId, name: 'Native lifecycle fence',
+        }]),
+        downloadBudget: vi.fn().mockResolvedValue(undefined),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getRules: vi.fn(async () => {
+          await pause('adapter final rules');
+          return deleted ? [] : [sdkRule];
+        }),
+        deleteRule: vi.fn(async () => { deleted = true; return true; }),
+        sync: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ActualClient;
+      connector = new ActualConnector({
+        client: sdk, credentialStore: new NullCredentialStore(), mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-native-lifecycle-fence',
+      });
+      await connector.connect({ serverUrl: 'http://test:5006', secretKey: 'test' });
+      await connector.selectBudget(budgetId);
+      // Use the real adapter delete path, not a mock invoking a prospective fence.
+      ledger.deleteRule.mockImplementation(connector.deleteRule.bind(connector));
+    }
+    let credentialCurrent = true;
+    const executionInput: ExecuteRuleInput = {
+      actorId: 'executor', proposalId: proposal.id, approvalId: approval.id,
+      requestId: 'native-lifecycle-fence', idempotencyKey: 'native-lifecycle-fence',
+      auth: {
+        ...human('executor'),
+        credentialExpiresAt: change === 'credential expired' ? shortly : expiresAt,
+        isCredentialValid: () => {
+          if (!credentialCurrent && change === 'credential check failed')
+            throw new Error('Session lookup failed');
+          return credentialCurrent;
+        },
+      },
+    };
+    const execution = new RuleMutationService(
+      nativeStore, ledger, createRustMock(), unavailableCurrentContext,
+    ).execute(executionInput);
+    try {
+      await Promise.race([
+        paused,
+        execution.then((result) => {
+          throw new Error(`Lifecycle stopped before ${boundary}: ${JSON.stringify(result)}`);
+        }),
+      ]);
+      expect((await nativeStore.getApproval(approval.id))?.status).toBe('consumed');
+      if (change === 'executor revoked') grant('executor', 'rule:execute', false);
+      if (change === 'origin revoked') grant('proposer', 'rule:propose', false);
+      if (change === 'approver revoked') grant('approver', 'rule:approve', false);
+      if (change === 'superseded') await nativeStore.supersedeProposal(proposal.id);
+      if (change === 'policy changed') governance.setPolicy({
+        spaceId: space.id, expectedVersion: governance.getPolicy({ spaceId: space.id })!.version,
+        policy: { minimumApprovers: 2, approvalThresholds: [], operationApprovers: { [operation]: 2 } },
+        now, auth: human('owner'),
+      });
+      if (change === 'credential revoked' || change === 'credential check failed')
+        credentialCurrent = false;
+      if (change.endsWith('expired')) vi.setSystemTime(new Date(shortly));
+      if (change === 'consumed approval invalidated') {
+        const internals = nativeStore as unknown as {
+          db: { prepare(sql: string): { run(id: string): unknown } };
+        };
+        internals.db.prepare(
+          "UPDATE proposal_approvals SET status='active', consumed_at=NULL WHERE id=?",
+        ).run(approval.id);
+      }
+      if (change === 'executor changed') {
+        executionInput.actorId = 'approver';
+        executionInput.auth = human('approver');
+      }
+      release();
+      const result = await execution;
+      const unchanged = change === 'unchanged';
+      expect(result.success, JSON.stringify({ operation, boundary, change, result })).toBe(unchanged);
+      expect(result.verified).toBe(unchanged);
+      if (!unchanged) expect(result.reasonCodes).toContain(
+        change === 'policy changed' ? 'policy_version_mismatch'
+          : change === 'superseded' ? 'proposal_superseded'
+          : ['approval expired', 'consumed approval invalidated', 'approver revoked'].includes(change)
+            ? 'approval_required' : 'authorization_denied',
+      );
+      expect(writeOverride).toHaveBeenCalledTimes(operation === 'update_rule' && unchanged ? 1 : 0);
+      expect(ledger.deleteRule).toHaveBeenCalledTimes(
+        operation === 'delete_rule' &&
+          (unchanged || boundary === 'delete verification' || boundary === 'adapter final rules') ? 1 : 0,
+      );
+      if (sdk) expect(sdk.deleteRule).toHaveBeenCalledTimes(unchanged ? 1 : 0);
+      expect(removeOverride).toHaveBeenCalledTimes(operation === 'delete_rule' && unchanged ? 1 : 0);
+      if (!unchanged) expect(await readOverride(scope)).toEqual(originalOverride);
+      expect((await nativeStore.getIdempotencyRecord('native-lifecycle-fence'))?.status)
+        .toBe(unchanged ? 'succeeded' : 'terminal_failed');
+      const audits = await nativeStore.queryAuditRecordsByProposal(proposal.id);
+      expect(audits.filter((audit) => audit.classification === 'execution_started')).toHaveLength(1);
+      expect(audits.some((audit) => audit.classification ===
+        (unchanged ? 'execution_completed' : 'execution_failed'))).toBe(true);
+      expect(ledger.createRule).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await execution;
+      getOverride.mockRestore();
+      await connector?.disconnect();
+    }
+  });
 });

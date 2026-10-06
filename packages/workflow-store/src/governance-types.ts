@@ -1,7 +1,15 @@
 import type { Database } from 'better-sqlite3';
 
+/** Live credential metadata supplied only by a trusted authentication adapter. */
+export interface CredentialLifetime {
+  /** Null denotes an actual nonexpiring credential; omitted for trusted local auth. */
+  readonly credentialExpiresAt?: string | null;
+  /** Synchronous authoritative revocation/expiry check at the caller's fresh time. */
+  readonly isCredentialValid?: (now: string) => boolean;
+}
+
 /** A server-verified, recently reauthenticated human session. */
-export interface HumanControlContext {
+export interface HumanControlContext extends CredentialLifetime {
   readonly method: 'human-session';
   readonly actorId: string;
   readonly sessionId: string;
@@ -9,7 +17,7 @@ export interface HumanControlContext {
 }
 
 /** Verified execution identity supplied by trusted server code, never an HTTP body. */
-export type OperationalAuth =
+export type OperationalAuth = CredentialLifetime & (
   | HumanControlContext
   | { readonly method: 'session'; readonly actorId: string; readonly sessionId: string }
   | {
@@ -27,7 +35,7 @@ export type OperationalAuth =
       readonly principalType: 'agent';
       readonly delegationId: string;
       readonly delegationVersion: string;
-    };
+    });
 
 /** A personal or shared authorization boundary with an optional unique budget binding. */
 export interface Space {
@@ -216,6 +224,18 @@ export interface GovernanceOperation {
   readonly evidenceId?: string;
   readonly resourceKind?: GovernanceResourceKind;
   readonly resourceId?: string;
+}
+
+/** Server-derived numerical totals for exactly the private Money occurrences emitted by a read. */
+export interface GovernanceFinancialDisclosure {
+  readonly operationCount: number;
+  readonly grossOutgoing: Readonly<Record<string, bigint>>;
+}
+
+/** Additional read-only caps; these totals never replace source/effect or subject authorization. */
+export interface GovernanceReadDisclosureLimits {
+  readonly collection: GovernanceFinancialDisclosure;
+  readonly subject: GovernanceFinancialDisclosure;
 }
 
 /** Full request accepted by the deterministic synchronous governance evaluator. */

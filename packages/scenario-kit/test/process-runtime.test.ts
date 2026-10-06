@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   access,
   lstat,
@@ -11,7 +11,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createServer, Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -366,6 +366,52 @@ describe('scenario process runtime ownership and lifecycle', () => {
         await stopScenarioProcesses(handle);
       } finally {
         await occupied.close();
+      }
+    },
+  );
+
+  it(
+    'keeps Actual startup independent when a released ephemeral port is immediately reused',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      const first = await occupiedPort();
+      const second = await occupiedPort();
+      await first.close();
+      await second.close();
+      const reserved = new Set<number>();
+      const listen = Server.prototype.listen;
+      const allocation = vi.spyOn(Server.prototype, 'listen').mockImplementation(function (
+        this: Server,
+        ...args: unknown[]
+      ) {
+        if (args[0] === 0 && args[1] === '127.0.0.1') {
+          const port = reserved.has(first.port) ? second.port : first.port;
+          args[0] = port;
+          reserved.add(port);
+          this.once('close', () => reserved.delete(port));
+        }
+        return Reflect.apply(listen, this, args) as Server;
+      });
+      let handle: ScenarioProcesses | undefined;
+      try {
+        handle = await startShell('http://127.0.0.1:39003');
+        allocation.mockRestore();
+        await startScenarioActual(handle);
+        expect(handle.actualUrl).not.toBe(handle.webUrl);
+        const response = await fetch(new URL('/account/needs-bootstrap', handle.actualUrl), {
+          signal: AbortSignal.timeout(10_000),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          status: 'ok',
+          data: { bootstrapped: true, loginMethod: 'password', multiuser: false },
+        });
+      } finally {
+        allocation.mockRestore();
+        if (handle) {
+          activeProcesses.delete(handle);
+          await stopScenarioProcesses(handle);
+        }
       }
     },
   );

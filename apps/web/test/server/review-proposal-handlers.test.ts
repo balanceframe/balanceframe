@@ -9,9 +9,14 @@ import type { EventWithContext } from '../../server/utils/workflow-store';
 import type { GenericActionProposal, GenericProposalOperation } from '@balanceframe/workflow-store';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
 import fixture from '../../../../protocol/fixtures/representative.json';
-import { createNativeRuleMutationProtocol } from '@balanceframe/application';
+import { createNativeRuleMutationProtocol, MerchantIntelligenceService } from '@balanceframe/application';
+import type { RuleMutationPlan, RuleReviewContext, RuleSimulationResult } from '@balanceframe/application';
+import { createRuleProposal } from '../../server/utils/rule-create';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import { merchantConnectionId } from '../../../../packages/application/src/merchant-service';
+import { nativeReviewFixture } from './native-review.fixture';
 
+import { completeNativeRuleSourceAvailability, grantNativeRuleSources, nativeRuleSource } from './native-rule-source.fixture';
 const canonicalSnapshot = canonicalProtocolSnapshotSchema.parse(fixture);
 
 const { loadConfig, connect } = vi.hoisted(() => ({
@@ -39,6 +44,7 @@ const actorId = 'proposal-reader';
 const now = '2026-08-01T12:00:00.000Z';
 const expiresAt = '2026-08-02T12:00:00.000Z';
 const transaction = fixture.transactions[0]!;
+const currentPayee = canonicalSnapshot.payees.find((payee) => payee.id === transaction.payeeId)!;
 const currentCategoryId = transaction.categoryId!;
 const categoryId = fixture.transactions[1]!.categoryId!;
 const RULE_ID = 'current-fixture-rule';
@@ -181,6 +187,14 @@ function grant() {
     grantTo(actorId, actorMembershipId, 'existence', 'category', id);
     grantTo(actorId, actorMembershipId, 'name', 'category', id);
   }
+  grantNativeRuleSources(store,{ spaceId,budgetId,actorId,membershipId:actorMembershipId,now },canonicalSnapshot);
+  for (const a of canonicalSnapshot.accounts) grantTo(actorId,actorMembershipId,'rule:propose','account',a.id);
+  for (const c of canonicalSnapshot.categories) grantTo(actorId,actorMembershipId,'rule:propose','category',c.id);
+  const visit = (rows: typeof canonicalSnapshot.transactions) => {
+    for (const t of rows) { grantTo(actorId,actorMembershipId,'rule:propose','transaction',t.id); visit(t.subtransactions); }
+  };
+  visit(canonicalSnapshot.transactions);
+  for (const r of canonicalSnapshot.rules) grantTo(actorId,actorMembershipId,'rule:propose','rule',r.id);
 }
 
 async function addMember(memberId: string): Promise<string> {
@@ -208,9 +222,16 @@ function grantRuleResources(granteeId: string, membershipId: string, capability:
     ['category', categoryId],
   ] as const)
     grantTo(granteeId, membershipId, capability, kind, id);
+  for (const a of canonicalSnapshot.accounts) grantTo(granteeId,membershipId,capability,'account',a.id);
+  for (const c of canonicalSnapshot.categories) grantTo(granteeId,membershipId,capability,'category',c.id);
+  for (const r of canonicalSnapshot.rules) grantTo(granteeId,membershipId,capability,'rule',r.id);
+  const visit = (rows: typeof canonicalSnapshot.transactions) => {
+    for (const t of rows) { grantTo(granteeId,membershipId,capability,'transaction',t.id); visit(t.subtransactions); }
+  };
+  visit(canonicalSnapshot.transactions);
 }
 
-async function review() {
+async function review(evidence: Record<string, unknown> = {}) {
   const discovered = await store.createReviewItem({
     transactionId: transaction.id,
     budgetId,
@@ -218,6 +239,7 @@ async function review() {
     classifier: 'fixture',
     provenance: 'test',
     sourceTransaction,
+    evidence,
   });
   const suggestion = await store.transitionInternalReviewItem(discovered.id, {
     toStatus: 'suggestion_generated',
@@ -270,12 +292,12 @@ async function proposal(
         categoryId,
         composite: baseComposite,
         rule: {
-          name: 'Merchant rule',
-          conditions: [{ field: 'payee_name', op: 'is', value: transaction.payeeName }],
-          actions: [{ type: 'set-category', field: 'category', value: categoryId }],
+          stage: 'post', conditionsOp: 'and',
+          conditions: [{ field: 'payee', op: 'is', value: transaction.payeeId }],
+          actions: [{ op: 'set', field: 'category', value: categoryId }],
         },
       };
-      facts = { ...supplied, actualVersion: fixture.actualVersion };
+      facts = { ...supplied, ruleName: 'Merchant rule', actualVersion: fixture.actualVersion };
       break;
     case 'update_rule':
       payload = { kind: 'update_rule', ruleId: RULE_ID, inactive: true, composite: baseComposite };
@@ -378,11 +400,15 @@ beforeEach(async () => {
     auth: ownerAuth,
   }).id;
   connect.mockImplementation(async (operation) => operation({
-    config: { budgetId },
+    config: { budgetId, serverUrl: 'https://actual.invalid' },
     budget: { id: budgetId },
-    connector: {},
+    connector: { ...nativeRuleSource(() => canonicalSnapshot), synchronize: vi.fn(async () => ({
+      snapshot: canonicalSnapshot, financialSnapshot: { legacySnapshot: canonicalSnapshot },
+      rulePlanningSourceAvailability:completeNativeRuleSourceAvailability(canonicalSnapshot),
+    })) },
     synchronization: {
       snapshot: canonicalSnapshot,
+      rulePlanningSourceAvailability:completeNativeRuleSourceAvailability(canonicalSnapshot),
       financialSnapshot: {
         legacySnapshot: {
           accounts: canonicalSnapshot.accounts,
@@ -408,26 +434,217 @@ afterEach(() => {
 afterAll(() => store.close());
 
 describe('review proposal creation and detail', () => {
+  it('rechecks private Review rule proposal fields after the final configuration await revokes only full-read', async () => {
+    grant();
+    const item = await review();
+    const createProposal = store.createProposal.bind(store);
+    let published = false;
+    vi.spyOn(store, 'createProposal').mockImplementation(async (input) => {
+      const proposal = await createProposal(input);
+      published = true;
+      return proposal;
+    });
+    loadConfig.mockImplementation(async () => {
+      if (published) store.governance.provisionResourceGrant({
+        spaceId, budgetId, actorId, membershipId: actorMembershipId, capability: 'full-read',
+        resourceKind: 'budget', resourceId: budgetId, granted: false, now,
+      });
+      return { version: 1, budgetId, serverUrl: 'https://actual.invalid', budgetName: 'Fixture', groupId: 'fixture-group' };
+    });
+    const response = await propose(event({ reviewId: item.id, categoryId }));
+    for (const capability of ['rule:propose', 'source', 'observe'])
+      expect(store.liquidity.isAuthorized({
+        actorId, budgetId, spaceId, membershipId: actorMembershipId, now,
+        governancePolicyVersion: store.governance.getPolicy({ spaceId })!.version,
+        auth: { method: 'session', actorId, sessionId: `session:${actorId}` },
+        resourceKind: 'budget', resourceId: budgetId, capability,
+      })).toBe(true);
+    expect((await store.getReviewItem(item.id))?.version).toBe(item.version);
+    expect(store.liquidity.isAuthorized({
+      actorId, budgetId, spaceId, membershipId: actorMembershipId, now,
+      governancePolicyVersion: store.governance.getPolicy({ spaceId })!.version,
+      auth: { method: 'session', actorId, sessionId: `session:${actorId}` },
+      resourceKind: 'budget', resourceId: budgetId, capability: 'full-read',
+    })).toBe(false);
+    expect(response.result?.proposal.payload ?? null).toBeNull();
+    expect(response.result?.proposal.preconditions ?? null).toBeNull();
+  });
+
+  it.each(['stale-version', 'missing-version', 'missing-revision', 'rebound-revision', 'foreign-connection'] as const)('direct Review rule factory refuses %s immutable capture rather than borrowing live facts', async (state) => {
+    grant();
+    const publication: { authorize?: () => boolean } = {};
+    const resolve = MerchantIntelligenceService.prototype.getCurrentRuleReviewContext;
+    vi.spyOn(MerchantIntelligenceService.prototype, 'getCurrentRuleReviewContext')
+      .mockImplementation(function (this: MerchantIntelligenceService, actor, input) {
+        return resolve.call(this, actor, { ...input, capturePublicationAuthority: (authorize) => {
+          publication.authorize = authorize;
+          input.capturePublicationAuthority?.(authorize);
+        } });
+      });
+    const item = await nativeReviewFixture(store, {
+      scope: { spaceId, budgetId, connectionId: merchantConnectionId({ budgetId, serverUrl: 'https://actual.invalid' }) },
+      transaction: canonicalSnapshot.transactions.find((row) => row.id === transaction.id)!, categoryId: currentCategoryId,
+    });
+    const response = await propose(event({ reviewId: item.id, categoryId }));
+    expect(response.status).toBe('ok');
+    const stored = await store.getProposal(response.result!.proposal.id);
+    if (!stored) throw new Error('Canonical native rule proposal unavailable');
+    const facts = JSON.parse(stored.preconditions) as {
+      nativePlan: RuleMutationPlan; reviewContext: RuleReviewContext; reviewedSimulation: RuleSimulationResult;
+    };
+    const captured = { ...item, evidence: { ...item.evidence } };
+    if (state === 'stale-version') store['db'].prepare('UPDATE review_items SET version=version+1 WHERE id=?').run(item.id);
+    if (state === 'missing-version') Reflect.deleteProperty(captured, 'version');
+    if (state === 'missing-revision') delete captured.evidence.sourceRevision;
+    if (state === 'rebound-revision') captured.evidence.sourceRevision = 'unreviewed-source-revision';
+    if (state === 'foreign-connection') {
+      const foreign = await nativeReviewFixture(store, {
+        scope: { spaceId, budgetId, connectionId: merchantConnectionId({ budgetId, serverUrl: 'https://actual.other.test' }) },
+        transaction: canonicalSnapshot.transactions.find((row) => row.id === transaction.id)!, categoryId: currentCategoryId,
+      });
+      Object.assign(captured, foreign);
+    }
+    const input = {
+      store, spaceId, budgetId, actorId, auth: { method: 'session' as const, actorId, sessionId: 'factory-native-session' },
+      correlationId: 'immutable-native-factory', expiresAt: facts.reviewContext.expiresAt,
+      name: `Auto-rule for ${canonicalSnapshot.payees.find((row) => row.id === transaction.payeeId)!.name}`,
+      payeeId: transaction.payeeId!, categoryId,
+      transaction: canonicalSnapshot.transactions.find((row) => row.id === transaction.id)!,
+      nativePlan: facts.nativePlan, currentContext: facts.reviewContext, reviewedSimulation: facts.reviewedSimulation,
+      snapshot: canonicalSnapshot, origin: { kind: 'review' as const, review: captured },
+      assertPublicationCurrent: () => {
+        if (!publication.authorize?.()) throw new Error('Captured native source authority is unavailable');
+      },
+    };
+    const proposals = (await store.listProposals()).map((proposal) => proposal.id);
+    await expect(createRuleProposal(input)).rejects.toThrow();
+    expect((await store.listProposals()).map((proposal) => proposal.id)).toEqual(proposals);
+  });
+
+  it.each(['wrong-connection', 'wrong-space', 'historical', 'missing', 'malformed'] as const)('rule proposal refuses %s native Review provenance before source capture', async (source) => {
+    grant();
+    const selectedConnection = merchantConnectionId({ budgetId, serverUrl: 'https://actual.invalid' });
+    const nativeSource = nativeRuleSource(() => canonicalSnapshot);
+    const synchronize = vi.fn(async () => ({
+      snapshot: canonicalSnapshot, financialSnapshot: { legacySnapshot: canonicalSnapshot },
+      rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(canonicalSnapshot),
+    }));
+    connect.mockImplementation(async (operation) => operation({
+      config: { budgetId, serverUrl: 'https://actual.invalid' }, budget: { id: budgetId }, connector: { ...nativeSource, synchronize },
+      synchronization: {
+        snapshot: canonicalSnapshot, financialSnapshot: { legacySnapshot: canonicalSnapshot },
+        rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(canonicalSnapshot),
+      },
+    }));
+    const selectedSpace = source === 'wrong-space'
+      ? store.governance.createSpace({ actorId: OWNER_ID, name: 'Other native proposal namespace', kind: 'shared', now,
+        auth: { method: 'human-session', actorId: OWNER_ID, sessionId: `session:${OWNER_ID}`, reauthenticatedAt: now } }).id
+      : spaceId;
+    const item = await nativeReviewFixture(store, {
+      scope: { spaceId: selectedSpace, budgetId, connectionId: source === 'wrong-connection'
+        ? merchantConnectionId({ budgetId, serverUrl: 'https://actual.other.test' }) : selectedConnection },
+      transaction: canonicalSnapshot.transactions.find((row) => row.id === transaction.id)!, categoryId: currentCategoryId,
+      ...(source === 'historical' ? { historicalStatus: 'skipped' as const } : {}),
+      ...(source === 'missing' || source === 'malformed' ? { invalidReference: source } : {}),
+    });
+    const proposals = (await store.listProposals()).map((proposal) => proposal.id);
+    const response = await propose(event({ reviewId: item.id, categoryId }));
+    expect(response.status).toBe('error');
+    expect((await store.listProposals()).map((proposal) => proposal.id)).toEqual(proposals);
+    expect(await store.getReviewItem(item.id)).toEqual(item);
+    expect(synchronize).not.toHaveBeenCalled();
+    expect(nativeSource.captureMerchantSource).not.toHaveBeenCalled();
+    if (source !== 'wrong-connection') expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('can propose a rule from native Review bound to the exact selected source namespace', async () => {
+    grant();
+    const item = await nativeReviewFixture(store, {
+      scope: { spaceId, budgetId, connectionId: merchantConnectionId({ budgetId, serverUrl: 'https://actual.invalid' }) },
+      transaction: canonicalSnapshot.transactions.find((row) => row.id === transaction.id)!, categoryId: currentCategoryId,
+    });
+    const response = await propose(event({ reviewId: item.id, categoryId }));
+    expect(response.status).toBe('ok');
+    expect((await store.getProposal(response.result!.proposal.id))?.preconditions).toContain(item.id);
+    expect((await store.getReviewItem(item.id))?.status).toBe('pending_review');
+  });
+
+  it.each(['missing','failed-rules'] as const)('refuses Review proposal creation for %s trusted SDK availability', async (failure) => {
+    grant();
+    const item = await review();
+    const availability = completeNativeRuleSourceAvailability(canonicalSnapshot);
+    availability.rules = 'unavailable';
+    const sdk = {
+      snapshot:canonicalSnapshot,financialSnapshot:{legacySnapshot:canonicalSnapshot},
+      ...(failure === 'missing' ? {} : {rulePlanningSourceAvailability:availability}),
+    };
+    connect.mockImplementationOnce(async (operation) => operation({
+      config:{budgetId,serverUrl:'https://actual.invalid'},budget:{id:budgetId},
+      connector:{...nativeRuleSource(() => canonicalSnapshot),synchronize:vi.fn(async () => sdk)},
+      synchronization:sdk,
+    }));
+    const response = await propose(event({reviewId:item.id,categoryId}));
+    expect(response.status).toBe('error');
+    expect(await store.countProposals({budgetId,operations:['create_rule']})).toBe(0);
+  });
+
+  it('binds the exact stable-ID payload and complete reviewed simulation rather than a merchant label', async () => {
+    grant();
+    const item = await review({normalizedMerchant:'UNTRUSTED QUEUE DISPLAY',payeeName:'Untrusted stale payee label'});
+    const response = await propose(event({ reviewId: item.id, categoryId }));
+    expect(response.status).toBe('ok');
+    const stored = await store.getProposal(response.result!.proposal.id);
+    const preconditions = JSON.parse(stored!.preconditions) as Record<string, unknown>;
+    expect(preconditions.nativeRule).toEqual({
+      stage: 'post', conditionsOp: 'and',
+      conditions: [{ field: 'payee', op: 'is', value: transaction.payeeId }],
+      actions: [{ op: 'set', field: 'category', value: categoryId }],
+    });
+    expect(preconditions.ruleName).toBe(`Auto-rule for ${currentPayee.name}`);
+    expect(preconditions.ruleName).not.toContain('UNTRUSTED QUEUE DISPLAY');
+    expect(preconditions.ruleName).not.toContain(transaction.payeeName);
+    expect(preconditions.reviewContext).toMatchObject({
+      scope: { spaceId, budgetId }, evidenceKey: null,
+    });
+    const native = await createNativeRuleMutationProtocol();
+    expect(preconditions.reviewedSimulation).toEqual(native.simulateCreateRulePlan(
+      preconditions.nativePlan as Parameters<typeof native.simulateCreateRulePlan>[0], canonicalSnapshot,
+    ));
+    expect(preconditions.sourceTransactions).toEqual(canonicalSnapshot.transactions);
+    expect(response.result!.simulationStatus).toBe('present');
+  });
+
+  it('does not replace a merchant-linked missing current evidence record with direct-settings null authority', async () => {
+    grant();
+    const key = `merchant:transaction:${transaction.id}`;
+    for (const capability of ['evidence','normalized-evidence','source'])
+      store.governance.provisionResourceGrant({spaceId,budgetId,actorId,membershipId:actorMembershipId,resourceKind:'evidence',resourceId:key,capability,granted:true,now});
+    const item = await review({merchantEvidence:{evidenceKey:key}});
+    const response = await propose(event({reviewId:item.id,categoryId}));
+    expect(response.status).toBe('error');
+    expect(response.error?.code).toBe('PROPOSAL_UNAVAILABLE');
+    expect(await store.countProposals({budgetId,operations:['create_rule']})).toBe(0);
+  });
+
   it('creates a current native rule proposal from an authorized pending review', async () => {
     grant();
     const item = await review();
-    const name = `Auto-rule for ${transaction.payeeName}`;
+    const name = `Auto-rule for ${currentPayee.name}`;
     const native = await createNativeRuleMutationProtocol();
-    const nativePlan = native.planCreateRule({
-      name,
-      conditions: [{ field: 'payee_name', op: 'is', value: transaction.payeeName! }],
-      actions: [{ type: 'set-category', field: 'category', value: categoryId }],
-      budgetId,
-      stage: 'post',
-      conditionsOp: 'and',
-    }, canonicalSnapshot);
     const response = await propose(event({ reviewId: item.id, categoryId }));
     expect(response.error).toBeNull();
     expect(response.status).toBe('ok');
-    expect(response.result!.simulationStatus).toBe('missing');
+    expect(response.result!.simulationStatus).toBe('present');
 
     const id = response.result!.proposal.id;
     const stored = await store.getProposal(id);
+    const preconditions = JSON.parse(stored!.preconditions) as Record<string, unknown>;
+    const nativePlan = native.planCreateRule({
+      name, budgetId, stage: 'post', conditionsOp: 'and',
+      conditions: [{ field: 'payee', op: 'is', value: transaction.payeeId! }],
+      actions: [{ op: 'set', field: 'category', value: categoryId }],
+      reviewContext: preconditions.reviewContext as Parameters<typeof native.planCreateRule>[0]['reviewContext'],
+    }, canonicalSnapshot);
     expect(stored).toMatchObject({
       operation: 'create_rule',
       actorId,
@@ -440,13 +657,12 @@ describe('review proposal creation and detail', () => {
         categoryId,
         composite: { ...baseComposite, nativePayloadHash: nativePlan.hash },
         rule: {
-          name,
-          conditions: [{ field: 'payee_name', op: 'is', value: transaction.payeeName }],
-          actions: [{ type: 'set-category', field: 'category', value: categoryId }],
+          stage: 'post', conditionsOp: 'and',
+          conditions: [{ field: 'payee', op: 'is', value: transaction.payeeId }],
+          actions: [{ op: 'set', field: 'category', value: categoryId }],
         },
       },
     });
-    const preconditions = JSON.parse(stored!.preconditions) as Record<string, unknown>;
     expect(preconditions).toMatchObject({
       source: 'review',
       reviewId: item.id,
@@ -459,11 +675,10 @@ describe('review proposal creation and detail', () => {
         amount: transaction.amount,
       },
       nativeRule: {
-        name,
         stage: 'post',
         conditionsOp: 'and',
-        conditions: [{ field: 'payee_name', op: 'is', value: transaction.payeeName }],
-        actions: [{ type: 'set-category', field: 'category', value: categoryId }],
+        conditions: [{ field: 'payee', op: 'is', value: transaction.payeeId }],
+        actions: [{ op: 'set', field: 'category', value: categoryId }],
       },
       nativePlan,
     });
@@ -471,6 +686,7 @@ describe('review proposal creation and detail', () => {
     expect(connect).toHaveBeenCalledWith(expect.any(Function), {
       expectedBudgetId: budgetId,
       dispose: true,
+      synchronize: false,
     });
 
     const shown = await detail(event({}, id));

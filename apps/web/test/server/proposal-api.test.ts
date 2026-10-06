@@ -8,15 +8,15 @@ import {
 import type { GenericActionProposal, GenericProposalOperation } from '@balanceframe/workflow-store';
 import type { EventWithContext } from '../../server/utils/workflow-store';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import fixture from '../../../../protocol/fixtures/representative.json';
 import listProposals from '../../server/api/proposal/index.get';
+import proposalDetail from '../../server/api/proposal/[id].get';
 
 vi.mock('@balanceframe/application', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   createDefaultConnectionManager: () => ({ loadConfig: async () => ({ budgetId }) }),
 }));
-vi.mock('@balanceframe/workflow-store', async () =>
-  await import('../../../../packages/workflow-store/src/index'));
 
 const OWNER_ID = 'proposal-list-owner';
 const ACTOR_ID = 'proposal-list-human';
@@ -24,6 +24,7 @@ const NOW = '2026-08-01T12:00:00.000Z';
 const EXPIRES_AT = '2026-08-02T12:00:00.000Z';
 const RULE_ID = 'proposal-list-actual-rule';
 const transaction = fixture.transactions[0]!;
+const canonicalFixture = canonicalProtocolSnapshotSchema.parse(fixture);
 const targetCategoryId = fixture.transactions[1]!.categoryId!;
 const signedMinorUnits = BigInt(transaction.amount.minorUnits);
 const amount = {
@@ -171,9 +172,10 @@ function proposalInput(operation: GenericProposalOperation): {
           categoryId: targetCategoryId,
           composite,
           rule: {
-            name: 'Merchant rule',
-            conditions: [{ field: 'payee_name', op: 'is', value: transaction.payeeName }],
-            actions: [{ type: 'set-category', field: 'category', value: targetCategoryId }],
+            stage: 'post',
+            conditionsOp: 'and',
+            conditions: [{ field: 'payee', op: 'is', value: transaction.payeeId! }],
+            actions: [{ op: 'set', field: 'category', value: targetCategoryId }],
           },
         },
         preconditions: { actualVersion: fixture.actualVersion },
@@ -201,11 +203,17 @@ function proposalInput(operation: GenericProposalOperation): {
   }
 }
 
-async function seed(operation: GenericProposalOperation) {
+async function seed(operation: GenericProposalOperation, options: {
+  readonly preconditions?: Readonly<Record<string, unknown>>;
+  readonly payload?: GenericActionProposal['payload'];
+  readonly expiresAt?: string;
+} = {}) {
   grantProposal(operation);
-  const { payload, preconditions } = proposalInput(operation);
+  const input = proposalInput(operation);
+  const payload = options.payload ?? input.payload;
+  const preconditions = { ...input.preconditions, ...options.preconditions };
   const auth = { method: 'session' as const, actorId: ACTOR_ID, sessionId: `session:${ACTOR_ID}` };
-  const expiresAt = EXPIRES_AT;
+  const expiresAt = options.expiresAt ?? EXPIRES_AT;
   return store.createProposal({
     operation,
     spaceId,
@@ -226,6 +234,38 @@ async function seed(operation: GenericProposalOperation) {
     actorId: ACTOR_ID,
     auth,
     provenance: 'proposal-list-test',
+  });
+}
+
+function nativeSourceEnvelope() {
+  for (const capability of ['source', 'rule:view']) grant(capability, 'budget', budgetId);
+  for (const account of canonicalFixture.accounts)
+    for (const capability of ['existence', 'history', 'name', 'source', 'rule:propose'])
+      grant(capability, 'account', account.id);
+  for (const category of canonicalFixture.categories)
+    for (const capability of ['existence', 'name', 'rule:propose']) grant(capability, 'category', category.id);
+  for (const rule of canonicalFixture.rules) grant('rule:view', 'rule', rule.id);
+  for (const capability of ['transaction.view', 'source'])
+    grant(capability, 'transaction', transaction.id);
+  return {
+    sourceTransactions: [canonicalFixture.transactions[0]!],
+    sourceAccounts: canonicalFixture.accounts,
+    nativeImpact: {
+      payees: canonicalFixture.payees,
+      categories: canonicalFixture.categories,
+      rules: canonicalFixture.rules,
+    },
+  };
+}
+
+function privateReadLimit(restrictions: {
+  readonly maxOperationCount?: number;
+  readonly maxGrossOutgoing?: readonly { minorUnits: string; currency: string }[];
+}) {
+  store.governance.provisionResourceGrant({
+    spaceId, actorId: ACTOR_ID, membershipId, budgetId,
+    capability: 'full-read', resourceKind: 'budget', resourceId: budgetId,
+    granted: true, restrictions, now: NOW,
   });
 }
 
@@ -286,6 +326,80 @@ afterEach(() => vi.useRealTimers());
 afterAll(() => store.close());
 
 describe('proposal list route', () => {
+  it.each(['current', 'expired', 'withheld'] as const)(
+    'returns the complete reviewed native rule simulation with %s publication authority', async (state) => {
+      const reviewedSimulation = {
+        ruleId: '', name: canonicalFixture.payees[0]!.name,
+        transactionsMatched: 1, transactionsAffected: [transaction.id],
+        categoryDistribution: { [targetCategoryId]: 1 }, conflicts: [],
+        examples: [{ txId: transaction.id, payee: transaction.payeeName, amount: transaction.amount,
+          currentCategory: transaction.categoryId, wouldChange: true }],
+      };
+      grant('rule:propose', 'transaction', transaction.id);
+      const proposal = await seed('create_rule', { preconditions: { ...nativeSourceEnvelope(), reviewedSimulation } });
+      if (state === 'expired') vi.setSystemTime(new Date(Date.parse(EXPIRES_AT) + 1));
+      if (state === 'withheld') privateReadLimit({ maxOperationCount: 0 });
+      const listed = await listProposals(event());
+      expect(listed.status).toBe('ok');
+      const expectedStatus = state === 'withheld' ? 'missing' : state === 'expired' ? 'stale' : 'present';
+      expect(listed.result!.proposals.find(({ id }) => id === proposal.id)?.simulationStatus).toBe(expectedStatus);
+      const request = event();
+      request.context.params = { id: proposal.id };
+      const detail = await proposalDetail(request);
+      expect(detail.status).toBe('ok');
+      expect(detail.result!.simulationStatus).toBe(expectedStatus);
+      expect(detail.result!.simulation).toEqual(state === 'withheld' ? null : reviewedSimulation);
+      if (state === 'withheld') expect(detail.result!.proposal.preconditions).toBeNull();
+    },
+  );
+  it.each(['count', 'outgoing'] as const)(
+    'accounts for the repeated native simulation against the independent %s disclosure limit', async (limit) => {
+      const source = nativeSourceEnvelope();
+      const reviewedSimulation = {
+        ruleId: '', name: canonicalFixture.payees[0]!.name,
+        transactionsMatched: 1, transactionsAffected: [transaction.id],
+        categoryDistribution: { [targetCategoryId]: 1 }, conflicts: [],
+        examples: [{ txId: transaction.id, payee: transaction.payeeName, amount: transaction.amount,
+          currentCategory: transaction.categoryId, wouldChange: true }],
+      };
+      grant('rule:propose', 'transaction', transaction.id);
+      const proposal = await seed('create_rule', { preconditions: { ...source, reviewedSimulation } });
+      privateReadLimit(limit === 'count'
+        ? { maxOperationCount: source.sourceAccounts.length * 2 + 2 }
+        : { maxGrossOutgoing: [{ ...amount, minorUnits: (BigInt(amount.minorUnits) * 2n).toString() }] });
+      const listed = await listProposals(event());
+      expect(JSON.parse(listed.result!.proposals[0]!.preconditions).reviewedSimulation).toEqual(reviewedSimulation);
+      const request = event();
+      request.context.params = { id: proposal.id };
+      const detail = await proposalDetail(request);
+      expect(detail.status).toBe('ok');
+      expect(detail.result!.proposal).toMatchObject({ privateEnvelopeVisible: false, payload: null, preconditions: null });
+      expect(detail.result!.simulation).toBeNull();
+    },
+  );
+  it.each([false, true])('preserves persisted proposal payloads when operation-filtered listing is %s', async (filtered) => {
+    const first = await seed('set_category');
+    const second = await seed('create_rule');
+    const listed = await store.listProposals({
+      budgetId,
+      ...(filtered ? { operations: ['set_category', 'create_rule'] as GenericProposalOperation[] } : {}),
+    });
+    expect(listed.map(({ id, payload }) => ({ id, payload })).sort((left, right) => left.id.localeCompare(right.id)))
+      .toEqual([first, second].map(({ id, payload }) => ({ id, payload })).sort((left, right) => left.id.localeCompare(right.id)));
+  });
+  it('withholds every private envelope when a heterogeneous source-authorized collection contains a individually over-cap row', async () => {
+    const first = await seed('set_category');
+    const second = await seed('set_category', {
+      preconditions: { simulation: { projectedBalance: canonicalFixture.accounts[2]!.clearedBalance } },
+      expiresAt: '2026-08-02T12:01:00.000Z',
+    });
+    privateReadLimit({ maxOperationCount: 1 });
+    const combined = await listProposals(event());
+    expect(combined.status).toBe('ok');
+    expect(combined.result!.proposals.map(({ id }) => id).sort()).toEqual([first.id, second.id].sort());
+    expect(combined.result!.proposals.map(({ preconditions }) => preconditions)).toEqual(['null', 'null']);
+    expect(combined.result!.proposals.every(({ categoryId }) => categoryId === null)).toBe(true);
+  });
   it('lists each current-scope generic operation for the authenticated human', async () => {
     const operations: GenericProposalOperation[] = [
       'set_category',
@@ -293,7 +407,7 @@ describe('proposal list route', () => {
       'update_rule',
       'delete_rule',
     ];
-    const created = await Promise.all(operations.map(seed));
+    const created = await Promise.all(operations.map((operation) => seed(operation)));
 
     const response = await listProposals(event());
 
@@ -305,6 +419,104 @@ describe('proposal list route', () => {
     expect(response.result!.proposals.map(({ id }) => id).sort()).toEqual(
       created.map(({ id }) => id).sort(),
     );
+  });
+  it('caps repeated complete native source snapshots as one private outgoing disclosure collection', async () => {
+    const preconditions = nativeSourceEnvelope();
+    const first = await seed('create_rule', { preconditions });
+    privateReadLimit({ maxGrossOutgoing: [amount] });
+    const admitted = await listProposals(event());
+    expect(admitted.status).toBe('ok');
+    expect(admitted.result!.proposals.map(({ id }) => id)).toEqual([first.id]);
+    expect(JSON.parse(admitted.result!.proposals[0]!.preconditions).sourceTransactions)
+      .toEqual(preconditions.sourceTransactions);
+
+    const second = await seed('create_rule', {
+      preconditions, expiresAt: '2026-08-02T12:01:00.000Z',
+    });
+    const combined = await listProposals(event());
+    expect(combined.status).toBe('ok');
+    expect(combined.result!.proposals.map(({ id }) => id).sort())
+      .toEqual([first.id, second.id].sort());
+    expect(combined.result!.proposals.map(({ preconditions }) => preconditions))
+      .toEqual(['null', 'null']);
+    expect(combined.result!.proposals.every(({ categoryId }) => categoryId === null)).toBe(true);
+  });
+
+  it('counts source balances and derived Money slots without treating negative balances as ledger outgoing', async () => {
+    const source = nativeSourceEnvelope();
+    const preconditions = {
+      ...source,
+      simulation: { projectedBalance: canonicalFixture.accounts[2]!.clearedBalance },
+    };
+    const first = await seed('create_rule', { preconditions });
+    const perEnvelope = source.sourceAccounts.length * 2 + 2;
+    privateReadLimit({
+      maxOperationCount: perEnvelope,
+      maxGrossOutgoing: [{ ...amount, minorUnits: (BigInt(amount.minorUnits) * 2n).toString() }],
+    });
+    const admitted = await listProposals(event());
+    expect(admitted.status).toBe('ok');
+    expect(admitted.result!.proposals.map(({ id }) => id)).toEqual([first.id]);
+    expect(JSON.parse(admitted.result!.proposals[0]!.preconditions).simulation)
+      .toEqual(preconditions.simulation);
+
+    const second = await seed('create_rule', {
+      preconditions, expiresAt: '2026-08-02T12:01:00.000Z',
+    });
+    const combined = await listProposals(event());
+    expect(combined.status).toBe('ok');
+    expect(combined.result!.proposals.map(({ id }) => id).sort())
+      .toEqual([first.id, second.id].sort());
+    expect(combined.result!.proposals.map(({ preconditions }) => preconditions))
+      .toEqual(['null', 'null']);
+  });
+
+  it('charges the full private envelope separately from the preconditions-only list', async () => {
+    const input = proposalInput('set_category');
+    const proposal = await seed('set_category', {
+      payload: {
+        ...input.payload,
+        composite: {
+          ...composite,
+          operations: [{
+            operation: 'set_category', transactionId: transaction.id,
+            accountId: transaction.accountId, categoryId: targetCategoryId,
+            direction: signedMinorUnits < 0n ? 'outgoing' : 'incoming', amount,
+          }],
+        },
+      },
+    });
+    privateReadLimit({ maxGrossOutgoing: [amount] });
+    const listed = await listProposals(event());
+    expect(listed.result!.proposals.map(({ id }) => id)).toEqual([proposal.id]);
+    expect(JSON.parse(listed.result!.proposals[0]!.preconditions).transaction.amount).toEqual(amount);
+    const request = event();
+    request.context.params = { id: proposal.id };
+    const detail = await proposalDetail(request);
+    expect(detail.status).toBe('ok');
+    expect(detail.result!.proposal).toMatchObject({
+      id: proposal.id, privateEnvelopeVisible: false,
+      payload: null, preconditions: null, canApprove: false,
+    });
+  });
+
+  it('caps the repeated simulation in the exact detail response rather than only its proposal envelope', async () => {
+    const proposal = await seed('set_category', {
+      preconditions: { simulation: { projectedBalance: canonicalFixture.accounts[2]!.clearedBalance } },
+    });
+    privateReadLimit({ maxOperationCount: 2 });
+    const listed = await listProposals(event());
+    expect(listed.result!.proposals.map(({ id }) => id)).toEqual([proposal.id]);
+    expect(JSON.parse(listed.result!.proposals[0]!.preconditions).simulation.projectedBalance)
+      .toEqual(canonicalFixture.accounts[2]!.clearedBalance);
+    const request = event();
+    request.context.params = { id: proposal.id };
+    const detail = await proposalDetail(request);
+    expect(detail.status).toBe('ok');
+    expect(detail.result!.proposal).toMatchObject({
+      id: proposal.id, privateEnvelopeVisible: false, payload: null, preconditions: null,
+    });
+    expect(detail.result!.simulation).toBeNull();
   });
   it('withholds a private evidence-bearing proposal from a budget-only reader until its exact evidence grant exists', async () => {
     grantProposal('set_category');

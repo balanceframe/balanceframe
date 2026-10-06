@@ -94,7 +94,7 @@ export function createUnavailableAdapter(): ReviewControllerAdapter {
     correct: (_categoryId: string) => Promise.resolve(errorResult),
 
     // ── Rule creation ─────────────────────────────────────────────────
-    proposeRule: (_reviewId: string, _merchant: string, _categoryId: string) =>
+    proposeRule: (_reviewId: string, _categoryId: string) =>
       Promise.resolve(errorResult),
     reject: () => Promise.resolve(errorResult),
     skip: () => Promise.resolve(errorResult),

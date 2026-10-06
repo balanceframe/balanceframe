@@ -1,7 +1,15 @@
 import { ErrorInfo, errorResponse } from '@balanceframe/application/envelope';
+import { merchantPolicyViewSchema, merchantResearchPreviewSchema, merchantResearchOutcomeSchema, merchantResearchCacheSchema, merchantResearchPolicyViewSchema } from '@balanceframe/application';
 import type { CliCommand } from './index.js';
 import { z } from 'zod';
 
+const merchantResponseSchemas: Record<string, z.ZodType> = {
+  '/api/merchant/research/preview': merchantResearchPreviewSchema,
+  '/api/merchant/research': merchantResearchOutcomeSchema,
+  '/api/merchant/research/cache': merchantResearchCacheSchema,
+  '/api/merchant/research/policy': merchantResearchPolicyViewSchema,
+  '/api/merchant/space-policy': merchantPolicyViewSchema,
+};
 const authorizationSchema = z
   .object({ actorId: z.string().min(1), capability: z.string().min(1), allowed: z.boolean() })
   .nullable();
@@ -49,7 +57,7 @@ const envelopeSchema = z
     }
   });
 
-type Method = 'GET' | 'POST' | 'PUT';
+type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 type Query = Record<string, string | number | boolean | undefined>;
 type SpaceHeader = { kind: 'selected' } | { kind: 'none' } | { kind: 'explicit'; id: string };
 
@@ -197,6 +205,7 @@ async function send(
     else headers.set('authorization', `Bearer ${apiKey}`);
     if (selected) headers.set('X-BalanceFrame-Space', selected);
     if (options.body !== undefined) headers.set('content-type', 'application/json');
+    if (merchantResponseSchemas[path] && (method === 'POST' || method === 'PUT')) headers.set('origin', base.origin);
   } catch {
     return cliError(requestId, 'invalid_server_auth', 'The configured BalanceFrame credential or space is invalid.');
   }
@@ -238,6 +247,12 @@ async function send(
   if (envelope.status === 'error' && !envelope.error) {
     return cliError(requestId, 'invalid_server_response', 'The BalanceFrame server returned an invalid error envelope.');
   }
+  const resultSchema = merchantResponseSchemas[path];
+  if (envelope.status === 'ok' && resultSchema) {
+    const result = resultSchema.safeParse(envelope.result);
+    if (!result.success) return cliError(requestId, 'invalid_server_response', 'The BalanceFrame server returned an invalid merchant response.');
+    envelope.result = result.data;
+  }
   return responseText(envelope, credentialSecrets(apiKey, sessionCookie));
 }
 
@@ -273,6 +288,56 @@ export async function runServerCommand(cmd: CliCommand, requestId: string): Prom
   ) => send(requestId, path, 'GET', { query, space, humanControl });
 
   switch (cmd.command) {
+    case 'merchant.analyze':
+    case 'merchant.evidence':
+      return get('/api/merchant', queryOptions(options, { 'transaction-id': 'transactionId', cursor: 'cursor', limit: 'limit', 'facts-hash': 'factsHash' }));
+    case 'merchant.research.policy':
+      return get('/api/merchant/research/policy');
+    case 'merchant.research.preview':
+    case 'merchant.research.send':
+    case 'merchant.research.cache': {
+      const body = {
+        ...optionBody(options, { 'evidence-key': 'evidenceKey', 'evidence-revision': 'evidenceRevision', merchant: 'merchant' }),
+        locale: options.locale ?? null,
+        publicBusiness: true,
+        ...(cmd.command === 'merchant.research.send' ? { previewToken: options['preview-token'], consent: true, idempotencyKey: options['idempotency-key'] } : {}),
+      };
+      const path = cmd.command === 'merchant.research.send' ? '/api/merchant/research'
+        : cmd.command === 'merchant.research.preview' ? '/api/merchant/research/preview' : '/api/merchant/research/cache';
+      return post(path, body);
+    }
+    case 'merchant.space-policy.get':
+      return get('/api/merchant/space-policy');
+    case 'merchant.space-policy.set': {
+      const policy = objectJsonOption(requestId, 'policy', options.policy);
+      if ('error' in policy) return policy.error;
+      return put('/api/merchant/space-policy', { expectedVersion: Number(options['expected-version']), value: policy.value }, true);
+    }
+    case 'merchant.confirm':
+    case 'merchant.reject': {
+      const body = {
+        ...optionBody(options, { id: 'id', kind: 'kind', 'evidence-key': 'evidenceKey', 'evidence-revision': 'evidenceRevision', visibility: 'visibility' }),
+        expectedVersion: Number(options['expected-version']),
+        ...(options.kind === 'alias' ? {
+          transactionId: options['transaction-id'], sourceField: options['source-field'], targetPayeeId: options['target-payee-id'],
+          accountId: options['account-id'] === 'null' ? null : options['account-id'],
+        } : { patternId: options['pattern-id'] }),
+      };
+      return post(`/api/merchant/${cmd.command === 'merchant.confirm' ? 'confirm' : 'reject'}`, body, { kind: 'selected' }, true);
+    }
+    case 'merchant.policy.get':
+      return get('/api/merchant/policy');
+    case 'merchant.policy.set': {
+      const policy = objectJsonOption(requestId, 'policy', options.policy);
+      if ('error' in policy) return policy.error;
+      return put('/api/merchant/policy', { expectedVersion: Number(options['expected-version']), value: policy.value }, true);
+    }
+    case 'merchant.calendar':
+      return get('/api/merchant/calendar', { accountId: options['account-id'], year: options.year });
+    case 'merchant.export':
+      return get('/api/merchant/export', undefined, { kind: 'selected' }, true);
+    case 'merchant.delete':
+      return send(requestId, '/api/merchant', 'DELETE', { humanControl: true });
     case 'spaces.list':
       return get('/api/spaces', undefined, { kind: 'none' });
     case 'spaces.create':
@@ -481,7 +546,7 @@ export async function runServerCommand(cmd: CliCommand, requestId: string): Prom
         '/api/rule',
         optionBody(options, {
           name: 'name',
-          payee: 'payee',
+          'payee-id': 'payeeId',
           'category-id': 'categoryId',
           'transaction-id': 'transactionId',
           operation: 'operation',

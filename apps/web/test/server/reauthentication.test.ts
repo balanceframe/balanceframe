@@ -112,7 +112,7 @@ interface MockEvent {
 
 interface CurrentSession {
   user: { id: string; email?: string };
-  session: { id: string; userId: string; impersonatedBy?: string | null };
+  session: { id: string; userId: string; expiresAt: Date; impersonatedBy?: string | null };
 }
 
 let currentSession: CurrentSession | null;
@@ -136,7 +136,7 @@ function issueProof(request: MockEvent, password: string): Promise<boolean> {
 function session(userId = 'human-1', sessionId = 'session-1'): CurrentSession {
   return {
     user: { id: userId, email: `${userId}@example.test` },
-    session: { id: sessionId, userId },
+    session: { id: sessionId, userId, expiresAt: new Date('2026-10-03T12:00:00.000Z') },
   };
 }
 
@@ -490,7 +490,7 @@ describe('authentication context and Better Auth control plane', () => {
     mockVerifyApiKey.mockResolvedValueOnce({
       valid: true,
       error: null,
-      key: { id: 'key-1', referenceId: 'human-1' },
+      key: { id: 'key-1', referenceId: 'human-1', expiresAt: null },
     });
     const request = event('/api/proposal/one/approve');
 
@@ -520,7 +520,7 @@ describe('authentication context and Better Auth control plane', () => {
     mockVerifyApiKey.mockResolvedValueOnce({
       valid: true,
       error: null,
-      key: { id: 'key-1', referenceId: 'human-1' },
+      key: { id: 'key-1', referenceId: 'human-1', expiresAt: null },
     });
     mockResolveCredentialPrincipal.mockResolvedValueOnce({
       principalType: 'agent',
@@ -559,7 +559,7 @@ describe('authentication context and Better Auth control plane', () => {
     mockVerifyApiKey.mockResolvedValueOnce({
       valid: true,
       error: null,
-      key: { id: 'key-1', referenceId: 'human-1' },
+      key: { id: 'key-1', referenceId: 'human-1', expiresAt: null },
     });
     mockResolveCredentialPrincipal.mockResolvedValueOnce(null);
     const request = event('/api/review');
@@ -576,7 +576,7 @@ describe('authentication context and Better Auth control plane', () => {
     mockVerifyApiKey.mockResolvedValueOnce({
       valid: true,
       error: null,
-      key: { id: 'key-1', referenceId: 'human-1' },
+      key: { id: 'key-1', referenceId: 'human-1', expiresAt: null },
     });
     mockGetWorkflowStore.mockReturnValueOnce({ error: 'private store error' });
     const request = event('/api/proposal/one/approve');

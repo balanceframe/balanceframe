@@ -126,27 +126,31 @@ export function normalizeTransactions(
   transferAcctMap: Record<string, string | null>,
   currency = 'USD',
 ): Transaction[] {
-  // Group child transactions by parent_id
-  const childrenByParent: Record<string, TransactionEntity[]> = {};
+  const childrenByParent = new Map<string, Map<string, TransactionEntity>>();
   const parents: TransactionEntity[] = [];
-
-  for (const txn of transactions) {
-    if (txn.tombstone) continue;
-    if (txn.is_child && txn.parent_id) {
-      if (!childrenByParent[txn.parent_id]) childrenByParent[txn.parent_id] = [];
-      childrenByParent[txn.parent_id].push(txn);
+  const collect = (txn: TransactionEntity, enclosingParentId?: string): void => {
+    if (txn.tombstone) return;
+    const parentId = enclosingParentId ?? (txn.is_child ? txn.parent_id : undefined);
+    if (parentId) {
+      if (txn.parent_id && txn.parent_id !== parentId) throw new Error('Conflicting canonical transaction parent');
+      let children = childrenByParent.get(parentId);
+      if (!children) { children = new Map(); childrenByParent.set(parentId, children); }
+      const previous = children.get(txn.id);
+      if (previous && JSON.stringify(normalizeTransaction(previous, payeeMap, categoryMap, transferAcctMap, [], currency)) !==
+        JSON.stringify(normalizeTransaction(txn, payeeMap, categoryMap, transferAcctMap, [], currency)))
+        throw new Error('Conflicting canonical transaction facts');
+      children.set(txn.id, txn);
     } else if (!txn.is_child) {
       parents.push(txn);
     }
-    // Orphaned children (is_child without parent_id) are filtered out
-  }
-
-  return parents.map((txn) => {
-    const children = (childrenByParent[txn.id] ?? []).map((child) =>
-      normalizeTransaction(child, payeeMap, categoryMap, transferAcctMap, [], currency),
-    );
-    return normalizeTransaction(txn, payeeMap, categoryMap, transferAcctMap, children, currency);
-  });
+    for (const child of txn.subtransactions ?? []) collect(child, txn.id);
+  };
+  for (const txn of transactions) collect(txn);
+  const normalize = (txn: TransactionEntity): Transaction => normalizeTransaction(
+    txn, payeeMap, categoryMap, transferAcctMap,
+    [...(childrenByParent.get(txn.id)?.values() ?? [])].map(normalize), currency,
+  );
+  return parents.map(normalize);
 }
 
 // ---------------------------------------------------------------------------

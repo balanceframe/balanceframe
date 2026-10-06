@@ -485,21 +485,29 @@ async function resetActualPassword(
   }
 }
 
-async function allocatePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolveListen, rejectListen) => {
-    server.once('error', rejectListen);
-    server.listen(0, LOOPBACK_HOST, resolveListen);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    server.close();
-    throw new Error('Could not allocate a loopback process port');
+async function allocatePorts(): Promise<readonly [number, number]> {
+  const servers = [createServer(), createServer()] as const;
+  try {
+    for (const server of servers) {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once('error', rejectListen);
+        server.listen(0, LOOPBACK_HOST, resolveListen);
+      });
+    }
+    const [web, actual] = servers.map((server) => server.address());
+    if (!web || typeof web === 'string' || !actual || typeof actual === 'string') {
+      throw new Error('Could not allocate loopback process ports');
+    }
+    return [web.port, actual.port];
+  } finally {
+    await Promise.all(servers.map((server) => new Promise<void>((resolveClose, rejectClose) => {
+      if (!server.listening) {
+        resolveClose();
+        return;
+      }
+      server.close((error) => (error ? rejectClose(error) : resolveClose()));
+    })));
   }
-  await new Promise<void>((resolveClose, rejectClose) => {
-    server.close((error) => (error ? rejectClose(error) : resolveClose()));
-  });
-  return address.port;
 }
 
 function assertWebEntry(webEntryInput: string): string {
@@ -603,8 +611,7 @@ export async function startScenarioShell(options: {
   const root = ownership.root;
   assertEmptyDirectory(root);
   const directories = createDirectories(root);
-  const webPort = await allocatePort();
-  const actualPort = await allocatePort();
+  const [webPort, actualPort] = await allocatePorts();
   const publicHandle: ScenarioProcesses = Object.freeze({
     root,
     webUrl: `http://${LOOPBACK_HOST}:${webPort}`,

@@ -2,7 +2,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { appendResponseHeader, getCookie, setCookie } from 'h3';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { H3Event } from 'h3';
-import { auth } from '../../lib/auth';
+import type { CredentialLifetime } from '@balanceframe/workflow-store';
+import { auth, isAuthCredentialValid } from '../../lib/auth';
 import type { EventWithContext } from './workflow-store';
 
 export const REAUTH_COOKIE_NAME = 'balanceframe_reauth';
@@ -21,7 +22,7 @@ const passwordAttemptWindows = new Map<string, PasswordAttemptWindow>();
 export type AuthMethod = 'session' | 'api-key' | 'legacy-token' | 'development';
 export type PrincipalType = 'human' | 'agent';
 
-export interface TrustedAuthContext {
+export interface TrustedAuthContext extends CredentialLifetime {
   authenticated: boolean;
   actorId?: string;
   user?: Record<string, unknown>;
@@ -41,7 +42,7 @@ export type ReauthenticationEvent = H3Event & EventWithContext & {
 
 interface CurrentSession {
   user?: { id?: unknown; email?: unknown };
-  session?: { id?: unknown; userId?: unknown; impersonatedBy?: unknown };
+  session?: { id?: unknown; userId?: unknown; impersonatedBy?: unknown; expiresAt?: unknown };
 }
 
 interface Proof {
@@ -52,7 +53,7 @@ interface Proof {
   expiresAt: number;
 }
 
-export interface HumanControlAuth {
+export interface HumanControlAuth extends CredentialLifetime {
   method: 'human-session';
   actorId: string;
   sessionId: string;
@@ -118,6 +119,13 @@ async function currentHumanSession(
           context.sessionId !== sessionId ||
           context.user?.id !== actorId))
     ) return null;
+    const expiresAt = current?.session?.expiresAt;
+    const lifetime = expiresAt instanceof Date && Number.isFinite(expiresAt.getTime()) ? {
+      credentialExpiresAt: expiresAt.toISOString(),
+      isCredentialValid: (now: string) => isAuthCredentialValid({ method: 'session' as const, id: sessionId, ownerId: actorId }, now),
+    } : null;
+    const externalCredential = !context || context.credentialExpiresAt !== undefined || context.isCredentialValid !== undefined;
+    if (externalCredential && !lifetime) return null;
     if (!context) {
       event.context.auth = {
         authenticated: true,
@@ -127,6 +135,14 @@ async function currentHumanSession(
         sessionId,
         principalType: 'human',
         impersonatedBy: null,
+        ...lifetime,
+      };
+    }
+    if (context && externalCredential) {
+      event.context.auth = {
+        ...context, ...lifetime,
+        ...(context.credentialExpiresAt !== undefined && context.credentialExpiresAt !== null ? { credentialExpiresAt: context.credentialExpiresAt } : {}),
+        ...(context.isCredentialValid !== undefined ? { isCredentialValid: context.isCredentialValid } : {}),
       };
     }
     return { actorId, sessionId, headers };
@@ -253,6 +269,8 @@ export async function getHumanControlAuth(
     actorId: session.actorId,
     sessionId: session.sessionId,
     reauthenticatedAt: new Date(proof.issuedAt * 1000).toISOString(),
+    ...(event.context.auth?.credentialExpiresAt !== undefined ? { credentialExpiresAt: event.context.auth.credentialExpiresAt } : {}),
+    ...(event.context.auth?.isCredentialValid !== undefined ? { isCredentialValid: event.context.auth.isCredentialValid } : {}),
   };
 }
 
@@ -295,6 +313,12 @@ export async function authenticateInvitationHuman(
     if (typeof actorId !== 'string' || !actorId || typeof sessionId !== 'string' || !sessionId ||
         session?.session?.userId !== actorId || session.session.impersonatedBy ||
         typeof verifiedEmail !== 'string' || verifiedEmail.trim().toLowerCase() !== canonicalEmail) return null;
+    const expiresAt = session?.session?.expiresAt;
+    if (!(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime())) return null;
+    const lifetime = {
+      credentialExpiresAt: expiresAt.toISOString(),
+      isCredentialValid: (now: string) => isAuthCredentialValid({ method: 'session' as const, id: sessionId, ownerId: actorId }, now),
+    };
     const issuedAt = Math.floor(Date.now() / 1000);
     const proof: Proof = { version: 1, actorId, sessionId, issuedAt, expiresAt: issuedAt + REAUTH_TTL_SECONDS };
     for (const cookie of cookies) appendResponseHeader(event, 'set-cookie', cookie);
@@ -305,11 +329,12 @@ export async function authenticateInvitationHuman(
     event.context.auth = {
       authenticated: true, actorId, sessionId, user: { id: actorId, email: verifiedEmail },
       method: 'session', principalType: 'human', impersonatedBy: null,
+      ...lifetime,
     };
     passwordAttemptWindows.delete(attemptId);
     return {
       email: canonicalEmail,
-      auth: { method: 'human-session', actorId, sessionId, reauthenticatedAt: new Date(issuedAt * 1000).toISOString() },
+      auth: { method: 'human-session', actorId, sessionId, reauthenticatedAt: new Date(issuedAt * 1000).toISOString(), ...lifetime },
     };
   } catch {
     return null;

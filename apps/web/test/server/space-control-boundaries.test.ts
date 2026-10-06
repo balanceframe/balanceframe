@@ -323,7 +323,7 @@ beforeEach(() => {
     async (event: TestEvent, capability: string, scope?: string) =>
       controlAuthorization(event, capability, scope),
   );
-  mocks.requireSelectedSpace.mockImplementation(async (event: TestEvent) => {
+  mocks.requireSelectedSpace.mockImplementation((event: TestEvent) => {
     const boundary = event.context.boundary;
     if (!boundary || !boundary.membershipCurrent) return denial();
     const actorId = event.context.auth?.user?.id ?? 'anonymous';

@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { SqliteWorkflowStore } from '../src/store.js';
-import type { GovernanceResourceRef, HumanControlContext, SpaceMembership } from '../src/governance-types.js';
+import type {
+  GovernanceAuthorizationInput,
+  GovernanceReadDisclosureLimits,
+  GovernanceResourceRef,
+  HumanControlContext,
+  ResourceGrantRestrictions,
+  SpaceMembership,
+} from '../src/governance-types.js';
 
 const now = '2098-01-01T12:00:00.000Z';
 const later = '2098-01-01T12:05:00.000Z';
@@ -769,4 +776,258 @@ describe('governance authorization regressions', () => {
       expect(governance.authorizeRuleInspection(agentInput).inspectionAllowed).toBe(false);
     },
   );
+  describe('private proposal read disclosure limits', () => {
+    function disclosureFixture() {
+      const governance = store.governance;
+      const space = governance.createSpace({
+        actorId: 'owner', name: 'Private disclosure', kind: 'shared', now, auth: auth('owner'),
+      });
+      governance.bindBudget({ spaceId: space.id, budgetId, now, auth: auth('owner') });
+      const membership = governance.getCurrentMembership({ spaceId: space.id, actorId: 'owner', now });
+      const policy = governance.getPolicy({ spaceId: space.id });
+      if (!membership || !policy) throw new Error('Disclosure fixture unavailable');
+      const budget = { resourceKind: 'budget' as const, resourceId: budgetId };
+      const account = { resourceKind: 'account' as const, resourceId: 'acct-A' };
+      function grant(resource: GovernanceResourceRef, restrictions: ResourceGrantRestrictions = {}, granted = true) {
+        governance.setResourceGrant({
+          spaceId: space.id, actorId: 'owner', membershipId: membership!.id, budgetId,
+          capability: 'full-read', ...resource, restrictions, granted, now, auth: auth('owner'),
+        });
+      }
+      grant(budget);
+      grant(account);
+      const input: GovernanceAuthorizationInput = {
+        actorId: 'owner', auth: auth('owner'), spaceId: space.id, membershipId: membership.id,
+        expectedPolicyVersion: policy.version, phase: 'read', operation: 'private-proposal',
+        required: [budget, account].map((resource) => ({
+          ...resource, capability: 'full-read', visibility: 'resource',
+        })),
+        payload: {
+          operations: [{
+            operation: 'update_transactions', direction: 'outgoing', amount: money('20'), accountId: 'acct-A',
+          }],
+          executableEffect: { kind: 'account_debit', resourceId: 'acct-A', amount: money('20') },
+        },
+        now,
+      };
+      const limits: GovernanceReadDisclosureLimits = {
+        collection: { operationCount: 2, grossOutgoing: { USD: 40n } },
+        subject: { operationCount: 1, grossOutgoing: { USD: 20n } },
+      };
+      return { governance, space, membership, budget, account, grant, input, limits };
+    }
+
+    it.each(['budget', 'account', 'category', 'transaction', 'rule'] as const)(
+      'adds whole-collection numerical restrictions to the existing %s source/effect authority',
+      (resourceKind) => {
+        const fixture = disclosureFixture();
+        const { governance, input, limits, grant } = fixture;
+        const resource = {
+          resourceKind, resourceId: resourceKind === 'budget' ? budgetId : `${resourceKind}-limited`,
+        };
+        const restrictions = {
+          accountIds: ['acct-A'], operations: ['private-proposal', 'update_transactions'],
+          maxOperationCount: 2, maxGrossOutgoing: [money('40')],
+        };
+        grant(resource, restrictions);
+        const request = {
+          ...input,
+          required: [...input.required, { ...resource, capability: 'full-read', visibility: 'resource' as const }],
+        };
+        expect(governance.authorize(request).allowed).toBe(true);
+        expect(governance.authorizeReadDisclosure(request, limits).allowed).toBe(true);
+        expect(governance.authorizeReadDisclosure(request, {
+          ...limits, collection: { ...limits.collection, operationCount: 3 },
+        }).allowed).toBe(false);
+        expect(governance.authorizeReadDisclosure(request, {
+          ...limits, collection: { ...limits.collection, grossOutgoing: { USD: 41n } },
+        }).allowed).toBe(false);
+        expect(governance.authorizeReadDisclosure({
+          ...request, payload: { ...request.payload, hiddenSource: { accountId: 'acct-B' } },
+        }, limits).allowed).toBe(false);
+        expect(governance.authorizeReadDisclosure({
+          ...request, payload: {
+            ...request.payload, executableEffect: { kind: 'account_debit', resourceId: 'acct-B', amount: money('20') },
+          },
+        }, limits).allowed).toBe(false);
+      },
+    );
+
+    it.each(['evidence', 'receipt'] as const)(
+      'keeps independently granted %s disclosure caps and source restrictions subject-local',
+      (resourceKind) => {
+        const { governance, grant, input, limits, budget } = disclosureFixture();
+        for (const suffix of ['A', 'B']) {
+          const resource = { resourceKind, resourceId: `${resourceKind}-${suffix}` };
+          grant(resource, {
+            accountIds: [`acct-${suffix}`], maxOperationCount: 1, maxGrossOutgoing: [money('20')],
+          });
+          const request: GovernanceAuthorizationInput = {
+            ...input,
+            required: [budget, resource].map((ref) => ({
+              ...ref, capability: 'full-read', visibility: 'resource',
+            })),
+            payload: {
+              operations: [{
+                operation: 'update_transactions', direction: 'outgoing', amount: money('20'),
+                accountId: `acct-${suffix}`, resourceKind, resourceId: resource.resourceId,
+              }],
+            },
+          };
+          const largeCollection = {
+            ...limits, collection: { operationCount: 8, grossOutgoing: { USD: 200n } },
+          };
+          expect(governance.authorize(request).allowed).toBe(true);
+          expect(governance.authorizeReadDisclosure(request, largeCollection).allowed).toBe(true);
+          expect(governance.authorizeReadDisclosure(request, {
+            ...largeCollection, subject: { ...limits.subject, operationCount: 2 },
+          }).allowed).toBe(false);
+          expect(governance.authorizeReadDisclosure(request, {
+            ...largeCollection, subject: { ...limits.subject, grossOutgoing: { USD: 21n } },
+          }).allowed).toBe(false);
+          expect(governance.authorizeReadDisclosure({
+            ...request, payload: { ...request.payload, anotherSource: { accountId: 'acct-C' } },
+          }, largeCollection).allowed).toBe(false);
+        }
+      },
+    );
+
+    it('does not deduplicate a financial collection check against identical subject restrictions', () => {
+      const { governance, grant, input, limits, budget } = disclosureFixture();
+      const evidence = { resourceKind: 'evidence' as const, resourceId: 'evidence-A' };
+      const restrictions = { maxOperationCount: 1, maxGrossOutgoing: [money('20')] };
+      grant(evidence, restrictions);
+      grant(budget, restrictions);
+      const request = {
+        ...input,
+        required: [evidence, budget].map((resource) => ({
+          ...resource, capability: 'full-read', visibility: 'resource' as const,
+        })),
+      };
+      expect(governance.authorize(request).allowed).toBe(true);
+      expect(governance.authorizeReadDisclosure(request, {
+        ...limits, collection: limits.subject,
+      }).allowed).toBe(true);
+      expect(governance.authorizeReadDisclosure(request, limits).allowed).toBe(false);
+    });
+
+    it('enforces delegated numerical bounds in addition to current issuer grants and credentials', () => {
+      const { governance, space, membership, input, limits } = disclosureFixture();
+      const agentId = 'agent:disclosure';
+      const credentialId = 'credential:disclosure';
+      governance.registerAgent({ spaceId: space.id, agentId, now, auth: auth('owner') });
+      const delegation = governance.delegate({
+        spaceId: space.id, agentId, issuerMembershipId: membership.id, expectedVersion: null,
+        rights: input.required.map((resource) => ({
+          ...resource, restrictions: { maxOperationCount: 2, maxGrossOutgoing: [money('40')] },
+        })),
+        validFrom: now, validUntil: later, now, auth: auth('owner'),
+      });
+      governance.registerCredentialBinding({
+        spaceId: space.id, credentialId, credentialOwnerId: 'owner', principalType: 'agent',
+        principalId: agentId, delegationId: delegation.id, expectedDelegationVersion: delegation.version,
+        now, auth: auth('owner'),
+      });
+      const request: GovernanceAuthorizationInput = {
+        ...input, actorId: agentId, agentId, delegationId: delegation.id, delegationVersion: delegation.version,
+        auth: {
+          method: 'api-key', actorId: agentId, credentialId, credentialOwnerId: 'owner', principalType: 'agent',
+          delegationId: delegation.id, delegationVersion: delegation.version,
+        },
+      };
+      expect(governance.authorize(request).allowed).toBe(true);
+      expect(governance.authorizeReadDisclosure(request, limits).allowed).toBe(true);
+      expect(governance.authorizeReadDisclosure(request, {
+        ...limits, collection: { operationCount: 3, grossOutgoing: { USD: 40n } },
+      }).allowed).toBe(false);
+      expect(governance.authorizeReadDisclosure(request, {
+        ...limits, collection: { operationCount: 2, grossOutgoing: { USD: 41n } },
+      }).allowed).toBe(false);
+      governance.revokeCredentialBinding({ spaceId: space.id, credentialId, now, auth: auth('owner') });
+      expect(governance.authorizeReadDisclosure(request, limits).allowed).toBe(false);
+    });
+
+    it('never grants absent authority, revoked credentials, or a non-read phase', () => {
+      const { governance, grant, account, input, limits } = disclosureFixture();
+      expect(governance.authorizeReadDisclosure(input, limits).allowed).toBe(true);
+      for (const phase of ['propose', 'approve', 'execute'] as const)
+        expect(governance.authorizeReadDisclosure({ ...input, phase }, limits).allowed).toBe(false);
+      expect(governance.authorizeReadDisclosure({
+        ...input, auth: { ...auth('owner'), isCredentialValid: () => false },
+      }, limits).allowed).toBe(false);
+      expect(governance.authorizeReadDisclosure({
+        ...input, payload: { operations: input.payload.operations, evidenceId: 'ungranted-evidence' },
+      }, limits).allowed).toBe(false);
+      grant(account, {}, false);
+      expect(governance.authorizeReadDisclosure(input, limits).allowed).toBe(false);
+    });
+
+    it('compares currencies independently and never offsets source outgoing with incoming amounts', () => {
+      const { governance, grant, budget, input, limits } = disclosureFixture();
+      grant(budget, {
+        maxGrossOutgoing: [money('40'), { currency: 'EUR', minorUnits: '10' }],
+      });
+      expect(governance.authorizeReadDisclosure(input, {
+        ...limits, collection: { operationCount: 3, grossOutgoing: { USD: 40n, EUR: 10n } },
+      }).allowed).toBe(true);
+      const deniedTotals: Readonly<Record<string, bigint>>[] = [{ USD: 40n, EUR: 11n }, { USD: 40n, GBP: 1n }];
+      for (const grossOutgoing of deniedTotals)
+        expect(governance.authorizeReadDisclosure(input, {
+          ...limits, collection: { operationCount: 3, grossOutgoing },
+        }).allowed).toBe(false);
+      const request: GovernanceAuthorizationInput = {
+        ...input,
+        payload: {
+          operations: [
+            { operation: 'update_transactions', direction: 'outgoing', amount: money('41'), accountId: 'acct-A' },
+            { operation: 'update_transactions', direction: 'incoming', amount: money('41'), accountId: 'acct-A' },
+          ],
+        },
+      };
+      expect(governance.authorizeReadDisclosure(request, {
+        collection: { operationCount: 2, grossOutgoing: {} },
+        subject: { operationCount: 2, grossOutgoing: {} },
+      }).allowed).toBe(false);
+    });
+
+    it.each([
+      { operationCount: -1, grossOutgoing: {} },
+      { operationCount: 0.5, grossOutgoing: {} },
+      { operationCount: Number.NaN, grossOutgoing: {} },
+      { operationCount: Number.POSITIVE_INFINITY, grossOutgoing: {} },
+      { operationCount: Number.MAX_SAFE_INTEGER + 1, grossOutgoing: {} },
+      { operationCount: '1', grossOutgoing: {} },
+      { operationCount: 1, grossOutgoing: { USD: -1n } },
+      { operationCount: 1, grossOutgoing: { USD: 9_223_372_036_854_775_808n } },
+      { operationCount: 1, grossOutgoing: { USD: '20' } },
+      { operationCount: 1, grossOutgoing: { USD: 20 } },
+      { operationCount: 1, grossOutgoing: { usd: 20n } },
+      { operationCount: 1, grossOutgoing: { US: 20n } },
+      { operationCount: 1, grossOutgoing: [] },
+      { operationCount: 1, grossOutgoing: new Map([['USD', 20n]]) },
+      { operationCount: 1, grossOutgoing: null },
+      null,
+    ])('fails malformed numerical overlay %# closed even for unrestricted grants', (malformed) => {
+      const { governance, input, limits } = disclosureFixture();
+      expect(governance.authorize(input).allowed).toBe(true);
+      for (const scope of ['collection', 'subject'] as const)
+        expect(governance.authorizeReadDisclosure(input, {
+          ...limits, [scope]: malformed,
+        } as unknown as GovernanceReadDisclosureLimits).allowed).toBe(false);
+    });
+
+    it('admits valid zero and exact i64/safe-count boundaries without unrestricted-grant bypasses', () => {
+      const { governance, input } = disclosureFixture();
+      const validTotals: GovernanceReadDisclosureLimits['collection'][] = [
+        { operationCount: 0, grossOutgoing: {} },
+        { operationCount: Number.MAX_SAFE_INTEGER, grossOutgoing: { USD: 9_223_372_036_854_775_807n } },
+      ];
+      for (const totals of validTotals)
+        expect(governance.authorizeReadDisclosure(input, { collection: totals, subject: totals }).allowed).toBe(true);
+      for (const malformed of [null, {}, { collection: {} }, { subject: {} }])
+        expect(governance.authorizeReadDisclosure(
+          input, malformed as unknown as GovernanceReadDisclosureLimits,
+        ).allowed).toBe(false);
+    });
+  });
 });
