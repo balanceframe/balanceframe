@@ -12,6 +12,7 @@ import type { ReauthenticationEvent } from '../../utils/reauthentication';
 import { buildProposalApprovalView } from '../../utils/proposal-approval-view';
 import { createRuleProposal, findRuleSourceTransaction, hasNativeRuleSourceAdmission } from '../../utils/rule-create';
 import { requireSelectedSpace } from '../../utils/space-context';
+import { composeScenarioResearch } from '../../utils/scenario-research';
 import type { ApiEnvelope, EventWithContext } from '../../utils/workflow-store';
 import {
   classifyConnectionError,
@@ -137,7 +138,7 @@ export default defineEventHandler(async (event) => {
 
   let connectedResult: ConnectionResult;
   try {
-    const sourceService = await createMerchantIntelligenceService({ store:workflow.store,connectionManager:manager });
+    const sourceService = await createMerchantIntelligenceService({ store:workflow.store,connectionManager:manager,research:composeScenarioResearch(event,selected.space.id) });
     connectedResult = await manager.withConnection(async (connected): Promise<ConnectionResult> => {
       if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId)
         return { kind: 'failure', status: 409, code: 'SPACE_CONNECTION_MISMATCH', message: 'The connected budget does not match the selected space.' };

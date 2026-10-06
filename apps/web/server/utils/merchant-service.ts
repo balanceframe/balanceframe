@@ -10,6 +10,7 @@ import { requireSelectedSpace } from './space-context';
 import { selectedLiquidityActor } from './liquidity-service';
 import { getHumanControlAuth, hasTrustedRequestOrigin } from './reauthentication';
 import { errorEnvelope, getWorkflowStore, okEnvelope, requireAuthorization } from './workflow-store';
+import { composeScenarioResearch } from './scenario-research';
 
 const queryId = z.string().min(1).max(512);
 /** Query fields select evidence; none confer source or management authority. */
@@ -20,6 +21,7 @@ export const merchantCalendarQuery = z.object({ accountId: queryId, year: z.coer
 /** Optional Review integration requires a live exact merchant grant, not ambient ownership. */
 export function merchantAnalysisAuthorized(store: WorkflowStore, actor: MerchantActor): boolean {
   const auth = actor.auth;
+  if (!actor.membershipId || !actor.governancePolicyVersion) return false;
   const result = store.governance.authorize({
     actorId: actor.actorId, spaceId: actor.spaceId, membershipId: actor.membershipId,
     expectedPolicyVersion: actor.governancePolicyVersion, phase: 'read', operation: 'merchant:analyze',
@@ -78,7 +80,8 @@ export function merchantRoute<T>(
       }
       if (!options.query) z.object({}).strict().parse(getQuery(event));
       const connectionManager = createDefaultConnectionManager({ configPath: process.env.BALANCEFRAME_CONFIG_PATH });
-      const service = await createMerchantIntelligenceService({ store: workflow.store, connectionManager });
+      const research = composeScenarioResearch(event, selected.space.id);
+      const service = await createMerchantIntelligenceService({ store: workflow.store, connectionManager, ...(research ? { research } : {}) });
       const result = await operation(event, service, trusted);
       return okEnvelope(result, authInfo, requestId);
     } catch (error) {

@@ -1,7 +1,14 @@
+/// <reference lib="es2024.promise" />
+
 import { spawn } from 'node:child_process';
 
 import { listScenarios } from './catalog.js';
 import { startDemoServer, stopDemoServer } from './demo-server.js';
+import {
+  SCENARIO_ACCEPTANCE_CONTRACT,
+  createScenarioRecordCollector,
+  verifyScenarioCoverage,
+} from './acceptance-contract.js';
 
 function validScenario(id: string): boolean {
   return listScenarios().some((scenario) => scenario.id === id);
@@ -21,7 +28,7 @@ function requireScenario(id: string): string {
   return id;
 }
 
-async function runVitest(path: string, selector?: string): Promise<number> {
+async function runVitest(path: string, selector?: string): Promise<{ status: number; records: readonly unknown[] }> {
   const args = [
     '--filter',
     '@balanceframe/scenario-kit',
@@ -37,24 +44,68 @@ async function runVitest(path: string, selector?: string): Promise<number> {
     '--disableConsoleIntercept',
   ];
   if (selector) args.push('--testNamePattern', selector);
-  const child = spawn('pnpm', args, { stdio: 'inherit' });
-  return new Promise<number>((resolve, reject) => {
-    child.once('error', reject);
-    child.once('exit', (code) => resolve(code ?? 1));
+  const collector = createScenarioRecordCollector();
+  let collectionFailure: unknown;
+  const child = spawn('pnpm', args, { stdio: ['inherit', 'pipe', 'inherit'] });
+  child.stdout?.setEncoding('utf8');
+  child.stdout?.pipe(process.stdout, { end: false });
+  child.stdout?.on('data', (chunk: string) => {
+    if (collectionFailure !== undefined) return;
+    try {
+      collector.write(chunk);
+    } catch (failure) {
+      collectionFailure = failure;
+    }
   });
+  const { promise, resolve, reject } = Promise.withResolvers<{ status: number; records: readonly unknown[] }>();
+  child.once('error', reject);
+  child.stdout?.once('error', reject);
+  // close follows stdout exhaustion; exit alone can precede the final verification record.
+  child.once('close', (code) => {
+    const status = code ?? 1;
+    if (status !== 0) {
+      resolve({ status, records: [] });
+      return;
+    }
+    if (collectionFailure !== undefined) {
+      reject(collectionFailure);
+      return;
+    }
+    try {
+      resolve({ status, records: collector.finish() });
+    } catch (failure) {
+      reject(failure);
+    }
+  });
+  return promise;
 }
 
 async function verify(selector: string): Promise<void> {
   const selected =
     selector === '--all' || selector === '--faults' ? null : requireScenario(selector);
   if (selector !== '--faults') {
-    console.log(`Live Actual scenarios: ${selected ?? 'all 29'}`);
-    const status = await runVitest('test/acceptance', selected ?? undefined);
-    if (status !== 0) process.exitCode = status;
+    const scenarios = listScenarios();
+    const requiredIds = Object.keys(SCENARIO_ACCEPTANCE_CONTRACT);
+    if (scenarios.length !== requiredIds.length
+      || scenarios.some(({ id }) => !Object.hasOwn(SCENARIO_ACCEPTANCE_CONTRACT, id))
+      || requiredIds.some((id) => !scenarios.some((scenario) => scenario.id === id))) {
+      throw new Error('Scenario catalog and approved acceptance contract do not match');
+    }
+    console.log(`Live Actual scenarios: ${selected ?? `all ${scenarios.length}`}`);
+    const testName = selected ? `(?:^|\\s)${selected}(?:\\s|$)` : undefined;
+    const { status, records } = await runVitest('test/acceptance/', testName);
+    if (status !== 0) {
+      process.exitCode = status;
+      return;
+    }
+    const expected = selected
+      ? { [selected]: SCENARIO_ACCEPTANCE_CONTRACT[selected]! }
+      : SCENARIO_ACCEPTANCE_CONTRACT;
+    verifyScenarioCoverage(records, expected);
   }
   if (selector === '--all' || selector === '--faults') {
     console.log('Native/service fault contracts: four named cases (five tested variants)');
-    const status = await runVitest('test/fault/fault-contract.test.ts');
+    const { status } = await runVitest('test/fault/fault-contract.test.ts');
     if (status !== 0) process.exitCode = status;
   }
 }

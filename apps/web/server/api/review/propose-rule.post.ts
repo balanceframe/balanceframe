@@ -17,6 +17,7 @@ import {
 } from '../../utils/workflow-store';
 import type { EventWithContext } from '../../utils/workflow-store';
 import { buildProposalApprovalView } from '../../utils/proposal-approval-view';
+import { composeScenarioResearch } from '../../utils/scenario-research';
 import { hasReviewProjectionAdmission, hasReviewScopeAdmission, matchesReviewTransaction, reviewConnectionScope } from '../../utils/review-scope-admission';
 
 const ProposeRuleBody = z.object({
@@ -125,7 +126,7 @@ export default defineEventHandler(async (event) => {
       return errorEnvelope('NATIVE_UNAVAILABLE', 'Native rule planning is unavailable.', authorization.info, false, requestId);
     }
 
-    const sourceService = await createMerchantIntelligenceService({ store:workflow.store,connectionManager:manager });
+    const sourceService = await createMerchantIntelligenceService({ store:workflow.store,connectionManager:manager,research:composeScenarioResearch(event,selected.space.id) });
     const captured = await manager.withConnection(async (connected) => {
       const scope = reviewConnectionScope(selected.space.id, connected.config);
       if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId ||

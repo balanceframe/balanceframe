@@ -99,6 +99,8 @@ function writeManifest(overrides: Record<string, unknown> = {}): void {
       internalSecret: INTERNAL,
       budgetId: 'budget-demo',
       actorIds: ['owner-demo'],
+      scenarioId: 'funded-purchase',
+      spaceId: overrides.phase === 'setup' ? null : 'space-demo',
       ...overrides,
     }),
     { mode: 0o600 },
@@ -293,5 +295,150 @@ describe('enforceDemoBoundary', () => {
     const mismatchResponse = await enforceDemoBoundary(event);
     expect(event.status).toBe(503);
     expect(mismatchResponse).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+  });
+
+  it.each([
+    ['governance-scoped-access', '/api/spaces/space-demo/grants', 'PUT'],
+    ['governance-invitation-lifecycle', '/api/spaces/space-demo/memberships/member-demo/revoke', 'POST'],
+    ['governance-invitation-lifecycle', '/api/spaces/space-demo/grants', 'PUT'],
+    ['governance-delegated-assistant', '/api/spaces/space-demo/delegations/delegation-demo/revoke', 'POST'],
+    ['merchant-local-sparse', '/api/review/sync', 'POST'],
+    ['merchant-local-insufficient', '/api/review/sync', 'POST'],
+    ['merchant-alias-conflict', '/api/merchant/confirm', 'POST'],
+    ['merchant-alias-conflict', '/api/merchant/reject', 'POST'],
+    ['merchant-alias-conflict', '/api/review/correct', 'POST'],
+    ['merchant-alias-conflict', '/api/proposal/proposal-demo/approve', 'POST'],
+    ['merchant-alias-conflict', '/api/proposal/proposal-demo/execute', 'POST'],
+    ['merchant-recurrence-calendar', '/api/merchant/confirm', 'POST'],
+    ['merchant-recurrence-calendar', '/api/merchant/reject', 'POST'],
+    ['merchant-native-rule-lifecycle', '/api/review/propose-rule', 'POST'],
+    ['merchant-native-rule-lifecycle', '/api/review/sync', 'POST'],
+    ['merchant-native-rule-lifecycle', '/api/proposal/proposal-demo/approve', 'POST'],
+    ['merchant-native-rule-lifecycle', '/api/proposal/proposal-demo/execute', 'POST'],
+    ['merchant-research-success', '/api/merchant/research/preview', 'POST'],
+    ['merchant-research-lifecycle', '/api/merchant/research/preview', 'POST'],
+    ['merchant-research-lifecycle', '/api/merchant/research', 'POST'],
+    ['merchant-research-success', '/api/merchant/research', 'POST'],
+    ['merchant-research-outage', '/api/merchant/research', 'POST'],
+    ['merchant-research-lifecycle', '/api/merchant/research/cache', 'POST'],
+    ['merchant-research-lifecycle', '/api/merchant', 'DELETE'],
+    ['merchant-research-lifecycle', '/api/merchant/policy', 'PUT'],
+    ['merchant-research-lifecycle', '/api/merchant/space-policy', 'PUT'],
+    ['merchant-research-lifecycle', '/api/spaces/space-demo/grants', 'PUT'],
+  ])('admits only the declared %s action %s %s in the selected space', (scenarioId, path, method) => {
+    writeManifest({ scenarioId });
+    const legitimate = makeEvent(path, method, { 'x-balanceframe-space': 'space-demo' });
+    legitimate.context.runtimeConfig.public = { demoMode: false };
+    expect(enforceDemoBoundary(legitimate)).toBeUndefined();
+    expect(legitimate.status).toBeUndefined();
+
+    for (const headers of [
+      { 'x-balanceframe-space': 'unrelated-space' },
+      { 'x-balanceframe-space': 'space-demo', origin: 'https://attacker.example' },
+      { 'x-balanceframe-space': 'space-demo', origin: undefined },
+      { 'x-balanceframe-space': 'space-demo', origin: 'null' },
+      { 'x-balanceframe-space': 'space-demo', host: 'attacker.example', 'x-forwarded-host': 'demo.example.test', 'x-forwarded-proto': 'https' },
+      { 'x-balanceframe-space': 'space-demo', 'x-balanceframe-demo-internal': 'forged-secret' },
+    ]) {
+      const denied = makeEvent(path, method, headers);
+      expect(enforceDemoBoundary(denied)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(denied.status).toBe(403);
+    }
+    const wrongMethod = makeEvent(path, method === 'POST' ? 'PUT' : 'POST', { 'x-balanceframe-space': 'space-demo' });
+    expect(enforceDemoBoundary(wrongMethod)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+    expect(wrongMethod.status).toBe(403);
+    writeManifest({ scenarioId: 'funded-purchase' });
+    const unrelatedStory = makeEvent(path, method, { 'x-balanceframe-space': 'space-demo' });
+    expect(enforceDemoBoundary(unrelatedStory)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+    expect(unrelatedStory.status).toBe(403);
+  });
+
+  it.each(['governance-scoped-access', 'governance-invitation-lifecycle', 'governance-delegated-assistant', 'merchant-research-lifecycle'])(
+    'does not turn %s into general governance, auth, connection or provider CRUD',
+    (scenarioId) => {
+      writeManifest({ scenarioId });
+      for (const [path, method] of [
+        ['/api/spaces', 'POST'],
+        ['/api/spaces/unrelated-space/grants', 'PUT'],
+        ['/api/spaces/space-demo/policy', 'PUT'],
+        ['/api/spaces/space-demo/credentials', 'POST'],
+        ['/api/auth/api-key/create', 'POST'],
+        ['/api/auth/sign-up/email', 'POST'],
+        ['/api/invitations', 'POST'],
+        ['/api/connection', 'POST'],
+        ['/api/review/seed', 'POST'],
+      ]) {
+        const event = makeEvent(path!, method!, {
+          'x-balanceframe-space': 'space-demo',
+          'x-forwarded-host': 'demo.example.test',
+          'x-balanceframe-demo-internal': 'browser-injected-secret',
+        });
+        expect(enforceDemoBoundary(event)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+        expect(event.status).toBe(403);
+      }
+    },
+  );
+
+  it('permits real assistant/key setup only privately for that story and never in ready phase', () => {
+    for (const path of ['/api/spaces/space-demo/agents', '/api/spaces/space-demo/delegations', '/api/auth/api-key/create', '/api/spaces/space-demo/credentials']) {
+      writeManifest({ phase: 'setup', budgetId: null, actorIds: [], scenarioId: 'governance-delegated-assistant' });
+      expect(enforceDemoBoundary(makeEvent(path, 'POST', {
+        'x-balanceframe-space': 'space-demo',
+        'x-balanceframe-demo-internal': INTERNAL,
+      }))).toBeUndefined();
+      const browser = makeEvent(path, 'POST', { 'x-balanceframe-space': 'space-demo' });
+      expect(enforceDemoBoundary(browser)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(browser.status).toBe(403);
+      writeManifest({ scenarioId: 'governance-delegated-assistant' });
+      const ready = makeEvent(path, 'POST', { 'x-balanceframe-demo-internal': INTERNAL });
+      expect(enforceDemoBoundary(ready)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(ready.status).toBe(403);
+      writeManifest({ phase: 'setup', budgetId: null, actorIds: [] });
+      const wrongStory = makeEvent(path, 'POST', { 'x-balanceframe-demo-internal': INTERNAL });
+      expect(enforceDemoBoundary(wrongStory)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(wrongStory.status).toBe(403);
+    }
+  });
+
+  it.each([
+    ['/api/spend-sessions', 'POST'],
+    ['/api/spend-sessions/session-demo', 'PUT'],
+    ['/api/spend-sessions/session-demo', 'DELETE'],
+    ['/api/spend-sessions/session-demo/completions', 'POST'],
+    ['/api/spend-sessions/session-demo/completions/completion-demo/approve', 'POST'],
+    ['/api/spend-sessions/session-demo/completions/completion-demo/execute', 'POST'],
+    ['/api/spend-sessions/session-demo/completions/completion-demo/reconcile', 'POST'],
+    ['/api/liquidity/policy', 'PUT'],
+    ['/api/liquidity/observations', 'PUT'],
+    ['/api/liquidity/grants', 'PUT'],
+    ['/api/liquidity/preferences', 'PUT'],
+    ['/api/liquidity/claims', 'POST'],
+    ['/api/liquidity/claims/claim-demo/release', 'POST'],
+    ['/api/liquidity/reallocation-preview', 'POST'],
+    ['/api/transfer/preview', 'POST'],
+    ['/api/transfer/propose', 'POST'],
+    ['/api/transfer/transfer-demo/approve', 'POST'],
+    ['/api/transfer/transfer-demo/report-initiated', 'POST'],
+    ['/api/transfer/transfer-demo/reconcile', 'POST'],
+    ['/api/transfer/transfer-demo/cancel', 'POST'],
+    ['/api/transfer/transfer-demo/instructions', 'POST'],
+  ])('preserves the safe legacy spending method %s %s', (path, method) => {
+    const event = makeEvent(path, method);
+    expect(enforceDemoBoundary(event)).toBeUndefined();
+    expect(event.status).toBeUndefined();
+  });
+
+  it.each([
+    { scenarioId: '../../merchant-research-success' },
+    { scenarioId: 'not-a-registered-story' },
+    { spaceId: '' },
+    { research: { provider: 'https://attacker.example', mode: 'success' } },
+    { scenarioId: 'merchant-research-success', research: { provider: 'fixture', controlPath: '/tmp/not-owned-control.json' } },
+  ])('fails closed on invalid protected scenario selection %j with public demo disabled', (overrides) => {
+    writeManifest(overrides);
+    const event = makeEvent('/api/merchant', 'GET');
+    event.context.runtimeConfig.public = { demoMode: false };
+    expect(enforceDemoBoundary(event)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+    expect(event.status).toBe(503);
   });
 });

@@ -403,6 +403,43 @@ describe('durable historical cache and network lock boundary', () => {
   });
 });
 
+describe('research lifecycle time remains separate from real source and human authority time', () => {
+  it('fails closed at the real source expiry instead of renewing evidence from the lifecycle clock', async () => {
+    let lifecycleTime = now;
+    coordinator = new MerchantResearchCoordinator({ ...host(), clock: () => new Date(lifecycleTime) });
+    const proof = fixture.actor.auth;
+    const first = await ready();
+    expect(first.expiresAt).toBe('2026-10-04T12:05:00.000Z');
+    lifecycleTime = '2026-10-05T12:00:00.000Z';
+    expect(await coordinator.preview(fixture.actor, query)).toEqual({ status: 'denied', code: 'stale_source' });
+    expect(await coordinator.cached(fixture.actor, query)).toBeNull();
+    expect(calls).toEqual([]);
+    expect(journal()).toEqual([]);
+    expect(fixture.clock()).toBe(now);
+    expect(fixture.actor.auth).toBe(proof);
+    const current = await fixture.service.policy(fixture.actor);
+    expect((await fixture.service.setPolicy(fixture.actor, { expectedVersion: current.version, value: { ...POLICY, mode: 'local-only' } })).version).toBe(current.version + 1);
+    expect((await fixture.service.delete(fixture.actor)).generation).toBe(current.generation + 2);
+  });
+
+  it('does not turn a lifecycle cache-expiry advance into a renewed consent or a source-clock advance', async () => {
+    let lifecycleTime = now;
+    coordinator = new MerchantResearchCoordinator({ ...host(), clock: () => new Date(lifecycleTime) });
+    setSpacePolicy({ ...POLICY, cacheTtlHours: 1 });
+    const result = await research('independent-lifecycle-cache');
+    if (result.status !== 'succeeded') throw new Error('Expected real provider result');
+    expect(result.enrichment.expiresAt).toBe('2026-10-04T13:00:00.000Z');
+    const consent = await ready({ ...query, merchant: 'Different Public Market' });
+    lifecycleTime = '2026-10-04T13:00:00.001Z';
+    expect(await coordinator.cached(fixture.actor, query)).toBeNull();
+    expect(await coordinator.research(fixture.actor, request(consent, 'expired-independent-consent', { ...query, merchant: 'Different Public Market' }))).toMatchObject({ status: 'denied', billing: 'not_dispatched' });
+    expect(calls).toHaveLength(1);
+    expect(fixture.clock()).toBe(now);
+    expect(new Date().toISOString()).toBe(now);
+    expect(fixture.actor.auth).toEqual(humanAuth(fixture.actor.actorId));
+  });
+});
+
 describe('fresh final source/authority/config/lifetime fences', () => {
   it.each(['source-grant', 'budget-policy', 'deletion', 'actor-deletion', 'abort', 'capture-rejected'] as const)('releases proven-unsent marked work after %s before provider invocation without resurrecting content', async (change) => {
     configuration = { ...CONFIG, credentialLimits: { maxSearchesPerDay: 1, maxSpendMinorUnitsPerMonth: 1 },

@@ -636,6 +636,33 @@ describe('merchant intelligence Review controls', () => {
     return { wrapper, fetcher, controls: wrapper.findAll('section[aria-label="Optional external merchant research"]')[0]! };
   }
 
+  it.each([
+    ['scenario-fixture/1', true],
+    ['search/1', false],
+  ] as const)('labels only the declared %s preview as closed fixture research outside public demo mode', async (providerVersion, isFixture) => {
+    vi.stubGlobal('useRuntimeConfig', () => ({ public: { demoMode: false } }));
+    const { wrapper, controls, fetcher } = await mountResearch(async (url, options) =>
+      envelope(url === '/api/merchant' ? analysis() : {
+        ...readyPreview(JSON.parse(String(options?.body))), providerVersion,
+      }));
+    try {
+      await publicQuery(controls);
+      await button(controls, 'Preview external research').trigger('click');
+      await flushPromises();
+      const label = controls.find('[aria-label="Research fixture provenance"]');
+      expect(label.exists()).toBe(isFixture);
+      if (isFixture) {
+        expect(label.text()).toMatch(/closed fixture/i);
+        expect(label.text()).toMatch(/no live provider request/i);
+        expect(label.text()).toMatch(/modeled.*not.*real.*cost/i);
+      }
+      expect(button(controls, 'Send consented external research').attributes('disabled')).toBeDefined();
+      expect(fetcher.mock.calls.some(([url]) => url === '/api/merchant/research')).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it('requires blank standalone input, declaration, exact preview and independent consent before external dispatch', async () => {
     let sent: Record<string, unknown> | undefined;
     const { wrapper, controls, fetcher } = await mountResearch(async (url, options) => {

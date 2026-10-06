@@ -9,6 +9,7 @@ import type {
 import type { SeededActualBudget } from './actual-seed.js';
 import { existsSync, lstatSync, mkdtempSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 interface ActualRow extends Record<string, unknown> {
   readonly id?: unknown;
@@ -44,6 +45,8 @@ interface ActualApi {
   downloadBudget(syncId: string): Promise<void>;
   getBudgets(): Promise<ActualBudgetRow[]>;
   updateTransaction(id: string, fields: Partial<ActualRow>): Promise<unknown[]>;
+  getPayees(): Promise<ActualRow[]>;
+  updatePayee(id: string, fields: { name: string }): Promise<void>;
   getTransactions(accountId: string, startDate?: string, endDate?: string): Promise<unknown[]>;
   addTransactions(
     accountId: string,
@@ -76,7 +79,14 @@ export interface ImportScenarioEventResult {
   readonly amounts: readonly number[];
 }
 
-export type EventResult = CategorizeScenarioEventResult | ImportScenarioEventResult;
+export interface MerchantSourceChangeEventResult {
+  readonly eventId: 'merchant-source-change';
+  readonly kind: 'merchant-source-change';
+  readonly transactionId: string;
+  readonly payeeId: string;
+}
+
+export type EventResult = CategorizeScenarioEventResult | ImportScenarioEventResult | MerchantSourceChangeEventResult;
 
 export interface ApplyScenarioEventOptions {
   readonly scenario: MaterializedScenario;
@@ -402,6 +412,65 @@ async function applyImport(
   };
 }
 
+async function applyMerchantSourceChange(
+  scenario: MaterializedScenario,
+  seeded: SeededActualBudget,
+  recipe: Extract<ScenarioEventRecipe, { kind: 'merchant-source-change' }>,
+  client: ActualClientHandle,
+): Promise<MerchantSourceChangeEventResult> {
+  const source = transactionByLogicalId(scenario, recipe.transactionId);
+  if (source.subtransactions.length > 0 || !scenario.ledger.transactions.some((row) => row.id === source.id)) {
+    throw new Error('Merchant source change requires a regular fixture transaction');
+  }
+  if (!scenario.ledger.payees.some((payee) => payee.id === recipe.payeeId)) {
+    throw new Error('Merchant source change references an unknown fixture payee');
+  }
+  for (const [field, value] of Object.entries({
+    payeeName: recipe.payeeName, importedPayee: recipe.importedPayee, notes: recipe.notes,
+  })) {
+    if (typeof value !== 'string' || !value.trim() || value.length > 4096) {
+      throw new Error(`Merchant source change ${field} must be bounded nonempty fixture text`);
+    }
+  }
+  const accountId = accountActualId(seeded, source.accountId);
+  const transactionId = actualId(seeded.transactionIds[source.id], 'merchant source transaction');
+  const payeeId = actualId(seeded.payeeIds[recipe.payeeId], 'merchant source payee');
+  const rowsBefore = await readAccountRows(accountId);
+  const sourceRow = rowsBefore.find((row) => rowId(row) === transactionId);
+  if (!sourceRow || rowAmount(sourceRow) !== minorUnits(source.amount, 'merchant source amount') ||
+      rowDate(sourceRow) !== source.date) {
+    throw new Error('Merchant source change native transaction does not match its fixture identity/money');
+  }
+  const payeesBefore = await actualApi.getPayees();
+  const payee = payeesBefore.find((row) => rowId(row) === payeeId);
+  if (!payee) throw new Error('Merchant source change native payee is missing');
+  if (payeesBefore.some((row) => rowId(row) !== payeeId && row.name === recipe.payeeName)) {
+    throw new Error('Merchant source change would collide with another native payee');
+  }
+  await actualApi.updatePayee(payeeId, { name: recipe.payeeName });
+  const expectedSource = { ...sourceRow, imported_payee: recipe.importedPayee, notes: recipe.notes };
+  await actualApi.updateTransaction(transactionId, expectedSource);
+  await publishActualChanges(client);
+  const rowsAfter = await readAccountRows(accountId);
+  for (const before of rowsBefore) {
+    const after = rowsAfter.find((row) => rowId(row) === rowId(before));
+    const expected = rowId(before) === transactionId ? expectedSource : before;
+    if (!isDeepStrictEqual(after, expected)) {
+      throw new Error('Merchant source change did not preserve native transaction money/references/identity');
+    }
+  }
+  const payeesAfter = await actualApi.getPayees();
+  for (const before of payeesBefore) {
+    const after = payeesAfter.find((row) => rowId(row) === rowId(before));
+    const expected = rowId(before) === payeeId ? { ...before, name: recipe.payeeName } : before;
+    if (!isDeepStrictEqual(after, expected)) throw new Error('Merchant source change native payee read-back mismatch');
+  }
+  if (rowsAfter.length !== rowsBefore.length || payeesAfter.length !== payeesBefore.length) {
+    throw new Error('Merchant source change altered the native fixture entity count');
+  }
+  return { eventId: recipe.kind, kind: recipe.kind, transactionId, payeeId };
+}
+
 /** Applies one checked-in scenario event to a disposable Actual budget and verifies its read-back. */
 export async function applyScenarioEvent(
   options: ApplyScenarioEventOptions,
@@ -415,6 +484,10 @@ export async function applyScenarioEvent(
   }
   const root = assertEventRoot(options.root);
   const recipe = recipeForEvent(options.scenario, options.eventId);
+  if (recipe.kind !== 'categorize-uncategorized' && recipe.kind !== 'import-match' &&
+      recipe.kind !== 'import-ambiguous' && recipe.kind !== 'merchant-source-change') {
+    throw new Error(`Scenario event ${JSON.stringify(recipe.kind)} requires its bounded runner control`);
+  }
   const clientDir = mkdtempSync(join(root, CLIENT_DIRECTORY_PREFIX));
   let initialized = false;
   try {
@@ -428,6 +501,9 @@ export async function applyScenarioEvent(
     await assertSelectedBudget(options.seeded);
     if (recipe.kind === 'categorize-uncategorized') {
       return await applyCategorization(options.scenario, options.seeded, recipe, client);
+    }
+    if (recipe.kind === 'merchant-source-change') {
+      return await applyMerchantSourceChange(options.scenario, options.seeded, recipe, client);
     }
     return await applyImport(options.scenario, options.seeded, recipe, client);
   } finally {

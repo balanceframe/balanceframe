@@ -1,5 +1,4 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { constants, openSync, closeSync, renameSync, writeFileSync } from 'node:fs';
 import {
   request as httpRequest,
   createServer,
@@ -8,19 +7,20 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { join } from 'node:path';
 
 import { applyScenarioEvent } from './events.js';
-import { listScenarios, materializeScenario, type MaterializedScenario } from './catalog.js';
+import { listScenarios, materializeScenario, type MaterializedScenario, type ScenarioEventId, type ScenarioControlEvent } from './catalog.js';
 import { builtWebEntry, initializeScenarioShell, type LoadedScenario } from './loader.js';
 import {
   createOwnedScenarioRoot,
   discardOwnedScenarioRoot,
   startScenarioShell,
   stopScenarioProcesses,
+  updateScenarioPersonas,
   type ScenarioProcesses,
 } from './process-runtime.js';
-import type { ScenarioPersonaCredentials } from './workflow-setup.js';
+import { applyScenarioGovernanceAction, refreshScenarioMerchantReadGrants, type ScenarioPersonaCredentials } from './workflow-setup.js';
+import { cancelScenarioResearch, controlScenarioResearch, scenarioFeatureWrite } from './scenario-manifest.js';
 
 const MAX_CONTROL_BYTES = 4 * 1024;
 const MAX_PROXY_BYTES = 1024 * 1024;
@@ -30,6 +30,11 @@ const CONTROL_COOKIE = 'bf_demo';
 const INTERNAL_HEADER = 'x-balanceframe-demo-internal';
 const CSRF_HEADER = 'x-balanceframe-demo-csrf';
 const LOOPBACK = '127.0.0.1';
+const PERSONA_LABELS: Readonly<Record<string, string>> = {
+  owner: 'Fictional owner', approver: 'Fictional independent approver',
+  coapprover: 'Fictional co-approver', restricted: 'Fictional restricted viewer',
+  limited: 'Fictional limited member', invitee: 'Invited Member',
+};
 
 interface Workspace {
   readonly processes: ScenarioProcesses;
@@ -246,40 +251,6 @@ function appendCookies(response: ServerResponse, values: readonly string[]): voi
   response.setHeader('set-cookie', [...cookies, ...values]);
 }
 
-function writeManifest(
-  processes: ScenarioProcesses,
-  generation: number,
-  phase: 'setup' | 'ready',
-  budgetId: string | null,
-  actorIds: readonly string[],
-): void {
-  const manifest = {
-    version: 1,
-    phase,
-    generation,
-    origin: processes.publicOrigin,
-    actualUrl: processes.actualUrl,
-    root: processes.root,
-    authDbPath: processes.authDbPath,
-    workflowDbPath: processes.workflowDbPath,
-    connectionPath: processes.connectionPath,
-    internalSecret: processes.internalSecret,
-    budgetId,
-    actorIds,
-  };
-  const temporary = join(processes.root, `.manifest-${randomBytes(12).toString('hex')}`);
-  const descriptor = openSync(
-    temporary,
-    constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_WRONLY,
-    0o600,
-  );
-  try {
-    writeFileSync(descriptor, JSON.stringify(manifest));
-  } finally {
-    closeSync(descriptor);
-  }
-  renameSync(temporary, processes.manifestPath);
-}
 
 async function startWorkspace(
   supervisor: Supervisor,
@@ -295,34 +266,18 @@ async function startWorkspace(
       publicOrigin: supervisor.origin.origin,
       webEntry: supervisor.webEntry,
       demoMode: true,
+      generation,
+      scenarioId: scenario.id,
     });
   } catch (failure) {
     discardOwnedScenarioRoot(root);
     throw failure;
   }
-  try {
-    writeManifest(processes, generation, 'setup', null, []);
-  } catch (failure) {
-    await stopScenarioProcesses(processes);
-    throw failure;
-  }
   return { scenario, processes, loaded: null };
 }
 
-async function populateWorkspace(workspace: Workspace, generation: number): Promise<void> {
-  const loaded = await initializeScenarioShell(
-    workspace.processes,
-    workspace.scenario,
-    workspace.processes.internalSecret,
-  );
-  writeManifest(
-    workspace.processes,
-    generation,
-    'ready',
-    loaded.seeded.budgetId,
-    Object.values(loaded.initialized.personas).map((persona) => persona.actorId),
-  );
-  workspace.loaded = loaded;
+async function populateWorkspace(workspace: Workspace): Promise<void> {
+  workspace.loaded = await initializeScenarioShell(workspace.processes, workspace.scenario);
 }
 
 function personaCredentials(
@@ -404,15 +359,19 @@ function publicState(
   supervisor: Supervisor,
   control: { token: string; session: ControlSession } | null,
 ): Record<string, unknown> {
-  const active = control?.session.generation === supervisor.generation ? control : null;
+  const credentials = supervisor.current?.loaded?.initialized.personas ?? {};
+  const active = control?.session.generation === supervisor.generation && credentials[control.session.personaId] ? control : null;
+  const personas = Object.keys(credentials).filter((id) => Object.hasOwn(PERSONA_LABELS, id))
+    .map((id) => ({ id, label: PERSONA_LABELS[id]! }));
   return {
     status: supervisor.status,
     scenarioId: supervisor.scenarioId,
     generation: supervisor.generation,
     anchor: supervisor.anchor,
     shared: true,
-    personaIds: supervisor.current?.scenario.personas.map(({ id }) => id) ?? [],
-    personaId: active?.session.personaId ?? null,
+    personas,
+    personaIds: personas.map(({ id }) => id),
+    personaId: active && credentials[active.session.personaId] ? active.session.personaId : null,
     csrfToken: active ? csrf(supervisor, active.token) : null,
     ...(supervisor.failureCode ? { failureCode: supervisor.failureCode } : {}),
   };
@@ -487,11 +446,11 @@ function canWriteFinancial(method: string, path: string): boolean {
   return method === 'DELETE' && /^\/api\/spend-sessions\/[^/]+$/.test(path);
 }
 
-function forbiddenProxyPath(method: string, path: string): boolean {
+function forbiddenProxyPath(method: string, path: string, workspace: Workspace): boolean {
   if (!path.startsWith('/api/')) return false;
   if (method === 'POST' && path === '/api/auth/sign-out') return false;
   if (!unsafeMethod(method)) return false;
-  return !canWriteFinancial(method, path);
+  return !canWriteFinancial(method, path) && !scenarioFeatureWrite(workspace.scenario.id, method, path);
 }
 
 function safeProxyHeaders(
@@ -615,11 +574,17 @@ async function allowedEntry(
   workspace: Workspace,
   personaId: string,
   request: IncomingMessage,
-): Promise<{ path: string; input?: unknown }> {
+): Promise<{ path: string; input?: unknown } | null> {
   const mapped = workspace.loaded?.initialized.entry;
   if (!mapped) return { path: '/liquidity' };
   const cookie = header(request, 'cookie') ?? '';
   const headers = { ...internalHeaders(supervisor, workspace), cookie };
+  if (mapped.kind === 'page') {
+    const credentials = personaCredentials(workspace, personaId);
+    if (!credentials) return null;
+    if (await verifyBrowserPersona(supervisor, workspace, request, credentials) !== 200) return null;
+    return { path: mapped.path };
+  }
   let path: string;
   if (mapped.kind === 'purchase') path = '/api/liquidity/spendability';
   else if (mapped.kind === 'session') path = `/api/spend-sessions/${mapped.sessionId}`;
@@ -640,6 +605,132 @@ async function allowedEntry(
   )
     return { path: '/liquidity' };
   return { path: '/purchase-check', input };
+}
+
+/** Normal middleware verifies the cookie; this response binds it to the exact current selected membership. */
+async function verifyBrowserPersona(
+  supervisor: Supervisor, workspace: Workspace, request: IncomingMessage, credentials: ScenarioPersonaCredentials,
+): Promise<number> {
+  const response = await fetch(`${workspace.processes.webUrl}/api/spaces/${encodeURIComponent(credentials.spaceId)}`, {
+    headers: {
+      ...internalHeaders(supervisor, workspace), cookie: header(request, 'cookie') ?? '',
+      ...(header(request, 'x-balanceframe-space') !== null ? { 'x-balanceframe-space': header(request, 'x-balanceframe-space')! } : {}),
+    },
+  });
+  if (!response.ok) return response.status;
+  const body = await response.json() as {
+    result?: { space?: { id?: string; membership?: { id?: string; actorId?: string } } };
+  };
+  if (body.result?.space?.membership?.actorId !== credentials.actorId) return 401;
+  return body.result.space.id === credentials.spaceId && body.result.space.membership.id === credentials.membershipId ? 200 : 403;
+}
+
+class DemoActionError extends Error {
+  constructor(readonly status: number, readonly code: string) {
+    super('Scenario action was refused by the normal handler');
+  }
+}
+
+async function normalScenarioAction(
+  supervisor: Supervisor, workspace: Workspace, request: IncomingMessage,
+  path: string, method = 'GET', body?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`${workspace.processes.webUrl}${path}`, {
+    method,
+    headers: {
+      ...internalHeaders(supervisor, workspace), cookie: header(request, 'cookie') ?? '',
+      ...(header(request, 'x-balanceframe-space') !== null ? { 'x-balanceframe-space': header(request, 'x-balanceframe-space')! } : {}),
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const envelope = await response.json() as { status?: string; result?: Record<string, unknown>; error?: { code?: string } };
+  if (!response.ok || envelope.status !== 'ok') {
+    const code = envelope.error?.code;
+    throw new DemoActionError(response.ok ? 403 : response.status,
+      typeof code === 'string' && /^[A-Za-z0-9_]{1,80}$/.test(code) ? code : 'DEMO_EVENT_FAILED');
+  }
+  return envelope.result ?? {};
+}
+
+async function applyControlRecipe(
+  supervisor: Supervisor, workspace: Workspace, request: IncomingMessage, recipe: ScenarioControlEvent,
+): Promise<Record<string, unknown> | undefined> {
+  const loaded = workspace.loaded;
+  if (!loaded) throw new DemoActionError(503, 'DEMO_NOT_READY');
+  const spacePath = `/api/spaces/${encodeURIComponent(loaded.initialized.spaceId)}`;
+  switch (recipe.kind) {
+    case 'invitation-redeem':
+    case 'invitation-rejoin': {
+      await normalScenarioAction(supervisor, workspace, request, '/api/invitations');
+      await applyScenarioGovernanceAction({
+        handle: loaded, action: recipe.kind === 'invitation-redeem' ? 'redeem-invitee' : 'rejoin-invitee',
+      });
+      return undefined;
+    }
+    case 'membership-revoke': {
+      const persona = loaded.initialized.personas[recipe.personaId];
+      if (!persona) throw new DemoActionError(400, 'DEMO_UNKNOWN_PERSONA');
+      await normalScenarioAction(supervisor, workspace, request,
+        `${spacePath}/memberships/${encodeURIComponent(persona.membershipId)}/revoke`, 'POST', {});
+      delete (loaded.initialized.personas as Record<string, ScenarioPersonaCredentials>)[recipe.personaId];
+      await updateScenarioPersonas(workspace.processes, loaded.initialized);
+      return undefined;
+    }
+    case 'scoped-grant-change':
+    case 'scoped-grant-revoke': {
+      const persona = loaded.initialized.personas[recipe.personaId];
+      const resourceId = loaded.seeded.accountIds[recipe.resourceId];
+      if (!persona || !resourceId) throw new DemoActionError(400, 'DEMO_INVALID_CONTROL');
+      await normalScenarioAction(supervisor, workspace, request, `${spacePath}/grants`, 'PUT', {
+        membershipId: persona.membershipId, resourceKind: 'account', resourceId,
+        capability: recipe.capability, granted: recipe.granted,
+      });
+      return undefined;
+    }
+    case 'assistant-revoke': {
+      const assistant = loaded.initialized.governance?.assistant;
+      if (!assistant) throw new DemoActionError(400, 'DEMO_UNKNOWN_EVENT');
+      await normalScenarioAction(supervisor, workspace, request,
+        `${spacePath}/delegations/${encodeURIComponent(assistant.delegationId)}/revoke`, 'POST', { expectedVersion: assistant.delegationVersion });
+      return undefined;
+    }
+    case 'assistant-probe': {
+      const allowed = await applyScenarioGovernanceAction({ handle: loaded, action: 'probe-assistant', probe: 'checking-name' }) as {
+        status: number; body: { resources?: { resourceKind: string; resourceId: string; name?: string }[] };
+      };
+      const denials: { operation: string; status: number }[] = [];
+      for (const probe of ['manage-grants', 'financial', 'full-history'] as const) {
+        const result = await applyScenarioGovernanceAction({ handle: loaded, action: 'probe-assistant', probe }) as { status: number };
+        denials.push({ operation: probe, status: result.status });
+      }
+      return { probe: {
+        checking: { status: allowed.status, resources: (allowed.body.resources ?? []).map(({ resourceKind, resourceId, name }) => ({
+          resourceKind, resourceId, ...(name === undefined ? {} : { name }),
+        })) },
+        denials,
+      } };
+    }
+    case 'merchant-calendar-clear': {
+      const policy = await normalScenarioAction(supervisor, workspace, request, '/api/merchant/policy') as {
+        version: number; value: Record<string, unknown>;
+      };
+      await normalScenarioAction(supervisor, workspace, request, '/api/merchant/policy', 'PUT', {
+        expectedVersion: policy.version, value: { ...policy.value, calendar: { budget: null, accounts: [] } },
+      });
+      return undefined;
+    }
+    case 'research-hold':
+    case 'research-release':
+    case 'research-cancel':
+    case 'research-expire':
+      controlScenarioResearch(workspace.processes, recipe.kind);
+      return undefined;
+    default: {
+      const unexpected: never = recipe;
+      throw new Error(`Unknown scenario control ${String(unexpected)}`);
+    }
+  }
 }
 
 async function handleControl(
@@ -681,10 +772,16 @@ async function handleControl(
         error(response, 401, 'DEMO_AUTH_REQUIRED');
         return;
       }
-      json(response, 200, {
-        generation: supervisor.generation,
-        ...(await allowedEntry(supervisor, workspace, control.session.personaId, request)),
-      });
+      const entry = await allowedEntry(supervisor, workspace, control.session.personaId, request);
+      if (supervisor.busy || supervisor.current !== workspace || supervisor.generation !== control.session.generation) {
+        error(response, 409, 'DEMO_STALE_GENERATION');
+        return;
+      }
+      if (!entry) {
+        error(response, 403, 'DEMO_SPACE_REQUIRED');
+        return;
+      }
+      json(response, 200, { generation: supervisor.generation, ...entry });
     } finally {
       done();
     }
@@ -719,11 +816,15 @@ async function handleControl(
     error(response, 403, 'DEMO_CONTROL_DENIED');
     return;
   }
-  if (supervisor.busy) {
+  const current = supervisor.current;
+  const requestedRecipe = path === '/__demo/event' && typeof payload.eventId === 'string' &&
+    current?.loaded && Object.hasOwn(current.scenario.events, payload.eventId)
+    ? current.scenario.events[payload.eventId as ScenarioEventId] : undefined;
+  const nonDraining = requestedRecipe?.kind === 'research-release' || requestedRecipe?.kind === 'research-cancel';
+  if (supervisor.busy && !(nonDraining && supervisor.status === 'ready')) {
     error(response, 409, 'DEMO_BUSY');
     return;
   }
-  const current = supervisor.current;
   if (path === '/__demo/persona') {
     if (
       supervisor.status !== 'ready' ||
@@ -820,33 +921,83 @@ async function handleControl(
       return;
     }
     const eventId = payload.eventId;
-    if (
-      (eventId !== 'categorize-uncategorized' &&
-        eventId !== 'import-match' &&
-        eventId !== 'import-ambiguous') ||
-      !Object.hasOwn(current.scenario.events, eventId)
-    ) {
+    if (typeof eventId !== 'string' || !Object.hasOwn(current.scenario.events, eventId)) {
       error(response, 400, 'DEMO_UNKNOWN_EVENT');
       return;
     }
-    supervisor.busy = true;
-    await waitForFinancialDrain(supervisor);
+    if (Object.keys(payload).some((key) => key !== 'eventId' && key !== 'expectedGeneration')) {
+      error(response, 400, 'DEMO_INVALID_CONTROL');
+      return;
+    }
+    const recipe = current.scenario.events[eventId as ScenarioEventId]!;
+    const owner = personaCredentials(current, 'owner');
+    if (!owner || await authorizedActor(supervisor, current, request) !== owner.actorId) {
+      error(response, 401, 'DEMO_AUTH_REQUIRED');
+      return;
+    }
+    if (control.session.personaId !== 'owner') {
+      error(response, 403, 'DEMO_CONTROL_DENIED');
+      return;
+    }
+    const selectedStatus = await verifyBrowserPersona(supervisor, current, request, owner);
+    if (selectedStatus !== 200) {
+      error(response, selectedStatus, selectedStatus === 401 ? 'DEMO_AUTH_REQUIRED' : 'DEMO_SPACE_REQUIRED');
+      return;
+    }
+    if (supervisor.current !== current || supervisor.generation !== control.session.generation ||
+      supervisor.stopping || supervisor.status !== 'ready' || (supervisor.busy && !nonDraining)) {
+      error(response, 409, 'DEMO_STALE_GENERATION');
+      return;
+    }
+    if (!nonDraining) {
+      supervisor.busy = true;
+      await waitForFinancialDrain(supervisor);
+    }
     try {
-      const applied = await applyScenarioEvent({
-        scenario: current.scenario,
-        seeded: current.loaded.seeded,
-        root: current.processes.root,
-        actualServerUrl: current.processes.actualUrl,
-        actualSecretKey: current.processes.actualSecretKey,
-        eventId,
-      });
-      json(response, 200, { generation: supervisor.generation, eventId: applied.eventId });
-    } catch {
-      error(response, 503, 'DEMO_EVENT_FAILED');
+      let result: Record<string, unknown> | undefined;
+      if (recipe.kind === 'categorize-uncategorized' || recipe.kind === 'import-match' ||
+        recipe.kind === 'import-ambiguous' || recipe.kind === 'merchant-source-change') {
+        const applied = await applyScenarioEvent({
+          scenario: current.scenario, seeded: current.loaded.seeded,
+          root: current.processes.root, actualServerUrl: current.processes.actualUrl,
+          actualSecretKey: current.processes.actualSecretKey, eventId: eventId as ScenarioEventId,
+        });
+        if (current.scenario.merchant) {
+          const transactionIds = applied.kind === 'categorize-uncategorized' || applied.kind === 'merchant-source-change'
+            ? [applied.transactionId] : applied.transactionIds;
+          await refreshScenarioMerchantReadGrants(current.loaded, { transactionIds });
+        }
+      } else {
+        result = await applyControlRecipe(supervisor, current, request, recipe);
+      }
+      if (supervisor.current !== current || supervisor.generation !== control.session.generation || supervisor.stopping) {
+        error(response, 409, 'DEMO_STALE_GENERATION');
+        return;
+      }
+      json(response, 200, { generation: supervisor.generation, eventId, ...result });
+    } catch (failure) {
+      error(response, failure instanceof DemoActionError ? failure.status : 503,
+        failure instanceof DemoActionError ? failure.code : 'DEMO_EVENT_FAILED');
     } finally {
-      supervisor.busy = false;
+      if (!nonDraining) supervisor.busy = false;
     }
     return;
+  }
+  if (current?.loaded) {
+    const persona = personaCredentials(current, control.session.personaId);
+    if (!persona) {
+      error(response, 401, 'DEMO_AUTH_REQUIRED');
+      return;
+    }
+    const selectedStatus = await verifyBrowserPersona(supervisor, current, request, persona);
+    if (selectedStatus !== 200) {
+      error(response, selectedStatus, selectedStatus === 401 ? 'DEMO_AUTH_REQUIRED' : 'DEMO_SPACE_REQUIRED');
+      return;
+    }
+    if (supervisor.current !== current || supervisor.generation !== control.session.generation || supervisor.busy || supervisor.stopping) {
+      error(response, 409, 'DEMO_STALE_GENERATION');
+      return;
+    }
   }
   const nextId = path === '/__demo/reset' ? supervisor.scenarioId : payload.scenarioId;
   if (typeof nextId !== 'string' || !listScenarios().some(({ id }) => id === nextId)) {
@@ -863,12 +1014,13 @@ async function handleControl(
   supervisor.lastLoadAt = now;
   supervisor.busy = true;
   supervisor.status = 'loading';
-  await waitForFinancialDrain(supervisor);
   const generation = supervisor.generation + 1;
   let candidate: Workspace | null = null;
   try {
+    if (current) cancelScenarioResearch(current.processes);
+    await waitForFinancialDrain(supervisor);
     candidate = await startWorkspace(supervisor, nextId, generation);
-    await populateWorkspace(candidate, generation);
+    await populateWorkspace(candidate);
     await verifyNativeReadiness(supervisor, candidate);
     const cookies = await signInPersona(supervisor, candidate, 'owner');
     const previous = supervisor.current;
@@ -983,7 +1135,17 @@ async function handleRequest(
     error(response, 503, 'DEMO_FINANCIAL_UNAVAILABLE');
     return;
   }
-  if (forbiddenProxyPath(method, target.path)) {
+  if (forbiddenProxyPath(method, target.path, workspace) ||
+    (target.path.startsWith('/api/') && header(request, INTERNAL_HEADER) !== null)) {
+    error(response, 403, 'DEMO_OPERATION_DISABLED');
+    return;
+  }
+  const pathSpace = /^\/api\/spaces\/([^/]+)(?:\/|$)/.exec(target.path)?.[1];
+  const featureScope = scenarioFeatureWrite(workspace.scenario.id, method, target.path) ||
+    (workspace.scenario.id.startsWith('merchant-') && /^\/api\/(?:merchant|review|proposal|rule)(?:\/|$)/.test(target.path));
+  const requestedSpace = header(request, 'x-balanceframe-space')?.trim() ?? cookieValue(request, 'balanceframe_space');
+  if ((pathSpace && pathSpace !== workspace.loaded?.initialized.spaceId) ||
+    (featureScope && requestedSpace !== null && requestedSpace !== workspace.loaded?.initialized.spaceId)) {
     error(response, 403, 'DEMO_OPERATION_DISABLED');
     return;
   }
@@ -1059,7 +1221,7 @@ export async function startDemoServer(options: StartDemoServerOptions = {}): Pro
     supervisor.current = workspace;
     supervisor.anchor = workspace.scenario.anchor;
     try {
-      await populateWorkspace(workspace, 1);
+      await populateWorkspace(workspace);
       await verifyNativeReadiness(supervisor, workspace);
       supervisor.status = 'ready';
     } catch {
@@ -1081,7 +1243,24 @@ export async function stopDemoServer(handle: DemoServer): Promise<void> {
   if (!supervisor) throw new Error('Demo server handle is not owned');
   if (supervisor.stopping) return;
   supervisor.stopping = true;
-  await new Promise<void>((resolve) => supervisor.listener.close(() => resolve()));
-  if (supervisor.current) await stopScenarioProcesses(supervisor.current.processes);
-  supervisors.delete(handle);
+  let cancellationError: unknown;
+  try {
+    if (supervisor.current) cancelScenarioResearch(supervisor.current.processes);
+  } catch (failure) {
+    cancellationError = failure;
+  }
+  try {
+    if (cancellationError && supervisor.current) {
+      try {
+        await stopScenarioProcesses(supervisor.current.processes);
+      } catch (failure) {
+        cancellationError = failure;
+      }
+    }
+    await new Promise<void>((resolve) => supervisor.listener.close(() => resolve()));
+    if (supervisor.current) await stopScenarioProcesses(supervisor.current.processes);
+  } finally {
+    supervisors.delete(handle);
+  }
+  if (cancellationError) throw cancellationError;
 }

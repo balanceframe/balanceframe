@@ -21,6 +21,12 @@ import { createServer } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 
+import {
+  cancelScenarioResearch, initialScenarioManifest, readScenarioManifest, registerScenarioManifestHandle,
+  writeScenarioManifest, writeScenarioPrivateFile,
+  type ScenarioId,
+} from './scenario-manifest.js';
+import type { ScenarioInitialized } from './workflow-setup.js';
 const LOOPBACK_HOST = '127.0.0.1';
 const ROOT_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -305,7 +311,7 @@ function createWebEnvironment(
     NUXT_WORKFLOW_DB_PATH: handle.workflowDbPath,
     BALANCEFRAME_WORKFLOW_DB_PATH: handle.workflowDbPath,
     BALANCEFRAME_CONFIG_PATH: handle.connectionPath,
-    ...(state.demoMode ? { NUXT_DEMO_MANIFEST_PATH: handle.manifestPath } : {}),
+    NUXT_DEMO_MANIFEST_PATH: handle.manifestPath,
     BETTER_AUTH_URL: handle.publicOrigin,
     BETTER_AUTH_SECRET: handle.internalSecret,
     NUXT_BETTER_AUTH_SECRET: handle.internalSecret,
@@ -604,6 +610,8 @@ export async function startScenarioShell(options: {
   readonly publicOrigin: string;
   readonly webEntry: string;
   readonly demoMode?: boolean;
+  readonly generation?: number;
+  readonly scenarioId?: ScenarioId;
 }): Promise<ScenarioProcesses> {
   const ownership = validateOwnedRoot(options.root);
   const publicOrigin = assertPublicOrigin(options.publicOrigin);
@@ -626,6 +634,7 @@ export async function startScenarioShell(options: {
     manifestPath: join(root, 'manifest.json'),
     publicOrigin,
   });
+  writeScenarioPrivateFile(publicHandle.root, publicHandle.manifestPath, initialScenarioManifest(publicHandle, options.generation, options.scenarioId));
   const stateWithoutWeb = {
     publicHandle,
     ownership,
@@ -649,6 +658,7 @@ export async function startScenarioShell(options: {
   };
   internalProcesses.set(publicHandle, state);
   activeRoots.set(root, publicHandle);
+  registerScenarioManifestHandle(publicHandle, () => assertScenarioProcessesActive(publicHandle));
   try {
     await waitForHttp(web.process, publicHandle.webUrl, 'Nuxt shell');
   } catch (error) {
@@ -660,10 +670,59 @@ export async function startScenarioShell(options: {
   return publicHandle;
 }
 
-export async function startScenarioActual(handle: ScenarioProcesses): Promise<void> {
+/** A stale or substituted handle may never mutate private files or publish human credentials. */
+export function assertScenarioProcessesActive(handle: ScenarioProcesses): void {
   const state = internalProcesses.get(handle);
-  if (!state || stoppedHandles.has(handle)) throw new Error('Scenario process handle is not owned');
+  if (!state || state.stopPromise || stoppedHandles.has(handle) || activeRoots.get(handle.root) !== handle ||
+    state.web.process.exitCode !== null || state.web.process.signalCode !== null)
+    throw new Error('Scenario process handle is not active');
   validateOwnedRoot(handle.root);
+}
+
+/** Publish only current normal human sessions and membership periods verified by the owned child. */
+export async function updateScenarioPersonas(handle: ScenarioProcesses, initialized: ScenarioInitialized): Promise<void> {
+  assertScenarioProcessesActive(handle);
+  const manifest = readScenarioManifest(handle);
+  if (!manifest.scenarioId || (manifest.spaceId !== null && manifest.spaceId !== initialized.spaceId) ||
+    (manifest.budgetId !== null && manifest.budgetId !== initialized.budgetId))
+    throw new Error('Scenario persona publication changed the selected scope');
+  const actorIds: string[] = [];
+  for (const persona of Object.values(initialized.personas)) {
+    assertScenarioProcessesActive(handle);
+    if (persona.spaceId !== initialized.spaceId || actorIds.includes(persona.actorId))
+      throw new Error('Scenario persona scope or identity is invalid');
+    const headers = {
+      host: new URL(handle.publicOrigin).host, origin: handle.publicOrigin,
+      'x-balanceframe-demo-internal': handle.internalSecret,
+      'x-balanceframe-space': initialized.spaceId, cookie: persona.cookieHeader,
+    };
+    const sessionResponse = await fetch(new URL('/api/auth/get-session', handle.webUrl), { headers });
+    const session = await sessionResponse.json() as { user?: { id?: string }; session?: { userId?: string } };
+    if (!sessionResponse.ok || session.user?.id !== persona.actorId || session.session?.userId !== persona.actorId)
+      throw new Error('Scenario persona session is not current');
+    const selectedResponse = await fetch(new URL(`/api/spaces/${encodeURIComponent(initialized.spaceId)}`, handle.webUrl), { headers });
+    const selected = await selectedResponse.json() as {
+      result?: { space?: { id?: string; membership?: { id?: string; actorId?: string; revokedAt?: string | null } } };
+    };
+    const space = selected.result?.space;
+    if (!selectedResponse.ok || space?.id !== initialized.spaceId ||
+      space.membership?.id !== persona.membershipId || space.membership.actorId !== persona.actorId || space.membership.revokedAt !== null)
+      throw new Error('Scenario persona membership is not current');
+    actorIds.push(persona.actorId);
+  }
+  assertScenarioProcessesActive(handle);
+  const current = readScenarioManifest(handle);
+  if (current.generation !== manifest.generation || current.scenarioId !== manifest.scenarioId ||
+    current.spaceId !== manifest.spaceId || actorIds.length === 0)
+    throw new Error('Scenario persona publication is stale');
+  writeScenarioManifest(handle, {
+    ...current, phase: 'ready', spaceId: initialized.spaceId, budgetId: initialized.budgetId, actorIds,
+  });
+}
+
+export async function startScenarioActual(handle: ScenarioProcesses): Promise<void> {
+  assertScenarioProcessesActive(handle);
+  const state = internalProcesses.get(handle)!;
   if (state.actual && state.actual.process.exitCode === null && state.actual.process.signalCode === null) {
     return;
   }
@@ -691,13 +750,21 @@ export async function stopScenarioProcesses(handle: ScenarioProcesses): Promise<
   const state = internalProcesses.get(handle);
   if (!state) throw new Error('Scenario process handle is not owned');
   if (state.stopPromise) return await state.stopPromise;
+  validateOwnedRoot(handle.root);
   state.stopPromise = (async () => {
+    let cancellationError: unknown;
+    try {
+      cancelScenarioResearch(handle);
+    } catch (error) {
+      cancellationError = error;
+    }
     if (state.actual) await stopChild(state.actual.process);
     await stopChild(state.web.process);
     safeCleanup(state.ownership);
     activeRoots.delete(handle.root);
     internalProcesses.delete(handle);
     stoppedHandles.add(handle);
+    if (cancellationError) throw cancellationError;
   })();
   return await state.stopPromise;
 }

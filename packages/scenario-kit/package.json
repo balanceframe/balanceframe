@@ -13,13 +13,14 @@
     "./loader": "./dist/scenario-kit/src/loader.js"
   },
   "scripts": {
-    "build": "tsc && node --input-type=module -e \"import { mkdirSync, copyFileSync } from 'node:fs'; mkdirSync('dist/protocol/fixtures/scenarios', { recursive: true }); copyFileSync('../../protocol/fixtures/scenarios/household.json', 'dist/protocol/fixtures/scenarios/household.json');\"",
+    "build": "tsc && node --input-type=module -e \"import { mkdirSync, copyFileSync } from 'node:fs'; mkdirSync('dist/protocol/fixtures/scenarios', { recursive: true }); for (const name of ['household', 'merchant']) copyFileSync('../../protocol/fixtures/scenarios/' + name + '.json', 'dist/protocol/fixtures/scenarios/' + name + '.json');\"",
     "coverage": "vitest run --coverage",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@actual-app/api": "^26.10.0",
+    "@balanceframe/actual-adapter": "workspace:*",
     "@balanceframe/application": "workspace:*",
     "@balanceframe/protocol-generated": "workspace:*",
     "@balanceframe/workflow-store": "workspace:*",

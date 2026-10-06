@@ -1,13 +1,15 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type * as H3 from 'h3';
-import { merchantFixture, canonical, transaction, categoryId, now, humanAuth, accountId, privateAccountId, candidateId, payeeId, type MerchantFixture } from '../../../../packages/application/test/merchant-service.fixture';
+import { merchantFixture, canonical, transaction, categoryId, now, humanAuth, accountId, privateAccountId, candidateId, payeeId, native, type MerchantFixture } from '../../../../packages/application/test/merchant-service.fixture';
 import type { MerchantPublicSuggestion } from '@balanceframe/application';
 import { ValueSerpProvider } from '../../../../packages/inference/src/providers/valueserp';
 import type { MerchantResearchConfiguration } from '../../../../packages/application/src/merchant-research';
 import type { ConnectedBudget, ConnectionUseOptions } from '../../../../packages/application/src/connection-manager';
 import type { AuditRecord, GenericActionProposal } from '@balanceframe/workflow-store';
-import { merchantConnectionId } from '../../../../packages/application/src/merchant-service';
+import { MerchantIntelligenceService, merchantConnectionId, type MerchantServiceOptions } from '../../../../packages/application/src/merchant-service';
 import { merchantPendingReview, persistPendingReviewResult } from '@balanceframe/application';
 import { nativeReviewFixture } from './native-review.fixture';
 
@@ -529,7 +531,7 @@ describe('separately governed merchant research routes', () => {
     fixture.grant('evidence', `merchant:transaction:${candidateId}`, 'merchant:research');
   };
 
-  const enableExternal = async (fetchFn: typeof fetch) => {
+  const enableExternal = async (fetchFn: typeof fetch, lifecycleClock?: () => Date) => {
     await fixture.cleanup();
     const value = { mode: 'external-allowed' as const, allowedProviderIds: ['valueserp'], maxSearchesPerDay: 10, maxSpendMinorUnitsPerMonth: 1, billingCurrency: 'USD', cacheTtlHours: 24 };
     const configuration: MerchantResearchConfiguration = {
@@ -538,13 +540,12 @@ describe('separately governed merchant research routes', () => {
       credentialLimits: { maxSearchesPerDay: 10, maxSpendMinorUnitsPerMonth: 1 },
       tariff: { version: 'account-confirmed-test-v1', billingCurrency: 'USD', costAtoms: '125000' }, apiKey: 'SERVER-ONLY-SYNTHETIC-KEY',
     };
-    fixture = await merchantFixture({
-      currency: 'JPY',
-      research: {
-        settings: () => ({ installation: { version: configuration.installationVersion, value }, configuration }),
-        providerFor: () => new ValueSerpProvider({ apiKey: configuration.apiKey, fetchFn, now: () => new Date(fixture.clock()) }),
-      },
-    });
+    const research = {
+      settings: () => ({ installation: { version: configuration.installationVersion, value }, configuration }),
+      providerFor: () => new ValueSerpProvider({ apiKey: configuration.apiKey, fetchFn, now: () => new Date(fixture.clock()) }),
+      ...(lifecycleClock ? { clock: lifecycleClock } : {}),
+    };
+    fixture = await merchantFixture({ currency: 'JPY', research });
     deps.store.mockReturnValue({ store: fixture.store }); deps.manager.mockReturnValue(fixture.manager); deps.service.mockResolvedValue(fixture.service);
     grantResearch();
     await fixture.service.setSpacePolicy(fixture.actor, { expectedVersion: 0, value });
@@ -583,6 +584,31 @@ describe('separately governed merchant research routes', () => {
     const revoked = await researchCache(request(query));
     expect(revoked.status === 'error' || revoked.result?.enrichment === null).toBe(true);
     expect(JSON.stringify(revoked)).not.toContain('public.example.test');
+  });
+  it('uses bounded research time to expire cache while real current-session policy and delete controls still succeed', async () => {
+    let lifecycleTime = now;
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => organicResponse());
+    let query = await enableExternal(fetchFn, () => new Date(lifecycleTime));
+    const prior = await spacePolicy(request());
+    if (!prior.result) throw new Error('Expected actual space policy');
+    const changed = await setSpacePolicy(request({ expectedVersion: prior.result.version, value: { ...prior.result.value, cacheTtlHours: 1 } }));
+    expect(changed.status).toBe('ok');
+    query = await publicQuery();
+    const preview = await researchPreview(request(query));
+    if (preview.result?.status !== 'ready') throw new Error('Expected exact authorized consent');
+    const sent = await researchSend(request({ ...query, previewToken: preview.result.previewToken, consent: true, idempotencyKey: 'http-lifecycle' }));
+    if (sent.result?.status !== 'succeeded') throw new Error('Expected real research success');
+    expect(sent.result.enrichment.expiresAt).toBe('2026-10-04T13:00:00.000Z');
+    expect((await researchCache(request(query))).result).toEqual({ enrichment: sent.result.enrichment });
+    lifecycleTime = '2026-10-04T13:00:00.001Z';
+    expect((await researchCache(request(query))).result).toEqual({ enrichment: null });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(new Date().toISOString()).toBe(now);
+    expect(fixture.clock()).toBe(now);
+    const current = await policy(request());
+    if (!current.result) throw new Error('Expected current policy');
+    expect((await setPolicy(request({ expectedVersion: current.result.version, value: { ...current.result.value, mode: 'local-only' } }))).status).toBe('ok');
+    expect((await deleteData(request())).result?.generation).toBe(current.result.generation + 2);
   });
 
   it.each(['evidence', 'account', 'stale', 'lifetime'] as const)('rechecks current %s authority after preview and never dispatches a stale request', async (change) => {
@@ -767,5 +793,57 @@ describe('separately governed merchant research routes', () => {
     deps.human.mockResolvedValue(humanAuth('holder'));
     fixture.grant('space', fixture.actor.spaceId, 'policy:manage', false);
     expect((await setSpacePolicy(request(complete))).status).toBe('error');
+  });
+
+  it.each(['valid', 'missing-manifest', 'missing-control', 'invalid-control'] as const)('composes %s protected scenario research through normal HTTP admission without paid provider fallback', async (kind) => {
+    const root = dirname(fixture.databasePath);
+    const manifestPath = join(root, 'manifest.json');
+    const controlPath = join(root, 'research.json');
+    const connectionPath = join(root, 'config.json');
+    const actualUrl = 'http://127.0.0.1:49231';
+    fixture.setConfig(actualUrl); chmodSync(root, 0o700);
+    mkdirSync(join(root, 'credentials'), { mode: 0o700 });
+    writeFileSync(connectionPath, JSON.stringify({ version: 1, serverUrl: actualUrl, budgetId: fixture.actor.budgetId, budgetName: 'Merchant', groupId: fixture.actor.budgetId }), { mode: 0o600 });
+    writeFileSync(manifestPath, JSON.stringify({ version: 1, phase: 'ready', generation: 3, origin: 'https://balanceframe.test', actualUrl, root, authDbPath: join(root, 'auth.sqlite'), workflowDbPath: fixture.databasePath, connectionPath, internalSecret: 'private-runner-key-012345678901234567890', budgetId: fixture.actor.budgetId, actorIds: [fixture.actor.actorId], scenarioId: 'merchant-research-success', spaceId: fixture.actor.spaceId, research: { provider: 'fixture', controlPath } }), { mode: 0o600 });
+    writeFileSync(controlPath, JSON.stringify({ version: 1, generation: 3, scenarioId: 'merchant-research-success', spaceId: fixture.actor.spaceId, mode: 'success', clockOffsetMs: 0, releaseVersion: 0, cancelVersion: 0 }), { mode: 0o600 });
+    writeFileSync(`${controlPath}.status`, JSON.stringify({ version: 1, generation: 3, calls: 0, held: 0 }), { mode: 0o600 });
+    const value = { mode: 'external-allowed' as const, allowedProviderIds: ['valueserp'], maxSearchesPerDay: 20, maxSpendMinorUnitsPerMonth: 100, billingCurrency: 'USD', cacheTtlHours: 1 };
+    const paidPath = join(root, 'paid-research.json');
+    writeFileSync(paidPath, JSON.stringify({ installation: { id: 'paid-installation', version: 'paid/1', policy: value }, credential: { id: 'paid-credential', version: 'paid/1', limits: { maxSearchesPerDay: 20, maxSpendMinorUnitsPerMonth: 100 } }, tariff: { version: 'paid/1', billingCurrency: 'USD', costAtoms: '250000' } }), { mode: 0o600 });
+    vi.stubEnv('BALANCEFRAME_MERCHANT_CONFIG_PATH', paidPath); vi.stubEnv('VALUESERP_API_KEY', 'PAID-KEY-NOT-FOR-FIXTURES');
+    grantResearch();
+    await fixture.service.setSpacePolicy(fixture.actor, { expectedVersion: 0, value });
+    await fixture.service.setPolicy(fixture.actor, { expectedVersion: 0, value });
+    const query = await publicQuery();
+    if (kind === 'missing-manifest') rmSync(manifestPath);
+    if (kind === 'missing-control') rmSync(controlPath);
+    if (kind === 'invalid-control') writeFileSync(controlPath, '{invalid');
+    deps.service.mockImplementation(async (options: Omit<MerchantServiceOptions, 'native'>) => new MerchantIntelligenceService({ ...options, native, clock: () => new Date(fixture.clock()) }));
+    const runtimeConfig = { demoManifestPath: manifestPath, demoMode: false, public: { demoMode: false }, authDbPath: join(root, 'auth.sqlite'), workflowDbPath: fixture.databasePath, connectionPath, credentialDir: join(root, 'credentials'), actualServerUrl: actualUrl, reviewAndApply: true };
+    const http = (body: unknown) => {
+      const original = request(body);
+      return { ...original, context: { ...original.context, runtimeConfig }, node: { ...original.node, req: { ...original.node.req, method: 'POST', url: '/api/merchant/research', headers: { ...original.node.req.headers, host: 'balanceframe.test' }, socket: { localAddress: '127.0.0.1', remoteAddress: '127.0.0.1' } } } };
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Closed fixture branch must never fetch'));
+    try {
+      const preview = await researchPreview(http(query));
+      expect(preview.status).toBe('ok');
+      if (kind === 'valid') {
+        expect(preview.result).toMatchObject({ status: 'ready', providerId: 'valueserp', providerVersion: 'scenario-fixture/1', fieldsSent: ['merchant', 'locale'], evidenceKey: query.evidenceKey, evidenceRevision: query.evidenceRevision });
+        if (preview.result?.status !== 'ready') throw new Error('Expected manifest-authorized fixture preview');
+        const sent = await researchSend(http({ ...query, previewToken: preview.result.previewToken, consent: true, idempotencyKey: 'fixture-http' }));
+        expect(sent.result?.status).toBe('succeeded');
+        if (sent.result?.status !== 'succeeded') throw new Error('Expected closed fixture research');
+        expect(sent.result.enrichment.sources).toEqual([{ url: 'https://merchant.example.invalid/about', title: 'Scenario fixture merchant evidence', snippet: 'Synthetic scenario fixture evidence; not live search or financial advice.' }]);
+        expect((await researchCache(http(query))).result).toEqual({ enrichment: sent.result.enrichment });
+        expect(JSON.parse(readFileSync(`${controlPath}.status`, 'utf8'))).toEqual({ version: 1, generation: 3, calls: 1, held: 0 });
+        expect(JSON.stringify(sent)).not.toContain('PAID-KEY-NOT-FOR-FIXTURES');
+      } else {
+        expect(preview.result?.status).toBe('denied');
+        expect((await researchPolicy(http(undefined))).result?.resolved.mode).toBe('local-only');
+        expect((await researchCache(http(query))).result).toEqual({ enrichment: null });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally { fetchSpy.mockRestore(); }
   });
 });

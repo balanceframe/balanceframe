@@ -13,6 +13,7 @@ import {
 } from '@balanceframe/application';
 import { createMerchantIntelligenceService, merchantConnectionId } from '@balanceframe/application';
 import { merchantAnalysisAuthorized } from '../../utils/merchant-service';
+import { composeScenarioResearch } from '../../utils/scenario-research';
 import type { CanonicalReviewSource, PendingReviewScope } from '@balanceframe/application';
 import type { GovernanceOperation, ReviewItem } from '@balanceframe/workflow-store';
 import { getHumanControlAuth, hasTrustedRequestOrigin } from '../../utils/reauthentication';
@@ -141,7 +142,7 @@ export default defineEventHandler(async (event) => {
       return { result, created };
     }, { expectedBudgetId: access.budgetId });
     if (merchantEnabled && merchantActor) {
-      const merchant = await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager });
+      const merchant = await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager, research: composeScenarioResearch(event, access.spaceId) });
       const current = await merchant.withAnalysis(merchantActor, {}, async (view, source, authorize) => {
         const admitted = merchantPendingReview(view);
         const sourceOperations = reviewSourceReadOperations(source);

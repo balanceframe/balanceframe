@@ -26,7 +26,7 @@ export type MerchantActor = LiquidityActor & { auth: OperationalAuth; spaceId: s
 /** Native semantic analysis is read-only and never writes Actual. */
 export interface MerchantNativeBindings { analyzeMerchantIntelligence(input: string): string }
 /** Trusted application dependencies and source limits. */
-export interface MerchantServiceOptions { store: SqliteWorkflowStore; connectionManager: ConnectionManager; native: MerchantNativeBindings; clock?: () => Date; maxTransactions?: number; research?: { settings: () => MerchantResearchSettings; providerFor?: MerchantResearchHost['providerFor'] } }
+export interface MerchantServiceOptions { store: SqliteWorkflowStore; connectionManager: ConnectionManager; native: MerchantNativeBindings; clock?: () => Date; maxTransactions?: number; research?: { settings: () => MerchantResearchSettings; providerFor?: MerchantResearchHost['providerFor']; clock?: () => Date } }
 /** Page selection is not source authority. */
 export interface MerchantAnalyzeInput { transactionIds?: string[]; cursor?: string | null; limit?: number; factsHash?: string }
 /** Authorized native source details, preserving availability without opaque import IDs or ledger flags. */
@@ -187,7 +187,7 @@ export class MerchantIntelligenceService {
     this.clock = options.clock ?? (() => new Date());
     this.maxTransactions = parse(z.number().int().min(1).max(250000), options.maxTransactions ?? 250000);
     this.researchCoordinator = new MerchantResearchCoordinator({
-      store: options.store, clock: this.clock, configuration: () => this.researchSettings().configuration,
+      store: options.store, clock: options.research?.clock ?? this.clock, configuration: () => this.researchSettings().configuration,
       withCapture: (actor, target, consume) => this.withResearchCapture(actor, target, consume),
       ...(options.research?.providerFor ? { providerFor: options.research.providerFor } : {}),
     });

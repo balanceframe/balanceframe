@@ -15,6 +15,7 @@ import {
   liquidityPolicyInputSchema,
   liquidityPurchaseInputSchema,
   spendSessionInputSchema,
+  lookupMerchantCalendar,
 } from '@balanceframe/application';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import type {
@@ -23,8 +24,13 @@ import type {
   PublicLiquidityPolicyInput,
   PublicUserAttestedObservation,
   SpendSessionIntent,
+  MerchantCalendarSelection,
 } from '@balanceframe/application';
 import type { ResourceCapability, ResourceKind } from '@balanceframe/workflow-store';
+import { z } from 'zod';
+
+import { isScenarioId, SCENARIO_IDS } from './scenario-manifest.js';
+export { SCENARIO_IDS } from './scenario-manifest.js';
 
 const REFERENCE_ANCHOR = new Date('2026-09-06T12:00:00.000Z');
 const REFERENCE_DATE = '2026-09-06';
@@ -37,19 +43,19 @@ const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const HOUSEHOLD_BUDGET_ID = 'budget-2026-09';
 
-function resolveFixtureUrl(): URL {
+function resolveFixtureUrl(name: 'household' | 'merchant'): URL {
   const candidates = [
-    new URL('../../../protocol/fixtures/scenarios/household.json', import.meta.url),
-    new URL('../../protocol/fixtures/scenarios/household.json', import.meta.url),
+    new URL(`../../../protocol/fixtures/scenarios/${name}.json`, import.meta.url),
+    new URL(`../../protocol/fixtures/scenarios/${name}.json`, import.meta.url),
   ];
   const fixture = candidates.find((candidate) => existsSync(candidate));
   if (!fixture) {
-    throw new Error('household scenario fixture is not available');
+    throw new Error(`${name} scenario fixture is not available`);
   }
   return fixture;
 }
 
-const FIXTURE_URL = resolveFixtureUrl();
+const FIXTURE_URL = resolveFixtureUrl('household');
 const FIXTURE = canonicalProtocolSnapshotSchema.parse(
   JSON.parse(readFileSync(FIXTURE_URL, 'utf8')),
 ) as ProtocolSnapshot;
@@ -58,40 +64,24 @@ if (FIXTURE.snapshotDate !== REFERENCE_ANCHOR.toISOString()) {
   throw new Error('household scenario fixture must use the approved reference anchor');
 }
 
+const MERCHANT_FIXTURE = z.object({
+  sourceAsOfDate: z.literal('2026-10-04'),
+  provenance: z.object({
+    kind: z.literal('synthetic'),
+    sourceFixture: z.literal('merchant-quality.synthetic.json'),
+    generatorVersion: z.literal('merchant-quality-synthetic/1'),
+    seed: z.literal(110042),
+    limitations: z.array(z.string()),
+  }).strict(),
+  ledger: canonicalProtocolSnapshotSchema,
+}).strict().parse(JSON.parse(readFileSync(resolveFixtureUrl('merchant'), 'utf8')));
+
+if (MERCHANT_FIXTURE.ledger.snapshotDate.slice(0, 10) !== MERCHANT_FIXTURE.sourceAsOfDate)
+  throw new Error('Merchant fixture source anchor is inconsistent');
+
 /** Version of the checked scenario catalog and emitted verification records. */
 export const SCENARIO_CATALOG_VERSION = '1';
 
-export const SCENARIO_IDS = [
-  'funded-purchase',
-  'guilt-free-spending',
-  'unfunded-category',
-  'donor-reallocation',
-  'protected-category',
-  'goal-category',
-  'donor-competition',
-  'future-assignment',
-  'account-transfer',
-  'transfer-too-late',
-  'credit-card-purchase',
-  'missing-account-evidence',
-  'expired-account-evidence',
-  'currency-mismatch',
-  'pending-debit',
-  'uncategorized-debit',
-  'reservation-block',
-  'reservation-inform',
-  'commitment-overlap',
-  'rich-cart',
-  'required-item-overage',
-  'outside-price',
-  'expired-session',
-  'split-completion',
-  'cooldown-completion',
-  'coapproval-completion',
-  'import-before-completion',
-  'import-after-completion',
-  'ambiguous-completion',
-] as const;
 
 export type ScenarioId = (typeof SCENARIO_IDS)[number];
 export type ScenarioFeatureGroup =
@@ -102,7 +92,9 @@ export type ScenarioFeatureGroup =
   | 'Claims'
   | 'Cart'
   | 'Completion'
-  | 'Reconciliation';
+  | 'Reconciliation'
+  | 'Governance'
+  | 'Merchant';
 
 /** Presentation metadata shown by the local/demo selector. */
 export interface ScenarioSummary {
@@ -114,7 +106,24 @@ export interface ScenarioSummary {
   readonly supportedEventIds: readonly ScenarioEventId[];
 }
 
-export type ScenarioEventId = 'categorize-uncategorized' | 'import-match' | 'import-ambiguous';
+export type ScenarioEventId =
+  | 'categorize-uncategorized'
+  | 'import-match'
+  | 'import-ambiguous'
+  | 'merchant-source-change'
+  | 'merchant-calendar-clear'
+  | 'invite-redeem'
+  | 'invite-revoke'
+  | 'invite-rejoin'
+  | 'membership-revoke'
+  | 'assistant-probe'
+  | 'assistant-revoke'
+  | 'scoped-grant-change'
+  | 'scoped-grant-revoke'
+  | 'research-expire'
+  | 'research-hold'
+  | 'research-release'
+  | 'research-cancel';
 
 export type ScenarioPolicy = Omit<PublicLiquidityPolicyInput, 'expectedVersion'>;
 export type ScenarioObservations = Omit<PublicLiquidityObservationInput, 'expectedVersion'>;
@@ -136,6 +145,53 @@ export interface ScenarioPersona {
     readonly capabilities: readonly ResourceCapability[];
   };
   readonly grants: readonly PersonaGrant[];
+}
+
+/** Invitation intent is not a provisioned human identity or membership. */
+export interface ScenarioPendingInvitation {
+  readonly personaId: 'invitee';
+  readonly displayName: string;
+  readonly capabilities: readonly ResourceCapability[];
+  readonly grants: readonly PersonaGrant[];
+}
+
+export type ScenarioGovernanceRecipe =
+  | {
+      readonly kind: 'scoped-access';
+      readonly limitedPersonaId: 'limited';
+      readonly visibleAccountIds: readonly string[];
+      readonly withheldAccountIds: readonly string[];
+    }
+  | {
+      readonly kind: 'invitation-lifecycle';
+      readonly pendingInvitations: readonly ScenarioPendingInvitation[];
+    }
+  | {
+      readonly kind: 'delegated-assistant';
+      readonly assistant: {
+        readonly id: 'assistant';
+        readonly displayName: string;
+        readonly grants: readonly PersonaGrant[];
+      };
+    }
+  | {
+      readonly kind: 'coapproval-audit';
+      readonly readerPersonaIds: readonly string[];
+    };
+
+export interface ScenarioMerchantRecipe {
+  readonly historyTransactionIds: readonly string[];
+  readonly targetTransactionIds: readonly string[];
+  readonly calendar?: {
+    readonly budget: MerchantCalendarSelection | null;
+    readonly accounts: readonly { readonly accountId: string; readonly selection: MerchantCalendarSelection | null }[];
+  };
+}
+
+/** Private runners select a closed fixture provider; no URL, key or analysis is supplied. */
+export interface ScenarioResearchRecipe {
+  readonly provider: 'fixture';
+  readonly mode: 'success' | 'outage' | 'held';
 }
 
 export interface ScenarioClaimRecipe {
@@ -177,13 +233,42 @@ export interface ImportAmbiguousEvent {
   readonly candidates: readonly [ImportCandidate, ImportCandidate];
 }
 
+export interface MerchantSourceChangeEvent {
+  readonly kind: 'merchant-source-change';
+  readonly payeeId: string;
+  readonly transactionId: string;
+  readonly payeeName: string;
+  readonly importedPayee: string;
+  readonly notes: string;
+}
+
+export type ScenarioControlEvent =
+  | { readonly kind: 'merchant-calendar-clear' }
+  | { readonly kind: 'invitation-redeem' | 'invitation-rejoin'; readonly personaId: 'invitee' }
+  | { readonly kind: 'membership-revoke'; readonly personaId: 'limited' | 'invitee' }
+  | { readonly kind: 'assistant-probe' | 'assistant-revoke' }
+  | {
+      readonly kind: 'scoped-grant-change' | 'scoped-grant-revoke';
+      readonly personaId: 'limited';
+      readonly resourceId: string;
+      readonly capability: 'name' | 'existence';
+      readonly granted: boolean;
+    }
+  | { readonly kind: 'research-expire'; readonly offsetMs: 3_600_001 }
+  | { readonly kind: 'research-hold' | 'research-release' | 'research-cancel' };
+
 export type ScenarioEventRecipe =
-  CategorizeUncategorizedEvent | ImportMatchEvent | ImportAmbiguousEvent;
+  | CategorizeUncategorizedEvent
+  | ImportMatchEvent
+  | ImportAmbiguousEvent
+  | MerchantSourceChangeEvent
+  | ScenarioControlEvent;
 
 export type ScenarioEntry =
   | { readonly kind: 'purchase'; readonly input: LiquidityPurchaseIntent }
   | { readonly kind: 'session'; readonly sessionKey: string }
-  | { readonly kind: 'completion'; readonly sessionKey: string; readonly completionKey: string };
+  | { readonly kind: 'completion'; readonly sessionKey: string; readonly completionKey: string }
+  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/' };
 
 export interface MaterializedScenario {
   readonly id: ScenarioId;
@@ -197,6 +282,9 @@ export interface MaterializedScenario {
   readonly completions: Readonly<Record<string, ScenarioCompletionRecipe>>;
   readonly entry: ScenarioEntry;
   readonly events: Readonly<Record<string, ScenarioEventRecipe>>;
+  readonly governance?: ScenarioGovernanceRecipe;
+  readonly merchant?: ScenarioMerchantRecipe;
+  readonly research?: ScenarioResearchRecipe;
 }
 
 type MutableScenario = {
@@ -211,6 +299,9 @@ type MutableScenario = {
   completions: Record<string, ScenarioCompletionRecipe>;
   entry: ScenarioEntry;
   events: Record<string, ScenarioEventRecipe>;
+  governance?: ScenarioGovernanceRecipe;
+  merchant?: ScenarioMerchantRecipe;
+  research?: ScenarioResearchRecipe;
 };
 
 interface BuildContext {
@@ -811,11 +902,11 @@ function restrictedPersona(): ScenarioPersona {
   };
 }
 
-function baseScenario(context: BuildContext, id: ScenarioId): MutableScenario {
+function baseScenario(context: BuildContext, id: ScenarioId, ledger = shiftLedger(context.anchor)): MutableScenario {
   return {
     id,
     anchor: context.anchorIso,
-    ledger: shiftLedger(context.anchor),
+    ledger,
     policy: basePolicy(context),
     observations: baseObservations(context),
     personas: [ownerPersona()],
@@ -1264,6 +1355,7 @@ function buildCoapprovalCompletion(context: BuildContext): MutableScenario {
   scenario.personas.push(coapproverPersona(), restrictedPersona());
   scenario.completions.purchase = simpleCompletion('cart', 'proposed', ['approver', 'coapprover']);
   scenario.entry = { kind: 'completion', sessionKey: 'cart', completionKey: 'purchase' };
+  scenario.governance = { kind: 'coapproval-audit', readerPersonaIds: ['owner', 'coapprover', 'approver'] };
   return scenario;
 }
 
@@ -1303,6 +1395,243 @@ function buildImportScenario(
       kind: 'import-match',
       candidate: importCandidate(context, id === 'import-before-completion' ? 'before' : 'after'),
     };
+  }
+  return scenario;
+}
+
+function buildGovernanceScenario(
+  context: BuildContext,
+  id: 'governance-scoped-access' | 'governance-invitation-lifecycle' | 'governance-delegated-assistant',
+): MutableScenario {
+  const scenario = baseScenario(context, id);
+  scenario.entry = { kind: 'page', path: '/spaces' };
+  addAccount(scenario, {
+    id: 'acct-savings', name: 'Household Savings', accountType: 'savings', offBudget: false,
+    clearedBalance: money('20000'), importedBalance: money('20000'),
+  });
+  const limitedGrants: PersonaGrant[] = [
+    { resourceKind: 'account', resourceId: 'acct-checking', capability: 'name', granted: true },
+    { resourceKind: 'account', resourceId: 'acct-checking', capability: 'existence', granted: true },
+  ];
+  if (id === 'governance-scoped-access') {
+    scenario.personas.push({
+      id: 'limited', role: 'restricted', displayName: 'Limited Member',
+      membership: { status: 'active', capabilities: ['name', 'existence'] }, grants: limitedGrants,
+    });
+    scenario.governance = {
+      kind: 'scoped-access', limitedPersonaId: 'limited',
+      visibleAccountIds: ['acct-checking'], withheldAccountIds: ['acct-savings'],
+    };
+    scenario.events['scoped-grant-change'] = {
+      kind: 'scoped-grant-change', personaId: 'limited', resourceId: 'acct-checking',
+      capability: 'name', granted: false,
+    };
+    scenario.events['scoped-grant-revoke'] = {
+      kind: 'scoped-grant-revoke', personaId: 'limited', resourceId: 'acct-checking',
+      capability: 'existence', granted: false,
+    };
+    scenario.events['membership-revoke'] = { kind: 'membership-revoke', personaId: 'limited' };
+  } else if (id === 'governance-invitation-lifecycle') {
+    scenario.governance = {
+      kind: 'invitation-lifecycle',
+      pendingInvitations: [{ personaId: 'invitee', displayName: 'Invited Member', capabilities: ['existence'], grants: [] }],
+    };
+    scenario.events['invite-redeem'] = { kind: 'invitation-redeem', personaId: 'invitee' };
+    scenario.events['invite-revoke'] = { kind: 'membership-revoke', personaId: 'invitee' };
+    scenario.events['invite-rejoin'] = { kind: 'invitation-rejoin', personaId: 'invitee' };
+  } else {
+    scenario.governance = {
+      kind: 'delegated-assistant',
+      assistant: { id: 'assistant', displayName: 'Budget Assistant', grants: limitedGrants },
+    };
+    scenario.events['assistant-probe'] = { kind: 'assistant-probe' };
+    scenario.events['assistant-revoke'] = { kind: 'assistant-revoke' };
+  }
+  return scenario;
+}
+
+function merchantPersona(scenario: MutableScenario, id: 'owner' | 'coapprover' | 'approver'): ScenarioPersona {
+  const isOwner = id === 'owner';
+  const persona = isOwner ? ownerPersona(scenario.ledger) : {
+    id, role: 'coapprover' as const,
+    displayName: id === 'coapprover' ? 'Jordan Merchant Reviewer' : 'Taylor Merchant Reviewer',
+    membership: { status: 'active' as const, capabilities: [] as ResourceCapability[] },
+    grants: [] as PersonaGrant[],
+  };
+  const mutationRights: ResourceCapability[] = scenario.id === 'merchant-native-rule-lifecycle'
+    ? isOwner ? ['rule:propose', 'rule:execute'] : ['rule:approve']
+    : scenario.id === 'merchant-alias-conflict'
+      ? isOwner ? ['categorization:propose', 'categorization:execute'] : ['categorization:approve']
+      : [];
+  const capabilities: ResourceCapability[] = ['observe', 'merchant:analyze', 'rule:view', ...mutationRights];
+  if (isOwner) {
+    capabilities.push('policy:manage');
+    if (scenario.id === 'merchant-alias-conflict' || scenario.id === 'merchant-recurrence-calendar')
+      capabilities.push('merchant:confirm');
+    if (scenario.research) capabilities.push('merchant:research');
+    if (scenario.id === 'merchant-research-lifecycle') capabilities.push('merchant:delete', 'lifecycle:delete');
+  } else {
+    capabilities.push('source');
+  }
+  const grants: PersonaGrant[] = [...persona.grants];
+  const budgetId = scenario.ledger.budgets[0]!.id;
+  for (const capability of capabilities)
+    grants.push({ resourceKind: 'budget', resourceId: budgetId, capability, granted: true });
+  const accountRights: ResourceCapability[] = isOwner ? [...mutationRights] : [
+    'existence', 'name', 'history', 'source', 'merchant:analyze', ...mutationRights,
+  ];
+  if (isOwner && capabilities.includes('merchant:confirm')) accountRights.push('merchant:confirm');
+  for (const account of scenario.ledger.accounts)
+    for (const capability of accountRights)
+      grants.push({ resourceKind: 'account', resourceId: account.id, capability, granted: true });
+  const categoryRights: ResourceCapability[] = isOwner ? mutationRights : ['existence', 'name', 'category', ...mutationRights];
+  for (const category of scenario.ledger.categories)
+    for (const capability of categoryRights)
+      grants.push({ resourceKind: 'category', resourceId: category.id, capability, granted: true });
+  const transactionRights: ResourceCapability[] = ['transaction.view', 'source', ...mutationRights];
+  for (const transaction of scenario.ledger.transactions)
+    for (const capability of transactionRights)
+      grants.push({ resourceKind: 'transaction', resourceId: transaction.id, capability, granted: true });
+  for (const rule of scenario.ledger.rules)
+    grants.push({ resourceKind: 'rule', resourceId: rule.id, capability: 'rule:view', granted: true });
+  return {
+    ...persona,
+    membership: { status: 'active', capabilities: [...persona.membership.capabilities, ...capabilities] },
+    grants,
+  };
+}
+
+function adjustBusinessDate(date: Date, holidays: ReadonlySet<string>, direction: -1 | 1): void {
+  let adjustments = 0;
+  while (date.getUTCDay() === 0 || date.getUTCDay() === 6 || holidays.has(date.toISOString().slice(0, 10))) {
+    if (adjustments === 10) throw new Error('Offline calendar business-date adjustment exceeds its bound');
+    date.setUTCDate(date.getUTCDate() + direction);
+    adjustments += 1;
+  }
+}
+
+function buildRecurrenceHistory(scenario: MutableScenario, context: BuildContext): void {
+  const selection: MerchantCalendarSelection = { jurisdiction: 'US', subdivision: null, timeZone: 'America/New_York' };
+  scenario.merchant = { historyTransactionIds: [], targetTransactionIds: [], calendar: { budget: selection, accounts: [] } };
+  const monthly = MERCHANT_FIXTURE.ledger.transactions.filter(({ id }) => id.startsWith('recurrence-monthly-'));
+  const monthEnds = MERCHANT_FIXTURE.ledger.transactions.filter(({ id }) => id.startsWith('recurrence-end-month-'));
+  const variableAmounts = ['-1000', '-1200', '-900', '-1100'] as const;
+  const calendar = lookupMerchantCalendar({
+    accountId: 'acct-checking', year: context.anchor.getUTCFullYear(), budget: selection, accounts: [],
+  });
+  const holidays = calendar.state === 'known' ? new Set(calendar.calendar.holidays.map(({ date }) => date)) : null;
+  scenario.ledger.payees.push(
+    { id: 'pay-recurrence-business-day', name: 'Aster Business End', transferAccountId: null, mtid: null },
+    { id: 'pay-recurrence-variable', name: 'Aster Variable', transferAccountId: null, mtid: null },
+    { id: 'pay-recurrence-business-first', name: 'Aster Business First', transferAccountId: null, mtid: null },
+  );
+  for (let index = 0; index < 4; index += 1) {
+    const month = new Date(Date.UTC(context.anchor.getUTCFullYear(), context.anchor.getUTCMonth() - 4 + index, 1));
+    const year = month.getUTCFullYear();
+    const monthIndex = month.getUTCMonth();
+    const monthlyDate = new Date(Date.UTC(year, monthIndex, 15)).toISOString().slice(0, 10);
+    const monthEnd = new Date(Date.UTC(year, monthIndex + 1, 0));
+    const endDate = monthEnd.toISOString().slice(0, 10);
+    if (calendar.state === 'known' && holidays &&
+      endDate >= calendar.calendar.coverageStart && endDate <= calendar.calendar.coverageEnd) {
+      adjustBusinessDate(monthEnd, holidays, -1);
+    }
+    const template = monthly[index];
+    const endTemplate = monthEnds[index];
+    if (!template || !endTemplate) throw new Error('Compact recurrence fixture is incomplete');
+    scenario.ledger.transactions.push(
+      { ...clone(template), date: monthlyDate },
+      { ...clone(endTemplate), date: endDate },
+      {
+        ...clone(template), id: `recurrence-business-day-${index}`, date: monthEnd.toISOString().slice(0, 10),
+        importedId: `scenario-import-recurrence-business-day-${index}`,
+        payeeId: 'pay-recurrence-business-day', payeeName: 'Aster Business End',
+      },
+      {
+        ...clone(template), id: `recurrence-variable-${index}`, date: monthlyDate,
+        importedId: `scenario-import-recurrence-variable-${index}`,
+        payeeId: 'pay-recurrence-variable', payeeName: 'Aster Variable', amount: money(variableAmounts[index]!),
+      },
+    );
+  }
+  for (let index = 0; index < 12; index += 1) {
+    const first = new Date(Date.UTC(context.anchor.getUTCFullYear(), context.anchor.getUTCMonth() - 12 + index, 1));
+    const civilDate = first.toISOString().slice(0, 10);
+    const known = calendar.state === 'known' && holidays !== null &&
+      civilDate >= calendar.calendar.coverageStart && civilDate <= calendar.calendar.coverageEnd;
+    if (known && holidays) adjustBusinessDate(first, holidays, 1);
+    scenario.ledger.transactions.push({
+      ...clone(monthly[0]!), id: `recurrence-business-first-${index}`, date: first.toISOString().slice(0, 10),
+      importedId: `scenario-import-recurrence-business-first-${index}`,
+      payeeId: 'pay-recurrence-business-first', payeeName: 'Aster Business First',
+      notes: `Synthetic civil-first observation ${civilDate}; ${known ? 'selected US offline public calendar' : 'calendar unknown; ordinary day-one cadence'}`,
+    });
+  }
+  scenario.merchant = {
+    ...scenario.merchant,
+    historyTransactionIds: scenario.ledger.transactions.map(({ id }) => id),
+  };
+  scenario.events['merchant-calendar-clear'] = { kind: 'merchant-calendar-clear' };
+}
+
+function buildMerchantScenario(context: BuildContext, id: Extract<ScenarioId, `merchant-${string}`>): MutableScenario {
+  const source = MERCHANT_FIXTURE.ledger;
+  const dayDelta = utcDayNumber(context.anchorIso.slice(0, 10)) - utcDayNumber(MERCHANT_FIXTURE.sourceAsOfDate);
+  const historyIds = id === 'merchant-local-insufficient'
+    ? ['categorization-history-0-0']
+    : ['categorization-history-0-0', 'categorization-history-0-1', 'categorization-history-0-2'];
+  const targetIds = id === 'merchant-local-insufficient'
+    ? ['synthetic-holdout-000-02', 'synthetic-holdout-000-08']
+    : id === 'merchant-alias-conflict'
+      ? ['synthetic-holdout-000-03', 'synthetic-holdout-000-10']
+      : id === 'merchant-native-rule-lifecycle'
+        ? ['synthetic-holdout-000-00', 'synthetic-holdout-000-02']
+        : ['synthetic-holdout-000-02'];
+  if (id === 'merchant-alias-conflict')
+    historyIds.push('categorization-history-17-0', 'categorization-history-17-1', 'categorization-history-17-2');
+  const selectedIds = new Set(id === 'merchant-recurrence-calendar'
+    ? source.transactions.filter(({ id }) => id.startsWith('recurrence-irregular-')).map(({ id }) => id)
+    : [...historyIds, ...targetIds]);
+  const transactions = source.transactions.filter(({ id }) => selectedIds.has(id))
+    .map((row) => shiftTransaction(row, dayDelta));
+  const usedPayees = new Set(transactions.map(({ payeeId }) => payeeId));
+  if (id === 'merchant-recurrence-calendar') {
+    usedPayees.add('pay-recurrence-monthly');
+    usedPayees.add('pay-recurrence-end-month');
+  }
+  const ledger = clone({ ...source, transactions: [], payees: source.payees.filter(({ id }) => usedPayees.has(id)) }) as ProtocolSnapshot;
+  ledger.snapshotDate = context.anchorIso;
+  ledger.transactions = transactions;
+  ledger.budgets[0]!.id = HOUSEHOLD_BUDGET_ID;
+  ledger.budgets[0]!.month = context.month();
+  const scenario = baseScenario(context, id, ledger);
+  scenario.entry = { kind: 'page', path: id === 'merchant-native-rule-lifecycle' ? '/rules' : '/review' };
+  scenario.merchant = { historyTransactionIds: historyIds, targetTransactionIds: targetIds };
+  if (id === 'merchant-recurrence-calendar') buildRecurrenceHistory(scenario, context);
+  if (id === 'merchant-native-rule-lifecycle') {
+    scenario.policy.approvalPolicy.minimumApprovers = 2;
+    scenario.events['import-match'] = {
+      kind: 'import-match',
+      candidate: {
+        importedId: 'scenario-native-future-import', accountId: 'acct-savings', amount: money('-34607'),
+        date: context.date(1), payeeName: 'aster atelier',
+      },
+    };
+    scenario.events['merchant-source-change'] = {
+      kind: 'merchant-source-change', payeeId: 'pay-market', transactionId: 'synthetic-holdout-000-02',
+      payeeName: 'Aster Atelier Revised', importedPayee: 'Aster Atelier Revised', notes: 'Source changed for stale proposal',
+    };
+    scenario.personas.push(merchantPersona(scenario, 'coapprover'), merchantPersona(scenario, 'approver'));
+  }
+  if (id === 'merchant-alias-conflict') scenario.personas.push(merchantPersona(scenario, 'approver'));
+  if (id === 'merchant-research-success' || id === 'merchant-research-outage' || id === 'merchant-research-lifecycle') {
+    scenario.research = { provider: 'fixture', mode: id === 'merchant-research-success' ? 'success' : id === 'merchant-research-outage' ? 'outage' : 'held' };
+    scenario.events['research-expire'] = { kind: 'research-expire', offsetMs: 3_600_001 };
+    if (id === 'merchant-research-lifecycle') {
+      scenario.events['research-hold'] = { kind: 'research-hold' };
+      scenario.events['research-release'] = { kind: 'research-release' };
+      scenario.events['research-cancel'] = { kind: 'research-cancel' };
+    }
   }
   return scenario;
 }
@@ -1367,6 +1696,19 @@ function buildScenario(context: BuildContext, id: ScenarioId): MutableScenario {
       return buildImportScenario(context, 'import-after-completion');
     case 'ambiguous-completion':
       return buildImportScenario(context, 'ambiguous-completion');
+    case 'governance-scoped-access':
+    case 'governance-invitation-lifecycle':
+    case 'governance-delegated-assistant':
+      return buildGovernanceScenario(context, id);
+    case 'merchant-local-sparse':
+    case 'merchant-local-insufficient':
+    case 'merchant-alias-conflict':
+    case 'merchant-recurrence-calendar':
+    case 'merchant-native-rule-lifecycle':
+    case 'merchant-research-success':
+    case 'merchant-research-outage':
+    case 'merchant-research-lifecycle':
+      return buildMerchantScenario(context, id);
   }
 }
 
@@ -1551,7 +1893,11 @@ const SUMMARY_DATA: Readonly<Record<ScenarioId, Omit<ScenarioSummary, 'id'>>> = 
     featureGroup: 'Completion',
     title: 'Co-approval completion',
     summary: 'Two scoped approvers can approve a completion without sharing private session data.',
-    suggestedActions: ['Switch persona', 'Approve with both fictional approvers'],
+    suggestedActions: [
+      'Open the normal approval detail and inspect exact split scope',
+      'Approve as both independent fictional reviewers; neither can execute',
+      'Inspect attributed space audit events and actor filters; financial details remain private',
+    ],
     supportedEventIds: [],
   },
   'import-before-completion': {
@@ -1574,6 +1920,83 @@ const SUMMARY_DATA: Readonly<Record<ScenarioId, Omit<ScenarioSummary, 'id'>>> = 
     summary: 'Two matching imported candidates require review instead of fabricated linkage.',
     suggestedActions: ['Complete the purchase', 'Simulate ambiguous import candidates'],
     supportedEventIds: ['import-ambiguous'],
+  },
+  'governance-scoped-access': {
+    featureGroup: 'Governance',
+    title: 'Scoped household access',
+    summary: 'A separate limited human can identify Checking, but cannot read private amounts, history or Savings.',
+    suggestedActions: ['Switch to the limited member', 'Inspect allowed Checking metadata and withheld Savings', 'Change the exact grant, then revoke the membership'],
+    supportedEventIds: ['scoped-grant-change', 'scoped-grant-revoke', 'membership-revoke'],
+  },
+  'governance-invitation-lifecycle': {
+    featureGroup: 'Governance',
+    title: 'Invitation and membership periods',
+    summary: 'A pending invitation is not an actor or session; explicit real redemption creates an independently authenticated human.',
+    suggestedActions: ['Inspect the pending invitation', 'Accept as the invited fictional human', 'Revoke and rejoin with a new membership and no inherited grants'],
+    supportedEventIds: ['invite-redeem', 'invite-revoke', 'invite-rejoin'],
+  },
+  'governance-delegated-assistant': {
+    featureGroup: 'Governance',
+    title: 'Bounded delegated assistant',
+    summary: 'A real governed assistant credential can read Checking name and existence only; revocation invalidates the same credential.',
+    suggestedActions: ['Inspect the registered agent and bounded delegation', 'Probe allowed metadata and denied private operations', 'Revoke the delegation and reuse the same credential'],
+    supportedEventIds: ['assistant-probe', 'assistant-revoke'],
+  },
+  'merchant-local-sparse': {
+    featureGroup: 'Merchant',
+    title: 'Local sparse merchant history',
+    summary: 'Three canonical synthetic Aster observations and an unclassified holdout flow through Actual and normal local merchant analysis.',
+    suggestedActions: ['Sync the real fixture ledger', 'Inspect native merchant identity, category support and source fields', 'Confirm no research provider was dispatched'],
+    supportedEventIds: [],
+  },
+  'merchant-local-insufficient': {
+    featureGroup: 'Merchant',
+    title: 'Insufficient local merchant evidence',
+    summary: 'One canonical training observation and two distinct holdouts expose insufficient support and missing identity without confident category writes.',
+    suggestedActions: ['Sync the real fixture ledger', 'Inspect support-one and empty-identity abstentions', 'Keep local Review usable without external research'],
+    supportedEventIds: [],
+  },
+  'merchant-alias-conflict': {
+    featureGroup: 'Merchant',
+    title: 'Account-scoped alias and source conflict',
+    summary: 'Aster imported text and competing Dapple notes preserve exact native identities while conflicting evidence requires abstention.',
+    suggestedActions: ['Inspect exact raw-field availability and native payee IDs', 'Confirm or reject an account-scoped alias with its real version', 'Apply an explicit correction and inspect precedence without a native rule write'],
+    supportedEventIds: [],
+  },
+  'merchant-recurrence-calendar': {
+    featureGroup: 'Merchant',
+    title: 'Recurrence with an explicit offline calendar',
+    summary: 'Distinct monthly, civil month-end, backward US business-end, variable and irregular histories retain their real native observations.',
+    suggestedActions: ['Compare exact dates and amount ranges with the selected US calendar', 'Confirm or reject a pattern and inspect the normal Dashboard', 'Clear the calendar and retain ordinary cadence with calendar uncertainty'],
+    supportedEventIds: ['merchant-calendar-clear'],
+  },
+  'merchant-native-rule-lifecycle': {
+    featureGroup: 'Merchant',
+    title: 'Reviewed native rule lifecycle',
+    summary: 'Two independent limited reviewers approve exact native impact before owner execution; future Savings imports use Actual’s rule engine alone.',
+    suggestedActions: ['Review the native payload and approve as both independent reviewers', 'Execute as owner and inspect native rule readback and replay', 'Import into Savings through Actual alone', 'On a fresh unexecuted proposal, change real source fields and verify stale refusal'],
+    supportedEventIds: ['import-match', 'merchant-source-change'],
+  },
+  'merchant-research-success': {
+    featureGroup: 'Merchant',
+    title: 'Fixture research consent and cache',
+    summary: 'A closed no-network fixture provider exercises real preview, consent, attempts, cache hits and bounded expiry; sources are explicitly fictional.',
+    suggestedActions: ['Inspect the exact public-business preview and explicitly consent', 'Inspect fixture provenance and .invalid sources', 'Repeat with fresh consent, then expire only the research cache clock'],
+    supportedEventIds: ['research-expire'],
+  },
+  'merchant-research-outage': {
+    featureGroup: 'Merchant',
+    title: 'Fixture research outage',
+    summary: 'A closed unavailable fixture records a real failed coordinator attempt without upstream traffic; local Sync remains usable.',
+    suggestedActions: ['Explicitly consent to the fixture preview', 'Inspect the failed attempt and billing classification', 'Use local Sync and Review despite the fixture outage'],
+    supportedEventIds: ['research-expire'],
+  },
+  'merchant-research-lifecycle': {
+    featureGroup: 'Merchant',
+    title: 'Fixture research revocation and deletion',
+    summary: 'Held fixture research exercises real policy and grant revocation, quota limits, deletion fences and generation reset without network I/O.',
+    suggestedActions: ['Inspect real policy and grant boundaries in independent branches', 'Exercise exact daily and monthly fixture quotas', 'Delete merchant data while a result is held, then release without late publication', 'Reset a held generation and reject its old controls and cookies'],
+    supportedEventIds: ['research-expire', 'research-hold', 'research-release', 'research-cancel'],
   },
 };
 
@@ -1706,6 +2129,9 @@ function checkReferences(scenario: MutableScenario): void {
       !accountIds.has(scenario.entry.input.accountId)
     )
       throw new Error('Entry references unknown account');
+  } else if (scenario.entry.kind === 'page') {
+    if (!['/spaces', '/review', '/rules', '/'].includes(scenario.entry.path))
+      throw new Error('Page entry must use a registered normal-screen path');
   } else {
     if (!hasOwn(scenario.sessions, scenario.entry.sessionKey))
       throw new Error('Entry references unknown session');
@@ -1720,12 +2146,23 @@ function checkReferences(scenario: MutableScenario): void {
     if (event.kind === 'categorize-uncategorized') {
       if (!transactionIds.has(event.transactionId) || !categoryIds.has(event.categoryId))
         throw new Error('Categorization event references unknown resource');
-    } else {
+    } else if (event.kind === 'import-match' || event.kind === 'import-ambiguous') {
       const candidates = event.kind === 'import-match' ? [event.candidate] : event.candidates;
       for (const candidate of candidates) {
         if (!accountIds.has(candidate.accountId))
           throw new Error('Import event references unknown account');
       }
+    }
+    if (event.kind === 'merchant-source-change') {
+      if (!transactionIds.has(event.transactionId) || !payeeIds.has(event.payeeId))
+        throw new Error('Merchant source event references unknown native resource');
+      for (const value of [event.payeeName, event.importedPayee, event.notes])
+        if (value.length === 0 || value.length > 4096)
+          throw new Error('Merchant source event replacement must be bounded nonempty text');
+    }
+    if (event.kind === 'scoped-grant-change' || event.kind === 'scoped-grant-revoke') {
+      if (!accountIds.has(event.resourceId) || !scenario.personas.some(({ id }) => id === event.personaId))
+        throw new Error('Scoped grant event references unknown persona or account');
     }
   }
   for (const persona of scenario.personas) {
@@ -1736,6 +2173,10 @@ function checkReferences(scenario: MutableScenario): void {
         throw new Error('Persona grant references unknown account');
       if (grant.resourceKind === 'category' && !categoryIds.has(grant.resourceId))
         throw new Error('Persona grant references unknown category');
+      if (grant.resourceKind === 'transaction' && !transactionIds.has(grant.resourceId))
+        throw new Error('Persona grant references unknown transaction');
+      if (grant.resourceKind === 'rule' && !scenario.ledger.rules.some(({ id }) => id === grant.resourceId))
+        throw new Error('Persona grant references unknown rule');
       if (grant.resourceKind === 'session' && !hasOwn(scenario.sessions, grant.resourceId))
         throw new Error('Persona grant references unknown session');
     }
@@ -1745,6 +2186,17 @@ function checkReferences(scenario: MutableScenario): void {
       if (!scenario.personas.some((persona) => persona.id === approver))
         throw new Error(`Completion approver is not a scenario persona: ${approver}`);
     }
+  }
+  if (scenario.merchant) {
+    for (const id of [...scenario.merchant.historyTransactionIds, ...scenario.merchant.targetTransactionIds])
+      if (!transactionIds.has(id)) throw new Error('Merchant recipe references unknown transaction');
+    for (const account of scenario.merchant.calendar?.accounts ?? [])
+      if (!accountIds.has(account.accountId)) throw new Error('Calendar recipe references unknown account');
+  }
+  if (scenario.governance?.kind === 'invitation-lifecycle') {
+    for (const invitation of scenario.governance.pendingInvitations)
+      if (scenario.personas.some(({ id }) => id === invitation.personaId))
+        throw new Error('Pending invitation must not be a provisioned persona');
   }
 }
 
@@ -1783,11 +2235,13 @@ export function listScenarios(): readonly ScenarioSummary[] {
 
 /** Materializes the canonical ledger and explicit least-privilege persona grants. */
 export function materializeScenario(id: string, anchor: Date): MaterializedScenario {
-  if (!SCENARIO_IDS.includes(id as ScenarioId)) throw new Error(`Unknown scenario ID: ${id}`);
+  if (!isScenarioId(id)) throw new Error(`Unknown scenario ID: ${id}`);
   const context = makeContext(anchor);
-  const scenario = buildScenario(context, id as ScenarioId);
+  const scenario = buildScenario(context, id);
   scenario.personas = scenario.personas.map((persona) =>
-    persona.id === 'owner' ? ownerPersona(scenario.ledger) : persona);
+    persona.id === 'owner'
+      ? scenario.merchant ? merchantPersona(scenario, 'owner') : ownerPersona(scenario.ledger)
+      : persona);
   if (Object.values(scenario.completions).some(({ approvers }) => approvers.includes('approver'))) {
     const sessions = Object.values(scenario.completions).map(({ sessionKey }) => scenario.sessions[sessionKey]!);
     const categories = new Set(sessions.flatMap(({ items }) => items.flatMap((item) =>

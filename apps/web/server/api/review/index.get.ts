@@ -6,6 +6,7 @@ import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
 import { requireSelectedSpace } from '../../utils/space-context';
 import type { EventWithContext } from '../../utils/workflow-store';
 import { merchantAnalysisAuthorized } from '../../utils/merchant-service';
+import { composeScenarioResearch } from '../../utils/scenario-research';
 import { hasCurrentReviewNamespace, refreshReviewItems, reviewConnectionScope } from '../../utils/review-scope-admission';
 /**
  * GET /api/review — list pending review items in the explicitly selected space.
@@ -92,7 +93,7 @@ export default defineEventHandler(async (event) => {
       return projectReviewQueueItems(wf.store, actor, current, snapshot, merchant, source, 'observe', captured.scope);
     };
     const queueItems = merchantEnabled && merchantActor
-      ? await (await (await createMerchantIntelligenceService({ store: wf.store, connectionManager: manager }))
+      ? await (await (await createMerchantIntelligenceService({ store: wf.store, connectionManager: manager, research: composeScenarioResearch(event, selected.space.id) }))
         .withAnalysis(merchantActor, { transactionIds: allItems.map((item) => item.transactionId), limit: 1000 },
           async (view, source, authorize) => {
             const transactions = indexCanonicalTransactions(source.transactions);

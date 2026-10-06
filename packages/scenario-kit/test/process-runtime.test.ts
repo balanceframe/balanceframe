@@ -27,6 +27,7 @@ import {
 } from '../src/process-runtime.js';
 import { materializeScenario } from '../src/catalog.js';
 import { initializeScenarioShell } from '../src/loader.js';
+import { scenarioRequest } from './acceptance/support.js';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const WEB_ENTRY = resolve(REPOSITORY_ROOT, 'apps/web/.output/server/index.mjs');
@@ -455,6 +456,72 @@ describe('scenario process runtime ownership and lifecycle', () => {
       });
     },
   );
+
+  it('protects a local shell from setup through ready while public demo mode remains off', async () => {
+    const handle = await startShell('http://127.0.0.1:39003');
+    const headers = { Host: '127.0.0.1:39003', Origin: handle.publicOrigin, 'content-type': 'application/json' };
+    const setup = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
+      phase: string; spaceId: string | null; actorIds: string[];
+    };
+    expect(setup).toMatchObject({ phase: 'setup', spaceId: null, actorIds: [] });
+    await assertMode(handle.manifestPath, 0o600);
+    const unauthorized = await fetch(new URL('/api/registration/bootstrap', handle.webUrl), {
+      method: 'POST', headers, body: '{}',
+    });
+    expect(unauthorized.status).toBe(403);
+    const readDuringSetup = await fetch(new URL('/api/liquidity/spendability', handle.webUrl), { headers });
+    expect(readDuringSetup.status).toBe(403);
+    const loaded = await initializeScenarioShell(handle, materializeScenario('funded-purchase', new Date('2026-09-06T12:00:00.000Z')));
+    const ready = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
+      phase: string; scenarioId: string; spaceId: string; actorIds: string[];
+    };
+    expect(ready).toMatchObject({
+      phase: 'ready', scenarioId: 'funded-purchase', spaceId: loaded.initialized.spaceId,
+      actorIds: [loaded.initialized.personas.owner!.actorId],
+    });
+    const ownerHeaders = {
+      ...headers, Cookie: loaded.initialized.personas.owner!.cookieHeader,
+      'x-balanceframe-space': loaded.initialized.spaceId,
+    };
+    const normalRead = await fetch(new URL('/api/liquidity/spendability', handle.webUrl), { headers: ownerHeaders });
+    expect(normalRead.status).toBe(200);
+    expect(await normalRead.json()).toMatchObject({ status: 'ok' });
+    const preference = {
+      categoryId: loaded.seeded.categoryIds['cat-groceries'],
+      accountId: loaded.seeded.accountIds['acct-checking'],
+      expectedVersion: 0, expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    const unprovedPreferences = await fetch(new URL('/api/liquidity/preferences', handle.webUrl), {
+      method: 'PUT', headers: ownerHeaders, body: JSON.stringify(preference),
+    });
+    expect(unprovedPreferences.status).toBe(403);
+    const normalPreferences = await scenarioRequest<{
+      status: string;
+      result?: { items?: readonly unknown[] };
+    }>(loaded, '/api/liquidity/preferences', { method: 'PUT', body: preference });
+    expect(normalPreferences.status, JSON.stringify(normalPreferences.body)).toBe(200);
+    expect(normalPreferences.body).toMatchObject({
+      status: 'ok', result: { items: [expect.objectContaining({
+        categoryId: preference.categoryId, accountId: preference.accountId,
+        expiresAt: preference.expiresAt, version: 1,
+      })] },
+    });
+    const budgetDiscovery = await fetch(new URL('/api/connection/budgets', handle.webUrl), {
+      headers: ownerHeaders,
+    });
+    expect(budgetDiscovery.status).toBe(403);
+    expect(await budgetDiscovery.json()).not.toHaveProperty('result.budgets');
+    const disabled = await fetch(new URL('/api/connection', handle.webUrl), {
+      method: 'POST', headers: ownerHeaders, body: '{}',
+    });
+    expect(disabled.status).toBe(403);
+    const selector = await fetch(new URL('/demo', handle.webUrl), { headers: ownerHeaders });
+    expect(selector.status).toBe(200);
+    expect(await selector.text()).not.toMatch(/data-action="(?:open-scenario|reset)"/);
+    const supervisorState = await fetch(new URL('/__demo/state', handle.webUrl), { headers: ownerHeaders });
+    expect(await supervisorState.json().catch(() => ({}))).not.toHaveProperty('generation');
+    expect((await textFilesUnder(handle.root)).join('\n')).not.toContain(handle.internalSecret);
+  }, TEST_TIMEOUT);
 
   it(
     'refuses scenario readiness when the production web child has no native addon despite a healthy HTTP shell',

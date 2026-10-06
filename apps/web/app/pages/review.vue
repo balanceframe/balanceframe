@@ -24,6 +24,14 @@
         <UBadge v-else-if="adapter.error" color="error" variant="soft" :label="adapter.error" />
         <UBadge v-else color="neutral" variant="solid" :label="`${currentCount} items`" />
         <UButton
+          v-if="!adapter.state.currentItem && activeProposals.length > 0"
+          :label="`Proposed rules (${activeProposals.length})`"
+          color="primary"
+          variant="outline"
+          size="sm"
+          @click="openProposalsModal"
+        />
+        <UButton
           size="sm"
           color="neutral"
           variant="ghost"

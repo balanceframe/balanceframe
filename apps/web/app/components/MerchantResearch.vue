@@ -15,6 +15,9 @@
       <p class="whitespace-pre-wrap">Sent merchant text: {{ preview.merchant }}</p>
       <p>Sent locale: {{ preview.locale ?? 'None' }} · fields sent: {{ preview.fieldsSent.join(', ') }}</p>
       <p>Provider {{ preview.providerId }} · version {{ preview.providerVersion }}</p>
+      <p v-if="preview.providerVersion === 'scenario-fixture/1'" aria-label="Research fixture provenance">
+        Closed fixture — no live provider request. Billing atoms are modeled scenario accounting, not real provider cost.
+      </p>
       <p>Maximum cost: {{ preview.maxCostAtoms }} billing atoms {{ preview.billingCurrency }}. 1,000,000 atoms = one billing minor unit; this is not transaction Money.</p>
       <p>Target {{ preview.evidenceKey }} · revision {{ preview.evidenceRevision }} · consent expires {{ preview.expiresAt }}</p>
       <p class="whitespace-pre-wrap">{{ preview.disclosure }}</p>
@@ -117,7 +120,7 @@ async function send() {
       outcome.value = 'Historical untrusted research received. No category, identity, confidence or financial decision was changed.';
     } else if (result.status === 'pending') {
       outcome.value = 'Research is pending with potential billing. The request may already have been dispatched; no automatic retry or polling occurs.';
-    } else {
+    } else if (result.status === 'failed' || result.status === 'denied') {
       error.value = `Research ${result.status}: ${result.code}. ${result.billing === 'uncertain' ? 'There is potential billing; the request may already have been dispatched.' : 'Not dispatched.'}`;
     }
   } catch {

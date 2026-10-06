@@ -3,6 +3,10 @@ import { timingSafeEqual } from 'node:crypto';
 import { lstatSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import type { EventWithContext } from './workflow-store';
+import {
+  isScenarioId, scenarioFeatureWrite,
+  type ScenarioId, type ScenarioManifest,
+} from '../../../../packages/scenario-kit/src/scenario-manifest.js';
 
 /** Header used only by the runner's private loopback setup/persona client. */
 export const DEMO_INTERNAL_HEADER = 'x-balanceframe-demo-internal';
@@ -19,20 +23,17 @@ const LOOPBACK_HOSTS: Record<string, true> = {
 const LOOPBACK_ADDRESSES: Record<string, true> = { '127.0.0.1': true, '::1': true };
 
 /** Private manifest consumed by the web child at its trust boundary. */
-export interface DemoManifest {
-  readonly version: 1;
-  readonly phase: 'setup' | 'ready';
-  readonly generation: number;
-  readonly origin: string;
-  readonly actualUrl: string;
-  readonly root: string;
-  readonly authDbPath: string;
-  readonly workflowDbPath: string;
-  readonly connectionPath: string;
-  readonly internalSecret: string;
-  readonly budgetId: string | null;
-  readonly actorIds: readonly string[];
-}
+export type DemoManifest = ScenarioManifest;
+
+export type ScenarioFixtureContext =
+  | { readonly active: false }
+  | { readonly active: true; readonly valid: false }
+  | {
+      readonly active: true; readonly valid: true;
+      readonly scenarioId: ScenarioId; readonly spaceId: string;
+      readonly root: string; readonly generation: number;
+      readonly research: NonNullable<DemoManifest['research']> | null;
+    };
 
 type BoundaryEvent = EventWithContext & {
   method?: string;
@@ -270,6 +271,12 @@ function manifestFromFile(manifestPath: string, config: RuntimeConfig): DemoMani
   const internalSecret = stringValue(parsed.internalSecret, 4096);
   const budgetId = parsed.budgetId === null ? null : stringValue(parsed.budgetId, 1024);
   const actorIds = parsed.actorIds;
+  const scenarioId = parsed.scenarioId === undefined || parsed.scenarioId === null ? null : parsed.scenarioId;
+  const spaceId = parsed.spaceId === undefined || parsed.spaceId === null ? null : stringValue(parsed.spaceId, 512);
+  if ((scenarioId !== null && !isScenarioId(scenarioId)) ||
+    (parsed.spaceId !== undefined && parsed.spaceId !== null && !spaceId) ||
+    (phase === 'setup' && spaceId !== null) ||
+    (phase === 'ready' && scenarioId !== null && !spaceId)) return null;
   if (
     !origin ||
     !actualUrl ||
@@ -376,6 +383,15 @@ function manifestFromFile(manifestPath: string, config: RuntimeConfig): DemoMani
       return null;
     }
   }
+  let research: DemoManifest['research'];
+  if (parsed.research !== undefined) {
+    if (!isRecord(parsed.research) || parsed.research.provider !== 'fixture' ||
+      !isScenarioId(scenarioId) || !scenarioId.startsWith('merchant-research-') || !spaceId ||
+      Object.keys(parsed.research).some((key) => key !== 'provider' && key !== 'controlPath')) return null;
+    const controlPath = absolutePath(parsed.research.controlPath);
+    if (!controlPath || !privateResearchFiles(root, controlPath, parsed.generation, scenarioId, spaceId)) return null;
+    research = { provider: 'fixture', controlPath };
+  }
 
   return {
     version: 1,
@@ -390,6 +406,9 @@ function manifestFromFile(manifestPath: string, config: RuntimeConfig): DemoMani
     internalSecret,
     budgetId,
     actorIds: [...actorIds] as string[],
+    scenarioId: scenarioId as ScenarioId | null,
+    spaceId,
+    ...(research ? { research } : {}),
   };
 }
 
@@ -398,6 +417,48 @@ function readManifest(config: RuntimeConfig): ManifestState {
   if (!manifestPath) return { kind: 'inactive' };
   const manifest = manifestFromFile(manifestPath, config);
   return manifest ? { kind: 'valid', manifest } : { kind: 'invalid' };
+}
+
+function privateResearchFiles(root: string, controlPath: string, generation: number, scenarioId: ScenarioId, spaceId: string): boolean {
+  try {
+    const values: Record<string, unknown>[] = [];
+    for (const pathname of [controlPath, `${controlPath}.status`]) {
+      if (!isWithin(root, pathname) || hasSymlinkComponent(pathname)) return false;
+      const stats = lstatSync(pathname);
+      if (!stats.isFile() || !hasMode(stats, 0o600) || stats.size > 16 * 1024) return false;
+      const value: unknown = JSON.parse(readFileSync(pathname, 'utf8'));
+      if (!isRecord(value) || value.version !== 1 || value.generation !== generation) return false;
+      values.push(value);
+    }
+    const control = values[0]!;
+    const status = values[1]!;
+    return control.scenarioId === scenarioId && control.spaceId === spaceId &&
+      ['success', 'outage', 'held'].includes(String(control.mode)) &&
+      boundedInteger(control.clockOffsetMs, 7_200_000) &&
+      boundedInteger(control.releaseVersion, 1000) && boundedInteger(control.cancelVersion, 1000) &&
+      Object.keys(control).every((key) => ['version', 'generation', 'scenarioId', 'spaceId', 'mode', 'clockOffsetMs', 'releaseVersion', 'cancelVersion'].includes(key)) &&
+      boundedInteger(status.calls, 1000) && boundedInteger(status.held, 16) &&
+      Object.keys(status).every((key) => ['version', 'generation', 'calls', 'held'].includes(key));
+  } catch {
+    return false;
+  }
+}
+
+function boundedInteger(value: unknown, maximum: number): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+}
+
+/** The only research fixture selector: owned file authority, never public demo mode or request input. */
+export function getScenarioFixtureContext(event: EventWithContext): ScenarioFixtureContext {
+  const state = readManifest(readRuntimeConfig(event as BoundaryEvent));
+  if (state.kind === 'inactive') return { active: false };
+  if (state.kind === 'invalid' || state.manifest.phase !== 'ready' || !state.manifest.scenarioId || !state.manifest.spaceId)
+    return { active: true, valid: false };
+  const manifest = state.manifest;
+  return {
+    active: true, valid: true, scenarioId: manifest.scenarioId!, spaceId: manifest.spaceId!,
+    root: manifest.root, generation: manifest.generation, research: manifest.research ?? null,
+  };
 }
 
 function requestMethod(event: BoundaryEvent): string {
@@ -493,8 +554,12 @@ function approvedFinancialWrite(path: string, method: string): boolean {
   );
 }
 
-function setupWrite(path: string, method: string): boolean {
+function setupWrite(path: string, method: string, manifest: DemoManifest): boolean {
   return (
+    (manifest.scenarioId === 'governance-delegated-assistant' && method === 'POST' &&
+      (path === '/api/auth/api-key/create' || /^\/api\/spaces\/[^/]+\/(?:agents|delegations|credentials)$/.test(path))) ||
+    (manifest.scenarioId?.startsWith('merchant-') && method === 'PUT' &&
+      (path === '/api/merchant/policy' || path === '/api/merchant/space-policy')) ||
     (method === 'POST' &&
       (path === '/api/registration/bootstrap' ||
         path === '/api/invitations' ||
@@ -514,9 +579,21 @@ function externalRead(path: string, method: string): boolean {
   return true;
 }
 
-function externalWrite(path: string, method: string): boolean {
+function externalWrite(path: string, method: string, manifest: DemoManifest): boolean {
   if (method === 'POST' && path === '/api/auth/sign-out') return true;
-  return approvedFinancialWrite(path, method);
+  return approvedFinancialWrite(path, method) || scenarioFeatureWrite(manifest.scenarioId, method, path);
+}
+
+function selectedSpace(event: BoundaryEvent): string | null {
+  const explicit = getHeader(event as unknown as H3Event, 'x-balanceframe-space');
+  if (explicit !== undefined) return explicit.trim();
+  const cookie = getHeader(event as unknown as H3Event, 'cookie') ?? '';
+  const selected = cookie.split(';').map((pair) => pair.trim()).find((pair) => pair.startsWith('balanceframe_space='));
+  try {
+    return selected ? decodeURIComponent(selected.slice('balanceframe_space='.length)) : null;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -535,19 +612,35 @@ export function enforceDemoBoundary(event: EventWithContext): Record<string, unk
 
   const path = getRequestPath(boundaryEvent as unknown as H3Event);
   if (!path.startsWith('/api/')) return undefined;
+  if (path === '/api/health' && requestMethod(boundaryEvent) === 'GET') return undefined;
   if (state.kind === 'invalid') return disabled(boundaryEvent, 503);
 
   const manifest = state.manifest;
   const method = requestMethod(boundaryEvent);
+  const suppliedInternal = getHeader(boundaryEvent as unknown as H3Event, DEMO_INTERNAL_HEADER);
   const internal = internalRequest(boundaryEvent, manifest);
+  if (suppliedInternal !== undefined && !internal) return disabled(boundaryEvent, 403);
   const unsafe = method !== 'GET' && method !== 'HEAD';
   if (unsafe && !validUnsafeRequest(boundaryEvent, manifest, internal)) {
     return disabled(boundaryEvent, 403);
   }
   if (method === 'CONNECT') return disabled(boundaryEvent, 403);
+  if (manifest.spaceId) {
+    const pathSpace = /^\/api\/spaces\/([^/]+)(?:\/|$)/.exec(path)?.[1];
+    if (pathSpace && pathSpace !== manifest.spaceId) return disabled(boundaryEvent, 403);
+    const merchantPath = manifest.scenarioId?.startsWith('merchant-') &&
+      /^\/api\/(?:merchant|review|proposal|rule)(?:\/|$)/.test(path);
+    const selected = selectedSpace(boundaryEvent);
+    if ((scenarioFeatureWrite(manifest.scenarioId, method, path) || merchantPath) &&
+      selected !== null && selected !== manifest.spaceId) return disabled(boundaryEvent, 403);
+  }
 
   if (externalRead(path, method) && (manifest.phase === 'ready' || internal)) return undefined;
-  if (externalWrite(path, method) && !internal && manifest.phase === 'ready') return undefined;
+  if (externalWrite(path, method, manifest) && manifest.phase === 'ready') return undefined;
+  const publicConfig = isRecord(config.public) ? config.public : null;
+  if (manifest.phase === 'ready' && method === 'POST' && path === '/api/reauth' &&
+    (publicConfig?.demoMode === false || process.env.NUXT_PUBLIC_DEMO_MODE === 'false') &&
+    (!manifest.spaceId || selectedSpace(boundaryEvent) === manifest.spaceId)) return undefined;
 
   if (internal) {
     // Private transport still reaches Source's real session, membership and
@@ -557,7 +650,12 @@ export function enforceDemoBoundary(event: EventWithContext): Record<string, unk
       path === '/api/reauth' ||
       /^\/api\/spaces\/[^/]+\/select$/.test(path)
     )) return undefined;
-    if (manifest.phase === 'setup' && setupWrite(path, method)) return undefined;
+    if (manifest.phase === 'ready' && manifest.scenarioId === 'governance-invitation-lifecycle' &&
+      method === 'POST' && (path === '/api/invitations' || path === '/api/invitations/redeem')) return undefined;
+    if (manifest.phase === 'ready' && manifest.scenarioId?.startsWith('merchant-') &&
+      method === 'PUT' && /^\/api\/spaces\/[^/]+\/grants$/.test(path) &&
+      selectedSpace(boundaryEvent) === manifest.spaceId) return undefined;
+    if (manifest.phase === 'setup' && setupWrite(path, method, manifest)) return undefined;
   }
 
   return disabled(boundaryEvent, 403);

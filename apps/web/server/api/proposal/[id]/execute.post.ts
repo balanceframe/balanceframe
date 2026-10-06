@@ -23,6 +23,7 @@ import { hasNativeRuleSourceAdmission } from '../../../utils/rule-create';
 import { hasTrustedRequestOrigin } from '../../../utils/reauthentication';
 import type { ReauthenticationEvent } from '../../../utils/reauthentication';
 import { requireSelectedSpace } from '../../../utils/space-context';
+import { composeScenarioResearch } from '../../../utils/scenario-research';
 import type { EventWithContext } from '../../../utils/workflow-store';
 import {
   errorEnvelope,
@@ -146,7 +147,7 @@ export default defineEventHandler(async (event) => {
         current.budgetId !== selected.space.budgetId)
       throw new Error('Current merchant replay actor or scope changed');
     const manager = createMutationConnectionManager({ configPath: process.env.BALANCEFRAME_CONFIG_PATH });
-    const sourceService = await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager });
+    const sourceService = await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager, research: composeScenarioResearch(event, selected.space.id) });
     const authorize = await sourceService.getRuleReplayPublicationAuthority({
       ...sourceActor, spaceId: selected.space.id, auth: selected.auth,
     }, current.context);
@@ -232,7 +233,7 @@ export default defineEventHandler(async (event) => {
             current.auth !== selected.auth || current.spaceId !== selected.space.id ||
             current.budgetId !== selected.space.budgetId)
           throw new Error('Current rule source actor or selected scope changed');
-        const sourceService = await createMerchantIntelligenceService({store:workflow.store,connectionManager:manager});
+        const sourceService = await createMerchantIntelligenceService({store:workflow.store,connectionManager:manager,research:composeScenarioResearch(event,selected.space.id)});
         return sourceService.getCurrentRuleReviewContext({
           ...sourceActor,spaceId:selected.space.id,auth:selected.auth,
         },{evidenceKey:current.evidenceKey,connected,snapshot:current.snapshot,sourceAvailability:current.sourceAvailability,
@@ -266,7 +267,7 @@ export default defineEventHandler(async (event) => {
 
   if (proposal.operation === 'create_rule' && result.reasonCodes.includes('idempotency_replay')) {
     try {
-      const preconditions = z.record(z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
+      const preconditions = z.record(z.string(), z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
       const context = ruleReviewContextSchema.parse(preconditions.reviewContext);
       if (context.scope.spaceId !== proposal.spaceId || context.scope.budgetId !== proposal.budgetId)
         throw new Error('Ordinary rule replay scope differs from its governed proposal');

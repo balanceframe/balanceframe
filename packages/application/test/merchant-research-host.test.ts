@@ -13,13 +13,15 @@ let settings: MerchantResearchSettings;
 let query: MerchantResearchQuery;
 let response: () => Promise<Response>;
 let egress: Array<URL>;
+let researchTime: string;
 const success = () => Response.json({ request_info: { success: true }, organic_results: [{ link: 'https://public.example/about', title: 'Public business', snippet: 'Untrusted historical public result' }] });
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(now));
   fixture = await merchantFixture(); settings = { installation: { version: configuration.installationVersion, value: policy }, configuration: structuredClone(configuration) };
-  egress = []; response = async () => success();
-  service = new MerchantIntelligenceService({ store: fixture.store, connectionManager: fixture.manager, native, clock: () => new Date(fixture.clock()),
-    research: { settings: () => settings, providerFor: (config) => new ValueSerpProvider({ apiKey: config.apiKey, now: () => new Date(fixture.clock()), fetchFn: async (input) => { egress.push(new URL(String(input))); return response(); } }) } });
+  egress = []; response = async () => success(); researchTime = now;
+  const research = { settings: () => settings, clock: () => new Date(researchTime),
+    providerFor: (config: MerchantResearchConfiguration) => new ValueSerpProvider({ apiKey: config.apiKey, now: () => new Date(researchTime), fetchFn: async (input) => { egress.push(new URL(String(input))); return response(); } }) };
+  service = new MerchantIntelligenceService({ store: fixture.store, connectionManager: fixture.manager, native, clock: () => new Date(fixture.clock()), research });
   fixture.grant('budget', fixture.actor.budgetId, 'merchant:research'); fixture.grant('account', accountId, 'merchant:research'); fixture.grant('evidence', `merchant:transaction:${candidateId}`, 'merchant:research');
   const view = await service.analyze(fixture.actor); const target = view.suggestions.find((row) => row.transactionId === candidateId)!;
   query = { evidenceKey: target.evidenceKey, evidenceRevision: target.evidenceRevision, merchant: 'Explicit Public Business', locale: null, publicBusiness: true };
@@ -100,6 +102,43 @@ describe('real merchant research application host', () => {
     const cached = await service.cachedResearch(fixture.actor, query); expect(cached.enrichment?.confidence).toBe('uncalibrated'); expect(cached.enrichment?.sources[0]?.url).toBe('https://public.example/about'); expect(egress).toHaveLength(1);
     expect(JSON.stringify(cached)).not.toContain('PRIVATE-NOTE-DO-NOT-PUBLISH'); expect(JSON.stringify(cached)).not.toContain(configuration.apiKey);
   });
+  it('expires one-hour research cache without aging the same real human proof or local source clock', async () => {
+    await enable();
+    const space = await service.spacePolicy(fixture.actor);
+    await service.setSpacePolicy(fixture.actor, { expectedVersion: space.version, value: { ...policy, cacheTtlHours: 1 } });
+    const proof = fixture.actor.auth;
+    const ready = await preview();
+    const outcome = await send(ready.previewToken);
+    expect(outcome.status).toBe('succeeded');
+    if (outcome.status !== 'succeeded') throw new Error('Expected admitted real coordinator result');
+    expect(outcome.enrichment.expiresAt).toBe('2026-10-04T13:00:00.000Z');
+    expect(await service.cachedResearch(fixture.actor, query)).toEqual({ enrichment: outcome.enrichment });
+    researchTime = '2026-10-04T12:59:59.999Z';
+    expect(await service.cachedResearch(fixture.actor, query)).toEqual({ enrichment: outcome.enrichment });
+    researchTime = '2026-10-04T13:00:00.000Z';
+    expect(await service.cachedResearch(fixture.actor, query)).toEqual({ enrichment: null });
+    expect(egress).toHaveLength(1);
+    expect(fixture.clock()).toBe(now);
+    expect(new Date().toISOString()).toBe(now);
+    expect(fixture.actor.auth).toBe(proof);
+    const current = await service.policy(fixture.actor);
+    expect((await service.setPolicy(fixture.actor, { expectedVersion: current.version, value: { ...policy, mode: 'local-only' } })).version).toBe(current.version + 1);
+    expect((await service.delete(fixture.actor)).generation).toBe(current.generation + 2);
+    expect(fixture.actor.auth).toBe(proof);
+  });
+  it('expires exact consent on research time while ordinary controls retain current real-time proof', async () => {
+    await enable();
+    const proof = fixture.actor.auth;
+    const ready = await preview();
+    expect(ready.expiresAt).toBe('2026-10-04T12:05:00.000Z');
+    researchTime = ready.expiresAt;
+    expect(await send(ready.previewToken)).toMatchObject({ status: 'denied', billing: 'not_dispatched' });
+    expect(egress).toEqual([]);
+    expect(fixture.clock()).toBe(now);
+    expect(fixture.actor.auth).toBe(proof);
+    const space = await service.spacePolicy(fixture.actor);
+    expect((await service.setSpacePolicy(fixture.actor, { expectedVersion: space.version, value: { ...policy, mode: 'local-only' } })).version).toBe(space.version + 1);
+  });
   it('does not hold Actual source lock during provider I/O and discards a result after a current research grant is revoked', async () => {
     await enable(); const ready = await preview();
     let release!: () => void; let entered!: () => void;
@@ -138,6 +177,7 @@ describe('real merchant research application host', () => {
   it('never manufactures consent from local alias confirmation or sends an expired preview', async () => {
     await enable(); expect((await send('a'.repeat(64))).status).toBe('denied'); const ready = await preview();
     fixture.setClock(new Date(Date.parse(now) + 300001).toISOString()); fixture.actor.auth = humanAuth(fixture.actor.actorId, fixture.clock());
+    researchTime = fixture.clock();
     expect((await send(ready.previewToken)).status).toBe('denied'); expect(egress).toEqual([]);
   });
 });

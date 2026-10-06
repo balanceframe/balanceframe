@@ -294,10 +294,10 @@ function nativeIdBefore(left: string, right: string): boolean {
 /** Structural shared provenance: legacy sources keep their existing ID/count contract. */
 export const nativeRuleBlockSchema = z.object({
   ruleIds: z.array(z.string().min(1).regex(/^[^\uD800-\uDFFF]+$/u)).min(1)
-    .refine((ids) => ids.every((value, index) => index === 0 || nativeIdBefore(ids[index - 1], value))),
+    .refine((ids) => ids.every((value, index) => index === 0 || nativeIdBefore(ids[index - 1]!, value))),
 }).strict();
 const partReferences = z.array(unsigned)
-  .refine((indexes) => indexes.every((value, index) => index === 0 || indexes[index - 1] < value));
+  .refine((indexes) => indexes.every((value, index) => index === 0 || indexes[index - 1]! < value));
 export const nativeRulePartSchema = z.object({ blockIndexes: partReferences.refine((values) => values.length > 0) }).strict();
 export const nativeRuleSetSchema = z.object({
   orPartIndexes: partReferences.refine((values) => values.length <= 4),
@@ -310,7 +310,7 @@ function containsIndex(values: readonly number[], index: number): boolean {
   let start = 0; let end = values.length;
   while (start < end) {
     const middle = start + Math.floor((end - start) / 2);
-    if (values[middle] < index) start = middle + 1; else end = middle;
+    if (values[middle]! < index) start = middle + 1; else end = middle;
   }
   return values[start] === index;
 }
@@ -322,10 +322,10 @@ interface NativeWitnessDomain {
 }
 
 function nativeRuleSetHasWitness(set: MerchantNativeRuleSet, parts: readonly MerchantNativeRulePart[]): boolean {
-  const category = parts[set.categoryPartIndex].blockIndexes;
+  const category = parts[set.categoryPartIndex]!.blockIndexes;
   const empty: readonly number[] = [];
   const domains = set.orPartIndexes.map<NativeWitnessDomain>((reference, kind) => {
-    const operand = parts[reference].blockIndexes;
+    const operand = parts[reference]!.blockIndexes;
     const candidates = operand.length < category.length ? operand : category;
     return { sources: [candidates, empty], positions: [0, 0],
       other: candidates === operand ? category : operand, kind, cost: candidates.length };
@@ -333,12 +333,14 @@ function nativeRuleSetHasWitness(set: MerchantNativeRuleSet, parts: readonly Mer
   if (set.andPartIndexes.length !== 0 && set.andPartIndexes.every((operand) => operand.length !== 0)) {
     let shortest = -1; let cost = category.length;
     for (let field = 0; field < 4; field++) {
-      const size = set.andPartIndexes[field].reduce((sum, reference) => sum + parts[reference].blockIndexes.length, 0);
+      const size = set.andPartIndexes[field]!.reduce((sum, reference) => sum + parts[reference]!.blockIndexes.length, 0);
       if (size < cost) { shortest = field; cost = size; }
     }
-    const operand = shortest === -1 ? [] : set.andPartIndexes[shortest];
+    const operand = shortest === -1 ? [] : set.andPartIndexes[shortest]!;
+    const first = operand[0];
+    const second = operand[1];
     domains.push({ sources: shortest === -1 ? [category, empty]
-      : [parts[operand[0]].blockIndexes, parts[operand[1]]?.blockIndexes ?? empty],
+      : [parts[first!]!.blockIndexes, second === undefined ? empty : parts[second]!.blockIndexes],
       positions: [0, 0], other: empty, kind: 4, cost });
   }
   domains.sort((left, right) => left.cost - right.cost || left.kind - right.kind);
@@ -354,7 +356,7 @@ function nativeRuleSetHasWitness(set: MerchantNativeRuleSet, parts: readonly Mer
       advanced = true;
       const matches = domain.kind < 4 ? containsIndex(domain.other, index)
         : containsIndex(category, index) && set.andPartIndexes.every((operand) =>
-          operand.some((reference) => containsIndex(parts[reference].blockIndexes, index)));
+          operand.some((reference) => containsIndex(parts[reference]!.blockIndexes, index)));
       if (matches) return true;
     }
     if (!advanced) return false;
@@ -378,7 +380,7 @@ function checkNativeRuleTables(value: NativeRuleTables, used: readonly number[],
   for (const part of value.nativeRuleParts) {
     if (part.blockIndexes.length === 0 || part.blockIndexes.length > value.nativeRuleBlocks.length
       || part.blockIndexes.some((index, position) => !Number.isInteger(index) || index < 0 || index >= value.nativeRuleBlocks.length
-        || (position > 0 && part.blockIndexes[position - 1] >= index))) {
+        || (position > 0 && part.blockIndexes[position - 1]! >= index))) {
       fail('Native part references a missing block'); valid = false;
     }
   }

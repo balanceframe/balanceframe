@@ -545,6 +545,30 @@ describe('review page recovery behavior', () => {
     expect(composableDoubles.handleKeyboard).not.toHaveBeenCalled();
   });
 
+  it('opens authorized proposed rules when the transaction queue is empty', async () => {
+    composableDoubles.adapter.state.items = [];
+    composableDoubles.adapter.state.currentItem = null;
+    const defaultFetch = fetchSpy.getMockImplementation()!;
+    fetchSpy.mockImplementation((input, init) =>
+      requestUrl(input) === '/api/proposal'
+        ? Promise.resolve(jsonResponse({
+            status: 'ok',
+            result: { proposals: [{ id: 'proposal-001' }] },
+            error: null,
+          }))
+        : defaultFetch(input, init),
+    );
+    const page = await mountPage();
+    expect(page.text()).toContain('No items to review.');
+    expect(page.find('[data-testid="review-item"]').exists()).toBe(false);
+    const proposalButton = page.findAll('button')
+      .find((button) => button.text() === 'Proposed rules (1)');
+    expect(proposalButton, 'An empty private queue must not hide authorized proposals').toBeDefined();
+    await proposalButton!.trigger('click');
+    await flushPromises();
+    expect(page.get('[role="dialog"]').attributes('aria-label')).toBe('Proposed rules');
+  });
+
   it('suppresses shortcuts dispatched from the hidden keyboard input while the proposed-rules modal is open', async () => {
     const page = await mountPage();
 

@@ -1,4 +1,6 @@
 import * as actualApiModule from '@actual-app/api';
+import type { APIRuleEntity } from '@actual-app/api/models';
+import { z } from 'zod';
 import type { ProtocolSnapshot, Transaction } from '@balanceframe/protocol-generated';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import type { ResourceRef } from '@balanceframe/workflow-store';
@@ -20,6 +22,7 @@ export interface SeededEntityIds {
   readonly categoryIds: Readonly<Record<string, string>>;
   readonly payeeIds: Readonly<Record<string, string>>;
   readonly transactionIds: Readonly<Record<string, string>>;
+  readonly ruleIds: Readonly<Record<string, string>>;
 }
 
 export interface SeededActualBudget extends SeededEntityIds {
@@ -76,6 +79,7 @@ type ActualApi = {
   updateTransaction(id: string, fields: Record<string, unknown>): Promise<unknown>;
   getTransactions(accountId: string): Promise<unknown[]>;
   getRules(): Promise<unknown[]>;
+  createRule(rule: Omit<APIRuleEntity, 'id'>): Promise<{ id: string }>;
   setBudgetAmount(month: string, categoryId: string, amount: number): Promise<unknown>;
   setBudgetCarryover?(month: string, categoryId: string, carriesOver: boolean): Promise<unknown>;
   getBudgetMonth(month: string): Promise<unknown>;
@@ -97,6 +101,7 @@ interface PreparedLedger {
   readonly amountByTransactionId: Map<string, number>;
   readonly initialBalanceByAccountId: Map<string, number>;
   readonly clearedBalanceByAccountId: Map<string, number>;
+  readonly rules: readonly { id: string; order: number; payload: Omit<APIRuleEntity, 'id'> }[];
 }
 
 interface TransactionOperation {
@@ -340,6 +345,98 @@ function monthIsValid(month: string): boolean {
   return numericMonth >= 1 && numericMonth <= 12;
 }
 
+type RuleReferenceField = z.infer<typeof ruleReferenceFieldSchema>;
+const ruleReferenceFieldSchema = z.enum(['account', 'payee', 'category', 'category_group']);
+const nativeAmountSchema = z.number().int().safe();
+const nativeConditionSchema = z.union([
+  z.object({
+    field: ruleReferenceFieldSchema, op: z.enum(['is', 'isNot']),
+    value: z.string().min(1), type: z.literal('id').optional(),
+  }).strict(),
+  z.object({
+    field: ruleReferenceFieldSchema, op: z.enum(['oneOf', 'notOneOf']),
+    value: z.array(z.string().min(1)).min(1), type: z.literal('id').optional(),
+  }).strict(),
+  z.object({
+    field: z.enum(['imported_payee', 'notes']),
+    op: z.enum(['is', 'isNot', 'contains', 'doesNotContain', 'matches']),
+    value: z.string(), type: z.literal('string').optional(),
+  }).strict(),
+  z.object({
+    field: z.enum(['cleared', 'reconciled']), op: z.literal('is'),
+    value: z.boolean(), type: z.literal('boolean').optional(),
+  }).strict(),
+  z.object({
+    field: z.literal('amount'), op: z.enum(['is', 'isapprox', 'gt', 'gte', 'lt', 'lte']),
+    value: nativeAmountSchema, type: z.literal('number').optional(),
+  }).strict(),
+  z.object({
+    field: z.literal('amount'), op: z.literal('isbetween'),
+    value: z.object({ num1: nativeAmountSchema, num2: nativeAmountSchema }).strict(),
+    type: z.literal('number').optional(),
+  }).strict(),
+]);
+const nativeActionSchema = z.union([
+  z.object({
+    op: z.literal('set'), field: z.enum(['account', 'payee', 'category']),
+    value: z.string().min(1), type: z.literal('id').optional(),
+  }).strict(),
+  z.object({
+    op: z.literal('set'), field: z.literal('amount'),
+    value: nativeAmountSchema, type: z.literal('number').optional(),
+  }).strict(),
+  z.object({
+    op: z.literal('set'), field: z.literal('notes'),
+    value: z.string(), type: z.literal('string').optional(),
+  }).strict(),
+  z.object({
+    op: z.literal('set'), field: z.enum(['cleared', 'reconciled']),
+    value: z.boolean(), type: z.literal('boolean').optional(),
+  }).strict(),
+  z.object({
+    op: z.enum(['prepend-notes', 'append-notes']), value: z.string(),
+    field: z.literal('notes').optional(), type: z.literal('id').optional(),
+  }).strict(),
+]);
+const nativeTriggerSchema = z.object({
+  stage: z.enum(['pre', 'post']).nullable(),
+  conditionsOp: z.enum(['and', 'or']),
+  conditions: z.array(nativeConditionSchema).min(1),
+}).strict();
+
+function mapRuleReferences(
+  payload: Omit<APIRuleEntity, 'id'>,
+  resolveReference: (field: RuleReferenceField, id: string) => string,
+): Omit<APIRuleEntity, 'id'> {
+  return {
+    ...payload,
+    conditions: payload.conditions.map((condition) => {
+      const field = ruleReferenceFieldSchema.safeParse(condition.field);
+      if (!field.success) return condition;
+      const value = Array.isArray(condition.value)
+        ? condition.value.map((id) => resolveReference(field.data, readString(id, 'native rule reference')))
+        : resolveReference(field.data, readString(condition.value, 'native rule reference'));
+      // Parsed reference conditions have only scalar-ID or array-ID operators.
+      return { ...condition, value } as APIRuleEntity['conditions'][number];
+    }),
+    actions: payload.actions.map((action) => action.op === 'set' &&
+      (action.field === 'account' || action.field === 'payee' || action.field === 'category')
+      ? { ...action, value: resolveReference(action.field, readString(action.value, 'native rule action reference')) }
+      : action),
+  };
+}
+
+function ruleSemantics(payload: Omit<APIRuleEntity, 'id'>): string {
+  return JSON.stringify({
+    stage: payload.stage,
+    conditionsOp: payload.conditionsOp,
+    conditions: payload.conditions.map(({ field, op, value }) => ({ field, op, value })),
+    actions: payload.actions.map((action) => action.op === 'set'
+      ? { field: action.field, op: action.op, value: action.value }
+      : { op: action.op, value: action.value }),
+  });
+}
+
 function validateLedger(input: ProtocolSnapshot): PreparedLedger {
   let snapshot: ProtocolSnapshot;
   try {
@@ -350,7 +447,7 @@ function validateLedger(input: ProtocolSnapshot): PreparedLedger {
     );
   }
 
-  if (snapshot.rules.length > 0) fail('rules are not supported by the Actual scenario seeder');
+  assertUniqueIds(snapshot.rules, 'rules');
   if (snapshot.schedules.length > 0) {
     fail('schedules are not supported by the Actual scenario seeder');
   }
@@ -361,6 +458,22 @@ function validateLedger(input: ProtocolSnapshot): PreparedLedger {
   const payeeById = assertUniqueIds(snapshot.payees, 'payees');
   assertUniqueNames(snapshot.accounts, 'account');
   assertUniqueNames(snapshot.payees, 'payee');
+  const ruleReferences: Record<RuleReferenceField, ReadonlySet<string>> = {
+    account: new Set(accountById.keys()),
+    payee: new Set(payeeById.keys()),
+    category: new Set(snapshot.categories.filter((category) => !category.deleted).map((category) => category.id)),
+    category_group: new Set(snapshot.categories.filter((category) => !category.deleted).map((category) => category.groupName!)),
+  };
+  const rules = snapshot.rules.map((rule) => {
+    if (rule.inactive) fail(`inactive native rule ${JSON.stringify(rule.id)} cannot be seeded as a live Actual rule`);
+    const trigger = nativeTriggerSchema.parse(rule.trigger);
+    const actions = z.array(nativeActionSchema).min(1).parse(rule.actions);
+    const payload = mapRuleReferences({ ...trigger, actions }, (field, id) => {
+      if (!ruleReferences[field].has(id)) fail(`rule ${JSON.stringify(rule.id)} has unresolved ${field} reference ${JSON.stringify(id)}`);
+      return id;
+    });
+    return { id: rule.id, order: rule.order, payload };
+  });
 
   let currency: string | undefined;
   const setCurrency = (money: unknown, label: string): ParsedMoney => {
@@ -451,6 +564,9 @@ function validateLedger(input: ProtocolSnapshot): PreparedLedger {
       if (child.accountId !== transaction.accountId) {
         fail(`${path}.subtransactions[${index}] must use the parent account`);
       }
+      if (child.cleared !== transaction.cleared || child.reconciled !== transaction.reconciled) {
+        fail(`${path}.subtransactions[${index}] cleared/reconciled flags must match the native split parent`);
+      }
       visitTransaction(child, `${path}.subtransactions[${index}]`, true);
       splitSum = checkedI64(
         splitSum + BigInt(amountByTransactionId.get(child.id)!),
@@ -538,6 +654,7 @@ function validateLedger(input: ProtocolSnapshot): PreparedLedger {
     amountByTransactionId,
     initialBalanceByAccountId,
     clearedBalanceByAccountId: clearedBalanceNumbers,
+    rules,
   };
 }
 
@@ -695,6 +812,7 @@ async function populatePrepared(ledger: PreparedLedger): Promise<SeededEntityIds
   const categoryIds: Record<string, string> = {};
   const payeeIds: Record<string, string> = {};
   const transactionIds: Record<string, string> = {};
+  const ruleIds: Record<string, string> = {};
 
   const groupNames = new Set<string>();
   for (const category of ledger.categoryById.values()) {
@@ -791,7 +909,7 @@ async function populatePrepared(ledger: PreparedLedger): Promise<SeededEntityIds
 
   for (const budget of [...snapshot.budgets].sort((a, b) => a.month.localeCompare(b.month))) {
     for (const categoryBudget of Object.values(budget.categories)) {
-      const categoryId = categoryIds[categoryBudget.categoryId];
+      const categoryId = categoryIds[categoryBudget.categoryId]!;
       const amount = Number(BigInt(categoryBudget.amount.minorUnits));
       await actualApi.setBudgetAmount(budget.month, categoryId, amount);
       if (categoryBudget.carriesOver) {
@@ -956,7 +1074,11 @@ async function populatePrepared(ledger: PreparedLedger): Promise<SeededEntityIds
       actualId: transactionIds[source.id]!,
     })),
   ]);
+  const nativeRows = new Map(rows.flatMap((parent) => [parent, ...flattenSubtransactions(parent)])
+    .map((row) => [row.id, row]));
   for (const { source, actualId } of metadata) {
+    const nativeRow = nativeRows.get(actualId);
+    if (!nativeRow) fail(`Actual metadata update lost transaction ${JSON.stringify(source.id)}`);
     const fields: Record<string, unknown> = {};
     if (source.reconciled) fields.reconciled = true;
     if (
@@ -965,14 +1087,44 @@ async function populatePrepared(ledger: PreparedLedger): Promise<SeededEntityIds
     ) {
       fields.imported_id = source.importedId;
     }
-    if (source.importedPayee !== null && source.importedId === null) {
+    if (source.importedPayee !== null && rowImportedPayee(nativeRow) !== source.importedPayee) {
       fields.imported_payee = source.importedPayee;
     }
-    if (Object.keys(fields).length > 0) await actualApi.updateTransaction(actualId, fields);
+    if (Object.keys(fields).length > 0) {
+      // Actual replaces a split child with the supplied fields. Sending only
+      // reconciliation/import metadata zeros its amount and loses references.
+      const completeFields: ActualRow = { ...nativeRow, ...fields };
+      delete completeFields.accountId;
+      await actualApi.updateTransaction(actualId, completeFields);
+    }
   }
 
-  await readBack(ledger, accountIds, categoryIds, payeeIds, transactionIds);
-  return { accountIds, categoryGroupIds, categoryIds, payeeIds, transactionIds };
+  await readBack(ledger, accountIds, categoryIds, payeeIds, payeeNameIds, transactionIds);
+  for (const rule of ledger.rules) {
+    const payload = mapRuleReferences(rule.payload, (field, id) => {
+      const maps: Record<RuleReferenceField, Readonly<Record<string, string>>> = {
+        account: accountIds, payee: payeeIds, category: categoryIds, category_group: categoryGroupIds,
+      };
+      return readString(maps[field][id], `native ${field} reference ${JSON.stringify(id)}`);
+    });
+    const created = await actualApi.createRule(payload);
+    const nativeId = readString(created.id, `created native rule ${JSON.stringify(rule.id)}`);
+    ruleIds[rule.id] = nativeId;
+    const nativeRules = await actualApi.getRules();
+    const nativeRule = nativeRules.find((row) => row !== null && typeof row === 'object' && 'id' in row && row.id === nativeId);
+    const parsed = z.object({
+      stage: nativeTriggerSchema.shape.stage,
+      conditionsOp: nativeTriggerSchema.shape.conditionsOp,
+      conditions: z.array(nativeConditionSchema),
+      actions: z.array(nativeActionSchema),
+    }).parse(nativeRule);
+    if (ruleSemantics(parsed) !== ruleSemantics(payload)) fail(`Actual native rule read-back mismatch for ${JSON.stringify(rule.id)}`);
+  }
+  const actualRules = (await actualApi.getRules()).map((value) => value as ActualRow);
+  const expectedOrder = [...ledger.rules].sort((a, b) => a.order - b.order).map((rule) => ruleIds[rule.id]);
+  const nativeOrder = actualRules.map((rule) => rowId(rule)).filter((id) => id !== undefined && Object.values(ruleIds).includes(id));
+  if (JSON.stringify(nativeOrder) !== JSON.stringify(expectedOrder)) fail('Actual native rule read-back order differs from the fixture');
+  return { accountIds, categoryGroupIds, categoryIds, payeeIds, transactionIds, ruleIds };
 }
 
 async function readBack(
@@ -980,11 +1132,12 @@ async function readBack(
   accountIds: Readonly<Record<string, string>>,
   categoryIds: Readonly<Record<string, string>>,
   payeeIds: Readonly<Record<string, string>>,
+  payeeNameIds: Readonly<Record<string, string>>,
   transactionIds: Readonly<Record<string, string>>,
 ): Promise<void> {
   const accounts = (await actualApi.getAccounts()).map((row) => row as ActualRow);
   for (const account of ledger.snapshot.accounts) {
-    const actualId = accountIds[account.id];
+    const actualId = accountIds[account.id]!;
     const row = accounts.find((candidate) => candidate.id === actualId);
     if (!row) fail(`Actual read-back missing account ${JSON.stringify(account.id)}`);
     const balanceValue = await actualApi.getAccountBalance(actualId);
@@ -1054,45 +1207,36 @@ async function readBack(
     if (rowIsChild(row)) nestedById.set(row.id, row);
     for (const child of flattenSubtransactions(row)) nestedById.set(child.id, child);
   }
-  for (const transaction of ledger.snapshot.transactions) {
-    const row = byId.get(transactionIds[transaction.id]);
+  const checkTransaction = (transaction: Transaction, row: ReadTransaction | undefined): void => {
     if (!row) fail(`Actual read-back missing transaction ${JSON.stringify(transaction.id)}`);
     if (rowAmount(row) !== Number(BigInt(transaction.amount.minorUnits))) {
       fail(`Actual read-back amount mismatch for transaction ${JSON.stringify(transaction.id)}`);
     }
+    if (rowAccount(row) !== accountIds[transaction.accountId] || row.date !== transaction.date ||
+        rowPayee(row) !== transactionPayeeRef(transaction, payeeIds, payeeNameIds) ||
+        rowCategory(row) !== categoryRef(transaction.categoryId, categoryIds, `transaction ${transaction.id}`, ledger.deletedCategoryIds)) {
+      fail(`Actual read-back reference mismatch for transaction ${JSON.stringify(transaction.id)}`);
+    }
     if (rowImportedId(row) !== transaction.importedId) {
-      fail(
-        `Actual read-back imported id mismatch for transaction ${JSON.stringify(transaction.id)}`,
-      );
+      fail(`Actual read-back imported id mismatch for transaction ${JSON.stringify(transaction.id)}`);
     }
-    if (transaction.importedPayee !== null && rowImportedPayee(row) !== transaction.importedPayee) {
-      fail(
-        `Actual read-back imported payee mismatch for transaction ${JSON.stringify(transaction.id)}`,
-      );
+    if (rowImportedPayee(row) !== transaction.importedPayee) {
+      fail(`Actual read-back imported payee mismatch for transaction ${JSON.stringify(transaction.id)}`);
     }
-    if (transaction.reconciled && row.reconciled !== true) {
-      fail(
-        `Actual read-back reconciliation mismatch for transaction ${JSON.stringify(transaction.id)}`,
-      );
+    if ((row.notes ?? '') !== (transaction.notes ?? '')) {
+      fail(`Actual read-back notes mismatch for transaction ${JSON.stringify(transaction.id)}`);
     }
+    if ((row.cleared ?? false) !== transaction.cleared) {
+      fail(`Actual read-back cleared mismatch for transaction ${JSON.stringify(transaction.id)}`);
+    }
+    if ((row.reconciled ?? false) !== transaction.reconciled) {
+      fail(`Actual read-back reconciliation mismatch for transaction ${JSON.stringify(transaction.id)}`);
+    }
+  };
+  for (const transaction of ledger.snapshot.transactions) {
+    checkTransaction(transaction, byId.get(transactionIds[transaction.id]!));
     for (const child of transaction.subtransactions) {
-      const childRow = nestedById.get(transactionIds[child.id]);
-      if (!childRow || rowAmount(childRow) !== Number(BigInt(child.amount.minorUnits))) {
-        fail(`Actual read-back split child mismatch for transaction ${JSON.stringify(child.id)}`);
-      }
-      if (child.importedId !== null && rowImportedId(childRow) !== child.importedId) {
-        fail(`Actual read-back imported id mismatch for split child ${JSON.stringify(child.id)}`);
-      }
-      if (child.importedPayee !== null && rowImportedPayee(childRow) !== child.importedPayee) {
-        fail(
-          `Actual read-back imported payee mismatch for split child ${JSON.stringify(child.id)}`,
-        );
-      }
-      if (child.reconciled && childRow.reconciled !== true) {
-        fail(
-          `Actual read-back reconciliation mismatch for split child ${JSON.stringify(child.id)}`,
-        );
-      }
+      checkTransaction(child, nestedById.get(transactionIds[child.id]!));
     }
   }
 }

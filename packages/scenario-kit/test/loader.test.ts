@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
 
@@ -83,4 +84,55 @@ describe('disposable scenario loader', () => {
     }
     expect(existsSync(root)).toBe(false);
   }, 120_000);
+
+  it.each([
+    ['governance-scoped-access', '/spaces'],
+    ['merchant-local-sparse', '/review'],
+    ['merchant-native-rule-lifecycle', '/rules'],
+    ['merchant-research-success', '/review'],
+  ])('loads %s under a private ready manifest without enabling public demo mode', async (scenarioId, path) => {
+    const root = createOwnedScenarioRoot();
+    const publicOrigin = 'http://127.0.0.1:3003';
+    const loaded = await loadScenario({ scenarioId, root, anchor: new Date('2026-09-06T12:00:00.000Z'), publicOrigin });
+    try {
+      const manifest = JSON.parse(await readFile(loaded.processes.manifestPath, 'utf8')) as {
+        phase: string; scenarioId: string; spaceId: string; actorIds: string[]; internalSecret: string;
+      };
+      expect((await stat(loaded.processes.manifestPath)).mode & 0o777).toBe(0o600);
+      expect(manifest).toMatchObject({
+        phase: 'ready', scenarioId, spaceId: loaded.initialized.spaceId,
+        actorIds: Object.values(loaded.initialized.personas).map((persona) => persona.actorId),
+        internalSecret: loaded.processes.internalSecret,
+      });
+      expect(loaded.initialized.entry).toEqual({ kind: 'page', path });
+      const owner = loaded.initialized.personas.owner!;
+      const headers = {
+        Host: new URL(publicOrigin).host, Origin: publicOrigin,
+        Cookie: owner.cookieHeader, 'x-balanceframe-space': loaded.initialized.spaceId,
+      };
+      const selector = await fetch(new URL('/demo', loaded.processes.webUrl), { headers });
+      expect(selector.status).toBe(200);
+      expect(await selector.text()).not.toMatch(/data-action="(?:open-scenario|reset)"/);
+      const supervisorState = await fetch(new URL('/__demo/state', loaded.processes.webUrl), { headers });
+      expect(await supervisorState.json().catch(() => ({}))).not.toHaveProperty('generation');
+      const page = await fetch(new URL(path, loaded.processes.webUrl), { headers });
+      expect(page.status).toBe(200);
+      const budgetDiscovery = await fetch(new URL('/api/connection/budgets', loaded.processes.webUrl), { headers });
+      expect(budgetDiscovery.status).toBe(403);
+      expect(await budgetDiscovery.json()).not.toHaveProperty('result.budgets');
+      const connection = await fetch(new URL('/api/connection', loaded.processes.webUrl), {
+        method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}',
+      });
+      expect(connection.status).toBe(403);
+      const forgedSetup = await fetch(new URL('/api/auth/api-key/create', loaded.processes.webUrl), {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json', 'x-balanceframe-demo-internal': loaded.processes.internalSecret },
+        body: '{}',
+      });
+      expect(forgedSetup.status).toBe(403);
+    } finally {
+      await stopScenario(loaded);
+    }
+    expect(existsSync(root)).toBe(false);
+  }, 180_000);
 });

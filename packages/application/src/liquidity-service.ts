@@ -1119,7 +1119,10 @@ export class LiquidityService {
             accountId: preference.route.accountId,
             expiresAt: preference.expiresAt,
           })),
-        canManage: capture.projector.allowed('budget', actor.budgetId, 'approval'),
+        canManage: this.options.store.liquidity.isAuthorized({
+          ...actor, now: capture.now,
+          resourceKind: 'budget', resourceId: actor.budgetId, capability: 'approval', phase: 'read',
+        }),
       };
     });
   }

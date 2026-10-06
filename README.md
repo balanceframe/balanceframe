@@ -201,21 +201,51 @@ Scenario fixture packaging uses Node filesystem APIs, so the build does not requ
 ```bash
 pnpm scenarios list
 pnpm scenarios verify funded-purchase
+pnpm scenarios verify merchant-native-rule-lifecycle
 pnpm scenarios verify --all
 pnpm scenarios verify --faults
 pnpm scenarios run funded-purchase
 pnpm demo --scenario rich-cart
+pnpm demo --scenario governance-scoped-access
+pnpm demo --scenario merchant-research-lifecycle
 ```
 
 `run` and `demo` open the shared fictional workspace at `http://127.0.0.1:3003/demo` by default. Select a story, follow **Open active scenario** to its ordinary application screen, and use **Reset shared demo** to discard all changes and regenerate that scenario. The selector and banner identify the fictional persona and warn that anyone sharing this instance sees its changes. Stop the supervisor with Ctrl-C; it removes only its own disposable workspace. Never connect it to a personal or production Actual budget.
 
-`verify --all` runs the 29 independent authenticated Actual/Nuxt cases and then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with its catalog version, scenario ID, anchor, assertion count, and sanitized evidence mode. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, and interrupted completion writes without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
+`verify --all` runs all **40** independently loadable authenticated Actual/Nuxt stories and their required behavior branches, then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with catalog version, scenario ID, anchor, assertion count, branches, and sanitized evidence mode. Missing stories or branches fail verification even if Vitest exits zero. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, and interrupted completion writes without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
 
 Scenario account attestations are explicit, fictional source evidence, not bank imports; missing or expired attestations keep the Card at `insufficient_data`. Reset regenerates only the active instance's credentials, budget, sessions and attestations; another runner is independent.
+Catalog policy, observation and session expiry durations are materialized at their real submission time, so a fixed historical `--anchor` does not submit an already-expired configuration. Ordinary fixture timestamps remain unchanged; deliberately short expiry stories retain their short lifetime.
 
-Scenario setup creates a real personal/shared space, accepts space-scoped invitations into current membership periods, and installs the catalog's exact resource grants. An explicit selected-budget full-read grant is resolved into finite read-only scopes for the real Actual baseline, including generated balances and default categories; it grants no extra write/control authority. Every persona has independent Better Auth credentials and selected-space cookies, and completions use independent scoped approvers rather than the requester. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this explicitly renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.
+
+Scenario setup creates real personal/shared spaces and installs exact resource grants with development authentication bypass disabled. Active human personas have independent Better Auth credentials and selected-space cookies. Pending invitations have no invented user/session; redemption creates a real separate human membership, and rejoining creates a new membership without inherited grants. The assistant uses a real bounded agent/delegation/API-key binding, not a human login. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.
 
 Scoped completion approvers have explicit selected-budget liquidity admission for Native Card revalidation and exact grants for their completion's canonical accounts and categories. Persona roles infer no private history/source/full-read, execution, or control authority.
+
+#### Release coverage and walkthroughs
+
+The existing 29 spending stories remain selectable, covering v0.5.0 rich carts, opportunity costs and reservations alongside liquidity routing, completion and reconciliation. `coapproval-completion` additionally demonstrates independently attributed approvals, existing space-scoped audit access, actor filters, financial-detail redaction and denial without audit rights.
+
+| Release | Scenario | Entry and expected behavior |
+|---|---|---|
+| v0.6.0 | `governance-scoped-access` | `/spaces`: separate limited human, Checking name/existence only; exact grant changes and membership revocation withhold other resources and financial data. |
+| v0.6.0 | `governance-invitation-lifecycle` | `/spaces`: pending invitation → separate-person redemption → revoke/rejoin with a new membership and no old grants. |
+| v0.6.0 | `governance-delegated-assistant` | `/spaces`: **Probe bounded assistant access** in demo controls displays admitted native Checking metadata and blocked management/history/financial HTTP outcomes; **Revoke assistant delegation**, then probe again to see the same key rejected with 401. |
+| v0.7.0 | `merchant-local-sparse` | `/review`: run **Sync**; Aster's $346.07 debit suggests Groceries from three real categorized observations, with no research/provider call. |
+| v0.7.0 | `merchant-local-insufficient` | `/review`: one categorized observation and an empty-identity target abstain rather than inventing a confident category or rule. |
+| v0.7.0 | `merchant-alias-conflict` | `/review`: imported Aster text versus Dapple notes abstains; independently reset alias confirm/reject decisions persist versions without ledger edits. A normal independently approved correction to Other wins subsequent inference. |
+| v0.7.0 | `merchant-recurrence-calendar` | `/review` and Dashboard: monthly, civil month-end, US business-end/first-business-day, variable $9–$12 and irregular series; independent pattern accept/reject branches. Clearing the calendar or selecting an unsupported jurisdiction preserves ordinary cadence with uncertainty. Local calendar fixtures also cover leap/year and unsupported-year boundaries. |
+| v0.7.0 | `merchant-native-rule-lifecycle` | `/rules` and Review: select Aster's $749.65 queue row and inspect the exact rule impact. **Proposed rules** remains accessible to scoped reviewers with empty transaction queues. Two independent human approvals exclude the author; owner execution creates one real Actual rule, with idempotent replay checked by local acceptance. **Simulate fixture import** uses Actual alone on Savings. Reset, prepare and approve a fresh unexecuted proposal, then **Change native fixture source** and attempt execution: refusal leaves zero rules. |
+| v0.7.0 | `merchant-research-success` | `/review`: explicitly consent to merchant-only fixture research; observe fixture provenance, cache reuse and **Expire fixture research cache** expiry. |
+| v0.7.0 | `merchant-research-outage` | `/review`: consent returns a modeled provider outage/uncertain billing; local Sync and Review remain usable. |
+| v0.7.0 | `merchant-research-lifecycle` | `/review`: held research, non-draining release/cancel/reset, installation/space/budget or exact-grant revocation, daily/monthly limits, and normal deletion with late-result fencing. Each mutually exclusive branch starts from a fresh load. |
+
+Use the selector's declared entry links, persona selector and event controls; normal application authorization, fresh proof, approval and version checks still apply. After switching personas or reopening a guarded normal screen, enter `CONFIRM` in that screen's fresh-confirmation form before making changes; return to demo controls for fixture events. Governance name/existence probes are bounded local tooling backed by the real principal, governance engine and Actual metadata—not a new production resource-list endpoint.
+
+Native-rule reviewers receive finite full-read/approval rights for the complete current Actual source graph and exact published evidence, including generated baseline IDs; they receive neither budget-wide full-read nor execution/control rights. The owner receives only that story's required native-rule intent authority on those resources, not generic write rights for generated balances. Imports and newly created rules extend the same exact native-ID scope through validated normal grant handlers.
+
+Research is a **closed fixture provider through the real coordinator, policies, cache and quota journal**. It never constructs a provider transport, reads paid keys, calls ValueSerp, or falls back to live research. `.invalid` sources are synthetic and uncalibrated; the modeled USD tariff is 250000 atoms ($0.0025) per dispatch, not a live provider price. Only the bounded research clock advances; source freshness and human proof use real time. Disabling or retiring fixture authority fails closed, and reset cancels held work before draining requests. This remains one shared disposable runtime, not per-visitor isolation or a static browser demo.
+
 
 ### Release
 

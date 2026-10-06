@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   addTransactions,
+  createRule,
   downloadBudget,
   getAccounts,
+  getPayees,
+  getRules,
   getTransactions,
   init,
   shutdown,
@@ -12,7 +15,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { materializeScenario, type MaterializedScenario } from '../src/catalog.js';
+import type { APIRuleEntity } from '@actual-app/api/models';
+import { z } from 'zod';
+import { materializeScenario, type MaterializedScenario, type ScenarioEventId } from '../src/catalog.js';
 import { seedActualBudget, type SeededActualBudget } from '../src/actual-seed.js';
 import {
   createOwnedScenarioRoot,
@@ -27,6 +32,12 @@ import { applyScenarioEvent } from '../src/events.js';
 interface ActualRow {
   readonly id?: string;
   readonly amount?: number;
+  readonly account?: string;
+  readonly payee?: string | null;
+  readonly notes?: string;
+  readonly cleared?: boolean;
+  readonly reconciled?: boolean;
+  readonly imported_payee?: string | null;
   readonly category?: string | null;
   readonly imported_id?: string | null;
   readonly importedId?: string | null;
@@ -65,7 +76,7 @@ async function withActualClient<T>(
   }
 }
 
-async function createWorkspace(scenarioId: MaterializedScenario['id']): Promise<TestWorkspace> {
+async function createWorkspace(scenarioId: string): Promise<TestWorkspace> {
   const root = createOwnedScenarioRoot();
   const publicOrigin = `http://127.0.0.1:${publicOriginPort++}`;
   let handle: ScenarioProcesses;
@@ -273,9 +284,148 @@ describe('scenario Actual events', () => {
   );
 
   it(
-    'rejects an event not listed by the scenario before making any Actual write',
+    'lets Actual alone apply a native rule to a future import on the other account, once',
     { timeout: TEST_TIMEOUT },
     async () => {
+      const workspace = await createWorkspace('merchant-native-rule-lifecycle');
+      const event = workspace.scenario.events['import-match'];
+      if (!event || event.kind !== 'import-match') throw new Error('Expected native future import recipe');
+      expect(event.candidate.accountId).toBe('acct-savings');
+      expect(workspace.scenario.ledger.transactions
+        .filter((row) => row.id.startsWith('categorization-history-0-'))
+        .map((row) => row.accountId)).toEqual(['acct-checking', 'acct-checking', 'acct-checking']);
+      const nativePayeeId = workspace.seeded.payeeIds['pay-market'];
+      const nativeCategoryId = workspace.seeded.categoryIds['cat-groceries'];
+      if (!nativePayeeId || !nativeCategoryId) throw new Error('Native rule fixture references are missing');
+      // The governed proposal journey supplies this native write in acceptance.
+      // At this boundary use only the verified public SDK: no BF import adapter
+      // or matcher can make this assertion pass.
+      const ruleInput: Omit<APIRuleEntity, 'id'> = {
+        stage: 'post',
+        conditionsOp: 'and',
+        conditions: [
+          { field: 'imported_payee', op: 'is', value: event.candidate.payeeName, type: 'string' },
+        ],
+        actions: [
+          { field: 'payee', op: 'set', value: nativePayeeId, type: 'id' },
+          { field: 'category', op: 'set', value: nativeCategoryId, type: 'id' },
+        ],
+      };
+      const nativeRule = await withActualClient(workspace, async () => {
+        await downloadBudget(workspace.seeded.groupId);
+        const created = await createRule(ruleInput);
+        expect(await getRules()).toContainEqual(expect.objectContaining({ id: created.id, ...ruleInput }));
+        await sync();
+        return created;
+      });
+      const before = await readRows(workspace);
+      const beforeTotal = before.reduce((sum, row) => sum + (row.amount ?? 0), 0);
+      const options = {
+        scenario: workspace.scenario,
+        seeded: workspace.seeded,
+        root: workspace.root,
+        actualServerUrl: workspace.serverUrl,
+        actualSecretKey: workspace.secretKey,
+        eventId: 'import-match' as const,
+      };
+      const first = await applyScenarioEvent(options);
+      const second = await applyScenarioEvent(options);
+      const after = await readRows(workspace);
+      const imported = after.filter((row) => row.imported_id === event.candidate.importedId);
+      const amount = Number(BigInt(event.candidate.amount.minorUnits));
+      expect(imported).toHaveLength(1);
+      expect(imported[0]).toMatchObject({
+        id: expect.any(String),
+        account: workspace.seeded.accountIds['acct-savings'],
+        amount,
+        imported_id: event.candidate.importedId,
+        imported_payee: event.candidate.payeeName,
+        payee: nativePayeeId,
+        category: nativeCategoryId,
+        cleared: true,
+      });
+      expect(after).toHaveLength(before.length + 1);
+      expect(after.reduce((sum, row) => sum + (row.amount ?? 0), 0)).toBe(beforeTotal + amount);
+      expect(after.filter((row) => row.imported_id !== event.candidate.importedId)).toEqual(before);
+      expect(first).toMatchObject({
+        importedIds: [event.candidate.importedId],
+        transactionIds: [imported[0]!.id],
+        amounts: [amount],
+      });
+      expect(second).toEqual(first);
+      await withActualClient(workspace, async () => {
+        await downloadBudget(workspace.seeded.groupId);
+        expect((await getRules()).filter((rule) => rule.id === nativeRule.id)).toEqual([
+          expect.objectContaining({ id: nativeRule.id, ...ruleInput }),
+        ]);
+      });
+    },
+  );
+
+  it(
+    'changes real native merchant source fields without changing money, references, or row identity',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      const workspace = await createWorkspace('merchant-native-rule-lifecycle');
+      const recipe = z.object({
+        kind: z.literal('merchant-source-change'),
+        payeeId: z.literal('pay-market'),
+        transactionId: z.literal('synthetic-holdout-000-02'),
+        payeeName: z.string().min(1),
+        importedPayee: z.string().min(1),
+        notes: z.string().min(1),
+      }).strict().parse(workspace.scenario.events['merchant-source-change']);
+      const nativePayeeId = workspace.seeded.payeeIds[recipe.payeeId];
+      const nativeTransactionId = workspace.seeded.transactionIds[recipe.transactionId];
+      const beforeRows = await readRows(workspace);
+      const beforeSource = beforeRows.find((row) => row.id === nativeTransactionId);
+      if (!beforeSource || !nativePayeeId) throw new Error('Native source fixture is missing');
+      const beforePayees = await withActualClient(workspace, async () => {
+        await downloadBudget(workspace.seeded.groupId);
+        return getPayees();
+      });
+      const beforePayee = beforePayees.find((payee) => payee.id === nativePayeeId);
+      if (!beforePayee) throw new Error('Native source payee is missing');
+      expect(beforePayee.name).not.toBe(recipe.payeeName);
+      expect(beforeSource.imported_payee).not.toBe(recipe.importedPayee);
+      expect(beforeSource.notes).not.toBe(recipe.notes);
+      const options = {
+        scenario: workspace.scenario,
+        seeded: workspace.seeded,
+        root: workspace.root,
+        actualServerUrl: workspace.serverUrl,
+        actualSecretKey: workspace.secretKey,
+        // The finite catalog union is extended by the GREEN implementation.
+        eventId: 'merchant-source-change' as ScenarioEventId,
+      };
+      await applyScenarioEvent(options);
+      const afterRows = await readRows(workspace);
+      expect(afterRows).toHaveLength(beforeRows.length);
+      expect(afterRows.find((row) => row.id === nativeTransactionId)).toEqual({
+        ...beforeSource,
+        imported_payee: recipe.importedPayee,
+        notes: recipe.notes,
+      });
+      expect(afterRows.filter((row) => row.id !== nativeTransactionId))
+        .toEqual(beforeRows.filter((row) => row.id !== nativeTransactionId));
+      const afterPayees = await withActualClient(workspace, async () => {
+        await downloadBudget(workspace.seeded.groupId);
+        return getPayees();
+      });
+      expect(afterPayees.find((payee) => payee.id === nativePayeeId)).toEqual({
+        ...beforePayee, name: recipe.payeeName,
+      });
+      expect(afterPayees.filter((payee) => payee.id !== nativePayeeId))
+        .toEqual(beforePayees.filter((payee) => payee.id !== nativePayeeId));
+      await applyScenarioEvent(options);
+      expect(await readRows(workspace)).toEqual(afterRows);
+    },
+  );
+
+  it.each(['import-match', 'merchant-source-change'])(
+    'rejects unlisted %s before making any Actual write',
+    { timeout: TEST_TIMEOUT },
+    async (eventId) => {
       const workspace = await createWorkspace('funded-purchase');
       const before = await readRows(workspace);
 
@@ -286,7 +436,7 @@ describe('scenario Actual events', () => {
           root: workspace.root,
           actualServerUrl: workspace.serverUrl,
           actualSecretKey: workspace.secretKey,
-          eventId: 'import-match' as never,
+          eventId: eventId as ScenarioEventId,
         }),
       ).rejects.toThrow(/event|scenario|supported|listed/i);
 

@@ -6,6 +6,7 @@ import { projectReviewQueueItem, reviewDisclosureOperations, ReviewSynchronizati
 import { selectedLiquidityActor } from '../../utils/liquidity-service';
 import { requireSelectedSpace } from '../../utils/space-context';
 import { merchantAnalysisAuthorized } from '../../utils/merchant-service';
+import { composeScenarioResearch } from '../../utils/scenario-research';
 import { hasCurrentReviewNamespace, refreshReviewItems, reviewConnectionScope } from '../../utils/review-scope-admission';
 import {
   errorEnvelope,
@@ -106,7 +107,7 @@ export default defineEventHandler(async (event) => {
       return projectReviewQueueItem(workflow.store, actor, current, snapshot, view, source, 'observe', captured.scope);
     };
     const projected = !snapshot || !currentNamespace ? null : merchantEnabled && merchantActor
-      ? await (await (await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager }))
+      ? await (await (await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager, research: composeScenarioResearch(event, selected.space.id) }))
         .withAnalysis(merchantActor, { transactionIds: [review.transactionId], limit: 1 },
           async (view, source, authorize) => {
             const transactions = indexCanonicalTransactions(source.transactions);

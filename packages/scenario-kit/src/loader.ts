@@ -4,13 +4,16 @@ import { fileURLToPath } from 'node:url';
 import { seedActualBudget, type SeededActualBudget } from './actual-seed.js';
 import { materializeScenario, type MaterializedScenario } from './catalog.js';
 import {
+  assertScenarioProcessesActive,
   discardOwnedScenarioRoot,
   startScenarioActual,
   startScenarioShell,
   stopScenarioProcesses,
+  updateScenarioPersonas,
   type ScenarioProcesses,
 } from './process-runtime.js';
 import { initializeScenarioWorkflow, type ScenarioInitialized } from './workflow-setup.js';
+import { initializeScenarioResearch, readScenarioManifest, writeScenarioManifest } from './scenario-manifest.js';
 
 export interface LoadScenarioOptions {
   readonly scenarioId: string;
@@ -41,8 +44,12 @@ export function builtWebEntry(): string {
 export async function initializeScenarioShell(
   processes: ScenarioProcesses,
   scenario: MaterializedScenario,
-  internalSecret?: string,
 ): Promise<LoadedScenario> {
+  assertScenarioProcessesActive(processes);
+  const manifest = readScenarioManifest(processes);
+  if (manifest.phase !== 'setup' || (manifest.scenarioId !== null && manifest.scenarioId !== scenario.id))
+    throw new Error('Scenario shell selection is unavailable');
+  writeScenarioManifest(processes, { ...manifest, scenarioId: scenario.id });
   await startScenarioActual(processes);
   const seeded = await seedActualBudget({
     serverUrl: processes.actualUrl,
@@ -54,11 +61,14 @@ export async function initializeScenarioShell(
   const initialized = await initializeScenarioWorkflow({
     scenario,
     seeded,
-    webUrl: processes.webUrl,
-    publicOrigin: processes.publicOrigin,
-    bootstrapSecret: processes.bootstrapSecret,
-    ...(internalSecret ? { internalSecret } : {}),
+    processes,
   });
+  await updateScenarioPersonas(processes, initialized);
+  if (scenario.research) {
+    assertScenarioProcessesActive(processes);
+    const ready = initializeScenarioResearch(processes, readScenarioManifest(processes), scenario.research.mode);
+    writeScenarioManifest(processes, ready);
+  }
   return { scenario, seeded, processes, initialized };
 }
 /** Loads one checked fictional scenario into its owned Actual and authenticated web workspace. */

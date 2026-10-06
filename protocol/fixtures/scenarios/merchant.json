@@ -1,0 +1,632 @@
+{
+  "sourceAsOfDate": "2026-10-04",
+  "provenance": {
+    "kind": "synthetic",
+    "sourceFixture": "merchant-quality.synthetic.json",
+    "generatorVersion": "merchant-quality-synthetic/1",
+    "seed": 110042,
+    "limitations": [
+      "Compact source-only derivative; no request result or expected classifier answers.",
+      "Source logical IDs map to local scenario native resources.",
+      "Distinct recurrence cases use fictional distinct payees to preserve independent histories.",
+      "Calendar and variable-amount observations are generated from declared scenario policy at materialization."
+    ]
+  },
+  "ledger": {
+    "schemaVersion": "1",
+    "actualVersion": "26.7.0",
+    "snapshotDate": "2026-10-04T12:00:00.000Z",
+    "accounts": [
+      {
+        "id": "acct-checking",
+        "name": "Household Checking",
+        "accountType": "checking",
+        "offBudget": false,
+        "isClosed": false,
+        "clearedBalance": {
+          "minorUnits": "15000",
+          "currency": "USD"
+        },
+        "importedBalance": {
+          "minorUnits": "15000",
+          "currency": "USD"
+        },
+        "mtid": null
+      },
+      {
+        "id": "acct-savings",
+        "name": "Household Savings",
+        "accountType": "savings",
+        "offBudget": false,
+        "isClosed": false,
+        "clearedBalance": {
+          "minorUnits": "20000",
+          "currency": "USD"
+        },
+        "importedBalance": {
+          "minorUnits": "20000",
+          "currency": "USD"
+        },
+        "mtid": null
+      }
+    ],
+    "transactions": [
+      {
+        "id": "categorization-history-0-0",
+        "accountId": "acct-checking",
+        "date": "2025-04-15",
+        "payeeId": "pay-market",
+        "payeeName": "Aster Atelier",
+        "categoryId": "cat-groceries",
+        "categoryName": "Groceries",
+        "amount": {
+          "minorUnits": "-137941",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-categorization-history-0-0",
+        "importedPayee": "Aster Atelier",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "categorization-history-0-1",
+        "accountId": "acct-checking",
+        "date": "2025-05-15",
+        "payeeId": "pay-market",
+        "payeeName": "Aster Atelier",
+        "categoryId": "cat-groceries",
+        "categoryName": "Groceries",
+        "amount": {
+          "minorUnits": "-73839",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-categorization-history-0-1",
+        "importedPayee": "Aster Atelier",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "categorization-history-0-2",
+        "accountId": "acct-checking",
+        "date": "2025-06-15",
+        "payeeId": "pay-market",
+        "payeeName": "Aster Atelier",
+        "categoryId": "cat-groceries",
+        "categoryName": "Groceries",
+        "amount": {
+          "minorUnits": "-121305",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-categorization-history-0-2",
+        "importedPayee": "Aster Atelier",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "categorization-history-17-0",
+        "accountId": "acct-checking",
+        "date": "2025-04-15",
+        "payeeId": "pay-other",
+        "payeeName": "Dapple Grove",
+        "categoryId": "cat-other",
+        "categoryName": "Other",
+        "amount": {
+          "minorUnits": "-101665",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-categorization-history-17-0",
+        "importedPayee": "Dapple Grove",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "categorization-history-17-1",
+        "accountId": "acct-checking",
+        "date": "2025-05-15",
+        "payeeId": "pay-other",
+        "payeeName": "Dapple Grove",
+        "categoryId": "cat-other",
+        "categoryName": "Other",
+        "amount": {
+          "minorUnits": "-104475",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-categorization-history-17-1",
+        "importedPayee": "Dapple Grove",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "categorization-history-17-2",
+        "accountId": "acct-checking",
+        "date": "2025-06-15",
+        "payeeId": "pay-other",
+        "payeeName": "Dapple Grove",
+        "categoryId": "cat-other",
+        "categoryName": "Other",
+        "amount": {
+          "minorUnits": "-144229",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-categorization-history-17-2",
+        "importedPayee": "Dapple Grove",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "synthetic-holdout-000-00",
+        "accountId": "acct-checking",
+        "date": "2026-01-02",
+        "payeeId": "pay-market",
+        "payeeName": "Aster Atelier",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-74965",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-synthetic-holdout-000-00",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "synthetic-holdout-000-02",
+        "accountId": "acct-checking",
+        "date": "2026-01-02",
+        "payeeId": null,
+        "payeeName": null,
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-34607",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-synthetic-holdout-000-02",
+        "importedPayee": "aster atelier",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "synthetic-holdout-000-03",
+        "accountId": "acct-checking",
+        "date": "2026-09-01",
+        "payeeId": null,
+        "payeeName": null,
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-34258",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-synthetic-holdout-000-03",
+        "importedPayee": "  Aster—Atelier  ",
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "synthetic-holdout-000-08",
+        "accountId": "acct-checking",
+        "date": "2026-01-02",
+        "payeeId": null,
+        "payeeName": null,
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-32989",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-synthetic-holdout-000-08",
+        "importedPayee": "",
+        "notes": "",
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "synthetic-holdout-000-10",
+        "accountId": "acct-checking",
+        "date": "2026-01-02",
+        "payeeId": null,
+        "payeeName": null,
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-77239",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-synthetic-holdout-000-10",
+        "importedPayee": "Aster Atelier",
+        "notes": "Dapple Grove",
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-monthly-0",
+        "accountId": "acct-checking",
+        "date": "2026-01-15",
+        "payeeId": "pay-recurrence-monthly",
+        "payeeName": "Aster Monthly",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-monthly-0",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-monthly-1",
+        "accountId": "acct-checking",
+        "date": "2026-02-15",
+        "payeeId": "pay-recurrence-monthly",
+        "payeeName": "Aster Monthly",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-monthly-1",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-monthly-2",
+        "accountId": "acct-checking",
+        "date": "2026-03-15",
+        "payeeId": "pay-recurrence-monthly",
+        "payeeName": "Aster Monthly",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-monthly-2",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-monthly-3",
+        "accountId": "acct-checking",
+        "date": "2026-04-15",
+        "payeeId": "pay-recurrence-monthly",
+        "payeeName": "Aster Monthly",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-monthly-3",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-end-month-0",
+        "accountId": "acct-checking",
+        "date": "2024-01-31",
+        "payeeId": "pay-recurrence-end-month",
+        "payeeName": "Aster Month End",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-end-month-0",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-end-month-1",
+        "accountId": "acct-checking",
+        "date": "2024-02-29",
+        "payeeId": "pay-recurrence-end-month",
+        "payeeName": "Aster Month End",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-end-month-1",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-end-month-2",
+        "accountId": "acct-checking",
+        "date": "2024-03-31",
+        "payeeId": "pay-recurrence-end-month",
+        "payeeName": "Aster Month End",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-end-month-2",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-end-month-3",
+        "accountId": "acct-checking",
+        "date": "2024-04-30",
+        "payeeId": "pay-recurrence-end-month",
+        "payeeName": "Aster Month End",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-end-month-3",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-irregular-0",
+        "accountId": "acct-checking",
+        "date": "2026-01-03",
+        "payeeId": "pay-recurrence-irregular",
+        "payeeName": "Aster Irregular",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-irregular-0",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-irregular-1",
+        "accountId": "acct-checking",
+        "date": "2026-01-22",
+        "payeeId": "pay-recurrence-irregular",
+        "payeeName": "Aster Irregular",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-irregular-1",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-irregular-2",
+        "accountId": "acct-checking",
+        "date": "2026-03-04",
+        "payeeId": "pay-recurrence-irregular",
+        "payeeName": "Aster Irregular",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-irregular-2",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      },
+      {
+        "id": "recurrence-irregular-3",
+        "accountId": "acct-checking",
+        "date": "2026-06-19",
+        "payeeId": "pay-recurrence-irregular",
+        "payeeName": "Aster Irregular",
+        "categoryId": null,
+        "categoryName": null,
+        "amount": {
+          "minorUnits": "-1200",
+          "currency": "USD"
+        },
+        "cleared": true,
+        "reconciled": false,
+        "importedId": "synthetic-import-recurrence-irregular-3",
+        "importedPayee": null,
+        "notes": null,
+        "tags": [],
+        "transferAccountId": null,
+        "subtransactions": []
+      }
+    ],
+    "categories": [
+      {
+        "id": "cat-groceries",
+        "name": "Groceries",
+        "groupName": "Food",
+        "isIncome": false,
+        "mtid": null,
+        "deleted": false
+      },
+      {
+        "id": "cat-other",
+        "name": "Other",
+        "groupName": "Living",
+        "isIncome": false,
+        "mtid": null,
+        "deleted": false
+      }
+    ],
+    "payees": [
+      {
+        "id": "pay-market",
+        "name": "Aster Atelier",
+        "transferAccountId": null,
+        "mtid": null
+      },
+      {
+        "id": "pay-other",
+        "name": "Dapple Grove",
+        "transferAccountId": null,
+        "mtid": null
+      },
+      {
+        "id": "pay-recurrence-monthly",
+        "name": "Aster Monthly",
+        "transferAccountId": null,
+        "mtid": null
+      },
+      {
+        "id": "pay-recurrence-end-month",
+        "name": "Aster Month End",
+        "transferAccountId": null,
+        "mtid": null
+      },
+      {
+        "id": "pay-recurrence-irregular",
+        "name": "Aster Irregular",
+        "transferAccountId": null,
+        "mtid": null
+      }
+    ],
+    "rules": [],
+    "schedules": [],
+    "budgets": [
+      {
+        "id": "budget-2026-10",
+        "month": "2026-10",
+        "categories": {
+          "cat-groceries": {
+            "categoryId": "cat-groceries",
+            "amount": {
+              "minorUnits": "2000",
+              "currency": "USD"
+            },
+            "carryover": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "carryoverFromPrevious": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "carriesOver": false
+          },
+          "cat-other": {
+            "categoryId": "cat-other",
+            "amount": {
+              "minorUnits": "2000",
+              "currency": "USD"
+            },
+            "carryover": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "carryoverFromPrevious": {
+              "minorUnits": "0",
+              "currency": "USD"
+            },
+            "carriesOver": false
+          }
+        }
+      }
+    ],
+    "tags": []
+  }
+}

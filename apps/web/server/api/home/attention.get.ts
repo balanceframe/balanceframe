@@ -34,6 +34,7 @@ import type { EventWithContext } from '../../utils/workflow-store';
 import { requireSelectedSpace } from '../../utils/space-context';
 import { selectedLiquidityActor } from '../../utils/liquidity-service';
 import { merchantAnalysisAuthorized } from '../../utils/merchant-service';
+import { composeScenarioResearch } from '../../utils/scenario-research';
 import { z } from 'zod';
 
 /** Map an analysis error code to an HTTP status. */
@@ -294,7 +295,7 @@ export default defineEventHandler(async (event) => {
     let authorizeMerchant: (() => boolean) | undefined;
     const merchantActor = live.auth && live.spaceId ? { ...live, auth: live.auth, spaceId: live.spaceId } : null;
     const merchantOptions = merchantActor && merchantAnalysisAuthorized(workflow.store, merchantActor)
-      ? { merchantService: await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager }),
+      ? { merchantService: await createMerchantIntelligenceService({ store: workflow.store, connectionManager: manager, research: composeScenarioResearch(event, selected.space.id) }),
         merchantActor, captureMerchantPublicationAuthority: (authorize: () => boolean) => { authorizeMerchant = authorize; } }
       : undefined;
     const protocol = await createNativeAnalysisProtocol(undefined, merchantOptions);

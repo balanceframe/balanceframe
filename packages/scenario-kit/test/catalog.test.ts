@@ -1,6 +1,14 @@
+import { readFileSync } from 'node:fs';
+
+import { lookupMerchantCalendar } from '@balanceframe/application';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import { describe, expect, it } from 'vitest';
 
 import { listScenarios, materializeScenario } from '../src/catalog.js';
+
+const SYNTHETIC_FIXTURE: unknown = JSON.parse(readFileSync(
+  new URL('../../../protocol/fixtures/merchant-quality.synthetic.json', import.meta.url), 'utf8',
+));
 
 const REFERENCE_ANCHOR = new Date('2026-09-06T12:00:00.000Z');
 const SAFE_ACTUAL_MINOR_UNITS = 9_007_199_254_740_991n;
@@ -37,6 +45,20 @@ const APPROVED_SCENARIO_IDS = [
   'import-before-completion',
   'import-after-completion',
   'ambiguous-completion',
+] as const;
+
+const EXPANSION_STORIES = [
+  ['governance-scoped-access', 'Governance', '/spaces'],
+  ['governance-invitation-lifecycle', 'Governance', '/spaces'],
+  ['governance-delegated-assistant', 'Governance', '/spaces'],
+  ['merchant-local-sparse', 'Merchant', '/review'],
+  ['merchant-local-insufficient', 'Merchant', '/review'],
+  ['merchant-alias-conflict', 'Merchant', '/review'],
+  ['merchant-recurrence-calendar', 'Merchant', '/review'],
+  ['merchant-native-rule-lifecycle', 'Merchant', '/rules'],
+  ['merchant-research-success', 'Merchant', '/review'],
+  ['merchant-research-outage', 'Merchant', '/review'],
+  ['merchant-research-lifecycle', 'Merchant', '/review'],
 ] as const;
 
 type Dict = Record<string, unknown>;
@@ -470,13 +492,402 @@ function expectAccountReferences(scenario: Materialized): void {
   }
 }
 
+describe('Governance and Merchant loadable stories', () => {
+  it.each(EXPANSION_STORIES)('loads %s with its real feature group and safe normal-screen entry', (id, featureGroup, path) => {
+    const scenario = materialize(id);
+    expect((listScenarios() as readonly Summary[]).find((summary) => summary.id === id)).toMatchObject({ featureGroup });
+    expect(scenario.entry).toEqual({ kind: 'page', path });
+    expect(canonicalProtocolSnapshotSchema.safeParse(scenario.ledger).success).toBe(true);
+    expect(scenario.id).toBe(id);
+    expect(scenario.ledger.snapshotDate).toBe(REFERENCE_ANCHOR.toISOString());
+    expect(scenario.sessions).toEqual({});
+    expect(scenario.claims).toEqual({});
+    expect(scenario.completions).toEqual({});
+    for (const key of ['accounts', 'categories', 'payees', 'transactions', 'budgets'])
+      expectUniqueIds(scenario, key);
+    const again = materialize(id);
+    expect(again).toEqual(scenario);
+    scenario.ledger.snapshotDate = '1999-01-01T00:00:00.000Z';
+    expect(materialize(id).ledger.snapshotDate).toBe(REFERENCE_ANCHOR.toISOString());
+  });
+
+  it('scopes the limited human to named resources without private amounts or history authority', () => {
+    const scenario = materialize('governance-scoped-access');
+    expect(scenario.governance).toMatchObject({
+      kind: 'scoped-access',
+      limitedPersonaId: 'limited',
+      visibleAccountIds: ['acct-checking'],
+      withheldAccountIds: ['acct-savings'],
+    });
+    expect(logicalIds(scenario, 'accounts')).toEqual(expect.arrayContaining(['acct-checking', 'acct-savings']));
+    const limited = collection(scenario, 'personas').find((persona) => persona.id === 'limited');
+    expect(limited).toBeDefined();
+    expect(limited!.grants).toEqual([
+      { resourceKind: 'account', resourceId: 'acct-checking', capability: 'name', granted: true },
+      { resourceKind: 'account', resourceId: 'acct-checking', capability: 'existence', granted: true },
+    ]);
+    const membership = asObject(limited!.membership, 'limited membership');
+    expect(asArray(membership.capabilities, 'limited capabilities')).not.toEqual(expect.arrayContaining(['grant:manage']));
+    expect(scenario.research).toBeUndefined();
+  });
+
+  it('keeps the pending invitation separate from provisioned humans and carries no identity or token', () => {
+    const scenario = materialize('governance-invitation-lifecycle');
+    expect(scenario.governance).toMatchObject({
+      kind: 'invitation-lifecycle',
+      pendingInvitations: [{
+        personaId: 'invitee', displayName: 'Invited Member', capabilities: ['existence'], grants: [],
+      }],
+    });
+    expect(collection(scenario, 'personas').map(({ id }) => id)).toEqual(['owner']);
+    const invitations = collection(asObject(scenario.governance, 'invitation recipe'), 'pendingInvitations');
+    for (const invitation of invitations) {
+      for (const key of ['actorId', 'membershipId', 'cookieHeader', 'password', 'token', 'inviteUrl'])
+        expect(invitation).not.toHaveProperty(key);
+    }
+  });
+
+  it('describes a bounded assistant separately from human personas and keeps secrets private', () => {
+    const scenario = materialize('governance-delegated-assistant');
+    expect(logicalIds(scenario, 'accounts')).toEqual(expect.arrayContaining(['acct-checking', 'acct-savings']));
+    const governance = asObject(scenario.governance, 'assistant governance');
+    expect(governance.kind).toBe('delegated-assistant');
+    const assistant = asObject(governance.assistant, 'assistant recipe');
+    expect(assistant).toEqual({
+      id: 'assistant',
+      displayName: 'Budget Assistant',
+      grants: [
+        { resourceKind: 'account', resourceId: 'acct-checking', capability: 'name', granted: true },
+        { resourceKind: 'account', resourceId: 'acct-checking', capability: 'existence', granted: true },
+      ],
+    });
+    expect(collection(scenario, 'personas').some(({ id }) => id === 'assistant')).toBe(false);
+    for (const key of ['apiKey', 'keySecret', 'cookieHeader', 'actorId', 'delegationId', 'bindingId'])
+      expect(assistant).not.toHaveProperty(key);
+  });
+
+  it.each(EXPANSION_STORIES.filter(([, featureGroup]) => featureGroup === 'Merchant').map(([id]) => id))(
+    'declares exact source-admission transaction and complete-rule rights for %s readers',
+    (id) => {
+      const scenario = materialize(id);
+      const transactionIds = logicalIds(scenario, 'transactions').sort();
+      const personas = collection(scenario, 'personas');
+      for (const personaId of id === 'merchant-native-rule-lifecycle' ? ['owner', 'approver'] : ['owner']) {
+        const persona = personas.find(({ id }) => id === personaId);
+        expect(persona).toBeDefined();
+        const grants = collection(persona!, 'grants');
+        for (const capability of ['transaction.view', 'source']) {
+          expect(grants.filter((grant) =>
+            grant.resourceKind === 'transaction' && grant.capability === capability && grant.granted,
+          ).map(({ resourceId }) => resourceId).sort()).toEqual(transactionIds);
+        }
+        expect(grants).toContainEqual({
+          resourceKind: 'budget', resourceId: 'budget-2026-09', capability: 'rule:view', granted: true,
+        });
+      }
+    },
+  );
+
+  it.each([
+    ['merchant-local-sparse', ['categorization-history-0-0', 'categorization-history-0-1', 'categorization-history-0-2'], ['synthetic-holdout-000-02']],
+    ['merchant-local-insufficient', ['categorization-history-0-0'], ['synthetic-holdout-000-02', 'synthetic-holdout-000-08']],
+  ] as const)('grounds %s in exact canonical synthetic history and unclassified holdout source fields', (id, historyIds, targetIds) => {
+    const scenario = materialize(id);
+    expect(scenario.merchant).toMatchObject({
+      historyTransactionIds: historyIds, targetTransactionIds: targetIds,
+    });
+    const source = syntheticTransactions('categorization-holdout');
+    const transactions = collection(scenario.ledger, 'transactions');
+    for (const transactionId of [...historyIds, ...targetIds]) {
+      const original = source.find(({ id }) => id === transactionId);
+      const actual = transactions.find(({ id }) => id === transactionId);
+      expect(original, transactionId).toBeDefined();
+      expect(actual, transactionId).toBeDefined();
+      expect(actual).toMatchObject({
+        id: transactionId,
+        accountId: 'acct-checking',
+        date: syntheticDate(original!.date),
+        amount: original!.amount,
+        payeeId: historyIds.some((id) => id === transactionId) ? 'pay-market' : null,
+        categoryId: historyIds.some((id) => id === transactionId) ? 'cat-groceries' : null,
+        importedId: original!.importedId,
+        importedPayee: asObject(original!.importedPayee, 'fixture imported payee').value,
+        cleared: true,
+        reconciled: false,
+      });
+    }
+    expect(transactions.filter(({ categoryId, payeeId }) =>
+      categoryId === 'cat-groceries' && payeeId === 'pay-market',
+    ).map(({ id }) => id).sort()).toEqual([...historyIds].sort());
+    expect(collection(scenario.ledger, 'payees').find(({ id }) => id === 'pay-market')?.name).toBe('Aster Atelier');
+    expect(scenario.research).toBeUndefined();
+    expect(scenario.merchant).not.toHaveProperty('analysis');
+    expect(scenario.merchant).not.toHaveProperty('result');
+  });
+
+  it('keeps alias ambiguity and conflicting raw fields on exact independent native resources', () => {
+    const scenario = materialize('merchant-alias-conflict');
+    expect(logicalIds(scenario, 'accounts')).toEqual(expect.arrayContaining(['acct-checking', 'acct-savings']));
+    expect(logicalIds(scenario, 'payees')).toEqual(expect.arrayContaining(['pay-market', 'pay-other']));
+    expect(scenario.merchant).toMatchObject({
+      targetTransactionIds: ['synthetic-holdout-000-03', 'synthetic-holdout-000-10'],
+    });
+    const source = syntheticTransactions('categorization-holdout');
+    for (const id of ['synthetic-holdout-000-03', 'synthetic-holdout-000-10']) {
+      const original = source.find((transaction) => transaction.id === id)!;
+      const transaction = collection(scenario.ledger, 'transactions').find((transaction) => transaction.id === id);
+      expect(transaction).toMatchObject({
+        accountId: 'acct-checking', categoryId: null, payeeId: null,
+        amount: original.amount, date: syntheticDate(original.date),
+        importedPayee: asObject(original.importedPayee, 'alias raw payee').value,
+        notes: asObject(original.notes, 'alias raw notes').value,
+      });
+    }
+    const otherHistoryIds = ['categorization-history-17-0', 'categorization-history-17-1', 'categorization-history-17-2'];
+    expect(collection(scenario.ledger, 'payees').find(({ id }) => id === 'pay-other')?.name).toBe('Dapple Grove');
+    for (const id of otherHistoryIds) {
+      const original = source.find((transaction) => transaction.id === id)!;
+      expect(collection(scenario.ledger, 'transactions').find((transaction) => transaction.id === id)).toMatchObject({
+        accountId: 'acct-checking', payeeId: 'pay-other', categoryId: 'cat-other',
+        date: syntheticDate(original.date), amount: original.amount,
+        importedId: original.importedId, importedPayee: 'Dapple Grove',
+      });
+    }
+    expect(scenario.research).toBeUndefined();
+  });
+
+  it.each([
+    [REFERENCE_ANCHOR, {
+      'recurrence-monthly': ['2026-05-15', '2026-06-15', '2026-07-15', '2026-08-15'],
+      'recurrence-end-month': ['2026-05-31', '2026-06-30', '2026-07-31', '2026-08-31'],
+      'recurrence-business-day': ['2026-05-29', '2026-06-30', '2026-07-31', '2026-08-31'],
+    }],
+    [new Date('2024-05-06T12:00:00.000Z'), {
+      'recurrence-monthly': ['2024-01-15', '2024-02-15', '2024-03-15', '2024-04-15'],
+      'recurrence-end-month': ['2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30'],
+      'recurrence-business-day': ['2024-01-31', '2024-02-29', '2024-03-29', '2024-04-30'],
+    }],
+  ] as const)('generates exact completed-month dates at %s with an explicit known offline calendar', (anchor, dates) => {
+    const scenario = materialize('merchant-recurrence-calendar', anchor);
+    const merchant = asObject(scenario.merchant, 'calendar merchant recipe');
+    expect(merchant.calendar).toEqual({
+      budget: { jurisdiction: 'US', subdivision: null, timeZone: 'America/New_York' }, accounts: [],
+    });
+    const calendar = lookupMerchantCalendar({
+      accountId: 'acct-checking', year: anchor.getUTCFullYear(),
+      budget: { jurisdiction: 'US', subdivision: null, timeZone: 'America/New_York' }, accounts: [],
+    });
+    expect(calendar).toMatchObject({
+      state: 'known', reasonCodes: [],
+      calendar: {
+        jurisdiction: 'US', subdivision: null, timeZone: 'America/New_York',
+        version: 'python-holidays/0.105:public:observed:2020-2035',
+      },
+    });
+    const payeeIds: string[] = [];
+    for (const [caseId, expectedDates] of Object.entries(dates)) {
+      const actual = collection(scenario.ledger, 'transactions').filter(({ id }) =>
+        typeof id === 'string' && id.startsWith(`${caseId}-`),
+      ).sort((left, right) => String(left.id).localeCompare(String(right.id)));
+      expect(actual.map(({ date }) => date)).toEqual(expectedDates);
+      if (caseId !== 'recurrence-business-day') {
+        for (const original of syntheticTransactions(caseId)) {
+          expect(actual.find(({ id }) => id === original.id)).toMatchObject({
+            accountId: 'acct-checking', amount: original.amount,
+            importedId: original.importedId, cleared: true, reconciled: false,
+          });
+        }
+      }
+      const casePayees = new Set(actual.map(({ payeeId }) => asString(payeeId, 'recurrence native payee')));
+      expect(casePayees.size).toBe(1);
+      payeeIds.push(...casePayees);
+      for (const { date } of actual)
+        expect(asString(date, 'completed-month date') < dateOnly(anchor)).toBe(true);
+    }
+    expect(new Set(payeeIds).size).toBe(payeeIds.length);
+    const irregular = collection(scenario.ledger, 'transactions').filter(({ id }) =>
+      typeof id === 'string' && id.startsWith('recurrence-irregular-'),
+    );
+    const irregularSource = syntheticTransactions('recurrence-irregular');
+    expect(irregular.map(({ date }) => date)).toEqual(
+      irregularSource.map(({ date }) => syntheticDate(date, anchor, 'recurrence-irregular')),
+    );
+    const irregularPayees = new Set(irregular.map(({ payeeId }) => asString(payeeId, 'irregular native payee')));
+    expect(irregularPayees.size).toBe(1);
+    expect(payeeIds).not.toContain([...irregularPayees][0]);
+    expect(scenario.ledger.schedules).toEqual([]);
+    expect(merchant).not.toHaveProperty('recurrences');
+    expect(scenario.research).toBeUndefined();
+  });
+
+  it.each([
+    [REFERENCE_ANCHOR, [
+      '2025-09-02', '2025-10-01', '2025-11-03', '2025-12-01',
+      '2026-01-02', '2026-02-02', '2026-03-02', '2026-04-01',
+      '2026-05-01', '2026-06-01', '2026-07-01', '2026-08-03',
+    ]],
+    [new Date('2024-05-06T12:00:00.000Z'), [
+      '2023-05-01', '2023-06-01', '2023-07-03', '2023-08-01',
+      '2023-09-01', '2023-10-02', '2023-11-01', '2023-12-01',
+      '2024-01-02', '2024-02-01', '2024-03-01', '2024-04-01',
+    ]],
+    [new Date('2027-01-06T12:00:00.000Z'), [
+      '2026-01-02', '2026-02-02', '2026-03-02', '2026-04-01',
+      '2026-05-01', '2026-06-01', '2026-07-01', '2026-08-03',
+      '2026-09-01', '2026-10-01', '2026-11-02', '2026-12-01',
+    ]],
+  ] as const)('seeds distinct first-business-day native observations across holidays and weekends at %s', (anchor, dates) => {
+    const scenario = materialize('merchant-recurrence-calendar', anchor);
+    const rows = collection(scenario.ledger, 'transactions');
+    const firstBusiness = dates.map((date, index) => {
+      const row = rows.find(({ id }) => id === `recurrence-business-first-${index}`);
+      expect(row).toMatchObject({
+        id: `recurrence-business-first-${index}`, accountId: 'acct-checking', date,
+        payeeId: 'pay-recurrence-business-first', payeeName: 'Aster Business First',
+        amount: { minorUnits: '-1200', currency: 'USD' },
+        importedId: `scenario-import-recurrence-business-first-${index}`,
+        categoryId: null, cleared: true, reconciled: false,
+      });
+      expect(date < dateOnly(anchor)).toBe(true);
+      return row!;
+    });
+    expect(rows.filter(({ payeeId }) => payeeId === 'pay-recurrence-business-first')).toEqual(firstBusiness);
+    expect(rows.filter(({ id }) => typeof id === 'string' && !id.startsWith('recurrence-business-first-'))
+      .some(({ payeeId }) => payeeId === 'pay-recurrence-business-first')).toBe(false);
+    expect(scenario.merchant).toMatchObject({
+      historyTransactionIds: expect.arrayContaining(firstBusiness.map(({ id }) => id)),
+    });
+    expect(scenario.ledger.schedules).toEqual([]);
+  });
+
+  it.each([
+    [new Date('2019-09-06T12:00:00.000Z'), {
+      monthly: ['2019-05-15', '2019-06-15', '2019-07-15', '2019-08-15'],
+      ends: ['2019-05-31', '2019-06-30', '2019-07-31', '2019-08-31'],
+      firsts: ['2018-09-01', '2018-10-01', '2018-11-01', '2018-12-01', '2019-01-01', '2019-02-01',
+        '2019-03-01', '2019-04-01', '2019-05-01', '2019-06-01', '2019-07-01', '2019-08-01'],
+    }],
+    [new Date('2036-05-06T12:00:00.000Z'), {
+      monthly: ['2036-01-15', '2036-02-15', '2036-03-15', '2036-04-15'],
+      ends: ['2036-01-31', '2036-02-29', '2036-03-31', '2036-04-30'],
+      firsts: ['2035-05-01', '2035-06-01', '2035-07-01', '2035-08-01', '2035-09-01', '2035-10-01',
+        '2035-11-01', '2035-12-01', '2036-01-01', '2036-02-01', '2036-03-01', '2036-04-01'],
+    }],
+  ] as const)('merchant-recurrence-calendar retains ordinary civil observations outside offline coverage at %s', (anchor, dates) => {
+    const scenario = materialize('merchant-recurrence-calendar', anchor);
+    expect(scenario.merchant).toMatchObject({
+      calendar: { budget: { jurisdiction: 'US', subdivision: null, timeZone: 'America/New_York' }, accounts: [] },
+    });
+    expect(lookupMerchantCalendar({
+      accountId: 'acct-checking', year: anchor.getUTCFullYear(),
+      budget: { jurisdiction: 'US', subdivision: null, timeZone: 'America/New_York' }, accounts: [],
+    })).toEqual({ state: 'unknown', calendar: null, reasonCodes: ['calendar_unknown'] });
+    const rows = collection(scenario.ledger, 'transactions');
+    for (const [prefix, expectedDates] of [
+      ['recurrence-monthly', dates.monthly], ['recurrence-end-month', dates.ends],
+      ['recurrence-business-day', dates.ends], ['recurrence-business-first', dates.firsts],
+    ] as const) {
+      for (const [index, date] of expectedDates.entries()) {
+        const row = rows.find(({ id }) => id === `${prefix}-${index}`);
+        expect(row).toMatchObject({
+          id: `${prefix}-${index}`, accountId: 'acct-checking', date,
+          amount: { minorUnits: '-1200', currency: 'USD' }, categoryId: null,
+          cleared: true, reconciled: false,
+        });
+        if (prefix === 'recurrence-business-first') expect(row?.notes).toContain('calendar unknown; ordinary day-one cadence');
+        expect(date < dateOnly(anchor)).toBe(true);
+      }
+    }
+    expect(canonicalProtocolSnapshotSchema.safeParse(scenario.ledger).success).toBe(true);
+    expect(scenario.ledger.schedules).toEqual([]);
+  });
+
+  it('merchant-native-rule-lifecycle keeps a canonical stable native target alongside the independent imported source-change target', () => {
+    const scenario = materialize('merchant-native-rule-lifecycle');
+    expect(scenario.merchant).toMatchObject({
+      historyTransactionIds: ['categorization-history-0-0', 'categorization-history-0-1', 'categorization-history-0-2'],
+      targetTransactionIds: ['synthetic-holdout-000-00', 'synthetic-holdout-000-02'],
+    });
+    const original = syntheticTransactions('categorization-holdout').find(({ id }) => id === 'synthetic-holdout-000-00');
+    expect(original).toMatchObject({
+      payeeId: 'synthetic-merchant-000', payeeName: 'Aster Atelier', categoryId: null,
+      amount: { minorUnits: '-74965', currency: 'USD' },
+      importedPayee: { state: 'absent', value: null }, notes: { state: 'absent', value: null },
+    });
+    expect(collection(scenario.ledger, 'transactions').find(({ id }) => id === 'synthetic-holdout-000-00')).toMatchObject({
+      id: 'synthetic-holdout-000-00', accountId: 'acct-checking', date: syntheticDate(original!.date),
+      payeeId: 'pay-market', payeeName: 'Aster Atelier', categoryId: null, amount: original!.amount,
+      importedId: original!.importedId, importedPayee: null, notes: null, cleared: true, reconciled: false,
+    });
+    expect(collection(scenario.ledger, 'transactions').find(({ id }) => id === 'synthetic-holdout-000-02')).toMatchObject({
+      id: 'synthetic-holdout-000-02', payeeId: null, categoryId: null,
+      amount: { minorUnits: '-34607', currency: 'USD' }, importedPayee: 'aster atelier',
+    });
+    expect(scenario.events['merchant-source-change']).toMatchObject({
+      kind: 'merchant-source-change', transactionId: 'synthetic-holdout-000-02', payeeId: 'pay-market',
+    });
+  });
+
+  it('starts native rule review without executed writes and uses independent limited human approval', () => {
+    const scenario = materialize('merchant-native-rule-lifecycle');
+    expect(scenario.ledger.rules).toEqual([]);
+    const approver = collection(scenario, 'personas').find(({ id }) => id === 'approver');
+    expect(approver).toBeDefined();
+    expect(approver!.role).toBe('coapprover');
+    expect(collection(approver!, 'grants').some(({ granted, capability }) =>
+      granted && ['session:execute', 'full-read', 'grant:manage', 'policy:manage'].includes(String(capability)),
+    )).toBe(false);
+    const futureImport = asObject(scenario.events['import-match'], 'future native import');
+    expect(futureImport.kind).toBe('import-match');
+    expect(asObject(futureImport.candidate, 'future import candidate').accountId).toBe('acct-savings');
+    expect(scenario.events['merchant-source-change']).toMatchObject({
+      kind: 'merchant-source-change', payeeId: 'pay-market', transactionId: 'synthetic-holdout-000-02',
+    });
+    expect(scenario.research).toBeUndefined();
+  });
+
+  it.each([
+    ['merchant-research-success', 'success'],
+    ['merchant-research-outage', 'outage'],
+    ['merchant-research-lifecycle', 'held'],
+  ])('makes %s explicitly fixture-only without provider URLs, keys or prebaked merchant results', (id, mode) => {
+    const scenario = materialize(id);
+    expect(scenario.research).toEqual({ provider: 'fixture', mode });
+    expect(scenario.merchant).toMatchObject({
+      targetTransactionIds: expect.arrayContaining([expect.any(String)]),
+    });
+    const research = asObject(scenario.research, 'fixture research recipe');
+    for (const key of ['url', 'apiKey', 'credential', 'result', 'analysis'])
+      expect(research).not.toHaveProperty(key);
+  });
+});
+
+function syntheticRequest(caseId: string): Dict {
+  const sourceCase = collection(asObject(SYNTHETIC_FIXTURE, 'synthetic fixture'), 'requests')
+    .find(({ id }) => id === caseId);
+  expect(sourceCase, `synthetic case ${caseId}`).toBeDefined();
+  return asObject(sourceCase!.request, 'canonical synthetic source request');
+}
+
+function syntheticTransactions(caseId: string): readonly Dict[] {
+  return collection(syntheticRequest(caseId), 'transactions');
+}
+
+function syntheticDate(value: unknown, anchor = REFERENCE_ANCHOR, caseId = 'categorization-holdout'): string {
+  const sourceAsOf = asString(syntheticRequest(caseId).asOfDate, 'canonical source asOfDate');
+  const dayDelta = utcDayNumber(dateOnly(anchor)) - utcDayNumber(sourceAsOf);
+  return addUtcDays(asString(value, 'canonical source date'), dayDelta);
+}
+
 describe('scenario catalog contract', () => {
-  it('lists precisely the 29 approved loadable IDs with stable presentation metadata', () => {
+  it('preserves approved stories with unique IDs and usable presentation metadata', () => {
     const summaries = listScenarios() as readonly Summary[];
     const ids = summaries.map((summary) => summary.id);
 
-    expect(ids).toEqual([...APPROVED_SCENARIO_IDS]);
-    expect(new Set(ids).size).toBe(APPROVED_SCENARIO_IDS.length);
+    expect(ids).toEqual(expect.arrayContaining([
+      ...APPROVED_SCENARIO_IDS, ...EXPANSION_STORIES.map(([id]) => id),
+    ]));
+    expect(new Set(ids).size).toBe(ids.length);
 
     for (const summary of summaries) {
       expect(summary.featureGroup).toEqual(expect.any(String));
@@ -518,11 +929,14 @@ describe('scenario catalog contract', () => {
   });
 
   it('keeps execution entries discriminated and completion recipes free of runtime IDs, hashes, and versions', () => {
-    for (const id of APPROVED_SCENARIO_IDS) {
+    for (const { id } of listScenarios()) {
       const scenario = materialize(id);
       const entry = scenario.entry;
-      expect(['purchase', 'session', 'completion']).toContain(entry.kind);
-      if (entry.kind === 'purchase') {
+      expect(['purchase', 'session', 'completion', 'page']).toContain(entry.kind);
+      if (entry.kind === 'page') {
+        expect(['/spaces', '/review', '/rules', '/']).toContain(entry.path);
+        expect(Object.keys(entry).sort()).toEqual(['kind', 'path']);
+      } else if (entry.kind === 'purchase') {
         expect(entry.input).toBeDefined();
       } else {
         expect(typeof entry.sessionKey).toBe('string');
