@@ -655,6 +655,10 @@ export function enforceDemoBoundary(event: EventWithContext): Record<string, unk
     if (manifest.phase === 'ready' && manifest.scenarioId?.startsWith('merchant-') &&
       method === 'PUT' && /^\/api\/spaces\/[^/]+\/grants$/.test(path) &&
       selectedSpace(boundaryEvent) === manifest.spaceId) return undefined;
+    // Private local-data republication may rotate the sync group; normal human control checks still apply.
+    if (manifest.phase === 'ready' && manifest.scenarioId?.startsWith('merchant-') &&
+      method === 'POST' && path === '/api/connection' && publicConfig?.demoMode === false &&
+      manifest.spaceId !== null && selectedSpace(boundaryEvent) === manifest.spaceId) return undefined;
     if (manifest.phase === 'setup' && setupWrite(path, method, manifest)) return undefined;
   }
 

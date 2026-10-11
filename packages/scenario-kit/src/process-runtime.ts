@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmdirSync,
   rmSync,
@@ -605,24 +606,29 @@ export function createOwnedScenarioRoot(): string {
   }
 }
 
+/** Starts an isolated shell with an explicit proxy origin or its allocated loopback URL. */
 export async function startScenarioShell(options: {
   readonly root: string;
-  readonly publicOrigin: string;
+  readonly publicOrigin?: string;
   readonly webEntry: string;
   readonly demoMode?: boolean;
   readonly generation?: number;
   readonly scenarioId?: ScenarioId;
 }): Promise<ScenarioProcesses> {
   const ownership = validateOwnedRoot(options.root);
-  const publicOrigin = assertPublicOrigin(options.publicOrigin);
+  const requestedPublicOrigin = options.publicOrigin === undefined
+    ? undefined
+    : assertPublicOrigin(options.publicOrigin);
   const webEntry = assertWebEntry(options.webEntry);
   const root = ownership.root;
   assertEmptyDirectory(root);
   const directories = createDirectories(root);
   const [webPort, actualPort] = await allocatePorts();
+  const webUrl = `http://${LOOPBACK_HOST}:${webPort}`;
+  const publicOrigin = requestedPublicOrigin ?? webUrl;
   const publicHandle: ScenarioProcesses = Object.freeze({
     root,
-    webUrl: `http://${LOOPBACK_HOST}:${webPort}`,
+    webUrl,
     actualUrl: `http://${LOOPBACK_HOST}:${actualPort}`,
     actualSecretKey: makeSecret(),
     seedClientDir: join(root, 'seed-client'),
@@ -679,9 +685,39 @@ export function assertScenarioProcessesActive(handle: ScenarioProcesses): void {
   validateOwnedRoot(handle.root);
 }
 
-/** Publish only current normal human sessions and membership periods verified by the owned child. */
-export async function updateScenarioPersonas(handle: ScenarioProcesses, initialized: ScenarioInitialized): Promise<void> {
+function readChildMemory(child: RuntimeChild | undefined): { rssBytes: number; highWaterBytes: number } | null {
+  if (!child?.process.pid || child.process.exitCode !== null || child.process.signalCode !== null) return null;
+  try {
+    const status = readFileSync(`/proc/${child.process.pid}/status`, 'utf8');
+    const rssBytes = Number(/^VmRSS:\s+(\d+)\s+kB$/m.exec(status)?.[1]) * 1024;
+    const highWaterBytes = Number(/^VmHWM:\s+(\d+)\s+kB$/m.exec(status)?.[1]) * 1024;
+    if (!Number.isSafeInteger(rssBytes) || !Number.isSafeInteger(highWaterBytes) || rssBytes < 0 || highWaterBytes < 0 ||
+      child.process.exitCode !== null || child.process.signalCode !== null) return null;
+    return { rssBytes, highWaterBytes };
+  } catch {
+    return null;
+  }
+}
+
+/** Read approximate Linux RSS/lifetime-HWM counters for active owned entry processes without exposing PIDs. */
+export function readScenarioProcessMemory(handle: ScenarioProcesses): {
+  actual: { rssBytes: number; highWaterBytes: number } | null;
+  web: { rssBytes: number; highWaterBytes: number } | null;
+} {
   assertScenarioProcessesActive(handle);
+  if (process.platform !== 'linux') return { actual: null, web: null };
+  const state = internalProcesses.get(handle)!;
+  return { actual: readChildMemory(state.actual), web: readChildMemory(state.web) };
+}
+
+/** Publish only current normal human sessions and membership periods verified by the owned child. */
+export async function updateScenarioPersonas(
+  handle: ScenarioProcesses,
+  initialized: ScenarioInitialized,
+  signal?: AbortSignal,
+): Promise<void> {
+  assertScenarioProcessesActive(handle);
+  signal?.throwIfAborted();
   const manifest = readScenarioManifest(handle);
   if (!manifest.scenarioId || (manifest.spaceId !== null && manifest.spaceId !== initialized.spaceId) ||
     (manifest.budgetId !== null && manifest.budgetId !== initialized.budgetId))
@@ -696,25 +732,34 @@ export async function updateScenarioPersonas(handle: ScenarioProcesses, initiali
       'x-balanceframe-demo-internal': handle.internalSecret,
       'x-balanceframe-space': initialized.spaceId, cookie: persona.cookieHeader,
     };
-    const sessionResponse = await fetch(new URL('/api/auth/get-session', handle.webUrl), { headers });
+    signal?.throwIfAborted();
+    const sessionResponse = await fetch(new URL('/api/auth/get-session', handle.webUrl), { headers, signal });
+    signal?.throwIfAborted();
     const session = await sessionResponse.json() as { user?: { id?: string }; session?: { userId?: string } };
+    signal?.throwIfAborted();
     if (!sessionResponse.ok || session.user?.id !== persona.actorId || session.session?.userId !== persona.actorId)
       throw new Error('Scenario persona session is not current');
-    const selectedResponse = await fetch(new URL(`/api/spaces/${encodeURIComponent(initialized.spaceId)}`, handle.webUrl), { headers });
+    signal?.throwIfAborted();
+    const selectedResponse = await fetch(new URL(`/api/spaces/${encodeURIComponent(initialized.spaceId)}`, handle.webUrl), { headers, signal });
+    signal?.throwIfAborted();
     const selected = await selectedResponse.json() as {
       result?: { space?: { id?: string; membership?: { id?: string; actorId?: string; revokedAt?: string | null } } };
     };
+    signal?.throwIfAborted();
     const space = selected.result?.space;
     if (!selectedResponse.ok || space?.id !== initialized.spaceId ||
       space.membership?.id !== persona.membershipId || space.membership.actorId !== persona.actorId || space.membership.revokedAt !== null)
       throw new Error('Scenario persona membership is not current');
     actorIds.push(persona.actorId);
+    signal?.throwIfAborted();
   }
   assertScenarioProcessesActive(handle);
+  signal?.throwIfAborted();
   const current = readScenarioManifest(handle);
   if (current.generation !== manifest.generation || current.scenarioId !== manifest.scenarioId ||
     current.spaceId !== manifest.spaceId || actorIds.length === 0)
     throw new Error('Scenario persona publication is stale');
+  signal?.throwIfAborted();
   writeScenarioManifest(handle, {
     ...current, phase: 'ready', spaceId: initialized.spaceId, budgetId: initialized.budgetId, actorIds,
   });
@@ -745,7 +790,14 @@ export async function startScenarioActual(handle: ScenarioProcesses): Promise<vo
   }
 }
 
-export async function stopScenarioProcesses(handle: ScenarioProcesses): Promise<void> {
+/**
+ * Stops owned children and normally disposes their root; the first call may retain it for live clients.
+ * A retained root must later be discarded by its allocator after every client has closed.
+ */
+export async function stopScenarioProcesses(
+  handle: ScenarioProcesses,
+  options: { readonly retainRoot?: boolean } = {},
+): Promise<void> {
   if (stoppedHandles.has(handle)) return;
   const state = internalProcesses.get(handle);
   if (!state) throw new Error('Scenario process handle is not owned');
@@ -760,7 +812,7 @@ export async function stopScenarioProcesses(handle: ScenarioProcesses): Promise<
     }
     if (state.actual) await stopChild(state.actual.process);
     await stopChild(state.web.process);
-    safeCleanup(state.ownership);
+    if (!options.retainRoot) safeCleanup(state.ownership);
     activeRoots.delete(handle.root);
     internalProcesses.delete(handle);
     stoppedHandles.add(handle);

@@ -26,6 +26,7 @@ const MAX_CONTROL_BYTES = 4 * 1024;
 const MAX_PROXY_BYTES = 1024 * 1024;
 const CONTROL_DURATION_MS = 60 * 60 * 1000;
 const LOAD_INTERVAL_MS = 10_000;
+const CLEANUP_UNPROVEN_FAILURE = 'DEMO_CLEANUP_UNPROVEN';
 const CONTROL_COOKIE = 'bf_demo';
 const INTERNAL_HEADER = 'x-balanceframe-demo-internal';
 const CSRF_HEADER = 'x-balanceframe-demo-csrf';
@@ -107,6 +108,12 @@ function error(
   headers: Record<string, string> = {},
 ): void {
   json(response, status, { error: { code } }, headers);
+}
+
+function isOwnedCleanupUnproven(failure: unknown): boolean {
+  return failure instanceof Error && 'code' in failure &&
+    failure.code === 'cleanup_unproven' && 'ownedCleanupUnproven' in failure &&
+    failure.ownedCleanupUnproven === true;
 }
 
 function header(request: IncomingMessage, name: string): string | null {
@@ -999,6 +1006,10 @@ async function handleControl(
       return;
     }
   }
+  if (supervisor.failureCode === CLEANUP_UNPROVEN_FAILURE) {
+    error(response, 503, CLEANUP_UNPROVEN_FAILURE);
+    return;
+  }
   const nextId = path === '/__demo/reset' ? supervisor.scenarioId : payload.scenarioId;
   if (typeof nextId !== 'string' || !listScenarios().some(({ id }) => id === nextId)) {
     error(response, 400, 'DEMO_UNKNOWN_SCENARIO');
@@ -1041,7 +1052,14 @@ async function handleControl(
       anchor: supervisor.anchor,
       personaId: 'owner',
     });
-  } catch {
+  } catch (failure) {
+    if (isOwnedCleanupUnproven(failure)) {
+      supervisor.failureCode = CLEANUP_UNPROVEN_FAILURE;
+      supervisor.status = 'failed';
+      if (candidate) await stopScenarioProcesses(candidate.processes, { retainRoot: true });
+      error(response, 503, CLEANUP_UNPROVEN_FAILURE);
+      return;
+    }
     if (candidate) await stopScenarioProcesses(candidate.processes);
     supervisor.scenarioId = nextId;
     supervisor.anchor = candidate?.scenario.anchor ?? supervisor.anchor;
@@ -1224,9 +1242,12 @@ export async function startDemoServer(options: StartDemoServerOptions = {}): Pro
       await populateWorkspace(workspace);
       await verifyNativeReadiness(supervisor, workspace);
       supervisor.status = 'ready';
-    } catch {
-      supervisor.failureCode = 'DEMO_LOAD_FAILED';
+    } catch (failure) {
+      const cleanupUnproven = isOwnedCleanupUnproven(failure);
+      supervisor.failureCode = cleanupUnproven ? CLEANUP_UNPROVEN_FAILURE : 'DEMO_LOAD_FAILED';
       supervisor.status = 'failed';
+      if (cleanupUnproven)
+        await stopScenarioProcesses(workspace.processes, { retainRoot: true });
     } finally {
       supervisor.busy = false;
     }
@@ -1243,22 +1264,25 @@ export async function stopDemoServer(handle: DemoServer): Promise<void> {
   if (!supervisor) throw new Error('Demo server handle is not owned');
   if (supervisor.stopping) return;
   supervisor.stopping = true;
+  // A reset failure retains its candidate separately; only an initial failed workspace is current and uncertain.
+  const retainRoot = supervisor.failureCode === CLEANUP_UNPROVEN_FAILURE &&
+    supervisor.current?.loaded === null;
   let cancellationError: unknown;
   try {
-    if (supervisor.current) cancelScenarioResearch(supervisor.current.processes);
+    if (supervisor.current && !retainRoot) cancelScenarioResearch(supervisor.current.processes);
   } catch (failure) {
     cancellationError = failure;
   }
   try {
     if (cancellationError && supervisor.current) {
       try {
-        await stopScenarioProcesses(supervisor.current.processes);
+        await stopScenarioProcesses(supervisor.current.processes, { retainRoot });
       } catch (failure) {
         cancellationError = failure;
       }
     }
     await new Promise<void>((resolve) => supervisor.listener.close(() => resolve()));
-    if (supervisor.current) await stopScenarioProcesses(supervisor.current.processes);
+    if (supervisor.current) await stopScenarioProcesses(supervisor.current.processes, { retainRoot });
   } finally {
     supervisors.delete(handle);
   }

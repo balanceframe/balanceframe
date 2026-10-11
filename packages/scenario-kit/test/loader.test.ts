@@ -1,10 +1,41 @@
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { loadScenario, stopScenario } from '../src/loader.js';
-import { createOwnedScenarioRoot } from '../src/process-runtime.js';
+import * as actualSdk from '@actual-app/api';
+
+import * as processRuntime from '../src/process-runtime.js';
+import { loadScenario, stopScenario, type LoadedScenario } from '../src/loader.js';
+import {
+  assertScenarioProcessesActive,
+  createOwnedScenarioRoot,
+  discardOwnedScenarioRoot,
+  stopScenarioProcesses,
+  type ScenarioProcesses,
+} from '../src/process-runtime.js';
+
+vi.mock('@actual-app/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof actualSdk>();
+  return {
+    ...actual,
+    get internal() { return actual.internal; },
+    shutdown: vi.fn(actual.shutdown),
+    createAccount: vi.fn(actual.createAccount),
+  };
+});
+
+function failNextShutdownAfterClose(failure: Error): () => Promise<void> {
+  const shutdown = vi.mocked(actualSdk.shutdown);
+  const realShutdown = shutdown.getMockImplementation();
+  if (!realShutdown) throw new Error('Actual SDK shutdown delegate is unavailable');
+  shutdown.mockImplementationOnce(async () => {
+    await realShutdown();
+    throw failure;
+  });
+  return realShutdown;
+}
+
 
 describe('disposable scenario loader', () => {
   it('removes its allocated root if public-origin validation fails before shell startup', async () => {
@@ -17,6 +48,97 @@ describe('disposable scenario loader', () => {
     })).rejects.toThrow(/origin/i);
     expect(existsSync(root)).toBe(false);
   });
+  it('retains its owned root when SDK shutdown cannot be proven and stops its children', async () => {
+    const root = createOwnedScenarioRoot();
+    const started: ScenarioProcesses[] = [];
+    const startShell = processRuntime.startScenarioShell;
+    const start = vi.spyOn(processRuntime, 'startScenarioShell').mockImplementation(async (options) => {
+      const processes = await startShell(options);
+      started.push(processes);
+      return processes;
+    });
+    const shutdownFailure = new Error(`private shutdown detail ${root}`);
+    const shutdown = vi.mocked(actualSdk.shutdown);
+    const realShutdown = failNextShutdownAfterClose(shutdownFailure);
+    let loaded: LoadedScenario | undefined;
+    let failure: unknown;
+    try {
+      try {
+        loaded = await loadScenario({
+          scenarioId: 'funded-purchase',
+          root,
+          anchor: new Date(),
+          publicOrigin: 'http://127.0.0.1:3003',
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({ code: 'cleanup_unproven', ownedCleanupUnproven: true });
+      expect((failure as Error).message).toBe('Actual SDK cleanup could not be proven');
+      expect((failure as Error).message).not.toContain(root);
+      expect((failure as Error).message).not.toContain(shutdownFailure.message);
+      expect(failure).not.toHaveProperty('cause');
+      expect(existsSync(root)).toBe(true);
+      expect(started).toHaveLength(1);
+      expect(() => assertScenarioProcessesActive(started[0]!))
+        .toThrow('Scenario process handle is not active');
+    } finally {
+      shutdown.mockReset().mockImplementation(realShutdown);
+      start.mockRestore();
+      await actualSdk.shutdown().catch(() => undefined);
+      if (loaded) await stopScenario(loaded);
+      for (const processes of started)
+        await stopScenarioProcesses(processes, { retainRoot: true });
+      if (existsSync(root)) discardOwnedScenarioRoot(root);
+    }
+  }, 180_000);
+
+  it('cleans a shutdown-proven seed failure so a fresh owned load can retry', async () => {
+    const root = createOwnedScenarioRoot();
+    const createAccount = vi.mocked(actualSdk.createAccount);
+    const realCreateAccount = createAccount.getMockImplementation();
+    if (!realCreateAccount) throw new Error('Actual SDK account delegate is unavailable');
+    createAccount.mockRejectedValueOnce(new Error('ordinary seed failure'));
+    let loaded: LoadedScenario | undefined;
+    let failure: unknown;
+    try {
+      try {
+        loaded = await loadScenario({
+          scenarioId: 'funded-purchase',
+          root,
+          anchor: new Date(),
+          publicOrigin: 'http://127.0.0.1:3003',
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ message: 'ordinary seed failure' });
+      expect(failure).not.toHaveProperty('ownedCleanupUnproven');
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      createAccount.mockReset().mockImplementation(realCreateAccount);
+      if (loaded) await stopScenario(loaded);
+      await actualSdk.shutdown().catch(() => undefined);
+      if (existsSync(root)) discardOwnedScenarioRoot(root);
+    }
+
+    const retryRoot = createOwnedScenarioRoot();
+    const retried = await loadScenario({
+      scenarioId: 'funded-purchase',
+      root: retryRoot,
+      anchor: new Date(),
+      publicOrigin: 'http://127.0.0.1:3003',
+    });
+    try {
+      expect(retried.scenario.id).toBe('funded-purchase');
+    } finally {
+      await stopScenario(retried);
+    }
+    expect(existsSync(retryRoot)).toBe(false);
+  }, 240_000);
+
 
   it('serves a funded native Card through the normally authenticated web API and removes its owned stack', async () => {
     const root = createOwnedScenarioRoot();

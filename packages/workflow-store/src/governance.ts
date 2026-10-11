@@ -609,8 +609,20 @@ export function migrateGovernance(db: Database): void {
 export class SpaceGovernance {
   constructor(private readonly db: Database) {}
 
+  private readonly grantStatements = new Map<string, Statement>();
+
+  /** Reuses static grant-path SQL, never queried authorization results. */
+  private grantStatement(sql: string): Statement {
+    let statement = this.grantStatements.get(sql);
+    if (!statement) {
+      statement = this.db.prepare(sql);
+      this.grantStatements.set(sql, statement);
+    }
+    return statement;
+  }
+
   private activeIdentity(actorId: string): boolean {
-    const row = this.db.prepare('SELECT status FROM actor_memberships WHERE actor_id=?').get(actorId) as
+    const row = this.grantStatement('SELECT status FROM actor_memberships WHERE actor_id=?').get(actorId) as
       { status: string } | undefined;
     return row?.status === 'active';
   }
@@ -627,18 +639,18 @@ export class SpaceGovernance {
   }
 
   private space(spaceId: string, includeDeleted = false): Space | null {
-    const row = this.db.prepare(`SELECT * FROM spaces WHERE id=?${includeDeleted ? '' : ' AND deleted_at IS NULL'}`)
+    const row = this.grantStatement(`SELECT * FROM spaces WHERE id=?${includeDeleted ? '' : ' AND deleted_at IS NULL'}`)
       .get(spaceId) as Row | undefined;
     return row ? rowToSpace(row) : null;
   }
   private membershipById(membershipId: string): SpaceMembership | null {
-    const row = this.db.prepare('SELECT * FROM space_memberships WHERE id=?').get(membershipId) as Row | undefined;
+    const row = this.grantStatement('SELECT * FROM space_memberships WHERE id=?').get(membershipId) as Row | undefined;
     return row ? rowToMembership(row) : null;
   }
 
   private currentMembership(spaceId: string, actorId: string, now: string): SpaceMembership | null {
     if (!this.activeIdentity(actorId) || !this.space(spaceId)) return null;
-    const periods = this.db.prepare(`
+    const periods = this.grantStatement(`
       SELECT * FROM space_memberships WHERE space_id=? AND actor_id=? AND revoked_at IS NULL
       ORDER BY valid_from DESC,id
     `).all(spaceId, actorId) as Row[];
@@ -648,7 +660,7 @@ export class SpaceGovernance {
   }
 
   private manager(membership: SpaceMembership, capability: string, operation: string): boolean {
-    const row = this.db.prepare(`
+    const row = this.grantStatement(`
       SELECT restrictions FROM resource_grants
        WHERE actor_id=? AND space_id=? AND membership_id=? AND capability=?
          AND resource_kind='space' AND resource_id=? AND granted=1 AND revoked_at IS NULL
@@ -675,7 +687,7 @@ export class SpaceGovernance {
   }
 
   private audit(spaceId: string, actorId: string, classification: string, subjectId: string | null, now: string, details: unknown = {}): void {
-    this.db.prepare(`
+    this.grantStatement(`
       INSERT INTO space_governance_audit(id,space_id,actor_id,classification,subject_id,timestamp,details)
       VALUES (?,?,?,?,?,?,?)
     `).run(randomUUID(), spaceId, actorId, classification, subjectId, now, JSON.stringify(details));
@@ -692,12 +704,12 @@ export class SpaceGovernance {
     now: string;
   }): GovernanceResourceGrant {
     const id = randomUUID();
-    this.db.prepare(`
+    this.grantStatement(`
       INSERT INTO resource_grants(id,space_id,membership_id,actor_id,budget_id,capability,resource_kind,resource_id,granted,restrictions,created_at,updated_at,revoked_at)
       VALUES (?,?,?,?,?,?,?,?,1,?,?,?,NULL)
     `).run(id, input.spaceId, input.membership.id, input.membership.actorId, input.budgetId,
       input.capability, input.resourceKind, input.resourceId, JSON.stringify(input.restrictions), input.now, input.now);
-    const row = this.db.prepare('SELECT * FROM resource_grants WHERE id=?').get(id) as Row;
+    const row = this.grantStatement('SELECT * FROM resource_grants WHERE id=?').get(id) as Row;
     return rowToGrant(row);
   }
 
@@ -708,21 +720,21 @@ export class SpaceGovernance {
     actorId: string,
   ): GovernanceResourceGrant | null {
     const restrictions = parseRestrictions(input.restrictions ?? {});
-    const existing = this.db.prepare(`
+    const existing = this.grantStatement(`
       SELECT * FROM resource_grants WHERE space_id=? AND membership_id=? AND capability=?
        AND resource_kind=? AND resource_id=? AND revoked_at IS NULL
     `).get(input.spaceId, member.id, input.capability, input.resourceKind, input.resourceId) as Row | undefined;
     if (!input.granted) {
       if (!existing) return null;
-      this.db.prepare('UPDATE resource_grants SET granted=0,revoked_at=?,updated_at=? WHERE id=?')
+      this.grantStatement('UPDATE resource_grants SET granted=0,revoked_at=?,updated_at=? WHERE id=?')
         .run(input.now, input.now, existing.id);
       this.audit(input.spaceId, actorId, 'resource_grant_revoked', existing.id as string, input.now);
       return null;
     }
     if (existing) {
-      this.db.prepare('UPDATE resource_grants SET restrictions=?,updated_at=? WHERE id=?')
+      this.grantStatement('UPDATE resource_grants SET restrictions=?,updated_at=? WHERE id=?')
         .run(JSON.stringify(restrictions), input.now, existing.id);
-      const updated = this.db.prepare('SELECT * FROM resource_grants WHERE id=?').get(existing.id) as Row;
+      const updated = this.grantStatement('SELECT * FROM resource_grants WHERE id=?').get(existing.id) as Row;
       this.audit(input.spaceId, actorId, 'resource_grant_changed', existing.id as string, input.now);
       return rowToGrant(updated);
     }

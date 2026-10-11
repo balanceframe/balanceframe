@@ -353,6 +353,40 @@ describe('enforceDemoBoundary', () => {
     expect(unrelatedStory.status).toBe(403);
   });
 
+  it('admits only private non-demo merchant reconnection in its selected space', () => {
+    writeManifest({ scenarioId: 'merchant-local-sparse' });
+    const privateHeaders = {
+      'x-balanceframe-space': 'space-demo',
+      'x-balanceframe-demo-internal': INTERNAL,
+    };
+    const admitted = makeEvent('/api/connection', 'POST', privateHeaders);
+    admitted.context.runtimeConfig.public = { demoMode: false };
+    expect(enforceDemoBoundary(admitted)).toBeUndefined();
+
+    for (const [name, headers, demoMode, method, remoteAddress] of [
+      ['public browser', { 'x-balanceframe-space': 'space-demo' }, false, 'POST', '127.0.0.1'],
+      ['public demo', privateHeaders, true, 'POST', '127.0.0.1'],
+      ['unconfigured mode', privateHeaders, undefined, 'POST', '127.0.0.1'],
+      ['wrong selected space', { ...privateHeaders, 'x-balanceframe-space': 'unrelated-space' }, false, 'POST', '127.0.0.1'],
+      ['missing selected space', { 'x-balanceframe-demo-internal': INTERNAL }, false, 'POST', '127.0.0.1'],
+      ['foreign origin', { ...privateHeaders, origin: 'https://attacker.example' }, false, 'POST', '127.0.0.1'],
+      ['forged runner token', { ...privateHeaders, 'x-balanceframe-demo-internal': 'forged-secret' }, false, 'POST', '127.0.0.1'],
+      ['wrong method', privateHeaders, false, 'PUT', '127.0.0.1'],
+      ['remote caller', privateHeaders, false, 'POST', '203.0.113.42'],
+    ] as const) {
+      const denied = makeEvent('/api/connection', method, headers);
+      denied.context.runtimeConfig.public = { demoMode };
+      denied.node.req.socket.remoteAddress = remoteAddress;
+      expect(enforceDemoBoundary(denied), name).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+      expect(denied.status, name).toBe(403);
+    }
+    writeManifest({ scenarioId: 'funded-purchase' });
+    const unrelated = makeEvent('/api/connection', 'POST', privateHeaders);
+    unrelated.context.runtimeConfig.public = { demoMode: false };
+    expect(enforceDemoBoundary(unrelated)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+    expect(unrelated.status).toBe(403);
+  });
+
   it.each(['governance-scoped-access', 'governance-invitation-lifecycle', 'governance-delegated-assistant', 'merchant-research-lifecycle'])(
     'does not turn %s into general governance, auth, connection or provider CRUD',
     (scenarioId) => {

@@ -1,6 +1,21 @@
+import { existsSync } from 'node:fs';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
+import * as actualSdk from '@actual-app/api';
+
+import * as processRuntime from '../src/process-runtime.js';
+import type { ScenarioProcesses } from '../src/process-runtime.js';
 import { startDemoServer, stopDemoServer, type DemoServer } from '../src/demo-server.js';
+
+vi.mock('@actual-app/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof actualSdk>();
+  return {
+    ...actual,
+    get internal() { return actual.internal; },
+    shutdown: vi.fn(actual.shutdown),
+    createCategoryGroup: vi.fn(actual.createCategoryGroup),
+  };
+});
 
 let demo: DemoServer | undefined;
 
@@ -22,6 +37,23 @@ function mergeCookies(...values: string[]): string {
     if (separator > 0) cookies.set(pair.slice(0, separator), pair.slice(separator + 1));
   }
   return [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
+}
+
+async function cleanScenarioHandles(handles: readonly ScenarioProcesses[]): Promise<void> {
+  for (const processes of handles) {
+    await processRuntime.stopScenarioProcesses(processes, { retainRoot: true });
+    if (existsSync(processes.root)) processRuntime.discardOwnedScenarioRoot(processes.root);
+  }
+}
+
+function failNextShutdownAfterClose(failure: Error): void {
+  const shutdown = vi.mocked(actualSdk.shutdown);
+  const realShutdown = shutdown.getMockImplementation();
+  if (!realShutdown) throw new Error('Actual SDK shutdown delegate is unavailable');
+  shutdown.mockImplementationOnce(async () => {
+    await realShutdown();
+    throw failure;
+  });
 }
 
 async function api(path: string, cookie: string, method = 'GET', body?: Record<string, unknown>, extraHeaders: Record<string, string> = {}, timeoutMs = 10_000): Promise<Response> {
@@ -1131,4 +1163,194 @@ describe('owned demo supervisor', () => {
       demo = previous;
     }
   }, 180_000);
+  it('retains the initial uncertain-seed root through server stop and exposes only a safe terminal failure', async () => {
+    const previous = demo;
+    const started: ScenarioProcesses[] = [];
+    const startShell = processRuntime.startScenarioShell;
+    const start = vi.spyOn(processRuntime, 'startScenarioShell').mockImplementation(async (options) => {
+      const processes = await startShell(options);
+      started.push(processes);
+      return processes;
+    });
+    const shutdownFailure = new Error('private shutdown detail /private/actual/path');
+    const shutdown = vi.mocked(actualSdk.shutdown);
+    const realShutdown = shutdown.getMockImplementation();
+    if (!realShutdown) throw new Error('Actual SDK shutdown delegate is unavailable');
+    failNextShutdownAfterClose(shutdownFailure);
+    let stopped = false;
+    try {
+      demo = await startDemoServer({ scenarioId: 'funded-purchase', port: 0 });
+      const current = await state();
+      expect(current).toMatchObject({ status: 'failed', failureCode: 'DEMO_CLEANUP_UNPROVEN' });
+      expect(JSON.stringify(current)).not.toContain(shutdownFailure.message);
+      expect(started).toHaveLength(1);
+      expect(existsSync(started[0]!.root)).toBe(true);
+      expect(() => processRuntime.assertScenarioProcessesActive(started[0]!))
+        .toThrow('Scenario process handle is not active');
+
+      const unauthorizedRetry = await control('/__demo/reset', '', '', {
+        expectedGeneration: current.generation,
+      });
+      expect(unauthorizedRetry.status).toBe(403);
+
+      const root = started[0]!.root;
+      await stopDemoServer(demo);
+      stopped = true;
+      demo = undefined;
+      expect(existsSync(root)).toBe(true);
+    } finally {
+      shutdown.mockReset().mockImplementation(realShutdown);
+      start.mockRestore();
+      await actualSdk.shutdown().catch(() => undefined);
+      if (!stopped && demo) await stopDemoServer(demo);
+      demo = previous;
+      await cleanScenarioHandles(started);
+    }
+  }, 180_000);
+
+  it('retains an uncertain reset candidate and refuses successor seeds and financial replay', async () => {
+    const previous = demo;
+    const started: ScenarioProcesses[] = [];
+    const startShell = processRuntime.startScenarioShell;
+    const start = vi.spyOn(processRuntime, 'startScenarioShell').mockImplementation(async (options) => {
+      const processes = await startShell(options);
+      started.push(processes);
+      return processes;
+    });
+    const shutdown = vi.mocked(actualSdk.shutdown);
+    const realShutdown = shutdown.getMockImplementation();
+    if (!realShutdown) throw new Error('Actual SDK shutdown delegate is unavailable');
+    let stopped = false;
+    try {
+      demo = await startDemoServer({ scenarioId: 'import-before-completion', port: 0 });
+      const page = await fetch(`${demo.url}/demo`);
+      const cookie = cookieHeader(page);
+      const current = await state(cookie);
+      expect(current.status).toBe('ready');
+      expect(started).toHaveLength(1);
+
+      shutdown.mockClear();
+      const shutdownFailure = new Error('private shutdown detail /private/actual/path');
+      failNextShutdownAfterClose(shutdownFailure);
+      const reset = await control('/__demo/reset', cookie, current.csrfToken!, {
+        expectedGeneration: current.generation,
+      });
+      expect(reset.status).toBe(503);
+      expect(await reset.json()).toEqual({ error: { code: 'DEMO_CLEANUP_UNPROVEN' } });
+      const failed = await state(cookie);
+      expect(failed).toMatchObject({
+        status: 'failed',
+        failureCode: 'DEMO_CLEANUP_UNPROVEN',
+        generation: current.generation,
+      });
+      expect(JSON.stringify(failed)).not.toContain(shutdownFailure.message);
+      expect(started).toHaveLength(2);
+      const candidateRoot = started[1]!.root;
+      expect(existsSync(candidateRoot)).toBe(true);
+      expect(() => processRuntime.assertScenarioProcessesActive(started[1]!))
+        .toThrow('Scenario process handle is not active');
+
+      for (const [path, body] of [
+        ['/__demo/reset', { expectedGeneration: failed.generation }],
+        ['/__demo/load', { expectedGeneration: failed.generation, scenarioId: 'coapproval-completion' }],
+      ] as const) {
+        const retry = await control(path, cookie, current.csrfToken!, body);
+        expect(retry.status).toBe(503);
+        expect(await retry.json()).toEqual({ error: { code: 'DEMO_CLEANUP_UNPROVEN' } });
+      }
+      const replay = await control('/__demo/event', cookie, current.csrfToken!, {
+        expectedGeneration: failed.generation,
+        eventId: 'import-match',
+      });
+      expect(replay.status).toBe(503);
+      expect(await replay.json()).toEqual({ error: { code: 'DEMO_NOT_READY' } });
+      expect(started).toHaveLength(2);
+
+      const previousRoot = started[0]!.root;
+      await stopDemoServer(demo);
+      stopped = true;
+      demo = undefined;
+      expect(existsSync(previousRoot)).toBe(false);
+      expect(existsSync(candidateRoot)).toBe(true);
+    } finally {
+      shutdown.mockReset().mockImplementation(realShutdown);
+      start.mockRestore();
+      await actualSdk.shutdown().catch(() => undefined);
+      if (!stopped && demo) await stopDemoServer(demo);
+      demo = previous;
+      await cleanScenarioHandles(started);
+    }
+  }, 240_000);
+
+  it('keeps an ordinary shutdown-proven demo load failure retryable', async () => {
+    const previous = demo;
+    const started: ScenarioProcesses[] = [];
+    const startShell = processRuntime.startScenarioShell;
+    const start = vi.spyOn(processRuntime, 'startScenarioShell').mockImplementation(async (options) => {
+      const processes = await startShell(options);
+      started.push(processes);
+      return processes;
+    });
+    const createCategoryGroup = vi.mocked(actualSdk.createCategoryGroup);
+    const realCreateCategoryGroup = createCategoryGroup.getMockImplementation();
+    if (!realCreateCategoryGroup) throw new Error('Actual SDK category group delegate is unavailable');
+    let stopped = false;
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      demo = await startDemoServer({ scenarioId: 'funded-purchase', port: 0 });
+      const page = await fetch(`${demo.url}/demo`);
+      const cookie = cookieHeader(page);
+      const current = await state(cookie);
+      expect(current.status).toBe('ready');
+      now = Date.now();
+      clock.mockImplementation(() => now);
+      createCategoryGroup.mockRejectedValueOnce(new Error('ordinary seed failure'));
+
+      const failedReset = await control('/__demo/reset', cookie, current.csrfToken!, {
+        expectedGeneration: current.generation,
+      });
+      expect(failedReset.status).toBe(503);
+      expect(await failedReset.json()).toEqual({ error: { code: 'DEMO_LOAD_FAILED' } });
+      const failed = await state(cookie);
+      expect(failed).toMatchObject({
+        status: 'failed',
+        failureCode: 'DEMO_LOAD_FAILED',
+        generation: current.generation,
+      });
+      expect(started).toHaveLength(2);
+      expect(existsSync(started[0]!.root)).toBe(true);
+      expect(existsSync(started[1]!.root)).toBe(false);
+
+      now += 10_001;
+      const retried = await control('/__demo/reset', cookie, current.csrfToken!, {
+        expectedGeneration: failed.generation,
+      });
+      expect(retried.status).toBe(200);
+      const ready = await state(mergeCookies(cookie, cookieHeader(retried)));
+      expect(ready).toMatchObject({
+        status: 'ready',
+        scenarioId: 'funded-purchase',
+        generation: current.generation + 1,
+      });
+      expect(ready.failureCode).toBeUndefined();
+      expect(started).toHaveLength(3);
+      expect(existsSync(started[0]!.root)).toBe(false);
+      expect(existsSync(started[1]!.root)).toBe(false);
+      expect(existsSync(started[2]!.root)).toBe(true);
+
+      await stopDemoServer(demo);
+      stopped = true;
+      demo = undefined;
+      expect(existsSync(started[2]!.root)).toBe(false);
+    } finally {
+      createCategoryGroup.mockReset().mockImplementation(realCreateCategoryGroup);
+      clock.mockRestore();
+      start.mockRestore();
+      await actualSdk.shutdown().catch(() => undefined);
+      if (!stopped && demo) await stopDemoServer(demo);
+      demo = previous;
+      await cleanScenarioHandles(started);
+    }
+  }, 300_000);
 });

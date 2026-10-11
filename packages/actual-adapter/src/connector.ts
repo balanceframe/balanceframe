@@ -1998,16 +1998,18 @@ export class ActualConnector implements BudgetLedger {
     const transactions: Transaction[] = [];
     for (const transactionRead of transactionReads) {
       if (!transactionRead.read.available) continue;
-      if (activeAccountIds.has(transactionRead.accountId)) allRawTransactions.push(...transactionRead.read.items);
-      transactions.push(
-        ...normalizeTransactions(
-          transactionRead.read.items,
-          payeeMap,
-          categoryMap,
-          transferAcctMap,
-          this.currency,
-        ),
-      );
+      if (activeAccountIds.has(transactionRead.accountId)) {
+        for (const transaction of transactionRead.read.items) allRawTransactions.push(transaction);
+      }
+      for (const transaction of normalizeTransactions(
+        transactionRead.read.items,
+        payeeMap,
+        categoryMap,
+        transferAcctMap,
+        this.currency,
+      )) {
+        transactions.push(transaction);
+      }
     }
     const activeTransactionReads = transactionReads.filter(({ accountId }) => activeAccountIds.has(accountId));
     const rulePlanningSourceAvailability: NonNullable<LedgerSnapshotResult['rulePlanningSourceAvailability']> = {
@@ -2178,6 +2180,15 @@ export class ActualConnector implements BudgetLedger {
     const observableTransactions = allRawTransactions.filter(
       (transaction) => !transaction.tombstone,
     );
+
+    type DuplicateCandidateBucket = {
+      first: TransactionEntity;
+      second?: TransactionEntity;
+    };
+    let duplicateCandidates: Map<
+      string,
+      Map<string, Map<number, Map<string | null | undefined, DuplicateCandidateBucket>>>
+    > | undefined;
     for (const transaction of observableTransactions) {
       const transactionEvidence = [visibleEvidence(transaction.id, 'transaction')];
       const accountScope = { kind: 'account' as const, id: transaction.account };
@@ -2200,14 +2211,43 @@ export class ActualConnector implements BudgetLedger {
       }
 
       if (transaction.imported_id) {
-        const duplicate = observableTransactions.find(
-          (candidate) =>
-            candidate.id !== transaction.id &&
-            candidate.account === transaction.account &&
-            candidate.date === transaction.date &&
-            candidate.amount === transaction.amount &&
-            candidate.payee === transaction.payee,
-        );
+        if (!duplicateCandidates) {
+          duplicateCandidates = new Map();
+          for (const candidate of observableTransactions) {
+            if (Number.isNaN(candidate.amount)) continue;
+            let byDate = duplicateCandidates.get(candidate.account);
+            if (!byDate) {
+              byDate = new Map();
+              duplicateCandidates.set(candidate.account, byDate);
+            }
+            let byAmount = byDate.get(candidate.date);
+            if (!byAmount) {
+              byAmount = new Map();
+              byDate.set(candidate.date, byAmount);
+            }
+            let byPayee = byAmount.get(candidate.amount);
+            if (!byPayee) {
+              byPayee = new Map();
+              byAmount.set(candidate.amount, byPayee);
+            }
+            const bucket = byPayee.get(candidate.payee);
+            if (!bucket) {
+              byPayee.set(candidate.payee, { first: candidate });
+            } else if (bucket.first.id !== candidate.id && !bucket.second) {
+              bucket.second = candidate;
+            }
+          }
+        }
+        const bucket = duplicateCandidates
+          .get(transaction.account)
+          ?.get(transaction.date)
+          ?.get(transaction.amount)
+          ?.get(transaction.payee);
+        const duplicate = bucket
+          ? bucket.first.id === transaction.id
+            ? bucket.second
+            : bucket.first
+          : undefined;
         if (duplicate) {
           observations.push({
             kind: 'duplicate_candidate',

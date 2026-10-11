@@ -121,6 +121,89 @@ After both services become healthy, connect BalanceFrame to `http://actual:5006`
 through the application setup. Actual is independently upgradeable and
 removable — removing BalanceFrame never deletes Actual data.
 
+### Optional ValueSerp merchant research
+
+The canonical `compose.yaml` remains provider-off. This feature is an explicit
+operator opt-in; adding the overlay supplies the server configuration path and
+private key but does not grant research authority or consent.
+
+Before enabling it:
+
+1. Obtain the current tariff version, billing currency and exact unit price
+   confirmed by the actual provider account. Set the account's approved
+   versioned installation policy and credential caps (`maxSearchesPerDay` and
+   `maxSpendMinorUnitsPerMonth`) using the
+   [server deployment schema](packages/application/src/merchant-settings.ts).
+   Public price pages, guessed values, sample tariffs and dummy caps are not
+   deployment settings. If account-confirmed pricing or authorized caps are
+   unavailable, keep research off.
+2. Create the operator-owned JSON file at the path in
+   `BALANCEFRAME_MERCHANT_CONFIG_FILE`. It must exist and be readable by the
+   non-root BalanceFrame container user. The strict JSON schema does not accept
+   the API key; do not put secrets in it.
+3. Keep `VALUESERP_API_KEY` in a private, untracked deployment environment
+   file (for example, mode `0600`). Rotate or revoke it through the provider
+   account, replace the server-side value, and recreate the service after
+   rotation. Never put the key in source control, browser settings, Actual, or
+   the JSON file.
+4. Before any external request, independently confirm that installation,
+   selected-space and budget policies all allow the provider, current source
+   authorization and exact scoped `merchant:research` grants are present, and
+   the user explicitly consents to each operation. Ordinary authentication
+   and CSRF checks remain in force. The overlay grants no wildcard, write or
+   research authority.
+
+Only after those prerequisites, explicitly select both compose files:
+
+```bash
+docker compose --env-file /secure/private/balanceframe.env \
+  -f compose.yaml -f compose.research.yaml up -d
+```
+
+Set `BALANCEFRAME_MERCHANT_CONFIG_FILE` and `VALUESERP_API_KEY` in that private
+environment file. The overlay mounts exactly one file read-only at
+`/run/secrets/merchant-research.json` and refuses to create a missing host
+source path. No provider settings are mounted or passed by the canonical
+compose command.
+
+#### Offline and redaction checks
+
+Before deployment, run the offline Compose validator and sentinel regression:
+
+```bash
+COMPOSE_BIN=/path/to/docker-compose tests/deployment/compose-validate.sh
+COMPOSE_BIN=/path/to/docker-compose node --test tests/deployment/compose-research.test.mjs
+```
+
+`COMPOSE_BIN` may name a standalone Compose renderer; without it, the checks use
+`docker compose`. These checks render private sentinel values to Compose JSON
+for semantic parsing and do not start services or contact a provider. They
+prove local manifest isolation and output suppression only, not deployed
+redaction.
+
+Before enabling egress, verify every logging and observability boundary using
+synthetic sentinels with outbound provider traffic blocked:
+
+- Check application/container stdout and stderr, reverse-proxy access/error
+  logs, APM traces, exception capture, and retained/exported logs.
+- Confirm the entire outbound URL including its query, authorization and other
+  sensitive headers, request/response bodies, and secret values are suppressed
+  at each boundary. A path-only URL redaction is insufficient.
+- Search captures and their exports for each sentinel; if any collector cannot
+  be verified, leave external research off. This repository has no deployed
+  proxy/APM environment, so no deployed redaction result is claimed.
+
+Any eventual live check requires separate operator authorization, the actual
+account-confirmed price and caps, and an explicitly bounded single
+public-business request. Do not send transaction or financial details; stop
+after that one request or on uncertain billing. No paid request or service
+deployment is part of these local checks.
+
+Review the account's applicable terms and upstream retention before opt-in.
+Local deletion cannot recall dispatched queries or prove erasure by the provider.
+Use the same explicitly selected overlay files for upgrades and key rotation;
+the canonical upgrade command below intentionally leaves research disabled.
+
 ### Upgrade
 
 ```bash
@@ -245,6 +328,40 @@ Use the selector's declared entry links, persona selector and event controls; no
 Native-rule reviewers receive finite full-read/approval rights for the complete current Actual source graph and exact published evidence, including generated baseline IDs; they receive neither budget-wide full-read nor execution/control rights. The owner receives only that story's required native-rule intent authority on those resources, not generic write rights for generated balances. Imports and newly created rules extend the same exact native-ID scope through validated normal grant handlers.
 
 Research is a **closed fixture provider through the real coordinator, policies, cache and quota journal**. It never constructs a provider transport, reads paid keys, calls ValueSerp, or falls back to live research. `.invalid` sources are synthetic and uncalibrated; the modeled USD tariff is 250000 atoms ($0.0025) per dispatch, not a live provider price. Only the bounded research clock advances; source freshness and human proof use real time. Disabling or retiring fixture authority fails closed, and reset cancels held work before draining requests. This remains one shared disposable runtime, not per-visitor isolation or a static browser demo.
+
+#### Complete Review measurements (Linux)
+
+With the same source build and an installed Chromium/Chrome, run the real
+Actual → authenticated Sync → persisted queue → rendered Review path:
+
+```bash
+taskset -c 0,1 node scripts/merchant-intelligence/review.mjs \
+  --sizes 50000,250000 --warmups 2 --iterations 20 \
+  --deadline-ms 120000 --dataset-deadline-ms 3300000 \
+  --chromium-path /opt/google/chrome/chrome --output /tmp/review-local-reference.json
+```
+
+Choose an unused output path and your installed browser path. Use an owned
+resource supervisor on a shared host; the reference runs use a 12 GiB whole-job
+cap with no swap, separate from the reported approximate Actual/web entry RSS.
+The tool creates only disposable fictional budgets, compacts their sync history
+with native `sync-reset`, verifies independent financial readback and reconnects
+the same budget under its new sync group. No production budget or paid provider
+is used. First queue population is separate from the warmed 2+20 p95; neither
+is a cold-start or native-only measurement. Full Review p95 is descriptive;
+the existing native latency/memory gates are unchanged. Short, failed or censored
+datasets have no affirmative reference p95; incomplete reports exit 2.
+Reports/screenshots are private and exclusive. Normal handled runs clean up
+owned services/data unless SDK shutdown is unproven. External OOM/SIGKILL can
+bypass report finalization and cleanup: retain the owning supervisor's failure
+evidence, verify its cgroup is released, then remove only its recorded disposable
+workspace. An externally killed run establishes no reference p95.
+
+The separate real-fixture allocation regression is
+`node --test scripts/merchant-intelligence/review-grants.test.mjs`, run serially
+in the locked source environment. Its isolated grant-write RSS ceiling is an
+operational regression check, not the native analysis memory gate; it is not
+part of the ordinary unit suite.
 
 
 ### Release

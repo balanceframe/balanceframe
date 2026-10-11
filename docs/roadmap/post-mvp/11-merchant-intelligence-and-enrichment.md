@@ -1,7 +1,7 @@
 # Phase 11 — Merchant intelligence and enrichment
 
 **Depends on:** MVP evidence, trustworthy Actual gateway, Phase 7 proposal governance, Phase 8 budget intelligence, and Phase 8.8 shared financial evidence contracts
-**Status:** Implemented and locally verified — optional paid-provider deployment remains gated
+**Status:** Core Phase 11 features are implemented and locally verified; complete-path large-history Review measurement and optional-provider deployment readiness remain open operational acceptance. External paid dispatch remains off.
 
 ## Objective
 
@@ -26,7 +26,7 @@ Connector health/capability and provenance remain service-neutral, distinguishin
 
 ## Current implementation and change boundary
 
-The Phase 11 surfaces below are implemented in the existing flow, without a parallel inference engine or review queue. The exit evidence below records local implementation acceptance and separately identifies unverified paid-provider deployment prerequisites.
+The Phase 11 surfaces below are implemented in the existing flow, without a parallel inference engine or review queue. Local deterministic analysis, governed review/rules, and policy/lifecycle behavior have local evidence; that evidence does not close complete-path large-history Review measurement or optional-provider deployment acceptance.
 
 | Implemented surface | Phase 11 behavior |
 | --- | --- |
@@ -40,6 +40,16 @@ The Phase 11 surfaces below are implemented in the existing flow, without a para
 | `packages/application/src/rule-mutation.ts`; `crates/core-protocol/src/native_rules.rs` | Stable Actual payee-ID rule planning reuses governed proposal/simulation/approval/execution, with complete reviewed impact and independently executable native rule semantics. |
 
 Rust owns deterministic matching, scoring, recurrence, and checked amount statistics over normalized immutable inputs. TypeScript owns Actual normalization, authorization, policy, persistence, provider I/O, and presentation. Provider results never become ledger facts. Rust-owned canonical merchant types are exposed through `crates/core-protocol/src/merchant_intelligence.rs` and the N-API boundary, with versioned `protocol/json-schema/merchant-intelligence-v1.json`, checked-in TypeScript/Zod mirrors and contract fixtures. Keep these boundaries in lockstep; the `protocol-generated` package does not automatically regenerate them, and Phase 8.8's shared vocabulary does not substitute for the merchant records.
+
+### Current demo expansion evidence (`c1fbd8f`)
+
+The current demo catalog has 40 selectable Actual-backed stories: the original 29 spending stories, three governance stories, and eight merchant stories. Its acceptance evidence covers 59 live Actual acceptance tests and five native/service fault variants, using genuine Better Auth personas with development authentication bypass disabled and disposable Actual budgets. This is separate from the historical Phase 11 quality/native benchmark receipts and does not establish large-history complete-path Review or live-provider acceptance. See [ADR 0002 expansion verification](../../adr/0002-owned-disposable-scenario-demo.md#expansion-verification), the [scenario catalog](../../../README.md#disposable-feature-scenarios-and-demo), and the [acceptance contract](../../../packages/scenario-kit/src/acceptance-contract.ts).
+
+### Open operational acceptance
+
+- Full-path large-history Review remains open at 250k. The final-source, 12 GiB controlled 50k run below completed all 20 measured Sync-to-render repetitions with descriptive p95 44,946.963628 ms; it has no UI threshold and does not close the 250k gate. The final-source 250k receipt below captured exact source and balances but timed out on its first physical Sync before a completed Review render, warmup, or measured repeat; its p95 is `null` and reference status is unproven. Both final-source runs use the same `MemoryMax=12GiB`, `MemorySwapMax=0`, `OOMPolicy=continue`, `AllowedCPUs=0,1`, default Node heap, and `RuntimeMaxSec=3600` controls. Keep the uncapped 50k pre-patch observation below as historical, separate evidence. A distinct earlier capped 250k attempt ended in kernel OOM/SIGKILL at the service `MemoryMax` during synchronous grant preparation after SDK clone/data-integrity checks; this cap failure is not the later deadline receipt and yielded no independent authorized source-admission/readback receipt or Review result. Neither operational whole-job event is a result against the native 512 MiB incremental-analysis target or owned Actual/web-entry RSS. The grant-statement cache passed its isolated probe; its separate operational 512 MiB budget is not the native target.
+- The disposable runtime's `readScenarioProcessMemory(activeHandle)` reports approximate Linux VmRSS/lifetime VmHWM for the owned Actual and web entry processes, or `null` when unavailable/unsupported. PIDs stay private; it does not inspect environment/command lines or foreign processes. These samples exclude descendants, browser, and host, are not exact physical memory, and do not establish the 512 MiB incremental-analysis target.
+- Optional-provider deployment readiness remains open: no provider key, account-confirmed tariff, or cost authorization has been supplied; upstream-retention terms and deployment proxy/log redaction remain unverified. The optional `compose.research` overlay keeps canonical provider configuration off by default, but does not establish deployed readiness. External dispatch remains off.
 
 ## Deliverables
 
@@ -89,13 +99,13 @@ The engine must distinguish ledger facts, derived evidence, advice, proposals, a
 
 - Alias/pattern confirmation changes evidence only; category writes and rule creation remain separate governed actions. Re-read current source facts, rule/payee/category identities, policy, and evidence versions before approval/execution; changed, deleted, expired, or superseded inputs invalidate the proposal.
 - Extend native rule planning, simulation, hashing, execution, and postcondition verification to use the same stable-ID condition semantics. Prove the exported payload against a disposable Actual instance, including duplicate payee names, rename/merge/delete, existing-rule ordering, and authorization-safe refusal of effects outside the actor's scope without exposing their records or counts. Do not silently export a broader name-based rule.
-- Capture proposal-time simulation with source snapshot/hash, evidence/policy versions, exact payload, affected IDs, conflicts, examples, and expiry. The current review proposal route reports missing simulation; execution-time simulation alone does not fulfill this requirement. Revalidation that changes the reviewed impact or payload requires a new proposal/approval.
+- Capture proposal-time simulation with source snapshot/hash, evidence/policy versions, exact payload, affected IDs, conflicts, examples, and expiry. The current disposable Review proposal flow has simulation-present evidence (see Integrated runtime evidence below); execution-time simulation alone would not fulfill the requirement. Revalidation that changes the reviewed impact or payload requires a new proposal/approval.
 
 ### Phase C — Provider-neutral external enrichment
 
 Define a `MerchantEnrichmentProvider` boundary with:
 
-- reuse the existing `merchantResearch` capability vocabulary (`disabled | local-only | external-allowed`); add server-side space/budget policy persistence and resolution as new work;
+- reuse the existing `merchantResearch` capability vocabulary (`disabled | local-only | external-allowed`); server-side space/budget policy persistence and least-permissive resolution are implemented, while provider deployment configuration and live paid dispatch remain gated;
 - provider and version;
 - query and normalized merchant input;
 - timestamp, cache TTL, confidence, source URLs, and failure state;
@@ -177,7 +187,7 @@ Persist scoped alias and recurrence decisions as well as enrichment: stable targ
 
 ## Implementation orchestration and rollout
 
-1. **Contract and fixture gate:** map Actual fields and stable-ID native rule semantics; define canonical schemas, precedence, scope/lifecycle, and calibration examples. Adopt the planning defaults below, select the calendar source/license/coverage and applicable provider tariff, and baseline the performance targets before implementation. Record any evidence-based target adjustment before tuning; do not infer missing SDK fields or provider guarantees.
+1. **Contract and fixture gate (completed for the local slice):** map Actual fields and stable-ID native rule semantics; define canonical schemas, precedence, scope/lifecycle, and calibration examples. The selected calendar source/license/coverage and frozen synthetic corpus are documented below. Native-window workload/method evidence is artifact-specific below; account-confirmed provider tariff remains a deployment prerequisite. Do not infer missing SDK fields or provider guarantees.
 2. **Local vertical slice (A/B):** extend normalized input and Rust analysis, then governed persistence/proposals, Review and existing attention/CLI projections. Migrate the occurrence-count recurrence projection to the shared result. Prove local-only categorization, alias confirmation/rejection, and native rule round-trips before adding network I/O.
 3. **External slice (C/D), then E evaluation:** implement one shared policy/cache/cost/lifecycle path and the ValueSerp adapter. Evaluate datasets/self-hosted search without requiring a second production provider. Provider failure must not regress the local slice.
 4. **Persistence/release:** use existing workflow-store migrations for scoped aliases, policy, enrichment, and quota records, with schema validation and indexed scope/expiry lookups. Never backfill unconfirmed historical suggestions as confirmations. Invalidate derived data on relevant source/normalizer/policy changes. Test old-database upgrade and backup/restore; do not run older incompatible binaries against an upgraded database. External dispatch remains off until an authorized opt-in.
@@ -186,7 +196,7 @@ Primary ownership covers shared schemas, integration, and final acceptance. Afte
 
 ## Recommended planning defaults and release targets
 
-These recommendations guide implementation; numerical quality/performance targets are not measured results or established product capabilities. Calendar support and external enrichment remain optional. The contract/fixture gate must resolve the remaining selections below before implementing the affected slice; do not weaken release criteria after seeing evaluation results.
+These recommendations guided implementation; numerical quality/performance targets remain proposed gates, not measured general capabilities. Calendar support and external enrichment remain optional. The selected local calendar/corpus fixtures are recorded below; provider pricing and deployment egress/log controls remain operational selections. Do not weaken release criteria after seeing evaluation results.
 
 ### 1. Holiday calendars and jurisdiction
 
@@ -227,9 +237,111 @@ At the maximum supported dataset, target **≤ 512 MiB incremental analysis memo
 - Above the supported envelope, return explicit limited coverage rather than silently truncating or exhausting memory.
 - Pin benchmark hardware/runtime, candidate counts, and measurement method at the contract gate; these targets are not hardware-independent guarantees.
 
+#### Full-path Review measurement harness
+
+The [Review harness](../../../scripts/merchant-intelligence/review.mjs) reuses the owned disposable Actual/Nuxt runtime, normal fictional Better Auth identity, canonical sparse merchant scenario, and exact native-ID source/view grants. It requires exact admitted source size and an independent published-SDK capture preserving baseline ledger facts, generated rows, and every account balance against the exact generated delta. Generated categorized USD rows are performance history, not quality labels. Run from the repository root in the locked Nix environment with `actual-server`, the source-built addon, production Nuxt bundle, and lockfile-resolved `@actual-app/api@26.10.0` available; the two sizes are intentionally serial, on CPUs 0–1, into a fresh private artifact directory:
+
+**SDK and dataset preparation.** The locked SDK carries the registered one-line pnpm patch (SHA256 `b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9`) replacing history-sized grouped-query argument expansion with equivalent `flatMap` assembly. The production SDK entry and locked package source have the same observed SHA256, `adcce45c12250e9deef666632a33c0edb6b0e8988c79a13ddc0a90a9566c7269`. The permanent `scripts/merchant-intelligence/review-sdk.test.mjs` real-SDK regression reads the original 250k history and downloads it into a fresh independent SDK directory, verifying every native transaction ID, financial field, and account balance; it completed in 243,002.642701 ms. This proves SDK data-path correctness, not Review UI latency or a reference performance pass.
+
+The harness now follows the existing guarded sync-reset path for its generated rows, compacting CRDT/deferred/tombstone state, vacuuming and rotating the sync group while preserving the disposable budget, native IDs, and checked Money. The SDK's `sync-reset` command republishes the compacted snapshot before independent SDK capture. Keep Actual's default 50 MiB encrypted-archive allowance and the existing 500 MiB SDK ZIP guard unchanged. Wrong-budget publication is rejected without changing preferences. The narrow benchmark connection admission requires a validated private, non-demo ready merchant and exact selected-space POST connection, then normal owner/session/proof/`connection:manage` and unchanged-budget checks; foreign, shared, or demo origins remain denied with HTTP 403.
+
+```sh
+REPORT_DIR="$(mktemp -d /tmp/merchant-review-XXXXXX)" &&
+taskset -c 0,1 nix develop --command node scripts/merchant-intelligence/review.mjs \
+  --sizes 50000 --warmups 2 --iterations 20 --deadline-ms 120000 \
+  --dataset-deadline-ms 3300000 --chromium-path /opt/google/chrome/chrome \
+  --output "$REPORT_DIR/reference-50000.json"
+```
+
+The first physical Sync/population is reported separately; it is not a cold-start sample. Each measured click ends only after successful Sync, authorized queue/category reads, complete queue/item rendering, and enabled Sync. Descriptive nearest-rank p95 is emitted only after both warmups and all 20 serial repetitions complete; otherwise p95 is `null` and reference status is unproven. This adds no UI latency threshold (`uiThresholdMs` remains `null`) and does not change the existing 2s/5s local-analysis or 512 MiB incremental-analysis targets. Memory samples cover only owned Actual/web entry processes, approximately; descendants, browser, and host are excluded. Benchmark reports/screenshots remain private. See [ADR 0002's benchmark contract](../../adr/0002-owned-disposable-scenario-demo.md#expansion-verification).
+
+Run the serial 250k follow-on with the same harness options, `--sizes 250000`, and a second fresh artifact path inside the owned transient user service described above. The harness itself does not impose those resource limits. Do not retry, widen native gates, or add heap overrides if this bounded run censors or fails; incomplete samples leave p95 `null` and reference status unproven.
+
+##### Historical uncapped pre-patch 50,000-source reference (descriptive; not final-source evidence)
+
+The private `reference-50000-verified.json` receipt is the uncapped pre-patch reference: `status: completed`, `referenceStatus: descriptive`, `failureCode: null`, and cleanup completed. It used the `merchant-local-sparse` canonical fixture dated `2026-10-04`, a genuine Better Auth owner, and development authentication bypass disabled; no production Actual or provider was involved. Source admission/capture/readback were exact: 50,000 original, raw, and retained rows, zero truncation, six baseline rows plus 49,994 generated categorized USD rows, 49,998 eligible rows, and one candidate/persisted/visible queue item. The complete five-year analysis window ran from `2021-10-11` through `2026-10-11`. The independent published-SDK capture preserved every account balance; generated delta was −127,473,018 USD minor units, with account balance 15,000 → −127,458,018 minor units and `balanceCheck: true`. The queue remained stable; all 23 Sync/Review/category response epochs returned HTTP 200, with zero page errors. The private screenshot showed Aster Atelier at −346.07 USD in Household Checking / Groceries, native support 49,997, one stable queue item, and enabled Sync.
+
+| 50k full-path measure | Result |
+| --- | ---: |
+| Preparation (excluded from UI timing) | 134,865.719946 ms |
+| First physical Sync/population | 63,413.603646 ms |
+| Warmups / complete measured repetitions | 2 / 20 of 20 |
+| Failed / censored repetitions | 0 / 0 |
+| Warmed nearest-rank p95 | 61,314.913948 ms |
+| Full-UI threshold | None (`uiThresholdMs: null`) |
+
+Approximate sampled memory, over a prepared-state baseline through first population, warmups, and measured repetitions; this 50k run was uncapped:
+
+| Owned entry process | Baseline sampled RSS | Sampled peak RSS | Sampled peak delta |
+| --- | ---: | ---: | ---: |
+| Actual | 439,910,400 bytes | 1,162,752,000 bytes | 722,841,600 bytes |
+| Web | 2,662,391,808 bytes | 3,778,744,320 bytes | 1,116,352,512 bytes |
+
+These sampled entry-process values exclude descendants, browser, and host. Lifetime high-water deltas are distinct counters; do not sum or present them as exact physical/total-process memory or compare them to the native 512 MiB incremental-analysis target. The roughly 61-second warmed p95 is descriptive only, not a target pass/fail.
+
+The receipt records Node v24.18.0, Linux x64 kernel `7.2.8-200.fc44.x86_64`, affinity 0–1 (two allowed CPUs, not dedicated-core isolation), and these build identities: native addon SHA256 `3fea89730df48ec777ac3322cabcb83ae5f7f9aec621ac444b1144751cff15b4`; web entry `de823eb810593659277edd00dcfc1bd145880683fbe5ad2e9ea64e57cb686559`; Review harness `237baa3e1de7d2fc9df6818faa9bca28648e8fb4b8898b63f5fb0375eea9de9f`; browser harness `97a624143cb545966f875a489d6262efc9e2fb0e4f9758a82bcc392af9ec6742`; scenario fixture `af8a6164377fceae4ae1724c6f3296eee4366b35b121f392944dfe42f212b9aa`; benchmark spec `f170f6da1ae8b2e28bfbb8853d7b42840679737485b493b3e68c8da3061b3e82`; Chromium executable `6c792041b07547a662e1b17974d1dc34a3db630379b45d9d89ddd7e3e68cc587` (reported browser version unavailable).
+
+##### Final-source 50,000-source observation (complete; descriptive, no UI threshold)
+
+The private `reference-50000-statement-reuse.json` receipt completed with `status: completed`, `referenceStatus: descriptive`, `failureCode: null`, and cleanup completed. It used the same final-source grant-statement cache, patched `@actual-app/api@26.10.0`, and harness/build identities documented in the adjacent final-source 250k receipt; no production Actual or provider was involved. It ran under the same owned `MemoryMax=12GiB`, `MemorySwapMax=0`, `AllowedCPUs=0,1`, default-heap, and 120,000 ms Sync-deadline controls, with two warmups and 20 serial measured repetitions.
+
+The `merchant-local-sparse` disposable source dated `2026-10-04` contained 50,000 original, raw, and retained rows with zero truncation: six baseline rows plus 49,994 generated categorized USD rows, 49,998 eligible, two starting, and zero excluded. Preparation used 100 batches and 99,988 exact grants. Original SDK readback took 697.123978 ms; independent SDK copy readback took 1,030.492574 ms. Independent published capture, exact readback, complete collections, and the USD balance check all succeeded. The five-year window was `2021-10-11` through `2026-10-11`, as of `2026-10-11`. Generated delta was −127,473,018 USD minor units; account balance changed from 15,000 to −127,458,018 minor units. There was one candidate, one persisted/visible item, and a stable queue; a foreign-origin request returned 403 without changing it.
+
+| Final-source 50k full-path measure | Result |
+| --- | ---: |
+| Preparation (excluded from UI timing) | 69,823.129264 ms |
+| Whole CLI wall time / exit | 1,879.17 s / 0 |
+| Original / independent SDK readback | 697.123978 / 1,030.492574 ms |
+| First physical Sync/population | 44,841.935623 ms |
+| Warmup Sync times | 44,771.506251 / 44,828.952113 ms |
+| Measured repetitions completed | 20 of 20 |
+| Failed / censored repetitions | 0 / 0 |
+| Warmed nearest-rank p95 | 44,946.963628 ms |
+| UI threshold | None (`uiThresholdMs: null`) |
+
+All 69 Sync/Review/category responses returned HTTP 200 (23 per request type); there were zero browser network, runtime, or console errors. The private final PNG showed Aster Atelier at −346.07 USD in Household Checking / Groceries, native support 49,997, one pending queue item, and enabled Sync, with no financial UI mutation. This is a complete 50k UI sample set, but its descriptive p95 has no pass/fail threshold and does not establish the 250k Review gate.
+
+Approximate owned-entry-process RSS samples over the prepared-state baseline, first population, warmups, and measured repetitions (7,043 samples, zero failed reads):
+
+| Owned entry process | Baseline sampled RSS | Sampled peak RSS | Peak delta | End sampled RSS | Lifetime VmHWM delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Actual | 186,630,144 bytes | 186,658,816 bytes | 28,672 bytes | 136,114,176 bytes | 0 |
+| Web | 1,507,307,520 bytes | 1,973,800,960 bytes | 466,493,440 bytes | 1,860,378,624 bytes | 319,803,392 bytes |
+
+These approximate entry-process values exclude descendants, browser, and host. Lifetime high-water deltas are separate counters; do not sum them, present them as exact physical/total-process memory, or compare them to the native 512 MiB incremental-analysis target.
+
+##### Final-source 250,000-source observation (first-population deadline; not a Review pass)
+
+The private `reference-250000-statement-reuse.json` receipt reported `status: failed`, `failureCode: deadline_exceeded`, and cleanup completed. The CLI exited 2 after 642.17 seconds through the reported deadline failure, not a cgroup kill. The populated synthetic source, SDK readbacks, and independent capture completed; the first physical Sync was armed but its initial Review population timed out before completion. No completed browser render or screenshot, HTTP summary, warmup, measured repeat, or p95 resulted. This deadline receipt is separate from the earlier 12 GiB cap/OOM attempt.
+
+The `merchant-local-sparse` disposable source dated `2026-10-04` contained 250,000 original, raw, and retained rows with zero truncation: six baseline rows plus 249,994 generated categorized USD rows, 249,998 eligible, two starting, and zero excluded. Preparation used 500 batches and 499,988 exact grants. Original SDK readback took 4,539.161649 ms; the independent SDK copy readback took 5,406.395757 ms. Independent published capture, exact readback, complete collections, and the USD balance check all succeeded. The five-year window was `2021-10-11` through `2026-10-11`, as of `2026-10-11`. Generated delta was −637,477,668 USD minor units; account balance changed from 15,000 to −637,462,668 minor units. The foreign-origin request returned 403 without changing the queue.
+
+| Final-source 250k full-path observation | Result |
+| --- | ---: |
+| Preparation (excluded from UI timing) | 388,041.543202 ms |
+| Original / independent SDK readback | 4,539.161649 / 5,406.395757 ms |
+| First physical Sync/population | Timed out before completion; no elapsed time |
+| Warmups completed | 0 |
+| Measured repetitions attempted / completed / censored | 0 / 0 / 0 |
+| Reference status / warmed p95 | Unproven / `null` |
+| Full-UI threshold | None (`uiThresholdMs: null`) |
+
+The CLI completed with `failureCode: deadline_exceeded`; it did not produce a screenshot or Review latency observation. Do not reinterpret zero repetitions as completed/censored samples or claim zero browser errors.
+
+Approximate owned-entry-process RSS samples from the prepared-state baseline through the timed-out first population (479 samples, zero failed reads):
+
+| Owned entry process | Baseline sampled RSS | Sampled peak RSS | Peak delta | End sampled RSS | Lifetime VmHWM delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Actual | 140,988,416 bytes | 141,185,024 bytes | 196,608 bytes | 141,185,024 bytes | 0 |
+| Web | 2,375,450,624 bytes | 3,157,188,608 bytes | 781,737,984 bytes | 2,721,813,120 bytes | 0 |
+
+These approximate entry-process samples exclude descendants, browser, and host; lifetime high-water deltas are separate counters, and a zero delta does not mean zero memory use. They are not exact physical/total-process memory and do not establish the native 512 MiB incremental-analysis target.
+
+The receipt records Node v24.18.0, Linux x64 kernel `7.2.8-200.fc44.x86_64`, CPU affinity 0–1 (two allowed CPUs, not dedicated-core isolation), native addon SHA256 `3fea89730df48ec777ac3322cabcb83ae5f7f9aec621ac444b1144751cff15b4`, SDK source/production entry SHA256 `adcce45c12250e9deef666632a33c0edb6b0e8988c79a13ddc0a90a9566c7269`, Review harness SHA256 `901ef63bf89d5ccb4f3d23a9aa6eef683405c463642c3e6e650c83a8f7b19964`, browser harness SHA256 `97a624143cb545966f875a489d6262efc9e2fb0e4f9758a82bcc392af9ec6742`, scenario fixture SHA256 `af8a6164377fceae4ae1724c6f3296eee4366b35b121f392944dfe42f212b9aa`, and benchmark spec SHA256 `f170f6da1ae8b2e28bfbb8853d7b42840679737485b493b3e68c8da3061b3e82`. The report's web-entry SHA256 is `de823eb810593659277edd00dcfc1bd145880683fbe5ad2e9ea64e57cb686559`; it identifies the loader entry alone, not the whole bundle. Governance source SHA256 `767c1bffa367bd48298a29234d8a0958030686190c433d8b32b5dc85d5ebcac5` and compiled Nitro chunk `apps/web/.output/server/chunks/nitro/nitro.mjs` SHA256 `9ded2b6e941c4e177224399741a4d2c7e6f57b0c9478ebd59b09193e15c9bc2c` identify the production grant-cache implementation. Chromium executable SHA256 was `6c792041b07547a662e1b17974d1dc34a3db630379b45d9d89ddd7e3e68cc587`; the browser version was unavailable.
+
 Final native measurements use `scripts/merchant-intelligence/current.mjs`, release addon SHA256 `3fea89730df48ec777ac3322cabcb83ae5f7f9aec621ac444b1144751cff15b4`, Linux x64 on an Intel Core Ultra 7 268V, inherited CPU affinity 0–1, Node 24.18.0, two warmups and 20 serial samples per size. Node differs from the frozen baseline's 24.11.1; the affinity is not dedicated-core isolation. Admitted-history input serialization plus native-call p95 is 266.0 ms / 1,618.0 ms at 50k / 250k; the maximum incremental exported kernel-counter estimates are 35,520,512 / 280,743,936 bytes. All 40 samples completed uncensored.
 
-The lossless `wide-or-private-and` workload separately measures native-window p95 1,191.8 ms / 3,853.7 ms and maximum incremental exported-counter estimates 100,941,824 / 217,837,568 bytes. Its 250k output retains 100,000 blocks, 100,003 parts, 50,000 sets and all 250,000 native classifications; none are capped or replaced by previews. Serialization uses a bounded 64 KiB staging buffer and returns the unchanged primitive-string ABI. These counters are not exact physical RSS or allocation measurements. The frozen native timing/memory window excludes deferred JavaScript response parsing: correlated input/native/parse p95 is 1,255.3 ms / 5,299.8 ms, so these native-window passes do **not** establish a five-second fully consumed response or the separate ten-second end-to-end Review target. Parse p95 alone is 66.1 ms / 1,452.4 ms.
+The lossless `wide-or-private-and` workload separately measures native-window p95 1,191.8 ms / 3,853.7 ms and maximum incremental exported-counter estimates 100,941,824 / 217,837,568 bytes. Its 250k output retains 100,000 blocks, 100,003 parts, 50,000 sets and all 250,000 native classifications; none are capped or replaced by previews. Serialization uses a bounded 64 KiB staging buffer and returns the unchanged primitive-string ABI. These counters are not exact physical RSS or allocation measurements. The frozen native timing/memory window excludes deferred JavaScript response parsing: correlated input/native/parse p95 is 1,255.3 ms / 5,299.8 ms, so these native-window passes do **not** establish a five-second fully consumed response. The earlier mention of a separate ten-second Review target is not an independently documented UI gate; complete-path results are descriptive and add no UI threshold. Parse p95 alone is 66.1 ms / 1,452.4 ms.
 
 All four final native reference workloads pass their frozen native-window latency and exported-counter gates with 20 uncensored measured samples per size after two warmups. The conflicting broad workload preserves weighted provenance and abstention; the producer-shaped workload retains disjoint predicates rather than inventing matches.
 
@@ -302,10 +414,10 @@ Authenticated source-browser verification uses `http://127.0.0.1:3073/review` ag
 - Separately observed complete Review Sync takes **821 ms** on this disposable 120-transaction fixture: the timer waits for the successful Sync response, the governed queue refresh, 45 settled items and the enabled Sync control. An earlier 231 ms observation covered only the response/early toast and is not complete-path evidence. One observation is neither p95 nor a 50k/250k end-to-end benchmark.
 - At 390px, merchant evidence grids and alias selects remain within their content bounds and retain both full 64-character revisions. The separate unchanged application header still produces 12px horizontal document overflow; this verification does not claim a globally overflow-free mobile shell.
 - A freshly compiled disposable SQLite workflow-store retention smoke uses the canonical representative fixture: deleting the actual private owner retires an unassigned Review bundle while preserving peer/private and shared copies before their original expiry. A foreign known legacy namespace and ordinary nested canonical `sourceRevision` survive selected cleanup; exact Money remains unchanged. Cleanup at the inclusive original expiry retires the remaining selected derived copies. This is compiled store-lifecycle evidence, not browser/provider acceptance, and performs no Actual ledger mutation.
-- A deterministic released-port-reuse regression reproduces the observed Actual reset failure in 597 ms: selecting the same web/Actual port lets Nuxt answer the initial Actual readiness probe before Actual initializes. Reserving both loopback ports together removes that failure without retries. The complete process-runtime and original purchase/payment scenario targets pass all 29 tests, followed by strict TypeScript, zero-warning ESLint and the full serial production build. Independent correctness and security review found no patch defects. The historical coverage run did not record its port pair; the regression proves this failure class and repair, not retrospective identification of that pair.
+- A deterministic released-port-reuse regression reproduces the observed Actual reset failure in 597 ms: selecting the same web/Actual port lets Nuxt answer the initial Actual readiness probe before Actual initializes. Reserving both loopback ports together removes that failure without retries. The associated process-runtime and original purchase/payment receipt is from the historical `99a7257` era; its 29 original CLI scenarios, strict TypeScript, zero-warning ESLint and full serial production build are not current `c1fbd8f` totals. Independent correctness and security review found no patch defects. The historical coverage run did not record its port pair; the regression proves this failure class and repair, not retrospective identification of that pair.
 - Fresh authenticated alias verification follows physical Sync and the 45-item settled queue, then loads the complete 120-record source. For Target transaction `046083db-3bbf-4959-8797-ec628f9e6459`, absent `importedPayee` cannot enable Confirm. Selecting admitted native `payeeName` and the exact payee `fd674d8b-36f5-4036-9295-39cd46be27ac` enables it without inventing bank text. Fresh password confirmation creates private/account-scoped alias `9035746a-42d1-4364-809b-ee306c523cf0` at accepted version 1; rejection advances it to version 2 and reloads the visible attributed contradiction. Reauthentication, rejection and evidence reload return HTTP 200; the browser has no page or console errors. A visual capture shows the durable rejected state. A subsequent complete Actual SDK read preserves all 120 transactions, the original ledger digest, pending null category and exactly one native rule.
 
-Final Rust/Nix formatting, all-target Clippy with warnings denied, all 29 disposable-Actual CLI scenarios, five native/service fault variants and all four x86_64-linux Nix flake checks pass. Current full isolated execution/coverage, production build, TypeScript, zero-warning ESLint, authenticated alias controls and final-binary quality/performance also pass. Nix does not exercise the incompatible aarch64-linux outputs on this host. Live paid ValueSerp dispatch, actual account tariff, upstream retention and deployment proxy/log redaction are not verified: no key or priced opt-in is configured. Deterministic adapter/coordinator/API tests exercise outage, cancellation, revocation, late-result deletion fences and restore holds; those are not live-provider browser claims. The only retained Actual mutation is the explicitly verified native rule; standalone interoperability and human alias/pattern/policy controls preserve the original ledger.
+Historical `99a7257`-era verification receipt (not current `c1fbd8f` verification): final Rust/Nix formatting, all-target Clippy with warnings denied, the original 29 disposable-Actual CLI scenarios, five native/service fault variants, 854 Rust tests, 5,150 Vitest tests, Contract 140/140, Actual integration 102/102, required native/CLI/coverage-checker execution, and all four x86_64-linux Nix flake checks were reported as passing. The associated isolated execution/coverage, production build, TypeScript, zero-warning ESLint, authenticated alias controls and final-binary quality/performance are historical receipts, not current totals. Nix does not exercise the incompatible aarch64-linux outputs on this host. Live paid ValueSerp dispatch, actual account tariff, upstream retention and deployment proxy/log redaction are not verified: no key or priced opt-in is configured. Deterministic adapter/coordinator/API tests exercise outage, cancellation, revocation, late-result deletion fences and restore holds; those are not live-provider browser claims. The only retained Actual mutation is the explicitly verified native rule; standalone interoperability and human alias/pattern/policy controls preserve the original ledger.
 
 ## Exit evidence matrix
 
@@ -320,13 +432,13 @@ Final Rust/Nix formatting, all-target Clippy with warnings denied, all 29 dispos
 | Cache, exact cost and worker lifecycle | Scoped durable cache, fractional-cost reservations, credential/budget limits and claims | Full suites cover duplicate workers, cache reauthorization, fractional charges, UTC boundaries, uncertain outcomes and live lease occupancy through deletion/restore. No live account tariff or paid dispatch is claimed. |
 | Retention, ownership and deletion | Server-owned derivation stamps; existing Review/projection tables; merchant store maintenance | Failing-before/passing-after regressions and compiled SQLite smoke verify original expiry/30-day age, private owner versus assignment, nested other-owner/shared/legacy scope preservation, retired fingerprints and protected Money/human/audit records. |
 | Authorization and publication | Complete source/numeric manifests; final-await subject, membership, delegation, policy and SDK-dispatch fences | Full regression suite passes; real second-actor denial/approval, signout clearing and reversible analyze-grant revocation produce the documented 404/403 outcomes without inheriting private evidence. |
-| Quality and performance | Frozen labeled fixture; quality evaluator; four lossless native workloads | Final release artifact passes all six quality gates and all eight size/workload native-window latency/memory gates. Complete 250k wide-OR output parses at correlated p95 5,299.8 ms; physical process memory and end-to-end Review are not represented by native-window limits. |
+| Quality and performance | Frozen labeled fixture; quality evaluator; four lossless native workloads; Actual-backed Review harness | The release artifact's six synthetic quality gates and eight size/workload native-window gates remain artifact-specific; native p95/counter values below do not represent full Review or physical process memory. The uncapped pre-patch 50k observation reports descriptive p95 61,314.913948 ms; the final-source controlled 50k run completed 20/20 repetitions at descriptive p95 44,946.963628 ms, with no UI threshold. The final-source 250k run captured exact source and balances but timed out before its first Review population completed, with no UI p95; large-history Review acceptance remains open. |
 | Independent review and deliverable inventory | DeepReview/security passes over integrated phase, Attention, final retention and runtime port isolation; read-only exit inventory | Current reviewed patches have no remaining reported findings; the inventory identifies no additional concrete implementation gap. Reviews are static evidence, not test or live-provider execution. |
-| Build, execution and coverage | Serial workspace build; strict TypeScript; ESLint; isolated LLVM/V8 coverage against full base `63d3df17a6f2bebae5522c09fa194657ca86b51b` | Production build/typecheck/zero-warning lint, Rust/Nix formatting and all-target Clippy pass; 854 Rust and 5,150 Vitest tests pass, plus required native/CLI/coverage-checker execution. Contract 140/140 and Actual integration 102/102 pass with no skipped tests. All 29 CLI scenarios, five fault variants and four x86_64-linux Nix checks pass. |
+| Historical `99a7257`-era build, execution and coverage receipt (not current `c1fbd8f`) | Serial workspace build; strict TypeScript; ESLint; isolated LLVM/V8 coverage against full base `63d3df17a6f2bebae5522c09fa194657ca86b51b` | Historical receipt: production build/typecheck/zero-warning lint, Rust/Nix formatting and all-target Clippy passed; 854 Rust and 5,150 Vitest tests passed, plus required native/CLI/coverage-checker execution. Contract 140/140 and Actual integration 102/102 passed with no skipped tests. The original 29 CLI scenarios, five fault variants and four x86_64-linux Nix checks passed. |
 
-### Current coverage gate
+### Historical coverage receipt (`99a7257` era; not current `c1fbd8f`)
 
-Coverage uses the existing package and changed-file aggregate thresholds; no threshold was reduced. Source-free contract/integration workspaces report **N/A**, not fabricated 100% line coverage; their complete successful, nonempty, unskipped execution is enforced separately.
+The figures below are historical `99a7257`-era package and changed-file aggregates, not current `c1fbd8f` coverage totals. That run used the existing package and changed-file aggregate thresholds without reducing them. Source-free contract/integration workspaces reported **N/A**, not fabricated 100% line coverage; complete successful, nonempty, unskipped execution was enforced separately.
 
 | Production surface | Covered / executable lines | Coverage | Changed aggregate |
 | --- | --- | --- | --- |
@@ -343,6 +455,25 @@ Coverage uses the existing package and changed-file aggregate thresholds; no thr
 | Scenario kit | 1,952 / 2,308 | 84.58% | 85.66% |
 | Coverage checker | 446 / 446 | 100.00% | N/A |
 | Weighted workspace | 37,315 / 41,599 | 89.70% | Package aggregates above |
+
+### Current follow-through verification
+
+The latest bounded follow-through reports:
+
+- `scenario-kit`: all 336 tests across 18 files passed, including the uncertain-reset refusal of canonical import-match financial replay. Coverage is 2,876/3,326 lines (86.47%), statements 82.68%, branches 74.95%, and functions 92.08%; branch coverage is 74.95%, so these receipts do not show that every metric meets 80%.
+- Changed `scenario-kit` production-file line coverage: `actual-seed` 498/598 (83.28%); `demo-server` 481/599 (80.30%); loader 35/38 (92.11%); process-runtime 291/339 (85.84%); workflow-setup 597/666 (89.64%).
+- Actual adapter: 319 tests passed, line coverage 87.60%, changed `connector` coverage 85.12%.
+- The 16-test runtime-origin same-origin regression has failing-before/passing-after evidence. After adding the owned-process memory-observation accessor, the full runtime test file passed 17 tests and package typecheck/build passed in 37.37 seconds. Fresh SDK-boundary follow-through: 55 Node tests passed with zero failures/skips; targeted boundary/connection-selection/legacy-financial tests passed 96/96, Actual-adapter financial tests 38/38, and `scenario-kit` `actual-seed` tests 25/25 including real parent/child behavior. Fresh root typecheck, targeted ESLint, scenario-kit build, and Nuxt production build passed. The changed `demo-boundary` line coverage is 83.46% (statements 75.49%, branches 75.59%, functions 87.8%); this does not establish that every metric reaches 80%.
+- Fresh grant-statement-cache verification: workflow-store's full 24-file suite passed 899 tests with zero skips in 35.29 seconds; coverage is 4,506/5,319 lines (84.71%), statements 81.70%, branches 77.57%, and functions 91.51%. The isolated copy of the canonical fictional fixture completed 50,000 updates to the same grant ID/member/resource/capability with unchanged empty restrictions and null revocation, recording exactly 50,000 audit writes. After bounded per-database reuse of 12 static prepared SQL shapes (no cached rows or authorization results), sampled incremental RSS plateaued at 47,149,056 bytes from 15,000 through 50,000 writes; before the change it reached 729,214,976 bytes at 10,000. This 512 MiB probe budget is operational evidence, not the native 512 MiB incremental-analysis target or an Actual/web-entry RSS measurement.
+- Separate manual `scripts/merchant-intelligence/review-grants.test.mjs` evidence (not an ordinary unit/CI test): restoring the uncached implementation produced a RED assertion failure after 10,000 writes at 628,965,376 incremental RSS bytes above its operational 512 MiB ceiling (zero skips, 9.40 s). Reapplying the identical cache source and rebuilding produced GREEN: 50,000 grant writes, 50,000 audits, and fresh inactive-actor rejection passed (1 pass, 0 failures/skips, 11.99 s). This isolated regression ceiling is not the native 512 MiB analysis target.
+- Post-reset 120-source Actual/UI smoke: exact complete source of six baseline plus 114 generated rows, 118 eligible, one stable queue item; genuine Better Auth owner and development bypass disabled. First physical Sync was 5,454.858967 ms; two warmups and two measured repeats completed, with zero failures/censoring/browser errors and all 15 relevant response epochs HTTP 200. A foreign-origin request returned 403 without changing the queue. Independent capture verified generated delta −282,527 USD minor units and account balance 15,000 → −267,527; cleanup completed. With only two measured repeats p95 is `null` and status remains unproven for this sample count, not a large-history benchmark. The private screenshot showed Aster Atelier at −346.07 USD in Checking / Groceries, support 117, enabled Sync, and no financial UI mutation.
+- A separate missing-Chromium-interpreter acquisition failure in the real CLI smoke awaited SDK/store/server teardown and verified absence of the exact owned root and parent; this is cleanup evidence, not performance evidence.
+- Optional research/deployment checks: ten Node Compose checks passed in one fresh serial command (seven semantic/sentinel checks and three release-producer/real-Compose checks); the private-JSON CLI validator smoke passed 17, offline ValueSerp tests passed 28, settings/coordinator/host tests passed 136, and `bash -n` passed. The reproducible offline command was `nix develop .#release --command bash -c 'COMPOSE_BIN="$(command -v docker-compose)" just compose-validate'` (44.09 seconds); the default development shell lacks Compose. No containers, paid calls, provider key values, or network provider were used.
+- Release packaging: the release producer verified four assets and exact-byte SHA256s, with provider off and read-only opt-in; the release workflow now includes the overlay. A Nuxt production build passed in 16.20 seconds; a scan of all 1,204 artifact diagnostics found no warning/error matches. No image, tag, release, or publish was executed.
+- Independent DeepReview and security reviews cleared the integrated SDK boundary, private reconnection, and bounded grant-statement-cache changes. A separate final read-only review cleared the manual allocation regression. The earlier ready-connection admission finding was resolved; these are static review results, not runtime performance passes.
+
+The 336-test scenario-kit rerun covered all 18 files with zero parent-suite skips, including the completion-reconciliation, governance, merchant-local, merchant-native-rule, merchant-research, claims-cart, and purchase-payment-evidence suites plus the fault suite. Filtered child CLI invocations with 58 skips and one pass are separate focused runs, not skips in that parent suite. This rerun did not repeat `c1fbd8f`'s all-40-story live-browser walkthrough or whole-workspace Rust/Vitest/coverage gates. The fresh post-reset browser proof includes the 120-source smoke and the final-source 50k run (20/20 complete; descriptive p95, no UI threshold). The uncapped pre-patch 50k observation remains separate historical evidence. The final-source 250k receipt below proves exact source/readback but timed out on first Review population without a completed browser observation, warmup, repetition, or p95; large-history Review acceptance remains open. Packaging checks establish no published image or live provider/deployment acceptance; the `99a7257`-era aggregate above remains historical.
+
 
 ## Tests and exit criteria
 

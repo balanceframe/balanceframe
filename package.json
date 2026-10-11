@@ -26,7 +26,8 @@
     ],
     "patchedDependencies": {
       "nitropack@2.13.4": "patches/nitropack@2.13.4.patch",
-      "@nuxt/devtools@3.4.2": "patches/@nuxt__devtools@3.4.2.patch"
+      "@nuxt/devtools@3.4.2": "patches/@nuxt__devtools@3.4.2.patch",
+      "@actual-app/api@26.10.0": "patches/@actual-app__api@26.10.0.patch"
     }
   },
   "scripts": {

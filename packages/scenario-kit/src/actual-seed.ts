@@ -1316,6 +1316,11 @@ export async function populateActualBudget(ledger: ProtocolSnapshot): Promise<Se
   return populatePrepared(prepared);
 }
 
+/**
+ * Seeds the ledger through a private Actual client and shuts the SDK down before returning.
+ * A shutdown rejection after any init attempt throws a static `cleanup_unproven` error marked
+ * `ownedCleanupUnproven` so callers retain the owning root and stop before another dataset.
+ */
 export async function seedActualBudget(
   options: SeedActualBudgetOptions,
 ): Promise<SeededActualBudget> {
@@ -1328,14 +1333,12 @@ export async function seedActualBudget(
   }
   const prepared = validateLedger(options.ledger);
   const clientDir = createOwnedClientDir(options.clientDir);
-  let initialized = false;
-  try {
+  return (async () => {
     const client = await actualApi.init({
       serverURL: options.serverUrl,
       password: options.secretKey,
       dataDir: clientDir,
     });
-    initialized = true;
     await client.send('create-budget', { budgetName: options.budgetName, avoidUpload: false });
     const budgets = (await actualApi.getBudgets()).map((row) => row as ActualRow);
     const localBudget = budgets.find(
@@ -1390,7 +1393,13 @@ export async function seedActualBudget(
       name: options.budgetName,
       ...(typeof localBudget?.id === 'string' ? { localBudgetId: localBudget.id } : {}),
     };
-  } finally {
-    if (initialized) await actualApi.shutdown().catch(() => {});
-  }
+  })().finally(async () => {
+    try {
+      await actualApi.shutdown();
+    } catch {
+      const cleanupError = new Error('Actual SDK cleanup could not be proven');
+      Object.assign(cleanupError, { code: 'cleanup_unproven', ownedCleanupUnproven: true });
+      throw cleanupError;
+    }
+  });
 }

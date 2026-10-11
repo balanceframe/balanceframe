@@ -70,10 +70,11 @@ docker-build:
 docker-test:
     tests/deployment/container.test.sh
 
-# Validate Compose manifest structure and constraints.
-# Requires Docker Compose.
+# Validate offline Compose and generated release deployment contracts.
+# Requires Docker Compose (COMPOSE_BIN selects a standalone renderer).
 compose-validate:
     tests/deployment/compose-validate.sh
+    node --test --test-concurrency=1 tests/deployment/compose-research.test.mjs tests/deployment/release-assets.test.mjs
 
 # Verify that TAG matches the root package.json version (with 'v' prefix).
 # Locally, reject an already-pushed tag. In GitHub Actions, verify that the

@@ -223,14 +223,16 @@ export class ScenarioHttpClient {
   private readonly webUrl: URL;
   private readonly publicOrigin: URL;
   private readonly internalSecret: string | undefined;
+  private readonly signal: AbortSignal | undefined;
   private readonly cookies = new Map<string, string>();
   private selectedSpaceId: string | undefined;
 
   /** Creates an origin-bound client with an independent cookie jar. */
-  constructor(webUrl: string, publicOrigin: string, internalSecret?: string) {
+  constructor(webUrl: string, publicOrigin: string, internalSecret?: string, signal?: AbortSignal) {
     this.webUrl = assertLoopbackHttpUrl(webUrl, 'webUrl');
     this.publicOrigin = assertPublicOrigin(publicOrigin);
     this.internalSecret = internalSecret;
+    this.signal = signal;
   }
 
   /** Returns current session, selection and reauthentication cookies. */
@@ -307,6 +309,7 @@ export class ScenarioHttpClient {
   }
 
   private async response(method: string, path: string, body?: JsonObject, spaceId = this.selectedSpaceId, apiKey?: string): Promise<HttpResult> {
+    this.signal?.throwIfAborted();
     if (!path.startsWith('/') || path.startsWith('//')) throw new Error('Scenario HTTP path must be relative');
     const headers: Record<string, string> = {
       accept: 'application/json',
@@ -325,9 +328,11 @@ export class ScenarioHttpClient {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: this.signal,
     });
     if (!apiKey) this.rememberCookies(response.headers);
     const responseBody: unknown = await response.json();
+    this.signal?.throwIfAborted();
     return { status: response.status, body: responseBody };
   }
 
@@ -665,6 +670,7 @@ async function initializePersonas(
   publicOrigin: string,
   webUrl: string,
   internalSecret?: string,
+  signal?: AbortSignal,
 ): Promise<{
   readonly ownerPersonaId: string;
   readonly spaceId: string;
@@ -705,7 +711,7 @@ async function initializePersonas(
     const invited = await ownerClient.post('/api/invitations', {});
     const token = invitationToken(invited);
     const personaCredentials = credentialsFor(persona, scenario.id);
-    const anonymousClient = new ScenarioHttpClient(webUrl, publicOrigin, internalSecret);
+    const anonymousClient = new ScenarioHttpClient(webUrl, publicOrigin, internalSecret, signal);
     const redeemed = resultObject(await anonymousClient.post('/api/invitations/redeem', {
       token,
       name: persona.displayName,
@@ -1185,10 +1191,12 @@ export async function initializeScenarioWorkflow(options: {
   readonly scenario: MaterializedScenario;
   readonly seeded: SeededActualBudget;
   readonly processes: ScenarioProcesses;
+  readonly signal?: AbortSignal;
 }): Promise<ScenarioInitialized> {
-  const { scenario, seeded, processes } = options;
+  const { scenario, seeded, processes, signal } = options;
   assertScenarioProcessesActive(processes);
-  const client = new ScenarioHttpClient(processes.webUrl, processes.publicOrigin, processes.internalSecret);
+  signal?.throwIfAborted();
+  const client = new ScenarioHttpClient(processes.webUrl, processes.publicOrigin, processes.internalSecret, signal);
   const personas = await initializePersonas(
     client,
     scenario,
@@ -1196,6 +1204,7 @@ export async function initializeScenarioWorkflow(options: {
     processes.publicOrigin,
     processes.webUrl,
     processes.internalSecret,
+    signal,
   );
   const ownerCredential = personas.credentials[personas.ownerPersonaId]!;
   await client.reauthenticate(ownerCredential.password);

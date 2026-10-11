@@ -40,17 +40,23 @@ export function builtWebEntry(): string {
   return fileURLToPath(built);
 }
 
-/** Initializes an unpublished owned shell through the same Actual and authenticated HTTP path as local loading. */
+/**
+ * Initializes an owned shell through Actual and authenticated HTTP; abort stops HTTP waits and later steps.
+ * Actual SDK steps settle before cancellation is checked. The caller still owns runtime cleanup.
+ */
 export async function initializeScenarioShell(
   processes: ScenarioProcesses,
   scenario: MaterializedScenario,
+  signal?: AbortSignal,
 ): Promise<LoadedScenario> {
   assertScenarioProcessesActive(processes);
+  signal?.throwIfAborted();
   const manifest = readScenarioManifest(processes);
   if (manifest.phase !== 'setup' || (manifest.scenarioId !== null && manifest.scenarioId !== scenario.id))
     throw new Error('Scenario shell selection is unavailable');
   writeScenarioManifest(processes, { ...manifest, scenarioId: scenario.id });
   await startScenarioActual(processes);
+  signal?.throwIfAborted();
   const seeded = await seedActualBudget({
     serverUrl: processes.actualUrl,
     secretKey: processes.actualSecretKey,
@@ -58,12 +64,16 @@ export async function initializeScenarioShell(
     budgetName: `BalanceFrame ${scenario.id} ${scenario.anchor}`,
     ledger: scenario.ledger,
   });
+  signal?.throwIfAborted();
   const initialized = await initializeScenarioWorkflow({
     scenario,
     seeded,
     processes,
+    signal,
   });
-  await updateScenarioPersonas(processes, initialized);
+  signal?.throwIfAborted();
+  await updateScenarioPersonas(processes, initialized, signal);
+  signal?.throwIfAborted();
   if (scenario.research) {
     assertScenarioProcessesActive(processes);
     const ready = initializeScenarioResearch(processes, readScenarioManifest(processes), scenario.research.mode);
@@ -97,7 +107,10 @@ export async function loadScenario(options: LoadScenarioOptions): Promise<Loaded
   try {
     return await initializeScenarioShell(processes, scenario);
   } catch (error) {
-    await stopScenarioProcesses(processes);
+    const retainRoot = error instanceof Error && 'code' in error &&
+      error.code === 'cleanup_unproven' && 'ownedCleanupUnproven' in error &&
+      error.ownedCleanupUnproven === true;
+    await stopScenarioProcesses(processes, { retainRoot });
     throw error;
   }
 }

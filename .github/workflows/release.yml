@@ -170,12 +170,14 @@ jobs:
             ### Assets
             - `compose.yaml` — canonical sidecar deployment
             - `compose.actual.yaml` — optional Actual Budget overlay
+            - `compose.research.yaml` — explicit opt-in merchant research overlay
             - `.env.example` — environment template
             - `CHECKSUMS` — SHA-256 checksums for all assets
             - `sbom.spdx.json` — SPDX SBOM
           files: |
             _release/${{ github.ref_name }}/compose.yaml
             _release/${{ github.ref_name }}/compose.actual.yaml
+            _release/${{ github.ref_name }}/compose.research.yaml
             _release/${{ github.ref_name }}/.env.example
             _release/${{ github.ref_name }}/CHECKSUMS
           draft: false

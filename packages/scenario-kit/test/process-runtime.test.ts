@@ -20,13 +20,16 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   createOwnedScenarioRoot,
   discardOwnedScenarioRoot,
+  readScenarioProcessMemory,
   startScenarioActual,
   startScenarioShell,
   stopScenarioProcesses,
+  updateScenarioPersonas,
   type ScenarioProcesses,
 } from '../src/process-runtime.js';
 import { materializeScenario } from '../src/catalog.js';
 import { initializeScenarioShell } from '../src/loader.js';
+import { readScenarioManifest, writeScenarioManifest } from '../src/scenario-manifest.js';
 import { scenarioRequest } from './acceptance/support.js';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -99,9 +102,12 @@ async function occupiedPort(): Promise<{ port: number; close: () => Promise<void
 async function startShell(publicOrigin?: string): Promise<ScenarioProcesses> {
   await assertExists(WEB_ENTRY);
   const root = createOwnedScenarioRoot();
-  const origin = publicOrigin ?? `http://127.0.0.1:${await availablePort()}`;
   try {
-    const handle = await startScenarioShell({ root, publicOrigin: origin, webEntry: WEB_ENTRY });
+    const handle = await startScenarioShell({
+      root,
+      ...(publicOrigin === undefined ? {} : { publicOrigin }),
+      webEntry: WEB_ENTRY,
+    });
     activeProcesses.add(handle);
     return handle;
   } catch (error) {
@@ -226,6 +232,50 @@ async function textFilesUnder(root: string): Promise<string[]> {
 }
 
 describe('scenario process runtime ownership and lifecycle', () => {
+  it('reads only active owned child memory across Actual startup and disposal', { timeout: TEST_TIMEOUT }, async () => {
+    const handle = await startShell();
+    const shellMemory = readScenarioProcessMemory(handle);
+    expect(shellMemory.actual).toBeNull();
+    expect(() => readScenarioProcessMemory({ ...handle })).toThrow();
+    if (process.platform === 'linux') {
+      expect(shellMemory.web).toEqual({
+        rssBytes: expect.any(Number),
+        highWaterBytes: expect.any(Number),
+      });
+      expect(shellMemory.web!.rssBytes).toBeGreaterThan(0);
+    } else {
+      expect(shellMemory.web).toBeNull();
+    }
+    await startScenarioActual(handle);
+    const readyMemory = readScenarioProcessMemory(handle);
+    if (process.platform === 'linux') {
+      expect(readyMemory.actual).toEqual({
+        rssBytes: expect.any(Number),
+        highWaterBytes: expect.any(Number),
+      });
+      expect(readyMemory.actual!.rssBytes).toBeGreaterThan(0);
+    } else {
+      expect(readyMemory.actual).toBeNull();
+    }
+    await stopScenarioProcesses(handle);
+    activeProcesses.delete(handle);
+    expect(() => readScenarioProcessMemory(handle)).toThrow();
+  });
+
+  it('stops both owned servers while retaining client data until explicit disposal', { timeout: TEST_TIMEOUT }, async () => {
+    const handle = await startShell();
+    await startScenarioActual(handle);
+    await stopScenarioProcesses(handle, { retainRoot: true });
+    activeProcesses.delete(handle);
+    await expect(requestHealth(handle.webUrl)).rejects.toThrow();
+    await expect(fetch(new URL('/health', handle.actualUrl), { signal: AbortSignal.timeout(10_000) })).rejects.toThrow();
+    await assertExists(handle.root);
+    expect(() => readScenarioProcessMemory(handle)).toThrow();
+    discardOwnedScenarioRoot(handle.root);
+    await assertMissing(handle.root);
+    await assertMissing(dirname(handle.root));
+  });
+
   it('allocates a private 0700 root beneath a private 0700 parent', () => {
     const root = createOwnedScenarioRoot();
     return (async () => {
@@ -298,21 +348,24 @@ describe('scenario process runtime ownership and lifecycle', () => {
     expect(await readFile(marker, 'utf8')).toBe('replacement');
     await rm(parent, { recursive: true, force: true });
   });
-  it('discards an allocated root after a pre-start validation rejection', async () => {
-    const root = createOwnedScenarioRoot();
-    const parent = dirname(root);
-    await expect(
-      startScenarioShell({
-        root,
-        publicOrigin: 'not-an-origin',
-        webEntry: WEB_ENTRY,
-      }),
-    ).rejects.toThrow(/origin/i);
+  it.each(['not-an-origin', 'http://user:password@127.0.0.1:39002'])(
+    'discards an allocated root after rejecting unsafe explicit origin %s',
+    async (publicOrigin) => {
+      const root = createOwnedScenarioRoot();
+      const parent = dirname(root);
+      await expect(
+        startScenarioShell({
+          root,
+          publicOrigin,
+          webEntry: WEB_ENTRY,
+        }),
+      ).rejects.toThrow(/origin/i);
 
-    discardOwnedScenarioRoot(root);
-    await assertMissing(root);
-    await assertMissing(parent);
-  });
+      discardOwnedScenarioRoot(root);
+      await assertMissing(root);
+      await assertMissing(parent);
+    },
+  );
 
   it('rejects a nonempty allocated root before creating child state', async () => {
     const root = createOwnedScenarioRoot();
@@ -457,8 +510,45 @@ describe('scenario process runtime ownership and lifecycle', () => {
     },
   );
 
+  it(
+    'uses the allocated loopback URL for manifest and authenticated same-origin Review Sync when publicOrigin is omitted',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      const handle = await startShell();
+      try {
+        expect(handle.publicOrigin).toBe(handle.webUrl);
+        const loaded = await initializeScenarioShell(
+          handle,
+          materializeScenario('merchant-local-sparse', new Date('2026-09-06T12:00:00.000Z')),
+        );
+        const ready = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
+          origin: string; phase: string; scenarioId: string;
+        };
+        expect(ready).toMatchObject({
+          origin: handle.webUrl,
+          phase: 'ready',
+          scenarioId: 'merchant-local-sparse',
+        });
+
+        const synced = await scenarioRequest<{
+          status: string;
+          result?: { synchronized: boolean; failed: number };
+        }>(loaded, '/api/review/sync', { method: 'POST', body: {} });
+        expect(synced.status, JSON.stringify(synced.body)).toBe(200);
+        expect(synced.body).toMatchObject({
+          status: 'ok',
+          result: { synchronized: true, failed: 0 },
+        });
+      } finally {
+        activeProcesses.delete(handle);
+        await stopScenarioProcesses(handle);
+      }
+    },
+  );
+
   it('protects a local shell from setup through ready while public demo mode remains off', async () => {
     const handle = await startShell('http://127.0.0.1:39003');
+    expect(handle.publicOrigin).toBe('http://127.0.0.1:39003');
     const headers = { Host: '127.0.0.1:39003', Origin: handle.publicOrigin, 'content-type': 'application/json' };
     const setup = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
       phase: string; spaceId: string | null; actorIds: string[];
@@ -473,9 +563,11 @@ describe('scenario process runtime ownership and lifecycle', () => {
     expect(readDuringSetup.status).toBe(403);
     const loaded = await initializeScenarioShell(handle, materializeScenario('funded-purchase', new Date('2026-09-06T12:00:00.000Z')));
     const ready = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
-      phase: string; scenarioId: string; spaceId: string; actorIds: string[];
+      origin: string;
+      phase: string; spaceId: string | null; actorIds: string[];
     };
     expect(ready).toMatchObject({
+      origin: handle.publicOrigin,
       phase: 'ready', scenarioId: 'funded-purchase', spaceId: loaded.initialized.spaceId,
       actorIds: [loaded.initialized.personas.owner!.actorId],
     });
@@ -520,6 +612,22 @@ describe('scenario process runtime ownership and lifecycle', () => {
     expect(await selector.text()).not.toMatch(/data-action="(?:open-scenario|reset)"/);
     const supervisorState = await fetch(new URL('/__demo/state', handle.webUrl), { headers: ownerHeaders });
     expect(await supervisorState.json().catch(() => ({}))).not.toHaveProperty('generation');
+    const manifest = readScenarioManifest(handle);
+    writeScenarioManifest(handle, { ...manifest, phase: 'setup', actorIds: [] });
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    const outcome = await updateScenarioPersonas(handle, loaded.initialized, alreadyAborted.signal)
+      .then(() => null, (error: unknown) => error);
+    const afterAbort = readScenarioManifest(handle);
+    expect({
+      outcome,
+      phase: afterAbort.phase,
+      actorIds: afterAbort.actorIds,
+    }).toMatchObject({
+      outcome: { name: 'AbortError' },
+      phase: 'setup',
+      actorIds: [],
+    });
     expect((await textFilesUnder(handle.root)).join('\n')).not.toContain(handle.internalSecret);
   }, TEST_TIMEOUT);
 
