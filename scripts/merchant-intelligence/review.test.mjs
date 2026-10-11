@@ -735,6 +735,21 @@ test('a later dataset failure preserves completed first-population evidence in a
   assert.deepEqual(failed.httpStatusCounts, receipt.httpStatusCounts);
   assert.deepEqual(failed.pageErrorCounts, receipt.pageErrorCounts);
 });
+test('strict reports retain specific safe Sync failures and reject arbitrary diagnostic text', () => {
+  const report = structuredClone(safeArtifact);
+  report.status = 'partial';
+  report.datasets[0].status = 'failed';
+  report.datasets[0].referenceStatus = 'unproven';
+  report.datasets[0].p95ElapsedMs = null;
+  for (const code of ['review_sync_control_unavailable', 'review_sync_http_or_envelope_failed',
+    'review_sync_partial_transition', 'review_sync_already_active']) {
+    report.datasets[0].failureCode = code;
+    assert.equal(JSON.parse(serializeArtifact(report)).datasets[0].failureCode, code);
+  }
+  report.datasets[0].failureCode = 'review_sync_http_or_envelope_failed: private-cookie-sentinel';
+  assert.throws(() => serializeArtifact(report), /failure_code_invalid/);
+});
+
 test('artifact serialization rejects secrets and output is exclusive, private, and symlink-safe', (t) => {
   const serialized = serializeArtifact(safeArtifact);
   const failureAfterPopulation = structuredClone(safeArtifact);

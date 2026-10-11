@@ -83,6 +83,8 @@ const FAILURE_CODES = new Set([
   'dataset_deadline_exceeded', 'deadline_exceeded', 'scenario_setup_failed', 'identity_unverified',
   'source_admission_unproven', 'source_below_requested_size', 'actual_import_unproven', 'source_grant_unavailable',
   'source_queue_invariant_failed', 'review_page_failed', 'review_sync_failed', 'review_ui_unproven',
+  'review_sync_control_unavailable', 'review_sync_http_or_envelope_failed',
+  'review_sync_partial_transition', 'review_sync_already_active',
   'review_screenshot_unavailable', 'signal_interrupted', 'runtime_error', 'origin_guard_unproven',
   'cleanup_unproven', 'not_attempted_cleanup_unproven',
 ]);

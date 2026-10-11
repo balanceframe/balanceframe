@@ -356,6 +356,8 @@ owned services/data unless SDK shutdown is unproven. External OOM/SIGKILL can
 bypass report finalization and cleanup: retain the owning supervisor's failure
 evidence, verify its cgroup is released, then remove only its recorded disposable
 workspace. An externally killed run establishes no reference p95.
+The CI publication test reports specific allowlisted Sync failures, HTTP status
+counts and page-error counts; it never prints private reports, cookies or ledger rows.
 
 The separate real-fixture allocation regression is
 `node --test scripts/merchant-intelligence/review-grants.test.mjs`, run serially

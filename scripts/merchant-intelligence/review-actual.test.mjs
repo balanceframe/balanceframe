@@ -36,7 +36,11 @@ test('publishes 50k imported source rows and settles first and repeated authenti
       assert.equal(dataset.source.independentPublishedCapture, true);
       assert.equal(dataset.money.accountBalanceAfterMinorUnits,
         dataset.money.accountBalanceBeforeMinorUnits + Number(dataset.money.generatedMinorUnits));
-      assert.equal(dataset.firstPopulation.status, 'completed', `first Sync failed: ${dataset.failureCode}`);
+      assert.equal(dataset.firstPopulation.status, 'completed', `first Sync failed: ${JSON.stringify({
+        failureCode: dataset.failureCode,
+        httpStatusCounts: dataset.firstPopulation.httpStatusCounts,
+        pageErrorCounts: dataset.firstPopulation.pageErrorCounts,
+      })}`);
       assert.equal(dataset.firstPopulation.sourceCount, 50000);
       assert.equal(dataset.completedWarmups, 1);
       assert.equal(dataset.completedSamples, 1);
