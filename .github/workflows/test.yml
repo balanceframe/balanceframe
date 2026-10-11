@@ -11,7 +11,8 @@ jobs:
   linux:
     name: Linux x86_64 (full suite)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Serial scaled Actual proofs plus instrumented scenario coverage exceed 45 minutes.
+    timeout-minutes: 90
 
     steps:
       - name: Check out repository
