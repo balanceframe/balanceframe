@@ -361,6 +361,7 @@ The CI publication test reports specific allowlisted Sync failures, HTTP status
 counts and page-error counts; it never prints private reports, cookies or ledger rows.
 The Linux full-suite CI job allows 90 minutes for serial scaled Actual proofs and
 instrumented scenario coverage. This job limit is not a UI/native performance target.
+Actual-adapter test files run serially so the 250,000-row retention check does not compete with credential-key derivation. Its 10-second test timeout, dataset and exact-money/ID assertions remain unchanged.
 
 The separate real-fixture allocation regression is
 `node --test scripts/merchant-intelligence/review-grants.test.mjs`, run serially

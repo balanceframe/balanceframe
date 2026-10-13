@@ -5,6 +5,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // Large snapshot reads must not compete with credential KDF workers.
+    maxWorkers: 1,
     testTimeout: 10_000,
     bail: 1,
     coverage: {
