@@ -1295,15 +1295,15 @@ describe('owned demo supervisor', () => {
     const realCreateCategoryGroup = createCategoryGroup.getMockImplementation();
     if (!realCreateCategoryGroup) throw new Error('Actual SDK category group delegate is unavailable');
     let stopped = false;
-    let now = Date.now();
-    const clock = vi.spyOn(Date, 'now');
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now');
     try {
       demo = await startDemoServer({ scenarioId: 'funded-purchase', port: 0 });
       const page = await fetch(`${demo.url}/demo`);
       const cookie = cookieHeader(page);
       const current = await state(cookie);
       expect(current.status).toBe('ready');
-      now = Date.now();
+      // Advance only the control cooldown; memberships and child servers keep real time.
       clock.mockImplementation(() => now);
       createCategoryGroup.mockRejectedValueOnce(new Error('ordinary seed failure'));
 
@@ -1322,7 +1322,16 @@ describe('owned demo supervisor', () => {
       expect(existsSync(started[0]!.root)).toBe(true);
       expect(existsSync(started[1]!.root)).toBe(false);
 
-      now += 10_001;
+      now += 9_999;
+      const throttled = await control('/__demo/reset', cookie, current.csrfToken!, {
+        expectedGeneration: failed.generation,
+      });
+      expect(throttled.status).toBe(429);
+      expect(await throttled.json()).toEqual({ error: { code: 'DEMO_LOAD_RATE_LIMIT' } });
+      expect(throttled.headers.get('retry-after')).toBe('1');
+      expect(started).toHaveLength(2);
+
+      now += 1;
       const retried = await control('/__demo/reset', cookie, current.csrfToken!, {
         expectedGeneration: failed.generation,
       });

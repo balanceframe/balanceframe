@@ -299,6 +299,7 @@ pnpm demo --scenario merchant-research-lifecycle
 
 Scenario account attestations are explicit, fictional source evidence, not bank imports; missing or expired attestations keep the Card at `insufficient_data`. Reset regenerates only the active instance's credentials, budget, sessions and attestations; another runner is independent.
 Catalog policy, observation and session expiry durations are materialized at their real submission time, so a fixed historical `--anchor` does not submit an already-expired configuration. Ordinary fixture timestamps remain unchanged; deliberately short expiry stories retain their short lifetime.
+Shared demo load/reset controls enforce a ten-second monotonic cooldown after each attempt; membership, authentication and financial freshness checks keep real time.
 
 
 Scenario setup creates real personal/shared spaces and installs exact resource grants with development authentication bypass disabled. Active human personas have independent Better Auth credentials and selected-space cookies. Pending invitations have no invented user/session; redemption creates a real separate human membership, and rejoining creates a new membership without inherited grants. The assistant uses a real bounded agent/delegation/API-key binding, not a human login. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.

@@ -1015,7 +1015,7 @@ async function handleControl(
     error(response, 400, 'DEMO_UNKNOWN_SCENARIO');
     return;
   }
-  const now = Date.now();
+  const now = performance.now();
   if (now - supervisor.lastLoadAt < LOAD_INTERVAL_MS) {
     error(response, 429, 'DEMO_LOAD_RATE_LIMIT', {
       'retry-after': String(Math.ceil((LOAD_INTERVAL_MS - (now - supervisor.lastLoadAt)) / 1000)),
@@ -1067,7 +1067,7 @@ async function handleControl(
     supervisor.status = 'failed';
     error(response, 503, supervisor.failureCode);
   } finally {
-    supervisor.lastLoadAt = Date.now();
+    supervisor.lastLoadAt = performance.now();
     supervisor.busy = false;
   }
 }
@@ -1224,7 +1224,7 @@ export async function startDemoServer(options: StartDemoServerOptions = {}): Pro
       busy: true,
       activeFinancial: 0,
       drainFinancial: null,
-      lastLoadAt: 0,
+      lastLoadAt: Number.NEGATIVE_INFINITY,
       stopping: false,
     };
     const handle = Object.freeze({ url: origin.origin });
