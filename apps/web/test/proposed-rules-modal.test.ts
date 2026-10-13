@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import { ref } from 'vue';
+import type { Ref } from 'vue';
 import ProposedRulesModal from '../app/components/ProposedRulesModal.vue';
 import type { PendingProposalApproval } from '../types/review-client';
 import type { ProposalApprovalView } from '../server/utils/proposal-approval-view';
+
+const auth = vi.hoisted(() => ({
+  session: undefined as unknown as Ref<{ data: { user: { id: string; email: string } } | null }>,
+}));
+vi.mock('../lib/auth-client', () => ({
+  authClient: { useSession: () => auth.session },
+}));
+auth.session = ref({ data: { user: { id: 'owner-001', email: 'owner@example.test' } } });
 
 const proposal: ProposalApprovalView = {
   id: 'proposal-001',
@@ -105,7 +115,118 @@ function route(input: Parameters<typeof fetch>[0]) {
 afterEach(() => {
   for (const wrapper of wrappers.splice(0)) wrapper.unmount();
   fetchMock.mockClear();
+  auth.session.value = { data: { user: { id: 'owner-001', email: 'owner@example.test' } } };
   vi.unstubAllGlobals();
+});
+
+describe('private proposal lifetime', () => {
+  it.each(['HTTP denial', 'error envelope', 'malformed response', 'transport failure'])(
+    'removes a previously authorized exact payload and actions after %s, including prop-backed snapshots',
+    async (failure) => {
+      fetchMock.mockResolvedValueOnce(response(detail()));
+      vi.stubGlobal('fetch', fetchMock);
+      const wrapper = mountModal([{ reviewId: 'review-001', proposal }]);
+      await button(wrapper, 'Refresh proposal view').trigger('click');
+      await flushPromises();
+      expect(wrapper.text()).toContain(proposal.payloadHash);
+      expect(wrapper.text()).toContain('"normalizedRule"');
+      expect(button(wrapper, 'Execute exact rule proposal').attributes('disabled')).toBeUndefined();
+      await wrapper.get('input[type="password"]').setValue('private-password');
+
+      if (failure === 'transport failure') fetchMock.mockRejectedValueOnce(new Error('Offline'));
+      else if (failure === 'malformed response') fetchMock.mockResolvedValueOnce(response(null));
+      else fetchMock.mockResolvedValueOnce(response({
+        status: 'error', result: null,
+        error: { code: 'DENIED', message: 'Private proposal denied' },
+      }, failure === 'HTTP denial' ? 403 : 200));
+      await button(wrapper, 'Refresh proposal view').trigger('click');
+      await flushPromises();
+
+      expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+      expect(wrapper.text()).not.toContain(proposal.payloadHash);
+      expect(wrapper.text()).not.toContain('"normalizedRule"');
+      expect(wrapper.findAll('button').some((control) => control.text().includes('Execute exact'))).toBe(false);
+      expect(wrapper.findAll('button').some((control) => control.text().includes('approve exact proposal'))).toBe(false);
+      expect(wrapper.find('input[type="password"]').element).not.toHaveProperty('value', 'private-password');
+      await wrapper.setProps({ open: false });
+      await wrapper.setProps({ open: true });
+      await flushPromises();
+      expect(wrapper.text()).not.toContain(proposal.payloadHash);
+      expect(wrapper.text()).not.toContain('"normalizedRule"');
+    },
+  );
+
+  it('clears fetched detail on close and ignores an old successful completion after reopening', async () => {
+    const { promise, resolve } = Promise.withResolvers<Response>();
+    fetchMock.mockResolvedValueOnce(response(detail())).mockReturnValueOnce(promise);
+    vi.stubGlobal('fetch', fetchMock);
+    const wrapper = mountModal();
+    await button(wrapper, 'Review exact proposal').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain(proposal.payloadHash);
+    await button(wrapper, 'Refresh proposal view').trigger('click');
+    await wrapper.setProps({ open: false });
+    await wrapper.setProps({ open: true });
+    expect(wrapper.text()).not.toContain(proposal.payloadHash);
+    resolve(response(detail()));
+    await flushPromises();
+    expect(wrapper.text()).not.toContain(proposal.payloadHash);
+    expect(wrapper.findAll('button').some((control) => control.text().includes('Execute exact'))).toBe(false);
+  });
+
+  it('clears identity-bound private props and ignores the previous identity detail response', async () => {
+    const { promise, resolve } = Promise.withResolvers<Response>();
+    fetchMock.mockReturnValueOnce(promise);
+    vi.stubGlobal('fetch', fetchMock);
+    const wrapper = mountModal([{ reviewId: 'review-001', proposal }]);
+    expect(wrapper.text()).toContain(proposal.payloadHash);
+    await button(wrapper, 'Refresh proposal view').trigger('click');
+    auth.session.value = { data: { user: { id: 'owner-002', email: 'other@example.test' } } };
+    await flushPromises();
+    expect(wrapper.text()).not.toContain(proposal.payloadHash);
+    expect(wrapper.text()).not.toContain('Market');
+    resolve(response(detail()));
+    await flushPromises();
+    expect(wrapper.text()).not.toContain(proposal.payloadHash);
+    expect(wrapper.findAll('button').some((control) => control.text().includes('Execute exact'))).toBe(false);
+  });
+  it('recovers an initial-proposal-only caller through an explicitly authorized fresh snapshot after failure', async () => {
+    vi.stubGlobal('fetch', fetchMock);
+    const wrapper = mountModal();
+    await wrapper.setProps({ proposals: [], initialProposal: proposal });
+    expect(wrapper.text()).toContain(proposal.payloadHash);
+    fetchMock.mockResolvedValueOnce(response({
+      status: 'error', result: null, error: { code: 'DENIED', message: 'Private proposal denied' },
+    }, 403));
+    await button(wrapper, 'Refresh proposal view').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).not.toContain(proposal.payloadHash);
+    const fresh = { ...proposal, payloadHash: 'f'.repeat(64) };
+    fetchMock.mockResolvedValueOnce(response(detail(fresh)));
+    await button(wrapper, 'Refresh proposal view').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain(fresh.payloadHash);
+    expect(wrapper.text()).not.toContain(proposal.payloadHash);
+    expect(button(wrapper, 'Execute exact rule proposal').attributes('disabled')).toBeUndefined();
+  });
+
+  it('does not submit an old approval after reauthentication completes following close/reopen', async () => {
+    const { promise, resolve } = Promise.withResolvers<Response>();
+    fetchMock.mockReturnValueOnce(promise);
+    vi.stubGlobal('fetch', fetchMock);
+    const wrapper = mountModal([{ reviewId: 'review-001', proposal }]);
+    await wrapper.get('input[type="password"]').setValue('private-password');
+    await button(wrapper, 'Reauthenticate and approve exact proposal').trigger('click');
+    await button(wrapper, 'Close').trigger('click');
+    await wrapper.setProps({ open: false });
+    await wrapper.setProps({ open: true });
+    resolve(response({ status: 'success' }));
+    await flushPromises();
+    expect(fetchMock.mock.calls.map(([input]) => route(input))).toEqual(['/api/reauth']);
+    expect(wrapper.text()).not.toContain(proposal.payloadHash);
+    expect(wrapper.text()).not.toContain('Human approval recorded');
+    expect(wrapper.emitted('accepted')).toBeUndefined();
+  });
 });
 
 describe('bulk exact proposal review', () => {
@@ -364,5 +485,63 @@ describe('exact rule proposal review', () => {
     ]);
     expect(wrapper.emitted('accepted')).toBeUndefined();
     expect(wrapper.text()).toContain('Proposal execution was not verified');
+  });
+});
+
+describe('native rule impact and standalone export', () => {
+  it('renders exact stable IDs, unchanged matches, category diffs and conflicts without executing', async () => {
+    const nativeRule = {
+      stage: 'post', conditionsOp: 'and',
+      conditions: [{ field: 'payee', op: 'is', value: 'opaque-payee-ID' }],
+      actions: [{ op: 'set', field: 'category', value: 'category-food' }],
+    };
+    const reviewedSimulation = {
+      ruleId: '', name: 'Human label', transactionsMatched: 2, transactionsAffected: ['tx-a', 'tx-b'], categoryDistribution: { 'category-food': 2 },
+      examples: [
+        { txId: 'tx-a', payee: 'Same display', amount: { minorUnits: '-100', currency: 'JPY' }, currentCategory: 'category-old', wouldChange: true },
+        { txId: 'tx-b', payee: 'Same display', amount: { minorUnits: '-200', currency: 'KWD' }, currentCategory: 'category-food', wouldChange: false },
+      ],
+      conflicts: ['rule-existing'],
+    };
+    const wrapper = mountModal([{ reviewId: 'review-001', proposal: {
+      ...proposal, preconditions: { nativeRule, reviewedSimulation, ruleName: 'Human label' },
+    } }]);
+    expect(wrapper.get('[aria-label="Standalone Actual rule payload"]').text()).toBe(JSON.stringify(nativeRule, null, 2));
+    expect(wrapper.text()).toContain('Global future effect');
+    expect(wrapper.text()).toContain('opaque-payee-ID');
+    expect(wrapper.text()).toContain('tx-a');
+    expect(wrapper.text()).toContain('tx-b');
+    expect(wrapper.text()).toContain('category-old');
+    expect(wrapper.text()).toContain('rule-existing');
+    expect(wrapper.get('a[download]').attributes('href')).toBe(`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(nativeRule, null, 2))}`);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('pages the complete reviewed category differences without truncating the impact', async () => {
+    const nativeRule = {
+      stage: 'post', conditionsOp: 'and',
+      conditions: [{ field: 'payee', op: 'is', value: 'opaque-payee-ID' }],
+      actions: [{ op: 'set', field: 'category', value: 'category-food' }],
+    };
+    const examples = Array.from({ length: 125 }, (_, index) => ({
+      txId: `tx-${String(index).padStart(3, '0')}`, payee: 'Market',
+      amount: { minorUnits: '9223372036854775807', currency: 'KWD' },
+      currentCategory: 'category-old', wouldChange: true,
+    }));
+    const wrapper = mountModal([{ reviewId: 'review-001', proposal: { ...proposal, preconditions: {
+      nativeRule, reviewedSimulation: {
+        ruleId: '', name: 'Market', transactionsMatched: 125,
+        transactionsAffected: examples.map(example => example.txId),
+        categoryDistribution: { 'category-food': 125 }, conflicts: [], examples,
+      },
+    } } }]);
+    expect(wrapper.text()).toContain('125');
+    expect(wrapper.findAll('tbody tr')).toHaveLength(100);
+    expect(wrapper.text()).toContain('9223372036854775.807 KWD');
+    await button(wrapper, 'Next impact page').trigger('click');
+    expect(wrapper.findAll('tbody tr')).toHaveLength(25);
+    expect(wrapper.text()).toContain('tx-124');
+    await button(wrapper, 'Previous impact page').trigger('click');
+    expect(wrapper.findAll('tbody tr')).toHaveLength(100);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

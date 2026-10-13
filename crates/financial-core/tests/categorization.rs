@@ -12,7 +12,7 @@ fn sample_candidate(tx_id: &str, reasons: Vec<Evidence>) -> CategorizationCandid
         reasons,
         proposed_category_id: None,
         proposed_category_name: None,
-        rule_ids: None,
+        rule_set_index: None,
     }
 }
 

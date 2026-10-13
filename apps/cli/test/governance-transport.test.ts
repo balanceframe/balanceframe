@@ -643,6 +643,9 @@ describe('production CLI governance transport', () => {
       analysisProtocol: {
         async pendingReview() {
           return {
+            nativeRuleBlocks: [],
+            nativeRuleParts: [],
+            nativeRuleSets: [],
             uncategorizedCount: 99,
             totalUncategorizedAmount: { minorUnits: '99900', currency: 'USD' },
             candidates: [],
@@ -728,7 +731,7 @@ describe('production CLI governance transport', () => {
       { args: ['proposals', 'execute', 'prop_1'], method: 'POST', path: '/api/proposal/prop_1/execute' },
       { args: ['proposals', 'list'], method: 'GET', path: '/api/proposal' },
       { args: ['audit', 'query', '--actor-id', 'usr_filter', '--from', '2026-09-01', '--limit', '10'], method: 'GET', path: '/api/spaces/spc_selected/audit', query: { actorId: 'usr_filter', from: '2026-09-01', limit: '10' } },
-      { args: ['rules', 'create', '--name', 'Auto', '--payee', 'Market'], method: 'POST', path: '/api/rule', body: { name: 'Auto', payee: 'Market' } },
+      { args: ['rules', 'create', '--name', 'Auto', '--payee-id', 'payee-Market', '--category-id', 'category-food'], method: 'POST', path: '/api/rule', body: { name: 'Auto', payeeId: 'payee-Market', categoryId: 'category-food' } },
       { args: ['rules', 'list'], method: 'GET', path: '/api/rule' },
       { args: ['rules', 'show', '--rule-id', 'rule_1'], method: 'GET', path: '/api/rule/rule_1' },
       { args: ['purchase', 'evaluate', '--category-id', 'cat_1', '--amount', '500'], method: 'GET', path: '/api/purchase/evaluate', query: { categoryId: 'cat_1', amount: '500', currency: 'USD' } },
@@ -761,5 +764,231 @@ describe('production CLI governance transport', () => {
       }
       expect(JSON.stringify(request)).not.toContain('usr_env_attacker');
     });
+  });
+});
+
+describe('merchant command transport', () => {
+  it('dispatches paginated merchant evidence without converting exact Money', async () => {
+    const money = { minorUnits: '9223372036854775807', currency: 'KWD' };
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope({ money }))));
+    const output = JSON.parse(await main(['merchant', 'evidence', '--transaction-id', 'tx-child', '--limit', '1', '--facts-hash', 'current', '--json']));
+    expect(output.result.money).toEqual(money);
+    expect(requests[0]!.url.pathname).toBe('/api/merchant');
+    expect(requests[0]!.url.searchParams.get('transactionId')).toBe('tx-child');
+    expect(requests[0]!.url.searchParams.get('limit')).toBe('1');
+    expect(requests[0]!.headers.get('x-balanceframe-space')).toBe('spc_selected');
+  });
+  it('requires human cookies and sends only explicit optimistic alias control fields', async () => {
+    const requests = setup();
+    const args = ['merchant', 'confirm', '--id', 'alias-1', '--kind', 'alias', '--evidence-key', 'merchant:transaction:tx', '--evidence-revision', 'rev', '--expected-version', '0', '--private', '--transaction-id', 'tx', '--source-field', 'importedPayee', '--target-payee-id', 'payee-ID', '--account-id', 'account-ID', '--json'];
+    expect(JSON.parse(await main(args)).error.code).toBe('human_session_required');
+    expect(requests).toHaveLength(0);
+    vi.stubEnv('BALANCEFRAME_SESSION_COOKIE', 'balanceframe_session=human; balanceframe_reauth=proof');
+    expect(JSON.parse(await main(args)).status).toBe('ok');
+    expect(JSON.parse(requests[0]!.body!)).toEqual({ id: 'alias-1', kind: 'alias', evidenceKey: 'merchant:transaction:tx', evidenceRevision: 'rev', expectedVersion: 0, visibility: 'private', transactionId: 'tx', sourceField: 'importedPayee', targetPayeeId: 'payee-ID', accountId: 'account-ID' });
+    expect(requests[0]!.headers.has('authorization')).toBe(false);
+  });
+  it('keeps explicit global alias selection distinct from global authority', async () => {
+    const requests = setup(() => new Response(JSON.stringify(errorEnvelope('FORBIDDEN')), { status: 403 }));
+    vi.stubEnv('BALANCEFRAME_SESSION_COOKIE', 'balanceframe_session=human; balanceframe_reauth=proof');
+    const result = JSON.parse(await main(['merchant', 'confirm', '--id', 'global-alias', '--kind', 'alias', '--evidence-key', 'merchant:transaction:tx', '--evidence-revision', 'current', '--expected-version', '0', '--shared', '--transaction-id', 'tx', '--source-field', 'payeeName', '--target-payee-id', 'PAYEE-ID', '--account-id', 'null', '--json']));
+    expect(result.status).toBe('error');
+    expect(result.error.code).toBe('FORBIDDEN');
+    expect(JSON.parse(requests[0]!.body!)).toMatchObject({ accountId: null, visibility: 'shared', targetPayeeId: 'PAYEE-ID' });
+    expect(JSON.parse(requests[0]!.body!)).not.toHaveProperty('verifiedHuman');
+  });
+  it('rejects a shared pattern using current optimistic evidence without alias or actor authority', async () => {
+    const requests = setup();
+    vi.stubEnv('BALANCEFRAME_SESSION_COOKIE', 'balanceframe_session=human; balanceframe_reauth=proof');
+    const output = JSON.parse(await main(['merchant', 'reject', '--id', 'pattern-decision', '--kind', 'pattern', '--pattern-id', 'pattern-ID', '--evidence-key', 'merchant:pattern:pattern-ID', '--evidence-revision', 'current', '--expected-version', '2', '--shared', '--json']));
+    expect(output.status).toBe('ok');
+    expect(requests[0]!.url.pathname).toBe('/api/merchant/reject');
+    expect(JSON.parse(requests[0]!.body!)).toEqual({ id: 'pattern-decision', kind: 'pattern', patternId: 'pattern-ID', evidenceKey: 'merchant:pattern:pattern-ID', evidenceRevision: 'current', expectedVersion: 2, visibility: 'shared' });
+  });
+  it('dispatches policy/calendar/export/delete through separate governed server endpoints', async () => {
+    const requests = setup();
+    vi.stubEnv('BALANCEFRAME_SESSION_COOKIE', 'balanceframe_session=human; balanceframe_reauth=proof');
+    for (const args of [
+      ['merchant', 'policy', 'get'],
+      ['merchant', 'policy', 'set', '--expected-version', '3', '--policy', '{"mode":"local-only"}'],
+      ['merchant', 'calendar', '--account-id', 'account', '--year', '2026'],
+      ['merchant', 'export'], ['merchant', 'delete'],
+    ]) expect(JSON.parse(await main([...args, '--json'])).status).toBe('ok');
+    expect(requests.map((r) => [r.method, r.url.pathname])).toEqual([['GET', '/api/merchant/policy'], ['PUT', '/api/merchant/policy'], ['GET', '/api/merchant/calendar'], ['GET', '/api/merchant/export'], ['DELETE', '/api/merchant']]);
+    expect(JSON.parse(requests[1]!.body!)).toEqual({ expectedVersion: 3, value: { mode: 'local-only' } });
+    expect(requests[2]!.url.searchParams.get('year')).toBe('2026');
+  });
+  it.each(['--actor-id', '--auth', '--source-refs', '--verified-human', '--jurisdiction'])('rejects authority/lookup override flag %s', (flag) => {
+    expect(parseArgs(['merchant', 'analyze', flag, 'forged', '--json']).ok).toBe(false);
+  });
+  it('rejects ambiguous visibility and unsafe optimistic integer controls', () => {
+    expect(parseArgs(['merchant', 'confirm', '--private', '--shared']).ok).toBe(false);
+    expect(parseArgs(['merchant', 'policy', 'set', '--expected-version', '9007199254740993', '--policy', '{}']).ok).toBe(false);
+  });
+});
+
+describe('separate consented public-business research transport', () => {
+  const revision = 'a'.repeat(64);
+  const queryArgs = ['--evidence-key', 'merchant:transaction:tx-leaf', '--evidence-revision', revision, '--merchant', 'Northstar Public Bakery', '--public-business', 'true'];
+  const query = { evidenceKey: 'merchant:transaction:tx-leaf', evidenceRevision: revision, merchant: 'Northstar Public Bakery', locale: null, publicBusiness: true };
+  const preview = {
+    status: 'ready', previewToken: 'b'.repeat(64), ...query, providerId: 'valueserp', providerVersion: 'valueserp-search/1',
+    expiresAt: '2026-10-04T12:05:00.000Z', fieldsSent: ['merchant', 'locale'],
+    disclosure: 'Separate public search; provider sees text and server IP. Retention unknown. Sent requests cannot be recalled.',
+    maxCostAtoms: '9007199254740993000001', billingCurrency: 'USD',
+  };
+  // Preview responses disclose the query, not the client's declaration field.
+  const ready = () => { const { publicBusiness: _declaration, ...result } = preview; return result; };
+
+  it('prints the exact preview disclosure and atom cost without dispatching research or reading bank text', async () => {
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope(ready()))));
+    const output = JSON.parse(await main(['merchant', 'research', 'preview', ...queryArgs, '--json']));
+    expect(output.status).toBe('ok');
+    expect(output.result).toEqual(ready());
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url.pathname).toBe('/api/merchant/research/preview');
+    expect(requests[0]!.url.search).toBe('');
+    expect(requests[0]!.method).toBe('POST');
+    expect(JSON.parse(requests[0]!.body!)).toEqual(query);
+    expect(requests[0]!.headers.get('origin')).toBe('https://balanceframe.example');
+    expect(requests[0]!.headers.get('x-balanceframe-space')).toBe('spc_selected');
+    expect(requests[0]!.headers.get('authorization')).toBe('Bearer bf_test_secret');
+  });
+
+  it('requires a separately supplied matching preview token, explicit consent and idempotency key before send', async () => {
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope({ status: 'pending', attemptId: 'attempt-one' }))));
+    for (const extra of [
+      [], ['--preview-token', preview.previewToken], ['--preview-token', preview.previewToken, '--consent', 'false', '--idempotency-key', 'request-1'],
+      ['--preview-token', preview.previewToken, '--consent', 'true'],
+    ]) expect(JSON.parse(await main(['merchant', 'research', 'send', ...queryArgs, ...extra, '--json'])).status).toBe('error');
+    expect(requests).toHaveLength(0);
+    const output = JSON.parse(await main(['merchant', 'research', 'send', ...queryArgs, '--preview-token', preview.previewToken, '--consent', 'true', '--idempotency-key', 'request-1', '--locale', 'CA', '--json']));
+    expect(output.result).toEqual({ status: 'pending', attemptId: 'attempt-one' });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url.pathname).toBe('/api/merchant/research');
+    expect(JSON.parse(requests[0]!.body!)).toEqual({ ...query, locale: 'CA', previewToken: preview.previewToken, consent: true, idempotencyKey: 'request-1' });
+  });
+
+  it.each(['--actor-id', '--budget-id', '--scope', '--auth', '--provider', '--provider-id', '--api-key', '--tariff', '--endpoint', '--transaction-id', '--notes'])('refuses client authority or bank-text flag %s', async (flag) => {
+    const requests = setup();
+    const output = JSON.parse(await main(['merchant', 'research', 'preview', ...queryArgs, flag, 'PRIVATE-QUERY', '--json']));
+    expect(output.status).toBe('error');
+    expect(requests).toHaveLength(0);
+    expect(JSON.stringify(output)).not.toContain('PRIVATE-QUERY');
+  });
+
+  it('rejects undeclared or absent public text, invalid coarse locale, duplicate flags and preview consent flags', () => {
+    for (const args of [
+      ['--evidence-key', query.evidenceKey, '--evidence-revision', revision, '--public-business', 'true'],
+      [...queryArgs.slice(0, -2)], [...queryArgs.slice(0, -1), 'false'],
+      [...queryArgs, '--locale', 'JP'], [...queryArgs, '--merchant', 'duplicate'],
+      [...queryArgs, '--preview-token', preview.previewToken], [...queryArgs, '--consent', 'true'],
+    ]) expect(parseArgs(['merchant', 'research', 'preview', ...args, '--json']).ok).toBe(false);
+  });
+
+  it('reads cache explicitly without consent or an automatic provider request', async () => {
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope({ enrichment: null }))));
+    const output = JSON.parse(await main(['merchant', 'research', 'cache', ...queryArgs, '--json']));
+    expect(output.result).toEqual({ enrichment: null });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url.pathname).toBe('/api/merchant/research/cache');
+    expect(JSON.parse(requests[0]!.body!)).toEqual(query);
+  });
+
+  it('preserves complete historical uncalibrated source provenance in both succeeded and cached outcomes', async () => {
+    const enrichment = {
+      key: { scope: { spaceId: 'spc_selected', budgetId: 'budget-selected', connectionId: 'selected-connection' }, queryFingerprint: 'c'.repeat(64), locale: null, providerId: 'valueserp', providerVersion: 'valueserp-search/1', parametersHash: 'd'.repeat(64), normalizationVersion: 'merchant/2', egressPolicyVersion: 'merchant-research/1', visibilityHash: 'e'.repeat(64) },
+      sources: [{ url: 'https://public.example.test/business', title: 'Public business', snippet: 'Historical untrusted observation' }],
+      fieldsSent: ['merchant', 'locale'], retrievedAt: '2026-10-04T12:00:00.000Z', expiresAt: '2026-10-05T12:00:00.000Z', policyVersion: 1, evidenceRevision: revision, confidence: 'uncalibrated',
+      visibility: { hash: 'e'.repeat(64), privateActorId: 'server-principal' },
+      sourceRefs: { accountIds: [], categoryIds: [], ruleIds: [], transactionIds: [], factsHash: 'f'.repeat(64), required: [] },
+      generation: 1,
+    };
+    for (const status of ['succeeded', 'cached']) {
+      const requests = setup(() => new Response(JSON.stringify(okEnvelope({ status, enrichment }))));
+      const output = JSON.parse(await main(['merchant', 'research', 'send', ...queryArgs, '--preview-token', preview.previewToken, '--consent', 'true', '--idempotency-key', 'request-1', '--json']));
+      expect(output.result).toEqual({ status, enrichment });
+      expect(output.result.enrichment).not.toHaveProperty('categoryId');
+      expect(requests).toHaveLength(1);
+    }
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope({ status: 'succeeded', enrichment: { ...enrichment, confidence: 'confirmed' } }))));
+    expect(JSON.parse(await main(['merchant', 'research', 'send', ...queryArgs, '--preview-token', preview.previewToken, '--consent', 'true', '--idempotency-key', 'request-1', '--json'])).error.code).toBe('invalid_server_response');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('reads independent effective policy versions without editing installation configuration', async () => {
+    const value = { mode: 'local-only', allowedProviderIds: [], maxSearchesPerDay: 0, maxSpendMinorUnitsPerMonth: 0, billingCurrency: 'USD', cacheTtlHours: 24 };
+    const scope = { spaceId: 'spc_selected', budgetId: 'budget-selected', connectionId: 'selected-connection' };
+    const result = {
+      installation: { version: 'installation-v5', value },
+      space: { scope: { ...scope, connectionId: 'merchant:space-policy' }, version: 3, generation: 3, value },
+      budget: { scope, version: 9, generation: 9, value },
+      resolved: { mode: 'local-only', allowedProviderIds: [], billingCurrency: 'USD', cacheTtlHours: 24, maxSearchesPerDay: 0, maxSpendMinorUnitsPerMonth: 0, layers: [
+        { kind: 'installation', version: 'installation-v5', mode: 'local-only', reason: 'local-only' },
+        { kind: 'space', version: '3:3', mode: 'local-only', reason: 'local-only' },
+        { kind: 'budget', version: '9:9', mode: 'local-only', reason: 'local-only' },
+      ] },
+    };
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope(result))));
+    expect(JSON.parse(await main(['merchant', 'research', 'policy', '--json'])).result).toEqual(result);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url.pathname).toBe('/api/merchant/research/policy');
+    expect(requests[0]!.method).toBe('GET');
+    expect(requests[0]!.body).toBeUndefined();
+  });
+
+  it.each([
+    { status: 'failed', code: 'timeout', billing: 'uncertain' },
+    { status: 'denied', code: 'stale_source', billing: 'not_dispatched' },
+    { status: 'pending', attemptId: 'attempt-existing' },
+  ])('returns the exact bounded research outcome without retry: %j', async (result) => {
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope(result))));
+    const output = JSON.parse(await main(['merchant', 'research', 'send', ...queryArgs, '--preview-token', preview.previewToken, '--consent', 'true', '--idempotency-key', 'request-1', '--json']));
+    expect(output.result).toEqual(result);
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each([
+    { ...ready(), maxCostAtoms: 1.25 },
+    { ...ready(), apiKey: 'PRIVATE-PROVIDER-KEY' },
+    { ...ready(), fieldsSent: ['merchant', 'notes'] },
+    { ...ready(), billingCurrency: 'not-currency' },
+    { status: 'ready', merchant: 'PRIVATE-QUERY' },
+  ])('refuses invalid public response DTO without forwarding private payload: %j', async (result) => {
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope(result))));
+    const output = JSON.parse(await main(['merchant', 'research', 'preview', ...queryArgs, '--json']));
+    expect(output.error.code).toBe('invalid_server_response');
+    expect(JSON.stringify(output)).not.toContain('PRIVATE-');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('requires a human session for complete optimistic space policy replacement, never a delegated key', async () => {
+    const value = { mode: 'local-only', allowedProviderIds: [], maxSearchesPerDay: 0, maxSpendMinorUnitsPerMonth: 0, billingCurrency: 'USD', cacheTtlHours: 24 };
+    const policyView = { scope: { spaceId: 'spc_selected', budgetId: 'budget-selected', connectionId: 'merchant:space-policy' }, version: 4, generation: 4, value };
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope(policyView))));
+    const args = ['merchant', 'space-policy', 'set', '--expected-version', '3', '--policy', JSON.stringify(value), '--json'];
+    expect(JSON.parse(await main(args)).error.code).toBe('human_session_required');
+    expect(requests).toHaveLength(0);
+    vi.stubEnv('BALANCEFRAME_SESSION_COOKIE', 'balanceframe_session=human; balanceframe_reauth=proof');
+    expect(JSON.parse(await main(args)).result).toEqual(policyView);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url.pathname).toBe('/api/merchant/space-policy');
+    expect(requests[0]!.method).toBe('PUT');
+    expect(requests[0]!.headers.has('authorization')).toBe(false);
+    expect(requests[0]!.headers.get('origin')).toBe('https://balanceframe.example');
+    expect(JSON.parse(requests[0]!.body!)).toEqual({ expectedVersion: 3, value });
+    expect(JSON.parse(await main(['merchant', 'space-policy', 'get', '--json'])).result).toEqual(policyView);
+    expect(requests[1]!.method).toBe('GET');
+    expect(parseArgs(['merchant', 'space-policy', 'set', '--expected-version', '9007199254740993', '--policy', '{}']).ok).toBe(false);
+  });
+
+  it('never falls back to Actual or environment actor authority when research lacks authentication or selected space', async () => {
+    const requests = setup();
+    vi.stubEnv('BALANCEFRAME_API_KEY', '');
+    expect(JSON.parse(await main(['merchant', 'research', 'preview', ...queryArgs, '--json'])).status).toBe('error');
+    vi.stubEnv('BALANCEFRAME_API_KEY', 'bf_test_secret');
+    vi.stubEnv('BALANCEFRAME_SPACE_ID', '');
+    expect(JSON.parse(await main(['merchant', 'research', 'preview', ...queryArgs, '--json'])).status).toBe('error');
+    expect(requests).toHaveLength(0);
   });
 });

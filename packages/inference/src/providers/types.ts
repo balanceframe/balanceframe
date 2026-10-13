@@ -5,7 +5,7 @@
  * hardcoded credentials. Tests inject fake adapters; production wiring
  * provides real HttpClient / API-key resolution at the composition root.
  */
-import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types';
+import type { ClassifyRequest, ClassificationResult, ProviderInfo } from '../types.js'
 
 export interface ProviderAdapter {
   readonly providerId: string;

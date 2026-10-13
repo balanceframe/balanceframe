@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   APIAccountEntity,
@@ -8,6 +9,7 @@ import type {
   APIScheduleEntity,
   APITagEntity,
 } from '@actual-app/api';
+import { merchantAnalysisRequestSchema } from '@balanceframe/protocol-generated/validators';
 import type { RuleEntity, TransactionEntity } from '@actual-app/core/types/models';
 import { ActualConnector } from '../src/connector';
 import type { ActualClient } from '../src/connector';
@@ -31,6 +33,12 @@ const BUDGET: APIFileEntity = {
   encrypted: false,
   state: 'remote',
 };
+
+const protocolFixture = JSON.parse(readFileSync(
+  new URL('../../../protocol/fixtures/merchant-intelligence.json', import.meta.url),
+  'utf8',
+)) as { request: unknown };
+const fixtureTransaction = merchantAnalysisRequestSchema.parse(protocolFixture.request).transactions[0]!;
 
 type CoverageState = 'unknown' | 'unavailable' | 'empty' | 'partial' | 'complete';
 
@@ -111,6 +119,20 @@ function transaction(
     imported_payee: null,
     ...fields,
   } as TransactionEntity;
+}
+
+function protocolTransaction(
+  id: string,
+  fields: Partial<TransactionEntity> = {},
+): TransactionEntity {
+  return transaction({
+    id,
+    account: fixtureTransaction.accountId,
+    date: fixtureTransaction.date,
+    amount: Number(fixtureTransaction.amount.minorUnits),
+    payee: fixtureTransaction.payeeId,
+    ...fields,
+  });
 }
 
 function schedule(
@@ -1281,6 +1303,48 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
     });
   });
 
+  it('retains all transaction ids and exact money from a 250,000-row account read', async () => {
+    const transactionCount = 250_000;
+    const rows = Array.from({ length: transactionCount }, (_, index) =>
+      transaction({
+        id: `${fixtureTransaction.id}-${String(index).padStart(6, '0')}`,
+        account: fixtureTransaction.accountId,
+        date: fixtureTransaction.date,
+        amount: Number(fixtureTransaction.amount.minorUnits),
+      }),
+    );
+    const getTransactions = vi.fn().mockResolvedValue(rows);
+    const client = createActualClient({
+      getAccounts: vi.fn().mockResolvedValue([account(fixtureTransaction.accountId, 'Checking')]),
+      getTransactions,
+    });
+
+    const result = await synchronize(client, { currency: fixtureTransaction.amount.currency });
+    const normalized = result.snapshot.transactions;
+    const totalMinorUnits = normalized.reduce(
+      (sum, row) => sum + BigInt(row.amount.minorUnits),
+      0n,
+    );
+
+    expect(getTransactions).toHaveBeenCalledOnce();
+    expect(getTransactions).toHaveBeenCalledWith(
+      fixtureTransaction.accountId,
+      '0001-01-01',
+      '9999-12-31',
+    );
+    expect(rows).toHaveLength(transactionCount);
+    expect(normalized).toHaveLength(transactionCount);
+    expect(normalized.map(({ id }) => id)).toEqual(rows.map(({ id }) => id));
+    expect({
+      minorUnits: totalMinorUnits.toString(),
+      currency: normalized[0]!.amount.currency,
+    }).toEqual({
+      minorUnits: (BigInt(fixtureTransaction.amount.minorUnits) * BigInt(transactionCount)).toString(),
+      currency: fixtureTransaction.amount.currency,
+    });
+    expect(financialSnapshot(result).coverage.transactions).toBe('complete');
+  });
+
   it('reports partial and unknown coverage without dropping the successfully normalized legacy data', async () => {
     const transactionsByAccount: Record<string, TransactionEntity[] | undefined> = {
       'account-readable': [
@@ -1604,6 +1668,123 @@ describe('ActualConnector FinancialSnapshot synchronization', () => {
       },
     ]);
     expect(observations(canonical, 'credit_card_obligation_coverage')).toEqual([]);
+  });
+
+  it('uses the earliest distinct-id transaction for imported duplicate evidence', async () => {
+    const sourceId = `${fixtureTransaction.id}-imported`;
+    const firstCandidateId = `${fixtureTransaction.id}-candidate-1`;
+    const secondCandidateId = `${fixtureTransaction.id}-candidate-2`;
+    const client = createActualClient({
+      getAccounts: vi.fn().mockResolvedValue([account(fixtureTransaction.accountId, 'Checking')]),
+      getTransactions: vi.fn().mockResolvedValue([
+        protocolTransaction(sourceId, { imported_id: fixtureTransaction.importedId! }),
+        protocolTransaction(sourceId),
+        protocolTransaction(firstCandidateId),
+        protocolTransaction(secondCandidateId),
+      ]),
+    });
+
+    const canonical = financialSnapshot(
+      await synchronize(client, { currency: fixtureTransaction.amount.currency }),
+    );
+
+    expect(observations(canonical, 'duplicate_candidate')).toEqual([
+      {
+        kind: 'duplicate_candidate',
+        scope: { kind: 'transaction', id: sourceId },
+        state: 'present',
+        observedAt: CAPTURED_AT,
+        evidence: [
+          { evidenceId: sourceId, kind: 'transaction', authorized: true, redaction: 'visible' },
+          {
+            evidenceId: firstCandidateId,
+            kind: 'transaction',
+            authorized: true,
+            redaction: 'visible',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('requires strict transaction equality and observable truthy-import rows for duplicate evidence', async () => {
+    const accountId = fixtureTransaction.accountId;
+    const otherAccountId = `${accountId}-other`;
+    const closedAccountId = `${accountId}-closed`;
+    const sourceId = `${fixtureTransaction.id}-active-imported`;
+    const tombstoneId = `${fixtureTransaction.id}-tombstone`;
+    const closedSourceId = `${fixtureTransaction.id}-closed-imported`;
+    const closedCandidateId = `${fixtureTransaction.id}-closed-candidate`;
+    const missingPayee = protocolTransaction(`${fixtureTransaction.id}-missing-payee`, {
+      payee: null,
+    });
+    delete missingPayee.payee;
+    const otherDate = new Date(`${fixtureTransaction.date}T00:00:00.000Z`);
+    otherDate.setUTCDate(otherDate.getUTCDate() - 1);
+    const transactionsByAccount: Record<string, TransactionEntity[]> = {
+      [accountId]: [
+        protocolTransaction(sourceId, {
+          payee: null,
+          imported_id: fixtureTransaction.importedId!,
+        }),
+        protocolTransaction(`${fixtureTransaction.id}-wrong-date`, {
+          date: otherDate.toISOString().slice(0, 10),
+          payee: null,
+        }),
+        protocolTransaction(`${fixtureTransaction.id}-wrong-amount`, {
+          amount: Number(fixtureTransaction.amount.minorUnits) + 1,
+          payee: null,
+        }),
+        missingPayee,
+        protocolTransaction(tombstoneId, { payee: null, tombstone: true }),
+      ],
+      [otherAccountId]: [
+        protocolTransaction(`${fixtureTransaction.id}-wrong-account`, {
+          account: otherAccountId,
+          payee: null,
+        }),
+        protocolTransaction(`${fixtureTransaction.id}-empty-import-id`, {
+          account: otherAccountId,
+          payee: null,
+          imported_id: '',
+        }),
+        protocolTransaction(`${fixtureTransaction.id}-empty-import-candidate`, {
+          account: otherAccountId,
+          payee: null,
+        }),
+      ],
+      [closedAccountId]: [
+        protocolTransaction(closedSourceId, {
+          account: closedAccountId,
+          payee: null,
+          imported_id: fixtureTransaction.importedId!,
+        }),
+        protocolTransaction(closedCandidateId, {
+          account: closedAccountId,
+          payee: null,
+        }),
+      ],
+    };
+    const client = createActualClient({
+      getAccounts: vi.fn().mockResolvedValue([
+        account(accountId, 'Checking'),
+        account(otherAccountId, 'Other'),
+        { ...account(closedAccountId, 'Closed'), closed: true },
+      ]),
+      getTransactions: vi.fn(async (readAccountId: string) =>
+        transactionsByAccount[readAccountId] ?? [],
+      ),
+    });
+
+    const result = await synchronize(client, { currency: fixtureTransaction.amount.currency });
+    const canonical = financialSnapshot(result);
+    const normalizedIds = result.snapshot.transactions.map(({ id }) => id);
+
+    expect(observations(canonical, 'duplicate_candidate')).toEqual([]);
+    expect(normalizedIds).toEqual(
+      expect.arrayContaining([closedSourceId, closedCandidateId]),
+    );
+    expect(normalizedIds).not.toContain(tombstoneId);
   });
 
   it('emits duplicate, one-sided transfer, and currency observations without reconciliation noise', async () => {

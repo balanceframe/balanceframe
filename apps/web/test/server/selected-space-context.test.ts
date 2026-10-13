@@ -3,13 +3,18 @@ import { SqliteWorkflowStore } from '../../../../packages/workflow-store/src/sto
 import type { EventWithContext } from '../../server/utils/workflow-store';
 import type * as SpaceContext from '../../server/utils/space-context';
 import type * as WorkflowUtils from '../../server/utils/workflow-store';
+import type * as WorkflowStoreModule from '@balanceframe/workflow-store';
+import type { LiquidityActor, ResourceGrantRestrictions } from '@balanceframe/workflow-store';
+import type { hasLegacyFullRead } from '../../server/utils/legacy-financial-read';
 
 interface Request extends EventWithContext {
   headers: Record<string, string>;
   cookies: Record<string, string>;
 }
 // Exercise the current source authority rather than a previously built workspace package.
-vi.mock('@balanceframe/workflow-store', () => ({ SqliteWorkflowStore }));
+vi.mock('@balanceframe/workflow-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof WorkflowStoreModule>()), SqliteWorkflowStore,
+}));
 vi.mock('h3', () => ({
   getHeader: (event: Request, name: string) => event.headers[name.toLowerCase()],
   getCookie: (event: Request, name: string) => event.cookies[name],
@@ -100,8 +105,8 @@ describe('explicit selected space authority', () => {
 
 describe('whole financial reads use current selected-space grants', () => {
   let store: SqliteWorkflowStore;
-  let actor: import('@balanceframe/workflow-store').LiquidityActor;
-  let fullRead: typeof import('../../server/utils/legacy-financial-read').hasLegacyFullRead;
+  let actor: LiquidityActor;
+  let fullRead: typeof hasLegacyFullRead;
   beforeEach(async () => {
     vi.resetModules(); vi.useFakeTimers(); vi.setSystemTime(now);
     store = new SqliteWorkflowStore(':memory:');
@@ -116,7 +121,7 @@ describe('whole financial reads use current selected-space grants', () => {
     fullRead = (await import('../../server/utils/legacy-financial-read')).hasLegacyFullRead;
   });
   afterEach(() => { store?.close(); vi.useRealTimers(); });
-  function grant(capability: string, restrictions: import('@balanceframe/workflow-store').ResourceGrantRestrictions = {}) {
+  function grant(capability: string, restrictions: ResourceGrantRestrictions = {}) {
     return store.governance.provisionResourceGrant({
       spaceId: actor.spaceId!, membershipId: actor.membershipId!, actorId: actor.actorId,
       budgetId: actor.budgetId, capability, resourceKind: 'budget', resourceId: actor.budgetId,
@@ -139,6 +144,49 @@ describe('whole financial reads use current selected-space grants', () => {
       capability: 'full-read', granted: false, now, auth: auth('owner'),
     });
     expect(await fullRead(store, actor)).toBe(false);
+  });
+  it('uses the live clock rather than captured actor time at the membership expiry boundary', async () => {
+    const expiresAt = new Date(Date.parse(now) + 1000).toISOString();
+    await store.upsertActorMembership('expiring-reader', 'active', [], '');
+    const membership = store.governance.addMembership({ spaceId: actor.spaceId!, actorId: 'expiring-reader',
+      validFrom: now, validUntil: expiresAt, now, auth: auth('owner') });
+    actor = { ...actor, actorId: 'expiring-reader', membershipId: membership.id,
+      auth: { method: 'session', actorId: 'expiring-reader', sessionId: 'session:expiring-reader' } };
+    grant('observe'); grant('full-read');
+    expect(await fullRead(store, actor)).toBe(true);
+    vi.setSystemTime(expiresAt);
+    expect(await fullRead(store, actor)).toBe(false);
+  });
+
+  it('supplies a settled synchronous authority fence for atomic Review publication', async () => {
+    grant('observe'); grant('full-read');
+    const publication = { budgetId: actor.budgetId, transactionId: 'authorized-publication',
+      categoryId: 'uncategorized', classifier: 'full-read-authority-regression', provenance: 'test' };
+    const authorize = () => {
+      const allowed = fullRead(store, actor);
+      if (typeof allowed !== 'boolean') throw new Error('Atomic publication requires synchronous authority');
+      return allowed;
+    };
+    const item = await store.createReviewItem({ ...publication, authorize });
+    expect(item.transactionId).toBe('authorized-publication');
+    store.governance.setResourceGrant({ spaceId: actor.spaceId!, actorId: actor.actorId,
+      membershipId: actor.membershipId!, budgetId: actor.budgetId, resourceKind: 'budget', resourceId: actor.budgetId,
+      capability: 'full-read', granted: false, now, auth: auth('owner') });
+    await expect(store.createReviewItem({ ...publication, transactionId: 'denied-publication', authorize }))
+      .rejects.toThrow('Review publication authority changed');
+    expect((await store.listReviewItems({ budgetId: actor.budgetId })).map((row) => row.transactionId))
+      .toEqual(['authorized-publication']);
+  });
+  it('applies financial and count caps to the complete supplied disclosure without incoming netting', async () => {
+    grant('observe');
+    grant('full-read', { maxGrossOutgoing: [{ minorUnits: '100', currency: 'USD' }], maxOperationCount: 3 });
+    const outgoing = (id: string, amount: string) => ({ operation: 'full-read', transactionId: id,
+      accountId: 'checking', direction: 'outgoing' as const, amount: { minorUnits: amount, currency: 'USD' } });
+    const incoming = { operation: 'full-read', transactionId: 'deposit', accountId: 'checking',
+      direction: 'incoming' as const, amount: { minorUnits: '1000', currency: 'USD' } };
+    expect(await fullRead(store, actor, [outgoing('one', '60'), incoming, outgoing('two', '40')])).toBe(true);
+    expect(await fullRead(store, actor, [outgoing('one', '60'), incoming, outgoing('two', '41')])).toBe(false);
+    expect(await fullRead(store, actor, [outgoing('one', '1'), incoming, outgoing('two', '1'), outgoing('three', '1')])).toBe(false);
   });
   it('does not turn aggregate-only rights or an alternate budget into raw data authority', async () => {
     grant('observe'); grant('full-read', { aggregateOnly: true });

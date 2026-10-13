@@ -1,0 +1,14 @@
+# Explicit opt-in only: combine with compose.yaml when operator-reviewed
+# merchant research settings and a private server-side provider key are ready.
+services:
+  balanceframe:
+    environment:
+      BALANCEFRAME_MERCHANT_CONFIG_PATH: /run/secrets/merchant-research.json
+      VALUESERP_API_KEY: ${VALUESERP_API_KEY:?required}
+    volumes:
+      - type: bind
+        source: ${BALANCEFRAME_MERCHANT_CONFIG_FILE:?required}
+        target: /run/secrets/merchant-research.json
+        read_only: true
+        bind:
+          create_host_path: false

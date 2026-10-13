@@ -27,6 +27,9 @@ import type {
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { requireSelectedSpace } from './space-context';
+import type { Money } from '@balanceframe/protocol-generated';
+import type { CategorizationCandidate, MerchantAnalysisView, MerchantPublicSuggestion, MerchantPublicRecurrence, MerchantReviewProof } from '@balanceframe/application';
+import type { CredentialLifetime } from '@balanceframe/workflow-store';
 
 /**
  * Server-side ReviewQueueItem type.
@@ -44,13 +47,21 @@ export interface ClassificationHistoryEntry {
   readonly categoryId: string;
   readonly count: number;
   readonly lastClassified: string;
+  readonly firstDate?: string;
+  readonly lastDate?: string;
+  readonly ledgerCount?: number;
+  readonly correctionCount?: number;
 }
 
 export interface RuleCandidate {
   readonly merchant: string;
   readonly currentCategory: string;
   readonly matchCount: number;
-  readonly consistency: number;
+  readonly payeeId: string;
+  readonly categoryId: string;
+  readonly supportCount: number;
+  readonly consistencyNumerator: number;
+  readonly consistencyDenominator: number;
 }
 
 
@@ -78,7 +89,16 @@ export interface ReviewQueueItem {
     readonly originalImportedName: string;
     readonly normalizedMerchant: string;
     readonly account: string;
-    readonly amount: number;
+    readonly amount?: number;
+    readonly money?: Money;
+    readonly currency?: string;
+    readonly merchantProof?: MerchantReviewProof;
+    readonly merchantEvidence?: MerchantPublicSuggestion;
+    readonly merchantRecurrences?: readonly MerchantPublicRecurrence[];
+    readonly source?: CategorizationCandidate['source'];
+    readonly merchantAsOfDate?: string;
+    readonly merchantNormalizationVersion?: MerchantAnalysisView['normalizationVersion'];
+    readonly merchantExpiresAt?: string;
     readonly currentCategory: string;
     readonly suggestedCategory: string;
     readonly alternatives: readonly string[];
@@ -108,10 +128,24 @@ export interface ProjectedReviewEvidence {
   readonly originalImportedName: string;
   readonly normalizedMerchant: string;
   readonly account: string;
-  readonly amount: number;
+  readonly amount?: number;
+  readonly money?: Money;
+  readonly currency?: string;
+  readonly merchantProof?: MerchantReviewProof;
+  readonly merchantEvidence?: MerchantPublicSuggestion;
+  readonly merchantRecurrences?: readonly MerchantPublicRecurrence[];
+  readonly source?: CategorizationCandidate['source'];
+  readonly merchantAsOfDate?: string;
+  readonly merchantNormalizationVersion?: MerchantAnalysisView['normalizationVersion'];
+  readonly merchantExpiresAt?: string;
+  readonly provenance?: string;
+  readonly history?: readonly ClassificationHistoryEntry[];
+  readonly alternatives?: readonly string[];
+  readonly ruleCandidates?: readonly RuleCandidate[];
   readonly currentCategory: string;
   readonly suggestedCategory: string;
   readonly categoryNames: Record<string, string>;
+  readonly actionable?: boolean;
 }
 
 
@@ -148,18 +182,26 @@ export function buildReviewQueueItem(
       originalImportedName: projected?.originalImportedName ?? '',
       normalizedMerchant: projected?.normalizedMerchant ?? '',
       account: projected?.account ?? '',
-      amount: projected?.amount ?? 0,
+      ...(projected?.amount !== undefined ? { amount: projected.amount } : {}),
+      ...(projected?.money ? { money: projected.money, currency: projected.money.currency } : {}),
+      ...(projected?.merchantProof ? { merchantProof: projected.merchantProof } : {}),
+      ...(projected?.merchantEvidence ? { merchantEvidence: projected.merchantEvidence } : {}),
+      ...(projected?.merchantRecurrences ? { merchantRecurrences: projected.merchantRecurrences } : {}),
+      ...(projected?.source ? { source: projected.source } : {}),
+      ...(projected?.merchantAsOfDate ? { merchantAsOfDate: projected.merchantAsOfDate } : {}),
+      ...(projected?.merchantNormalizationVersion ? { merchantNormalizationVersion: projected.merchantNormalizationVersion } : {}),
+      ...(projected?.merchantExpiresAt ? { merchantExpiresAt: projected.merchantExpiresAt } : {}),
       currentCategory,
       suggestedCategory,
-      alternatives: [],
-      history: [],
-      ruleCandidates: [],
-      provenance: '',
+      alternatives: projected?.alternatives ?? [],
+      history: projected?.history ?? [],
+      ruleCandidates: projected?.ruleCandidates ?? [],
+      provenance: projected?.provenance ?? '',
       freshness: item.freshnessExpiresAt,
       changePreview: {
         fromCategory: currentCategory,
         toCategory: suggestedCategory,
-        affectsEnvelope: currentCategory !== suggestedCategory,
+        affectsEnvelope: item.categoryId !== '' && currentCategory !== suggestedCategory,
       },
       correlationId: null,
       promptVersion: '',
@@ -171,7 +213,7 @@ export function buildReviewQueueItem(
       sameClassifier: false,
       sameCategory: false,
     },
-    actionable: item.status === 'pending_review' || item.status === 'correcting',
+    actionable: projected?.actionable ?? (item.status === 'pending_review' || item.status === 'correcting'),
   };
 }
 
@@ -191,7 +233,7 @@ export interface EventWithContext {
   context: {
     [key: string]: unknown;
     runtimeConfig?: Record<string, unknown>;
-    auth?: {
+    auth?: CredentialLifetime & {
       authenticated: boolean;
       actorId?: string;
       method?: 'session' | 'api-key' | 'legacy-token' | 'development';

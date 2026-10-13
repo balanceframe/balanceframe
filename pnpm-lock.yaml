@@ -8,6 +8,9 @@ overrides:
   nitropack@2.13.4>archiver: 8.0.0
 
 patchedDependencies:
+  '@actual-app/api@26.10.0':
+    hash: b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9
+    path: patches/@actual-app__api@26.10.0.patch
   '@nuxt/devtools@3.4.2':
     hash: 2aafb5a532badb056eea388eeb1d267aa4deab566cfecffd6ac97e1ad523380d
     path: patches/@nuxt__devtools@3.4.2.patch
@@ -72,13 +75,16 @@ importers:
     dependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0
+        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
       '@balanceframe/actual-adapter':
         specifier: workspace:*
         version: link:../../packages/actual-adapter
       '@balanceframe/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@balanceframe/inference':
+        specifier: workspace:*
+        version: link:../../packages/inference
       '@balanceframe/native':
         specifier: workspace:*
         version: link:../../crates/node-binding
@@ -175,7 +181,7 @@ importers:
     dependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0
+        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
       '@balanceframe/protocol-generated':
         specifier: workspace:*
         version: link:../protocol-generated
@@ -201,6 +207,9 @@ importers:
       '@balanceframe/actual-adapter':
         specifier: workspace:*
         version: link:../actual-adapter
+      '@balanceframe/inference':
+        specifier: workspace:*
+        version: link:../inference
       '@balanceframe/native':
         specifier: workspace:*
         version: link:../../crates/node-binding
@@ -260,7 +269,10 @@ importers:
     dependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0
+        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
+      '@balanceframe/actual-adapter':
+        specifier: workspace:*
+        version: link:../actual-adapter
       '@balanceframe/application':
         specifier: workspace:*
         version: link:../application
@@ -292,6 +304,9 @@ importers:
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
+      zod:
+        specifier: ^3.0.0
+        version: 3.25.76
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.12
@@ -310,7 +325,7 @@ importers:
     devDependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0
+        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
@@ -5459,7 +5474,7 @@ packages:
 
 snapshots:
 
-  '@actual-app/api@26.10.0':
+  '@actual-app/api@26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)':
     dependencies:
       '@actual-app/core': 26.10.0
       '@actual-app/crdt': 3.1.3

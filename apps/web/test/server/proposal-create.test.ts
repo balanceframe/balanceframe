@@ -1,13 +1,19 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as H3 from 'h3';
-import { SqliteWorkflowStore, canonicalProposalHash, GENERIC_MUTATION_POLICY_VERSION } from '@balanceframe/workflow-store';
 import type { GenericActionProposal, ResourceGrantRestrictions } from '@balanceframe/workflow-store';
 import type { ConnectionManager } from '@balanceframe/application';
 import type { EventWithContext } from '../../server/utils/workflow-store';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SqliteWorkflowStore, canonicalProposalHash, GENERIC_MUTATION_POLICY_VERSION } from '@balanceframe/workflow-store';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import { createNativeCategorizationMutationProtocol } from '../../../../packages/application/src/mutation';
+import { merchantConnectionId } from '../../../../packages/application/src/merchant-service';
 import fixture from '../../../../protocol/fixtures/representative.json';
+import createProposal from '../../server/api/proposal/index.post';
+import proposalDetail from '../../server/api/proposal/[id].get';
+import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
+import { nativeReviewFixture } from './native-review.fixture';
+import { completeNativeRuleSourceAvailability } from './native-rule-source.fixture';
 
 const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
@@ -36,13 +42,11 @@ vi.mock('../../server/utils/mutation-executor', async (importOriginal) => ({
 vi.mock('@balanceframe/workflow-store', async () =>
   await import('../../../../packages/workflow-store/src/index'));
 
-import createProposal from '../../server/api/proposal/index.post';
-import proposalDetail from '../../server/api/proposal/[id].get';
-import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
 
 const OWNER_ID = 'proposal-create-owner';
 const ACTOR_ID = 'proposal-create-human';
 const NOW = '2026-10-01T12:00:00.000Z';
+const SERVER_URL = 'https://actual.proposal-create.example.test';
 const snapshot = canonicalProtocolSnapshotSchema.parse(fixture);
 const TX = snapshot.transactions[0]!;
 const TARGET_CATEGORY_ID = snapshot.transactions[1]!.categoryId!;
@@ -205,11 +209,14 @@ beforeEach(async () => {
   }).id;
 
   connectedBudgetId = budgetId;
-  mocks.loadConfig.mockResolvedValue({ budgetId });
-  mocks.synchronize.mockResolvedValue({ snapshot });
+  mocks.loadConfig.mockResolvedValue({ budgetId, serverUrl: SERVER_URL });
+  mocks.synchronize.mockResolvedValue({
+    snapshot,
+    rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(snapshot),
+  });
   mocks.withConnection.mockImplementation(async (callback: (connection: unknown) => Promise<unknown>) =>
     callback({
-      config: { budgetId: connectedBudgetId },
+      config: { budgetId: connectedBudgetId, serverUrl: SERVER_URL },
       budget: { id: connectedBudgetId },
       connector: {
         synchronize: mocks.synchronize,
@@ -383,30 +390,10 @@ describe('standalone categorization proposal creation', () => {
     expect(standaloneResponse.status).toBe('ok');
     const [standalone] = await storedProposals();
     expect(standalone).toBeDefined();
-    const amount = BigInt(TX.amount.minorUnits);
-
-    const discovered = await store.createReviewItem({
-      transactionId: TX.id,
-      budgetId,
+    const pending = await nativeReviewFixture(store, {
+      scope: { spaceId, budgetId, connectionId: merchantConnectionId({ budgetId, serverUrl: SERVER_URL }) },
+      transaction: TX,
       categoryId: TX.categoryId!,
-      classifier: 'fixture',
-      provenance: 'proposal-create-test',
-      sourceTransaction: {
-        id: TX.id,
-        accountId: TX.accountId,
-        categoryId: TX.categoryId ?? null,
-        direction: amount < 0n ? 'outgoing' : 'incoming',
-        amount: {
-          minorUnits: (amount < 0n ? -amount : amount).toString(),
-          currency: TX.amount.currency,
-        },
-      },
-    });
-    const suggestion = await store.transitionInternalReviewItem(discovered.id, {
-      toStatus: 'suggestion_generated', actor: ACTOR_ID, expectedVersion: discovered.version,
-    });
-    const pending = await store.transitionInternalReviewItem(discovered.id, {
-      toStatus: 'pending_review', actor: ACTOR_ID, expectedVersion: suggestion.version,
     });
     const manager = { loadConfig: mocks.loadConfig, withConnection: mocks.withConnection } as unknown as ConnectionManager;
     const executor = createDefaultExecutorFactory(manager)(event({}, '', true) as EventWithContext);

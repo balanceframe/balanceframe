@@ -4,13 +4,16 @@ import { fileURLToPath } from 'node:url';
 import { seedActualBudget, type SeededActualBudget } from './actual-seed.js';
 import { materializeScenario, type MaterializedScenario } from './catalog.js';
 import {
+  assertScenarioProcessesActive,
   discardOwnedScenarioRoot,
   startScenarioActual,
   startScenarioShell,
   stopScenarioProcesses,
+  updateScenarioPersonas,
   type ScenarioProcesses,
 } from './process-runtime.js';
 import { initializeScenarioWorkflow, type ScenarioInitialized } from './workflow-setup.js';
+import { initializeScenarioResearch, readScenarioManifest, writeScenarioManifest } from './scenario-manifest.js';
 
 export interface LoadScenarioOptions {
   readonly scenarioId: string;
@@ -37,13 +40,23 @@ export function builtWebEntry(): string {
   return fileURLToPath(built);
 }
 
-/** Initializes an unpublished owned shell through the same Actual and authenticated HTTP path as local loading. */
+/**
+ * Initializes an owned shell through Actual and authenticated HTTP; abort stops HTTP waits and later steps.
+ * Actual SDK steps settle before cancellation is checked. The caller still owns runtime cleanup.
+ */
 export async function initializeScenarioShell(
   processes: ScenarioProcesses,
   scenario: MaterializedScenario,
-  internalSecret?: string,
+  signal?: AbortSignal,
 ): Promise<LoadedScenario> {
+  assertScenarioProcessesActive(processes);
+  signal?.throwIfAborted();
+  const manifest = readScenarioManifest(processes);
+  if (manifest.phase !== 'setup' || (manifest.scenarioId !== null && manifest.scenarioId !== scenario.id))
+    throw new Error('Scenario shell selection is unavailable');
+  writeScenarioManifest(processes, { ...manifest, scenarioId: scenario.id });
   await startScenarioActual(processes);
+  signal?.throwIfAborted();
   const seeded = await seedActualBudget({
     serverUrl: processes.actualUrl,
     secretKey: processes.actualSecretKey,
@@ -51,14 +64,21 @@ export async function initializeScenarioShell(
     budgetName: `BalanceFrame ${scenario.id} ${scenario.anchor}`,
     ledger: scenario.ledger,
   });
+  signal?.throwIfAborted();
   const initialized = await initializeScenarioWorkflow({
     scenario,
     seeded,
-    webUrl: processes.webUrl,
-    publicOrigin: processes.publicOrigin,
-    bootstrapSecret: processes.bootstrapSecret,
-    ...(internalSecret ? { internalSecret } : {}),
+    processes,
+    signal,
   });
+  signal?.throwIfAborted();
+  await updateScenarioPersonas(processes, initialized, signal);
+  signal?.throwIfAborted();
+  if (scenario.research) {
+    assertScenarioProcessesActive(processes);
+    const ready = initializeScenarioResearch(processes, readScenarioManifest(processes), scenario.research.mode);
+    writeScenarioManifest(processes, ready);
+  }
   return { scenario, seeded, processes, initialized };
 }
 /** Loads one checked fictional scenario into its owned Actual and authenticated web workspace. */
@@ -87,7 +107,10 @@ export async function loadScenario(options: LoadScenarioOptions): Promise<Loaded
   try {
     return await initializeScenarioShell(processes, scenario);
   } catch (error) {
-    await stopScenarioProcesses(processes);
+    const retainRoot = error instanceof Error && 'code' in error &&
+      error.code === 'cleanup_unproven' && 'ownedCleanupUnproven' in error &&
+      error.ownedCleanupUnproven === true;
+    await stopScenarioProcesses(processes, { retainRoot });
     throw error;
   }
 }

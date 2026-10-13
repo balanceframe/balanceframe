@@ -25,6 +25,13 @@ import { ActualConnector } from '../src/connector';
 import { NullCredentialStore } from '../src/credentials';
 import { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from '../src/types';
 import type { ActualClient } from '../src/connector';
+import type { RuleDeletePrecondition } from '../src/types';
+import {
+  SqliteWorkflowStore,
+  GENERIC_MUTATION_POLICY_VERSION,
+  deriveProposalAuthorizationFacts,
+} from '../../workflow-store/src/index';
+import type { HumanControlContext } from '../../workflow-store/src/index';
 import type {
   APIAccountEntity,
   APICategoryEntity,
@@ -212,6 +219,92 @@ async function connectRuleWriter(mock: ActualClient, cacheDir: string): Promise<
   return writeConnector;
 }
 
+async function acquireRuleAuthority(
+  rule: RuleDeletePrecondition['rule'],
+  actualVersion: string,
+  operation: 'create_rule' | 'delete_rule' = 'delete_rule',
+) {
+  const store = new SqliteWorkflowStore(':memory:');
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+  await store.claimBootstrap({
+    name: 'Owner', email: 'owner@example.test', claimId: 'adapter-rule-delete',
+  });
+  await store.finalizeBootstrap({ claimId: 'adapter-rule-delete', ownerUserId: 'owner' });
+  const actors = ['owner', 'proposer', 'approver', 'executor'];
+  const auth: Record<string, HumanControlContext> = {};
+  for (const actorId of actors) auth[actorId] = {
+    method: 'human-session', actorId, sessionId: `session:${actorId}`, reauthenticatedAt: now,
+  };
+  const governance = store.governance;
+  const budgetId = 'budget_1';
+  const space = governance.bindBudget({
+    spaceId: governance.createSpace({
+      actorId: 'owner', name: 'Adapter deletion authority', kind: 'shared', now, auth: auth.owner!,
+    }).id,
+    budgetId, now, auth: auth.owner!,
+  });
+  governance.setPolicy({
+    spaceId: space.id, expectedVersion: governance.getPolicy({ spaceId: space.id })!.version,
+    policy: { minimumApprovers: 1, approvalThresholds: [], operationApprovers: { [operation]: 1 } },
+    now, auth: auth.owner!,
+  });
+  const payload = operation === 'delete_rule'
+    ? { kind: 'delete_rule' as const, ruleId: rule.id }
+    : { kind: 'create_rule' as const, transactionId: null, categoryId: 'c1', rule: {
+        stage: rule.stage, conditionsOp: rule.conditionsOp, conditions: rule.trigger, actions: rule.actions,
+      } };
+  const preconditions = operation === 'delete_rule'
+    ? { rule, override: null, actualVersion }
+    : { nativeRule: payload.kind === 'create_rule' ? payload.rule : undefined, actualVersion };
+  const resources = [
+    { resourceKind: 'budget' as const, resourceId: budgetId },
+    ...deriveProposalAuthorizationFacts(operation, payload, preconditions).resources,
+  ];
+  const capabilities: Record<string, string> = {
+    proposer: 'rule:propose', approver: 'rule:approve', executor: 'rule:execute',
+  };
+  for (const actorId of ['proposer', 'approver', 'executor']) {
+    await store.upsertActorMembership(actorId, 'active', [], 'adapter-rule-delete');
+    const membership = governance.addMembership({
+      spaceId: space.id, actorId, validFrom: now, now, auth: auth.owner!,
+    });
+    for (const resource of resources) governance.setResourceGrant({
+      spaceId: space.id, budgetId, actorId, membershipId: membership.id,
+      capability: capabilities[actorId]!, ...resource, granted: true, now, auth: auth.owner!,
+    });
+  }
+  const proposal = await store.createProposal({
+    operation, spaceId: space.id, budgetId, payload,
+    preconditions: JSON.stringify(preconditions), policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+    actorId: 'proposer', auth: auth.proposer!, expiresAt, provenance: 'manual',
+  });
+  await store.createApproval({
+    proposalId: proposal.id, payloadHash: proposal.payloadHash, actorId: 'approver',
+    expiresAt, now, auth: auth.approver!,
+  });
+  if (!proposal.governancePolicyVersion) throw new Error('Fixture proposal lacks governance policy');
+  const input = {
+    actorId: 'executor', auth: auth.executor!, proposalId: proposal.id,
+    payloadHash: proposal.payloadHash, governancePolicyVersion: proposal.governancePolicyVersion,
+    idempotencyKey: 'adapter-rule-delete', requestId: 'adapter-rule-delete',
+    serialisedEffect: JSON.stringify({
+      operation: proposal.operation, payload: proposal.payload,
+      preconditions: JSON.parse(proposal.preconditions) as unknown,
+    }),
+  };
+  const acquired = await store.acquireProposalExecution(input);
+  if (!acquired.auditRecord) throw new Error('Fixture failed to acquire an execution token');
+  const acquisitionAuditId = acquired.auditRecord.id;
+  const precondition: RuleDeletePrecondition = {
+    rule, actualVersion,
+    assertExecutionCurrent: () => {
+      store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId });
+    },
+  };
+  return { store, precondition };
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -261,7 +354,9 @@ describe('ActualConnector', () => {
         secretKey: 'secret',
       });
       await expect(
-        connector.createRule({ name: 'test', conditions: [], actions: [] }),
+        connector.createRule({ conditions: [], actions: [] }, {
+          assertExecutionCurrent: () => { throw new Error('No execution acquired'); },
+        }),
       ).rejects.toThrow(/not yet implemented|not permitted|observe/i);
     });
 
@@ -325,7 +420,9 @@ describe('ActualConnector', () => {
       });
       mockClient.createRule = vi.fn();
       await expect(
-        connector.createRule({ name: 'test', conditions: [], actions: [] }),
+        connector.createRule({ conditions: [], actions: [] }, {
+          assertExecutionCurrent: () => { throw new Error('No execution acquired'); },
+        }),
       ).rejects.toThrow();
       expect(mockClient.createRule).not.toHaveBeenCalled();
     });
@@ -415,13 +512,15 @@ describe('ActualConnector', () => {
       });
       await writeConnector.selectBudget('budget_1');
 
+      const { store, precondition } = await acquireRuleAuthority(
+        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0', 'create_rule',
+      );
       const result = await writeConnector.createRule({
-        name: 'Groceries rule',
         stage: 'post',
         conditionsOp: 'and',
         conditions: [{ field: 'payee', op: 'is', value: 'p1' }],
         actions: [{ op: 'set', field: 'category', value: 'c1' }],
-      });
+      }, precondition);
 
       expect(result.success).toBe(true);
       if (result.success) {
@@ -436,6 +535,7 @@ describe('ActualConnector', () => {
       });
       expect(mock.sync).toHaveBeenCalled();
       await writeConnector.disconnect();
+      store.close();
     });
     it.each([
       {
@@ -479,16 +579,16 @@ describe('ActualConnector', () => {
         deleteRule: vi.fn().mockResolvedValue(true),
       });
       const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-stale');
-      const precondition = {
-        rule: automationRuleSnapshot(mockRules[0]!, 0),
-        actualVersion,
-      };
+      const { store, precondition } = await acquireRuleAuthority(
+        automationRuleSnapshot(mockRules[0]!, 0), actualVersion,
+      );
 
       try {
         await expect(writeConnector.deleteRule('r1', precondition)).rejects.toThrow();
         expect(mock.deleteRule).not.toHaveBeenCalled();
       } finally {
         await writeConnector.disconnect();
+        store.close();
       }
     });
 
@@ -500,19 +600,20 @@ describe('ActualConnector', () => {
         deleteRule: vi.fn().mockResolvedValue(true),
       });
       const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-success');
+      const { store, precondition } = await acquireRuleAuthority(
+        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0',
+      );
 
       try {
         await expect(
-          writeConnector.deleteRule('r1', {
-            rule: automationRuleSnapshot(mockRules[0]!, 0),
-            actualVersion: '26.7.0',
-          }),
+          writeConnector.deleteRule('r1', precondition),
         ).resolves.toBeUndefined();
         expect(mock.deleteRule).toHaveBeenCalledWith('r1');
         expect(mock.sync).toHaveBeenCalledTimes(1);
         expect(mock.getRules).toHaveBeenCalledTimes(2);
       } finally {
         await writeConnector.disconnect();
+        store.close();
       }
     });
 
@@ -524,19 +625,20 @@ describe('ActualConnector', () => {
         deleteRule: vi.fn().mockResolvedValue(true),
       });
       const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-unverified');
+      const { store, precondition } = await acquireRuleAuthority(
+        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0',
+      );
 
       try {
         await expect(
-          writeConnector.deleteRule('r1', {
-            rule: automationRuleSnapshot(mockRules[0]!, 0),
-            actualVersion: '26.7.0',
-          }),
+          writeConnector.deleteRule('r1', precondition),
         ).rejects.toThrow();
         expect(mock.deleteRule).toHaveBeenCalledWith('r1');
         expect(mock.sync).toHaveBeenCalledTimes(1);
         expect(mock.getRules).toHaveBeenCalledTimes(2);
       } finally {
         await writeConnector.disconnect();
+        store.close();
       }
     });
 
@@ -548,18 +650,19 @@ describe('ActualConnector', () => {
         deleteRule: vi.fn().mockResolvedValue(false),
       });
       const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-scheduled');
+      const { store, precondition } = await acquireRuleAuthority(
+        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0',
+      );
 
       try {
         await expect(
-          writeConnector.deleteRule('r1', {
-            rule: automationRuleSnapshot(mockRules[0]!, 0),
-            actualVersion: '26.7.0',
-          }),
+          writeConnector.deleteRule('r1', precondition),
         ).rejects.toThrow(/schedule/i);
         expect(mock.deleteRule).toHaveBeenCalledWith('r1');
         expect(mock.sync).not.toHaveBeenCalled();
       } finally {
         await writeConnector.disconnect();
+        store.close();
       }
     });
 
@@ -694,10 +797,9 @@ describe('ActualConnector', () => {
       });
       mock.createRule = vi.fn();
       const result = await writeConnector.createRule({
-        name: 'test',
         conditions: [],
         actions: [],
-      });
+      }, { assertExecutionCurrent: () => { throw new Error('No execution acquired'); } });
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('BUDGET_NOT_SELECTED');
@@ -2415,6 +2517,22 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('split child transactions', () => {
+    it.each([false, true])('retains nested SDK split children exactly once with flat copies %s', (includeFlatCopies) => {
+      const child = { ...mockTransactions[0]!, id: 'nested-child', is_child: true, parent_id: 'nested-parent', amount: -37 };
+      const parent = { ...mockTransactions[0]!, id: 'nested-parent', is_parent: true, is_child: false, subtransactions: [child] };
+      const result = normalizeTransactions(includeFlatCopies ? [parent, child] : [parent], {}, {}, {});
+      expect(result.map(({ id }) => id)).toEqual(['nested-parent']);
+      expect(result[0]!.subtransactions).toMatchObject([{ id: 'nested-child', amount: { minorUnits: '-37', currency: 'USD' } }]);
+      expect(result[0]!.subtransactions).toHaveLength(1);
+    });
+
+    it('refuses conflicting nested and flat SDK facts for the same split child', () => {
+      const child = { ...mockTransactions[0]!, id: 'nested-child', is_child: true, parent_id: 'nested-parent', amount: -37 };
+      const parent = { ...mockTransactions[0]!, id: 'nested-parent', is_parent: true, is_child: false, subtransactions: [child] };
+      expect(() => normalizeTransactions([parent, { ...child, amount: -38 }], {}, {}, {}))
+        .toThrow('Conflicting canonical transaction facts');
+    });
+
     it('should attach child transactions as subtransactions on parent', () => {
       const parentId = 'tx-parent';
       const txnsWithChildren: TransactionEntity[] = [
@@ -2751,6 +2869,49 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('snapshot metadata', () => {
+    it.each(['getRules', 'getPayees', 'getCategories', 'getCategoryGroups', 'getAccounts'] as const)(
+      'preserves unavailable %s independently of successfully empty full-ledger reads',
+      async (method) => {
+        mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
+        await connector.connect({ serverUrl: 'http://localhost:5006', secretKey: 'synthetic-test-only' });
+        await connector.selectBudget('budget_1');
+        const complete = await connector.synchronize({ refresh: false });
+        expect(complete.rulePlanningSourceAvailability).toEqual({
+          accounts: 'complete', payees: 'complete', categories: 'complete', categoryGroups: 'complete', rules: 'complete',
+          history: [],
+        });
+        mockClient[method] = vi.fn().mockRejectedValue(new Error('Synthetic unavailable SDK read'));
+        const unavailable = await connector.synchronize({ refresh: false });
+        const key = {
+          getRules: 'rules', getPayees: 'payees', getCategories: 'categories',
+          getCategoryGroups: 'categoryGroups', getAccounts: 'accounts',
+        }[method];
+        expect(unavailable.rulePlanningSourceAvailability).toMatchObject({ [key]: 'unavailable' });
+        expect(unavailable.snapshot.rules).toEqual([]);
+        await connector.disconnect();
+      },
+    );
+
+    it('captures all ledger account histories across the full SDK civil range and records individual failures', async () => {
+      mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
+      mockClient.getAccounts = vi.fn().mockResolvedValue(mockAccounts);
+      mockClient.getTransactions = vi.fn().mockImplementation(async (accountId: string, startDate: string, endDate: string) => {
+        expect([startDate, endDate]).toEqual(['0001-01-01', '9999-12-31']);
+        if (accountId === 'a2') throw new Error('Unreadable Savings history');
+        return accountId === 'a3' ? [{ ...mockTransactions[0]!, id: 'closed-account-history', account: 'a3', date: '1969-12-31' }] : [];
+      });
+      await connector.connect({ serverUrl: 'http://localhost:5006', secretKey: 'synthetic-test-only' });
+      await connector.selectBudget('budget_1');
+      const result = await connector.synchronize({ refresh: false });
+      expect(result.rulePlanningSourceAvailability?.history).toEqual(mockAccounts.map((account) => ({
+        accountId: account.id, state: account.id === 'a2' ? 'unavailable' : 'complete',
+        startDate: '0001-01-01', endDate: '9999-12-31',
+      })));
+      expect(result.snapshot.transactions.map((transaction) => transaction.id)).toContain('closed-account-history');
+      expect(result.financialSnapshot.coverage.transactions).toBe('partial');
+      await connector.disconnect();
+    });
+
     it('should include metadata fields in snapshot result from synchronize()', async () => {
       await connector.connect({
         serverUrl: 'http://localhost:5006',

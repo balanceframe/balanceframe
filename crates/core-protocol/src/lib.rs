@@ -3,6 +3,8 @@
 mod account_aware_liquidity;
 mod decision_card;
 mod financial_snapshot;
+mod merchant_intelligence;
+mod native_rules;
 mod prospective_decision;
 
 pub use account_aware_liquidity::{
@@ -38,6 +40,24 @@ pub use financial_snapshot::{
     CoverageState, FinancialSnapshot, InclusionScope, ObservationKind, ObservationState,
     PendingActivityTreatment, SnapshotCoverage, SnapshotSource, SourceObservation,
     UnclearedActivityTreatment,
+};
+pub use merchant_intelligence::{
+    analyze_merchant_intelligence, MerchantAccountCoverage, MerchantAlias, MerchantAliasState,
+    MerchantAlternative, MerchantAnalysisError, MerchantAnalysisRequest, MerchantAnalysisResult,
+    MerchantCalendar, MerchantCategoryClassification, MerchantCategoryHistory,
+    MerchantCategoryHistoryEntry, MerchantCollectionState, MerchantCollections, MerchantCorrection,
+    MerchantCorrectionState, MerchantCoverage, MerchantCurrencyState, MerchantDecisionState,
+    MerchantDirection, MerchantEvidence, MerchantEvidenceKind, MerchantEvidenceTier,
+    MerchantFrequency, MerchantHoliday, MerchantNativeRuleBlock, MerchantNativeRuleClassification,
+    MerchantNativeRulePart, MerchantNativeRuleSet, MerchantOccurrenceDistribution,
+    MerchantPatternDecision, MerchantPatternState, MerchantPendingState, MerchantRecurrence,
+    MerchantRecurrenceKind, MerchantRuleCandidate, MerchantSchedule, MerchantScheduledExpectation,
+    MerchantScope, MerchantSourceAdmission, MerchantSuggestion, MerchantSuggestionPage,
+    MerchantSuggestionSelection, MerchantTextField, MerchantTextState, MerchantTransaction,
+};
+pub use native_rules::{
+    plan_create_rule, simulate_create_rule_plan, verify_rule_mutation, CreateRuleRequest,
+    RulePlanningError, RuleReviewContext,
 };
 pub use prospective_decision::{
     evaluate_prospective_claims, evaluate_prospective_purchase, DecisionAlternative,
@@ -287,15 +307,15 @@ pub struct VerificationResult {
 // Rule planning types
 // ---------------------------------------------------------------------------
 
-/// A condition on a payee field used to match transactions for rule creation.
+/// An exact native payee-ID condition retained in a reviewed creation plan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PayeeCondition {
-    /// The field to match (e.g. "payee", "imported_payee").
+    /// Native field name (`payee`).
     pub field: String,
-    /// The comparison operation (e.g. "is", "contains", "startsWith").
+    /// Native equality operation (`is`).
     pub operation: String,
-    /// The value to compare against.
+    /// Opaque, case-sensitive Actual payee ID.
     pub value: String,
 }
 
@@ -307,9 +327,9 @@ pub struct CreateRulePlan {
     pub plan_id: String,
     /// Human-readable name for the rule.
     pub rule_name: String,
-    /// Trigger condition as JSON (e.g. `{"type":"payee_is","value":"groceries"}`).
+    /// Native post-stage AND trigger with an exact `payee` ID condition.
     pub trigger: serde_json::Value,
-    /// Actions to apply as JSON (e.g. `[{"type":"set_category","value":"c1"}]`).
+    /// Native category assignment: `[{"op":"set","field":"category","value":"c1"}]`.
     pub actions: serde_json::Value,
     /// Content hash for integrity verification.
     pub hash: String,
@@ -791,6 +811,9 @@ pub fn analyze_deterministic(
                 },
                 repeated_merchants: vec![],
                 deterministic_classifications: vec![],
+                native_rule_sets: vec![],
+                native_rule_blocks: vec![],
+                native_rule_parts: vec![],
                 rule_candidates: vec![],
                 duplicate_evidence: vec![],
                 recurring_charges: vec![],
@@ -829,7 +852,6 @@ pub fn analyze_deterministic(
         &snapshot.categories,
         &snapshot.payees,
         &snapshot.rules,
-        &snapshot.schedules,
         &snapshot.budgets,
         compatibility.clone(),
         actual_downloaded_at,
@@ -849,7 +871,14 @@ pub fn analyze_deterministic(
     if let Some(max) = max_results {
         let mut limited = analysis;
         limited.repeated_merchants.truncate(max);
-        limited.deterministic_classifications.truncate(max);
+        let mut explanations = 0;
+        limited.deterministic_classifications.retain(|candidate| {
+            if candidate.rule_set_index.is_some() {
+                return true;
+            }
+            explanations += 1;
+            explanations <= max
+        });
         limited.rule_candidates.truncate(max);
         limited.duplicate_evidence.truncate(max);
         limited.recurring_charges.truncate(max);
@@ -967,7 +996,7 @@ pub fn find_categorization_candidates(
             reasons: vec![],
             proposed_category_id: None,
             proposed_category_name: None,
-            rule_ids: None,
+            rule_set_index: None,
         })
         .collect()
 }
@@ -1222,12 +1251,30 @@ pub fn verify_mutation(plan: &MutationPlan, snapshot: &ProtocolSnapshot) -> Veri
     // false `verified: false` result.
     let mut failure_codes: Vec<String> = Vec::new();
 
-    // The written transaction must still exist.
-    let tx = match snapshot
-        .transactions
-        .iter()
-        .find(|tx| tx.id == plan.transaction_id)
-    {
+    // Match the exact target across the unchanged recursive snapshot. Two claims
+    // to its identity are ambiguous even when their category/financial facts agree.
+    let mut levels = vec![snapshot.transactions.iter()];
+    let mut found = None;
+    while let Some(level) = levels.last_mut() {
+        let Some(transaction) = level.next() else {
+            levels.pop();
+            continue;
+        };
+        if transaction.id == plan.transaction_id {
+            if found.is_some() {
+                return VerificationResult {
+                    verified: false,
+                    reason_codes: vec!["transaction_identity_conflict".into()],
+                    message: Some("Transaction identity is ambiguous".into()),
+                };
+            }
+            found = Some(transaction);
+        }
+        if !transaction.subtransactions.is_empty() {
+            levels.push(transaction.subtransactions.iter());
+        }
+    }
+    let tx = match found {
         Some(tx) => tx,
         None => {
             failure_codes.push("transaction_not_found".into());
@@ -1293,131 +1340,6 @@ pub fn verify_mutation(plan: &MutationPlan, snapshot: &ProtocolSnapshot) -> Veri
         } else {
             Some(format!("Verification failed: {:?}", reasons))
         },
-    }
-}
-
-/// Plan the creation of a new rule based on payee conditions and a target category.
-///
-/// Normalizes the first payee condition's value and produces a trigger/actions
-/// payload suitable for rule creation.
-pub fn plan_create_rule(
-    name: &str,
-    payee_conditions: &[PayeeCondition],
-    category_id: &str,
-    _snapshot: &ProtocolSnapshot,
-) -> CreateRulePlan {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    // Normalize the payee value from the first condition.  If there are no
-    // conditions we still produce a plan, but the trigger will be empty.
-    let normalized_payee = payee_conditions
-        .first()
-        .map(|c| c.value.trim().to_lowercase())
-        .unwrap_or_default();
-
-    let trigger = serde_json::json!({
-        "type": "payee_is",
-        "value": normalized_payee,
-    });
-
-    let actions = serde_json::json!([{
-        "type": "set_category",
-        "value": category_id,
-    }]);
-
-    let mut hasher = DefaultHasher::new();
-    name.hash(&mut hasher);
-    for c in payee_conditions {
-        c.field.hash(&mut hasher);
-        c.operation.hash(&mut hasher);
-        c.value.hash(&mut hasher);
-    }
-    category_id.hash(&mut hasher);
-    let hash = format!("{:x}", hasher.finish());
-
-    CreateRulePlan {
-        plan_id: format!("rule_plan_{}", hash),
-        rule_name: name.to_string(),
-        trigger,
-        actions,
-        hash,
-        conditions: payee_conditions.to_vec(),
-    }
-}
-
-/// Verify the complete category-rule creation postcondition in a fresh Actual snapshot.
-///
-/// Requires an active post-stage AND rule with the planned merchant condition
-/// and sole category-set action; absence or changed content is never verified.
-pub fn verify_rule_mutation(
-    plan: &CreateRulePlan,
-    snapshot: &ProtocolSnapshot,
-) -> VerificationResult {
-    let planned_payee = plan.trigger.get("value").and_then(|value| value.as_str());
-    let planned_category = extract_action_value(&plan.actions);
-    let verified = plan.conditions.len() == 1
-        && snapshot.rules.iter().any(|rule| {
-            !rule.inactive
-                && rule.trigger.get("stage").and_then(|value| value.as_str()) == Some("post")
-                && rule
-                    .trigger
-                    .get("conditionsOp")
-                    .and_then(|value| value.as_str())
-                    == Some("and")
-                && matches!((planned_payee, rule_payee_name(&rule.trigger, &snapshot.payees)),
-            (Some(planned), Some(actual)) if planned.trim().eq_ignore_ascii_case(actual.trim()))
-                && rule.actions.as_array().is_some_and(|actions| {
-                    actions.len() == 1
-                        && actions[0].get("op").and_then(|value| value.as_str()) == Some("set")
-                        && actions[0].get("field").and_then(|value| value.as_str())
-                            == Some("category")
-                })
-                && planned_category.is_some_and(|category| {
-                    extract_action_value(&rule.actions) == Some(category)
-                        && snapshot
-                            .categories
-                            .iter()
-                            .any(|current| current.id == category && !current.deleted)
-                })
-        });
-    VerificationResult {
-        verified,
-        reason_codes: vec![if verified {
-            "rule_creation_verified"
-        } else {
-            "rule_creation_not_verified"
-        }
-        .into()],
-        message: (!verified)
-            .then(|| "Created rule is absent or differs from the approved plan.".into()),
-    }
-}
-
-fn rule_payee_name<'a>(trigger: &'a serde_json::Value, payees: &'a [fc::Payee]) -> Option<&'a str> {
-    if trigger.get("type").and_then(|value| value.as_str()) == Some("payee_is") {
-        return trigger
-            .get("value")?
-            .as_str()
-            .filter(|name| !name.trim().is_empty());
-    }
-    fc::ActualRuleConditions::parse(trigger)?;
-    let conditions = trigger.get("conditions")?.as_array()?;
-    if conditions.len() != 1 {
-        return None;
-    }
-    let condition = &conditions[0];
-    if condition.get("op")?.as_str()? != "is" {
-        return None;
-    }
-    let value = condition.get("value")?.as_str()?;
-    match condition.get("field")?.as_str()? {
-        "payee_name" => Some(value),
-        "payee" => payees
-            .iter()
-            .find(|payee| payee.id == value)
-            .map(|payee| payee.name.as_str()),
-        _ => None,
     }
 }
 
@@ -1514,54 +1436,6 @@ pub fn simulate_rule(rule: &Rule, transactions: &[Transaction]) -> RuleSimulatio
         conflicts,
         examples,
     }
-}
-
-/// Simulate a rule creation plan against actual snapshot transactions.
-///
-/// Constructs a virtual [`Rule`] from the plan and delegates to
-/// [`simulate_rule`]. Also checks for conflicts with existing rules
-/// in the snapshot that share the same trigger condition or target category.
-pub fn simulate_create_rule_plan(
-    plan: &CreateRulePlan,
-    snapshot: &ProtocolSnapshot,
-) -> RuleSimulationResult {
-    let virtual_rule = Rule {
-        id: String::new(),
-        name: plan.rule_name.clone(),
-        order: 0,
-        trigger: plan.trigger.clone(),
-        actions: plan.actions.clone(),
-        inactive: false,
-    };
-    let mut result = simulate_rule(&virtual_rule, &snapshot.transactions);
-    result.rule_id = plan.plan_id.clone();
-
-    // Detect overlaps with existing rules in the snapshot
-    let planned_payee = plan.trigger.get("value").and_then(|value| value.as_str());
-    let planned_category = extract_action_value(&plan.actions);
-
-    for existing in &snapshot.rules {
-        if existing.inactive {
-            continue;
-        }
-        let existing_payee = rule_payee_name(&existing.trigger, &snapshot.payees);
-        let same_trigger = matches!((planned_payee, existing_payee),
-            (Some(planned), Some(actual)) if planned.trim().eq_ignore_ascii_case(actual.trim()));
-        let same_category = planned_category == extract_action_value(&existing.actions);
-        if same_trigger && same_category {
-            result.conflicts.push(format!(
-                "Rule '{}' already matches this payee and sets the same category",
-                existing.name
-            ));
-        } else if same_trigger && !same_category {
-            result.conflicts.push(format!(
-                "Rule '{}' matches the same payee but sets a different category",
-                existing.name
-            ));
-        }
-    }
-
-    result
 }
 
 /// Borrow the target of a native plan or an Actual category-set action.

@@ -13,7 +13,7 @@
  *   ALL sensitive fields are redacted to prevent side-channel leaks
  * - Benign false-positive avoidance
  */
-import type { UnresolvedCandidate, Redactor } from './types';
+import type { UnresolvedCandidate, Redactor } from './types.js'
 
 // ---------------------------------------------------------------------------
 // Format-control / obfuscation Unicode ranges

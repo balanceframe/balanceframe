@@ -241,10 +241,14 @@ describe('PendingReviewOutput — exact envelope fields', () => {
     };
     const auth = AuthorizationContext.observe('usr_test');
     const result: PendingReviewResult = {
+      nativeRuleBlocks: [],
+      nativeRuleParts: [],
+      nativeRuleSets: [],
       uncategorizedCount: 12,
       totalUncategorizedAmount: { minorUnits: '45000', currency: 'USD' },
       candidates: [
         {
+          source: 'uncategorized',
           transactionId: 'tx_001',
           amount: { minorUnits: '5000', currency: 'USD' },
           payeeName: 'Grocery Store',
@@ -280,6 +284,9 @@ describe('PendingReviewOutput — exact envelope fields', () => {
   it('includes reason codes and blockers when present', () => {
     const auth = AuthorizationContext.observe('usr_test');
     const result: PendingReviewResult = {
+      nativeRuleBlocks: [],
+      nativeRuleParts: [],
+      nativeRuleSets: [],
       uncategorizedCount: 0,
       totalUncategorizedAmount: { minorUnits: '0', currency: 'USD' },
       candidates: [],

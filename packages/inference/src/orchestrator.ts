@@ -14,20 +14,18 @@
  * - Immutable / deeply-copied output
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { classificationResultSchema } from './validators';
-import type { ClassificationResultParsed } from './validators';
-import type {
-  UnresolvedCandidate,
-  ClassifyRequest,
-  ClassificationResult,
-  Suggestion,
-  PolicyEngine,
-  Redactor,
-  ProviderInfo,
-  AuthoritativeLayer,
-  LayerResult,
-} from './types';
-import type { ProviderAdapter } from './providers/types';
+import { classificationResultSchema } from './validators.js'
+import type { ClassificationResultParsed } from './validators.js'
+import type { UnresolvedCandidate,
+ClassifyRequest,
+ClassificationResult,
+Suggestion,
+PolicyEngine,
+Redactor,
+ProviderInfo,
+AuthoritativeLayer,
+LayerResult, } from './types.js'
+import type { ProviderAdapter } from './providers/types.js'
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 /** Authorizes a candidate and returns its downstream-safe projection, or null to deny. */

@@ -9,7 +9,7 @@ import {
 import type { GetProposalApprovalSummaryInput, ProposalApprovalSummary } from '../src/index.js';
 import { deriveProposalAuthorizationFacts } from '../src/proposal.js';
 import type { ProposalAuthorizationFacts } from '../src/proposal.js';
-import type { GovernanceResourceRef } from '../src/governance-types.js';
+import type { GovernanceResourceRef, OperationalAuth as TrustedOperationalAuth } from '../src/governance-types.js';
 import { SqliteWorkflowStore } from '../src/store.js';
 import type {
   ActionProposal,
@@ -1358,6 +1358,76 @@ describe('generic proposal approval and execution acquisition', () => {
       expect.arrayContaining([first.actorId, second.actorId]),
     );
     expect(acquired.auditRecord).not.toBeNull();
+  });
+
+  it.each(['audit token', 'payload hash', 'claim key', 'executor', 'effect', 'consumed approval'])(
+    'synchronously rejects changed exact acquired execution %s without reacquiring approvals',
+    async (change) => {
+      await setup({ operationApprovers: { set_category: 2 } });
+      const { proposal, approvals } = await createHumanApprovedProposal();
+      const input = acquisitionInput(proposal);
+      const acquired = await store.acquireProposalExecution(input);
+      const final = { ...input, acquisitionAuditId: acquired.auditRecord!.id };
+      expect(store.validateAcquiredProposalExecution(final)).toBeUndefined();
+      if (change === 'audit token') final.acquisitionAuditId = 'not-the-durable-token';
+      if (change === 'payload hash') final.payloadHash = 'not-the-approved-hash';
+      if (change === 'claim key') final.idempotencyKey = 'not-the-acquired-key';
+      if (change === 'executor') { final.actorId = 'approver-c'; final.auth = auth('approver-c'); }
+      if (change === 'effect') final.serialisedEffect = '{}';
+      if (change === 'consumed approval') testDatabase().prepare(
+        "UPDATE proposal_approvals SET status='active',consumed_at=NULL WHERE id=?",
+      ).run(approvals[0]!.id);
+      expect(() => store.validateAcquiredProposalExecution(final)).toThrow();
+      expect((await store.getIdempotencyRecord(input.idempotencyKey))?.status).toBe('in_progress');
+      expect((await store.queryAuditRecordsByProposal(proposal.id))
+        .filter((audit) => audit.classification === 'execution_started')).toHaveLength(1);
+    },
+  );
+
+  it.each(['origin delegation', 'executor delegation', 'executor credential'])(
+    'rechecks persisted agent %s at the final acquired boundary',
+    async (change) => {
+      const fixture = await setup({ operationApprovers: { set_category: 1 } });
+      const { agent, proposal } = await createAgentOriginProposal(fixture.space.id, fixture.membershipIds.owner!);
+      await approve(proposal, 'approver-a');
+      const input = acquisitionInput(proposal, change === 'origin delegation'
+        ? {} : { actorId: agent.actorId, auth: agent.auth });
+      const acquired = await store.acquireProposalExecution(input);
+      const final = { ...input, acquisitionAuditId: acquired.auditRecord!.id };
+      expect(store.validateAcquiredProposalExecution(final)).toBeUndefined();
+      if (change === 'executor credential') governance.revokeCredentialBinding({
+        spaceId: fixture.space.id, credentialId: agent.credentialId, now, auth: auth('owner'),
+      });
+      else governance.revokeDelegation({
+        spaceId: fixture.space.id, delegationId: agent.delegation.id,
+        expectedVersion: agent.delegation.version, now, auth: auth('owner'),
+      });
+      expect(() => store.validateAcquiredProposalExecution(final)).toThrow();
+    },
+  );
+
+  it.each([
+    { credentialExpiresAt: 'not-an-ISO-timestamp' },
+    { credentialExpiresAt: now },
+    { isCredentialValid: () => false },
+    { isCredentialValid: () => 'true' },
+    { isCredentialValid: () => Promise.resolve(true) },
+    { isCredentialValid: () => { throw new Error('Authoritative credential lookup failed'); } },
+  ])('denies malformed or unavailable lifetime metadata throughout governance: %j', async (lifetime) => {
+    const fixture = await setup({ operationApprovers: { set_category: 2 } });
+    const { proposal } = await createHumanApprovedProposal();
+    const liveAuth = { ...auth('executor'), ...lifetime } as unknown as TrustedOperationalAuth;
+    const facts = deriveProposalAuthorizationFacts(proposal.operation, proposal.payload, JSON.parse(proposal.preconditions));
+    const authorization = governance.authorize({
+      actorId: 'executor', auth: liveAuth, spaceId: fixture.space.id,
+      expectedPolicyVersion: fixture.policy.version, phase: 'read', operation: 'proposal',
+      required: currentProposalResources.map((resource) => ({ ...resource, capability: 'categorization:execute' })),
+      payload: { operations: facts.operations, resources: facts.resources }, now,
+    });
+    expect(authorization.allowed).toBe(false);
+    await expect(store.acquireProposalExecution(acquisitionInput(proposal, { auth: liveAuth })))
+      .rejects.toMatchObject({ reasonCode: 'authorization_denied' });
+    expect(await store.getIdempotencyRecord('execute:exact-proposal')).toBeNull();
   });
 
   it('uses the bound gross USD outgoing amount, not an incoming net, to require the amount threshold', async () => {
@@ -2800,12 +2870,12 @@ describe('generic proposal approval and execution acquisition', () => {
     ]);
   });
 
-  it('requires the normalized executable rule in payload instead of copying preconditions into it', async () => {
+  it('requires exact native executable rule terms in payload instead of copying preconditions into it', async () => {
     const fixture = await setup();
-    const normalizedRule = {
-      name: 'Market groceries',
-      conditions: [{ field: 'payee_name', op: 'is', value: 'Market' }],
-      actions: [{ type: 'set-category', field: 'category', value: 'cat-food' }],
+    const nativeRule = {
+      stage: 'post',
+      conditions: [{ field: 'payee', op: 'is', value: 'payee-market' }],
+      actions: [{ op: 'set', field: 'category', value: 'cat-food' }],
       conditionsOp: 'and',
     };
     for (const resource of [
@@ -2835,7 +2905,7 @@ describe('generic proposal approval and execution acquisition', () => {
         rule: {},
       },
       policyVersion: GENERIC_MUTATION_POLICY_VERSION,
-      preconditions: JSON.stringify({ reviewId: 'review-rule-source', nativeRule: normalizedRule }),
+      preconditions: JSON.stringify({ ruleName: 'Market groceries', reviewId: 'review-rule-source', nativeRule }),
       expiresAt,
       actorId: 'proposer',
       auth: auth('proposer'),
@@ -2845,6 +2915,130 @@ describe('generic proposal approval and execution acquisition', () => {
     await expect(store.createProposal(input)).rejects.toThrow();
     expect(await store.countProposals({ budgetId, operations: ['create_rule'] })).toBe(0);
   });
+  it.each([
+    { stage: 'pre' },
+    { conditionsOp: 'or' },
+    { name: 'Unsupported SDK label' },
+    { trigger: { type: 'payee_is', value: 'Market' } },
+    { conditions: [{ field: 'payee', op: 'is', value: 'payee-market', type: 'string' }] },
+    { conditions: [{ field: 'payee', op: 'is', value: 'payee-market', arbitrary: true }] },
+    { actions: [{ op: 'set', field: 'category', value: 'cat-food', arbitrary: true }] },
+  ])('rejects unsupported native create-rule terms rather than expanding the executable schema: %j', (invalid) => {
+    const rule = {
+      stage: 'post', conditionsOp: 'and',
+      conditions: [{ field: 'payee', op: 'is', value: 'payee-market' }],
+      actions: [{ op: 'set', field: 'category', value: 'cat-food' }],
+      ...invalid,
+    };
+    expect(() => deriveProposalAuthorizationFacts('create_rule', {
+      kind: 'create_rule', transactionId: null, categoryId: 'cat-food', rule,
+    }, {})).toThrow(/Unsupported generic rule/);
+  });
+
+  it.each([
+    null,
+    { resourceKind: 'account', resourceId: 'acct-A' },
+    { resourceKind: 'account', resourceId: 'acct-B' },
+    { resourceKind: 'category', resourceId: 'cat-before' },
+    { resourceKind: 'category', resourceId: 'cat-food' },
+    { resourceKind: 'transaction', resourceId: 'txn-A' },
+    { resourceKind: 'transaction', resourceId: 'txn-B' },
+    { resourceKind: 'evidence', resourceId: 'merchant-evidence-current' },
+    { resourceKind: 'evidence', resourceId: 'receipt-native-rule' },
+    { resourceKind: 'rule', resourceId: 'existing-rule-dependency' },
+    { resourceKind: 'budget', resourceId: budgetId },
+  ] satisfies Array<GovernanceResourceRef | null>)('retains and rechecks the complete native rule source/evidence closure: %j', async (revoked) => {
+    const fixture = await setup({ operationApprovers: { create_rule: 1 } });
+    const rule = {
+      stage: 'post', conditionsOp: 'and',
+      conditions: [{ field: 'payee', op: 'is', value: 'payee-market' }],
+      actions: [{ op: 'set', field: 'category', value: 'cat-food' }],
+    };
+    const input: CreateProposalInput = {
+      ...proposalInput(),
+      operation: 'create_rule',
+      payload: {
+        kind: 'create_rule', transactionId: null, categoryId: 'cat-food', rule,
+        composite: {
+          operations: [], reallocations: [], transferRecommendations: [], ledgerProjections: [],
+          evidenceReferences: [{ evidenceId: 'receipt-native-rule' }],
+          nativePayloadHash: 'native-rule-hash',
+        },
+      },
+      preconditions: JSON.stringify({
+        ruleName: 'Market groceries',
+        actualVersion: 'actual-v1',
+        nativeRule: rule,
+        nativePlan: {
+          planId: 'plan-reviewed-not-a-rule-resource', ruleName: 'Market groceries',
+          trigger: { stage: rule.stage, conditionsOp: rule.conditionsOp, conditions: rule.conditions },
+          actions: rule.actions, hash: 'native-rule-hash',
+          conditions: [{ field: 'payee', operation: 'is', value: 'payee-market' }],
+        },
+        reviewedSimulation: {
+          ruleId: '', name: 'Market groceries', transactionsMatched: 2,
+          transactionsAffected: ['txn-A', 'txn-B'], categoryDistribution: { 'cat-food': 2 },
+          conflicts: [], examples: [],
+        },
+        reviewContext: {
+          scope: { spaceId: fixture.space.id, budgetId, connectionId: 'connection-native-rule' },
+          sourceFactsHash: 'source-native-rule-v1', evidenceKey: 'merchant-evidence-current',
+          evidenceRevision: 'merchant-evidence-v1', merchantPolicyVersion: 'merchant-policy-v1',
+          visibilityHash: 'rule-visibility-v1', expiresAt,
+        },
+        sourceAccounts: [{ accountId: 'acct-A' }, { accountId: 'acct-B' }],
+        sourceTransactions: [
+          { transactionId: 'txn-A', accountId: 'acct-A', categoryId: 'cat-before' },
+          { transactionId: 'txn-B', accountId: 'acct-B', categoryId: 'cat-before' },
+        ],
+        existingRules: [{ ruleId: 'existing-rule-dependency' }],
+      }),
+    };
+    const facts = deriveProposalAuthorizationFacts(input.operation, input.payload, JSON.parse(input.preconditions) as unknown);
+    expect(facts.operations).toContainEqual({ operation: 'create_rule', accountScope: { kind: 'global' } });
+    expect(facts.resources).toEqual(expect.arrayContaining([
+      { resourceKind: 'account', resourceId: 'acct-A' },
+      { resourceKind: 'account', resourceId: 'acct-B' },
+      { resourceKind: 'category', resourceId: 'cat-before' },
+      { resourceKind: 'category', resourceId: 'cat-food' },
+      { resourceKind: 'transaction', resourceId: 'txn-A' },
+      { resourceKind: 'transaction', resourceId: 'txn-B' },
+      { resourceKind: 'evidence', resourceId: 'merchant-evidence-current' },
+      { resourceKind: 'evidence', resourceId: 'receipt-native-rule' },
+      { resourceKind: 'rule', resourceId: 'existing-rule-dependency' },
+    ]));
+    expect(facts.resources.some(({ resourceId }) => resourceId === 'plan-reviewed-not-a-rule-resource')).toBe(false);
+    const proposal = await createProposal(input);
+    await approve(proposal, 'approver-a');
+    if (revoked) {
+      governance.setResourceGrant({
+        spaceId: fixture.space.id, budgetId,
+        actorId: 'executor', membershipId: fixture.membershipIds.executor!,
+        capability: 'rule:execute', ...revoked, granted: false, now, auth: auth('owner'),
+      });
+      await expect(store.acquireProposalExecution(acquisitionInput(proposal)))
+        .rejects.toMatchObject({ reasonCode: 'authorization_denied' });
+      expect(await store.getIdempotencyRecord('execute:exact-proposal')).toBeNull();
+    } else {
+      governance.provisionResourceGrant({
+        spaceId: fixture.space.id, budgetId,
+        actorId: 'executor', membershipId: fixture.membershipIds.executor!,
+        capability: 'rule:execute', resourceKind: 'budget', resourceId: budgetId,
+        granted: true, restrictions: { accountIds: ['acct-A', 'acct-B'] }, now,
+      });
+      await expect(store.acquireProposalExecution(acquisitionInput(proposal)))
+        .rejects.toMatchObject({ reasonCode: 'authorization_denied' });
+      expect(await store.getIdempotencyRecord('execute:exact-proposal')).toBeNull();
+      governance.provisionResourceGrant({
+        spaceId: fixture.space.id, budgetId,
+        actorId: 'executor', membershipId: fixture.membershipIds.executor!,
+        capability: 'rule:execute', resourceKind: 'budget', resourceId: budgetId,
+        granted: true, restrictions: {}, now,
+      });
+      expect((await store.acquireProposalExecution(acquisitionInput(proposal))).claim.isOwner).toBe(true);
+    }
+  });
+
   it('keeps payee-only rule effects global under account-restricted grants and scopes only exact AND account rules', async () => {
     const fixture = await setup({
       operationApprovers: { create_rule: 1, update_rule: 1, delete_rule: 1 },
@@ -2884,16 +3078,16 @@ describe('generic proposal approval and execution acquisition', () => {
         now,
       });
     };
-    for (const conditionsOp of ['and', 'or'] as const) {
+    for (const type of [undefined, 'id'] as const) {
       const payload = {
         kind: 'create_rule',
         transactionId: null,
         categoryId: 'cat-food',
         rule: {
-          name: 'Market groceries',
-          conditions: [{ field: 'payee_name', op: 'is', value: 'Market' }],
-          actions: [{ type: 'set-category', field: 'category', value: 'cat-food' }],
-          conditionsOp,
+          stage: 'post',
+          conditions: [{ field: 'payee', op: 'is', value: 'payee-market', ...(type === undefined ? {} : { type }) }],
+          actions: [{ op: 'set', field: 'category', value: 'cat-food' }],
+          conditionsOp: 'and',
         },
       };
       const sourceLess = deriveProposalAuthorizationFacts(
@@ -2918,9 +3112,9 @@ describe('generic proposal approval and execution acquisition', () => {
         transactionId: null,
         categoryId: 'cat-food',
         rule: {
-          name: 'Market groceries',
-          conditions: [{ field: 'payee_name', op: 'is', value: 'Market' }],
-          actions: [{ type: 'set-category', field: 'category', value: 'cat-food' }],
+          stage: 'post',
+          conditions: [{ field: 'payee', op: 'is', value: 'payee-market' }],
+          actions: [{ op: 'set', field: 'category', value: 'cat-food' }],
           conditionsOp: 'and',
         },
       },

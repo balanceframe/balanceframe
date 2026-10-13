@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
+import type { Ref } from 'vue';
 import type { ReviewQueueItem, ReviewStatus } from '../../src/review';
 import type { ProposalApprovalView } from '../../server/utils/proposal-approval-view';
 import ReviewPage from '../../app/pages/review.vue';
@@ -9,6 +10,14 @@ import ReviewItem from '../../app/components/ReviewItem.vue';
 import ReviewActions from '../../app/components/ReviewActions.vue';
 import CategoryCorrectModal from '../../app/components/CategoryCorrectModal.vue';
 import ProposedRulesModal from '../../app/components/ProposedRulesModal.vue';
+
+const auth = vi.hoisted(() => ({
+  session: undefined as unknown as Ref<{ data: { user: { id: string; email: string } } | null }>,
+}));
+vi.mock('../../lib/auth-client', () => ({
+  authClient: { useSession: () => auth.session },
+}));
+auth.session = ref({ data: { user: { id: 'owner-1', email: 'owner@example.test' } } });
 const stubs = {
   UContainer: { template: '<main><slot /></main>' },
   UCard: { template: '<section><slot name="header" /><slot /><slot name="footer" /></section>' },
@@ -71,6 +80,8 @@ function item(
       normalizedMerchant: merchant,
       account: 'Checking',
       amount: -42.75,
+      money: { minorUnits: '-4275', currency: 'USD' },
+      currency: 'USD',
       currentCategory: 'cat-unassigned',
       suggestedCategory: 'cat-groceries',
       alternatives: ['cat-dining'],
@@ -202,6 +213,7 @@ function mutations() {
 }
 
 beforeEach(() => {
+  auth.session.value = { data: { user: { id: 'owner-1', email: 'owner@example.test' } } };
   stored = [item('grocer', 'Corner Grocer'), item('cafe', 'Morning Cafe')];
   total = stored.length;
   fetchMock.mockReset();
@@ -257,6 +269,110 @@ afterEach(() => {
   }
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe('private Review lifetime', () => {
+  const privateProposal = {
+    id: 'private-proposal', operation: 'set_category', budgetId: 'budget-test',
+    transactionId: 'private-tx', categoryId: 'private-category',
+    preconditions: JSON.stringify({ merchant: 'Private proposal merchant' }),
+    expiresAt: '2026-10-03T12:00:00.000Z', actorId: 'owner-1',
+    provenance: 'review', providerModel: null, correlationId: null,
+    createdAt: '2026-10-02T10:00:00.000Z', simulationStatus: 'missing',
+  };
+
+  it('restores the authorized proposal entrypoint when the initial session resolves after mounting', async () => {
+    auth.session.value = { data: null };
+    const normalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, options) => {
+      if (new URL(String(input), 'https://review.test').pathname === '/api/proposal')
+        return Promise.resolve(response({ proposals: [privateProposal] }));
+      return normalFetch(input, options);
+    });
+    const page = mountPage();
+    await flushPromises();
+    auth.session.value = { data: { user: { id: 'owner-1', email: 'owner@example.test' } } };
+    await flushPromises();
+    await button(page, 'Proposed rules (1)').trigger('click');
+    await flushPromises();
+    expect(page.text()).toContain('Private proposal merchant');
+    expect(page.text()).toContain('private-category');
+    expect(mutations()).toEqual([]);
+  });
+
+  it.each(['denied', 'error envelope', 'offline'])('removes the authorized proposal list after a %s refresh and reopening', async (kind) => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    let denied = false;
+    fetchMock.mockImplementation((input, options) => {
+      if (new URL(String(input), 'https://review.test').pathname !== '/api/proposal')
+        return normalFetch(input, options);
+      if (!denied) return Promise.resolve(response({ proposals: [privateProposal] }));
+      if (kind === 'offline') return Promise.reject(new Error('Offline'));
+      return Promise.resolve(new Response(JSON.stringify({
+        status: 'error', result: null, error: { code: 'DENIED', message: 'Private list denied' },
+      }), { status: kind === 'denied' ? 403 : 200 }));
+    });
+    const page = mountPage();
+    await flushPromises();
+    await button(page, 'Proposed rules (1)').trigger('click');
+    await flushPromises();
+    expect(page.text()).toContain('Private proposal merchant');
+    expect(page.text()).toContain('private-category');
+    await button(page, 'Close').trigger('click');
+    denied = true;
+    await button(page, 'Proposed rules (1)').trigger('click');
+    await flushPromises();
+    expect(page.text()).not.toContain('Private proposal merchant');
+    expect(page.text()).not.toContain('private-category');
+    expect(page.findComponent(ProposedRulesModal).props('proposals')).toEqual([]);
+    expect(page.findAll('button').some((control) => control.text() === 'Review exact proposal')).toBe(false);
+    await button(page, 'Close').trigger('click');
+    expect(page.findComponent(ReviewActions).text()).not.toContain('Proposed rules (1)');
+  });
+
+  it('clears private queue, exact detail and list on identity change and rejects old successful responses', async () => {
+    const normalFetch = fetchMock.getMockImplementation()!;
+    const oldQueue = Promise.withResolvers<Response>();
+    const oldList = Promise.withResolvers<Response>();
+    const oldDetail = Promise.withResolvers<Response>();
+    const exact = { ...approvalProposal('secret', 'private-category'), id: privateProposal.id };
+    let refreshing = false;
+    fetchMock.mockImplementation((input, options) => {
+      const path = new URL(String(input), 'https://review.test').pathname;
+      if (path === '/api/review' && refreshing) return oldQueue.promise;
+      if (path === '/api/proposal') return refreshing ? oldList.promise : Promise.resolve(response({ proposals: [privateProposal] }));
+      if (path === '/api/proposal/private-proposal')
+        return refreshing ? oldDetail.promise : Promise.resolve(response({ proposal: exact, stale: false }));
+      return normalFetch(input, options);
+    });
+    const page = mountPage();
+    await flushPromises();
+    await button(page, 'Proposed rules (1)').trigger('click');
+    await flushPromises();
+    await button(page, 'Review exact proposal').trigger('click');
+    await flushPromises();
+    expect(page.text()).toContain('"private-category"');
+    refreshing = true;
+    await button(page, 'Refresh proposal view').trigger('click');
+    await button(page, 'Close').trigger('click');
+    await button(page, 'Proposed rules (1)').trigger('click');
+    await button(page, 'Refresh').trigger('click');
+    auth.session.value = { data: { user: { id: 'owner-2', email: 'other@example.test' } } };
+    await flushPromises();
+    expect(page.text()).not.toContain('Corner Grocer');
+    expect(page.text()).not.toContain('Morning Cafe');
+    expect(page.text()).not.toContain('Private proposal merchant');
+    oldQueue.resolve(response({ items: stored, total }));
+    oldList.resolve(response({ proposals: [privateProposal] }));
+    oldDetail.resolve(response({ proposal: exact, stale: false }));
+    await flushPromises();
+    expect(page.text()).not.toContain('Corner Grocer');
+    expect(page.text()).not.toContain('Private proposal merchant');
+    expect(page.text()).not.toContain('"private-category"');
+    expect(page.findComponent(ReviewQueue).exists()).toBe(false);
+    expect(page.findComponent(ReviewItem).exists()).toBe(false);
+    expect(page.findAll('button').filter((control) => control.text().startsWith('Execute exact'))).toEqual([]);
+  });
 });
 
 describe('real review queue, evidence and actions', () => {
@@ -389,6 +505,22 @@ describe('real review queue, evidence and actions', () => {
     expect(page.findComponent(ReviewQueue).text()).not.toContain('Load more');
   });
 
+  it('does not steal merchant-control focus when an earlier Review queue request completes', async () => {
+    const pending = deferred<Response>();
+    fetchMock.mockReturnValueOnce(pending.promise);
+    const page = mountPage();
+    await nextTick();
+    const details = page.findAll('details').find(row => row.text().includes('Merchant evidence and patterns'))!;
+    (details.element as HTMLDetailsElement).open = true;
+    const control = button(page, 'Load merchant evidence and patterns');
+    (control.element as HTMLButtonElement).focus();
+    expect(document.activeElement).toBe(control.element);
+    pending.resolve(response({ items: stored, total }));
+    await flushPromises();
+    expect(document.activeElement).toBe(control.element);
+    expect(mutations()).toHaveLength(0);
+  });
+
   it('renders decision evidence with resolved category names, expiry, history and rule consistency', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-06-01T00:00:00.000Z'));
     stored[0] = {
@@ -399,20 +531,20 @@ describe('real review queue, evidence and actions', () => {
         freshness: '2026-05-31T00:00:00.000Z',
         alternatives: ['cat-dining', 'cat-unmapped'],
         history: [
-          { categoryId: 'cat-groceries', count: 3, lastClassified: '2026-05-30T00:00:00.000Z' },
+          { categoryId: 'cat-groceries', count: 3, lastClassified: '2026-05-30', firstDate: '2026-03-30', lastDate: '2026-05-30', ledgerCount: 2, correctionCount: 1 },
         ],
         ruleCandidates: [
           {
             merchant: 'Corner Grocer',
             currentCategory: 'cat-groceries',
             matchCount: 3,
-            consistency: 0.876,
+            payeeId: 'payee-grocer', categoryId: 'cat-groceries', supportCount: 3, consistencyNumerator: 3, consistencyDenominator: 3,
           },
           {
             merchant: 'Corner Grocer',
             currentCategory: 'cat-dining',
-            matchCount: 1,
-            consistency: 1,
+            matchCount: 3,
+            payeeId: 'payee-grocer', categoryId: 'cat-dining', supportCount: 3, consistencyNumerator: 3, consistencyDenominator: 3,
           },
         ],
       },
@@ -433,14 +565,16 @@ describe('real review queue, evidence and actions', () => {
     const page = mountPage();
     await flushPromises();
     const detail = page.findComponent(ReviewItem);
-    expect(detail.text()).toContain('-$42.75');
+    expect(detail.text()).toContain('−42.75 USD');
     expect(detail.text()).toContain('Stale since');
     expect(detail.text()).toContain('Unassigned');
     expect(detail.text()).toContain('Groceries');
     expect(detail.text()).toContain('cat-unmapped');
-    expect(detail.text()).toContain('3x');
-    expect(detail.text()).toMatch(/3 matches\s*·\s*88% consistent/);
-    expect(detail.text()).toMatch(/1 match\s*·\s*100% consistent/);
+    expect(detail.text()).toContain('3 observations');
+    expect(detail.text()).toContain('2026-03-30');
+    expect(detail.text()).toContain('2 ledger / 1 verified correction');
+    expect(detail.text()).toMatch(/3 support observations\s*·\s*3 \/ 3 historical consistency/);
+    expect(detail.text()).not.toContain('% consistent');
     expect(button(page, 'Create rule').exists()).toBe(true);
     await queueRow(page, 'Morning Cafe').trigger('click');
     expect(detail.text()).toContain('Fresh until');

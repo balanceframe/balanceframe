@@ -62,6 +62,8 @@ export interface ConnectionUseOptions {
   readonly dispose?: boolean;
   /** Selected budget authorized before waiting for the global lifecycle lock. */
   readonly expectedBudgetId?: string;
+  /** Skip broad ledger synchronization when the operation admits its own scoped source reads. */
+  readonly synchronize?: boolean;
 }
 
 /** Persists selected-budget metadata and serializes access to the process-global Actual API. */
@@ -219,7 +221,7 @@ export class ConnectionManager {
     options: ConnectionUseOptions = {},
   ): Promise<T> {
     return this.runWithLifecycle(async () => {
-      const connected = await this.restoreConfiguredBudget(options.expectedBudgetId);
+      const connected = await this.restoreConfiguredBudget(options.expectedBudgetId, options.synchronize ?? true);
       try {
         return await operation(connected);
       } finally {
@@ -257,7 +259,7 @@ export class ConnectionManager {
     });
   }
 
-  private async restoreConfiguredBudget(expectedBudgetId?: string): Promise<ConnectedBudget> {
+  private async restoreConfiguredBudget(expectedBudgetId?: string, synchronize = true): Promise<ConnectedBudget> {
     const config = await this.loadConfig();
     if (!config) {
       await this.disconnectConnected();
@@ -287,6 +289,7 @@ export class ConnectionManager {
       sameConfig(this.connectedConfig, config) &&
       sameCredentials(this.connectedCredentials, credentials)
     ) {
+      if (!synchronize) return { ...this.connectedBudget, synchronization: null };
       try {
         const synchronization = await this.connectedBudget.connector.synchronize();
         const connected = { ...this.connectedBudget, synchronization };
@@ -312,7 +315,7 @@ export class ConnectionManager {
       connector = await this.connectorFactory(credentials);
       await connector.connect(credentials);
       const budget = await connector.selectBudget(config.budgetId, credentials.budgetPassword);
-      const synchronization = await connector.synchronize({ refresh: false });
+      const synchronization = synchronize ? await connector.synchronize({ refresh: false }) : null;
       const connected = { budget, config, connector, synchronization };
       this.connectedBudget = connected;
       this.connectedConfig = config;

@@ -35,6 +35,7 @@ import type {
 } from '@balanceframe/actual-adapter';
 import { z } from 'zod';
 import type { ProtocolSnapshot } from '@balanceframe/protocol-generated';
+import { moneySchema } from '@balanceframe/protocol-generated/validators';
 
 import type { VerificationResult } from './mutation.js';
 
@@ -42,14 +43,109 @@ import type { VerificationResult } from './mutation.js';
 // Rule proposal input / plan types
 // ---------------------------------------------------------------------------
 
-/** Input to plan the one supported Actual categorization-rule form. */
+/** Server-admitted evidence metadata; proposal bodies are never current authority. */
+export interface RuleReviewContext {
+  scope: { spaceId: string; budgetId: string; connectionId: string };
+  sourceFactsHash: string;
+  evidenceKey: string | null;
+  evidenceRevision: string;
+  merchantPolicyVersion: string;
+  visibilityHash: string;
+  expiresAt: string;
+}
+
+export const ruleReviewContextSchema = z.object({
+  scope: z.object({ spaceId: z.string().min(1), budgetId: z.string().min(1), connectionId: z.string().min(1) }).strict(),
+  sourceFactsHash: z.string().min(1),
+  evidenceKey: z.string().min(1).nullable(),
+  evidenceRevision: z.string().min(1),
+  merchantPolicyVersion: z.string().min(1),
+  visibilityHash: z.string().min(1),
+  expiresAt: z.string().datetime({ offset: true }),
+}).strict();
+
+/** Input to the sole supported standalone Actual stable-ID category rule. */
 export interface RuleProposalInput {
   name: string;
-  conditions: unknown[];
-  actions: unknown[];
+  conditions: [{ field: 'payee'; op: 'is'; value: string }];
+  actions: [{ op: 'set'; field: 'category'; value: string }];
   budgetId: string;
-  stage?: 'pre' | 'post' | null;
-  conditionsOp?: 'and' | 'or';
+  stage: 'post';
+  conditionsOp: 'and';
+  reviewContext: RuleReviewContext;
+}
+
+/**
+ * Required trusted resolver, bound to the caller's lock-held Actual connection.
+ * It independently admits current source/policy/evidence and current grants.
+ * Never close over proposal.reviewContext as the answer or reacquire that lock.
+ */
+export type ResolveCurrentRuleReviewContext = (input: {
+  spaceId: string;
+  budgetId: string;
+  evidenceKey: string | null;
+  actorId: string;
+  auth: OperationalAuth;
+  snapshot: ProtocolSnapshot;
+  /** Trusted SDK collection/full-history availability; omission is unavailable. */
+  sourceAvailability?: unknown;
+  /** Internal same-capture synchronous authority; never serialized into native context JSON. */
+  capturePublicationAuthority?: (authorize: () => boolean) => void;
+}) => Promise<RuleReviewContext>;
+
+/** Current merchant-subject publication admission for a durable result, without Actual rereads. */
+export type ResolveRuleReplayPublicationAuthority = (input: {
+  spaceId: string;
+  budgetId: string;
+  actorId: string;
+  auth: OperationalAuth;
+  context: RuleReviewContext;
+}) => Promise<() => boolean>;
+
+function stableReviewContext(context: RuleReviewContext) {
+  const { expiresAt: _expiresAt, ...facts } = context;
+  return facts;
+}
+
+function assertLiveReviewContext(context: RuleReviewContext): void {
+  if (Date.now() >= Date.parse(context.expiresAt))
+    throw new Error('Reviewed native rule evidence has expired');
+}
+
+const completeRulePlanningSourceSchema = z.object({
+  accounts: z.literal('complete'),
+  payees: z.literal('complete'),
+  categories: z.literal('complete'),
+  categoryGroups: z.literal('complete'),
+  rules: z.literal('complete'),
+  history: z.array(z.object({
+    accountId: z.string().min(1),
+    state: z.literal('complete'),
+    startDate: z.literal('0001-01-01'),
+    endDate: z.literal('9999-12-31'),
+  }).strict()),
+}).strict();
+
+/** Admit only a complete full-ledger SDK capture, including closed-account history. */
+export function requireCompleteRulePlanningSource(
+  snapshot: Pick<ProtocolSnapshot, 'accounts'>,
+  availability: unknown,
+): void {
+  const incomplete = 'Current rule planning source is incomplete';
+  const result = completeRulePlanningSourceSchema.safeParse(availability);
+  if (!result.success || !Array.isArray(snapshot?.accounts) ||
+      result.data.history.length !== snapshot.accounts.length)
+    throw new Error(incomplete);
+  const accountIds = new Set<string>();
+  for (const account of snapshot.accounts) {
+    if (typeof account?.id !== 'string' || !account.id.trim() || accountIds.has(account.id))
+      throw new Error(incomplete);
+    accountIds.add(account.id);
+  }
+  for (const history of result.data.history) {
+    if (!accountIds.delete(history.accountId)) throw new Error(incomplete);
+  }
+  if (accountIds.size !== 0) throw new Error(incomplete);
 }
 
 export interface RuleMutationCondition {
@@ -112,7 +208,7 @@ const ruleSimulationResultSchema = z
         .object({
           txId: z.string(),
           payee: z.string().nullable(),
-          amount: z.object({ minorUnits: z.string(), currency: z.string() }).strict(),
+          amount: moneySchema.strict(),
           currentCategory: z.string().nullable(),
           wouldChange: z.boolean(),
         })
@@ -216,7 +312,7 @@ export interface SimulationExample {
   payee: string | null;
   /** Transaction amount with minor units and currency. */
   amount: { minorUnits: string; currency: string };
-  /** Current category name, if any. */
+  /** Current category stable ID, if any. */
   currentCategory: string | null;
   /** Whether the rule would change the category. */
   wouldChange: boolean;
@@ -277,21 +373,26 @@ async function getNative(): Promise<NativeBindings> {
 
 const supportedConditionSchema = z
   .object({
-    field: z.literal('payee_name'),
+    field: z.literal('payee'),
     op: z.literal('is'),
-    value: z.string().min(1).refine((value) => value.trim() === value),
+    value: z.string().min(1),
   })
-  .passthrough();
+  .strict();
 
 const supportedActionSchema = z
   .object({
-    type: z.literal('set-category'),
+    op: z.literal('set'),
     field: z.literal('category'),
-    value: z.string().min(1).refine((value) => value.trim() === value),
+    value: z.string().min(1),
   })
-  .passthrough();
+  .strict();
 
 function supportedRuleTerms(input: RuleProposalInput) {
+  if (input.stage !== 'post' || input.conditionsOp !== 'and')
+    throw new Error('Native category rules require post-stage AND conditions');
+  ruleReviewContextSchema.parse(input.reviewContext);
+  if (input.reviewContext.scope.budgetId !== input.budgetId)
+    throw new Error('Reviewed source budget differs from the rule budget');
   if (input.conditions.length !== 1 || input.actions.length !== 1)
     throw new Error('Native rule planning supports one merchant condition and one category action');
   return {
@@ -320,12 +421,12 @@ function assertPlanMatchesApprovedTerms(
     planCondition.field !== 'payee' ||
     planCondition.operation !== condition.op ||
     planCondition.value !== condition.value ||
-    plan.trigger.type !== 'payee_is' ||
-    plan.trigger.value !== condition.value.trim().toLowerCase() ||
+    canonicalProposalJson(plan.trigger) !== canonicalProposalJson({
+      stage: 'post', conditionsOp: 'and', conditions: [condition],
+    }) ||
     plan.actions.length !== 1 ||
     !planAction ||
-    planAction.type !== 'set_category' ||
-    planAction.value !== action.value
+    canonicalProposalJson(planAction) !== canonicalProposalJson(action)
   )
     throw new Error('Native rule plan does not preserve the approved condition and action');
 }
@@ -343,8 +444,9 @@ export async function createNativeRuleMutationProtocol(): Promise<RustRuleMutati
         native.planCreateRule(
           JSON.stringify({
             ruleName: input.name,
-            payeeName: condition.value,
+            payeeId: condition.value,
             categoryId: action.value,
+            reviewContext: ruleReviewContextSchema.parse(input.reviewContext),
             snapshot,
           }),
         ),
@@ -454,6 +556,8 @@ export class RuleMutationService {
     private readonly store: WorkflowStore,
     private readonly ledger: BudgetLedger | null,
     private readonly rust: RustRuleMutationProtocol | null,
+    private readonly resolveCurrentReviewContext: ResolveCurrentRuleReviewContext,
+    private readonly resolveReplayPublicationAuthority?: ResolveRuleReplayPublicationAuthority,
   ) {}
 
   /**
@@ -593,8 +697,31 @@ export class RuleMutationService {
     }
 
     if (!acquisition.claim.isOwner) {
-      if (acquisition.claim.record.status !== 'in_progress')
-        return this.replayResult(acquisition.claim.record, input, proposal);
+      if (acquisition.claim.record.status !== 'in_progress') {
+        const replay = this.replayResult(acquisition.claim.record, input, proposal);
+        if (replay.success && proposal.operation === 'create_rule') {
+          try {
+            const preconditions = z.record(z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
+            const context = ruleReviewContextSchema.parse(preconditions.reviewContext);
+            if (context.evidenceKey !== null) {
+              if (!this.resolveReplayPublicationAuthority)
+                throw new Error('Current merchant replay publication authority is unavailable');
+              const authorize = await this.resolveReplayPublicationAuthority({
+                spaceId: proposal.spaceId, budgetId: proposal.budgetId,
+                actorId: input.actorId, auth: input.auth, context,
+              });
+              if (typeof authorize !== 'function' || authorize() !== true)
+                throw new Error('Current merchant replay publication authority changed');
+            }
+          } catch {
+            return this.fail(
+              baseResult, 'publication_withheld',
+              'Authorized Actual rule creation was dispatched; private result withheld, not rolled back', input,
+            );
+          }
+        }
+        return replay;
+      }
       return this.fail(
         baseResult,
         'idempotency_in_progress',
@@ -637,6 +764,14 @@ export class RuleMutationService {
     }
     const consumedApprovalId =
       input.approvalId ?? acquisition.approvals[0]?.id ?? null;
+    const governancePolicyVersion = proposal.governancePolicyVersion;
+    const assertExecutionCurrent = () => {
+      this.store.validateAcquiredProposalExecution({
+        actorId: input.actorId, proposalId: input.proposalId, payloadHash: proposal.payloadHash,
+        governancePolicyVersion, auth: input.auth,
+        idempotencyKey: input.idempotencyKey, serialisedEffect, acquisitionAuditId: auditStarted.id,
+      });
+    };
     // =====================================================================
     // 7. Latest snapshot via ledger.synchronize()
     // =====================================================================
@@ -644,6 +779,7 @@ export class RuleMutationService {
     let snapshotResult: LedgerSnapshotResult;
     try {
       snapshotResult = await ledger.synchronize();
+      assertExecutionCurrent();
     } catch (err) {
       await this.recordFailure(input, err);
       await this.appendFailureAudit(
@@ -654,7 +790,7 @@ export class RuleMutationService {
       );
       return this.fail(
         baseResult,
-        'sync_failed',
+        err instanceof ProposalAcquisitionError ? err.reasonCode : 'sync_failed',
         err instanceof Error ? err.message : 'Synchronization failed',
         input,
       );
@@ -663,7 +799,8 @@ export class RuleMutationService {
     const { snapshot } = snapshotResult;
 
     // Staleness check
-    if (Date.now() - new Date(snapshot.snapshotDate).getTime() > STALE_SNAPSHOT_MS) {
+    if (!Number.isFinite(Date.parse(snapshot.snapshotDate)) ||
+        Date.now() - Date.parse(snapshot.snapshotDate) > STALE_SNAPSHOT_MS) {
       await this.recordFailure(input, new Error('Snapshot data is stale'));
       await this.appendFailureAudit(input, proposal, authorizationDisposition, 'stale_snapshot');
       return this.fail(baseResult, 'stale_snapshot', 'Snapshot data is stale', input);
@@ -679,6 +816,7 @@ export class RuleMutationService {
         auditStarted,
         authorizationDisposition,
         ledger,
+        assertExecutionCurrent,
       );
     }
 
@@ -690,11 +828,30 @@ export class RuleMutationService {
     let ruleInput: RuleProposalInput;
     let approvedActualVersion: string;
     let approvedNativePlan: RuleMutationPlan;
+    let reviewedSimulation: RuleSimulationResult;
     try {
+      requireCompleteRulePlanningSource(snapshot, snapshotResult.rulePlanningSourceAvailability);
       ruleInput = this.extractRuleInput(proposal);
       const preconditions = JSON.parse(proposal.preconditions) as Record<string, unknown>;
       approvedActualVersion = ruleLifecyclePreconditionsSchema.shape.actualVersion.parse(preconditions.actualVersion);
       approvedNativePlan = ruleMutationPlanSchema.parse(preconditions.nativePlan);
+      reviewedSimulation = ruleSimulationResultSchema.parse(preconditions.reviewedSimulation);
+      const reviewedContext = ruleReviewContextSchema.parse(preconditions.reviewContext);
+      assertLiveReviewContext(reviewedContext);
+      if (reviewedContext.scope.spaceId !== proposal.spaceId ||
+          reviewedContext.scope.budgetId !== proposal.budgetId)
+        throw new Error('Reviewed source scope differs from the governed proposal');
+      const currentContext = ruleReviewContextSchema.parse(await this.resolveCurrentReviewContext({
+        spaceId: proposal.spaceId, budgetId: proposal.budgetId,
+        evidenceKey: reviewedContext.evidenceKey, actorId: input.actorId,
+        auth: input.auth, snapshot,
+        sourceAvailability: snapshotResult.rulePlanningSourceAvailability,
+      }));
+      assertLiveReviewContext(currentContext);
+      if (canonicalProposalJson(stableReviewContext(reviewedContext)) !==
+          canonicalProposalJson(stableReviewContext(currentContext)))
+        throw new Error('Current merchant evidence, policy, source or visibility differs from review');
+      ruleInput = { ...ruleInput, reviewContext: currentContext };
       const approvedNativePayloadHash = proposal.payload.composite?.nativePayloadHash;
       if (typeof approvedNativePayloadHash !== 'string' || approvedNativePayloadHash !== approvedNativePlan.hash)
         throw new Error('Native rule payload hash does not match its captured plan');
@@ -771,6 +928,8 @@ export class RuleMutationService {
     let simulation: RuleSimulationResult;
     try {
       simulation = rust.simulateCreateRulePlan(plan, snapshot);
+      if (canonicalProposalJson(simulation) !== canonicalProposalJson(reviewedSimulation))
+        throw new Error('Current rule impact differs from the exact reviewed simulation');
     } catch (err) {
       await this.recordFailure(input, err);
       await this.appendFailureAudit(
@@ -818,14 +977,47 @@ export class RuleMutationService {
     // =====================================================================
 
     let writeResult: MutationResult;
+    let merchantPublicationAuthority: (() => boolean) | undefined;
+    const assertPublicationCurrent = () => {
+      assertLiveReviewContext(ruleInput.reviewContext);
+      if (ruleInput.reviewContext.evidenceKey !== null && !merchantPublicationAuthority)
+        throw new Error('Current merchant publication authority is unavailable');
+      if (merchantPublicationAuthority && !merchantPublicationAuthority())
+        throw new Error('Current merchant publication authority changed');
+    };
+    const assertCreationCurrent = () => {
+      assertExecutionCurrent();
+      assertPublicationCurrent();
+    };
     try {
-      writeResult = await ledger.createRule(writeProposal);
+      assertLiveReviewContext(ruleInput.reviewContext);
+      const finalContext = ruleReviewContextSchema.parse(await this.resolveCurrentReviewContext({
+        spaceId: proposal.spaceId, budgetId: proposal.budgetId,
+        evidenceKey: ruleInput.reviewContext.evidenceKey, actorId: input.actorId,
+        auth: input.auth, snapshot,
+        sourceAvailability: snapshotResult.rulePlanningSourceAvailability,
+        capturePublicationAuthority: (authorize) => { merchantPublicationAuthority = authorize; },
+      }));
+      assertLiveReviewContext(finalContext);
+      if (canonicalProposalJson(stableReviewContext(finalContext)) !==
+          canonicalProposalJson(stableReviewContext(ruleInput.reviewContext)))
+        throw new Error('Native rule authority or evidence changed before write');
+      ruleInput = { ...ruleInput, reviewContext: finalContext };
+      assertCreationCurrent();
+      writeResult = await ledger.createRule(writeProposal, { assertExecutionCurrent: assertCreationCurrent });
+      if (writeResult.success) {
+        try {
+          assertCreationCurrent();
+        } catch (error) {
+          throw new Error('Actual rule creation was dispatched; private result withheld, not rolled back', { cause: error });
+        }
+      }
     } catch (err) {
       await this.recordFailure(input, err);
       await this.auditFailure(input, proposal, authorizationDisposition, err);
       return this.fail(
         baseResult,
-        'write_failed',
+        err instanceof ProposalAcquisitionError ? err.reasonCode : 'write_failed',
         err instanceof Error ? err.message : 'Write operation failed',
         input,
       );
@@ -846,6 +1038,11 @@ export class RuleMutationService {
     let rereadSnapshot: ProtocolSnapshot;
     try {
       const rereadResult = await ledger.synchronize();
+      try {
+        assertCreationCurrent();
+      } catch (error) {
+        throw new Error('Actual rule creation was dispatched; private result withheld, not rolled back', { cause: error });
+      }
       rereadSnapshot = rereadResult.snapshot;
     } catch (err) {
       // Write happened but we can't verify
@@ -902,6 +1099,15 @@ export class RuleMutationService {
       }
     }
 
+    // Terminal completion retires the acquired token; retain only the captured
+    // publication fence. Preserve the durable SDK outcome and its exact audit.
+    let publicationCurrent = true;
+    try {
+      assertPublicationCurrent();
+    } catch {
+      publicationCurrent = false;
+    }
+
     // =====================================================================
     // 14. Append completion or failure audit
     // =====================================================================
@@ -937,6 +1143,17 @@ export class RuleMutationService {
       // Non-fatal
     }
 
+    try {
+      assertPublicationCurrent();
+    } catch {
+      publicationCurrent = false;
+    }
+    if (!publicationCurrent)
+      return this.fail(
+        baseResult, 'publication_withheld',
+        'Authorized Actual rule creation was dispatched; private result withheld, not rolled back', input,
+      );
+
     return {
       success: verified,
       ruleId,
@@ -959,12 +1176,15 @@ export class RuleMutationService {
     auditStarted: AuditRecord,
     authorizationDisposition: AuthorizationDisposition,
     ledger: BudgetLedger,
+    assertExecutionCurrent: () => void,
   ): Promise<ExecuteRuleResult> {
     const terminalFailure = async (code: string, error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       await this.recordFailure(input, new Error(message));
       await this.appendFailureAudit(input, proposal, authorizationDisposition, message);
-      return this.fail(baseResult, code, message, input);
+      return this.fail(
+        baseResult, error instanceof ProposalAcquisitionError ? error.reasonCode : code, message, input,
+      );
     };
     if (!proposal.spaceId)
       return terminalFailure('authorization_denied', new Error('Governed space unavailable'));
@@ -997,9 +1217,9 @@ export class RuleMutationService {
       )
         throw new Error('Displayed Actual version is stale');
 
-      const currentRule = (await ledger.listRules()).find(
-        (rule) => rule.id === proposal.payload.ruleId,
-      );
+      const currentRules = await ledger.listRules();
+      assertExecutionCurrent();
+      const currentRule = currentRules.find((rule) => rule.id === proposal.payload.ruleId);
       if (!currentRule)
         throw new Error('Displayed Actual rule is no longer present');
       actualRule = ruleLifecycleSnapshotSchema.parse(toRuleLifecycleSnapshot(currentRule));
@@ -1010,6 +1230,7 @@ export class RuleMutationService {
         ...scope,
         ruleId: proposal.payload.ruleId,
       });
+      assertExecutionCurrent();
       if (canonicalProposalJson(currentOverride) !== canonicalProposalJson(preconditions.override))
         throw new Error('Displayed BalanceFrame rule state has changed');
 
@@ -1017,6 +1238,7 @@ export class RuleMutationService {
       const categoryGroupMembers = groupIds.length
         ? await ledger.getRuleCategoryGroupMembers()
         : {};
+      assertExecutionCurrent();
       assertCategoryGroupBaseline(
         groupIds,
         preconditions.categoryGroupMembers,
@@ -1029,6 +1251,7 @@ export class RuleMutationService {
     if (proposal.operation === 'update_rule') {
       let writtenOverride: RuleOverride;
       try {
+        assertExecutionCurrent();
         writtenOverride = await this.store.setRuleOverride({
           ...scope,
           ruleId: proposal.payload.ruleId,
@@ -1057,13 +1280,19 @@ export class RuleMutationService {
         const deletePrecondition: RuleDeletePrecondition = {
           rule: actualRule,
           actualVersion: preconditions.actualVersion,
+          assertExecutionCurrent,
         };
+        assertExecutionCurrent();
         await ledger.deleteRule(proposal.payload.ruleId, deletePrecondition);
+        assertExecutionCurrent();
         await ledger.synchronize();
+        assertExecutionCurrent();
         const remainingRules = await ledger.listRules();
+        assertExecutionCurrent();
         if (remainingRules.some((rule) => rule.id === proposal.payload.ruleId))
           throw new Error('Deleted Actual rule is still present after synchronization');
         if (currentOverride && currentOverride.inactive !== null) {
+          assertExecutionCurrent();
           await this.store.removeRuleOverride({
             ...scope,
             ruleId: proposal.payload.ruleId,
@@ -1134,27 +1363,23 @@ export class RuleMutationService {
 
   private extractRuleInput(proposal: ActionProposal): RuleProposalInput {
     const rule = this.ruleData(proposal);
-    const name = rule.name;
+    const preconditions = z.record(z.unknown()).parse(JSON.parse(proposal.preconditions) as unknown);
+    const name = preconditions.ruleName;
     if (typeof name !== 'string' || !name.trim() || name !== name.trim())
       throw new Error('Rule name must be non-empty and normalized');
     if (!Array.isArray(rule.conditions) || !Array.isArray(rule.actions))
       throw new Error('Rule conditions and actions must be arrays');
 
-    const stage = z.enum(['pre', 'post']).nullable().optional().parse(rule.stage);
-    const conditionsOp = z.enum(['and', 'or']).optional().parse(rule.conditionsOp);
-    const terms = supportedRuleTerms({
-      name,
-      conditions: rule.conditions,
-      actions: rule.actions,
-      budgetId: proposal.budgetId,
-    });
+    const stage = z.literal('post').parse(rule.stage);
+    const conditionsOp = z.literal('and').parse(rule.conditionsOp);
+    const reviewContext = ruleReviewContextSchema.parse(preconditions.reviewContext);
+    const condition = supportedConditionSchema.parse(rule.conditions[0]);
+    const action = supportedActionSchema.parse(rule.actions[0]);
+    if (rule.conditions.length !== 1 || rule.actions.length !== 1)
+      throw new Error('Native category rule requires exactly one condition and action');
     return {
-      name,
-      conditions: [terms.condition],
-      actions: [terms.action],
-      budgetId: proposal.budgetId,
-      ...(stage === undefined ? {} : { stage }),
-      ...(conditionsOp === undefined ? {} : { conditionsOp }),
+      name, conditions: [condition], actions: [action], budgetId: proposal.budgetId,
+      stage, conditionsOp, reviewContext,
     };
   }
 
@@ -1290,9 +1515,8 @@ export class RuleMutationService {
     const { condition, action } = supportedRuleTerms(input);
     assertPlanMatchesApprovedTerms(plan, input.name, condition, action);
     return {
-      name: plan.ruleName,
-      ...(input.stage === undefined ? {} : { stage: input.stage }),
-      ...(input.conditionsOp === undefined ? {} : { conditionsOp: input.conditionsOp }),
+      stage: 'post',
+      conditionsOp: 'and',
       conditions: [{ field: condition.field, op: condition.op, value: condition.value }],
       actions: [{ op: 'set', field: 'category', value: action.value }],
     };

@@ -4303,6 +4303,7 @@ export class LiquidityWorkflow {
             membershipId: context.membershipId,
             governancePolicyVersion: context.governancePolicyVersion,
             capability: 'approval',
+            phase: 'read',
             resourceKind: 'account',
             resourceId: r.route.accountId,
           }),

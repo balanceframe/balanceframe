@@ -9,21 +9,29 @@ import type {
   GenericActionProposal,
   GenericProposalOperation,
   ReviewItem,
+  ResourceGrantRestrictions,
 } from '@balanceframe/workflow-store';
 import type {
   AutomationRule,
+  ActualMerchantSourceCapture,
   BudgetLedger,
   LedgerSnapshotResult,
   RuleDeletePrecondition,
   RuleProposal,
+  RuleCreatePrecondition,
 } from '@balanceframe/actual-adapter';
-import { createNativeCategorizationMutationProtocol } from '@balanceframe/application';
+import {
+  createNativeCategorizationMutationProtocol, createNativeRuleMutationProtocol,
+  createMerchantIntelligenceService,
+} from '@balanceframe/application';
 import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
 import type { ConnectionConfig, ConnectionManager } from '@balanceframe/application';
+import type { RuleProposalInput } from '../../../../packages/application/src/rule-mutation';
+import type { ConnectedBudget } from '../../../../packages/application/src/connection-manager';
 import type { ProtocolSnapshot } from '@balanceframe/protocol-generated';
 import type * as MutationExecutor from '../../server/utils/mutation-executor';
-import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
-import type { EventWithContext } from '../../server/utils/workflow-store';
+import { canonicalProtocolSnapshotSchema, merchantAnalysisRequestSchema } from '@balanceframe/protocol-generated/validators';
+import type { ApiEnvelope, EventWithContext } from '../../server/utils/workflow-store';
 import { getWorkflowStore, setReviewMutationExecutorFactory } from '../../server/utils/workflow-store';
 import type { HumanControlAuth, ReauthenticationEvent } from '../../server/utils/reauthentication';
 import {
@@ -33,14 +41,18 @@ import {
 } from '../../server/utils/reauthentication';
 import { buildCategorizationProposalIntent } from '../../server/utils/categorization-proposal';
 import correctReview from '../../server/api/review/correct.post';
+import { createRuleProposal } from '../../server/utils/rule-create';
 import fixture from '../../../../protocol/fixtures/representative.json';
+import merchantFixture from '../../../../protocol/fixtures/merchant-intelligence.json';
+import { completeNativeRuleSourceAvailability, grantNativeRuleSources, nativeRuleSource } from './native-rule-source.fixture';
 
 interface TestConnection {
-  config: { budgetId: string };
+  config: { budgetId: string; serverUrl: string };
   budget: { id: string };
   connector: BudgetLedger;
   synchronization: {
     snapshot: ProtocolSnapshot;
+    rulePlanningSourceAvailability?:LedgerSnapshotResult['rulePlanningSourceAvailability'];
     financialSnapshot: {
       legacySnapshot: {
         accounts: unknown[];
@@ -231,7 +243,7 @@ function grant(
   capability: string,
   resourceKind: 'budget' | 'account' | 'category' | 'rule' | 'transaction',
   resourceId: string,
-  restrictions?: { operations: readonly string[] },
+  restrictions?: ResourceGrantRestrictions,
 ) {
   store.governance.provisionResourceGrant({
     spaceId,
@@ -283,6 +295,16 @@ function grantProposer(operation: GenericProposalOperation) {
   }
   grant(PROPOSER_ID, proposerMembershipId, 'observe', 'budget', budgetId);
   grant(PROPOSER_ID, proposerMembershipId, 'full-read', 'budget', budgetId);
+  if (operation === 'create_rule') {
+    grantNativeRuleSources(store,{ spaceId,budgetId,actorId:PROPOSER_ID,membershipId:proposerMembershipId,now:NOW },protocolSnapshot);
+    for (const a of protocolSnapshot.accounts) grant(PROPOSER_ID,proposerMembershipId,'rule:propose','account',a.id);
+    for (const c of protocolSnapshot.categories) grant(PROPOSER_ID,proposerMembershipId,'rule:propose','category',c.id);
+    const visit = (rows: ProtocolSnapshot['transactions']) => {
+      for (const t of rows) { grant(PROPOSER_ID,proposerMembershipId,'rule:propose','transaction',t.id); visit(t.subtransactions); }
+    };
+    visit(protocolSnapshot.transactions);
+    for (const r of protocolSnapshot.rules) grant(PROPOSER_ID,proposerMembershipId,'rule:propose','rule',r.id);
+  }
 }
 
 function grantOperator(
@@ -298,6 +320,24 @@ function grantOperator(
   for (const [kind, id] of operationResources(operation)) {
     grant(actor, membershipId, approvalCapability, kind, id);
     grant(actor, membershipId, executionCapability, kind, id);
+  }
+  if (operation === 'create_rule') {
+    grantNativeRuleSources(store,{ spaceId,budgetId,actorId:actor,membershipId,now:NOW },protocolSnapshot);
+    for (const [kind, ids] of [
+      ['account',protocolSnapshot.accounts.map((a) => a.id)],['category',protocolSnapshot.categories.map((c) => c.id)],
+      ['transaction',protocolSnapshot.transactions.map((t) => t.id)],['rule',protocolSnapshot.rules.map((r) => r.id)],
+    ] as const) for (const id of ids) {
+      grant(actor,membershipId,approvalCapability,kind,id);
+      grant(actor,membershipId,executionCapability,kind,id);
+    }
+    const visit = (rows: ProtocolSnapshot['transactions']) => {
+      for (const t of rows) {
+        grant(actor,membershipId,approvalCapability,'transaction',t.id);
+        grant(actor,membershipId,executionCapability,'transaction',t.id);
+        visit(t.subtransactions);
+      }
+    };
+    visit(protocolSnapshot.transactions);
   }
 }
 
@@ -339,15 +379,20 @@ async function configureTwoApprovers() {
 function createLedger(): BudgetLedger {
   const snapshotResult = () => ({ snapshot: protocolSnapshot }) as unknown as LedgerSnapshotResult;
   const fakeLedger = {
-    synchronize: vi.fn(async () => snapshotResult()),
+    ...nativeRuleSource(() => protocolSnapshot),
+    synchronize: vi.fn(async () => ({
+      ...snapshotResult(),financialSnapshot:{legacySnapshot:protocolSnapshot},
+      rulePlanningSourceAvailability:completeNativeRuleSourceAvailability(protocolSnapshot),
+    })),
     listRules: vi.fn(async () => actualRules),
     getRuleCategoryGroupMembers: vi.fn(async () => ({})),
-    createRule: vi.fn(async (proposal: RuleProposal) => {
+    createRule: vi.fn(async (proposal: RuleProposal, precondition: RuleCreatePrecondition) => {
+      precondition.assertExecutionCurrent();
       const condition = proposal.conditions[0] as { field: string; op: string; value: string };
       const action = proposal.actions[0] as { op: string; field: string; value: string };
       const nativeRule: AutomationRule = {
         id: CREATED_RULE_ID,
-        name: proposal.name,
+        name: '',
         order: actualRules.length,
         trigger: [condition],
         actions: [{ op: 'set', field: 'category', value: action.value }],
@@ -358,7 +403,7 @@ function createLedger(): BudgetLedger {
       actualRules = [...actualRules, nativeRule];
       const protocolRule = {
         id: CREATED_RULE_ID,
-        name: proposal.name,
+        name: '',
         order: nativeRule.order,
         trigger: {
           stage: proposal.stage ?? 'post',
@@ -377,6 +422,7 @@ function createLedger(): BudgetLedger {
     deleteRule: vi.fn(async (ruleId: string, precondition: RuleDeletePrecondition) => {
       if (ruleId !== precondition.rule.id || precondition.actualVersion !== protocolSnapshot.actualVersion)
         throw new Error('The test ledger rejected a mismatched Actual rule precondition');
+      precondition.assertExecutionCurrent();
       actualRules = actualRules.filter((rule) => rule.id !== ruleId);
       protocolSnapshot = {
         ...protocolSnapshot,
@@ -451,12 +497,12 @@ async function proposalInput(operation: GenericProposalOperation): Promise<{
           categoryId,
           composite,
           rule: {
-            name: `Auto-rule for ${transaction.payeeName}`,
-            conditions: [{ field: 'payee_name', op: 'is', value: transaction.payeeName }],
-            actions: [{ type: 'set-category', field: 'category', value: categoryId }],
+            stage: 'post', conditionsOp: 'and',
+            conditions: [{ field: 'payee', op: 'is', value: transaction.payeeId }],
+            actions: [{ op: 'set', field: 'category', value: categoryId }],
           },
         },
-        preconditions: { actualVersion: fixture.actualVersion },
+        preconditions: { ruleName: `Auto-rule for ${transaction.payeeName}`, actualVersion: fixture.actualVersion },
       };
     case 'update_rule':
       return {
@@ -570,6 +616,97 @@ async function proposalFromReviewRoute(): Promise<GenericActionProposal> {
   });
   expect(preconditions.actualVersion).toBe(fixture.actualVersion);
   return proposal;
+}
+
+/** Real merchant current context and native plan; only SDK/source I/O is injected. */
+async function merchantExecutionProposal() {
+  const now = '2026-10-04T12:00:00.000Z';
+  const expiresAt = '2026-10-05T12:00:00.000Z';
+  vi.setSystemTime(now);
+  const source = merchantAnalysisRequestSchema.parse(merchantFixture.request);
+  protocolSnapshot = canonicalProtocolSnapshotSchema.parse({
+    ...baseSnapshot, actualVersion: '26.10.0', snapshotDate: now,
+    accounts: [{ ...baseSnapshot.accounts[0]!, id: 'account-checking' }],
+    payees: source.payees, categories: source.categories, rules: [], schedules: [], budgets: [], tags: [],
+    transactions: source.transactions.map((row) => ({
+      ...row, importedPayee: row.importedPayee.value, notes: row.notes.value,
+      categoryName: null, tags: [], subtransactions: [],
+    })),
+  });
+  grantProposer('create_rule');
+  grantOperator('create_rule');
+  const key = 'merchant:transaction:tx-source';
+  for (const [actorId, membershipId] of [
+    [PROPOSER_ID, proposerMembershipId], [approverId, actorMembershipId],
+  ]) for (const row of protocolSnapshot.transactions)
+    for (const capability of ['evidence', 'normalized-evidence', 'source'])
+      store.governance.provisionResourceGrant({
+        spaceId, budgetId, actorId: actorId!, membershipId: membershipId!,
+        resourceKind: 'evidence', resourceId: `merchant:transaction:${row.id}`, capability,
+        granted: true, now,
+      });
+  for (const [resourceKind, resourceId, capability] of [
+    ['budget', budgetId, 'policy'], ['space', spaceId, 'policy:manage'],
+  ] as const) store.governance.provisionResourceGrant({
+    spaceId, budgetId, actorId: PROPOSER_ID, membershipId: proposerMembershipId,
+    resourceKind, resourceId, capability, granted: true, now,
+  });
+  const proposerProof = await issueApprovalProof(PROPOSER_ID, `session:${PROPOSER_ID}`);
+  const executorProof = await issueApprovalProof();
+  const governancePolicyVersion = store.governance.getPolicy({ spaceId })!.version;
+  const actor = {
+    actorId: approverId, spaceId, budgetId, membershipId: actorMembershipId,
+    governancePolicyVersion, auth: executorProof.auth,
+  };
+  const manager = {
+    loadConfig: mocks.mutationLoadConfig, withConnection: mocks.mutationWithConnection,
+  } as unknown as ConnectionManager;
+  const service = await createMerchantIntelligenceService({ store, connectionManager: manager });
+  // The SDK test connection supplies the source methods used by the real service.
+  const connected = connection as unknown as ConnectedBudget;
+  let sourceAuthority: (() => boolean) | undefined;
+  const context = await service.getCurrentRuleReviewContext(actor, {
+    evidenceKey: key, connected, snapshot: protocolSnapshot,
+    sourceAvailability: completeNativeRuleSourceAvailability(protocolSnapshot),
+    capturePublicationAuthority: (authorize) => { sourceAuthority = authorize; },
+  });
+  const native = await createNativeRuleMutationProtocol();
+  const input: RuleProposalInput = {
+    name: 'Merchant publication fence', budgetId, stage: 'post', conditionsOp: 'and',
+    conditions: [{ field: 'payee', op: 'is', value: 'payee-market' }],
+    actions: [{ op: 'set', field: 'category', value: 'category-food' }],
+    reviewContext: context,
+  };
+  const plan = native.planCreateRule(input, protocolSnapshot);
+  const simulation = native.simulateCreateRulePlan(plan, protocolSnapshot);
+  expect(simulation.transactionsMatched).toBeGreaterThan(0);
+  for (const [actorId, membershipId, capability] of [
+    [PROPOSER_ID, proposerMembershipId, 'rule:propose'],
+    [approverId, actorMembershipId, 'rule:approve'], [approverId, actorMembershipId, 'rule:execute'],
+  ]) store.governance.provisionResourceGrant({
+    spaceId, budgetId, actorId: actorId!, membershipId: membershipId!, capability: capability!,
+    resourceKind: 'evidence', resourceId: key, granted: true, now,
+  });
+  const proposalInput = {
+    store, spaceId, budgetId, actorId: PROPOSER_ID, auth: proposerProof.auth,
+    correlationId: 'merchant-execution-publication', expiresAt,
+    name: input.name, payeeId: 'payee-market', categoryId: 'category-food',
+    nativePlan: plan, currentContext: context, reviewedSimulation: simulation, snapshot: protocolSnapshot,
+    origin: { kind: 'rule-route' as const },
+    assertPublicationCurrent: () => {
+      if (!sourceAuthority || !sourceAuthority())
+        throw new Error('Canonical merchant proposal publication is no longer authorized');
+    },
+  };
+  const proposal = await createRuleProposal(proposalInput);
+  await store.createApproval({
+    proposalId: proposal.id, payloadHash: proposal.payloadHash, actorId: approverId,
+    auth: executorProof.auth, expiresAt, now,
+  });
+  return {
+    proposal, proofCookie: executorProof.cookie, key, service,
+    policyActor: { ...actor, actorId: PROPOSER_ID, membershipId: proposerMembershipId, auth: proposerProof.auth },
+  };
 }
 async function proposalFromCorrectionRoute(recommendedCategoryId = currentCategoryId): Promise<{
   proposal: GenericActionProposal;
@@ -726,11 +863,12 @@ beforeEach(async () => {
   actualRules = [];
   ledger = createLedger();
   connection = {
-    config: { budgetId },
+    config: { budgetId, serverUrl: 'https://actual.invalid' },
     budget: { id: budgetId },
     connector: ledger,
     synchronization: {
       snapshot: protocolSnapshot,
+      rulePlanningSourceAvailability:completeNativeRuleSourceAvailability(protocolSnapshot),
       financialSnapshot: {
         legacySnapshot: {
           accounts: fixture.accounts,
@@ -763,6 +901,267 @@ afterEach(() => {
 afterAll(() => store.close());
 
 describe('proposal execution route', () => {
+  it('proposes approves and executes the exact nested split child through real Store and Native verification', async () => {
+    const child = structuredClone(baseSnapshot.transactions.find((row) => row.id === transaction.id)!);
+    protocolSnapshot = {
+      ...baseSnapshot,
+      transactions: [{ ...child, id: 'execute-split-parent', categoryId: null, categoryName: null, subtransactions: [
+        { ...child, id: 'execute-split-intermediate', categoryId: null, categoryName: null, subtransactions: [child] },
+      ] }],
+    };
+    ledger.setTransactionCategory = vi.fn<BudgetLedger['setTransactionCategory']>(async (id, target, previous) => {
+      if (id !== child.id || previous !== child.categoryId) throw new Error('SDK child write precondition mismatch');
+      child.categoryId = target;
+      child.categoryName = protocolSnapshot.categories.find((row) => row.id === target)?.name ?? null;
+      return { success: true, transactionId: id, previousCategoryId: previous, newCategoryId: target, idempotencyKey: 'nested-child-write', verified: true };
+    });
+    const { proposal, review } = await proposalFromCorrectionRoute();
+    expect(proposal.payload).toMatchObject({ transactionId: child.id, categoryId });
+    expect(JSON.parse(proposal.preconditions)).toMatchObject({
+      reviewId: review.id, reviewProvenance: { transactionId: child.id, version: review.version },
+      transaction: { id: child.id, amount: { currency: child.amount.currency, minorUnits: '1500' } },
+    });
+    await approve(proposal);
+    const execution = await executeProposal(event({}, proposal.id, approverId));
+    expect(execution.status).toBe('ok');
+    expect(execution.result?.verified).toBe(true);
+    expect(ledger.setTransactionCategory).toHaveBeenCalledWith(child.id, categoryId, currentCategoryId);
+    expect(child.categoryId).toBe(categoryId);
+    expect((await store.getReviewItem(review.id))?.status).toBe('applied');
+    expect(await store.queryCorrectionHistory({ reviewItemId: review.id })).toMatchObject([
+      { reviewItemId: review.id, transactionId: child.id, previousCategoryId: currentCategoryId },
+    ]);
+  });
+
+  it('executes an already approved exact child plan when the current canonical source is recursively nested', async () => {
+    const { proposal, review } = await proposalFromCorrectionRoute();
+    await approve(proposal);
+    const child = structuredClone(baseSnapshot.transactions.find((row) => row.id === transaction.id)!);
+    protocolSnapshot = {
+      ...baseSnapshot,
+      transactions: [{ ...child, id: 'approved-split-parent', categoryId: null, categoryName: null, subtransactions: [
+        { ...child, id: 'approved-split-intermediate', categoryId: null, categoryName: null, subtransactions: [child] },
+      ] }],
+    };
+    ledger.setTransactionCategory = vi.fn<BudgetLedger['setTransactionCategory']>(async (id, target, previous) => {
+      if (id !== child.id || previous !== child.categoryId) throw new Error('SDK child write precondition mismatch');
+      child.categoryId = target;
+      child.categoryName = protocolSnapshot.categories.find((row) => row.id === target)?.name ?? null;
+      return { success: true, transactionId: id, previousCategoryId: previous, newCategoryId: target, idempotencyKey: 'approved-child-write', verified: true };
+    });
+    const execution = await executeProposal(event({}, proposal.id, approverId));
+    expect(execution.status).toBe('ok');
+    expect(execution.result?.verified).toBe(true);
+    expect(ledger.setTransactionCategory).toHaveBeenCalledWith(child.id, categoryId, currentCategoryId);
+    expect((await store.getReviewItem(review.id))?.status).toBe('applied');
+  });
+
+  it('refuses an approved categorization before write when a top-level and nested source share the transaction ID', async () => {
+    const { proposal, review } = await proposalFromCorrectionRoute();
+    await approve(proposal);
+    const row = structuredClone(baseSnapshot.transactions.find((value) => value.id === transaction.id)!);
+    protocolSnapshot = { ...baseSnapshot, transactions: [row, {
+      ...row, id: 'conflicting-source-parent', categoryId: null, categoryName: null, subtransactions: [structuredClone(row)],
+    }] };
+    const execution = await executeProposal(event({}, proposal.id, approverId));
+    expect(execution.status).toBe('error');
+    expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+    expect((await store.getReviewItem(review.id))?.status).toBe('pending_review');
+    expect(await store.queryCorrectionHistory({ reviewItemId: review.id })).toEqual([]);
+  });
+
+  it('does not finalize a child categorization when its post-write canonical reread has duplicate transaction identities', async () => {
+    const { proposal, review } = await proposalFromCorrectionRoute();
+    await approve(proposal);
+    const write = ledger.setTransactionCategory.bind(ledger);
+    ledger.setTransactionCategory = vi.fn<BudgetLedger['setTransactionCategory']>(async (id, target, previous) => {
+      const outcome = await write(id, target, previous);
+      const row = structuredClone(protocolSnapshot.transactions.find((value) => value.id === id)!);
+      protocolSnapshot = { ...protocolSnapshot, transactions: [...protocolSnapshot.transactions, {
+        ...row, id: 'conflicting-reread-parent', categoryId: null, categoryName: null, subtransactions: [row],
+      }] };
+      return outcome;
+    });
+    const execution = await executeProposal(event({}, proposal.id, approverId));
+    expect(execution.status).toBe('error');
+    expect(ledger.setTransactionCategory).toHaveBeenCalledOnce();
+    expect((await store.getReviewItem(review.id))?.status).toBe('pending_review');
+    expect(await store.queryCorrectionHistory({ reviewItemId: review.id })).toEqual([]);
+  });
+
+  it.each(['missing','failed-rules','closed-history'] as const)(
+    'consumes acquired approvals without an SDK write when native planning source is %s',
+    async (failed) => {
+      if (failed === 'closed-history') protocolSnapshot = {...protocolSnapshot,accounts:[
+        ...protocolSnapshot.accounts,{...structuredClone(protocolSnapshot.accounts[0]!),id:'sdk-closed-account',isClosed:true},
+      ]};
+      const proposal = await proposalFromReviewRoute();
+      const proofCookie = await approve(proposal);
+      const approval = (await store.findActiveApprovals(proposal.id))[0]!;
+      const availability = completeNativeRuleSourceAvailability(protocolSnapshot);
+      if (failed === 'failed-rules') availability.rules = 'unavailable';
+      if (failed === 'closed-history') availability.history.find((row) => row.accountId === 'sdk-closed-account')!.state = 'unavailable';
+      vi.mocked(ledger.synchronize).mockResolvedValueOnce({
+        snapshot:protocolSnapshot,...(failed === 'missing' ? {} : {rulePlanningSourceAvailability:availability}),
+      } as unknown as LedgerSnapshotResult);
+      const response = await executeProposal(event({},proposal.id,approverId,proofCookie));
+      expect(response.status).toBe('error');
+      expect(ledger.createRule).not.toHaveBeenCalled();
+      expect((await store.getApproval(approval.id))?.status).toBe('consumed');
+    },
+  );
+
+  it('rechecks current source authority after SDK capture and consumes acquired approval without writing', async () => {
+    const proposal = await proposalFromReviewRoute();
+    const proofCookie = await approve(proposal);
+    const approval = (await store.findActiveApprovals(proposal.id))[0]!;
+    vi.mocked(ledger.synchronize).mockImplementationOnce(async () => {
+      store.governance.setResourceGrant({
+        spaceId, actorId: approverId, membershipId: actorMembershipId, budgetId,
+        resourceKind: 'budget', resourceId: budgetId, capability: 'merchant:analyze',
+        granted: false, now: NOW,
+        auth: { method: 'human-session', actorId: OWNER_ID, sessionId: `session:${OWNER_ID}`, reauthenticatedAt: NOW },
+      });
+      return {snapshot:protocolSnapshot,rulePlanningSourceAvailability:completeNativeRuleSourceAvailability(protocolSnapshot)} as unknown as LedgerSnapshotResult;
+    });
+    const response = await executeProposal(event({}, proposal.id, approverId, proofCookie));
+    expect(response.status).toBe('error');
+    expect(ledger.createRule).not.toHaveBeenCalled();
+    expect((await store.getApproval(approval.id))?.status).toBe('consumed');
+    expect(mocks.mutationWithConnection).toHaveBeenCalledWith(expect.any(Function), {
+      expectedBudgetId: budgetId, dispose: true, synchronize: false,
+    });
+  });
+
+  it('blocks a fully approved altered reviewed simulation with an unchanged native plan hash', async () => {
+    const original = await proposalFromReviewRoute();
+    const preconditions = JSON.parse(original.preconditions) as Record<string, unknown>;
+    const simulation = preconditions.reviewedSimulation as { transactionsAffected: string[]; transactionsMatched: number };
+    simulation.transactionsAffected = [];
+    simulation.transactionsMatched = 0;
+    const proposal = await store.createProposal({
+      operation: 'create_rule',spaceId,budgetId,payload:original.payload,
+      policyVersion:GENERIC_MUTATION_POLICY_VERSION,preconditions:JSON.stringify(preconditions),
+      expiresAt:original.expiresAt,actorId:PROPOSER_ID,
+      auth:{ method:'session',actorId:PROPOSER_ID,sessionId:`session:${PROPOSER_ID}` },provenance:'test',
+    });
+    const proofCookie = await approve(proposal);
+    const approval = (await store.findActiveApprovals(proposal.id))[0]!;
+    const response = await executeProposal(event({},proposal.id,approverId,proofCookie));
+    expect(response.status).toBe('error');
+    expect(ledger.createRule).not.toHaveBeenCalled();
+    expect((await store.getApproval(approval.id))?.status).toBe('consumed');
+  });
+
+  it('denies a future-global native rule for a narrowed current execution actor before broad SDK reads', async () => {
+    const proposal = await proposalFromReviewRoute();
+    const proofCookie = await approve(proposal);
+    grant(approverId,actorMembershipId,'rule:execute','budget',budgetId,{accountIds:[transaction.accountId]});
+    const response = await executeProposal(event({},proposal.id,approverId,proofCookie));
+    expect(response.status).toBe('error');
+    expect(mocks.mutationWithConnection).not.toHaveBeenCalled();
+    expect(ledger.synchronize).toHaveBeenCalledTimes(1);
+    expect(ledger.createRule).not.toHaveBeenCalled();
+  });
+
+  it('replays verified native rule execution without invoking unavailable current-source or ledger dependencies', async () => {
+    const proposal = await proposalFromReviewRoute();
+    const proofCookie = await approve(proposal);
+    const first = await executeProposal(event({},proposal.id,approverId,proofCookie));
+    expect(first.status).toBe('ok');
+    mocks.mutationWithConnection.mockClear();
+    mocks.mutationLoadConfig.mockClear();
+    const capture = vi.mocked((ledger as BudgetLedger & ActualMerchantSourceCapture).captureMerchantSource);
+    capture.mockClear();
+    const replay = await executeProposal(event({},proposal.id,approverId));
+    expect(replay.status).toBe('ok');
+    expect(replay.result).toEqual(first.result);
+    expect(mocks.mutationWithConnection).not.toHaveBeenCalled();
+    expect(mocks.mutationLoadConfig).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    expect(ledger.createRule).toHaveBeenCalledOnce();
+  });
+
+  it.each(['already succeeded', 'completed while queued'] as const)(
+    'publishes an exact ordinary null-evidence replay when %s without source capture or redispatch',
+    async (timing) => {
+      const proposal = await proposalFromReviewRoute();
+      const proofCookie = await approve(proposal);
+      expect(JSON.parse(proposal.preconditions)).toMatchObject({ reviewContext: { evidenceKey: null } });
+      const sourceLedger = ledger as BudgetLedger & ActualMerchantSourceCapture;
+      const capture = vi.mocked(sourceLedger.captureMerchantSource);
+      capture.mockClear();
+      vi.mocked(ledger.synchronize).mockClear();
+      const synchronize = vi.mocked(ledger.synchronize).getMockImplementation();
+      if (!synchronize) throw new Error('Canonical SDK synchronization fixture is unavailable');
+      let reachedFirst!: () => void;
+      let releaseFirst!: () => void;
+      let reachedSecond!: () => void;
+      const firstAcquired = new Promise<void>((resolve) => { reachedFirst = resolve; });
+      const resumeFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      const secondQueued = new Promise<void>((resolve) => { reachedSecond = resolve; });
+      vi.mocked(ledger.synchronize).mockImplementationOnce(async (options) => {
+        reachedFirst();
+        await resumeFirst;
+        return synchronize(options);
+      });
+      let first: Promise<ApiEnvelope<unknown>>;
+      let turns = 0;
+      let capturesBeforeReplay = 0;
+      let synchronizationsBeforeReplay = 0;
+      mocks.mutationWithConnection.mockImplementation(async (operation) => {
+        if (++turns === 2) {
+          reachedSecond();
+          await first;
+          capturesBeforeReplay = capture.mock.calls.length;
+          synchronizationsBeforeReplay = vi.mocked(ledger.synchronize).mock.calls.length;
+        }
+        return operation(connection);
+      });
+      first = executeProposal(event({}, proposal.id, approverId, proofCookie));
+      await firstAcquired;
+      expect((await store.getIdempotencyRecord(`${proposal.id}:execute:${approverId}`))?.status).toBe('in_progress');
+      let replay: Promise<ApiEnvelope<unknown>>;
+      if (timing === 'completed while queued') {
+        replay = executeProposal(event({}, proposal.id, approverId));
+        await Promise.race([
+          secondQueued,
+          replay.then((response) => {
+            throw new Error(`Replay stopped before its queued turn: ${JSON.stringify({
+              status: response.status, errorCode: response.error?.code,
+            })}`);
+          }),
+        ]);
+        releaseFirst();
+      } else {
+        releaseFirst();
+        expect((await first).status).toBe('ok');
+        capture.mockClear();
+        vi.mocked(ledger.synchronize).mockClear();
+        mocks.mutationWithConnection.mockClear();
+        replay = executeProposal(event({}, proposal.id, approverId));
+      }
+      const original = await first;
+      expect(original.status).toBe('ok');
+      const repeated = await replay;
+      expect(repeated.status).toBe('ok');
+      expect(repeated.result).toEqual(original.result);
+      expect(repeated.result).toMatchObject({ ruleId: CREATED_RULE_ID, verified: true });
+      expect(capture.mock.calls).toHaveLength(capturesBeforeReplay);
+      expect(vi.mocked(ledger.synchronize).mock.calls).toHaveLength(synchronizationsBeforeReplay);
+      if (timing === 'already succeeded') expect(mocks.mutationWithConnection).not.toHaveBeenCalled();
+      else expect(turns).toBe(2);
+      expect(ledger.createRule).toHaveBeenCalledOnce();
+      expect((await store.getIdempotencyRecord(`${proposal.id}:execute:${approverId}`))?.status).toBe('succeeded');
+      expect(await store.queryAuditRecordsByProposal(proposal.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          classification: 'execution_completed', expectedPriorState: proposal.preconditions,
+        }),
+      ]));
+    },
+  );
+
+
   it.each([
     'set_category',
     'create_rule',
@@ -788,6 +1187,11 @@ describe('proposal execution route', () => {
       expect(response.result).toMatchObject({ transactionId: transaction.id, categoryId });
     } else if (operation === 'create_rule') {
       expect(ledger.createRule).toHaveBeenCalledOnce();
+      expect(ledger.createRule).toHaveBeenCalledWith({
+        stage:'post',conditionsOp:'and',
+        conditions:[{field:'payee',op:'is',value:transaction.payeeId}],
+        actions:[{op:'set',field:'category',value:categoryId}],
+      }, { assertExecutionCurrent: expect.any(Function) });
       expect(response.result).toMatchObject({ ruleId: CREATED_RULE_ID });
     } else if (operation === 'update_rule') {
       expect(await store.getRuleOverride({ spaceId, budgetId, ruleId: RULE_ID })).toMatchObject({
@@ -1029,5 +1433,106 @@ describe('proposal execution route', () => {
     expect((await store.listProposals()).map(({ id }) => id)).toEqual(proposalIdsBefore);
     expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
     expect((await store.getReviewItem(review.id))?.status).toBe('pending_review');
+  });
+  it.each([
+    ['disconnect', 'unchanged'], ['disconnect', 'normalized-evidence'],
+    ['disconnect', 'session'], ['disconnect', 'policy'],
+    ['supersession', 'unchanged'], ['supersession', 'normalized-evidence'],
+    ['supersession', 'session'], ['supersession', 'policy'],
+  ] as const)('retains merchant publication authority through %s: %s', async (boundary, change) => {
+    const admitted = await merchantExecutionProposal();
+    let credentialCurrent = true;
+    let boundaryReached = false;
+    const revoke = async () => {
+      boundaryReached = true;
+      if (change === 'normalized-evidence')
+        store.governance.setResourceGrant({
+          spaceId, budgetId, actorId: approverId, membershipId: actorMembershipId,
+          resourceKind: 'evidence', resourceId: admitted.key, capability: 'normalized-evidence',
+          granted: false, now: new Date().toISOString(),
+          auth: {
+            method: 'human-session', actorId: OWNER_ID, sessionId: `session:${OWNER_ID}`,
+            reauthenticatedAt: new Date().toISOString(),
+          },
+        });
+      if (change === 'session') credentialCurrent = false;
+      if (change === 'policy')
+        await admitted.service.setPolicy(admitted.policyActor, {
+          expectedVersion: 0, value: {
+            mode: 'disabled', allowedProviderIds: [], maxSearchesPerDay: 0,
+            maxSpendMinorUnitsPerMonth: 0, billingCurrency: 'USD', cacheTtlHours: 720,
+          },
+        });
+    };
+    if (boundary === 'disconnect') {
+      const disconnect = vi.fn(async () => { await revoke(); });
+      mocks.mutationWithConnection.mockImplementation(async (operation, options) => {
+        const result = await operation(connection);
+        if (!options?.dispose) throw new Error('Execution must dispose its mutation connection');
+        await disconnect();
+        return result;
+      });
+    } else {
+      const supersede = store.supersedeProposal.bind(store);
+      vi.spyOn(store, 'supersedeProposal').mockImplementation(async (id) => {
+        await supersede(id);
+        await revoke();
+      });
+    }
+    const request = event({}, admitted.proposal.id, approverId, admitted.proofCookie);
+    if (!request.context.auth) throw new Error('Fixture requires its real selected request identity');
+    request.context.auth.isCredentialValid = () => credentialCurrent;
+    request.context.auth.credentialExpiresAt = '2026-10-05T12:00:00.000Z';
+    mocks.getSession.mockResolvedValue({
+      user: { id: approverId }, session: {
+        id: approverSessionId, userId: approverId, expiresAt: new Date('2026-10-05T12:00:00.000Z'),
+      },
+    });
+    const response = await executeProposal(request);
+    expect(boundaryReached, JSON.stringify({ status: response.status, errorCode: response.error?.code })).toBe(true);
+    expect(response.status).toBe(change === 'unchanged' ? 'ok' : 'error');
+    if (change === 'unchanged')
+      expect(response.result).toMatchObject({ ruleId: CREATED_RULE_ID, verified: true });
+    else {
+      expect(response.result).toBeNull();
+      expect(JSON.stringify(response)).not.toContain(CREATED_RULE_ID);
+      expect(response.error).toMatchObject({ code: 'PUBLICATION_WITHHELD', retryable: false });
+      expect(response.error?.message).toMatch(/dispatched.*not rolled back/i);
+    }
+    expect(ledger.createRule).toHaveBeenCalledOnce();
+    expect(protocolSnapshot.rules.filter((rule) => rule.id === CREATED_RULE_ID)).toHaveLength(1);
+    expect((await store.getIdempotencyRecord(`${admitted.proposal.id}:execute:${approverId}`))?.status).toBe('succeeded');
+    expect(await store.queryAuditRecordsByProposal(admitted.proposal.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        classification: 'execution_completed', expectedPriorState: admitted.proposal.preconditions,
+      }),
+    ]));
+    if (change !== 'session') {
+      const capture = vi.mocked((ledger as BudgetLedger & ActualMerchantSourceCapture).captureMerchantSource);
+      capture.mockClear();
+      vi.mocked(ledger.synchronize).mockClear();
+      mocks.mutationWithConnection.mockClear();
+      const durable = await store.getIdempotencyRecord(`${admitted.proposal.id}:execute:${approverId}`);
+      const audit = await store.queryAuditRecordsByProposal(admitted.proposal.id);
+      const replay = await executeProposal(event({}, admitted.proposal.id, approverId));
+      expect(replay.status).toBe(change === 'unchanged' ? 'ok' : 'error');
+      if (change === 'unchanged')
+        expect(replay.result).toMatchObject({ ruleId: CREATED_RULE_ID, verified: true });
+      else {
+        expect(replay.result).toBeNull();
+        expect(JSON.stringify(replay)).not.toContain(CREATED_RULE_ID);
+        expect(replay.error).toMatchObject({ code: 'PUBLICATION_WITHHELD', retryable: false });
+        expect(replay.error?.message).toMatch(/dispatched.*not rolled back/i);
+      }
+      expect(capture).not.toHaveBeenCalled();
+      expect(ledger.synchronize).not.toHaveBeenCalled();
+      expect(mocks.mutationWithConnection).not.toHaveBeenCalled();
+      expect(ledger.createRule).toHaveBeenCalledOnce();
+      expect(await store.getIdempotencyRecord(`${admitted.proposal.id}:execute:${approverId}`)).toEqual(durable);
+      const replayAudit = await store.queryAuditRecordsByProposal(admitted.proposal.id);
+      expect(replayAudit).toEqual(expect.arrayContaining(audit));
+      expect(replayAudit.filter((record) => record.classification === 'execution_completed'))
+        .toEqual(audit.filter((record) => record.classification === 'execution_completed'));
+    }
   });
 });

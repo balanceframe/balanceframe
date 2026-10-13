@@ -1,0 +1,2196 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/merchant-intelligence-v1.json",
+  "title": "Merchant intelligence v1",
+  "description": "Manually mirrored Rust-owned merchant/2 request/result. Canonical Money is signed-i64 decimal-string minor units; semantic evidence never establishes transaction identity, monetary relationships, authority, or execution. Cross-field/UTF-8/timezone constraints noted in $comment are additionally enforced by Rust/Zod boundaries.",
+  "$ref": "#/$defs/MerchantAnalysisRequest",
+  "$defs": {
+    "OpaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "$comment": "Rust and Zod additionally bound UTF-8 bytes to 256."
+    },
+    "Text": {
+      "type": "string",
+      "maxLength": 4096,
+      "$comment": "Rust and Zod additionally bound UTF-8 bytes to 4096."
+    },
+    "NonemptyText": {
+      "type": "string",
+      "maxLength": 4096,
+      "$comment": "Rust and Zod additionally bound UTF-8 bytes to 4096.",
+      "minLength": 1
+    },
+    "Count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "PositiveCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "UnsignedDecimal": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,37}|1[0-6][0-9]{37}|1700[0-9]{35}|1701[0-3][0-9]{34}|170140[0-9]{33}|1701410[0-9]{32}|1701411[0-7][0-9]{31}|17014118[0-2][0-9]{30}|170141183[0-3][0-9]{29}|1701411834[0-5][0-9]{28}|170141183460[0-3][0-9]{26}|1701411834604[0-5][0-9]{25}|17014118346046[0-8][0-9]{24}|170141183460469[0-1][0-9]{23}|1701411834604692[0-2][0-9]{22}|170141183460469230[0-9]{21}|170141183460469231[0-6][0-9]{20}|1701411834604692317[0-2][0-9]{19}|170141183460469231730[0-9]{18}|170141183460469231731[0-5][0-9]{17}|1701411834604692317316[0-7][0-9]{16}|17014118346046923173168[0-6][0-9]{15}|170141183460469231731687[0-2][0-9]{14}|17014118346046923173168730[0-2][0-9]{12}|170141183460469231731687303[0-6][0-9]{11}|17014118346046923173168730370[0-9]{10}|17014118346046923173168730371[0-4][0-9]{9}|170141183460469231731687303715[0-7][0-9]{8}|1701411834604692317316873037158[0-7][0-9]{7}|17014118346046923173168730371588[0-3][0-9]{6}|1701411834604692317316873037158840[0-9]{5}|17014118346046923173168730371588410[0-4][0-9]{3}|170141183460469231731687303715884105[0-6][0-9]{2}|1701411834604692317316873037158841057[0-1][0-9]{1}|17014118346046923173168730371588410572[0-6]|170141183460469231731687303715884105727)$"
+    },
+    "PositiveDecimal": {
+      "type": "string",
+      "pattern": "^(?:[1-9][0-9]{0,37}|1[0-6][0-9]{37}|1700[0-9]{35}|1701[0-3][0-9]{34}|170140[0-9]{33}|1701410[0-9]{32}|1701411[0-7][0-9]{31}|17014118[0-2][0-9]{30}|170141183[0-3][0-9]{29}|1701411834[0-5][0-9]{28}|170141183460[0-3][0-9]{26}|1701411834604[0-5][0-9]{25}|17014118346046[0-8][0-9]{24}|170141183460469[0-1][0-9]{23}|1701411834604692[0-2][0-9]{22}|170141183460469230[0-9]{21}|170141183460469231[0-6][0-9]{20}|1701411834604692317[0-2][0-9]{19}|170141183460469231730[0-9]{18}|170141183460469231731[0-5][0-9]{17}|1701411834604692317316[0-7][0-9]{16}|17014118346046923173168[0-6][0-9]{15}|170141183460469231731687[0-2][0-9]{14}|17014118346046923173168730[0-2][0-9]{12}|170141183460469231731687303[0-6][0-9]{11}|17014118346046923173168730370[0-9]{10}|17014118346046923173168730371[0-4][0-9]{9}|170141183460469231731687303715[0-7][0-9]{8}|1701411834604692317316873037158[0-7][0-9]{7}|17014118346046923173168730371588[0-3][0-9]{6}|1701411834604692317316873037158840[0-9]{5}|17014118346046923173168730371588410[0-4][0-9]{3}|170141183460469231731687303715884105[0-6][0-9]{2}|1701411834604692317316873037158841057[0-1][0-9]{1}|17014118346046923173168730371588410572[0-6]|170141183460469231731687303715884105727)$"
+    },
+    "Money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minorUnits",
+        "currency"
+      ],
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^(?:(?:0|[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807)|-(?:[1-9][0-9]{0,17}|[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-7]|9223372036854775808))$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    },
+    "CivilDate": {
+      "type": "string",
+      "pattern": "^(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)[Tt](?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,9})?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$"
+    },
+    "TimeZone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "$comment": "Explicit IANA zone, additionally validated against the runtime timezone database by Zod."
+    },
+    "MerchantCollectionState": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "MerchantCurrencyState": {
+      "type": "string",
+      "enum": [
+        "known",
+        "unknown"
+      ]
+    },
+    "MerchantPendingState": {
+      "type": "string",
+      "enum": [
+        "unsupported",
+        "included",
+        "excluded"
+      ]
+    },
+    "MerchantTextState": {
+      "type": "string",
+      "enum": [
+        "unavailable",
+        "unsupported",
+        "absent",
+        "empty",
+        "present"
+      ]
+    },
+    "MerchantAliasState": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "rejected"
+      ]
+    },
+    "MerchantCorrectionState": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "revoked"
+      ]
+    },
+    "MerchantPatternState": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "rejected",
+        "revoked"
+      ]
+    },
+    "MerchantDecisionState": {
+      "type": "string",
+      "enum": [
+        "unreviewed",
+        "accepted",
+        "rejected"
+      ]
+    },
+    "MerchantEvidenceTier": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "deterministic_match",
+        "inferred",
+        "insufficient_data",
+        "conflicting"
+      ]
+    },
+    "MerchantEvidenceKind": {
+      "type": "string",
+      "enum": [
+        "source_observation",
+        "normalized_evidence",
+        "confirmed_decision",
+        "native_rule",
+        "semantic_suggestion"
+      ]
+    },
+    "MerchantDirection": {
+      "type": "string",
+      "enum": [
+        "inflow",
+        "outflow",
+        "zero"
+      ]
+    },
+    "MerchantFrequency": {
+      "type": "string",
+      "enum": [
+        "weekly",
+        "biweekly",
+        "monthly",
+        "quarterly",
+        "annual",
+        "multiple",
+        "irregular"
+      ]
+    },
+    "MerchantRecurrenceKind": {
+      "type": "string",
+      "enum": [
+        "observed"
+      ]
+    },
+    "ReasonCodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OpaqueId"
+      },
+      "maxItems": 100
+    },
+    "MerchantScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spaceId",
+        "budgetId",
+        "connectionId"
+      ],
+      "properties": {
+        "spaceId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "budgetId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "connectionId": {
+          "$ref": "#/$defs/OpaqueId"
+        }
+      }
+    },
+    "MerchantTextField": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "unavailable"
+            },
+            "value": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "unsupported"
+            },
+            "value": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "absent"
+            },
+            "value": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "empty"
+            },
+            "value": {
+              "const": ""
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "present"
+            },
+            "value": {
+              "$ref": "#/$defs/NonemptyText"
+            }
+          }
+        }
+      ]
+    },
+    "MerchantCollections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transactions",
+        "payees",
+        "categories",
+        "rules",
+        "schedules"
+      ],
+      "properties": {
+        "transactions": {
+          "$ref": "#/$defs/MerchantCollectionState"
+        },
+        "payees": {
+          "$ref": "#/$defs/MerchantCollectionState"
+        },
+        "categories": {
+          "$ref": "#/$defs/MerchantCollectionState"
+        },
+        "rules": {
+          "$ref": "#/$defs/MerchantCollectionState"
+        },
+        "schedules": {
+          "$ref": "#/$defs/MerchantCollectionState"
+        }
+      }
+    },
+    "MerchantAccountCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "state",
+        "startDate",
+        "endDate",
+        "currencyState"
+      ],
+      "properties": {
+        "accountId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "state": {
+          "$ref": "#/$defs/MerchantCollectionState"
+        },
+        "startDate": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "endDate": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "currencyState": {
+          "$ref": "#/$defs/MerchantCurrencyState"
+        }
+      },
+      "$comment": "Runtime validation requires startDate <= endDate."
+    },
+    "MerchantSourceAdmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capturedAt",
+        "factsHash",
+        "expiresAt",
+        "collections",
+        "accountCoverage",
+        "pendingState",
+        "originalTransactionCount",
+        "truncatedCount",
+        "visibilityHash",
+        "sourceAccountIds",
+        "sourceCategoryIds"
+      ],
+      "properties": {
+        "capturedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "factsHash": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "collections": {
+          "$ref": "#/$defs/MerchantCollections"
+        },
+        "accountCoverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantAccountCoverage"
+          },
+          "maxItems": 100000
+        },
+        "pendingState": {
+          "$ref": "#/$defs/MerchantPendingState"
+        },
+        "originalTransactionCount": {
+          "$ref": "#/$defs/Count"
+        },
+        "truncatedCount": {
+          "$ref": "#/$defs/Count"
+        },
+        "visibilityHash": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "sourceAccountIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OpaqueId"
+          },
+          "maxItems": 100000
+        },
+        "sourceCategoryIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OpaqueId"
+          },
+          "maxItems": 100000
+        }
+      },
+      "$comment": "Runtime validation requires expiresAt > capturedAt, truncatedCount <= originalTransactionCount, and unique accountCoverage.accountId."
+    },
+    "MerchantTransaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "accountId",
+        "date",
+        "payeeId",
+        "payeeName",
+        "categoryId",
+        "amount",
+        "cleared",
+        "reconciled",
+        "importedId",
+        "importedPayee",
+        "description",
+        "verboseTitle",
+        "notes",
+        "isSplitParent",
+        "isSplitChild",
+        "parentId",
+        "occurrenceId",
+        "occurrenceComplete",
+        "startingBalance",
+        "transferAccountId",
+        "deleted",
+        "pending"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "accountId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "date": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "payeeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "payeeName": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "cleared": {
+          "type": "boolean"
+        },
+        "reconciled": {
+          "type": "boolean"
+        },
+        "importedId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "importedPayee": {
+          "$ref": "#/$defs/MerchantTextField"
+        },
+        "description": {
+          "$ref": "#/$defs/MerchantTextField"
+        },
+        "verboseTitle": {
+          "$ref": "#/$defs/MerchantTextField"
+        },
+        "notes": {
+          "$ref": "#/$defs/MerchantTextField"
+        },
+        "isSplitParent": {
+          "type": "boolean"
+        },
+        "isSplitChild": {
+          "type": "boolean"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurrenceId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "occurrenceComplete": {
+          "type": "boolean"
+        },
+        "startingBalance": {
+          "type": "boolean"
+        },
+        "transferAccountId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "pending": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "not": {
+            "properties": {
+              "isSplitParent": {
+                "const": true
+              },
+              "isSplitChild": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "isSplitChild": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parentId": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "parentId": {
+                "$ref": "#/$defs/OpaqueId"
+              }
+            }
+          }
+        }
+      ],
+      "$comment": "Runtime validation requires child parentId=occurrenceId, or nonchild occurrenceId=id. Contradictory repeated source IDs fail; identical repetitions preserve source facts."
+    },
+    "Payee": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "transferAccountId",
+        "mtid"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "name": {
+          "$ref": "#/$defs/Text"
+        },
+        "transferAccountId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mtid": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "groupName",
+        "isIncome",
+        "mtid",
+        "deleted"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "name": {
+          "$ref": "#/$defs/Text"
+        },
+        "groupName": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "isIncome": {
+          "type": "boolean"
+        },
+        "mtid": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "NativeRuleJson": {
+      "description": "Bounded opaque canonical JSON, preserving unsupported native rule semantics.",
+      "$comment": "Rust and Zod additionally enforce at most 10000 nodes and depth 32, counting the root at depth zero; strings and keys are bounded to 4096 UTF-8 bytes.",
+      "anyOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "$ref": "#/$defs/Text" },
+        {
+          "type": "array",
+          "maxItems": 9999,
+          "items": { "$ref": "#/$defs/NativeRuleJson" }
+        },
+        {
+          "type": "object",
+          "maxProperties": 9999,
+          "propertyNames": { "$ref": "#/$defs/Text" },
+          "additionalProperties": { "$ref": "#/$defs/NativeRuleJson" }
+        }
+      ]
+    },
+    "Rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "order",
+        "trigger",
+        "actions",
+        "inactive"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "name": {
+          "$ref": "#/$defs/Text"
+        },
+        "order": {
+          "$ref": "#/$defs/Count"
+        },
+        "trigger": { "$ref": "#/$defs/NativeRuleJson" },
+        "actions": { "$ref": "#/$defs/NativeRuleJson" },
+        "inactive": {
+          "type": "boolean"
+        }
+      },
+      "description": "Canonical opaque native-rule JSON. Unsupported semantics produce explicit abstention, not source payload stripping."
+    },
+    "MerchantAlias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sourceText",
+        "sourceField",
+        "targetPayeeId",
+        "accountId",
+        "state",
+        "actorId",
+        "version",
+        "updatedAt",
+        "sourceTransactionIds"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "sourceText": {
+          "$ref": "#/$defs/NonemptyText"
+        },
+        "sourceField": {
+          "type": "string",
+          "enum": [
+            "payeeName",
+            "importedPayee",
+            "description",
+            "verboseTitle",
+            "notes"
+          ]
+        },
+        "targetPayeeId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MerchantAliasState"
+        },
+        "actorId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "version": {
+          "$ref": "#/$defs/PositiveCount"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "sourceTransactionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OpaqueId"
+          },
+          "maxItems": 1000
+        }
+      }
+    },
+    "MerchantCorrection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transactionId",
+        "payeeId",
+        "accountId",
+        "categoryId",
+        "state",
+        "verified",
+        "actorId",
+        "version"
+      ],
+      "properties": {
+        "transactionId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "payeeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accountId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "categoryId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "state": {
+          "$ref": "#/$defs/MerchantCorrectionState"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "actorId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "version": {
+          "$ref": "#/$defs/PositiveCount"
+        }
+      }
+    },
+    "MerchantHoliday": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "name"
+      ],
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "name": {
+          "$ref": "#/$defs/NonemptyText"
+        }
+      }
+    },
+    "MerchantCalendar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "jurisdiction",
+        "subdivision",
+        "timeZone",
+        "version",
+        "coverageStart",
+        "coverageEnd",
+        "holidays"
+      ],
+      "properties": {
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jurisdiction": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "subdivision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeZone": {
+          "$ref": "#/$defs/TimeZone"
+        },
+        "version": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "coverageStart": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "coverageEnd": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "holidays": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantHoliday"
+          },
+          "maxItems": 36600
+        }
+      },
+      "$comment": "Runtime validation requires coverageStart <= coverageEnd. Unknown jurisdiction is valid, never inferred from currency."
+    },
+    "ScheduleRecurrencePattern": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "value"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "su",
+            "mo",
+            "tu",
+            "we",
+            "th",
+            "fr",
+            "sa",
+            "day"
+          ]
+        },
+        "value": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "ScheduleRecurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frequency",
+        "interval",
+        "patterns",
+        "start",
+        "endMode",
+        "endOccurrences",
+        "endDate",
+        "skipWeekend",
+        "weekendSolveMode"
+      ],
+      "properties": {
+        "frequency": {
+          "type": "string",
+          "enum": [
+            "daily",
+            "weekly",
+            "monthly",
+            "yearly"
+          ]
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "patterns": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ScheduleRecurrencePattern"
+              },
+              "maxItems": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "start": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "endMode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "never",
+                "after_n_occurrences",
+                "on_date"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endOccurrences": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Count"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endDate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CivilDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skipWeekend": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "weekendSolveMode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "before",
+                "after"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ScheduleLiquidityFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "accountId",
+        "categoryId",
+        "ruleId",
+        "dueDate",
+        "certainty",
+        "amount",
+        "minimum",
+        "maximum",
+        "recurrence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ruleId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dueDate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CivilDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "certainty": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "approximate",
+            "range",
+            "unknown"
+          ]
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recurrence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduleRecurrence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "Existing canonical source schedule: preserves unknown/approximate/range precision and nullable recurrence options without inventing observed statistics."
+    },
+    "MerchantSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payeeId",
+        "source"
+      ],
+      "properties": {
+        "payeeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/ScheduleLiquidityFact"
+        }
+      }
+    },
+    "MerchantPatternDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "patternId",
+        "state",
+        "actorId",
+        "version",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "patternId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "state": {
+          "$ref": "#/$defs/MerchantPatternState"
+        },
+        "actorId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "version": {
+          "$ref": "#/$defs/PositiveCount"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "MerchantSuggestionSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transactionIds",
+        "cursor",
+        "limit"
+      ],
+      "properties": {
+        "transactionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OpaqueId"
+          },
+          "maxItems": 250000
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    },
+    "MerchantAnalysisRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "scope",
+        "snapshotId",
+        "asOfDate",
+        "normalizationVersion",
+        "sourceAdmission",
+        "transactions",
+        "payees",
+        "categories",
+        "rules",
+        "aliases",
+        "corrections",
+        "schedules",
+        "patternDecisions",
+        "calendars",
+        "horizonYears",
+        "maxEvidence"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1"
+        },
+        "scope": {
+          "$ref": "#/$defs/MerchantScope"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "asOfDate": {
+          "$ref": "#/$defs/CivilDate"
+        },
+        "normalizationVersion": {
+          "const": "merchant/2"
+        },
+        "sourceAdmission": {
+          "$ref": "#/$defs/MerchantSourceAdmission"
+        },
+        "transactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantTransaction"
+          },
+          "maxItems": 250000
+        },
+        "payees": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Payee"
+          },
+          "maxItems": 100000
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Category"
+          },
+          "maxItems": 100000
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rule"
+          },
+          "maxItems": 100000
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantAlias"
+          },
+          "maxItems": 100000
+        },
+        "corrections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantCorrection"
+          },
+          "maxItems": 250000
+        },
+        "schedules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantSchedule"
+          },
+          "maxItems": 100000
+        },
+        "patternDecisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantPatternDecision"
+          },
+          "maxItems": 100000
+        },
+        "calendars": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantCalendar"
+          },
+          "maxItems": 1000
+        },
+        "horizonYears": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "maxEvidence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "suggestionSelection": {
+          "$ref": "#/$defs/MerchantSuggestionSelection"
+        }
+      },
+      "description": "Already-authorized immutable merchant/2 source capture. Optional selection omission stays omitted; full aggregates retain all admitted observations."
+    },
+    "MerchantEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sourceId",
+        "field",
+        "rawText",
+        "normalizedText",
+        "sourceTime",
+        "version",
+        "reasonCode"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/MerchantEvidenceKind"
+        },
+        "sourceId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rawText": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "normalizedText": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceTime": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CivilDate"
+                },
+                {
+                  "$ref": "#/$defs/Timestamp"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "reasonCode": {
+          "$ref": "#/$defs/OpaqueId"
+        }
+      }
+    },
+    "MerchantCategoryHistoryEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["categoryId", "count", "firstDate", "lastDate", "ledgerCount", "correctionCount"],
+      "properties": {
+        "categoryId": {"$ref": "#/$defs/OpaqueId"},
+        "count": {"type": "integer", "minimum": 1, "maximum": 250000},
+        "firstDate": {"$ref": "#/$defs/CivilDate"},
+        "lastDate": {"$ref": "#/$defs/CivilDate"},
+        "ledgerCount": {"$ref": "#/$defs/Count"},
+        "correctionCount": {"$ref": "#/$defs/Count"}
+      },
+      "$comment": "Rust/Zod require count = ledgerCount + correctionCount and firstDate <= lastDate; a verified correction replaces the ledger outcome, never adds a second observation."
+    },
+    "MerchantCategoryHistory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["totalCount", "categoryCount", "entries", "truncated"],
+      "properties": {
+        "totalCount": {"type": "integer", "minimum": 0, "maximum": 250000},
+        "categoryCount": {"$ref": "#/$defs/Count"},
+        "entries": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/MerchantCategoryHistoryEntry"}},
+        "truncated": {"type": "boolean"}
+      },
+      "description": "Full admitted outcome totals and endpoints, independent of bounded category/evidence samples; selected category first, then count descending and category ID ascending.",
+      "$comment": "Rust/Zod require unique category IDs, categoryCount <= totalCount, truncated iff entries.length < categoryCount, and sampled sum < totalCount when truncated or exact total otherwise."
+    },
+    "MerchantAlternative": {
+      "type": "object", "additionalProperties": false,
+      "required": ["categoryId", "supportCount", "tier", "reasonCodes"],
+      "properties": {
+        "categoryId": {"$ref": "#/$defs/OpaqueId"},
+        "supportCount": {"allOf": [{"$ref": "#/$defs/Count"}], "minimum": 1},
+        "tier": {"$ref": "#/$defs/MerchantEvidenceTier"},
+        "reasonCodes": {"$ref": "#/$defs/ReasonCodes"}
+      },
+      "description": "Exact competing current evidence; authoritative categories before ranked history, no invented numeric confidence."
+    },
+    "MerchantRuleCandidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["payeeId", "categoryId", "supportCount", "consistencyNumerator", "consistencyDenominator"],
+      "properties": {
+        "payeeId": {"$ref": "#/$defs/OpaqueId"},
+        "categoryId": {"$ref": "#/$defs/OpaqueId"},
+        "supportCount": {"type": "integer", "minimum": 3, "maximum": 250000},
+        "consistencyNumerator": {"type": "integer", "minimum": 3, "maximum": 250000},
+        "consistencyDenominator": {"type": "integer", "minimum": 3, "maximum": 250000}
+      },
+      "description": "Stable native payee ID advice only, not a native rule payload or action permission.",
+      "$comment": "Rust/Zod require supportCount = consistencyNumerator <= consistencyDenominator and numerator*100 >= denominator*90."
+    },
+    "MerchantNativeRuleBlock": {
+      "type": "object", "additionalProperties": false, "required": ["ruleIds"],
+      "properties": {
+        "ruleIds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "pattern": "^[^\\uD800-\\uDFFF]+$"}}
+      },
+      "$comment": "Structural shared block; valid-scalar IDs sorted strictly. Generic legacy has no merchant-only ID/count cap. Merchant result runtime additionally enforces ID UTF8<=256 and global ID count<=100000/disjoint."
+    },
+    "MerchantNativeRulePart": {
+      "type": "object", "additionalProperties": false, "required": ["blockIndexes"],
+      "properties": {"blockIndexes": {
+        "type": "array", "minItems": 1, "uniqueItems": true,
+        "items": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      }},
+      "$comment": "Frozen literal posting; overlaps across parts are intentional. Runtime checks strictly increasing indexes and references to present blocks."
+    },
+    "MerchantNativeRuleSet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["orPartIndexes", "andPartIndexes", "categoryPartIndex"],
+      "properties": {
+        "orPartIndexes": {"type": "array", "maxItems": 4, "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 0, "maximum": 4294967295}},
+        "andPartIndexes": {"anyOf": [
+          {"type": "array", "maxItems": 0},
+          {"type": "array", "minItems": 4, "maxItems": 4, "items": {
+            "type": "array", "maxItems": 2, "uniqueItems": true,
+            "items": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+          }}
+        ]},
+        "categoryPartIndex": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      },
+      "$comment": "categoryPart intersect (OR-union union four-field AND-intersection), fields payeeId/payeeName/accountId/categoryId. AND [] means no contribution; an empty operand canonicalizes the whole AND to [] only after original refs/order/closure validate. Runtime checks used sets and nonempty classified witnesses without bulk union materialization."
+    },
+    "MerchantNativeRuleClassification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transactionId", "accountId", "categoryId", "ruleSetIndex"],
+      "properties": {
+        "transactionId": {"$ref": "#/$defs/OpaqueId"},
+        "accountId": {"$ref": "#/$defs/OpaqueId"},
+        "categoryId": {"$ref": "#/$defs/OpaqueId"},
+        "ruleSetIndex": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      },
+      "description": "Complete surviving uncategorized native rule result referencing the shared result table, independent of selected explanations; rule IDs are never truncated."
+    },
+    "MerchantCategoryClassification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transactionId", "accountId", "payeeId", "categoryId", "tier", "evidenceRevision"],
+      "properties": {
+        "transactionId": {"$ref": "#/$defs/OpaqueId"},
+        "accountId": {"$ref": "#/$defs/OpaqueId"},
+        "payeeId": {"anyOf": [{"$ref": "#/$defs/OpaqueId"}, {"type": "null"}]},
+        "categoryId": {"$ref": "#/$defs/OpaqueId"},
+        "tier": {"type": "string", "enum": ["confirmed", "inferred"]},
+        "evidenceRevision": {"$ref": "#/$defs/OpaqueId"}
+      },
+      "description": "Complete actionable non-native category targets, independent of explanation pages. payeeId is resolver-selected identity, never a replacement for actual native predicate fields."
+    },
+    "MerchantSuggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transactionId",
+        "accountId",
+        "payeeId",
+        "categoryId",
+        "tier",
+        "reasonCodes",
+        "evidence",
+        "contradictions",
+        "supportCount",
+        "evidenceRevision",
+        "categoryHistory",
+        "alternatives",
+        "ruleCandidates"
+      ],
+      "properties": {
+        "transactionId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "accountId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "payeeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tier": {
+          "$ref": "#/$defs/MerchantEvidenceTier"
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/ReasonCodes"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantEvidence"
+          },
+          "maxItems": 100
+        },
+        "contradictions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantEvidence"
+          },
+          "maxItems": 100
+        },
+        "supportCount": {
+          "$ref": "#/$defs/Count"
+        },
+        "evidenceRevision": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "categoryHistory": {"$ref": "#/$defs/MerchantCategoryHistory"},
+        "alternatives": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/MerchantAlternative"}},
+        "ruleCandidates": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/MerchantRuleCandidate"}}
+      }
+    },
+    "MerchantOccurrenceDistribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "periodCounts",
+        "countDistribution",
+        "averageNumerator",
+        "averageDenominator"
+      ],
+      "properties": {
+        "periodCounts": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^.*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Count"
+          },
+          "maxProperties": 10000,
+          "minProperties": 1
+        },
+        "countDistribution": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/UnsignedDecimal"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/PositiveCount"
+          }
+        },
+        "averageNumerator": {
+          "$ref": "#/$defs/UnsignedDecimal"
+        },
+        "averageDenominator": {
+          "$ref": "#/$defs/PositiveDecimal"
+        }
+      },
+      "description": "Every contiguous period (including zeros), occurrence-count histogram, and reduced exact average over full eligible observations."
+    },
+    "MerchantOccurrenceDistributionWeek": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MerchantOccurrenceDistribution"
+        },
+        {
+          "properties": {
+            "periodCounts": {
+              "propertyNames": {
+                "pattern": "^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$"
+              }
+            }
+          }
+        }
+      ],
+      "$comment": "Runtime validation also rejects ISO week 53 in years that have only 52 weeks."
+    },
+    "MerchantOccurrenceDistributionMonth": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MerchantOccurrenceDistribution"
+        },
+        {
+          "properties": {
+            "periodCounts": {
+              "propertyNames": {
+                "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "MerchantOccurrenceDistributionYear": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MerchantOccurrenceDistribution"
+        },
+        {
+          "properties": {
+            "periodCounts": {
+              "propertyNames": {
+                "pattern": "^[0-9]{4}$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "MerchantRecurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "accountId",
+        "payeeId",
+        "normalizedMerchant",
+        "currency",
+        "direction",
+        "tier",
+        "kind",
+        "frequency",
+        "decisionState",
+        "occurrences",
+        "firstDate",
+        "lastDate",
+        "transactionIds",
+        "dates",
+        "intervalDays",
+        "intervalDistribution",
+        "dayOfMonth",
+        "dayOfWeek",
+        "monthOfYear",
+        "yearDistribution",
+        "occurrencesPerWeek",
+        "occurrencesPerMonth",
+        "occurrencesPerYear",
+        "minimumAmount",
+        "maximumAmount",
+        "varianceNumerator",
+        "varianceDenominator",
+        "reasonCodes",
+        "calendarVersion",
+        "evidenceRevision"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "accountId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "payeeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "normalizedMerchant": {
+          "$ref": "#/$defs/Text"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "direction": {
+          "$ref": "#/$defs/MerchantDirection"
+        },
+        "tier": {
+          "$ref": "#/$defs/MerchantEvidenceTier"
+        },
+        "kind": {
+          "$ref": "#/$defs/MerchantRecurrenceKind"
+        },
+        "frequency": {
+          "$ref": "#/$defs/MerchantFrequency"
+        },
+        "decisionState": {
+          "$ref": "#/$defs/MerchantDecisionState"
+        },
+        "occurrences": {
+          "$ref": "#/$defs/Count"
+        },
+        "firstDate": {
+          "$ref": "#/$defs/CivilDate",
+          "description": "Earliest date across all admitted observations; never inferred from bounded samples."
+        },
+        "lastDate": {
+          "$ref": "#/$defs/CivilDate",
+          "description": "Latest date across all admitted observations; never inferred from bounded samples."
+        },
+        "transactionIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OpaqueId"
+          },
+          "maxItems": 100
+        },
+        "dates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CivilDate"
+          },
+          "maxItems": 100
+        },
+        "intervalDays": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Count"
+          },
+          "maxItems": 100
+        },
+        "intervalDistribution": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]{0,3}|[1-2][0-9]{4}|3[0-5][0-9]{3}|36[0-5][0-9]{2}|36600)$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/PositiveCount"
+          }
+        },
+        "dayOfMonth": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(?:[1-9]|[12][0-9]|3[01])$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/PositiveCount"
+          }
+        },
+        "dayOfWeek": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[1-7]$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/PositiveCount"
+          }
+        },
+        "monthOfYear": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(?:[1-9]|1[0-2])$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/PositiveCount"
+          }
+        },
+        "yearDistribution": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(?!0000)[0-9]{4}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/PositiveCount"
+          }
+        },
+        "occurrencesPerWeek": {
+          "$ref": "#/$defs/MerchantOccurrenceDistributionWeek"
+        },
+        "occurrencesPerMonth": {
+          "$ref": "#/$defs/MerchantOccurrenceDistributionMonth"
+        },
+        "occurrencesPerYear": {
+          "$ref": "#/$defs/MerchantOccurrenceDistributionYear"
+        },
+        "minimumAmount": {
+          "$ref": "#/$defs/Money"
+        },
+        "maximumAmount": {
+          "$ref": "#/$defs/Money"
+        },
+        "varianceNumerator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnsignedDecimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "varianceDenominator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PositiveDecimal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/ReasonCodes"
+        },
+        "calendarVersion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidenceRevision": {
+          "$ref": "#/$defs/OpaqueId"
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "varianceNumerator": {
+                  "$ref": "#/$defs/UnsignedDecimal"
+                },
+                "varianceDenominator": {
+                  "$ref": "#/$defs/PositiveDecimal"
+                }
+              }
+            },
+            {
+              "properties": {
+                "varianceNumerator": {
+                  "type": "null"
+                },
+                "varianceDenominator": {
+                  "type": "null"
+                },
+                "reasonCodes": {
+                  "contains": {
+                    "const": "amount_statistics_overflow"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "$comment": "Runtime validation additionally requires minimumAmount.currency=maximumAmount.currency=currency and minimumAmount.minorUnits <= maximumAmount.minorUnits."
+    },
+    "MerchantScheduledExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "payeeId",
+        "source",
+        "reasonCodes",
+        "decisionState"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "payeeId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/ScheduleLiquidityFact"
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/ReasonCodes"
+        },
+        "decisionState": {
+          "$ref": "#/$defs/MerchantDecisionState"
+        }
+      }
+    },
+    "MerchantCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startDate",
+        "endDate",
+        "inputCount",
+        "eligibleCount",
+        "excludedCount",
+        "limited",
+        "reasonCodes"
+      ],
+      "properties": {
+        "startDate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CivilDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endDate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CivilDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputCount": {
+          "$ref": "#/$defs/Count"
+        },
+        "eligibleCount": {
+          "$ref": "#/$defs/Count"
+        },
+        "excludedCount": {
+          "$ref": "#/$defs/Count"
+        },
+        "limited": {
+          "type": "boolean"
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/ReasonCodes"
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "startDate": {
+                  "$ref": "#/$defs/CivilDate"
+                },
+                "endDate": {
+                  "$ref": "#/$defs/CivilDate"
+                }
+              }
+            },
+            {
+              "properties": {
+                "startDate": {
+                  "type": "null"
+                },
+                "endDate": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MerchantSuggestionPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligibleCandidates",
+        "returned",
+        "nextCursor"
+      ],
+      "properties": {
+        "eligibleCandidates": {
+          "$ref": "#/$defs/Count"
+        },
+        "returned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "$comment": "Runtime validation additionally requires returned <= eligibleCandidates."
+    },
+    "MerchantAnalysisResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "scope",
+        "snapshotId",
+        "normalizationVersion",
+        "sourceAdmission",
+        "coverage",
+        "suggestions",
+        "recurrences",
+        "scheduledExpectations",
+        "nativeRuleBlocks",
+        "nativeRuleParts",
+        "nativeRuleSets",
+        "nativeRuleClassifications",
+        "categoryClassifications"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "1"
+        },
+        "scope": {
+          "$ref": "#/$defs/MerchantScope"
+        },
+        "snapshotId": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "normalizationVersion": {
+          "const": "merchant/2"
+        },
+        "sourceAdmission": {
+          "$ref": "#/$defs/MerchantSourceAdmission"
+        },
+        "coverage": {
+          "$ref": "#/$defs/MerchantCoverage"
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantSuggestion"
+          }
+        },
+        "recurrences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantRecurrence"
+          }
+        },
+        "scheduledExpectations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MerchantScheduledExpectation"
+          }
+        },
+        "suggestionPage": {
+          "$ref": "#/$defs/MerchantSuggestionPage"
+        },
+        "nativeRuleBlocks": {
+          "type": "array", "maxItems": 100000,
+          "items": {"allOf": [
+            {"$ref": "#/$defs/MerchantNativeRuleBlock"},
+            {"properties": {"ruleIds": {"maxItems": 100000, "items": {"maxLength": 256}}}}
+          ]}
+        },
+        "nativeRuleParts": {
+          "type": "array", "maxItems": 3250000,
+          "items": {"$ref": "#/$defs/MerchantNativeRulePart"},
+          "$comment": "Derived <=13*T referenced part ceiling at merchant T<=250000; runtime uses actual used set count. No source M=O(rule-count) assumption."
+        },
+        "nativeRuleSets": {
+          "type": "array", "maxItems": 250000,
+          "items": {"$ref": "#/$defs/MerchantNativeRuleSet"}
+        },
+        "nativeRuleClassifications": {
+          "type": "array", "maxItems": 250000, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/MerchantNativeRuleClassification"},
+          "$comment": "Rust/Zod additionally enforce unique transactionId across rows and ruleSetIndex < nativeRuleSets.length."
+        },
+        "categoryClassifications": {
+          "type": "array", "maxItems": 250000, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/MerchantCategoryClassification"},
+          "$comment": "Rust/Zod enforce unique transaction IDs disjoint from native classifications and account/category membership in the admitted source manifests."
+        }
+      },
+      "description": "Explainable nonmutating findings, preserving source dependencies and independent observed/scheduled facts. Optional page omission stays omitted."
+    }
+  }
+}

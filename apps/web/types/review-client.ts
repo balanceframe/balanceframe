@@ -136,8 +136,8 @@ export interface ReviewControllerAdapter {
   
   // ── Rule creation ──────────────────────────────────────────────────
   
-  /** Propose a new automation rule for the given merchant and category. */
-  proposeRule(reviewId: string, merchant: string, categoryId: string): Promise<WebActionResult>;
+  /** Propose from current native source identity; the server owns simulation and payee authority. */
+  proposeRule(reviewId: string, categoryId: string): Promise<WebActionResult>;
   
   // ── Bulk actions ───────────────────────────────────────────────────
 

@@ -1,0 +1,13 @@
+diff --git a/dist/index.js b/dist/index.js
+index 64a82cc52d93ce5fb81b86ed317ef821518a8a87..648d7d985dd51866232cf6a2836838ee06a5c560 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -14862,7 +14862,7 @@ async function execTransactionsGrouped(compilerState, queryState, sqlPieces, par
+       ${sqlPieces.limit != null ? `LIMIT ${sqlPieces.limit}` : ""}
+       ${sqlPieces.offset != null ? `OFFSET ${sqlPieces.offset}` : ""}
+     `, params);
+-		matched = new Set([].concat.apply([], rows.map((row) => row.matched.split(","))));
++		matched = new Set(rows.flatMap((row) => row.matched.split(",")));
+ 	}
+ 	const where = whereIn(rows.map((row) => row.group_id), `IFNULL(${sqlPieces.from}.parent_id, ${sqlPieces.from}.id)`);
+ 	const { parents, children } = (await all(`

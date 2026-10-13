@@ -1,3 +1,4 @@
+import { request } from 'node:http';
 import { expect } from 'vitest';
 
 import type { LoadedScenario } from '../../src/loader.js';
@@ -7,10 +8,47 @@ import { SCENARIO_CATALOG_VERSION } from '../../src/catalog.js';
 
 const PUBLIC_ORIGIN = 'http://127.0.0.1:3003';
 
+interface ScenarioHttpResponse {
+  readonly status: number;
+  readonly ok: boolean;
+  readonly cookies: readonly string[];
+  readonly json: () => Promise<unknown>;
+}
+
+/** Node's HTTP transport preserves the public Host on the private loopback connection. */
+export function normalScenarioResponse(
+  url: URL,
+  options: { method: string; headers: Record<string, string>; body?: string },
+): Promise<ScenarioHttpResponse> {
+  const { promise, resolve, reject } = Promise.withResolvers<ScenarioHttpResponse>();
+  const outgoing = request(url, options, (response) => {
+    const chunks: Buffer[] = [];
+    response.on('data', (chunk: Buffer) => chunks.push(chunk));
+    response.on('error', reject);
+    response.on('end', () => {
+      const bytes = Buffer.concat(chunks);
+      const cookies: string[] = [];
+      for (let index = 0; index < response.rawHeaders.length; index += 2) {
+        if (response.rawHeaders[index]!.toLowerCase() === 'set-cookie')
+          cookies.push(response.rawHeaders[index + 1]!);
+      }
+      const status = response.statusCode!;
+      resolve({
+        status, ok: status >= 200 && status < 300, cookies,
+        json: async () => JSON.parse(bytes.toString('utf8')) as unknown,
+      });
+    });
+  });
+  outgoing.on('error', reject);
+  outgoing.end(options.body);
+  return promise;
+}
+
 /** Runs an assertion against the real authenticated application and always removes its isolated Actual workspace. */
 export async function withScenario<T>(
   id: string,
   assertion: (handle: LoadedScenario) => Promise<T>,
+  options: { branches?: readonly string[] } = {},
 ): Promise<T> {
   const root = createOwnedScenarioRoot();
   const handle = await loadScenario({
@@ -34,6 +72,7 @@ export async function withScenario<T>(
         status: 'passed',
         assertions: { name: currentTestName, count: assertionCalls },
         evidence: { backend: 'disposable-actual', auth: 'better-auth' },
+        ...(options.branches ? { branches: options.branches } : {}),
       }),
     );
     return result;
@@ -46,19 +85,26 @@ export async function withScenario<T>(
 export async function scenarioRequest<T = unknown>(
   handle: LoadedScenario,
   path: string,
-  options: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; personaId?: string; body?: unknown } = {},
+  options: {
+    method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    personaId?: string;
+    body?: unknown;
+    /** Some normal human governance reads, including invitation listing, require fresh proof. */
+    freshProof?: boolean;
+  } = {},
 ): Promise<{ status: number; body: T }> {
   if (!path.startsWith('/') || path.startsWith('//'))
     throw new Error('Expected an application-relative path');
   const persona = handle.initialized.personas[options.personaId ?? 'owner'];
   if (!persona) throw new Error('Unknown fictional persona');
+  const publicOrigin = handle.processes.publicOrigin;
   let cookieHeader = persona.cookieHeader;
-  if (options.method && options.method !== 'GET') {
-    const proof = await fetch(new URL('/api/reauth', handle.processes.webUrl), {
+  if (options.freshProof || (options.method && options.method !== 'GET')) {
+    const proof = await normalScenarioResponse(new URL('/api/reauth', handle.processes.webUrl), {
       method: 'POST',
       headers: {
-        host: new URL(PUBLIC_ORIGIN).host,
-        origin: PUBLIC_ORIGIN,
+        host: new URL(publicOrigin).host,
+        origin: publicOrigin,
         cookie: cookieHeader,
         'x-balanceframe-space': persona.spaceId,
         'content-type': 'application/json',
@@ -70,18 +116,18 @@ export async function scenarioRequest<T = unknown>(
       const separator = pair.indexOf('=');
       return [pair.slice(0, separator), pair.slice(separator + 1)] as const;
     }));
-    for (const value of proof.headers.getSetCookie()) {
+    for (const value of proof.cookies) {
       const pair = value.split(';', 1)[0]!;
       const separator = pair.indexOf('=');
       cookies.set(pair.slice(0, separator), pair.slice(separator + 1));
     }
     cookieHeader = [...cookies].map(([name, value]) => `${name}=${value}`).join('; ');
   }
-  const response = await fetch(new URL(path, handle.processes.webUrl), {
+  const response = await normalScenarioResponse(new URL(path, handle.processes.webUrl), {
     method: options.method ?? 'GET',
     headers: {
-      host: new URL(PUBLIC_ORIGIN).host,
-      origin: PUBLIC_ORIGIN,
+      host: new URL(publicOrigin).host,
+      origin: publicOrigin,
       cookie: cookieHeader,
       'x-balanceframe-space': persona.spaceId,
       ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),

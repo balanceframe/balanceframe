@@ -53,6 +53,7 @@ export type {
   AutomationRule,
   RuleProposal,
   RuleDeletePrecondition,
+  RuleCreatePrecondition,
   BudgetInfo,
   HealthReport,
   HealthState,
@@ -66,6 +67,8 @@ export type {
   LedgerSnapshotResult,
   SynchronizeOptions,
   VersionRange,
+  ActualMerchantCaptureOptions,
+  ActualMerchantSourceCapture,
 } from './types.js';
 export { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from './types.js';
 
@@ -118,3 +121,11 @@ export type {
   UserAttestedLiquidityObservation,
   PersistedUserAttestedLiquidityObservation,
 } from './liquidity-normalizer.js';
+
+export { normalizeActualMerchantSource, ActualMerchantSourceError } from './merchant-normalizer.js';
+export type {
+  ActualMerchantCollection,
+  ActualMerchantSourceInput,
+  ActualMerchantSource,
+  ActualMerchantSourceDependencies,
+} from './merchant-normalizer.js';

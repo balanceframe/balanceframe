@@ -1,15 +1,14 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as H3 from 'h3';
 import type { EventWithContext } from '../../server/utils/workflow-store';
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-import {
-  GENERIC_MUTATION_POLICY_VERSION,
-  canonicalProposalHash,
-} from '@balanceframe/workflow-store';
-import type { GenericActionProposal, GenericProposalOperation } from '@balanceframe/workflow-store';
-import { getWorkflowStore } from '../../server/utils/workflow-store';
+import type { GenericActionProposal, GenericProposalOperation, GovernanceResourceKind } from '@balanceframe/workflow-store';
 import type { ReauthenticationEvent } from '../../server/utils/reauthentication';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SqliteWorkflowStore, GENERIC_MUTATION_POLICY_VERSION, canonicalProposalHash, deriveProposalAuthorizationFacts } from '@balanceframe/workflow-store';
+import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import fixture from '../../../../protocol/fixtures/representative.json';
+import { getWorkflowStore } from '../../server/utils/workflow-store';
 import { issueReauthentication, REAUTH_COOKIE_NAME } from '../../server/utils/reauthentication';
+import handler from '../../server/api/proposal/[id]/approve.post';
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -32,7 +31,6 @@ vi.mock('../../lib/auth', () => ({
 vi.mock('@balanceframe/workflow-store', async () =>
   import('../../../../packages/workflow-store/src/index'));
 
-import handler from '../../server/api/proposal/[id]/approve.post';
 
 const OWNER_ID = 'proposal-approval-owner';
 const PROPOSER_ID = 'proposal-author';
@@ -41,9 +39,10 @@ const SESSION_ID = `session:${APPROVER_ID}`;
 const ORIGIN = 'https://balanceframe.example.test';
 const NOW = '2098-01-01T12:00:00.000Z';
 const EXPIRES_AT = '2099-01-01T00:00:00.000Z';
-const ACCOUNT_ID = 'approval-account';
-const TRANSACTION_ID = 'approval-transaction';
-const CATEGORY_ID = 'approval-category';
+const snapshot = canonicalProtocolSnapshotSchema.parse(fixture);
+const ACCOUNT_ID = snapshot.transactions[0]!.accountId;
+const TRANSACTION_ID = snapshot.transactions[0]!.id;
+const CATEGORY_ID = snapshot.transactions[0]!.categoryId!;
 const RULE_ID = 'approval-rule';
 const GROUP_ID = 'approval-group';
 const GROUP_CATEGORY_ID = 'approval-group-category';
@@ -67,6 +66,12 @@ const RULE_SNAPSHOT = {
   inactive: false,
   stage: 'pre' as const,
   conditionsOp: 'or' as const,
+};
+const NATIVE_RULE = {
+  stage: 'post',
+  conditionsOp: 'and',
+  conditions: [{ field: 'payee', op: 'is', type: 'id', value: snapshot.transactions[0]!.payeeId! }],
+  actions: [{ op: 'set', field: 'category', value: CATEGORY_ID }],
 };
 
 let store: SqliteWorkflowStore;
@@ -141,7 +146,7 @@ function grant(
   actorId: string,
   membershipId: string,
   capability: string,
-  resourceKind: 'budget' | 'account' | 'category' | 'rule' | 'transaction',
+  resourceKind: GovernanceResourceKind,
   resourceId: string,
   restrictions?: { operations: readonly string[] },
 ) {
@@ -190,13 +195,15 @@ function proposalInput(operation: GenericProposalOperation): {
           transactionId: null,
           categoryId: CATEGORY_ID,
           composite: COMPOSITE,
-          rule: {
-            name: 'Merchant rule',
-            conditions: [{ field: 'payee_name', op: 'is', value: 'Merchant' }],
-            actions: [{ type: 'set-category', field: 'category', value: CATEGORY_ID }],
-          },
+          rule: NATIVE_RULE,
         },
-        preconditions: { actualVersion: 'actual-approval-v1' },
+        preconditions: {
+          actualVersion: snapshot.actualVersion,
+          nativeRule: NATIVE_RULE,
+          sourceAccounts: snapshot.accounts,
+          sourceTransactions: snapshot.transactions,
+          nativeImpact: { payees: snapshot.payees, categories: snapshot.categories, rules: snapshot.rules },
+        },
       };
     case 'update_rule':
       return {
@@ -255,8 +262,11 @@ function proposalResources(operation: GenericProposalOperation) {
       ['account', ACCOUNT_ID],
       ['category', CATEGORY_ID],
     ] as const;
-  if (operation === 'create_rule')
-    return [['category', CATEGORY_ID]] as const;
+  if (operation === 'create_rule') {
+    const { payload, preconditions } = proposalInput(operation);
+    return deriveProposalAuthorizationFacts(operation, payload, preconditions).resources
+      .map(({ resourceKind, resourceId }) => [resourceKind, resourceId] as const);
+  }
   return [
     ['rule', RULE_ID],
     ['account', ACCOUNT_ID],

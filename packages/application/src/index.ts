@@ -20,6 +20,11 @@ export * from './liquidity-public.js';
 export * from './liquidity-service.js';
 export * from './liquidity-inputs.js';
 export { LiquidityProjector } from './liquidity-projector.js';
+export * from './merchant-service.js';
+export * from './merchant-calendar.js';
+export * from './merchant-research.js';
+export * from './merchant-settings.js';
+export * from './merchant-public.js';
 
 export type {
   DecisionContext,

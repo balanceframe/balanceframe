@@ -1,7 +1,7 @@
-import { createDefaultConnectionManager } from '@balanceframe/application';
+import { createDefaultConnectionManager, indexCanonicalTransactions } from '@balanceframe/application';
 import { defineEventHandler, readBody, setHeader, setResponseStatus } from 'h3';
 import { z } from 'zod';
-import { projectReviewQueueItem, ReviewSynchronization } from '../../utils/review-projection';
+import { projectReviewQueueItems, ReviewSynchronization } from '../../utils/review-projection';
 import { selectedLiquidityActor } from '../../utils/liquidity-service';
 import { requireSelectedSpace } from '../../utils/space-context';
 import {
@@ -12,8 +12,8 @@ import {
   sanitizeError,
 } from '../../utils/workflow-store';
 import type { EventWithContext } from '../../utils/workflow-store';
-import type { ReviewItem } from '@balanceframe/workflow-store';
-import { hasReviewProjectionAdmission } from '../../utils/review-scope-admission';
+import type { GovernanceOperation, ReviewItem } from '@balanceframe/workflow-store';
+import { hasCurrentReviewNamespace, hasReviewProjectionAdmission, refreshReviewItems, reviewConnectionScope } from '../../utils/review-scope-admission';
 
 const Body = z.object({
   ids: z.array(z.string().trim().min(1).max(200)).min(1).max(100).refine(
@@ -109,62 +109,103 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 409);
       return errorEnvelope('SPACE_CONNECTION_MISMATCH', 'The configured budget does not match the selected space.', authorization.info, false, requestId);
     }
-    const result = await manager.withConnection(async (connected) => {
-      if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId)
-        throw new Error('Selected budget changed');
-      const snapshot = ReviewSynchronization.parse(connected.synchronization).financialSnapshot.legacySnapshot;
-      const items: ReviewGroupEntry[] = [];
-      let totalMinorUnits = 0n;
-      let currency: string | null = null;
-      const generatedAt = new Date().toISOString();
+    const selectedItems = body.data.ids.map((id) => reviewItems.get(id)!);
+    const captured = await manager.withConnection(async (connected) => {
+      const scope = reviewConnectionScope(selected.space.id, connected.config);
+      if (connected.config.budgetId !== budgetId || connected.budget.id !== budgetId ||
+          !selectedItems.every((item) => hasCurrentReviewNamespace(workflow.store, item, scope)))
+        throw new Error('Selected Review namespace changed');
+      const synchronized = await connected.connector.synchronize();
+      return { scope, snapshot: ReviewSynchronization.parse(synchronized).financialSnapshot.legacySnapshot };
+    }, { expectedBudgetId: budgetId, dispose: true, synchronize: false });
+    const currentItems = await refreshReviewItems(workflow.store, selectedItems);
+    if (currentItems.length !== selectedItems.length) throw new Error('Captured Review generation changed');
+    for (const item of currentItems) reviewItems.set(item.id, item);
+    const finalConfig = await manager.loadConfig();
+    if (!finalConfig || finalConfig.budgetId !== budgetId ||
+        reviewConnectionScope(selected.space.id, finalConfig).connectionId !== captured.scope.connectionId)
+      throw new Error('Selected Review namespace changed');
+    const snapshot = captured.snapshot;
+    const transactions = indexCanonicalTransactions(snapshot.transactions);
+    const projectedItems = projectReviewQueueItems(workflow.store, actor, currentItems, snapshot, undefined, undefined, 'observe', captured.scope);
+    if (projectedItems.length !== selectedItems.length)
+      throw new Error('Current review facts are not authorized in the selected space');
+    const projectedById = new Map(projectedItems.map((item) => [item.reviewItem.id, item]));
+    const items: ReviewGroupEntry[] = [];
+    let totalMinorUnits = 0n;
+    let currency: string | null = null;
+    const generatedAt = new Date().toISOString();
 
-      for (const id of body.data.ids) {
-        const review = reviewItems.get(id);
-        if (!review) throw new Error('Review item unavailable in selected space');
-        const transaction = snapshot.transactions.find((row) => row.id === review.transactionId);
-        const projected = projectReviewQueueItem(workflow.store, actor, review, snapshot);
-        if (!transaction || !projected)
-          throw new Error('Current review facts are not authorized in the selected space');
-        if (currency !== null && currency !== transaction.amount.currency)
-          throw new Error('Review group contains transactions in different currencies');
-        currency = transaction.amount.currency;
-        totalMinorUnits += BigInt(transaction.amount.minorUnits);
-        const detailItem = {
-          transactionId: transaction.id,
-          amount: transaction.amount,
-          payeeName: transaction.payeeName,
-          date: transaction.date ?? null,
-          categoryName: projected.evidence.currentCategory,
-          suggestedCategoryId: review.categoryId,
-          suggestedCategoryName: projected.evidence.suggestedCategory,
-        };
-        items.push({
-          reviewId: review.id,
-          generatedAt,
-          status: review.status,
-          description: `Review for ${projected.evidence.normalizedMerchant || transaction.id}`,
-          totalAmount: transaction.amount,
-          itemCount: 1,
-          items: [detailItem],
-        });
-      }
-      const representative = reviewItems.get(body.data.ids[0]!);
-      if (!representative) throw new Error('Review group has no current items');
-      const homogeneous = body.data.ids.every((id) => {
-        const item = reviewItems.get(id);
-        return !!item &&
-          item.status === representative.status &&
-          item.categoryId === representative.categoryId &&
-          item.classifier === representative.classifier;
-      });
-      if (currency === null) throw new Error('Review group has no current transactions');
-      return {
-        items,
-        homogeneous,
-        totalAmount: { minorUnits: totalMinorUnits.toString(), currency },
-        itemCount: items.length,
+    for (const id of body.data.ids) {
+      const review = reviewItems.get(id);
+      if (!review) throw new Error('Review item unavailable in selected space');
+      const transaction = transactions.get(review.transactionId);
+      const projected = projectedById.get(review.id);
+      if (!transaction || !projected)
+        throw new Error('Current review facts are not authorized in the selected space');
+      if (currency !== null && currency !== transaction.amount.currency)
+        throw new Error('Review group contains transactions in different currencies');
+      currency = transaction.amount.currency;
+      totalMinorUnits += BigInt(transaction.amount.minorUnits);
+      const detailItem = {
+        transactionId: transaction.id,
+        amount: transaction.amount,
+        payeeName: transaction.payeeName,
+        date: transaction.date ?? null,
+        categoryName: projected.evidence.currentCategory,
+        suggestedCategoryId: projected.reviewItem.categoryId,
+        suggestedCategoryName: projected.evidence.suggestedCategory,
       };
-    }, { expectedBudgetId: budgetId, dispose: true });
+      items.push({
+        reviewId: review.id,
+        generatedAt,
+        status: review.status,
+        description: `Review for ${projected.evidence.normalizedMerchant || transaction.id}`,
+        totalAmount: transaction.amount,
+        itemCount: 1,
+        items: [detailItem],
+      });
+    }
+    const representative = reviewItems.get(body.data.ids[0]!);
+    if (!representative) throw new Error('Review group has no current items');
+    const representativeCategory = projectedById.get(representative.id)?.reviewItem.categoryId;
+    const homogeneous = body.data.ids.every((id) => {
+      const item = reviewItems.get(id);
+      return !!item &&
+        item.status === representative.status &&
+        projectedById.get(id)?.reviewItem.categoryId === representativeCategory &&
+        item.classifier === representative.classifier;
+    });
+    if (currency === null) throw new Error('Review group has no current transactions');
+    const result = {
+      items,
+      homogeneous,
+      totalAmount: { minorUnits: totalMinorUnits.toString(), currency },
+      itemCount: items.length,
+    };
+    const outbound: (GovernanceOperation & { readonly id?: string })[] = [];
+    for (const entry of result.items) {
+      for (const item of entry.items) {
+        const transaction = transactions.get(item.transactionId);
+        if (!transaction) throw new Error('Review group disclosure source unavailable');
+        const signed = BigInt(item.amount.minorUnits);
+        outbound.push({ operation: 'history', id: transaction.id, accountId: transaction.accountId,
+          ...(transaction.categoryId ? { categoryId: transaction.categoryId } : {}),
+          direction: BigInt(transaction.amount.minorUnits) < 0n ? 'outgoing' : 'incoming',
+          amount: { currency: item.amount.currency, minorUnits: (signed < 0n ? -signed : signed).toString() } });
+      }
+      // A subtotal is derived even when its one item happens to have identical Money.
+      const subtotal = BigInt(entry.totalAmount.minorUnits);
+      outbound.push({ operation: 'history', amount: {
+        currency: entry.totalAmount.currency, minorUnits: (subtotal < 0n ? -subtotal : subtotal).toString(),
+      } });
+    }
+    outbound.push({ operation: 'history', amount: {
+      currency, minorUnits: (totalMinorUnits < 0n ? -totalMinorUnits : totalMinorUnits).toString(),
+    } });
+    if (projectReviewQueueItems(workflow.store, actor, currentItems, snapshot, undefined, undefined,
+      'observe', captured.scope, outbound).length !== currentItems.length)
+      throw new Error('Complete Review group disclosure is unavailable');
     return okEnvelope(result, authorization.info, requestId);
   } catch (error) {
     const safe = sanitizeError(error, requestId, 'REVIEW_GROUP_FAILED', false);

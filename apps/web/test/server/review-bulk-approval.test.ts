@@ -1,14 +1,20 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LedgerSnapshotResult } from '@balanceframe/actual-adapter';
+import type { ConnectionManager } from '@balanceframe/application';
 import type { ReauthenticationEvent } from '../../server/utils/reauthentication';
 import type { EventWithContext } from '../../server/utils/workflow-store';
-import { getWorkflowStore } from '../../server/utils/workflow-store';
-import { SqliteWorkflowStore } from '../../../../packages/workflow-store/src/store';
-import type { ConnectionManager } from '@balanceframe/application';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import { getWorkflowStore, setReviewMutationExecutorFactory } from '../../server/utils/workflow-store';
+import { issueReauthentication, REAUTH_COOKIE_NAME } from '../../server/utils/reauthentication';
+import { SqliteWorkflowStore } from '../../../../packages/workflow-store/src/store';
+import { merchantConnectionId } from '../../../../packages/application/src/merchant-service';
 import fixture from '../../../../protocol/fixtures/representative.json';
 import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
 import approveReview from '../../server/api/review/approve.post';
-import { setReviewMutationExecutorFactory } from '../../server/utils/workflow-store';
+import approveBulk from '../../server/api/review/approve-bulk.post';
+import proposalDetail from '../../server/api/proposal/[id].get';
+import { nativeReviewFixture } from './native-review.fixture';
+import { completeNativeRuleSourceAvailability } from './native-rule-source.fixture';
 
 const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -65,13 +71,6 @@ vi.mock('@balanceframe/application', async (importOriginal) => {
   };
 });
 
-
-import { issueReauthentication, REAUTH_COOKIE_NAME } from '../../server/utils/reauthentication';
-
-import approveBulk from '../../server/api/review/approve-bulk.post';
-import proposalDetail from '../../server/api/proposal/[id].get';
-
-
 let selectedSpaceId: string;
 let BUDGET_ID: string;
 let budgetSequence = 0;
@@ -79,6 +78,7 @@ let bootstrapInitialized = false;
 const PROPOSER_ID = 'proposal-author';
 const APPROVER_ID = 'review-approver';
 const ACTOR_SESSION = `session:${APPROVER_ID}`;
+const SERVER_URL = 'https://actual.review-bulk.example.test';
 const snapshot = canonicalProtocolSnapshotSchema.parse(fixture);
 const firstTransaction = snapshot.transactions[0]!;
 const secondTransaction = snapshot.transactions[1]!;
@@ -195,19 +195,6 @@ function grant(
   });
 }
 
-function sourceTransaction(transaction: (typeof snapshot.transactions)[number]) {
-  const amount = BigInt(transaction.amount.minorUnits);
-  return {
-    id: transaction.id,
-    accountId: transaction.accountId,
-    categoryId: transaction.categoryId ?? null,
-    direction: amount < 0n ? 'outgoing' as const : 'incoming' as const,
-    amount: {
-      minorUnits: (amount < 0n ? -amount : amount).toString(),
-      currency: transaction.amount.currency,
-    },
-  };
-}
 async function addProposal(
   transaction: (typeof snapshot.transactions)[number],
   scope: ProposalScope = {
@@ -218,21 +205,15 @@ async function addProposal(
   },
 ) {
   const categoryId = snapshot.categories.find(({ id }) => id !== transaction.categoryId)!.id;
-  let item = await store.createReviewItem({
-    transactionId: transaction.id,
-    budgetId: scope.budgetId,
+  const item = await nativeReviewFixture(store, {
+    scope: {
+      spaceId: scope.spaceId,
+      budgetId: scope.budgetId,
+      connectionId: merchantConnectionId({ serverUrl: SERVER_URL, budgetId: scope.budgetId }),
+    },
+    transaction,
     categoryId,
-    classifier: 'fixture-classifier',
-    provenance: 'test-fixture',
-    sourceTransaction: sourceTransaction(transaction),
   });
-  for (const toStatus of ['suggestion_generated', 'pending_review'] as const) {
-    item = await store.transitionInternalReviewItem(item.id, {
-      toStatus,
-      actor: 'trusted-fixture',
-      expectedVersion: item.version,
-    });
-  }
 
   const resources = [
     { resourceKind: 'budget' as const, resourceId: scope.budgetId },
@@ -340,16 +321,22 @@ beforeEach(async () => {
   });
   approverMembershipId = approverMembership.id;
   const connectionManager = {
-    loadConfig: async () => ({ budgetId: BUDGET_ID }),
+    loadConfig: async () => ({ budgetId: BUDGET_ID, serverUrl: SERVER_URL }),
     withConnection: async (operation: (connected: {
-      config: { budgetId: string };
+      config: { budgetId: string; serverUrl: string };
       budget: { id: string };
-      connector: { synchronize: () => Promise<{ snapshot: typeof snapshot }> };
+      connector: { synchronize: () => Promise<{
+        snapshot: typeof snapshot;
+        rulePlanningSourceAvailability: LedgerSnapshotResult['rulePlanningSourceAvailability'];
+      }> };
     }) => Promise<unknown>) => operation({
-      config: { budgetId: BUDGET_ID },
+      config: { budgetId: BUDGET_ID, serverUrl: SERVER_URL },
       budget: { id: BUDGET_ID },
       connector: {
-        synchronize: async () => ({ snapshot }),
+        synchronize: async () => ({
+          snapshot,
+          rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(snapshot),
+        }),
         setTransactionCategory: mocks.setTransactionCategory,
       },
     }),
@@ -388,6 +375,16 @@ describe('POST /api/review/approve-bulk', () => {
       kind: 'set_category',
       transactionId: firstTransaction.id,
     });
+    expect(first.item.evidence.ruleSetRef).toMatchObject({
+      kind: 'scoped',
+      scope: {
+        spaceId: selectedSpaceId,
+        budgetId: BUDGET_ID,
+        connectionId: merchantConnectionId({ serverUrl: SERVER_URL, budgetId: BUDGET_ID }),
+      },
+    });
+    expect(first.item.evidence.sourceRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.parse(first.proposal.preconditions).reviewSourceRevision).toBe(first.item.evidence.sourceRevision);
 
     const response = await approveBulk(request(bodyFor([first.item.id, second.item.id])));
 

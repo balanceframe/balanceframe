@@ -47,6 +47,13 @@ interface Completion {
   approvalCount: number;
   canApprove: boolean;
   canExecute: boolean;
+  approvalMetadata?: {
+    requesterActorId: string;
+    requesterMembershipId: string | null;
+    governancePolicyVersion: string | null;
+    financialPolicyVersion: string;
+    approvers: { actorId: string; issuedAt: string; expiresAt: string }[];
+  };
   debit: CompletionDebit | null;
   manualTransactionId: string | null;
   importedTransactionId: string | null;
@@ -597,6 +604,9 @@ describe('completion and reconciliation scenarios', () => {
           ),
         );
         expect(requesterApproval).toMatchObject({ phase: 'proposed', approvalCount: 1 });
+        expect(requesterApproval.approvalMetadata?.approvers.map(({ actorId }) => actorId)).toEqual([
+          handle.initialized.personas.coapprover!.actorId,
+        ]);
         const independentApproval = resultOf(await scenarioRequest<Envelope<Completion>>(
           handle,
           completionPath(sessionId, completionId, 'approve'),
@@ -613,6 +623,55 @@ describe('completion and reconciliation scenarios', () => {
           requiredApprovals: 2,
           canExecute: true,
         });
+
+        const owner = handle.initialized.personas.owner!;
+        const coapprover = handle.initialized.personas.coapprover!;
+        const approver = handle.initialized.personas.approver!;
+        expect(new Set([owner.actorId, coapprover.actorId, approver.actorId]).size).toBe(3);
+        expect(new Set([owner.cookieHeader, coapprover.cookieHeader, approver.cookieHeader]).size).toBe(3);
+        expect(ownerApproved.approvalMetadata).toMatchObject({
+          requesterActorId: owner.actorId,
+          requesterMembershipId: owner.membershipId,
+        });
+        expect(ownerApproved.approvalMetadata?.approvers.map(({ actorId }) => actorId).sort()).toEqual(
+          [coapprover.actorId, approver.actorId].sort(),
+        );
+        for (const vote of ownerApproved.approvalMetadata!.approvers) {
+          expect(Object.keys(vote).sort()).toEqual(['actorId', 'expiresAt', 'issuedAt']);
+          expect(Date.parse(vote.expiresAt)).toBeGreaterThan(Date.parse(vote.issuedAt));
+        }
+
+        type Audit = {
+          records: { id: string; actorId: string; action: string; entityId: string | null; timestamp: string }[];
+          total: number;
+        };
+        const spacePath = `/api/spaces/${encodeURIComponent(handle.initialized.spaceId)}`;
+        for (const [personaId, reader] of [['coapprover', coapprover], ['approver', approver]] as const) {
+          const other = reader.actorId === coapprover.actorId ? approver : coapprover;
+          const audit = resultOf(await scenarioRequest<Envelope<Audit>>(
+            handle, `${spacePath}/audit?actorId=${encodeURIComponent(other.actorId)}&action=workflow_transition&limit=100`, { personaId },
+          ));
+          expect(audit.records).toEqual(expect.arrayContaining([
+            expect.objectContaining({ actorId: other.actorId, action: 'workflow_transition', entityId: null }),
+          ]));
+          expect(audit.records.every(({ actorId, action, entityId }) =>
+            actorId === other.actorId && action === 'workflow_transition' && entityId === null)).toBe(true);
+          for (const record of audit.records)
+            expect(Object.keys(record).sort()).toEqual(['action', 'actorId', 'entityId', 'id', 'timestamp']);
+          for (const privateId of [handle.seeded.budgetId, sessionId, completionId,
+            ...Object.values(handle.seeded.accountIds), ...Object.values(handle.seeded.categoryIds),
+            ...Object.values(handle.seeded.transactionIds)])
+            expect(JSON.stringify(audit).includes(privateId)).toBe(false);
+        }
+        const ownerLookingForPeer = resultOf(await scenarioRequest<Envelope<Audit>>(
+          handle, `${spacePath}/audit?actorId=${encodeURIComponent(coapprover.actorId)}&action=workflow_transition`,
+        ));
+        expect(ownerLookingForPeer.records).toEqual(expect.arrayContaining([
+          expect.objectContaining({ actorId: coapprover.actorId, action: 'workflow_transition', entityId: null }),
+        ]));
+        errorOf(await scenarioRequest<Envelope<Audit>>(
+          handle, `${spacePath}/audit`, { personaId: 'restricted' },
+        ), 403, 'FORBIDDEN');
 
         const peerAfterOwner = resultOf(
           await scenarioRequest<Envelope<Completion>>(
@@ -679,7 +738,12 @@ describe('completion and reconciliation scenarios', () => {
         });
         expect(parent?.subtransactions).toHaveLength(3);
         expect(actualTotal(afterExecution)).toBe(actualTotal(beforeExecution) - 2600);
-      });
+      }, { branches: [
+        'coapproval.scoped-proposal-visible-private-session-denied',
+        'coapproval.requester-excluded-independent-human-approvals-retained',
+        'coapproval.peer-execution-denied-owner-native-debit',
+        'coapproval-audit',
+      ] });
     },
   );
 

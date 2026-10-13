@@ -33,35 +33,29 @@ export interface ProposalApprovalView {
 }
 
 /** Build the exact view only after the store admits current selected-space read authority. */
-export async function buildProposalApprovalView(input: {
+export function buildProposalApprovalView(input: {
   readonly store: WorkflowStore;
   readonly proposal: GenericActionProposal;
   readonly actorId: string;
   readonly auth: OperationalAuth;
   readonly now: string;
   readonly requestId?: string;
-}): Promise<ProposalApprovalView | null> {
-  const { proposal } = input;
-  if (!proposal.spaceId || !proposal.requesterMembershipId || !proposal.governancePolicyVersion)
-    return null;
-
-  let preconditions: unknown;
-  try {
-    preconditions = JSON.parse(proposal.preconditions) as unknown;
-  } catch {
-    return null;
-  }
-  if (!preconditions || typeof preconditions !== 'object' || Array.isArray(preconditions))
-    return null;
-
-  const summary = await input.store.getProposalApprovalSummary({
-    proposalId: proposal.id,
-    spaceId: proposal.spaceId,
+  readonly privateProjection?: 'envelope' | 'detail';
+}): ProposalApprovalView | null {
+  if (!input.proposal.spaceId) return null;
+  const read = input.store.getProposalApprovalReads({
+    proposalIds: [input.proposal.id],
+    spaceId: input.proposal.spaceId,
     actorId: input.actorId,
     auth: input.auth,
     now: input.now,
     requestId: input.requestId,
-  });
+    privateProjection: input.privateProjection ?? 'envelope',
+  })[0];
+  if (!read) return null;
+  const { proposal, summary, preconditions } = read;
+  if (!proposal.spaceId || !proposal.requesterMembershipId || !proposal.governancePolicyVersion)
+    return null;
   return {
     id: proposal.id,
     operation: proposal.operation,
@@ -76,7 +70,7 @@ export async function buildProposalApprovalView(input: {
     payloadHash: proposal.payloadHash,
     privateEnvelopeVisible: summary.privateEnvelopeVisible,
     payload: summary.privateEnvelopeVisible ? proposal.payload : null,
-    preconditions: summary.privateEnvelopeVisible ? preconditions as Readonly<Record<string, unknown>> : null,
+    preconditions,
     expiresAt: proposal.expiresAt,
     requiredApprovers: summary.requiredApprovers,
     approvers: summary.approvers,

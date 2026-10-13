@@ -13,7 +13,7 @@
  */
 
 
-import { ref, shallowRef } from 'vue';
+import { getCurrentScope, onScopeDispose, ref, shallowRef, watch } from 'vue';
 import { isProposalApprovalView } from '../types/review-client';
 import type {
   ApiReviewControllerAdapter,
@@ -116,28 +116,6 @@ interface ApiEnvelope<T> {
 
 
 // ---------------------------------------------------------------------------
-// Proposal detail types (mirrors server-side shapes)
-// ---------------------------------------------------------------------------
-
-export interface SimulationExample {
-  readonly txId: string;
-  readonly payee: string | null;
-  readonly amount: { minorUnits: string; currency: string };
-  readonly currentCategory: string | null;
-  readonly wouldChange: boolean;
-}
-
-export interface SimulationEvidence {
-  readonly transactionsMatched: number;
-  readonly transactionsAffected: readonly string[];
-  readonly categoryDistribution: Record<string, number>;
-  readonly conflicts: readonly string[];
-  readonly examples: readonly SimulationExample[];
-  readonly simulatedAt: string;
-}
-
-
-// ---------------------------------------------------------------------------
 // Composable
 // ---------------------------------------------------------------------------
 
@@ -149,6 +127,8 @@ export interface ApiReviewControllerOptions {
    * before each fetch.  Return null or omit to rely on same-origin cookies.
    */
   getSessionToken?: () => string | null;
+  /** Reactive authenticated identity; changing it invalidates all private results. */
+  getIdentityKey?: () => string | null;
 }
 
 export function useApiReviewController(
@@ -162,6 +142,29 @@ export function useApiReviewController(
   /** ID of the most recently consumed item, for undo when queue resets. */
   const lastActedItemId = ref<string | null>(null);
   const proposalApprovalViews = shallowRef<readonly PendingProposalApproval[]>([]);
+  let lifetime = 0;
+  let listRequest = 0;
+  let disposed = false;
+  const staleRequestError = 'Review access changed. Reload before acting.';
+
+  function clearPrivateState(): void {
+    lifetime += 1;
+    state.value = createDefaultState();
+    proposalApprovalViews.value = [];
+    lastActedItemId.value = null;
+    loading.value = false;
+    error.value = null;
+  }
+
+  if (options?.getIdentityKey) {
+    watch(options.getIdentityKey, clearPrivateState, { flush: 'sync' });
+  }
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      disposed = true;
+      clearPrivateState();
+    });
+  }
 
   // Normalise the base URL (strip trailing slash).
   const api = baseUrl.replace(/\/+$/, '');
@@ -220,6 +223,8 @@ export function useApiReviewController(
     method: string = 'GET',
     body?: unknown,
   ): Promise<ApiEnvelope<T>> {
+    if (disposed) throw new Error(staleRequestError);
+    const requestLifetime = lifetime;
     const url = `${api}${path}`;
     const res = await fetch(url, {
       method,
@@ -229,6 +234,7 @@ export function useApiReviewController(
     });
 
     const envelope = await parseEnvelope<T>(res);
+    if (requestLifetime !== lifetime || disposed) throw new Error(staleRequestError);
 
     if (!res.ok && envelope.status === 'error') {
       throw new Error(
@@ -263,6 +269,7 @@ export function useApiReviewController(
     actionName: string,
     extraBody: Record<string, string> = {},
   ): Promise<WebActionResult> {
+    const requestLifetime = lifetime;
     loading.value = true;
     error.value = null;
 
@@ -288,6 +295,7 @@ export function useApiReviewController(
         'POST',
         { reviewId: currentId, ...extraBody },
       );
+      if (requestLifetime !== lifetime) return { itemId: currentId, success: false, error: staleRequestError };
 
       if (envelope.status === 'error' || envelope.error) {
         const msg = envelope.error?.message ?? 'Unknown error';
@@ -359,21 +367,26 @@ export function useApiReviewController(
         error: null,
       };
     } catch (e) {
+      if (requestLifetime !== lifetime) return { itemId: currentId, success: false, error: staleRequestError };
       const msg = e instanceof Error ? e.message : String(e);
       error.value = msg;
       return { itemId: currentId, success: false, error: msg };
     } finally {
-      loading.value = false;
+      if (requestLifetime === lifetime) loading.value = false;
     }
   }
 
   /** Fetch the current review list from the API and update state. */
   async function fetchItems(): Promise<void> {
+    if (disposed) return;
+    const requestLifetime = lifetime;
+    const request = ++listRequest;
     loading.value = true;
     error.value = null;
 
     try {
       const envelope = await callApi<ReviewListResult>('/api/review');
+      if (requestLifetime !== lifetime || request !== listRequest) return;
 
       if (envelope.status === 'error') {
         throw new Error(
@@ -383,11 +396,11 @@ export function useApiReviewController(
 
       // Validate result shape
       const result = envelope.result;
-      if (!result || typeof result !== 'object') {
-        throw new Error('Invalid review list envelope: missing result');
+      if (!result || typeof result !== 'object' || !Array.isArray(result.items)) {
+        throw new Error('Invalid review list envelope: missing result or items');
       }
 
-      const items = Array.isArray(result.items) ? result.items : [];
+      const items = result.items;
       const total =
         typeof result.total === 'number' ? result.total : items.length;
       const currentItem = items.length > 0 ? items[0]! : null;
@@ -404,14 +417,16 @@ export function useApiReviewController(
         error: null,
       };
     } catch (e) {
+      if (requestLifetime !== lifetime || request !== listRequest) return;
+      clearPrivateState();
       const msg = e instanceof Error ? e.message : String(e);
       error.value = msg;
       state.value = {
-        ...state.value,
+        ...createDefaultState(),
         error: { code: 'LOAD_ERROR', message: msg, retryable: true },
       };
     } finally {
-      loading.value = false;
+      if (request === listRequest && !disposed) loading.value = false;
     }
   }
 
@@ -422,7 +437,7 @@ export function useApiReviewController(
   }
 
   async function refresh(): Promise<void> {
-    state.value = createDefaultState();
+    clearPrivateState();
     await fetchItems();
   }
 
@@ -433,6 +448,7 @@ export function useApiReviewController(
   }
 
   async function correct(categoryId: string): Promise<WebActionResult> {
+    const requestLifetime = lifetime;
     const currentItem = state.value.currentItem;
     if (!currentItem) {
       const result: WebActionResult = {
@@ -454,6 +470,7 @@ export function useApiReviewController(
         'POST',
         { reviewId: currentId, categoryId },
       );
+      if (requestLifetime !== lifetime) return { itemId: currentId, success: false, error: staleRequestError };
 
       if (envelope.status === 'error' || envelope.error) {
         const msg = envelope.error?.message ?? 'Unknown error';
@@ -488,11 +505,12 @@ export function useApiReviewController(
       error.value = msg;
       return { itemId: currentId, success: false, error: msg };
     } catch (e) {
+      if (requestLifetime !== lifetime) return { itemId: currentId, success: false, error: staleRequestError };
       const msg = e instanceof Error ? e.message : String(e);
       error.value = msg;
       return { itemId: currentId, success: false, error: msg };
     } finally {
-      loading.value = false;
+      if (requestLifetime === lifetime) loading.value = false;
     }
   }
 
@@ -505,6 +523,7 @@ export function useApiReviewController(
   }
   
   async function undo(): Promise<WebActionResult> {
+    const requestLifetime = lifetime;
     const targetId = lastActedItemId.value ?? state.value.currentItem?.reviewItem.id ?? '<no-current>';
     if (!lastActedItemId.value) {
       const msg = 'No item to undo. Act on an item first.';
@@ -521,6 +540,7 @@ export function useApiReviewController(
         'POST',
         { reviewId: targetId },
       );
+      if (requestLifetime !== lifetime) return { itemId: targetId, success: false, error: staleRequestError };
   
       if (envelope.status === 'error' || envelope.error) {
         const msg = envelope.error?.message ?? 'Unknown error';
@@ -545,6 +565,7 @@ export function useApiReviewController(
       // then refresh the queue to show the restored item.
       lastActedItemId.value = null;
       await fetchItems();
+      if (requestLifetime !== lifetime) return { itemId: targetId, success: false, error: staleRequestError };
   
       return {
         itemId: result.itemId ?? targetId,
@@ -552,34 +573,32 @@ export function useApiReviewController(
         error: null,
       };
     } catch (e) {
+      if (requestLifetime !== lifetime) return { itemId: targetId, success: false, error: staleRequestError };
       const msg = e instanceof Error ? e.message : String(e);
       error.value = msg;
       return { itemId: targetId, success: false, error: msg };
     } finally {
-      loading.value = false;
+      if (requestLifetime === lifetime) loading.value = false;
     }
   }
   
   async function proposeRule(
     reviewId: string,
-    merchant: string,
     categoryId: string,
-    simulation?: SimulationEvidence,
   ): Promise<WebActionResult & { simulationStatus?: string; simulationWarning?: string | null }> {
+    const requestLifetime = lifetime;
     loading.value = true;
     error.value = null;
   
     try {
-      const body: Record<string, unknown> = { reviewId, merchant, categoryId };
-      if (simulation) {
-        body.simulation = simulation;
-      }
+      const body = { reviewId, categoryId };
   
       const envelope = await callApi<RuleProposalResult>(
         '/api/review/propose-rule',
         'POST',
         body,
       );
+      if (requestLifetime !== lifetime) return { itemId: reviewId, success: false, error: staleRequestError };
 
       if (envelope.status === 'error' || envelope.error) {
         const msg = envelope.error?.message ?? 'Unknown error';
@@ -609,11 +628,12 @@ export function useApiReviewController(
         simulationWarning: result.simulationWarning ?? null,
       };
     } catch (e) {
+      if (requestLifetime !== lifetime) return { itemId: reviewId, success: false, error: staleRequestError };
       const msg = e instanceof Error ? e.message : String(e);
       error.value = msg;
       return { itemId: reviewId, success: false, error: msg };
     } finally {
-      loading.value = false;
+      if (requestLifetime === lifetime) loading.value = false;
     }
   }
   
@@ -623,6 +643,7 @@ export function useApiReviewController(
     action: 'approve' | 'correct',
     categoryId?: string,
   ): Promise<WebBulkActionResult> {
+    const requestLifetime = lifetime;
     const selectedIds = [
       ...new Set(
         state.value.selectedIndices.flatMap((index) => {
@@ -645,12 +666,14 @@ export function useApiReviewController(
     let errorCount = 0;
     try {
       for (const reviewId of selectedIds) {
+        if (requestLifetime !== lifetime) break;
         try {
           const envelope = await callApi<SingleActionResult>(
             `/api/review/${action}`,
             'POST',
             { reviewId, ...(action === 'correct' ? { categoryId } : {}) },
           );
+          if (requestLifetime !== lifetime) break;
           const result = envelope.result;
           if (
             envelope.status !== 'ok' ||
@@ -673,15 +696,20 @@ export function useApiReviewController(
           }
           results.push({ itemId: reviewId, success: false, error: null, approvalRequired: true });
         } catch (cause) {
+          if (requestLifetime !== lifetime) break;
           const message = cause instanceof Error ? cause.message : String(cause);
           results.push({ itemId: reviewId, success: false, error: message });
           errorCount += 1;
         }
       }
     } finally {
-      loading.value = false;
+      if (requestLifetime === lifetime) loading.value = false;
     }
-    error.value = errorCount ? `${errorCount} selected review proposal(s) could not be prepared.` : null;
+    if (requestLifetime === lifetime) {
+      error.value = errorCount ? `${errorCount} selected review proposal(s) could not be prepared.` : null;
+    } else {
+      return { results: [], consumedCount: 0, errorCount: 1 };
+    }
     return { results, consumedCount: 0, errorCount };
   }
 
@@ -694,6 +722,7 @@ export function useApiReviewController(
   }
 
   async function runBulkTransition(action: 'reject' | 'skip'): Promise<WebBulkActionResult> {
+    const requestLifetime = lifetime;
     const selectedIds = [
       ...new Set(
         state.value.selectedIndices.flatMap((index) => {
@@ -716,12 +745,14 @@ export function useApiReviewController(
     let errorCount = 0;
     try {
       for (const reviewId of selectedIds) {
+        if (requestLifetime !== lifetime) break;
         try {
           const envelope = await callApi<SingleActionResult>(
             `/api/review/${action}`,
             'POST',
             { reviewId },
           );
+          if (requestLifetime !== lifetime) break;
           if (envelope.status === 'ok' && !envelope.error && envelope.result?.success) {
             results.push({ itemId: reviewId, success: true, error: null });
             consumedCount += 1;
@@ -731,16 +762,21 @@ export function useApiReviewController(
             errorCount += 1;
           }
         } catch (cause) {
+          if (requestLifetime !== lifetime) break;
           const message = cause instanceof Error ? cause.message : String(cause);
           results.push({ itemId: reviewId, success: false, error: message });
           errorCount += 1;
         }
       }
-      if (consumedCount > 0) await fetchItems();
+      if (requestLifetime === lifetime && consumedCount > 0) await fetchItems();
     } finally {
-      loading.value = false;
+      if (requestLifetime === lifetime) loading.value = false;
     }
-    error.value = errorCount ? `${errorCount} selected review action(s) failed.` : null;
+    if (requestLifetime === lifetime) {
+      error.value = errorCount ? `${errorCount} selected review action(s) failed.` : null;
+    } else {
+      return { results: [], consumedCount: 0, errorCount: 1 };
+    }
     return { results, consumedCount, errorCount };
   }
 

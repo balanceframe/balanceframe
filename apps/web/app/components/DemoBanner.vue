@@ -16,6 +16,12 @@
         For guarded actions as this fictional persona, type CONFIRM in the confirmation field.
         This is disposable-demo confirmation, not your account password; fictional passwords stay private.
       </p>
+      <div v-if="activeScenario?.suggestedActions.length" class="basis-full">
+        <p class="font-medium">Scenario walkthrough</p>
+        <ul class="list-disc pl-5">
+          <li v-for="action in activeScenario.suggestedActions" :key="action">{{ action }}</li>
+        </ul>
+      </div>
       <p v-if="state?.status === 'failed'" role="alert" class="basis-full">
         This demo scenario could not be prepared.
         <NuxtLink
@@ -43,7 +49,8 @@ interface DemoState {
   anchor: string | null;
   shared: true;
   personaId: string | null;
-  csrfToken: string | null;
+  personaIds: string[];
+  personas: { id: string; label: string }[];
   failureCode?: string;
 }
 
@@ -62,28 +69,23 @@ const summaries = ref<DemoSummary[]>([]);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let redirecting = false;
 
-const scenarioTitle = computed(() => {
-  const scenarioId = state.value?.scenarioId;
-  if (!scenarioId) return '';
-  return (
-    summaries.value.find((scenario) => scenario.id === scenarioId)?.title ?? 'Current scenario'
-  );
-});
+const fallbackPersonas = [
+  { id: 'owner', label: 'Fictional owner' },
+  { id: 'approver', label: 'Fictional independent approver' },
+  { id: 'coapprover', label: 'Fictional co-approver' },
+  { id: 'restricted', label: 'Fictional restricted viewer' },
+];
+const personaIds = [...fallbackPersonas.map(({ id }) => id), 'limited', 'invitee'];
+const activeScenario = computed(() =>
+  summaries.value.find((scenario) => scenario.id === state.value?.scenarioId),
+);
 
-const personaLabel = computed(() => {
-  switch (state.value?.personaId) {
-    case 'owner':
-      return 'Fictional owner';
-    case 'approver':
-      return 'Fictional independent approver';
-    case 'coapprover':
-      return 'Fictional co-approver';
-    case 'restricted':
-      return 'Fictional restricted viewer';
-    default:
-      return state.value?.personaId ? 'Fictional persona' : '';
-  }
-});
+const scenarioTitle = computed(() => state.value?.scenarioId
+  ? activeScenario.value?.title ?? 'Current scenario' : '');
+
+const personaLabel = computed(() =>
+  state.value?.personas.find(({ id }) => id === state.value?.personaId)?.label ?? '',
+);
 
 function configuredForDemo() {
   try {
@@ -93,17 +95,34 @@ function configuredForDemo() {
   }
 }
 
-function validState(value: unknown): value is DemoState {
-  if (!value || typeof value !== 'object') return false;
+function parseState(value: unknown): DemoState | null {
+  if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<DemoState>;
-  return (
-    (candidate.status === 'loading' ||
-      candidate.status === 'ready' ||
-      candidate.status === 'failed') &&
-    typeof candidate.scenarioId === 'string' &&
-    Number.isSafeInteger(candidate.generation) &&
-    candidate.shared === true
-  );
+  if (
+    (candidate.status !== 'loading' && candidate.status !== 'ready' && candidate.status !== 'failed') ||
+    typeof candidate.scenarioId !== 'string' ||
+    typeof candidate.generation !== 'number' || !Number.isSafeInteger(candidate.generation) ||
+    candidate.shared !== true || !Array.isArray(candidate.personaIds) ||
+    !candidate.personaIds.every((id) => typeof id === 'string' && personaIds.includes(id)) ||
+    new Set(candidate.personaIds).size !== candidate.personaIds.length
+  ) return null;
+  const declared = candidate.personas ?? fallbackPersonas.filter(({ id }) => candidate.personaIds!.includes(id));
+  if (!Array.isArray(declared) || declared.length !== candidate.personaIds.length ||
+    !declared.every((persona) => persona && typeof persona === 'object' &&
+      candidate.personaIds!.includes(persona.id) && typeof persona.label === 'string' &&
+      persona.label.trim().length > 0 && persona.label.length <= 160) ||
+    new Set(declared.map(({ id }) => id)).size !== declared.length) return null;
+  return {
+    status: candidate.status,
+    scenarioId: candidate.scenarioId,
+    generation: candidate.generation,
+    anchor: typeof candidate.anchor === 'string' ? candidate.anchor : null,
+    shared: true,
+    personaId: typeof candidate.personaId === 'string' && candidate.personaIds.includes(candidate.personaId)
+      ? candidate.personaId : null,
+    personaIds: candidate.personaIds,
+    personas: declared.map(({ id, label }) => ({ id, label })),
+  };
 }
 
 function validCatalog(value: unknown): value is { scenarios: DemoSummary[] } {
@@ -134,10 +153,10 @@ async function refresh() {
   if (!demoEnabled.value || redirecting) return;
   try {
     const [nextState, catalog] = await Promise.all([
-      $fetch<unknown>('/__demo/state', { credentials: 'same-origin' }),
+      $fetch<unknown>('/__demo/state', { credentials: 'same-origin' }).then(parseState),
       $fetch<unknown>('/__demo/catalog', { credentials: 'same-origin' }),
     ]);
-    if (validState(nextState)) {
+    if (nextState) {
       const previous = state.value;
       if (previous && nextState.generation < previous.generation) return;
       if (

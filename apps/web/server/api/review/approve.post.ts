@@ -106,7 +106,7 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 409);
       return errorEnvelope('PROPOSAL_UNAVAILABLE', 'The exact proposal is unavailable.', null, false, requestId);
     }
-    const proposalView = await buildProposalApprovalView({
+    const proposalView = buildProposalApprovalView({
       store: workflow.store,
       proposal,
       actorId: selected.auth.actorId,

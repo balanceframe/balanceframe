@@ -27,10 +27,14 @@ function createMockProtocol(): {
     async pendingReview(ledger, freshness) {
       calls.pendingReview.push({ ledger, freshness });
       const result: PendingReviewResult = {
+        nativeRuleBlocks: [],
+        nativeRuleParts: [],
+        nativeRuleSets: [],
         uncategorizedCount: 5,
         totalUncategorizedAmount: { minorUnits: '15000', currency: 'USD' },
         candidates: [
           {
+            source: 'uncategorized',
             transactionId: 'tx_001',
             amount: { minorUnits: '5000', currency: 'USD' },
             payeeName: 'Test Store',

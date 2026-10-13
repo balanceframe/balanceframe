@@ -25,6 +25,7 @@
     "@balanceframe/actual-adapter": "workspace:*",
     "@balanceframe/workflow-store": "workspace:*",
     "@balanceframe/protocol-generated": "workspace:*",
+    "@balanceframe/inference": "workspace:*",
     "zod": "^3.0.0"
   },
   "devDependencies": {

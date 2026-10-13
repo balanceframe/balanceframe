@@ -1,7 +1,17 @@
 import { createHash } from 'node:crypto';
+import {
+  accountSchema,
+  canonicalTransactionSchema,
+  categorySchema,
+  moneySchema,
+  payeeSchema,
+  ruleSchema,
+} from '@balanceframe/protocol-generated/validators';
 import type {
   GovernanceAccountScope,
   GovernanceAuthorizationResult,
+  GovernanceAuthorizationInput,
+  GovernanceFinancialDisclosure,
   GovernanceOperation,
   GovernanceResourceKind,
   GovernanceResourceRef,
@@ -81,6 +91,11 @@ export class ProposalAcquisitionError extends Error {
 export interface ProposalAuthorizationFacts {
   readonly resources: readonly GovernanceResourceRef[];
   readonly operations: readonly GovernanceOperation[];
+}
+
+/** Current source rights and financial population needed to reveal a native envelope. */
+export interface ProposalSourceReadFacts extends ProposalAuthorizationFacts {
+  readonly required: GovernanceAuthorizationInput['required'];
 }
 
 const RESOURCE_FIELDS: Record<string, GovernanceResourceKind> = {
@@ -186,6 +201,106 @@ function collectProposalResources(
     collectProposalResources(object[field], resources, preconditionsRoot && field === 'reviewProvenance');
 }
 
+/** Native source reads are independent of the proposal's executable future effects. */
+export function deriveProposalSourceReadFacts(
+  operation: GenericProposalOperation,
+  preconditionsValue: unknown,
+  budgetId: string,
+): ProposalSourceReadFacts | null {
+  if (operation !== 'create_rule') return null;
+  const preconditions = proposalRecord(preconditionsValue);
+  if (!preconditions) throw new Error('Malformed proposal source envelope');
+  if (!['sourceTransactions', 'sourceAccounts', 'nativeImpact'].some((field) => hasOwnField(preconditions, field)))
+    return null; // Legacy proposals have no complete native source snapshot.
+
+  const accounts = accountSchema.extend({
+    clearedBalance: moneySchema.strict(), importedBalance: moneySchema.strict(),
+  }).strict().array().parse(preconditions.sourceAccounts);
+  const impact = proposalRecord(preconditions.nativeImpact);
+  if (!impact) throw new Error('Missing native source namespaces');
+  assertOnlyFields(impact, ['payees', 'categories', 'rules'], 'native source namespaces');
+  const payees = payeeSchema.strict().array().parse(impact.payees);
+  const categories = categorySchema.strict().array().parse(impact.categories);
+  const rules = ruleSchema.strict().array().parse(impact.rules);
+  canonicalTransactionSchema.array().parse(preconditions.sourceTransactions);
+  if (!Array.isArray(preconditions.sourceTransactions)) throw new Error('Missing canonical source transactions');
+
+  const resources: Record<string, GovernanceResourceRef> = {};
+  const required: Record<string, GovernanceResourceRef & { readonly capability: string; readonly visibility: 'resource' }> = {};
+  const add = (kind: GovernanceResourceKind, value: unknown, capabilities: readonly string[]): string => {
+    const resourceId = proposalText(value, `${kind} source resource`);
+    const resource = { resourceKind: kind, resourceId };
+    resources[`${kind}:${resourceId}`] = resource;
+    for (const capability of capabilities)
+      required[`${kind}:${resourceId}:${capability}`] = { ...resource, capability, visibility: 'resource' };
+    return resourceId;
+  };
+  add('budget', budgetId, ['observe', 'source', 'rule:view']);
+  const identities = (values: readonly { readonly id: string }[]): Set<string> => {
+    const ids = new Set<string>();
+    for (const value of values) {
+      const id = proposalText(value.id, 'native source identity');
+      if (ids.has(id)) throw new Error('Duplicate native source identity');
+      ids.add(id);
+    }
+    return ids;
+  };
+  const accountIds = identities(accounts);
+  const categoryIds = identities(categories);
+  const payeeIds = identities(payees);
+  identities(rules);
+  for (const account of accounts) add('account', account.id, ['existence', 'history', 'name', 'source']);
+  for (const category of categories) add('category', category.id, ['existence', 'name']);
+  for (const payee of payees)
+    if (payee.transferAccountId !== null && !accountIds.has(payee.transferAccountId))
+      throw new Error('Unknown native payee transfer account');
+  for (const rule of rules) add('rule', rule.id, ['rule:view']);
+
+  const transactionIds = new Set<string>();
+  const operations: GovernanceOperation[] = [];
+  const visit = (value: unknown, parent?: { accountId: string; currency: string }): bigint => {
+    const transaction = proposalRecord(value);
+    if (!transaction) throw new Error('Malformed canonical source transaction');
+    assertOnlyFields(transaction, [
+      'id', 'accountId', 'date', 'payeeId', 'payeeName', 'categoryId', 'categoryName', 'amount',
+      'cleared', 'reconciled', 'importedId', 'importedPayee', 'notes', 'tags', 'transferAccountId', 'subtransactions',
+    ], 'canonical source transaction');
+    const transactionId = add('transaction', transaction.id, ['transaction.view', 'source']);
+    if (transactionIds.has(transactionId)) throw new Error('Duplicate native source transaction');
+    transactionIds.add(transactionId);
+    const accountId = proposalText(transaction.accountId, 'source transaction account');
+    if (!accountIds.has(accountId)) throw new Error('Unknown native source transaction account');
+    const amount = moneySchema.strict().parse(transaction.amount);
+    const signed = BigInt(amount.minorUnits);
+    if (parent && (parent.accountId !== accountId || parent.currency !== amount.currency))
+      throw new Error('Split source account or currency differs from its parent');
+    const categoryId = transaction.categoryId === null ? null : proposalText(transaction.categoryId, 'source category');
+    if (categoryId !== null && !categoryIds.has(categoryId)) throw new Error('Unknown native source category');
+    if (transaction.payeeId !== null && !payeeIds.has(proposalText(transaction.payeeId, 'source payee')))
+      throw new Error('Unknown native source payee');
+    if (transaction.transferAccountId !== null &&
+        !accountIds.has(proposalText(transaction.transferAccountId, 'source transfer account')))
+      throw new Error('Unknown native source transfer account');
+    const children: unknown = transaction.subtransactions;
+    if (!Array.isArray(children)) throw new Error('Malformed native source splits');
+    if (children.length > 0) {
+      let childAmount = 0n;
+      for (const child of children) childAmount += visit(child, { accountId, currency: amount.currency });
+      if (childAmount !== signed) throw new Error('Split source amounts do not equal their parent');
+    } else {
+      operations.push({
+        operation: 'merchant:analyze', transactionId, accountId,
+        ...(categoryId === null ? {} : { categoryId }),
+        direction: signed < 0n ? 'outgoing' : 'incoming',
+        amount: { minorUnits: (signed < 0n ? -signed : signed).toString(), currency: amount.currency },
+      });
+    }
+    return signed;
+  };
+  for (const transaction of preconditions.sourceTransactions) visit(transaction);
+  return { resources: Object.values(resources), required: Object.values(required), operations };
+}
+
 function normalizedGovernanceOperation(
   operation: string,
   source: Record<string, unknown>,
@@ -240,6 +355,219 @@ function requireCompositeArray(composite: Record<string, unknown>, key: string):
   const value = composite[key];
   if (!Array.isArray(value)) throw new Error(`Invalid generic proposal composite ${key}`);
   return value;
+}
+
+type DisclosureRole =
+  | 'unknown' | 'preconditions' | 'payload' | 'composite' | 'account' | 'transaction'
+  | 'simulation' | 'example' | 'operation' | 'reallocation' | 'transfer' | 'leg'
+  | 'accountPrecondition' | 'claim' | 'backing' | 'backingLine' | 'scenario'
+  | 'purchase' | 'projection' | 'evidence';
+type DisclosureMoneyRole = 'balance' | 'outgoing' | 'directional';
+
+const DISCLOSURE_MONEY_FIELDS: Partial<Record<DisclosureRole, Readonly<Record<string, DisclosureMoneyRole>>>> = {
+  account: { clearedBalance: 'balance', importedBalance: 'balance' },
+  transaction: { amount: 'directional' },
+  simulation: { projectedBalance: 'balance' },
+  operation: { amount: 'directional' },
+  reallocation: { amount: 'directional' },
+  transfer: { minimumAmount: 'balance' },
+  leg: { amount: 'outgoing', sourceAfter: 'balance', destinationAfter: 'balance' },
+  accountPrecondition: { recordedBalance: 'balance', signedHeadroom: 'balance', backingCapacity: 'balance' },
+  claim: { amount: 'directional' },
+  backingLine: { amount: 'balance' },
+  purchase: { amount: 'outgoing' },
+  projection: { amount: 'directional' },
+  evidence: { amount: 'directional' },
+};
+const DISCLOSURE_ARRAY_FIELDS: Partial<Record<DisclosureRole, Readonly<Record<string, DisclosureRole>>>> = {
+  preconditions: { sourceAccounts: 'account' },
+  simulation: { examples: 'example' },
+  composite: {
+    operations: 'operation', reallocations: 'reallocation', transferRecommendations: 'transfer',
+    ledgerProjections: 'projection', evidenceReferences: 'evidence',
+  },
+  transfer: { legs: 'leg', reservations: 'claim' },
+  backing: { lines: 'backingLine' },
+  scenario: { moves: 'reallocation', items: 'purchase' },
+};
+const DISCLOSURE_OBJECT_FIELDS: Partial<Record<DisclosureRole, Readonly<Record<string, DisclosureRole>>>> = {
+  preconditions: {
+    transaction: 'transaction', actualTransaction: 'transaction', transactionFacts: 'transaction',
+    reviewedSimulation: 'simulation', simulation: 'simulation',
+  },
+  payload: { composite: 'composite' },
+  transfer: { backingAfter: 'backing', scenario: 'scenario' },
+  leg: { sourceBefore: 'accountPrecondition', destinationBefore: 'accountPrecondition' },
+};
+
+/**
+ * Numeric limits for the exact emitted Money occurrences, not executable-operation counts.
+ * Native source/resource validation and executable-effect authorization remain independent.
+ * Unknown Money roles (including Money-valued native rule predicates) fail private reads closed.
+ */
+export function deriveProposalDisclosureTotals(
+  operation: GenericProposalOperation,
+  payloadValue: unknown,
+  preconditionsValue: unknown,
+  projection: 'preconditions' | 'envelope' | 'detail',
+): GovernanceFinancialDisclosure {
+  const preconditions = proposalRecord(preconditionsValue);
+  if (!preconditions) throw new Error('Malformed proposal disclosure preconditions');
+  const maxMinor = 9223372036854775807n;
+  let operationCount = 0;
+  const grossOutgoing: Record<string, bigint> = {};
+  const sourceTransactions = new Map<string, Record<string, unknown>>();
+  const baseTransaction = proposalRecord(preconditions.transaction) ??
+    proposalRecord(preconditions.actualTransaction) ?? proposalRecord(preconditions.transactionFacts) ?? preconditions;
+
+  const countMoney = (value: unknown, outgoing: boolean, signedLedger = false): bigint => {
+    const money = proposalRecord(value);
+    if (!money || Object.keys(money).length !== 2 ||
+        typeof money.minorUnits !== 'string' || !/^(?:0|-?[1-9]\d*)$/.test(money.minorUnits) ||
+        typeof money.currency !== 'string' || !/^[A-Z]{3}$/.test(money.currency))
+      throw new Error('Malformed proposal disclosure Money');
+    const minor = BigInt(money.minorUnits);
+    if (minor < -maxMinor - 1n || minor > maxMinor || outgoing && !signedLedger && minor < 0n)
+      throw new Error('Proposal disclosure Money exceeds its ledger role');
+    operationCount += 1;
+    if (!Number.isSafeInteger(operationCount)) throw new Error('Proposal disclosure count overflow');
+    if (outgoing) {
+      const gross = (grossOutgoing[money.currency] ?? 0n) + (signedLedger && minor < 0n ? -minor : minor);
+      if (gross > maxMinor) throw new Error('Proposal disclosure gross outgoing overflow');
+      grossOutgoing[money.currency] = gross;
+    }
+    return minor;
+  };
+
+  const visitCanonicalTransaction = (value: unknown, source: boolean): void => {
+    const transaction = proposalRecord(value);
+    if (!transaction || !Array.isArray(transaction.subtransactions))
+      throw new Error('Malformed proposal disclosure canonical transaction');
+    const id = proposalText(transaction.id, 'disclosed source transaction');
+    if (source) {
+      if (sourceTransactions.has(id)) throw new Error('Duplicate proposal disclosure source transaction');
+      sourceTransactions.set(id, transaction);
+    }
+    const amount = proposalRecord(transaction.amount);
+    const isOutgoingLeaf = transaction.subtransactions.length === 0 &&
+      typeof amount?.minorUnits === 'string' && amount.minorUnits.startsWith('-');
+    countMoney(transaction.amount, isOutgoingLeaf, true);
+    for (const child of transaction.subtransactions) visitCanonicalTransaction(child, source);
+    for (const field of Object.keys(transaction))
+      if (field !== 'amount' && field !== 'subtransactions') visit(transaction[field], 'unknown');
+  };
+
+  const visitArray = (value: unknown, role: DisclosureRole): void => {
+    if (!Array.isArray(value)) throw new Error('Malformed proposal disclosure financial collection');
+    for (const row of value) visit(row, role);
+  };
+
+  const visit = (value: unknown, role: DisclosureRole): void => {
+    if (Array.isArray(value)) {
+      if (role !== 'unknown') throw new Error('Malformed proposal disclosure financial object');
+      for (const child of value) visit(child, 'unknown');
+      return;
+    }
+    const record = proposalRecord(value);
+    if (!record) {
+      if (role !== 'unknown') throw new Error('Malformed proposal disclosure financial object');
+      return;
+    }
+    if (hasOwnField(record, 'minorUnits') || hasOwnField(record, 'currency'))
+      throw new Error('Unknown proposal disclosure Money role');
+    if (role === 'transaction' && operation === 'create_rule' && hasOwnField(record, 'subtransactions')) {
+      visitCanonicalTransaction(record, false);
+      return;
+    }
+    if (role === 'example') {
+      const source = sourceTransactions.get(proposalText(record.txId, 'simulation example transaction'));
+      const amount = proposalRecord(record.amount);
+      const sourceAmount = proposalRecord(source?.amount);
+      if (!source || !Array.isArray(source.subtransactions) || source.subtransactions.length !== 0 ||
+          !amount || !sourceAmount || amount.minorUnits !== sourceAmount.minorUnits ||
+          amount.currency !== sourceAmount.currency)
+        throw new Error('Simulation example Money differs from its source transaction');
+      countMoney(record.amount, typeof amount.minorUnits === 'string' && amount.minorUnits.startsWith('-'), true);
+    }
+    if (role === 'account' && (!hasOwnField(record, 'clearedBalance') || !hasOwnField(record, 'importedBalance')))
+      throw new Error('Missing proposal disclosure account balances');
+    if (role === 'operation' && record.operation !== operation)
+      throw new Error('Unknown proposal disclosure executable operation');
+    if (role === 'composite')
+      for (const field of Object.keys(DISCLOSURE_ARRAY_FIELDS.composite!))
+        if (!hasOwnField(record, field)) throw new Error('Incomplete proposal disclosure composite');
+    if (role === 'transfer' && (!Array.isArray(record.legs) || record.legs.length === 0))
+      throw new Error('Missing proposal disclosure transfer legs');
+    if ((role === 'reallocation' || role === 'leg' || role === 'claim' || role === 'purchase' ||
+        role === 'transaction' || role === 'projection' ||
+        role === 'operation' && record.direction !== undefined) && !hasOwnField(record, 'amount'))
+      throw new Error('Missing proposal disclosure financial amount');
+    if (role === 'claim' && record.kind !== 'category' && record.kind !== 'account_debit' &&
+        record.kind !== 'destination_hold')
+      throw new Error('Unknown proposal disclosure claim effect');
+    if (role === 'evidence' && hasOwnField(record, 'amount') && record.kind !== 'receipt')
+      throw new Error('Unknown proposal disclosure monetary evidence');
+    if (role === 'scenario' &&
+        (hasOwnField(record, 'moves') && record.kind !== 'reallocation' ||
+         hasOwnField(record, 'items') && record.kind !== 'purchases'))
+      throw new Error('Unknown proposal disclosure scenario financial role');
+
+    const moneyFields = role === 'preconditions' && operation === 'set_category' && baseTransaction === record
+      ? DISCLOSURE_MONEY_FIELDS.transaction : DISCLOSURE_MONEY_FIELDS[role];
+    const arrayFields = DISCLOSURE_ARRAY_FIELDS[role];
+    const objectFields = DISCLOSURE_OBJECT_FIELDS[role];
+    for (const field of Object.keys(record)) {
+      if (role === 'preconditions' && field === 'sourceTransactions' ||
+          role === 'example' && field === 'amount') continue;
+      const moneyRole = moneyFields && hasOwnField(moneyFields, field) ? moneyFields[field] : undefined;
+      if (moneyRole) {
+        if (role === 'simulation' && field === 'projectedBalance' && record[field] === null) continue;
+        let outgoing = moneyRole === 'outgoing';
+        if (moneyRole === 'directional') {
+          const direction = record.direction ??
+            (role === 'reallocation' || role === 'evidence' || role === 'claim' ? 'outgoing' :
+              role === 'projection' && record.transactionId !== undefined &&
+                record.transactionId === (baseTransaction.id ?? baseTransaction.transactionId)
+                ? baseTransaction.direction : undefined);
+          if (direction !== 'incoming' && direction !== 'outgoing')
+            throw new Error('Unknown proposal disclosure amount direction');
+          outgoing = direction === 'outgoing';
+          const amount = proposalRecord(record[field]);
+          if (typeof amount?.minorUnits !== 'string' || !/^(?:0|[1-9]\d*)$/.test(amount.minorUnits))
+            throw new Error('Proposal disclosure absolute amount is not canonical');
+        }
+        countMoney(record[field], outgoing);
+      } else if (arrayFields && hasOwnField(arrayFields, field)) {
+        visitArray(record[field], arrayFields[field]!);
+      } else if (objectFields && hasOwnField(objectFields, field)) {
+        visit(record[field], objectFields[field]!);
+      } else {
+        if (field === 'amount') throw new Error('Unknown proposal disclosure financial amount role');
+        visit(record[field], 'unknown');
+      }
+    }
+  };
+
+  if (hasOwnField(preconditions, 'sourceTransactions')) {
+    if (!Array.isArray(preconditions.sourceTransactions))
+      throw new Error('Malformed proposal disclosure source transactions');
+    for (const transaction of preconditions.sourceTransactions) visitCanonicalTransaction(transaction, true);
+  }
+  visit(preconditions, 'preconditions');
+  if (projection === 'envelope' || projection === 'detail') {
+    const payload = proposalRecord(payloadValue);
+    if (!payload || payload.kind !== operation) throw new Error('Malformed proposal disclosure payload');
+    visit(payload, 'payload');
+  } else if (projection !== 'preconditions') {
+    throw new Error('Unknown proposal disclosure projection');
+  }
+  if (projection === 'detail') {
+    const simulation = operation === 'create_rule'
+      ? preconditions.reviewedSimulation ?? preconditions.simulation
+      : preconditions.simulation;
+    if (simulation !== undefined && simulation !== null) visit(simulation, 'simulation');
+  }
+  return { operationCount, grossOutgoing };
 }
 
 type RuleLifecycleOperation = 'update_rule' | 'delete_rule';
@@ -512,7 +840,12 @@ export function deriveProposalAuthorizationFacts(
 
   const resources: Record<string, GovernanceResourceRef> = {};
   collectProposalResources(payload, resources);
-  collectProposalResources(preconditions, resources, false, true);
+  const plannedSimulation = operation === 'create_rule'
+    ? proposalRecord(preconditions.reviewedSimulation)
+    : null;
+  collectProposalResources(plannedSimulation?.ruleId === ''
+    ? { ...preconditions, reviewedSimulation: { ...plannedSimulation, ruleId: undefined } }
+    : preconditions, resources, false, true);
 
   const composite = payload.composite === undefined ? null : proposalRecord(payload.composite);
   if (payload.composite !== undefined && !composite)
@@ -543,16 +876,26 @@ export function deriveProposalAuthorizationFacts(
     const rule = proposalRecord(payload.rule);
     const conditions = rule?.conditions;
     const actions = rule?.actions;
-    if (!rule || !Array.isArray(conditions) || conditions.length !== 1 ||
+    if (!rule || rule.stage !== 'post' || rule.conditionsOp !== 'and' ||
+        Object.keys(rule).some((key) => !['stage', 'conditionsOp', 'conditions', 'actions'].includes(key)) ||
+        !Array.isArray(conditions) || conditions.length !== 1 ||
         !Array.isArray(actions) || actions.length !== 1)
       throw new Error('Unsupported generic rule shape');
     const condition = proposalRecord(conditions[0]);
     const action = proposalRecord(actions[0]);
-    if (!condition || condition.field !== 'payee_name' || condition.op !== 'is' ||
+    if (!condition || condition.field !== 'payee' || condition.op !== 'is' ||
         typeof condition.value !== 'string' || !condition.value.trim() ||
-        !action || action.type !== 'set-category' || action.field !== 'category' ||
+        Object.keys(condition).some((key) => !['field', 'op', 'value', 'type'].includes(key)) ||
+        condition.type !== undefined && condition.type !== 'id' ||
+        !action || action.op !== 'set' || action.field !== 'category' ||
+        Object.keys(action).some((key) => !['op', 'field', 'value'].includes(key)) ||
         action.value !== categoryId)
       throw new Error('Unsupported generic rule predicate or action');
+    const reviewContext = proposalRecord(preconditions.reviewContext);
+    if (reviewContext?.evidenceKey !== undefined && reviewContext.evidenceKey !== null) {
+      const evidenceId = proposalText(reviewContext.evidenceKey, 'merchant evidence');
+      resources[`evidence:${evidenceId}`] = { resourceKind: 'evidence', resourceId: evidenceId };
+    }
   } else {
     ruleLifecycleOperation = deriveRuleLifecycleOperation(operation, payload, preconditions, resources);
   }
@@ -681,11 +1024,11 @@ export function deriveProposalAuthorizationFacts(
       resourceId: source.resourceId,
     }));
   }
+  if (operation === 'create_rule' && !operations.some((item) => item.operation === 'create_rule')) {
+    operations.push({ operation: 'create_rule', accountScope: { kind: 'global' } });
+  }
   if (operations.length === 0) {
-    const operationFact = normalizedGovernanceOperation(operation, { operation });
-    operations.push(operation === 'create_rule'
-      ? { ...operationFact, accountScope: { kind: 'global' } }
-      : operationFact);
+    operations.push(normalizedGovernanceOperation(operation, { operation }));
   }
 
   return { resources: Object.values(resources), operations };

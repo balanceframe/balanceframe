@@ -11,7 +11,8 @@ jobs:
   linux:
     name: Linux x86_64 (full suite)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Serial scaled Actual proofs plus instrumented scenario coverage exceed 45 minutes.
+    timeout-minutes: 90
 
     steps:
       - name: Check out repository
@@ -42,6 +43,15 @@ jobs:
 
       - name: Lint workspace
         run: nix develop --command pnpm lint
+
+      - name: Validate offline deployment and release contracts
+        run: nix develop .#release --command bash -c 'COMPOSE_BIN="$(command -v docker-compose)" just compose-validate'
+
+      - name: Test merchant measurement contracts
+        run: taskset -c 0,1 nix develop --command node --test --test-concurrency=1 scripts/merchant-intelligence/current.test.mjs scripts/merchant-intelligence/review.test.mjs scripts/merchant-intelligence/review-browser.test.mjs scripts/merchant-intelligence/review-collector.test.mjs scripts/merchant-intelligence/review-cleanup.test.mjs
+
+      - name: Test real Actual SDK grouped history and scaled Review Sync
+        run: taskset -c 0,1 nix develop --command node --test --test-concurrency=1 scripts/merchant-intelligence/review-sdk.test.mjs scripts/merchant-intelligence/review-actual.test.mjs
 
       # This serial run includes all JS/Rust tests, real instrumented N-API
       # consumers and its own isolated live Actual fixture with teardown.

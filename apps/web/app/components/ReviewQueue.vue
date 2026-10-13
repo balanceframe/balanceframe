@@ -28,7 +28,7 @@
           </UBadge>
         </div>
         <div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-          {{ formatAmount(item.evidence.amount) }}
+          <SemanticAmount :amount="item.evidence.money ?? null" />
         </div>
       </button>
     </div>
@@ -48,6 +48,7 @@
 </template>
 
 <script setup lang="ts">
+import SemanticAmount from './SemanticAmount.vue';
 import type { ReviewQueueItem, ReviewStatus } from '../../src/review.js';
 import { computed } from 'vue';
 
@@ -127,10 +128,4 @@ function statusLabel(status: ReviewStatus): string {
   }
 }
 
-function formatAmount(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(amount);
-}
 </script>

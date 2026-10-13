@@ -1,36 +1,78 @@
 import { spawnSync, type SpawnOptions } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import { format } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const repository = fileURLToPath(new URL('../../../', import.meta.url));
 
-const output = vi.hoisted(() => ({ stdout: '', stderr: '', children: [] as Promise<void>[] }));
+const output = vi.hoisted(() => ({
+  stdout: '',
+  stderr: '',
+  children: [] as Promise<void>[],
+  childStatuses: [] as (number | null)[],
+  omittedRecords: [] as string[],
+  acceptanceSelector: undefined as string | undefined,
+  omitScenarioRecords: false,
+}));
 
-// Observe real verification children without replacing their work or exit status.
+// Keep real children and statuses; selected coverage tests narrow actual work or omit its records.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
     spawn(command: string, args: readonly string[], options: SpawnOptions) {
       const capture = options.stdio === 'inherit';
-      const child = actual.spawn(command, args, capture ? { ...options, stdio: 'pipe' } : options);
-      if (capture) {
-        child.stdout?.setEncoding('utf8').on('data', (text: string) => { output.stdout += text; });
-        child.stderr?.setEncoding('utf8').on('data', (text: string) => { output.stderr += text; });
+      const acceptance = args.some((arg) => arg === 'test/acceptance' || arg === 'test/acceptance/');
+      const childArgs = acceptance
+        ? [...args, '--exclude', 'test/acceptance-contract.test.ts',
+          ...(output.acceptanceSelector ? ['--testNamePattern', output.acceptanceSelector] : [])]
+        : args;
+      const child = actual.spawn(command, childArgs, capture ? { ...options, stdio: 'pipe' } : options);
+      const rawStdout = child.stdout;
+      if (acceptance && output.omitScenarioRecords && rawStdout) {
+        const filtered = new PassThrough();
+        let pending = '';
+        const forward = (line: string) => {
+          if (line.startsWith('{"type":"scenario-verification",')) output.omittedRecords.push(line.trimEnd());
+          else filtered.write(line);
+        };
+        rawStdout.setEncoding('utf8').on('data', (text: string) => {
+          pending += text;
+          let newline: number;
+          while ((newline = pending.indexOf('\n')) >= 0) {
+            forward(pending.slice(0, newline + 1));
+            pending = pending.slice(newline + 1);
+          }
+        });
+        rawStdout.once('end', () => {
+          if (pending) forward(pending);
+          filtered.end();
+        });
+        child.stdout = filtered;
       }
+      child.stdout?.setEncoding('utf8').on('data', (text: string) => { output.stdout += text; });
+      child.stderr?.setEncoding('utf8').on('data', (text: string) => { output.stderr += text; });
+      child.once('exit', (code) => { output.childStatuses.push(code); });
       output.children.push(new Promise<void>((resolve) => { child.once('close', () => resolve()); }));
       return child;
     },
   };
 });
 
-async function runSourceCli(args: string[]) {
+async function runSourceCli(
+  args: string[],
+  coverage: { acceptanceSelector?: string; omitScenarioRecords?: boolean } = {},
+) {
   const argv = process.argv;
   const exitCode = process.exitCode;
   output.stdout = '';
   output.stderr = '';
   output.children = [];
+  output.childStatuses = [];
+  output.omittedRecords = [];
+  output.acceptanceSelector = coverage.acceptanceSelector;
+  output.omitScenarioRecords = coverage.omitScenarioRecords ?? false;
   const log = vi.spyOn(console, 'log').mockImplementation((...values: unknown[]) => {
     output.stdout += `${format(...values)}\n`;
   });
@@ -44,12 +86,21 @@ async function runSourceCli(args: string[]) {
     await import('../src/cli.js');
     const finished = Promise.all(output.children);
     if (args[0] !== 'run') await finished;
-    return { status: process.exitCode ?? 0, stdout: output.stdout, stderr: output.stderr, finished };
+    return {
+      status: process.exitCode ?? 0,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      childStatuses: output.childStatuses,
+      omittedRecords: output.omittedRecords,
+      finished,
+    };
   } finally {
     process.argv = argv;
     process.exitCode = exitCode;
     log.mockRestore();
     error.mockRestore();
+    output.acceptanceSelector = undefined;
+    output.omitScenarioRecords = false;
   }
 }
 
@@ -104,6 +155,32 @@ describe('root scenario commands', () => {
       }),
     );
     expect((report.assertions as { count: number }).count).toBeGreaterThan(0);
+  }, 185_000);
+
+  it('rejects selected verification when its real successful child does not deliver the named assertion record', async () => {
+    const result = await runSourceCli(['verify', 'funded-purchase'], { omitScenarioRecords: true });
+    expect(result.childStatuses).toEqual([0]);
+    expect(result.omittedRecords.length).toBeGreaterThan(0);
+    expect(JSON.parse(result.omittedRecords[0]!) as unknown).toMatchObject({
+      scenarioId: 'funded-purchase',
+      status: 'passed',
+      evidence: { backend: 'disposable-actual', auth: 'better-auth' },
+      assertions: { count: expect.any(Number), name: expect.stringContaining('funded-purchase') },
+    });
+    expect(result.stdout).not.toContain('{"type":"scenario-verification",');
+    expect(result.status).not.toBe(0);
+  }, 185_000);
+
+  it('rejects verify --all when real Vitest exits zero but only one approved scenario actually ran', async () => {
+    const result = await runSourceCli(['verify', '--all'], { acceptanceSelector: 'funded-purchase' });
+    expect(result.childStatuses.length).toBeGreaterThan(0);
+    expect(result.childStatuses.every((status) => status === 0)).toBe(true);
+    const records = result.stdout.split(/\r?\n/)
+      .filter((line) => line.startsWith('{"type":"scenario-verification",'))
+      .map((line) => JSON.parse(line) as { scenarioId: string; assertions: { count: number } });
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.every((record) => record.scenarioId === 'funded-purchase' && record.assertions.count > 0)).toBe(true);
+    expect(result.status).not.toBe(0);
   }, 185_000);
   it('reports all named native/service fault variants without launching Actual', async () => {
     vi.stubEnv('FORCE_COLOR', '1');

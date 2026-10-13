@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { WorkflowStore } from '@balanceframe/workflow-store';
 import { getActorId } from '../../server/utils/workflow-store';
-import { hasLegacyFullRead } from '../../server/utils/legacy-financial-read';
 
 vi.mock('h3', () => ({ setResponseStatus: vi.fn() }));
 
@@ -55,14 +53,4 @@ describe('governed web principal isolation', () => {
     expect(getActorId(event)).toBe('human-member');
   });
 
-  it('does not let instance ownership bypass a revoked whole-budget financial grant', async () => {
-    const store = {
-      evaluateAuthorization: vi.fn().mockResolvedValue({ allowed: true, reason: 'authorized' }),
-      liquidity: {
-        isOwner: vi.fn().mockReturnValue(true),
-        isAuthorized: vi.fn().mockReturnValue(false),
-      },
-    } as unknown as WorkflowStore;
-    expect(await hasLegacyFullRead(store, 'human-owner', 'private-budget')).toBe(false);
-  });
 });

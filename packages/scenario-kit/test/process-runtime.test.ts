@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   access,
   lstat,
@@ -11,7 +11,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createServer, Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -20,13 +20,17 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   createOwnedScenarioRoot,
   discardOwnedScenarioRoot,
+  readScenarioProcessMemory,
   startScenarioActual,
   startScenarioShell,
   stopScenarioProcesses,
+  updateScenarioPersonas,
   type ScenarioProcesses,
 } from '../src/process-runtime.js';
 import { materializeScenario } from '../src/catalog.js';
 import { initializeScenarioShell } from '../src/loader.js';
+import { readScenarioManifest, writeScenarioManifest } from '../src/scenario-manifest.js';
+import { scenarioRequest } from './acceptance/support.js';
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const WEB_ENTRY = resolve(REPOSITORY_ROOT, 'apps/web/.output/server/index.mjs');
@@ -98,9 +102,12 @@ async function occupiedPort(): Promise<{ port: number; close: () => Promise<void
 async function startShell(publicOrigin?: string): Promise<ScenarioProcesses> {
   await assertExists(WEB_ENTRY);
   const root = createOwnedScenarioRoot();
-  const origin = publicOrigin ?? `http://127.0.0.1:${await availablePort()}`;
   try {
-    const handle = await startScenarioShell({ root, publicOrigin: origin, webEntry: WEB_ENTRY });
+    const handle = await startScenarioShell({
+      root,
+      ...(publicOrigin === undefined ? {} : { publicOrigin }),
+      webEntry: WEB_ENTRY,
+    });
     activeProcesses.add(handle);
     return handle;
   } catch (error) {
@@ -225,6 +232,50 @@ async function textFilesUnder(root: string): Promise<string[]> {
 }
 
 describe('scenario process runtime ownership and lifecycle', () => {
+  it('reads only active owned child memory across Actual startup and disposal', { timeout: TEST_TIMEOUT }, async () => {
+    const handle = await startShell();
+    const shellMemory = readScenarioProcessMemory(handle);
+    expect(shellMemory.actual).toBeNull();
+    expect(() => readScenarioProcessMemory({ ...handle })).toThrow();
+    if (process.platform === 'linux') {
+      expect(shellMemory.web).toEqual({
+        rssBytes: expect.any(Number),
+        highWaterBytes: expect.any(Number),
+      });
+      expect(shellMemory.web!.rssBytes).toBeGreaterThan(0);
+    } else {
+      expect(shellMemory.web).toBeNull();
+    }
+    await startScenarioActual(handle);
+    const readyMemory = readScenarioProcessMemory(handle);
+    if (process.platform === 'linux') {
+      expect(readyMemory.actual).toEqual({
+        rssBytes: expect.any(Number),
+        highWaterBytes: expect.any(Number),
+      });
+      expect(readyMemory.actual!.rssBytes).toBeGreaterThan(0);
+    } else {
+      expect(readyMemory.actual).toBeNull();
+    }
+    await stopScenarioProcesses(handle);
+    activeProcesses.delete(handle);
+    expect(() => readScenarioProcessMemory(handle)).toThrow();
+  });
+
+  it('stops both owned servers while retaining client data until explicit disposal', { timeout: TEST_TIMEOUT }, async () => {
+    const handle = await startShell();
+    await startScenarioActual(handle);
+    await stopScenarioProcesses(handle, { retainRoot: true });
+    activeProcesses.delete(handle);
+    await expect(requestHealth(handle.webUrl)).rejects.toThrow();
+    await expect(fetch(new URL('/health', handle.actualUrl), { signal: AbortSignal.timeout(10_000) })).rejects.toThrow();
+    await assertExists(handle.root);
+    expect(() => readScenarioProcessMemory(handle)).toThrow();
+    discardOwnedScenarioRoot(handle.root);
+    await assertMissing(handle.root);
+    await assertMissing(dirname(handle.root));
+  });
+
   it('allocates a private 0700 root beneath a private 0700 parent', () => {
     const root = createOwnedScenarioRoot();
     return (async () => {
@@ -297,21 +348,24 @@ describe('scenario process runtime ownership and lifecycle', () => {
     expect(await readFile(marker, 'utf8')).toBe('replacement');
     await rm(parent, { recursive: true, force: true });
   });
-  it('discards an allocated root after a pre-start validation rejection', async () => {
-    const root = createOwnedScenarioRoot();
-    const parent = dirname(root);
-    await expect(
-      startScenarioShell({
-        root,
-        publicOrigin: 'not-an-origin',
-        webEntry: WEB_ENTRY,
-      }),
-    ).rejects.toThrow(/origin/i);
+  it.each(['not-an-origin', 'http://user:password@127.0.0.1:39002'])(
+    'discards an allocated root after rejecting unsafe explicit origin %s',
+    async (publicOrigin) => {
+      const root = createOwnedScenarioRoot();
+      const parent = dirname(root);
+      await expect(
+        startScenarioShell({
+          root,
+          publicOrigin,
+          webEntry: WEB_ENTRY,
+        }),
+      ).rejects.toThrow(/origin/i);
 
-    discardOwnedScenarioRoot(root);
-    await assertMissing(root);
-    await assertMissing(parent);
-  });
+      discardOwnedScenarioRoot(root);
+      await assertMissing(root);
+      await assertMissing(parent);
+    },
+  );
 
   it('rejects a nonempty allocated root before creating child state', async () => {
     const root = createOwnedScenarioRoot();
@@ -371,6 +425,52 @@ describe('scenario process runtime ownership and lifecycle', () => {
   );
 
   it(
+    'keeps Actual startup independent when a released ephemeral port is immediately reused',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      const first = await occupiedPort();
+      const second = await occupiedPort();
+      await first.close();
+      await second.close();
+      const reserved = new Set<number>();
+      const listen = Server.prototype.listen;
+      const allocation = vi.spyOn(Server.prototype, 'listen').mockImplementation(function (
+        this: Server,
+        ...args: unknown[]
+      ) {
+        if (args[0] === 0 && args[1] === '127.0.0.1') {
+          const port = reserved.has(first.port) ? second.port : first.port;
+          args[0] = port;
+          reserved.add(port);
+          this.once('close', () => reserved.delete(port));
+        }
+        return Reflect.apply(listen, this, args) as Server;
+      });
+      let handle: ScenarioProcesses | undefined;
+      try {
+        handle = await startShell('http://127.0.0.1:39003');
+        allocation.mockRestore();
+        await startScenarioActual(handle);
+        expect(handle.actualUrl).not.toBe(handle.webUrl);
+        const response = await fetch(new URL('/account/needs-bootstrap', handle.actualUrl), {
+          signal: AbortSignal.timeout(10_000),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          status: 'ok',
+          data: { bootstrapped: true, loginMethod: 'password', multiuser: false },
+        });
+      } finally {
+        allocation.mockRestore();
+        if (handle) {
+          activeProcesses.delete(handle);
+          await stopScenarioProcesses(handle);
+        }
+      }
+    },
+  );
+
+  it(
     'starts a password-only Actual child and ignores hostile inherited state paths',
     { timeout: TEST_TIMEOUT },
     async () => {
@@ -409,6 +509,127 @@ describe('scenario process runtime ownership and lifecycle', () => {
       });
     },
   );
+
+  it(
+    'uses the allocated loopback URL for manifest and authenticated same-origin Review Sync when publicOrigin is omitted',
+    { timeout: TEST_TIMEOUT },
+    async () => {
+      const handle = await startShell();
+      try {
+        expect(handle.publicOrigin).toBe(handle.webUrl);
+        const loaded = await initializeScenarioShell(
+          handle,
+          materializeScenario('merchant-local-sparse', new Date('2026-09-06T12:00:00.000Z')),
+        );
+        const ready = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
+          origin: string; phase: string; scenarioId: string;
+        };
+        expect(ready).toMatchObject({
+          origin: handle.webUrl,
+          phase: 'ready',
+          scenarioId: 'merchant-local-sparse',
+        });
+
+        const synced = await scenarioRequest<{
+          status: string;
+          result?: { synchronized: boolean; failed: number };
+        }>(loaded, '/api/review/sync', { method: 'POST', body: {} });
+        expect(synced.status, JSON.stringify(synced.body)).toBe(200);
+        expect(synced.body).toMatchObject({
+          status: 'ok',
+          result: { synchronized: true, failed: 0 },
+        });
+      } finally {
+        activeProcesses.delete(handle);
+        await stopScenarioProcesses(handle);
+      }
+    },
+  );
+
+  it('protects a local shell from setup through ready while public demo mode remains off', async () => {
+    const handle = await startShell('http://127.0.0.1:39003');
+    expect(handle.publicOrigin).toBe('http://127.0.0.1:39003');
+    const headers = { Host: '127.0.0.1:39003', Origin: handle.publicOrigin, 'content-type': 'application/json' };
+    const setup = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
+      phase: string; spaceId: string | null; actorIds: string[];
+    };
+    expect(setup).toMatchObject({ phase: 'setup', spaceId: null, actorIds: [] });
+    await assertMode(handle.manifestPath, 0o600);
+    const unauthorized = await fetch(new URL('/api/registration/bootstrap', handle.webUrl), {
+      method: 'POST', headers, body: '{}',
+    });
+    expect(unauthorized.status).toBe(403);
+    const readDuringSetup = await fetch(new URL('/api/liquidity/spendability', handle.webUrl), { headers });
+    expect(readDuringSetup.status).toBe(403);
+    const loaded = await initializeScenarioShell(handle, materializeScenario('funded-purchase', new Date('2026-09-06T12:00:00.000Z')));
+    const ready = JSON.parse(await readFile(handle.manifestPath, 'utf8')) as {
+      origin: string;
+      phase: string; spaceId: string | null; actorIds: string[];
+    };
+    expect(ready).toMatchObject({
+      origin: handle.publicOrigin,
+      phase: 'ready', scenarioId: 'funded-purchase', spaceId: loaded.initialized.spaceId,
+      actorIds: [loaded.initialized.personas.owner!.actorId],
+    });
+    const ownerHeaders = {
+      ...headers, Cookie: loaded.initialized.personas.owner!.cookieHeader,
+      'x-balanceframe-space': loaded.initialized.spaceId,
+    };
+    const normalRead = await fetch(new URL('/api/liquidity/spendability', handle.webUrl), { headers: ownerHeaders });
+    expect(normalRead.status).toBe(200);
+    expect(await normalRead.json()).toMatchObject({ status: 'ok' });
+    const preference = {
+      categoryId: loaded.seeded.categoryIds['cat-groceries'],
+      accountId: loaded.seeded.accountIds['acct-checking'],
+      expectedVersion: 0, expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    const unprovedPreferences = await fetch(new URL('/api/liquidity/preferences', handle.webUrl), {
+      method: 'PUT', headers: ownerHeaders, body: JSON.stringify(preference),
+    });
+    expect(unprovedPreferences.status).toBe(403);
+    const normalPreferences = await scenarioRequest<{
+      status: string;
+      result?: { items?: readonly unknown[] };
+    }>(loaded, '/api/liquidity/preferences', { method: 'PUT', body: preference });
+    expect(normalPreferences.status, JSON.stringify(normalPreferences.body)).toBe(200);
+    expect(normalPreferences.body).toMatchObject({
+      status: 'ok', result: { items: [expect.objectContaining({
+        categoryId: preference.categoryId, accountId: preference.accountId,
+        expiresAt: preference.expiresAt, version: 1,
+      })] },
+    });
+    const budgetDiscovery = await fetch(new URL('/api/connection/budgets', handle.webUrl), {
+      headers: ownerHeaders,
+    });
+    expect(budgetDiscovery.status).toBe(403);
+    expect(await budgetDiscovery.json()).not.toHaveProperty('result.budgets');
+    const disabled = await fetch(new URL('/api/connection', handle.webUrl), {
+      method: 'POST', headers: ownerHeaders, body: '{}',
+    });
+    expect(disabled.status).toBe(403);
+    const selector = await fetch(new URL('/demo', handle.webUrl), { headers: ownerHeaders });
+    expect(selector.status).toBe(200);
+    expect(await selector.text()).not.toMatch(/data-action="(?:open-scenario|reset)"/);
+    const supervisorState = await fetch(new URL('/__demo/state', handle.webUrl), { headers: ownerHeaders });
+    expect(await supervisorState.json().catch(() => ({}))).not.toHaveProperty('generation');
+    const manifest = readScenarioManifest(handle);
+    writeScenarioManifest(handle, { ...manifest, phase: 'setup', actorIds: [] });
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    const outcome = await updateScenarioPersonas(handle, loaded.initialized, alreadyAborted.signal)
+      .then(() => null, (error: unknown) => error);
+    const afterAbort = readScenarioManifest(handle);
+    expect({
+      outcome,
+      phase: afterAbort.phase,
+      actorIds: afterAbort.actorIds,
+    }).toMatchObject({
+      outcome: { name: 'AbortError' },
+      phase: 'setup',
+      actorIds: [],
+    });
+    expect((await textFilesUnder(handle.root)).join('\n')).not.toContain(handle.internalSecret);
+  }, TEST_TIMEOUT);
 
   it(
     'refuses scenario readiness when the production web child has no native addon despite a healthy HTTP shell',

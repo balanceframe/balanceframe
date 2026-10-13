@@ -113,6 +113,74 @@ function parseFlagCommand(
   };
 }
 
+function parseMerchantCommand(cleanArgs: string[], normalized: string[], format: string): ParseResult | null {
+  if (cleanArgs[0] !== 'merchant') return null;
+  const action = cleanArgs[1];
+  const error = (message: string): ParseResult => ({ ok: false, error: { code: 'invalid_merchant_command', message } });
+  let args = cleanArgs.slice(2);
+  let allowed: string[] = [];
+  let required: string[] = [];
+  let command = `merchant.${action}`;
+  let visibility: string | undefined;
+  if (action === 'analyze' || action === 'evidence') {
+    allowed = ['transaction-id', 'cursor', 'limit', 'facts-hash'];
+  } else if (action === 'confirm' || action === 'reject') {
+    const scopes = args.filter((arg) => arg === '--private' || arg === '--shared');
+    if (scopes.length !== 1) return error('Choose exactly one of --private or --shared.');
+    visibility = scopes[0] === '--private' ? 'private' : 'shared';
+    args = args.filter((arg) => arg !== '--private' && arg !== '--shared');
+    allowed = ['id', 'kind', 'evidence-key', 'evidence-revision', 'expected-version', 'transaction-id', 'source-field', 'target-payee-id', 'account-id', 'pattern-id'];
+    required = ['id', 'kind', 'evidence-key', 'evidence-revision', 'expected-version'];
+  } else if (action === 'research') {
+    const researchAction = args.shift();
+    if (!['preview', 'send', 'cache', 'policy'].includes(researchAction ?? ''))
+      return error('Use merchant research preview, send, cache or policy. Preview and explicit send are separate operations.');
+    command = `merchant.research.${researchAction}`;
+    if (researchAction !== 'policy') {
+      required = ['evidence-key', 'evidence-revision', 'merchant', 'public-business'];
+      allowed = [...required, 'locale'];
+      if (researchAction === 'send') {
+        required = [...required, 'preview-token', 'consent', 'idempotency-key'];
+        allowed = [...allowed, 'preview-token', 'consent', 'idempotency-key'];
+      }
+    }
+  } else if (action === 'policy' || action === 'space-policy') {
+    const policyAction = args.shift();
+    if (policyAction !== 'get' && policyAction !== 'set') return error(`Use merchant ${action} get or set.`);
+    command = `merchant.${action}.${policyAction}`;
+    if (policyAction === 'set') { allowed = ['expected-version', 'policy']; required = allowed; }
+  } else if (action === 'calendar') {
+    allowed = ['account-id', 'year']; required = allowed;
+  } else if (action !== 'export' && action !== 'delete') {
+    return error('Use merchant analyze, evidence, confirm, reject, policy, space-policy, research, calendar, export or delete.');
+  }
+  const result = parseFlagCommand(command, format, normalized, args, allowed, required, visibility ? { visibility } : {});
+  if (!result.ok) return action === 'research' ? error('Provide the documented public-business research flags with unique values; no authority or provider options are accepted.') : result;
+  const options = result.cmd.options!;
+  if (action === 'research' && command !== 'merchant.research.policy') {
+    if (options['public-business'] !== 'true') return error('Declare --public-business true for manually entered standalone business text.');
+    if (options.locale !== undefined && !['US', 'CA', 'GB'].includes(options.locale)) return error('--locale must be US, CA or GB; omit it for no locale.');
+    if (command === 'merchant.research.send' && options.consent !== 'true')
+      return error('Send requires separate --consent true after reviewing the exact preview disclosure and atom cost.');
+  }
+  for (const [key, min, max] of [['expected-version', 0, Number.MAX_SAFE_INTEGER], ['limit', 1, 1000], ['year', 1, 9999]] as const) {
+    const value = options[key];
+    if (value !== undefined && (!/^(0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < min || Number(value) > max))
+      return error(`--${key} must be an integer from ${min} through ${max}.`);
+  }
+  if (visibility) {
+    const aliasFields = ['transaction-id', 'source-field', 'target-payee-id', 'account-id'];
+    if (options.kind === 'alias') {
+      if (aliasFields.some((key) => !options[key]) || options['pattern-id']) return error('Alias controls require transaction, source field, target payee and account IDs, without a pattern ID.');
+      if (!['payeeName', 'importedPayee', 'description', 'verboseTitle', 'notes'].includes(options['source-field']!))
+        return error('Choose an explicitly available source field.');
+    } else if (options.kind === 'pattern') {
+      if (!options['pattern-id'] || aliasFields.some((key) => options[key])) return error('Pattern controls require only a pattern ID, not alias source fields.');
+    } else return error('--kind must be alias or pattern.');
+  }
+  return result;
+}
+
 function parseSpaceCommand(cleanArgs: string[], normalized: string[], format: string): ParseResult | null {
   if (cleanArgs[0] !== 'spaces') return null;
   const resource = cleanArgs[1];
@@ -348,7 +416,7 @@ export function parseArgs(argv: string[]): ParseResult {
     '--message': true,
     '--reason': true,
     '--name': true,
-    '--payee': true,
+    '--payee-id': true,
     '--active': true,
     '--rule-id': true,
     '--budget-id': true,
@@ -389,6 +457,23 @@ export function parseArgs(argv: string[]): ParseResult {
     '--principal-id': true,
     '--delegation-id': true,
     '--expected-delegation-version': true,
+    '--cursor': true,
+    '--facts-hash': true,
+    '--id': true,
+    '--evidence-key': true,
+    '--evidence-revision': true,
+    '--source-field': true,
+    '--target-payee-id': true,
+    '--pattern-id': true,
+    '--private': true,
+    '--shared': true,
+    '--year': true,
+    '--merchant': true,
+    '--locale': true,
+    '--public-business': true,
+    '--preview-token': true,
+    '--consent': true,
+    '--idempotency-key': true,
   };
   const unknownFlags = normalized.filter((a) => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -416,6 +501,8 @@ export function parseArgs(argv: string[]): ParseResult {
   }
   const spaceCommand = parseSpaceCommand(cleanArgs, normalized, format);
   if (spaceCommand) return spaceCommand;
+  const merchantCommand = parseMerchantCommand(cleanArgs, normalized, format);
+  if (merchantCommand) return merchantCommand;
 
   // Extract command path
   if (cleanArgs[0] === 'connect') {
@@ -1243,76 +1330,12 @@ export function parseArgs(argv: string[]): ParseResult {
   // -----------------------------------------------------------------------
 
   if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'create') {
-    const options: Record<string, string> = {};
-    const remaining = cleanArgs.slice(2);
-    for (let i = 0; i < remaining.length; i++) {
-      const a = remaining[i];
-      const nextVal = (): string | undefined =>
-        remaining[i + 1] && !remaining[i + 1].startsWith('--') ? remaining[i + 1] : undefined;
-      if (a === '--name') {
-        const v = nextVal();
-        if (!v)
-          return {
-            ok: false,
-            error: { code: 'missing_flag_value', message: '--name requires a value.' },
-          };
-        options.name = v;
-        i++;
-      } else if (a === '--payee') {
-        const v = nextVal();
-        if (!v)
-          return {
-            ok: false,
-            error: { code: 'missing_flag_value', message: '--payee requires a value.' },
-          };
-        options.payee = v;
-        i++;
-      } else if (a === '--category-id') {
-        const v = nextVal();
-        if (!v)
-          return {
-            ok: false,
-            error: { code: 'missing_flag_value', message: '--category-id requires a value.' },
-          };
-        options['category-id'] = v;
-        i++;
-      } else if (a === '--transaction-id') {
-        const v = nextVal();
-        if (!v)
-          return {
-            ok: false,
-            error: { code: 'missing_flag_value', message: '--transaction-id requires a value.' },
-          };
-        options['transaction-id'] = v;
-        i++;
-      } else if (a === '--operation') {
-        const v = nextVal();
-        if (!v)
-          return {
-            ok: false,
-            error: { code: 'missing_flag_value', message: '--operation requires a value.' },
-          };
-        options.operation = v;
-        i++;
-      } else if (!a.startsWith('--')) {
-        return {
-          ok: false,
-          error: {
-            code: 'trailing_args',
-            message: `Unexpected argument after 'rules create': ${a}`,
-          },
-        };
-      }
-    }
-    return {
-      ok: true,
-      cmd: {
-        command: 'rules.create',
-        format,
-        args: normalized,
-        options,
-      },
-    };
+    const result = parseFlagCommand('rules.create', format, normalized, cleanArgs.slice(2),
+      ['name', 'payee-id', 'category-id', 'transaction-id', 'operation'],
+      ['name', 'payee-id', 'category-id']);
+    if (result.ok && result.cmd.options?.operation !== undefined && result.cmd.options.operation !== 'create_rule')
+      return { ok: false, error: { code: 'invalid_operation', message: '--operation must be create_rule.' } };
+    return result;
   }
 
   if (cleanArgs[0] === 'rules' && cleanArgs[1] === 'list') {

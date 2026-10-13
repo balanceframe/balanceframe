@@ -8,6 +8,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
+import merchantFixture from '../../../../protocol/fixtures/merchant-intelligence.json';
 
 
 const {
@@ -49,7 +50,8 @@ import showRuleHandler from '../../server/api/rule/[id].get';
 const actorId = 'test-actor';
 const ownerId = 'rule-space-owner';
 let budgetId = 'budget_test';
-const now = new Date().toISOString();
+let routeConfig: { budgetId: string; serverUrl: string };
+const now = '2098-01-01T12:00:00.000Z';
 const controlAuth = {
   method: 'human-session' as const,
   actorId: ownerId,
@@ -128,6 +130,7 @@ beforeEach(async () => {
     spaceId: selectedSpaceId,
     actorId,
     validFrom: now,
+    validUntil: new Date(Date.parse(now) + 1000).toISOString(),
     now,
     auth: controlAuth,
   });
@@ -146,9 +149,11 @@ beforeEach(async () => {
       auth: controlAuth,
     });
   }
-  mockLoadConfig.mockResolvedValue({ budgetId });
+  routeConfig = { budgetId, serverUrl: 'http://original-fixture.test' };
+  mockLoadConfig.mockResolvedValue(routeConfig);
   mockCreateMutationConnectionManager.mockReturnValue({
     withConnection: mockWithConnection,
+    loadConfig: mockLoadConfig,
   });
   vi.stubGlobal('setResponseStatus', mockSetResponseStatus);
 });
@@ -234,6 +239,7 @@ describe('rule GET connection failures', () => {
     mockWithConnection.mockImplementationOnce(async (operation) =>
       operation({
         budget: { id: budgetId },
+        config: routeConfig,
         connector: { listRules: vi.fn().mockResolvedValue(rules) },
       }),
     );
@@ -265,7 +271,7 @@ describe('rule GET connection failures', () => {
       conditionsOp: 'and' as const,
     };
     mockWithConnection.mockImplementation(async (operation) =>
-      operation({ budget: { id: budgetId }, connector: { listRules: vi.fn().mockResolvedValue([rule]) } }),
+      operation({ config: routeConfig, budget: { id: budgetId }, connector: { listRules: vi.fn().mockResolvedValue([rule]) } }),
     );
 
     const list = await listRulesHandler(routeEvent());
@@ -303,7 +309,7 @@ describe('rule GET connection failures', () => {
       conditionsOp: 'and' as const,
     };
     mockWithConnection.mockImplementationOnce(async (operation) =>
-      operation({ budget: { id: budgetId }, connector: { listRules: vi.fn().mockResolvedValue([rule]) } }),
+      operation({ config: routeConfig, budget: { id: budgetId }, connector: { listRules: vi.fn().mockResolvedValue([rule]) } }),
     );
 
     const response = await showRuleHandler(routeEvent('rule-1'));
@@ -344,12 +350,97 @@ describe('rule GET connection failures', () => {
       conditionsOp: 'and' as const,
     };
     mockWithConnection.mockImplementationOnce(async (operation) =>
-      operation({ budget: { id: budgetId }, connector: { listRules: vi.fn().mockResolvedValue([rule]) } }),
+      operation({ config: routeConfig, budget: { id: budgetId }, connector: { listRules: vi.fn().mockResolvedValue([rule]) } }),
     );
 
     const response = await listRulesHandler(routeEvent());
 
     expect(response.status).toBe('ok');
     expect(response.result.items).toEqual([rule]);
+  });
+
+  describe.each([
+    { route: 'list', handler: listRulesHandler, override: 'getRuleOverrides' as const },
+    { route: 'detail', handler: showRuleHandler, override: 'getRuleOverride' as const },
+  ])('$route final disclosure authority', ({ handler, override }) => {
+    const canonicalRule = merchantFixture.request.rules[0]!;
+    const privateRule = {
+      ...canonicalRule, id: 'rule-1', name: 'Private native source marker',
+      trigger: canonicalRule.trigger.conditions, stage: 'pre' as const,
+      conditionsOp: canonicalRule.trigger.conditionsOp,
+    };
+    const revoke = () => routeStore.governance.setResourceGrant({
+      spaceId: selectedSpaceId, actorId, membershipId: routeMembershipId, budgetId,
+      resourceKind: 'budget', resourceId: budgetId, capability: 'full-read',
+      granted: false, now, auth: controlAuth,
+    });
+    it.each(['source', 'override', 'cleanup'] as const)(
+      'withholds the captured private rule after authority changes during %s', async (boundary) => {
+        const afterRead = () => {
+          if (boundary === 'source') revoke();
+          else if (boundary === 'override') vi.setSystemTime(new Date(Date.parse(now) + 1000));
+          else {
+            const policy = routeStore.governance.getPolicy({ spaceId: selectedSpaceId })!;
+            routeStore.governance.setPolicy({ spaceId: selectedSpaceId, expectedVersion: policy.version,
+              policy: { minimumApprovers: 1, approvalThresholds: [] }, now, auth: controlAuth });
+          }
+        };
+        const original = routeStore[override].bind(routeStore);
+        const overrideSpy = vi.spyOn(routeStore, override);
+        overrideSpy.mockImplementationOnce(async (input) => {
+          const value = await original(input);
+          if (boundary === 'override') afterRead();
+          return value;
+        });
+        mockWithConnection.mockImplementationOnce(async (operation) => {
+          const response = await operation({ config: routeConfig, budget: { id: budgetId }, connector: {
+            listRules: async () => {
+              if (boundary === 'source') afterRead();
+              return [privateRule];
+            },
+          } });
+          if (boundary === 'cleanup') afterRead();
+          return response;
+        });
+        try {
+          const response = await handler(routeEvent());
+          expect(response.status).toBe('error');
+          expect(response.error?.code).toBe('FORBIDDEN');
+          expect(response.result).toBeNull();
+          expect(JSON.stringify(response)).not.toContain(privateRule.name);
+        } finally {
+          overrideSpy.mockRestore();
+        }
+      },
+    );
+    it('bounds the complete native source collection before projecting the selected response', async () => {
+      routeStore.governance.setResourceGrant({
+        spaceId: selectedSpaceId, actorId, membershipId: routeMembershipId, budgetId,
+        resourceKind: 'budget', resourceId: budgetId, capability: 'full-read',
+        granted: true, restrictions: { maxOperationCount: 1 }, now, auth: controlAuth,
+      });
+      mockWithConnection.mockImplementationOnce(async (operation) => operation({
+        config: routeConfig, budget: { id: budgetId }, connector: { listRules: async () =>
+          [privateRule, { ...privateRule, id: 'rule-2', name: 'Second private native marker' }] },
+      }));
+      const response = await handler(routeEvent());
+      expect(response.status).toBe('error');
+      expect(response.error?.code).toBe('FORBIDDEN');
+      expect(response.result).toBeNull();
+      expect(JSON.stringify(response)).not.toContain(privateRule.name);
+    });
+    it('withholds native data from the previous connection after same-budget namespace replacement during cleanup', async () => {
+      mockWithConnection.mockImplementationOnce(async (operation) => {
+        const response = await operation({ config: routeConfig, budget: { id: budgetId },
+          connector: { listRules: async () => [privateRule] } });
+        mockLoadConfig.mockResolvedValue({ budgetId, serverUrl: 'http://replacement-fixture.test' });
+        return response;
+      });
+      const response = await handler(routeEvent());
+      expect(response.status).toBe('error');
+      expect(response.error?.code).toBe('SPACE_CONNECTION_MISMATCH');
+      expect(response.result).toBeNull();
+      expect(JSON.stringify(response)).not.toContain(privateRule.name);
+    });
   });
 });

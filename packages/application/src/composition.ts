@@ -1,3 +1,7 @@
+import { createRequire } from 'node:module';
+import type { MerchantIntelligenceService, MerchantActor } from './merchant-service.js';
+import { merchantPendingReview } from './merchant-service.js';
+import { canonicalProtocolSnapshotSchema, validateNativeRuleTables, merchantSuggestionSchema, targetHealthResultSchema } from '@balanceframe/protocol-generated/validators';
 /**
  * Production dependency composition for Observe mode.
  *
@@ -98,7 +102,7 @@ import {
   financialDecisionDedupKey,
 } from './notifications.js';
 import type { NotificationPolicy } from './notifications.js';
-import type { WorkflowStore, LifecycleScope } from '@balanceframe/workflow-store';
+import type { WorkflowStore, LifecycleScope, GovernanceOperation } from '@balanceframe/workflow-store';
 import type {
   DecisionIssue,
   FinancialSnapshot,
@@ -317,6 +321,8 @@ export type NotificationStoreMethods = Pick<
  */
 export interface NativeBindingShim {
   analyzeDeterministic(input: string): string;
+  /** Read-only merchant semantics over explicitly admitted immutable source. */
+  analyzeMerchantIntelligence?(input: string): string;
   analyzeSnapshot(input: string): string;
   findCategorizationCandidates(input: string): string;
 
@@ -380,8 +386,8 @@ export async function loadNativeBindings(
     return override();
   }
   if (!nativeSingleton) {
-    const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
+    // Static addon loading fails in injected runtimes where the platform binary is unavailable.
     nativeSingleton = require('@balanceframe/native') as NativeBindingShim;
   }
   return nativeSingleton;
@@ -664,6 +670,7 @@ function isDisconnectableLedger(value: unknown): value is { disconnect(): Promis
  */
 export async function createNativeAnalysisProtocol(
   nativeOverride?: () => Promise<NativeBindingShim>,
+  options?: { merchantService: MerchantIntelligenceService; merchantActor: MerchantActor; captureMerchantPublicationAuthority?: (authorize: () => boolean) => void },
 ): Promise<AnalysisProtocol> {
   const native = await loadNativeBindings(nativeOverride);
 
@@ -745,33 +752,20 @@ export async function createNativeAnalysisProtocol(
   };
 
   const parseTargetHealthResponse = (raw: string): TargetHealthResult => {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      throw new Error('Native evaluateTargetHealth returned invalid JSON.');
-    }
-    const categories = Array.isArray(parsed.categories) ? parsed.categories : [];
-    const mapped = categories.map((c: unknown) => {
-      const cat = c as Record<string, unknown>;
-      return {
-        categoryId: String(cat.categoryId ?? ''),
-        categoryName: String(cat.categoryName ?? ''),
-        budgeted: asMoney(cat.budgeted) ?? { minorUnits: '0', currency: 'USD' },
-        spent: asMoney(cat.spent) ?? { minorUnits: '0', currency: 'USD' },
-        remaining: asMoney(cat.remaining) ?? { minorUnits: '0', currency: 'USD' },
-        healthLabel: String(cat.healthLabel ?? 'unknown'),
-        isSinkingFund: cat.isSinkingFund === true,
-        targetAmount: asMoney(cat.targetAmount),
-        targetProgress: typeof cat.targetProgress === 'number' ? cat.targetProgress : null,
-      } as CategoryHealthResult;
-    });
+    const parsed = targetHealthResultSchema.parse(JSON.parse(raw));
+    const categories = parsed.categoryHealth.map((category): CategoryHealthResult => ({
+      ...category,
+      // The native target-health contract supplies no sinking-fund metadata.
+      isSinkingFund: false,
+      targetAmount: null,
+      targetProgress: null,
+    }));
     return {
-      categories: mapped,
-      overallLabel: String(parsed.overallLabel ?? 'unknown'),
-      healthyCount: typeof parsed.healthyCount === 'number' ? parsed.healthyCount : 0,
-      atRiskCount: typeof parsed.atRiskCount === 'number' ? parsed.atRiskCount : 0,
-      sinkingFundCount: typeof parsed.sinkingFundCount === 'number' ? parsed.sinkingFundCount : 0,
+      categories,
+      overallLabel: parsed.overallLabel,
+      healthyCount: categories.filter((category) => category.healthLabel === 'healthy').length,
+      atRiskCount: categories.filter((category) => category.healthLabel !== 'healthy').length,
+      sinkingFundCount: 0,
     };
   };
 
@@ -1076,6 +1070,9 @@ export async function createNativeAnalysisProtocol(
       _freshness: DataFreshness | null,
       context?: PendingReviewScope,
     ): Promise<PendingReviewResult> {
+      if (options) {
+        return merchantPendingReview(await options.merchantService.analyze(options.merchantActor));
+      }
       let snapshot: unknown = ledger;
       if (isSynchronizableLedger(ledger) || isLatestSynchronizationProvider(ledger)) {
         const synchronized = await obtainSnapshot(ledger);
@@ -1110,7 +1107,7 @@ export async function createNativeAnalysisProtocol(
         },
       });
       const raw = native.analyzeDeterministic(input);
-      return mapDeterministicResponse(raw);
+      return mapDeterministicResponse(raw, snapshot);
     },
 
     async reviewShow(_ledger: unknown, _reviewId: string): Promise<ReviewDetailResult> {
@@ -1525,8 +1522,24 @@ export async function createNativeAnalysisProtocol(
       ledger: unknown,
       params: AttentionHomeParams,
     ): Promise<AttentionHomeResult> {
+      // The caller must authorize the ledger's ordinary financial/target/transfer view.
+      // Merchant evidence is independently admitted before any optional ledger synchronization.
+      let authorizeMerchant: (() => boolean) | undefined;
+      const merchant = options ? await options.merchantService.withAnalysis(options.merchantActor, {}, (view, _source, authorize) => {
+        const operations: GovernanceOperation[] = view.recurrences.filter((recurrence) => recurrence.decisionState !== 'rejected').map((recurrence) => {
+          const signed = BigInt(recurrence.maximumAmount.minorUnits);
+          return { operation: 'merchant:analyze', accountId: recurrence.accountId,
+            amount: { ...recurrence.maximumAmount, minorUnits: (signed < 0n ? -signed : signed).toString() },
+            direction: signed < 0n ? 'outgoing' : 'incoming' };
+        });
+        if (!authorize(operations)) throw new Error('Merchant attention is not authorized');
+        authorizeMerchant = authorize;
+        options.captureMerchantPublicationAuthority?.(authorize);
+        return view;
+      }) : null;
       const synchronization = await obtainSynchronization(ledger);
-      const rawSnapshot = snapshotFromSynchronization(synchronization);
+      const directSnapshot = canonicalProtocolSnapshotSchema.safeParse(ledger);
+      const rawSnapshot = snapshotFromSynchronization(synchronization) ?? (directSnapshot.success ? directSnapshot.data : null);
       const financialSnapshot = financialSnapshotFromSynchronization(synchronization);
       if (!rawSnapshot) {
         return {
@@ -1561,8 +1574,6 @@ export async function createNativeAnalysisProtocol(
       const s = rawSnapshot as Record<string, unknown>;
       const accounts = (s.accounts as Array<Record<string, unknown>> | undefined) ?? [];
       const transactions = (s.transactions as Array<Record<string, unknown>> | undefined) ?? [];
-      const payees = (s.payees as Array<Record<string, unknown>> | undefined) ?? [];
-      const currency = 'USD';
 
       // Blockers: uncategorized transactions (counting/filtering only).
       // Pending activity remains included under the current attention policy.
@@ -1695,67 +1706,36 @@ export async function createNativeAnalysisProtocol(
         }
       }
 
-      // Recurrences: pattern detection from ordinary same-account purchases.
+      // One recurrence classifier: native shared interval/calendar analysis, never occurrence counts.
       const recurrences: RecurrencePattern[] = [];
-      const payeesById = new Map(
-        payees
-          .filter((payee) => typeof payee.id === 'string')
-          .map((payee) => [payee.id as string, payee] as const),
-      );
-      const schedCounts: Record<
-        string,
-        {
-          count: number;
-          lastDate: string;
-          amount: string;
-          payeeId: string;
-          payeeName: string;
-        }
-      > = {};
-      for (const tx of transactions) {
-        if (
-          typeof tx.accountId !== 'string' ||
-          typeof tx.payeeId !== 'string' ||
-          (tx.transferAccountId !== null &&
-            tx.transferAccountId !== undefined &&
-            tx.transferAccountId !== '')
-        ) {
-          continue;
-        }
-        const payeeId = tx.payeeId;
-        const payee = payeesById.get(payeeId);
-        const payeeName = String(payee?.name ?? tx.payeeName ?? payeeId);
-        if (payeeName.trim().toLowerCase() === 'starting balance') continue;
-
-        const key = `${tx.accountId}\u0000${payeeId}`;
-        if (!schedCounts[key]) {
-          schedCounts[key] = {
-            count: 0,
-            lastDate: '',
-            amount: '0',
-            payeeId,
-            payeeName,
-          };
-        }
-        schedCounts[key].count++;
-        const amt = tx.amount as Record<string, unknown> | undefined;
-        if (amt && typeof amt.minorUnits === 'string') {
-          schedCounts[key].amount = amt.minorUnits;
-        }
-        if (String(tx.date ?? '') > schedCounts[key].lastDate) {
-          schedCounts[key].lastDate = String(tx.date);
-        }
-      }
-      for (const info of Object.values(schedCounts)) {
-        if (info.count >= 3) {
+      if (merchant) {
+        for (const recurrence of merchant.recurrences) {
+          if (recurrence.decisionState === 'rejected') continue;
           recurrences.push({
-            payeeName: info.payeeName,
-            amount: { minorUnits: info.amount, currency },
-            frequency: info.count >= 6 ? 'monthly' : 'irregular',
-            occurrences: info.count,
-            lastOccurrence: info.lastDate,
-            isEstimated: false,
+            payeeName: recurrence.normalizedMerchant, amount: recurrence.maximumAmount,
+            frequency: recurrence.frequency, occurrences: recurrence.occurrences,
+            lastOccurrence: recurrence.lastDate,
+            isEstimated: recurrence.tier !== 'confirmed' && recurrence.tier !== 'deterministic_match',
           });
+        }
+      } else {
+        const response = asRecord(JSON.parse(native.analyzeDeterministic(JSON.stringify({
+          snapshot: rawSnapshot, options: { includePending: true, includeCleared: true },
+        }))));
+        const analysis = asRecord(response?.analysis);
+        const charges = Array.isArray(analysis?.recurringCharges) ? analysis.recurringCharges : [];
+        for (const value of charges) {
+          const charge = asRecord(value);
+          const amount = asMoney(charge?.typicalAmount);
+          const tier = merchantSuggestionSchema.shape.tier.safeParse(charge?.tier);
+          if (!charge || !amount || typeof charge.originalName !== 'string' ||
+            typeof charge.frequencyLabel !== 'string' || typeof charge.occurrences !== 'number' ||
+            !Number.isSafeInteger(charge.occurrences) || charge.occurrences < 0 ||
+            typeof charge.lastDate !== 'string' || !tier.success)
+            throw new Error('Native recurrence projection is incomplete');
+          recurrences.push({ payeeName: charge.originalName, amount, frequency: charge.frequencyLabel,
+            occurrences: charge.occurrences, lastOccurrence: charge.lastDate,
+            isEstimated: tier.data !== 'confirmed' && tier.data !== 'deterministic_match' });
         }
       }
 
@@ -1798,6 +1778,7 @@ export async function createNativeAnalysisProtocol(
         (sf) => (sf.targetProgress ?? 0) >= 0.8,
       ).length;
 
+      if (authorizeMerchant && !authorizeMerchant()) throw new Error('Merchant attention is not authorized');
       return {
         blockers,
         alerts,
@@ -1961,17 +1942,53 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 }
 
-function mapDeterministicResponse(raw: string): PendingReviewResult {
+function mapDeterministicResponse(raw: string, snapshot: unknown): PendingReviewResult {
   const parsed = asRecord(JSON.parse(raw));
   if (!parsed) throw new Error('Native deterministic response is not an object.');
   const analysis = asRecord(parsed.analysis);
+  if (!analysis || !Array.isArray(analysis.deterministicClassifications))
+    throw new Error('Native deterministic classifications are unavailable.');
+  const classifications = analysis.deterministicClassifications;
+  const usedSetIndexes = classifications.flatMap((value: unknown) => {
+    const item = asRecord(value);
+    if (item?.ruleSetIndex === undefined) return [];
+    if (typeof item.ruleSetIndex !== 'number') throw new Error('Invalid native rule-set index.');
+    return [item.ruleSetIndex];
+  });
+  const { nativeRuleBlocks, nativeRuleParts, nativeRuleSets } = validateNativeRuleTables(
+    analysis.nativeRuleBlocks, analysis.nativeRuleParts, analysis.nativeRuleSets, usedSetIndexes,
+  );
+  const source = asRecord(snapshot);
+  const sourceRules = new Set(Array.isArray(source?.rules) ? source.rules.flatMap((value: unknown) => {
+    const rule = asRecord(value); return typeof rule?.id === 'string' ? [rule.id] : [];
+  }) : []);
+  const sourceCategories = new Set(Array.isArray(source?.categories) ? source.categories.flatMap((value: unknown) => {
+    const category = asRecord(value); return typeof category?.id === 'string' && category.deleted !== true ? [category.id] : [];
+  }) : []);
+  for (const block of nativeRuleBlocks) for (const id of block.ruleIds) if (!sourceRules.has(id))
+    throw new Error('Native deterministic rule namespace is inconsistent with current source.');
+  const sourceTransactions = new Set<string>();
+  const collectSource = (rows: unknown[]): void => {
+    for (const value of rows) {
+      const transaction = asRecord(value);
+      if (!transaction || typeof transaction.id !== 'string' || sourceTransactions.has(transaction.id))
+        throw new Error('Native deterministic source transaction identity is inconsistent.');
+      sourceTransactions.add(transaction.id);
+      if (Array.isArray(transaction.subtransactions)) collectSource(transaction.subtransactions);
+    }
+  };
+  if (nativeRuleSets.length) {
+    if (!Array.isArray(source?.transactions)) throw new Error('Native deterministic source transactions are unavailable.');
+    collectSource(source.transactions);
+  }
+  const seen = new Set<string>();
   const backlog = asRecord(analysis?.uncategorizedBacklog);
-  const classifications = Array.isArray(analysis?.deterministicClassifications)
-    ? analysis.deterministicClassifications
-    : [];
   const candidates = classifications.flatMap((value) => {
     const item = asRecord(value);
-    if (!item || typeof item.transactionId !== 'string' || typeof item.date !== 'string') return [];
+    if (!item || typeof item.transactionId !== 'string' || !item.transactionId || typeof item.date !== 'string' || seen.has(item.transactionId))
+      throw new Error('Invalid or duplicate native deterministic transaction.');
+    seen.add(item.transactionId);
+    if (item.ruleIds !== undefined) throw new Error('Inline native rule provenance is no longer supported.');
     const amount = asRecord(item.amount);
     const reasons = Array.isArray(item.reasons)
       ? item.reasons.flatMap((reason) => {
@@ -1982,27 +1999,28 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
         })
       : [];
     const hasRuleTarget = item.proposedCategoryId !== undefined ||
-      item.proposedCategoryName !== undefined || item.ruleIds !== undefined;
+      item.proposedCategoryName !== undefined || item.ruleSetIndex !== undefined;
     let ruleTarget: {
       proposedCategoryId: string;
       proposedCategoryName: string;
-      ruleIds: string[];
+      ruleSetIndex: number;
     } | undefined;
     if (hasRuleTarget) {
       if (typeof item.proposedCategoryId !== 'string' || !item.proposedCategoryId ||
           typeof item.proposedCategoryName !== 'string' ||
-          !Array.isArray(item.ruleIds) || item.ruleIds.length === 0 ||
-          !item.ruleIds.every((id: unknown) => typeof id === 'string' && id.length > 0))
+          !Number.isInteger(item.ruleSetIndex) || typeof item.ruleSetIndex !== 'number' || item.ruleSetIndex < 0 || item.ruleSetIndex > 0xffff_ffff ||
+          !nativeRuleSets[item.ruleSetIndex] || !sourceCategories.has(item.proposedCategoryId) || !sourceTransactions.has(item.transactionId))
         throw new Error('Native rule classification has incomplete target evidence.');
       ruleTarget = {
         proposedCategoryId: item.proposedCategoryId,
         proposedCategoryName: item.proposedCategoryName,
-        ruleIds: item.ruleIds,
+        ruleSetIndex: item.ruleSetIndex,
       };
     }
     return [
       {
         transactionId: item.transactionId,
+        source: ruleTarget ? 'native-rule' as const : 'uncategorized' as const,
         amount: {
           minorUnits: typeof amount?.minorUnits === 'string' ? amount.minorUnits : '0',
           currency: typeof amount?.currency === 'string' ? amount.currency : 'USD',
@@ -2016,6 +2034,9 @@ function mapDeterministicResponse(raw: string): PendingReviewResult {
   });
   const total = asRecord(backlog?.totalAmount);
   return {
+    nativeRuleBlocks,
+    nativeRuleParts,
+    nativeRuleSets,
     uncategorizedCount: typeof backlog?.count === 'number' ? backlog.count : candidates.length,
     totalUncategorizedAmount: {
       minorUnits: typeof total?.minorUnits === 'string' ? total.minorUnits : '0',

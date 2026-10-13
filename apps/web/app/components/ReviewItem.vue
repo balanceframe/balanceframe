@@ -15,7 +15,7 @@
       <!-- Transaction details -->
       <div class="grid grid-cols-2 gap-2 text-sm">
         <div>
-          <span class="text-gray-500 dark:text-gray-400">Original name</span>
+          <span class="text-gray-500 dark:text-gray-400">Admitted source display text</span>
           <p class="font-medium">{{ item.evidence.originalImportedName }}</p>
         </div>
         <div>
@@ -24,13 +24,29 @@
         </div>
         <div>
           <span class="text-gray-500 dark:text-gray-400">Amount</span>
-          <p class="font-medium">{{ formatAmount(item.evidence.amount) }}</p>
+          <p class="font-medium"><SemanticAmount :amount="item.evidence.money ?? null" /></p>
         </div>
         <div>
           <span class="text-gray-500 dark:text-gray-400">Provenance</span>
           <p class="font-medium">{{ item.evidence.provenance }}</p>
+          <p class="text-xs">Source kind: {{ item.evidence.source ?? 'Unavailable in current projection' }}</p>
         </div>
       </div>
+      <MerchantEvidence
+        v-if="item.evidence.merchantEvidence"
+        :suggestion="item.evidence.merchantEvidence"
+        :source-transaction="item.evidence.merchantEvidence.sourceTransaction"
+        :category-names="item.evidence.categoryNames"
+        :normalization-version="item.evidence.merchantNormalizationVersion"
+        :as-of-date="item.evidence.merchantAsOfDate"
+        :expires-at="item.evidence.merchantExpiresAt"
+        class="border-t pt-3"
+      />
+      <details v-for="pattern in item.evidence.merchantRecurrences ?? []" :key="pattern.id" class="border-t pt-3">
+        <summary class="cursor-pointer font-medium">Current observed pattern: {{ pattern.normalizedMerchant }}</summary>
+        <MerchantEvidence :recurrence="pattern" :normalization-version="item.evidence.merchantNormalizationVersion" :as-of-date="item.evidence.merchantAsOfDate" :expires-at="item.evidence.merchantExpiresAt" />
+        <p class="text-xs">Use Merchant evidence and patterns above to confirm or reject this persisted finding.</p>
+      </details>
 
       <!-- Proposal metadata -->
       <div class="border-t pt-3 border-neutral-200 dark:border-neutral-700">
@@ -77,6 +93,7 @@
 
       <!-- Freshness / expiry indicator -->
       <div v-if="item.evidence.freshness" class="text-xs text-gray-400">
+        <span>Review item workflow TTL: </span>
         <span v-if="!isStale(item.evidence.freshness)">
           &#x2713; Fresh until {{ formatDate(item.evidence.freshness) }}
         </span>
@@ -119,9 +136,10 @@
             class="flex items-center justify-between text-xs"
           >
             <span>{{ displayName(h.categoryId) }}</span>
-            <span class="text-gray-400"
-              >{{ h.count }}x &middot; {{ formatDate(h.lastClassified) }}</span
-            >
+            <span class="text-gray-400">
+              {{ h.count }} observations · first {{ h.firstDate ?? 'Unknown' }} · last {{ h.lastDate ?? h.lastClassified }}
+              · {{ h.ledgerCount ?? 'Unknown' }} ledger / {{ h.correctionCount ?? 'Unknown' }} verified correction
+            </span>
           </div>
         </div>
       </div>
@@ -135,17 +153,18 @@
         <div class="space-y-2">
           <div
             v-for="rc in item.evidence.ruleCandidates"
-            :key="rc.merchant + rc.currentCategory"
+            :key="rc.payeeId + rc.categoryId"
             class="flex items-center justify-between px-2 py-1 rounded bg-neutral-50 dark:bg-neutral-800 text-xs"
           >
             <span>
               {{ rc.merchant }}&rarr;
-              <span class="font-medium">{{ displayName(rc.currentCategory) }}</span>
+              <span class="font-medium">{{ displayName(rc.categoryId) }}</span>
+              <span class="block">Native payee ID {{ rc.payeeId }} · category ID {{ rc.categoryId }}</span>
             </span>
             <span class="text-gray-400">
-              {{ rc.matchCount }} match{{ rc.matchCount !== 1 ? 'es' : '' }}
+              {{ rc.supportCount }} support observations
               &middot;
-              {{ Math.round(rc.consistency * 100) }}% consistent
+              {{ rc.consistencyNumerator }} / {{ rc.consistencyDenominator }} historical consistency (not a confidence probability)
             </span>
           </div>
         </div>
@@ -157,6 +176,8 @@
 <script setup lang="ts">
 import type { ReviewQueueItem, ReviewSurfaceState } from '../../src/review.js';
 import { computed } from 'vue';
+import SemanticAmount from './SemanticAmount.vue';
+import MerchantEvidence from './MerchantEvidence.vue';
 
 const props = defineProps<{
   item: ReviewQueueItem;
@@ -213,12 +234,6 @@ function displayName(id: string | undefined | null): string {
   return props.item.evidence.categoryNames?.[id] ?? id;
 }
 
-function formatAmount(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(amount);
-}
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', {

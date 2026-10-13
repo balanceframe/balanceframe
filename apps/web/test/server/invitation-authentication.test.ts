@@ -12,7 +12,7 @@ const event = (): ReauthenticationEvent => ({
   context: { runtimeConfig: {} },
   node: { req: { headers: { origin: 'https://balanceframe.example.test' } } },
 } as unknown as ReauthenticationEvent);
-const guest = () => ({ user: { id: 'actual-guest', email: 'guest@example.test' }, session: { id: 'actual-session', userId: 'actual-guest', impersonatedBy: null } });
+const guest = () => ({ user: { id: 'actual-guest', email: 'guest@example.test' }, session: { id: 'actual-session', userId: 'actual-guest', expiresAt: new Date('2098-01-02T12:00:00.000Z'), impersonatedBy: null } });
 
 beforeEach(() => {
   vi.stubEnv('BETTER_AUTH_URL', 'https://balanceframe.example.test');
@@ -27,7 +27,7 @@ describe('fresh invited human identity', () => {
   it('uses only the actual signed-in user and session and issues a current human consent proof', async () => {
     const request = event();
     const result = await authenticateInvitationHuman(request, 'guest@example.test', 'correct-password');
-    expect(result).toEqual({ email: 'guest@example.test', auth: { method: 'human-session', actorId: 'actual-guest', sessionId: 'actual-session', reauthenticatedAt: '2098-01-01T12:00:00.000Z' } });
+    expect(result).toEqual({ email: 'guest@example.test', auth: { method: 'human-session', actorId: 'actual-guest', sessionId: 'actual-session', reauthenticatedAt: '2098-01-01T12:00:00.000Z', credentialExpiresAt: '2098-01-02T12:00:00.000Z', isCredentialValid: expect.any(Function) } });
     expect(request.context.auth).toMatchObject({ actorId: 'actual-guest', method: 'session', sessionId: 'actual-session', principalType: 'human' });
   });
 

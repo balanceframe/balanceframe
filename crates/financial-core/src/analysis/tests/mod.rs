@@ -58,6 +58,41 @@ fn sample_category(id: &str, name: &str, deleted: bool) -> Category {
 }
 
 #[test]
+fn recurrence_accepts_canonical_snapshot_capture_timestamps() {
+    let rows = ["2026-06-30", "2026-07-31", "2026-08-31"]
+        .iter()
+        .enumerate()
+        .map(|(index, observed)| {
+            let mut row = sample_tx(
+                &format!("capture-{index}"),
+                "a1",
+                Some("Market"),
+                Some("c1"),
+                Some("Food"),
+                -100,
+                observed,
+                true,
+            );
+            row.payee_id = Some("payee-market".into());
+            row
+        })
+        .collect::<Vec<_>>();
+    let civil = legacy_recurrence_projection(&rows, "2026-10-04");
+    assert_eq!(civil.len(), 1);
+    assert_eq!(civil[0].occurrences, 3);
+    for captured_at in [
+        "2026-10-04T12:00:00Z",
+        "2026-10-04T12:00:00.000Z",
+        "2026-10-04T15:00:00+03:00",
+    ] {
+        assert_eq!(legacy_recurrence_projection(&rows, captured_at), civil);
+    }
+    for invalid in ["not-a-date", "2026-13-01T12:00:00Z", "2026-10-04junk"] {
+        assert!(legacy_recurrence_projection(&rows, invalid).is_empty());
+    }
+}
+
+#[test]
 fn test_analysis_uncategorized_backlog_populated() {
     let txs = vec![
         sample_tx(
@@ -406,7 +441,7 @@ fn test_generate_rule_candidates_merchant_normalization() {
 }
 #[test]
 fn test_recurring_charges_identified() {
-    let txs = vec![
+    let mut txs = vec![
         sample_tx(
             "tx1",
             "a1",
@@ -428,12 +463,15 @@ fn test_recurring_charges_identified() {
             true,
         ),
     ];
-    let charges = find_recurring_charges(&txs, &[]);
-    // Outgoing (negative) amounts should be included as charges.
-    // Two identical amounts on monthly-ish schedule -> should be identified.
+    for tx in &mut txs {
+        tx.payee_id = Some("payee-netflix".into());
+    }
+    let charges = legacy_recurrence_projection(&txs, "2026-07-18");
+    // Two native-ID observations remain provisional, never numeric confidence.
     assert_eq!(charges.len(), 1, "expected Netflix as recurring charge");
     if !charges.is_empty() {
         assert_eq!(charges[0].normalized_merchant, "netflix");
+        assert_eq!(charges[0].tier, MerchantEvidenceTier::InsufficientData);
     }
 }
 
@@ -463,7 +501,6 @@ fn test_deterministic_analysis_roundtrip_json() {
         &accounts,
         &txs,
         &cats,
-        &[],
         &[],
         &[],
         &[],
@@ -638,7 +675,6 @@ fn test_encrypted_snapshot_unlocked_when_downloaded() {
         &[],
         &[],
         &[],
-        &[],
         compatibility,
         Some("2026-07-18T00:00:00Z".into()),
         None,
@@ -678,7 +714,6 @@ fn test_encrypted_snapshot_locked_when_not_downloaded() {
         &[],
         &[],
         &[],
-        &[],
         compatibility,
         None,
         None,
@@ -715,7 +750,6 @@ fn test_stale_metadata_when_download_missing() {
         &accounts,
         &txs,
         &cats,
-        &[],
         &[],
         &[],
         &[],
@@ -768,7 +802,6 @@ fn test_deterministic_repeatability() {
         &[],
         &[],
         &[],
-        &[],
         compatibility.clone(),
         Some("2026-07-18T00:00:00Z".into()),
         None,
@@ -779,7 +812,6 @@ fn test_deterministic_repeatability() {
         &accounts,
         &txs,
         &cats,
-        &[],
         &[],
         &[],
         &[],
@@ -872,7 +904,7 @@ fn test_repeated_merchants_sorted_deterministically() {
 
 #[test]
 fn test_recurring_charges_sorted_deterministically() {
-    let txs = vec![
+    let mut txs = vec![
         sample_tx(
             "tx3",
             "a1",
@@ -914,7 +946,13 @@ fn test_recurring_charges_sorted_deterministically() {
             true,
         ),
     ];
-    let charges = find_recurring_charges(&txs, &[]);
+    for tx in &mut txs {
+        tx.payee_id = Some(format!(
+            "payee-{}",
+            tx.payee_name.as_deref().unwrap().to_lowercase()
+        ));
+    }
+    let charges = legacy_recurrence_projection(&txs, "2026-07-18");
     assert!(
         charges.len() >= 2,
         "expected at least 2 charges, got {}",
@@ -995,20 +1033,6 @@ fn test_historical_corrections_sorted_deterministically() {
     // So only cat_b should appear
     assert_eq!(corrections.len(), 1);
     assert_eq!(corrections[0].category_id, "cat_b");
-}
-
-// -- amounts_similar uses absolute values --------------------------------
-
-#[test]
-fn test_amounts_similar_uses_absolute_values() {
-    // All negative amounts with similar absolute values
-    assert!(amounts_similar(&[-1500, -1600, -1400]));
-    // Large difference in negative amounts (abs differs by >50%)
-    assert!(!amounts_similar(&[-1500, -3000]));
-    // Mixed signs: -3000 and 2000 have abs values 3000 and 2000, ratio=1.5 — borderline
-    assert!(amounts_similar(&[-3000, 2000]));
-    // i64::MIN should not cause panic
-    assert!(!amounts_similar(&[i64::MIN, -1500]));
 }
 
 // -- mixed-currency rejection -------------------------------------------
@@ -1132,7 +1156,6 @@ fn test_bank_sync_staleness_emits_blocker() {
         &[],
         &[],
         &[],
-        &[],
         compatibility,
         Some("2026-07-18T00:00:00Z".into()),
         Some("2026-06-18T00:00:00Z".into()),
@@ -1177,7 +1200,6 @@ fn test_amount_overflow_promotes_blocker() {
         &accounts,
         &txs,
         &cats,
-        &[],
         &[],
         &[],
         &[],
@@ -1261,7 +1283,6 @@ fn test_deterministic_repeatability_sorted() {
         &[],
         &[],
         &[],
-        &[],
         compatibility.clone(),
         Some("2026-07-18T00:00:00Z".into()),
         Some("2026-07-17T00:00:00Z".into()),
@@ -1272,7 +1293,6 @@ fn test_deterministic_repeatability_sorted() {
         &accounts,
         &txs,
         &cats,
-        &[],
         &[],
         &[],
         &[],
@@ -1405,8 +1425,8 @@ fn sample_correction_evidence() -> CorrectionEvidence {
 }
 
 #[test]
-fn analysis_recurring_schedules_fill_gaps_without_replacing_observed_history() {
-    let txs = [
+fn analysis_short_observed_history_retains_endpoints_without_source_confidence() {
+    let mut txs = [
         sample_tx(
             "n2",
             "a1",
@@ -1428,39 +1448,15 @@ fn analysis_recurring_schedules_fill_gaps_without_replacing_observed_history() {
             true,
         ),
     ];
-    let schedules = [
-        Schedule {
-            id: "netflix".into(),
-            frequency: "yearly".into(),
-            amount: Money::new(-18000, "USD"),
-            payee_name: Some("NETFLIX".into()),
-            account_id: "a1".into(),
-            next_expected: "2027-01-01".into(),
-        },
-        Schedule {
-            id: "power".into(),
-            frequency: "monthly".into(),
-            amount: Money::new(-8500, "EUR"),
-            payee_name: Some("Power".into()),
-            account_id: "a1".into(),
-            next_expected: "2026-08-01".into(),
-        },
-        Schedule {
-            id: "unidentified".into(),
-            frequency: "weekly".into(),
-            amount: Money::new(-500, "USD"),
-            payee_name: None,
-            account_id: "a1".into(),
-            next_expected: "2026-07-20".into(),
-        },
-    ];
+    for tx in &mut txs {
+        tx.payee_id = Some("payee-netflix".into());
+    }
     let result = run_deterministic_analysis(
         &[sample_account("a1", "Checking")],
         &txs,
         &[sample_category("c1", "Subscriptions", false)],
         &[],
         &[],
-        &schedules,
         &[],
         CompatibilityMetadata::new(false, true, "25.1.0".into()),
         Some("2026-07-18T00:00:00Z".into()),
@@ -1468,18 +1464,17 @@ fn analysis_recurring_schedules_fill_gaps_without_replacing_observed_history() {
         &InclusionScope::new(true, true),
         "2026-07-18",
     );
-    assert_eq!(result.recurring_charges.len(), 2);
+    assert_eq!(result.recurring_charges.len(), 1);
     let netflix = &result.recurring_charges[0];
     assert_eq!(netflix.normalized_merchant, "netflix");
     assert_eq!(netflix.frequency_label, "monthly");
     assert_eq!(netflix.typical_amount, Money::new(-1500, "USD"));
     assert_eq!(netflix.transaction_ids, ["n1", "n2"]);
     assert_eq!(netflix.dates, ["2026-06-01", "2026-07-01"]);
-    let power = &result.recurring_charges[1];
-    assert_eq!(power.normalized_merchant, "power");
-    assert_eq!(power.typical_amount, Money::new(-8500, "EUR"));
-    assert_eq!(power.dates, ["2026-08-01"]);
-    assert!(power.transaction_ids.is_empty());
+    assert_eq!(netflix.occurrences, 2);
+    assert_eq!(netflix.tier, MerchantEvidenceTier::InsufficientData);
+    assert_eq!(netflix.first_date, "2026-06-01");
+    assert_eq!(netflix.last_date, "2026-07-01");
 }
 
 #[test]
@@ -1494,7 +1489,7 @@ fn analysis_distinguishes_recurring_cadences_from_unusable_history() {
         ("Undated", "unknown", "unknown", -100, -100),
         ("Salary", "2026-06-01", "2026-07-01", 100, 100),
     ];
-    let txs: Vec<_> = cases
+    let mut txs: Vec<_> = cases
         .iter()
         .flat_map(|(merchant, first, last, amount1, amount2)| {
             [
@@ -1521,11 +1516,16 @@ fn analysis_distinguishes_recurring_cadences_from_unusable_history() {
             ]
         })
         .collect();
+    for tx in &mut txs {
+        tx.payee_id = Some(format!(
+            "payee-{}",
+            tx.payee_name.as_deref().unwrap().to_lowercase()
+        ));
+    }
     let result = run_deterministic_analysis(
         &[sample_account("a1", "Checking")],
         &txs,
         &[sample_category("c1", "Services", false)],
-        &[],
         &[],
         &[],
         &[],
@@ -1549,10 +1549,12 @@ fn analysis_distinguishes_recurring_cadences_from_unusable_history() {
         recurring,
         [
             ("biweekly", "biweekly"),
-            ("daily", "daily"),
-            ("irregular", "irregular"),
+            ("daily", "irregular"),
+            ("irregular", "quarterly"),
+            ("salary", "monthly"),
+            ("variable", "monthly"),
             ("weekly", "weekly"),
-            ("yearly", "yearly"),
+            ("yearly", "annual"),
         ]
     );
 }
@@ -1608,7 +1610,6 @@ fn analysis_historical_changes_use_observed_months_and_stable_ranking() {
         ],
         &[],
         &[],
-        &[],
         &budgets,
         CompatibilityMetadata::new(false, true, "25.1.0".into()),
         Some("2026-07-18T00:00:00Z".into()),
@@ -1650,7 +1651,6 @@ fn analysis_incompatible_version_blocks_even_without_diagnostic_metadata() {
     let mut compatibility = CompatibilityMetadata::new(false, true, "23.1.0".into());
     compatibility.compatibility_message = None;
     let result = run_deterministic_analysis(
-        &[],
         &[],
         &[],
         &[],
@@ -1702,7 +1702,6 @@ fn analysis_promotes_deleted_category_and_duplicate_evidence() {
         &[sample_account("a1", "Checking")],
         &txs,
         &[sample_category("deleted", "Old food", true)],
-        &[],
         &[],
         &[],
         &[],
@@ -1771,7 +1770,6 @@ fn analysis_policy_removes_pending_and_transfer_evidence_before_findings() {
         &[],
         &[],
         &[],
-        &[],
         CompatibilityMetadata::new(false, true, "25.1.0".into()),
         Some("2026-07-18T00:00:00Z".into()),
         Some("2026-07-18T00:00:00Z".into()),
@@ -1831,7 +1829,6 @@ fn analysis_mixed_currency_backlog_is_an_error_not_an_actionable_total() {
         &[],
         &[],
         &[],
-        &[],
         CompatibilityMetadata::new(false, true, "25.1.0".into()),
         Some("2026-07-18T00:00:00Z".into()),
         Some("2026-07-18T00:00:00Z".into()),
@@ -1878,7 +1875,6 @@ fn analysis_absolute_sum_overflow_blocks_and_omits_repeated_merchant_total() {
     let result = run_deterministic_analysis(
         &[sample_account("a1", "Checking")],
         &txs,
-        &[],
         &[],
         &[],
         &[],
@@ -1968,7 +1964,6 @@ fn analyze_with_rules(
         payees,
         rules,
         &[],
-        &[],
         CompatibilityMetadata::new(false, true, "25.1.0".into()),
         Some("2026-07-18T00:00:00Z".into()),
         Some("2026-07-18T00:00:00Z".into()),
@@ -1986,6 +1981,24 @@ fn classification_json(
         .iter()
         .find(|candidate| candidate.transaction_id == transaction_id)
         .map(|candidate| serde_json::to_value(candidate).unwrap())
+}
+
+fn shared_classification_rule_ids(
+    result: &DeterministicAnalysis,
+    candidate: &serde_json::Value,
+) -> serde_json::Value {
+    assert!(
+        candidate.get("ruleIds").is_none(),
+        "native candidates must not repeat complete IDs"
+    );
+    let index = candidate["ruleSetIndex"]
+        .as_u64()
+        .expect("native candidate requires a shared index") as usize;
+    let output = serde_json::to_value(result).unwrap();
+    serde_json::json!(source_posting_rule_ids(
+        &output,
+        &output["nativeRuleSets"][index]
+    ))
 }
 
 #[test]
@@ -2015,7 +2028,10 @@ fn analysis_enabled_actual_category_rule_proposes_target_and_rule_ids() {
     let candidate = classification_json(&result, "coffee").unwrap();
     assert_eq!(candidate["proposedCategoryId"], "food");
     assert_eq!(candidate["proposedCategoryName"], "Food");
-    assert_eq!(candidate["ruleIds"], serde_json::json!(["rule-coffee"]));
+    assert_eq!(
+        shared_classification_rule_ids(&result, &candidate),
+        serde_json::json!(["rule-coffee"])
+    );
     assert_eq!(candidate["reasons"][0]["kind"], "AutomationRule");
 }
 
@@ -2065,6 +2081,7 @@ fn analysis_paused_rule_keeps_history_and_resume_restores_rule_target() {
     let paused_candidate = classification_json(&paused_result, "coffee").unwrap();
     assert!(paused_candidate.get("proposedCategoryId").is_none());
     assert!(paused_candidate.get("ruleIds").is_none());
+    assert!(paused_candidate.get("ruleSetIndex").is_none());
     assert_eq!(paused_candidate["reasons"][0]["kind"], "Historical");
 
     let resumed_result = analyze_with_rules(
@@ -2077,7 +2094,7 @@ fn analysis_paused_rule_keeps_history_and_resume_restores_rule_target() {
     let resumed_candidate = classification_json(&resumed_result, "coffee").unwrap();
     assert_eq!(resumed_candidate["proposedCategoryId"], "food");
     assert_eq!(
-        resumed_candidate["ruleIds"],
+        shared_classification_rule_ids(&resumed_result, &resumed_candidate),
         serde_json::json!(["rule-coffee"])
     );
 }
@@ -2147,7 +2164,10 @@ fn analysis_actual_category_rule_supports_null_stage_and_or_vs_and() {
     );
     let or_candidate = classification_json(&or_result, "coffee").unwrap();
     assert_eq!(or_candidate["proposedCategoryId"], "food");
-    assert_eq!(or_candidate["ruleIds"], serde_json::json!(["or-rule"]));
+    assert_eq!(
+        shared_classification_rule_ids(&or_result, &or_candidate),
+        serde_json::json!(["or-rule"])
+    );
 
     let and_result = analyze_with_rules(
         &[tx],
@@ -2189,7 +2209,7 @@ fn analysis_actual_category_rule_matches_payee_id_and_account_category_predicate
     let candidate = classification_json(&result, "coffee").unwrap();
     assert_eq!(candidate["proposedCategoryId"], "food");
     assert_eq!(
-        candidate["ruleIds"],
+        shared_classification_rule_ids(&result, &candidate),
         serde_json::json!(["actual-identifiers"])
     );
 }
@@ -2391,9 +2411,295 @@ fn analysis_same_target_actual_rules_report_sorted_rule_ids() {
     let candidate = classification_json(&result, "coffee").unwrap();
     assert_eq!(candidate["proposedCategoryId"], "food");
     assert_eq!(
-        candidate["ruleIds"],
+        shared_classification_rule_ids(&result, &candidate),
         serde_json::json!(["a-rule", "z-rule"])
     );
+}
+
+#[test]
+fn analysis_shared_native_rule_sets_preserve_complete_ids_without_per_candidate_expansion() {
+    let ids: Vec<_> = (0..64)
+        .map(|index| format!("legacy-shared-rule-{index:03}"))
+        .collect();
+    let rules: Vec<_> = ids
+        .iter()
+        .rev()
+        .map(|id| {
+            actual_category_rule(
+                id,
+                false,
+                serde_json::json!("post"),
+                "and",
+                serde_json::json!([
+                    {"field": "account", "op": "is", "value": "fd-account-checking"},
+                    {"field": "category", "op": "is", "value": null}
+                ]),
+                category_rule_actions("food"),
+            )
+        })
+        .collect();
+    let transactions: Vec<_> = (0..240)
+        .map(|index| {
+            let mut tx = canonical_rule_tx(&format!("legacy-shared-{index:03}"));
+            tx.payee_id = Some(format!("legacy-payee-{index:03}"));
+            tx.payee_name = Some(format!("Distinct legacy merchant {index:03}"));
+            tx
+        })
+        .collect();
+    let payees: Vec<_> = transactions
+        .iter()
+        .map(|tx| crate::snapshots::Payee {
+            id: tx.payee_id.clone().unwrap(),
+            name: tx.payee_name.clone().unwrap(),
+            transfer_account_id: None,
+            mtid: None,
+        })
+        .collect();
+    let categories = [sample_category("food", "Food", false)];
+    let result = analyze_with_rules(
+        &transactions,
+        &categories,
+        &payees,
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    let output = serde_json::to_value(&result).unwrap();
+    assert_eq!(
+        output["nativeRuleBlocks"],
+        serde_json::json!([{"ruleIds": ids}])
+    );
+    assert_eq!(
+        output["nativeRuleParts"],
+        serde_json::json!([{"blockIndexes": [0]}])
+    );
+    assert_eq!(
+        output["nativeRuleSets"],
+        serde_json::json!([{"orPartIndexes": [], "andPartIndexes": [[0], [0], [0], [0]], "categoryPartIndex": 0}])
+    );
+    let candidates = output["deterministicClassifications"].as_array().unwrap();
+    assert_eq!(candidates.len(), 240);
+    for candidate in candidates {
+        assert_eq!(candidate["proposedCategoryId"], "food");
+        assert_eq!(candidate["proposedCategoryName"], "Food");
+        assert_eq!(candidate["ruleSetIndex"], 0);
+        assert!(candidate.get("ruleIds").is_none());
+        assert_eq!(candidate["reasons"][0]["kind"], "AutomationRule");
+    }
+    let serialized = serde_json::to_string(&result).unwrap();
+    for id in &ids {
+        assert_eq!(serialized.matches(&format!("\"{id}\"")).count(), 1);
+    }
+    let mut reversed_transactions = transactions.clone();
+    reversed_transactions.reverse();
+    let mut reversed_rules = rules.clone();
+    reversed_rules.reverse();
+    let reversed = analyze_with_rules(
+        &reversed_transactions,
+        &categories,
+        &payees,
+        &reversed_rules,
+        &InclusionScope::new(true, true),
+    );
+    let reversed = serde_json::to_value(reversed).unwrap();
+    assert_eq!(reversed["nativeRuleSets"], output["nativeRuleSets"]);
+    assert_eq!(reversed["nativeRuleBlocks"], output["nativeRuleBlocks"]);
+    assert_eq!(
+        reversed["deterministicClassifications"],
+        output["deterministicClassifications"]
+    );
+    reversed_rules.push(actual_category_rule(
+        "unmatched-payee-rule",
+        false,
+        serde_json::json!("post"),
+        "and",
+        serde_json::json!([{"field": "payee", "op": "is", "value": "not-a-matching-payee"}]),
+        category_rule_actions("food"),
+    ));
+    let relevant_but_equal = analyze_with_rules(
+        &transactions,
+        &categories,
+        &payees,
+        &reversed_rules,
+        &InclusionScope::new(true, true),
+    );
+    let relevant_but_equal = serde_json::to_value(relevant_but_equal).unwrap();
+    assert_eq!(
+        relevant_but_equal["nativeRuleSets"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        source_posting_rule_ids(
+            &relevant_but_equal,
+            &relevant_but_equal["nativeRuleSets"][0]
+        ),
+        ids
+    );
+    assert_eq!(
+        relevant_but_equal["deterministicClassifications"],
+        output["deterministicClassifications"]
+    );
+    let historical = analyze_with_rules(
+        &[canonical_rule_tx("non-native")],
+        &categories,
+        &[crate::snapshots::Payee {
+            id: "coffee".into(),
+            name: "Coffee".into(),
+            transfer_account_id: None,
+            mtid: None,
+        }],
+        &[],
+        &InclusionScope::new(true, true),
+    );
+    let historical = serde_json::to_value(historical).unwrap();
+    assert_eq!(historical["nativeRuleSets"], serde_json::json!([]));
+    assert_eq!(historical["nativeRuleBlocks"], serde_json::json!([]));
+    assert_eq!(historical["nativeRuleParts"], serde_json::json!([]));
+    assert!(historical["deterministicClassifications"][0]
+        .get("ruleSetIndex")
+        .is_none());
+    assert!(historical["deterministicClassifications"][0]
+        .get("ruleIds")
+        .is_none());
+}
+
+#[test]
+fn analysis_overlapping_native_rule_sets_share_blocks_without_common_id_expansion() {
+    let common_ids: Vec<_> = (0..64)
+        .map(|index| format!("legacy-overlap-common-{index:03}"))
+        .collect();
+    let transactions: Vec<_> = (0..240)
+        .map(|index| {
+            let mut tx = canonical_rule_tx(&format!("legacy-overlap-tx-{index:03}"));
+            tx.payee_id = Some(format!("legacy-overlap-payee-{:03}", index % 48));
+            tx.payee_name = Some(format!("Legacy overlap merchant {:03}", index % 48));
+            tx
+        })
+        .collect();
+    let payees: Vec<_> = (0..48)
+        .map(|index| crate::snapshots::Payee {
+            id: format!("legacy-overlap-payee-{index:03}"),
+            name: format!("Legacy overlap merchant {index:03}"),
+            transfer_account_id: None,
+            mtid: None,
+        })
+        .collect();
+    let categories = [sample_category("food", "Food", false)];
+    let mut rules: Vec<_> = common_ids
+        .iter()
+        .map(|id| {
+            actual_category_rule(
+                id,
+                false,
+                serde_json::json!("post"),
+                "and",
+                serde_json::json!([
+                    {"field": "account", "op": "is", "value": "fd-account-checking"},
+                    {"field": "category", "op": "is", "value": null}
+                ]),
+                category_rule_actions("food"),
+            )
+        })
+        .collect();
+    for index in 0..48 {
+        rules.push(actual_category_rule(
+            &format!("legacy-overlap-private-{index:03}"), false, serde_json::json!("post"), "and",
+            serde_json::json!([{"field": "payee", "op": "is", "value": format!("legacy-overlap-payee-{index:03}")}]),
+            category_rule_actions("food"),
+        ));
+    }
+    let result = analyze_with_rules(
+        &transactions,
+        &categories,
+        &payees,
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    let output = serde_json::to_value(&result).unwrap();
+    let blocks = output["nativeRuleBlocks"]
+        .as_array()
+        .expect("legacy unequal overlapping outcomes must retain common IDs in shared blocks");
+    assert_eq!(blocks.len(), 49);
+    assert_eq!(
+        blocks
+            .iter()
+            .map(|block| block["ruleIds"].as_array().unwrap().len())
+            .sum::<usize>(),
+        112
+    );
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block["ruleIds"] == serde_json::json!(common_ids))
+            .count(),
+        1
+    );
+    let all_ids: std::collections::BTreeSet<_> = blocks
+        .iter()
+        .flat_map(|block| {
+            block["ruleIds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(
+        all_ids.len(),
+        112,
+        "source rule IDs must belong to disjoint blocks"
+    );
+    let sets = output["nativeRuleSets"].as_array().unwrap();
+    assert_eq!(sets.len(), 48);
+    for set in sets {
+        assert!(set.get("ruleIds").is_none());
+        assert_eq!(source_posting_rule_ids(&output, set).len(), 65);
+    }
+    let candidates = output["deterministicClassifications"].as_array().unwrap();
+    assert_eq!(candidates.len(), 240);
+    for (index, candidate) in candidates.iter().enumerate() {
+        assert_eq!(
+            candidate["transactionId"],
+            format!("legacy-overlap-tx-{index:03}")
+        );
+        assert_eq!(candidate["proposedCategoryId"], "food");
+        assert_eq!(candidate["proposedCategoryName"], "Food");
+        assert!(candidate.get("ruleIds").is_none());
+        let set = &sets[candidate["ruleSetIndex"].as_u64().unwrap() as usize];
+        let complete = source_posting_rule_ids(&output, set);
+        let mut expected = common_ids.clone();
+        expected.push(format!("legacy-overlap-private-{:03}", index % 48));
+        assert_eq!(complete, expected);
+    }
+    let serialized = serde_json::to_string(&result).unwrap();
+    for id in &all_ids {
+        assert_eq!(serialized.matches(&format!("\"{id}\"")).count(), 1);
+    }
+    let mut reversed_transactions = transactions.clone();
+    reversed_transactions.reverse();
+    let mut reversed_payees = payees.clone();
+    reversed_payees.reverse();
+    rules.reverse();
+    let reversed = analyze_with_rules(
+        &reversed_transactions,
+        &categories,
+        &reversed_payees,
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    let reversed = serde_json::to_value(reversed).unwrap();
+    for field in [
+        "nativeRuleBlocks",
+        "nativeRuleSets",
+        "deterministicClassifications",
+    ] {
+        assert_eq!(
+            reversed[field], output[field],
+            "legacy {field} must survive source enumeration"
+        );
+    }
 }
 
 #[test]
@@ -2603,4 +2909,900 @@ fn correction_candidates_preserve_conflicting_context_and_rank_supported_categor
             "missing conflicting evidence {evidence}"
         );
     }
+}
+
+fn source_posting_rules(operation: &str) -> Vec<crate::snapshots::Rule> {
+    let mut rules = Vec::new();
+    for index in 0..32 {
+        rules.push(actual_category_rule(
+            &format!("posting-{operation}-{index:03}"),
+            false,
+            serde_json::json!("post"),
+            operation,
+            serde_json::json!([
+                {"field": "account", "op": "is", "value": "fd-account-checking"},
+                {"field": "payee", "op": "is", "value": format!("posting-payee-{index:03}")}
+            ]),
+            category_rule_actions("food"),
+        ));
+        if operation == "or" {
+            rules.push(actual_category_rule(
+                &format!("posting-private-{index:03}"), false, serde_json::json!("post"), "and",
+                serde_json::json!([{"field": "payee", "op": "is", "value": format!("posting-payee-{index:03}")}]),
+                category_rule_actions("food"),
+            ));
+        }
+    }
+    rules
+}
+
+fn source_posting_transactions() -> Vec<Transaction> {
+    (0..160)
+        .map(|index| {
+            let mut tx = canonical_rule_tx(&format!("legacy-posting-tx-{index:03}"));
+            tx.payee_id = Some(format!("posting-payee-{:03}", index % 32));
+            tx.payee_name = Some(format!("Posting merchant {:03}", index % 32));
+            tx
+        })
+        .collect()
+}
+
+fn source_posting_rule_ids(output: &serde_json::Value, set: &serde_json::Value) -> Vec<String> {
+    let parts = output["nativeRuleParts"]
+        .as_array()
+        .expect("literal source posting table is required");
+    let union = |references: &serde_json::Value| -> std::collections::BTreeSet<usize> {
+        let references = references.as_array().unwrap();
+        assert!(references
+            .windows(2)
+            .all(|pair| pair[0].as_u64().unwrap() < pair[1].as_u64().unwrap()));
+        references
+            .iter()
+            .flat_map(|reference| {
+                parts[reference.as_u64().unwrap() as usize]["blockIndexes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|index| index.as_u64().unwrap() as usize)
+            })
+            .collect()
+    };
+    let or = set["orPartIndexes"]
+        .as_array()
+        .expect("fixed OR references are required");
+    let and = set["andPartIndexes"]
+        .as_array()
+        .expect("fixed AND operands are required");
+    assert!(or.len() <= 4);
+    assert!(and.is_empty() || and.len() == 4);
+    assert!(and
+        .iter()
+        .all(|operand| (1..=2).contains(&operand.as_array().unwrap().len())));
+    assert!(
+        or.len()
+            + and
+                .iter()
+                .map(|operand| operand.as_array().unwrap().len())
+                .sum::<usize>()
+            < 13
+    );
+    assert!(set.get("blockIndexes").is_none() && set.get("ruleIds").is_none());
+    let mut indexes = union(&set["orPartIndexes"]);
+    if let Some(first) = and.first() {
+        let mut intersection = union(first);
+        for operand in &and[1..] {
+            intersection = intersection
+                .intersection(&union(operand))
+                .copied()
+                .collect();
+        }
+        indexes.extend(intersection);
+    }
+    let category = set["categoryPartIndex"]
+        .as_u64()
+        .expect("selected category filter is required") as usize;
+    let category_indexes: std::collections::BTreeSet<_> = parts[category]["blockIndexes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|index| index.as_u64().unwrap() as usize)
+        .collect();
+    indexes = indexes.intersection(&category_indexes).copied().collect();
+    let blocks = output["nativeRuleBlocks"].as_array().unwrap();
+    let mut ids: Vec<_> = indexes
+        .into_iter()
+        .flat_map(|index| {
+            blocks[index]["ruleIds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_owned())
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn analysis_or_postings_preserve_complete_unequal_outcomes_with_constant_descriptors() {
+    let mut transactions = source_posting_transactions();
+    let mut rules = source_posting_rules("or");
+    let categories = [sample_category("food", "Food", false)];
+    let result = analyze_with_rules(
+        &transactions,
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    let output = serde_json::to_value(result).unwrap();
+    let rows = output["deterministicClassifications"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        160,
+        "all real legacy producer outcomes remain present"
+    );
+    assert!(rows
+        .iter()
+        .all(|row| row["proposedCategoryId"] == "food" && row.get("ruleIds").is_none()));
+    let blocks = output["nativeRuleBlocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 64);
+    assert_eq!(
+        blocks
+            .iter()
+            .map(|block| block["ruleIds"].as_array().unwrap().len())
+            .sum::<usize>(),
+        64
+    );
+    let common_indexes: Vec<_> = blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            block["ruleIds"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("posting-or-")
+                .then_some(index)
+        })
+        .collect();
+    assert_eq!(common_indexes.len(), 32);
+    let parts = output["nativeRuleParts"]
+        .as_array()
+        .expect("legacy OR outcomes must reference shared literal source postings");
+    assert_eq!(
+        parts
+            .iter()
+            .filter(|part| part["blockIndexes"] == serde_json::json!(common_indexes))
+            .count(),
+        1
+    );
+    assert!(
+        parts
+            .iter()
+            .map(|part| part["blockIndexes"].as_array().unwrap().len())
+            .sum::<usize>()
+            <= 4 * 64,
+        "literal source postings cannot store one expanded 33-block union per outcome"
+    );
+    let mut contents = std::collections::BTreeSet::new();
+    for part in parts {
+        let indexes: Vec<_> = part["blockIndexes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|index| index.as_u64().unwrap())
+            .collect();
+        assert!(!indexes.is_empty() && indexes.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(indexes.iter().all(|index| *index < blocks.len() as u64));
+        assert!(
+            contents.insert(indexes),
+            "equal literal parts must be interned once"
+        );
+        assert!(part.get("ruleIds").is_none());
+    }
+    let sets = output["nativeRuleSets"].as_array().unwrap();
+    assert_eq!(sets.len(), 32);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            row["transactionId"],
+            format!("legacy-posting-tx-{index:03}")
+        );
+        let actual = source_posting_rule_ids(
+            &output,
+            &sets[row["ruleSetIndex"].as_u64().unwrap() as usize],
+        );
+        let mut expected: Vec<_> = (0..32)
+            .map(|rule| format!("posting-or-{rule:03}"))
+            .collect();
+        expected.push(format!("posting-private-{:03}", index % 32));
+        assert_eq!(
+            actual, expected,
+            "OR overlap cannot duplicate or lose any complete source ID"
+        );
+    }
+    let wire = serde_json::to_string(&output).unwrap();
+    for rule in &rules {
+        assert_eq!(wire.matches(&format!("\"{}\"", rule.id)).count(), 1);
+    }
+    transactions.reverse();
+    rules.reverse();
+    let reordered = serde_json::to_value(analyze_with_rules(
+        &transactions,
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    ))
+    .unwrap();
+    for field in [
+        "nativeRuleBlocks",
+        "nativeRuleParts",
+        "nativeRuleSets",
+        "deterministicClassifications",
+    ] {
+        assert_eq!(
+            reordered[field], output[field],
+            "legacy posting {field} must survive source ordering"
+        );
+    }
+}
+
+#[test]
+fn matcher_or_postings_do_not_retain_expanded_common_membership_per_outcome() {
+    let rules = source_posting_rules("or");
+    let categories = [sample_category("food", "Food", false)];
+    let categories = std::collections::HashMap::from([("food", &categories[0])]);
+    let index =
+        crate::categorization::CategoryRuleIndex::new(&rules, &categories, str::to_lowercase);
+    let mut cache = crate::categorization::RuleMatchCache::default();
+    for payee in 0..32 {
+        let payee = format!("posting-payee-{payee:03}");
+        for _ in 0..5 {
+            let matching = index.cached_matches(
+                [
+                    Some(payee.as_str()),
+                    None,
+                    Some("fd-account-checking"),
+                    None,
+                ],
+                &mut cache,
+            );
+            assert_eq!(matching.category, Some("food"));
+            assert_eq!(
+                matching.rule_count, 33,
+                "account/payee OR overlap is counted once"
+            );
+            assert!(!matching.conflict);
+        }
+    }
+    assert!(cache.retained_membership_entries() <= 64 * 4 + 32 * 40,
+        "fixed source postings and constant-size descriptor cache must replace expanded unions; retained {} entries",
+        cache.retained_membership_entries());
+}
+
+#[test]
+fn analysis_and_matcher_route_selective_payee_instead_of_unioning_shared_account_posting() {
+    let transactions = source_posting_transactions();
+    let rules = source_posting_rules("and");
+    let categories = [sample_category("food", "Food", false)];
+    let output = serde_json::to_value(analyze_with_rules(
+        &transactions,
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    ))
+    .unwrap();
+    let rows = output["deterministicClassifications"].as_array().unwrap();
+    assert_eq!(rows.len(), 160);
+    assert!(rows
+        .iter()
+        .all(|row| row["proposedCategoryId"] == "food" && row.get("ruleIds").is_none()));
+    let categories = std::collections::HashMap::from([("food", &categories[0])]);
+    let index =
+        crate::categorization::CategoryRuleIndex::new(&rules, &categories, str::to_lowercase);
+    let mut cache = crate::categorization::RuleMatchCache::default();
+    for payee in 0..32 {
+        let payee = format!("posting-payee-{payee:03}");
+        for _ in 0..5 {
+            let matching = index.cached_matches(
+                [
+                    Some(payee.as_str()),
+                    None,
+                    Some("fd-account-checking"),
+                    None,
+                ],
+                &mut cache,
+            );
+            assert_eq!(matching.category, Some("food"));
+            assert_eq!(matching.rule_count, 1);
+            assert!(!matching.conflict);
+        }
+    }
+    assert!(index.lookup_inspections.get() <= 32 * 8,
+        "each AND lookup must route the necessary selective payee posting, not repeatedly visit all account candidates; inspected {} entries",
+        index.lookup_inspections.get());
+}
+
+#[test]
+fn matcher_mixed_category_counts_and_bounded_advice_use_matching_source_routes() {
+    let mut rules = source_posting_rules("or");
+    for rule in rules
+        .iter_mut()
+        .filter(|rule| rule.id.starts_with("posting-private-"))
+    {
+        rule.actions = category_rule_actions("other");
+    }
+    let categories = [
+        sample_category("food", "Food", false),
+        sample_category("other", "Other", false),
+    ];
+    let categories =
+        std::collections::HashMap::from([("food", &categories[0]), ("other", &categories[1])]);
+    let index =
+        crate::categorization::CategoryRuleIndex::new(&rules, &categories, str::to_lowercase);
+    let mut cache = crate::categorization::RuleMatchCache::default();
+    for payee in 0..32 {
+        let payee = format!("posting-payee-{payee:03}");
+        let matching = index.cached_matches(
+            [
+                Some(payee.as_str()),
+                None,
+                Some("fd-account-checking"),
+                None,
+            ],
+            &mut cache,
+        );
+        assert!(matching.conflict);
+        assert_eq!(matching.rule_count, 33);
+        assert!(index.has_category(matching, "food"));
+        assert!(index.has_category(matching, "other"));
+        assert!(!index.has_category(matching, "unmatched"));
+        assert_eq!(index.category_count(matching, "food"), 32);
+        assert_eq!(index.category_count(matching, "other"), 1);
+        assert_eq!(index.matching_categories(matching, 1), vec!["food"]);
+        assert_eq!(
+            index.matching_categories(matching, 2),
+            vec!["food", "other"]
+        );
+    }
+}
+
+#[test]
+fn matcher_postings_preserve_null_empty_unmatched_and_repeated_field_boolean_semantics() {
+    let make = |id, operation, conditions| {
+        actual_category_rule(
+            id,
+            false,
+            serde_json::json!("post"),
+            operation,
+            conditions,
+            category_rule_actions("food"),
+        )
+    };
+    let rules = [
+        make(
+            "repeated-and-impossible",
+            "and",
+            serde_json::json!([
+                {"field": "payee", "op": "is", "value": "payee-a"},
+                {"field": "payee", "op": "is", "value": "payee-b"}
+            ]),
+        ),
+        make(
+            "repeated-and-a",
+            "and",
+            serde_json::json!([
+                {"field": "payee", "op": "is", "value": "payee-a"},
+                {"field": "payee", "op": "is", "value": "payee-a"}
+            ]),
+        ),
+        make(
+            "repeated-or-ab",
+            "or",
+            serde_json::json!([
+                {"field": "payee", "op": "is", "value": "payee-a"},
+                {"field": "payee", "op": "is", "value": "payee-b"}
+            ]),
+        ),
+        make(
+            "both-null",
+            "and",
+            serde_json::json!([
+                {"field": "payee", "op": "is", "value": null},
+                {"field": "category", "op": "is", "value": null}
+            ]),
+        ),
+    ];
+    let categories = [sample_category("food", "Food", false)];
+    let category_map = std::collections::HashMap::from([("food", &categories[0])]);
+    let index =
+        crate::categorization::CategoryRuleIndex::new(&rules, &category_map, str::to_lowercase);
+    let mut cache = crate::categorization::RuleMatchCache::default();
+    for (payee, category, expected) in [
+        (Some("payee-a"), None, 2),
+        (Some("payee-b"), None, 1),
+        (None, None, 1),
+        (Some(""), None, 0),
+        (Some("unmatched"), None, 0),
+        (None, Some(""), 0),
+        (None, Some("unmatched-category"), 0),
+    ] {
+        let matching = index.cached_matches(
+            [payee, None, Some("fd-account-checking"), category],
+            &mut cache,
+        );
+        assert_eq!(
+            matching.rule_count, expected,
+            "payee={payee:?}, category={category:?}"
+        );
+        assert_eq!(matching.category, (expected > 0).then_some("food"));
+        assert!(!matching.conflict);
+    }
+    let mut transactions: Vec<_> = [
+        Some("payee-a"),
+        Some("payee-b"),
+        None,
+        Some(""),
+        Some("unmatched"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, payee)| {
+        let mut tx = canonical_rule_tx(&format!("boolean-tx-{index}"));
+        tx.payee_id = payee.map(str::to_owned);
+        tx
+    })
+    .collect();
+    let result = serde_json::to_value(analyze_with_rules(
+        &transactions,
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    ))
+    .unwrap();
+    assert_eq!(
+        result["deterministicClassifications"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    for (transaction, expected) in [
+        ("boolean-tx-0", vec!["repeated-and-a", "repeated-or-ab"]),
+        ("boolean-tx-1", vec!["repeated-or-ab"]),
+        ("boolean-tx-2", vec!["both-null"]),
+    ] {
+        let row = result["deterministicClassifications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["transactionId"] == transaction)
+            .unwrap();
+        let actual = source_posting_rule_ids(
+            &result,
+            &result["nativeRuleSets"][row["ruleSetIndex"].as_u64().unwrap() as usize],
+        );
+        assert_eq!(
+            actual,
+            expected.into_iter().map(str::to_owned).collect::<Vec<_>>()
+        );
+    }
+    transactions.reverse();
+    let reordered = serde_json::to_value(analyze_with_rules(
+        &transactions,
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    ))
+    .unwrap();
+    for field in [
+        "nativeRuleBlocks",
+        "nativeRuleParts",
+        "nativeRuleSets",
+        "deterministicClassifications",
+    ] {
+        assert_eq!(reordered[field], result[field]);
+    }
+}
+
+#[test]
+fn analysis_legacy_supported_long_rule_id_preserves_existing_source_contract() {
+    let id = format!("legacy-{}", "x".repeat(293));
+    assert_eq!(id.len(), 300);
+    let rules = [actual_category_rule(
+        &id,
+        false,
+        serde_json::json!("post"),
+        "and",
+        serde_json::json!([{"field": "account", "op": "is", "value": "fd-account-checking"}]),
+        category_rule_actions("food"),
+    )];
+    let categories = [sample_category("food", "Food", false)];
+    let result = analyze_with_rules(
+        &[canonical_rule_tx("legacy-long-id")],
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    let output = serde_json::to_value(result)
+        .expect("generic legacy output cannot inherit a new merchant-only ID limit");
+    assert_eq!(
+        output["deterministicClassifications"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "a supported pre-existing legacy rule ID cannot silently become unsupported"
+    );
+    assert_eq!(
+        output["nativeRuleBlocks"],
+        serde_json::json!([{"ruleIds": [id.clone()]}])
+    );
+    let row = &output["deterministicClassifications"][0];
+    assert_eq!(
+        source_posting_rule_ids(
+            &output,
+            &output["nativeRuleSets"][row["ruleSetIndex"].as_u64().unwrap() as usize]
+        ),
+        vec![id]
+    );
+}
+
+#[test]
+fn analysis_legacy_source_rule_count_above_merchant_cap_preserves_every_id() {
+    let rules: Vec<_> = (0..100001).map(|index| actual_category_rule(
+        &format!("legacy-count-{index:06}"), false, serde_json::json!("post"), "and",
+        serde_json::json!([{"field": "account", "op": "is", "value": "fd-account-checking"}]),
+        category_rule_actions("food"),
+    )).collect();
+    let categories = [sample_category("food", "Food", false)];
+    let result = analyze_with_rules(
+        &[canonical_rule_tx("legacy-rule-count")],
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    let output = serde_json::to_value(result)
+        .expect("legacy source admission has no merchant 100k-rule limit");
+    assert_eq!(
+        output["deterministicClassifications"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let ids = output["nativeRuleBlocks"][0]["ruleIds"].as_array().unwrap();
+    assert_eq!(
+        ids.len(),
+        100001,
+        "a complete equivalently compiled legacy block preserves every source ID"
+    );
+    assert_eq!(ids.first().unwrap(), "legacy-count-000000");
+    assert_eq!(ids.last().unwrap(), "legacy-count-100000");
+    let row = &output["deterministicClassifications"][0];
+    let complete = source_posting_rule_ids(
+        &output,
+        &output["nativeRuleSets"][row["ruleSetIndex"].as_u64().unwrap() as usize],
+    );
+    assert_eq!(
+        complete,
+        rules.iter().map(|rule| rule.id.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn literal_witness_prefers_cheap_or_over_disjoint_and_postings() {
+    use crate::merchant_intelligence::{
+        native_set_has_witness, MerchantNativeRulePart, MerchantNativeRuleSet,
+        NATIVE_WITNESS_VISITS,
+    };
+    let part = |indexes: Vec<u32>| MerchantNativeRulePart {
+        block_indexes: indexes.into(),
+    };
+    let mut parts = vec![
+        part((0..128).collect()),
+        part((0..64).collect()),
+        part((96..128).collect()),
+        part((64..96).collect()),
+        part((64..128).collect()),
+    ];
+    parts.extend((0..64).map(|index| part(vec![index])));
+    NATIVE_WITNESS_VISITS.with(|visits| visits.set(0));
+    for index in 0..64 {
+        let set = MerchantNativeRuleSet {
+            or_part_indexes: vec![1, index + 5],
+            and_part_indexes: vec![vec![2], vec![4], vec![3], vec![4]],
+            category_part_index: 0,
+        };
+        assert!(native_set_has_witness(&set, &parts));
+    }
+    let visits = NATIVE_WITNESS_VISITS.with(|visits| visits.get());
+    assert!(
+        visits <= 64 * 8,
+        "OR witness must not repeatedly disprove 32-member disjoint AND postings: {visits}"
+    );
+}
+
+#[test]
+fn literal_witness_prefers_selective_and_when_or_and_category_are_disjoint() {
+    use crate::merchant_intelligence::{
+        native_set_has_witness, MerchantNativeRulePart, MerchantNativeRuleSet,
+        NATIVE_WITNESS_VISITS,
+    };
+    let part = |indexes: Vec<u32>| MerchantNativeRulePart {
+        block_indexes: indexes.into(),
+    };
+    let mut parts = vec![part((64..128).collect()), part((0..64).collect())];
+    parts.extend((64..128).map(|index| part(vec![index])));
+    NATIVE_WITNESS_VISITS.with(|visits| visits.set(0));
+    for index in 0..64 {
+        let set = MerchantNativeRuleSet {
+            or_part_indexes: vec![1],
+            and_part_indexes: vec![vec![index + 2], vec![0], vec![0], vec![0]],
+            category_part_index: 0,
+        };
+        assert!(native_set_has_witness(&set, &parts));
+    }
+    let visits = NATIVE_WITNESS_VISITS.with(|visits| visits.get());
+    assert!(visits <= 64 * 8, "category-selected AND witness must not repeatedly disprove the unrelated 64-block OR: {visits}");
+}
+
+fn broad_bounded_sample_rules(mixed: bool) -> Vec<crate::snapshots::Rule> {
+    let mut rules = Vec::new();
+    for index in 0..64 {
+        let id = match index {
+            0 => "sample-a".to_owned(),
+            1 => "sample-b".to_owned(),
+            _ => format!("sample-c-{index:03}"),
+        };
+        rules.push(actual_category_rule(&id, false, serde_json::json!("post"), "and",
+            serde_json::json!([{"field": "account", "op": "oneOf", "value": ["fd-account-checking", format!("sample-account-{index:03}")]}]),
+            category_rule_actions(if mixed && index % 2 == 1 { "other" } else { "food" })));
+    }
+    rules.push(actual_category_rule("sample-z", false, serde_json::json!("post"), "and",
+        serde_json::json!([{"field": "account", "op": "oneOf", "value": ["fd-account-checking", "sample-account-000"]}]),
+        category_rule_actions("food")));
+    for (id, operation, conditions) in [
+        (
+            "sample-0-payee",
+            "and",
+            serde_json::json!([{"field": "payee", "op": "is", "value": "sample-payee"}]),
+        ),
+        (
+            "sample-00-name",
+            "and",
+            serde_json::json!([{"field": "payee_name", "op": "is", "value": "Sample merchant"}]),
+        ),
+        (
+            "sample-000-or",
+            "or",
+            serde_json::json!([
+            {"field": "account", "op": "is", "value": "fd-account-checking"}, {"field": "payee", "op": "is", "value": "not-this-payee"}]),
+        ),
+        (
+            "sample-aa-conjunction",
+            "and",
+            serde_json::json!([
+            {"field": "account", "op": "is", "value": "fd-account-checking"}, {"field": "payee", "op": "is", "value": "sample-payee"}]),
+        ),
+    ] {
+        rules.push(actual_category_rule(
+            id,
+            false,
+            serde_json::json!("post"),
+            operation,
+            conditions,
+            category_rule_actions("food"),
+        ));
+    }
+    rules
+}
+
+#[test]
+fn bounded_and_evidence_work_tracks_sample_size_and_preserves_interleaved_multi_id_order() {
+    let rules = broad_bounded_sample_rules(false);
+    let categories = [sample_category("food", "Food", false)];
+    let categories = std::collections::HashMap::from([("food", &categories[0])]);
+    let index =
+        crate::categorization::CategoryRuleIndex::new(&rules, &categories, str::to_lowercase);
+    assert!(
+        index
+            .blocks
+            .windows(2)
+            .all(|blocks| blocks[0].rule_ids[0] < blocks[1].rule_ids[0]),
+        "frozen posting block order is minimum scalar ID order"
+    );
+    let mut cache = crate::categorization::RuleMatchCache::default();
+    let matching = index.cached_matches(
+        [
+            Some("sample-payee"),
+            Some("sample merchant"),
+            Some("fd-account-checking"),
+            None,
+        ],
+        &mut cache,
+    );
+    assert_eq!(
+        matching.rule_count, 69,
+        "equivalent two-ID block and OR/AND routes retain exact source weight"
+    );
+    let expected = [
+        "sample-0-payee",
+        "sample-00-name",
+        "sample-000-or",
+        "sample-a",
+        "sample-aa-conjunction",
+        "sample-b",
+    ];
+    for cap in [1, 4, 6] {
+        index.lookup_inspections.set(0);
+        for _ in 0..64 {
+            let ids: Vec<_> = index
+                .bounded_evidence(matching, cap)
+                .into_iter()
+                .map(|(block, offset)| index.blocks[block].rule_ids[offset].as_str())
+                .collect();
+            assert_eq!(
+                ids,
+                expected[..cap],
+                "multi-ID tails cannot terminate sampling before an interleaved smaller ID"
+            );
+        }
+        assert!(index.lookup_inspections.get() <= 64 * (2 * cap + 8),
+            "bounded explanations must not rescan every account-oneOf block per row: cap={cap}, visits={}", index.lookup_inspections.get());
+    }
+}
+
+#[test]
+fn bounded_mixed_and_advice_and_category_counts_do_not_rescan_broad_matching_routes() {
+    let rules = broad_bounded_sample_rules(true);
+    let categories = [
+        sample_category("food", "Food", false),
+        sample_category("other", "Other", false),
+    ];
+    let categories =
+        std::collections::HashMap::from([("food", &categories[0]), ("other", &categories[1])]);
+    let index =
+        crate::categorization::CategoryRuleIndex::new(&rules, &categories, str::to_lowercase);
+    let mut cache = crate::categorization::RuleMatchCache::default();
+    let matching = index.cached_matches(
+        [
+            Some("sample-payee"),
+            Some("sample merchant"),
+            Some("fd-account-checking"),
+            None,
+        ],
+        &mut cache,
+    );
+    assert!(matching.conflict);
+    assert_eq!(matching.rule_count, 69);
+    index.lookup_inspections.set(0);
+    for _ in 0..64 {
+        assert_eq!(index.matching_categories(matching, 1), vec!["food"]);
+        assert_eq!(index.category_count(matching, "food"), 37);
+        assert_eq!(index.category_count(matching, "other"), 32);
+    }
+    assert!(index.lookup_inspections.get() <= 64 * 24,
+        "source-owned weighted category summaries must bound repeated mixed-category advice/count work: {}",
+        index.lookup_inspections.get());
+}
+
+#[test]
+fn producer_large_or_witness_is_not_starved_by_smaller_disjoint_and_domains() {
+    use crate::merchant_intelligence::{native_set_has_witness, NATIVE_WITNESS_VISITS};
+    let mut rules = Vec::new();
+    for index in 0..64 {
+        rules.push(actual_category_rule(
+            &format!("starve-or-{index:03}"),
+            false,
+            serde_json::json!("post"),
+            "or",
+            serde_json::json!([
+                {"field": "account", "op": "is", "value": "fd-account-checking"},
+                {"field": "category", "op": "is", "value": format!("starve-category-c-{index:03}")}
+            ]),
+            category_rule_actions("food"),
+        ));
+    }
+    let mut duplicate = rules[0].clone();
+    duplicate.id = "starve-or-000-extra".into();
+    rules.push(duplicate);
+    for index in 0..32 {
+        rules.push(actual_category_rule(
+            &format!("starve-payee-account-{index:03}"),
+            false,
+            serde_json::json!("post"),
+            "and",
+            serde_json::json!([
+                {"field": "payee", "op": "is", "value": format!("starve-payee-{index:03}")},
+                {"field": "account", "op": "is", "value": "not-current-account"}
+            ]),
+            category_rule_actions("food"),
+        ));
+        rules.push(actual_category_rule(&format!("starve-category-only-{index:03}"), false, serde_json::json!("post"), "and",
+            serde_json::json!([{"field": "category", "op": "is", "value": format!("starve-category-d-{index:03}")}]),
+            category_rule_actions("food")));
+    }
+    let transactions: Vec<_> = (0..32)
+        .map(|index| {
+            let mut tx = canonical_rule_tx(&format!("starve-tx-{index:03}"));
+            tx.payee_id = Some(format!("starve-payee-{index:03}"));
+            tx
+        })
+        .collect();
+    let categories = [sample_category("food", "Food", false)];
+    let result = analyze_with_rules(
+        &transactions,
+        &categories,
+        &[],
+        &rules,
+        &InclusionScope::new(true, true),
+    );
+    assert_eq!(result.deterministic_classifications.len(), 32);
+    assert_eq!(
+        result.native_rule_sets.len(),
+        32,
+        "payee buckets retain distinct valid source expressions"
+    );
+    let output = serde_json::to_value(&result).unwrap();
+    let mut expected: Vec<_> = (0..64)
+        .map(|index| format!("starve-or-{index:03}"))
+        .collect();
+    expected.push("starve-or-000-extra".into());
+    expected.sort_unstable();
+    NATIVE_WITNESS_VISITS.with(|visits| visits.set(0));
+    for (index, set) in result.native_rule_sets.iter().enumerate() {
+        assert!(native_set_has_witness(set, &result.native_rule_parts));
+        assert_eq!(source_posting_rule_ids(&output, &output["nativeRuleSets"][index]), expected,
+            "all 65 weighted OR IDs survive although no AND predicate matches current account/category facts");
+    }
+    let visits = NATIVE_WITNESS_VISITS.with(|visits| visits.get());
+    assert!(visits <= 32 * 8,
+        "a smaller empty AND domain cannot starve an immediately available broad OR witness: {visits}");
+}
+
+#[test]
+fn literal_witness_keeps_later_or_candidates_fair_after_initial_probes_fail() {
+    use crate::merchant_intelligence::{
+        native_set_has_witness, MerchantNativeRulePart, MerchantNativeRuleSet,
+        NATIVE_WITNESS_VISITS,
+    };
+    let part = |indexes: Vec<u32>| MerchantNativeRulePart {
+        block_indexes: indexes.into(),
+    };
+    let mut category = vec![2, 63];
+    category.extend(64..128);
+    let mut parts = vec![
+        part(category),
+        part((0..64).collect()),
+        part((96..128).collect()),
+        part((64..96).collect()),
+        part((64..128).collect()),
+    ];
+    parts.extend((64..96).map(|index| part(vec![index])));
+    let output = serde_json::json!({
+        "nativeRuleParts": parts,
+        "nativeRuleBlocks": (0..128).map(|index| serde_json::json!({"ruleIds": [format!("future-{index:03}")]})).collect::<Vec<_>>()
+    });
+    NATIVE_WITNESS_VISITS.with(|visits| visits.set(0));
+    for index in 0..32 {
+        let set = MerchantNativeRuleSet {
+            or_part_indexes: vec![1],
+            and_part_indexes: vec![vec![2, index + 5], vec![4], vec![2], vec![3]],
+            category_part_index: 0,
+        };
+        assert!(native_set_has_witness(&set, &parts));
+        assert_eq!(
+            source_posting_rule_ids(&output, &serde_json::to_value(set).unwrap()),
+            vec!["future-002".to_owned(), "future-063".to_owned()]
+        );
+    }
+    let visits = NATIVE_WITNESS_VISITS.with(|visits| visits.get());
+    assert!(visits <= 32 * 8,
+        "after both first probes fail, future OR candidates must still advance before exhausting empty AND: {visits}");
 }

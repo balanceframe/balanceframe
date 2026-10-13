@@ -122,6 +122,24 @@
       <p v-if="operationMessage" role="status" aria-live="polite" class="mb-4 text-sm">
         {{ operationMessage }}
       </p>
+      <section
+        v-if="assistantProbe"
+        data-testid="demo-assistant-probe"
+        role="status"
+        aria-live="polite"
+        aria-labelledby="demo-assistant-probe-heading"
+        class="mb-6 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900"
+      >
+        <h2 id="demo-assistant-probe-heading" class="font-semibold">Bounded assistant probe</h2>
+        <p>Checking metadata: {{ assistantProbe.checking.status === 200 ? 'allowed' : 'blocked' }} (HTTP {{ assistantProbe.checking.status }})</p>
+        <p v-for="resource in assistantProbe.checking.resources" :key="resource.resourceId">{{ resource.name ?? 'Name withheld' }}</p>
+        <ul class="mt-2 list-inside list-disc">
+          <li v-for="denial in assistantProbe.denials" :key="denial.operation">
+            {{ denial.operation }}: {{ denial.status === 200 ? 'allowed' : 'blocked' }} (HTTP {{ denial.status }})
+          </li>
+        </ul>
+        <p class="mt-2 text-sm text-gray-500">Local ACL probe; financial data and raw credentials are not displayed.</p>
+      </section>
 
       <div
         v-if="confirmReset"
@@ -258,6 +276,7 @@
 
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted } from 'vue';
+import { z } from 'zod';
 type DemoStatus = 'loading' | 'ready' | 'failed';
 type Operation = 'load' | 'reset' | 'persona' | 'event' | 'entry';
 
@@ -270,6 +289,11 @@ interface ScenarioSummary {
   supportedEventIds: string[];
 }
 
+interface DemoPersona {
+  id: string;
+  label: string;
+}
+
 interface DemoState {
   status: DemoStatus;
   scenarioId: string;
@@ -278,6 +302,7 @@ interface DemoState {
   shared: true;
   personaId: string | null;
   personaIds: string[];
+  personas: DemoPersona[];
   csrfToken: string | null;
   failureCode?: string;
 }
@@ -297,6 +322,24 @@ const personas = [
   { id: 'coapprover', label: 'Fictional co-approver' },
   { id: 'restricted', label: 'Fictional restricted viewer' },
 ] as const;
+const personaIds = [...personas.map(({ id }) => id), 'limited', 'invitee'];
+const assistantProbeReply = z.object({
+  generation: z.number().int().positive(),
+  probe: z.object({
+    checking: z.object({
+      status: z.number().int().min(100).max(599),
+      resources: z.array(z.object({
+        resourceKind: z.literal('account'),
+        resourceId: z.string(),
+        name: z.string().optional(),
+      }).strict()).max(1),
+    }).strict(),
+    denials: z.array(z.object({
+      operation: z.enum(['manage-grants', 'financial', 'full-history']),
+      status: z.number().int().min(100).max(599),
+    }).strict()).length(3).refine(rows => new Set(rows.map(row => row.operation)).size === 3),
+  }).strict(),
+});
 
 const configuredForDemo = () => {
   try {
@@ -314,6 +357,7 @@ const catalogError = ref('');
 const stateError = ref('');
 const operationError = ref('');
 const operationMessage = ref('');
+const assistantProbe = ref<z.infer<typeof assistantProbeReply>['probe'] | null>(null);
 const operationBusy = ref<Operation | null>(null);
 const confirmReset = ref(false);
 const resetConfirmButton = ref<HTMLButtonElement | null>(null);
@@ -329,9 +373,7 @@ watch(confirmReset, (open) => {
   });
 });
 
-const availablePersonas = computed(() =>
-  personas.filter((persona) => state.value?.personaIds.includes(persona.id)),
-);
+const availablePersonas = computed(() => state.value?.personas ?? []);
 
 const groups = computed(() => {
   const grouped: Array<{ featureGroup: string; scenarios: ScenarioSummary[] }> = [];
@@ -385,20 +427,32 @@ function parseState(value: unknown): DemoState | null {
     !Number.isSafeInteger(candidate.generation) ||
     candidate.shared !== true ||
     !Array.isArray(candidate.personaIds) ||
-    !candidate.personaIds.every(
-      (id) => typeof id === 'string' && personas.some((persona) => persona.id === id),
-    )
+    !candidate.personaIds.every((id) => typeof id === 'string' && personaIds.includes(id)) ||
+    new Set(candidate.personaIds).size !== candidate.personaIds.length
   ) {
     return null;
   }
+  const declaredPersonas = candidate.personas ?? personas.filter(({ id }) => candidate.personaIds!.includes(id));
+  if (
+    !Array.isArray(declaredPersonas) ||
+    declaredPersonas.length !== candidate.personaIds.length ||
+    !declaredPersonas.every((persona) =>
+      persona && typeof persona === 'object' &&
+      candidate.personaIds!.includes(persona.id) &&
+      typeof persona.label === 'string' && persona.label.trim().length > 0 &&
+      persona.label.length <= 160) ||
+    new Set(declaredPersonas.map(({ id }) => id)).size !== declaredPersonas.length
+  ) return null;
   return {
     status: candidate.status,
     scenarioId: candidate.scenarioId,
     generation: candidate.generation,
     anchor: typeof candidate.anchor === 'string' ? candidate.anchor : null,
     shared: true,
-    personaId: typeof candidate.personaId === 'string' ? candidate.personaId : null,
+    personaId: typeof candidate.personaId === 'string' && candidate.personaIds.includes(candidate.personaId)
+      ? candidate.personaId : null,
     personaIds: candidate.personaIds,
+    personas: declaredPersonas.map(({ id, label }) => ({ id, label })),
     csrfToken: typeof candidate.csrfToken === 'string' ? candidate.csrfToken : null,
     ...(typeof candidate.failureCode === 'string' ? { failureCode: candidate.failureCode } : {}),
   };
@@ -433,13 +487,14 @@ async function loadState() {
     if (revision !== stateRequestRevision) return;
     const generationChanged =
       observedGeneration !== null && observedGeneration !== parsed.generation;
+    if (generationChanged || parsed.status !== 'ready') assistantProbe.value = null;
     observedGeneration = parsed.generation;
     state.value = parsed;
     if (generationChanged && operationBusy.value === null) {
       hardReload();
       return;
     }
-    if (parsed.personaId && personas.some((persona) => persona.id === parsed.personaId)) {
+    if (parsed.personaId && parsed.personaIds.includes(parsed.personaId)) {
       personaSelection.value = parsed.personaId;
     }
     if (parsed.status === 'failed') {
@@ -491,6 +546,7 @@ function controlError(error: unknown): string {
 }
 
 async function postControl(path: string, body: Record<string, unknown>, operation: Operation) {
+  assistantProbe.value = null;
   const currentState = state.value;
   if (!currentState || !currentState.csrfToken || currentState.status === 'loading') {
     operationError.value = 'Demo controls are not ready. Refresh the page and try again.';
@@ -515,6 +571,14 @@ async function postControl(path: string, body: Record<string, unknown>, operatio
     if (responseCode) throw { data: response, code: responseCode };
     if (state.value?.generation !== expectedGeneration) {
       throw new Error('The shared demo changed while this action was in flight.');
+    }
+    if (body.eventId === 'assistant-probe') {
+      const result = assistantProbeReply.parse(response);
+      if (result.generation !== expectedGeneration || state.value?.status !== 'ready')
+        throw new Error('The shared demo changed while the probe was in flight.');
+      assistantProbe.value = result.probe;
+      operationMessage.value = '';
+      return true;
     }
     state.value = state.value ? { ...state.value, status: 'loading' } : state.value;
     return true;
@@ -542,8 +606,7 @@ async function openScenario() {
     if (
       generation !== current.generation ||
       typeof path !== 'string' ||
-      (path !== '/purchase-check' &&
-        path !== '/liquidity' &&
+      (!['/purchase-check', '/liquidity', '/spaces', '/review', '/rules', '/'].includes(path) &&
         !/^\/spend-sessions\/[a-zA-Z0-9_-]+(?:\/completions\/[a-zA-Z0-9_-]+)?$/.test(path)) ||
       state.value?.generation !== current.generation
     )
@@ -591,7 +654,7 @@ async function resetDemo() {
 
 async function changePersona() {
   const personaId = personaSelection.value;
-  if (!personas.some((persona) => persona.id === personaId) || personaId === state.value?.personaId)
+  if (!availablePersonas.value.some((persona) => persona.id === personaId) || personaId === state.value?.personaId)
     return;
   const success = await postControl(
     '/__demo/persona',
@@ -611,6 +674,34 @@ function eventLabel(eventId: string) {
     case 'import-match':
     case 'import-ambiguous':
       return 'Simulate fixture import';
+    case 'merchant-source-change':
+      return 'Change native fixture source';
+    case 'merchant-calendar-clear':
+      return 'Clear fixture calendar';
+    case 'invite-redeem':
+      return 'Accept fictional invitation';
+    case 'invite-revoke':
+      return 'Revoke invited membership';
+    case 'invite-rejoin':
+      return 'Rejoin as invited human';
+    case 'membership-revoke':
+      return 'Revoke limited membership';
+    case 'assistant-probe':
+      return 'Probe bounded assistant access';
+    case 'assistant-revoke':
+      return 'Revoke assistant delegation';
+    case 'scoped-grant-change':
+      return 'Change scoped fixture grant';
+    case 'scoped-grant-revoke':
+      return 'Revoke scoped fixture grant';
+    case 'research-expire':
+      return 'Expire fixture research cache';
+    case 'research-hold':
+      return 'Hold fixture research result';
+    case 'research-release':
+      return 'Release held fixture result';
+    case 'research-cancel':
+      return 'Cancel held fixture result';
     default:
       return 'Apply fixture event';
   }
@@ -631,7 +722,7 @@ async function triggerEvent(eventId: string, scenarioId: string) {
     },
     'event',
   );
-  if (success) hardReload();
+  if (success && eventId !== 'assistant-probe') hardReload();
 }
 
 onMounted(() => {

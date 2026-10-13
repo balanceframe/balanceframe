@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteWorkflowStore } from '../../../../packages/workflow-store/src/store';
 import type {
   CreateReviewItemInput,
   ReviewActionAuthorization,
   ReviewItem,
+  LiquidityActor,
+  ResourceGrantRestrictions,
 } from '@balanceframe/workflow-store';
 import fixture from '../../../../protocol/fixtures/representative.json';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
@@ -54,7 +56,7 @@ async function seedPendingReview(
   return item;
 }
 
-function setGrant(resourceKind: 'budget' | 'account' | 'category' | 'transaction', resourceId: string, capability: string) {
+function setGrant(resourceKind: 'budget' | 'account' | 'category' | 'transaction', resourceId: string, capability: string, restrictions: ResourceGrantRestrictions = {}) {
   store.governance.setResourceGrant({
     spaceId,
     actorId: ACTOR,
@@ -64,6 +66,7 @@ function setGrant(resourceKind: 'budget' | 'account' | 'category' | 'transaction
     resourceId,
     capability,
     granted: true,
+    restrictions,
     now,
     auth: ownerAuth,
   });
@@ -111,6 +114,8 @@ function grantProjectionResources() {
 }
 
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime('2026-10-05T12:00:00.000Z');
   now = new Date().toISOString();
   ownerAuth = {
     method: 'human-session',
@@ -146,7 +151,10 @@ beforeEach(async () => {
   grantReviewAction();
 });
 
-afterEach(() => store.close());
+afterEach(() => {
+  store.close();
+  vi.useRealTimers();
+});
 
 describe('trusted review identity and non-ledger actions', () => {
   it('uses the authenticated human identity, never legacy or body identity', () => {
@@ -221,6 +229,38 @@ describe('trusted review identity and non-ledger actions', () => {
 });
 
 describe('review queue Native privacy projection', () => {
+  it('withholds baseline exact Money when the account history outgoing ceiling is zero', async () => {
+    grantProjectionResources();
+    setGrant('account', transaction.accountId, 'history', {
+      maxGrossOutgoing: [{ currency: transaction.amount.currency, minorUnits: '0' }],
+    });
+    const item = await seedPendingReview();
+    const actor: LiquidityActor = {
+      actorId: ACTOR, budgetId: BUDGET, spaceId, membershipId,
+      governancePolicyVersion: policyVersion, now,
+      auth: { method: 'session', actorId: ACTOR, sessionId: 'session:test-api-user' },
+    };
+    expect(BigInt(transaction.amount.minorUnits)).toBeLessThan(0n);
+    expect(projectReviewQueueItem(store, actor, item, canonicalSnapshot)).toBeNull();
+  });
+
+  it('withholds baseline Money when entry-time session authority has expired at disclosure', async () => {
+    grantProjectionResources();
+    const item = await seedPendingReview();
+    const expiry = '2026-10-05T12:01:00.000Z';
+    const actor: LiquidityActor = {
+      actorId: ACTOR, budgetId: BUDGET, spaceId, membershipId,
+      governancePolicyVersion: policyVersion, now,
+      auth: {
+        method: 'session', actorId: ACTOR, sessionId: 'session:test-api-user',
+        credentialExpiresAt: expiry,
+      },
+    };
+    expect(projectReviewQueueItem(store, actor, item, canonicalSnapshot)).not.toBeNull();
+    vi.setSystemTime(expiry);
+    expect(projectReviewQueueItem(store, actor, item, canonicalSnapshot)).toBeNull();
+  });
+
   it('returns only independently granted current facts and denies an ungranted category', async () => {
     grantProjectionResources();
     const item = await seedPendingReview({
@@ -264,5 +304,38 @@ describe('review queue Native privacy projection', () => {
 
     const inaccessible = await seedPendingReview({ categoryId: privateCategoryId });
     expect(projectReviewQueueItem(store, actor, inaccessible, snapshot)).toBeNull();
+  });
+
+  it('finds recursive split source children and honors source currency exponent', async () => {
+    grantProjectionResources();
+    const item = await seedPendingReview();
+    const actor = { actorId: ACTOR, budgetId: BUDGET, spaceId, membershipId, governancePolicyVersion: policyVersion, now, auth: { method: 'session' as const, actorId: ACTOR, sessionId: 'session:test-api-user' } };
+    for (const [currency, minorUnits, amount] of [['JPY', '-123', -123], ['KWD', '-1234', -1.234]] as const) {
+      const child = { ...transaction, amount: { currency, minorUnits } };
+      const snapshot = { ...canonicalSnapshot, transactions: [{ ...transaction, id: 'split-parent', subtransactions: [{ ...transaction, id: 'split-intermediate', subtransactions: [child] }] }] };
+      const projected = projectReviewQueueItem(store, actor, item, snapshot);
+      expect(projected?.evidence.amount).toBe(amount);
+      expect(projected?.evidence.money).toEqual(child.amount);
+      expect(projected?.evidence.currency).toBe(currency);
+    }
+  });
+
+  it('preserves large exact canonical Money without fabricating a numeric display value', async () => {
+    grantProjectionResources();
+    const item = await seedPendingReview();
+    const actor = { actorId: ACTOR, budgetId: BUDGET, spaceId, membershipId, governancePolicyVersion: policyVersion, now, auth: { method: 'session' as const, actorId: ACTOR, sessionId: 'session:test-api-user' } };
+    const money = { minorUnits: '9223372036854775807', currency: 'JPY' };
+    const projected = projectReviewQueueItem(store, actor, item, { ...canonicalSnapshot, transactions: [{ ...transaction, amount: money }] });
+    expect(projected?.evidence.money).toEqual(money);
+    expect(projected?.evidence.amount).toBeUndefined();
+  });
+
+  it('never upgrades parsed persisted merchant JSON into current authorized evidence', async () => {
+    grantProjectionResources();
+    const item = await seedPendingReview({ classifier: 'merchant', evidence: { merchantEvidence: { rawText: 'STALE-PRIVATE-MERCHANT' } } });
+    const actor = { actorId: ACTOR, budgetId: BUDGET, spaceId, membershipId, governancePolicyVersion: policyVersion, now, auth: { method: 'session' as const, actorId: ACTOR, sessionId: 'session:test-api-user' } };
+    const projected = projectReviewQueueItem(store, actor, item, canonicalSnapshot);
+    expect(projected?.evidence.merchantEvidence).toBeUndefined();
+    expect(JSON.stringify(projected)).not.toContain('STALE-PRIVATE-MERCHANT');
   });
 });

@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+use napi::{Env, JsFunction, JsString};
 use napi_derive::napi;
 use serde::Deserialize;
 use serde_json::Value;
@@ -16,12 +17,13 @@ use serde_json::Value;
 use balanceframe_core_protocol as cp;
 pub use balanceframe_core_protocol::{
     AnalysisRequest, AnalysisResult, BillCalendar, BudgetVarianceReport, CashFlowProjectionRequest,
-    CashFlowProjectionResponse, CreateRulePlan, DataQualityCenter, DeterministicAnalysisRequest,
-    DeterministicAnalysisResponse, FinancialStateLabel, FinancialStateRequest, ForecastCalibration,
-    IncomeReliabilityReport, IrregularObligationsReport, LiquidityCoverage, MultidimensionalHealth,
-    MutationPlan, PayeeCondition, ProtocolSnapshot, PurchaseEvaluation, PurchaseEvaluationRequest,
-    RuleSimulationResult, Suggestion, TargetHealthRequest, TargetHealthResult, ValidationResult,
-    VerificationResult,
+    CashFlowProjectionResponse, CreateRulePlan, CreateRuleRequest, DataQualityCenter,
+    DeterministicAnalysisRequest, DeterministicAnalysisResponse, FinancialStateLabel,
+    FinancialStateRequest, ForecastCalibration, IncomeReliabilityReport,
+    IrregularObligationsReport, LiquidityCoverage, MerchantAnalysisRequest, MerchantAnalysisResult,
+    MultidimensionalHealth, MutationPlan, ProtocolSnapshot, PurchaseEvaluation,
+    PurchaseEvaluationRequest, RuleReviewContext, RuleSimulationResult, Suggestion,
+    TargetHealthRequest, TargetHealthResult, ValidationResult, VerificationResult,
 };
 pub use balanceframe_financial_core::{
     CategorizationCandidate, Category, Rule, RuleCandidate, Transaction,
@@ -45,11 +47,26 @@ where
     I: serde::de::DeserializeOwned,
     O: serde::Serialize,
 {
+    run_serialized(input, f, |output| {
+        serde_json::to_string(output).map_err(|error| format!("serialize: {error}"))
+    })
+}
+
+fn run_serialized<I, O, R>(
+    input: String,
+    f: impl FnOnce(I) -> Result<O, String>,
+    serialize: impl FnOnce(&O) -> Result<R, String>,
+) -> napi::Result<R>
+where
+    I: serde::de::DeserializeOwned,
+{
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let deserialized: I =
             serde_json::from_str(&input).map_err(|e| format!("deserialize: {e}"))?;
+        // DeserializeOwned cannot retain input; release it before analysis/output allocations.
+        drop(input);
         let output: O = f(deserialized)?;
-        serde_json::to_string(&output).map_err(|e| format!("serialize: {e}"))
+        serialize(&output)
     }));
 
     match result {
@@ -67,6 +84,79 @@ where
                 "Panic contained by N-API binding: {payload}"
             )))
         }
+    }
+}
+
+const JSON_CHUNK_BYTES: usize = 64 * 1024;
+
+// Bound Rust staging while JavaScript owns the complete emitted string.
+struct MerchantJsonWriter<'env> {
+    env: &'env Env,
+    concatenate: JsFunction,
+    output: Option<JsString>,
+    bytes: Vec<u8>,
+}
+
+impl MerchantJsonWriter<'_> {
+    fn flush_chunk(&mut self) -> std::io::Result<()> {
+        if self.bytes.is_empty() {
+            return Ok(());
+        }
+        let text = match std::str::from_utf8(&self.bytes) {
+            Ok(text) => text,
+            Err(error) if error.error_len().is_none() => {
+                std::str::from_utf8(&self.bytes[..error.valid_up_to()])
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
+            }
+            Err(error) => {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+            }
+        };
+        if text.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Incomplete JSON UTF-8",
+            ));
+        }
+        let length = text.len();
+        let chunk = self
+            .env
+            .create_string(text)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let previous = self
+            .output
+            .take()
+            .expect("JSON string accumulator is initialized");
+        self.output = Some(
+            self.concatenate
+                .call(None, &[previous, chunk])
+                .and_then(|value| value.coerce_to_string())
+                .map_err(|error| std::io::Error::other(error.to_string()))?,
+        );
+        drop(self.bytes.drain(..length));
+        Ok(())
+    }
+}
+
+impl std::io::Write for MerchantJsonWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let length = remaining.len().min(JSON_CHUNK_BYTES - self.bytes.len());
+            self.bytes.extend_from_slice(&remaining[..length]);
+            remaining = &remaining[length..];
+            if self.bytes.len() == JSON_CHUNK_BYTES {
+                self.flush_chunk()?;
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        while !self.bytes.is_empty() {
+            self.flush_chunk()?;
+        }
+        Ok(())
     }
 }
 
@@ -94,6 +184,34 @@ pub fn analyze_deterministic(input: String) -> napi::Result<String> {
     run::<DeterministicAnalysisRequest, DeterministicAnalysisResponse>(input, |req| {
         Ok(cp::analyze_deterministic(req))
     })
+}
+
+/// Analyze an already-authorized merchant capture with bounded explanations and
+/// lossless schedule provenance; no provider or ledger mutation is invoked.
+#[napi]
+pub fn analyze_merchant_intelligence(env: Env, input: String) -> napi::Result<JsString> {
+    run_serialized::<MerchantAnalysisRequest, MerchantAnalysisResult, _>(
+        input,
+        |request| cp::analyze_merchant_intelligence(&request).map_err(|error| error.to_string()),
+        |output| {
+            let mut writer = MerchantJsonWriter {
+                env: &env,
+                concatenate: env
+                    .run_script("((left, right) => left + right)")
+                    .map_err(|error| error.to_string())?,
+                output: Some(env.create_string("").map_err(|error| error.to_string())?),
+                bytes: Vec::with_capacity(JSON_CHUNK_BYTES),
+            };
+            serde_json::to_writer(&mut writer, output)
+                .map_err(|error| format!("serialize: {error}"))?;
+            std::io::Write::flush(&mut writer).map_err(|error| format!("serialize: {error}"))?;
+            Ok(writer
+                .output
+                .take()
+                .expect("Complete JSON string is available"))
+        },
+    )
+    .map_err(|_| napi::Error::from_reason("merchant_analysis_failed"))
 }
 
 // ===========================================================================
@@ -231,30 +349,30 @@ pub fn simulate_rule(input: String) -> napi::Result<String> {
 // ===========================================================================
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PlanCreateRuleInput {
     rule_name: String,
-    payee_name: String,
+    payee_id: String,
     category_id: String,
+    review_context: RuleReviewContext,
     snapshot: ProtocolSnapshot,
 }
 
-/// Plan the creation of a new rule based on a payee name.
+/// Plan a native category rule for an exact Actual payee ID and current review context.
 /// Returns a CreateRulePlan describing the planned operation.
 #[napi]
 pub fn plan_create_rule(input: String) -> napi::Result<String> {
     run::<PlanCreateRuleInput, CreateRulePlan>(input, |pci| {
-        let conditions = vec![PayeeCondition {
-            field: "payee".into(),
-            operation: "is".into(),
-            value: pci.payee_name,
-        }];
-        Ok(cp::plan_create_rule(
-            &pci.rule_name,
-            &conditions,
-            &pci.category_id,
+        cp::plan_create_rule(
+            &CreateRuleRequest {
+                rule_name: pci.rule_name,
+                payee_id: pci.payee_id,
+                category_id: pci.category_id,
+                review_context: pci.review_context,
+            },
             &pci.snapshot,
-        ))
+        )
+        .map_err(|error| error.to_string())
     })
 }
 
@@ -274,10 +392,8 @@ struct RulePlanSnapshotInput {
 #[napi]
 pub fn simulate_create_rule_plan(input: String) -> napi::Result<String> {
     run::<RulePlanSnapshotInput, RuleSimulationResult>(input, |request| {
-        Ok(cp::simulate_create_rule_plan(
-            &request.plan,
-            &request.snapshot,
-        ))
+        cp::simulate_create_rule_plan(&request.plan, &request.snapshot)
+            .map_err(|error| error.to_string())
     })
 }
 

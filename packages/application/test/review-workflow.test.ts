@@ -91,6 +91,9 @@ function mockProtocol(): {
     async pendingReview(ledger, freshness) {
       calls.pendingReview.push({ ledger, freshness });
       return {
+        nativeRuleBlocks: [],
+        nativeRuleParts: [],
+        nativeRuleSets: [],
         uncategorizedCount: 5,
         totalUncategorizedAmount: mockMoney('15000', 'USD'),
         candidates: [],

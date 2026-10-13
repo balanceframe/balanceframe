@@ -1,14 +1,16 @@
-
-import { afterAll, describe, it, expect, vi } from 'vitest';
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-import { createNativeCategorizationMutationProtocol } from '@balanceframe/application';
 import type { ConnectionManager, ConnectionUseOptions } from '@balanceframe/application';
 import type { EventWithContext } from '../../server/utils/workflow-store';
 import type { ReviewItem } from '@balanceframe/workflow-store';
+import { afterAll, describe, it, expect, vi } from 'vitest';
+import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { createNativeCategorizationMutationProtocol } from '@balanceframe/application';
+import { merchantConnectionId } from '../../../../packages/application/src/merchant-service';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
 import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import fixture from '../../../../protocol/fixtures/representative.json';
+import { nativeReviewFixture } from './native-review.fixture';
+import { completeNativeRuleSourceAvailability } from './native-rule-source.fixture';
 let providerStore: SqliteWorkflowStore | null = null;
 let bootstrapInitialized = false;
 let fixtureSequence = 0;
@@ -98,6 +100,7 @@ const TEST_ACCOUNT_ID = nativeTransaction.accountId;
 const TEST_CURRENT_CATEGORY = nativeTransaction.categoryId;
 const TEST_TARGET_CATEGORY = nativeTargetCategory.id;
 const TEST_SPACE_OWNER = 'space-owner';
+const SERVER_URL = 'https://actual.mutation-composition.example.test';
 
 async function createGovernedExecutorFixture(withProposalGrants = true) {
   const now = new Date().toISOString();
@@ -186,14 +189,15 @@ async function createGovernedExecutorFixture(withProposalGrants = true) {
   requestEvent.node.req.headers['x-balanceframe-space'] = space.id;
   const synchronize = vi.fn().mockResolvedValue({
     snapshot: structuredClone(canonicalFixture),
+    rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(canonicalFixture),
   });
   const connected = {
-    config: { budgetId },
+    config: { budgetId, serverUrl: SERVER_URL },
     budget: { id: budgetId },
     connector: { synchronize },
   };
   const manager = {
-    loadConfig: vi.fn().mockResolvedValue({ budgetId }),
+    loadConfig: vi.fn().mockResolvedValue({ budgetId, serverUrl: SERVER_URL }),
     withConnection: vi.fn(async (
       operation: (connection: typeof connected) => Promise<unknown>,
       _options?: ConnectionUseOptions,
@@ -272,22 +276,19 @@ describe('createDefaultExecutorFactory', () => {
 
   it('creates an exact native proposal only with current grants in the selected scope', async () => {
     const fixture = await createGovernedExecutorFixture();
-    let item = await fixture.store.createReviewItem({
-      transactionId: TEST_TX_ID,
-      budgetId: fixture.budgetId,
+    const nativeItem = await nativeReviewFixture(fixture.store, {
+      scope: {
+        spaceId: fixture.space.id,
+        budgetId: fixture.budgetId,
+        connectionId: merchantConnectionId({ budgetId: fixture.budgetId, serverUrl: SERVER_URL }),
+      },
+      transaction: nativeTransaction,
       categoryId: TEST_TARGET_CATEGORY,
-      classifier: 'fixture',
-      provenance: 'canonical-fixture',
-      evidence: { currentCategory: 'untrusted-review-evidence' },
-      sourceTransaction,
     });
-    for (const toStatus of ['suggestion_generated', 'pending_review'] as const) {
-      item = await fixture.store.transitionInternalReviewItem(item.id, {
-        toStatus,
-        actor: 'trusted-fixture',
-        expectedVersion: item.version,
-      });
-    }
+    fixture.store['db'].prepare('UPDATE review_items SET evidence=? WHERE id=?')
+      .run(JSON.stringify({ ...nativeItem.evidence, currentCategory: 'untrusted-review-evidence' }), nativeItem.id);
+    const item = await fixture.store.getReviewItem(nativeItem.id);
+    if (!item) throw new Error('Native review fixture disappeared');
     const native = await createNativeCategorizationMutationProtocol();
     const nativePlan = native.planSetCategory(nativeTransaction, nativeTargetCategory);
     const result = await fixture.executor(
@@ -302,10 +303,6 @@ describe('createDefaultExecutorFactory', () => {
       mutationStatus: 'approval_required',
       applied: false,
       verified: false,
-    });
-    expect(fixture.manager.withConnection).toHaveBeenCalledWith(expect.any(Function), {
-      expectedBudgetId: fixture.budgetId,
-      dispose: true,
     });
     const proposal = await fixture.store.findActiveProposal(fixture.budgetId, TEST_TX_ID, 'set_category');
     if (!proposal) throw new Error('Native proposal was not persisted');

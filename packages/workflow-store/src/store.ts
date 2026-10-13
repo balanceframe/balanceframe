@@ -12,7 +12,7 @@
 
 import Database from 'better-sqlite3';
 import { LiquidityWorkflow } from './liquidity.js';
-import { SpaceGovernance, migrateGovernance } from './governance.js';
+import { SpaceGovernance, credentialLifetimeValid, migrateGovernance } from './governance.js';
 import { migrateScopedInvitations } from './scoped-invitations.js';
 import { migrateNotificationGovernance } from './notification-governance.js';
 import {
@@ -25,14 +25,19 @@ import {
   canonicalProposalHash,
   canonicalProposalJson,
   deriveProposalAuthorizationFacts,
+  deriveProposalSourceReadFacts,
+  deriveProposalDisclosureTotals,
   GENERIC_MUTATION_POLICY_VERSION,
   ProposalAcquisitionError,
   requiredProposalApprovers,
 } from './proposal.js';
-import type { ProposalAuthorizationFacts } from './proposal.js';
+import type { ProposalAuthorizationFacts, ProposalSourceReadFacts } from './proposal.js';
 import type {
   AcquireProposalExecutionInput,
+  ValidateAcquiredProposalExecutionInput,
   GetProposalApprovalSummaryInput,
+  GetProposalApprovalReadsInput,
+  ProposalApprovalRead,
   DiscardProposalAuthorization,
   GenericActionProposal,
   GenericProposalOperation,
@@ -43,6 +48,9 @@ import type {
   RuleActionPayload,
 } from './types.js';
 import type {
+  GovernanceAuthorizationInput,
+  GovernanceFinancialDisclosure,
+  GovernanceReadDisclosureLimits,
   GovernanceOperation,
   GovernanceResourceKind,
   GovernanceResourceRef,
@@ -50,8 +58,13 @@ import type {
   HumanControlContext,
 } from './governance-types.js';
 import { migrateProposalApprovals, migrateProposalOrigins } from './proposal-migration.js';
-import type { Database as DatabaseType } from 'better-sqlite3';
+import type { Database as DatabaseType, Statement } from 'better-sqlite3';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { constants, existsSync, lstatSync, openSync, closeSync, realpathSync, unlinkSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
+import { MerchantWorkflow, reconcileMerchantRestore, redactMerchantDerivedCopies } from './merchant.js';
+import { migrateMerchant } from './merchant-migration.js';
+import { assertReviewRuleSetScope, migrateReviewRuleSets, migrateReviewRuleBlocks, migrateReviewRuleParts, prepareReviewRuleSets, resolveReviewRuleSet } from './review-rule-sets.js';
 
 import type {
   Suggestion,
@@ -74,6 +87,9 @@ import type {
   AuthorizedReviewTransitionInput,
   ReviewActionAuthorization,
   CreateReviewItemInput,
+  CreateReviewItemsInput,
+  ReviewRuleSetReference,
+  ReviewRuleSetScope,
   TransitionReviewResult,
   ActionProposal,
   ProposalOperation,
@@ -148,6 +164,13 @@ import type {
   ReportHistoryEntry,
   LifecycleScope,
 } from './types.js';
+
+interface ProposalApprovalReadFrame {
+  readonly read: ProposalApprovalRead;
+  readonly privateReadEligible: boolean;
+  readonly disclosure: GovernanceFinancialDisclosure | null;
+  readonly admitsDisclosure: (collection: GovernanceFinancialDisclosure) => boolean;
+}
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -268,7 +291,7 @@ function rowToReviewAction(row: ReviewActionRow): ReviewAction {
 }
 
 /** Map a raw DB row to a typed ActionProposal. */
-function rowToProposal(row: ProposalRow): ActionProposal {
+function rowToProposal(row: ProposalRow, payload?: ActionProposal['payload']): ActionProposal {
   return {
     id: row.id,
     operation: row.operation as ProposalOperation,
@@ -276,7 +299,7 @@ function rowToProposal(row: ProposalRow): ActionProposal {
     spaceId: row.space_id,
     requesterMembershipId: row.requester_membership_id,
     governancePolicyVersion: row.governance_policy_version,
-    payload: JSON.parse(row.payload),
+    payload: payload ?? JSON.parse(row.payload),
     version: row.version,
     state: JSON.parse(row.state),
     payloadHash: row.payload_hash,
@@ -1024,6 +1047,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     insertReviewItem: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectReviewItem: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectReviewByIssue: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectScopedNativeReviewByIssue: null as unknown as Statement,
+    selectReviewRuleSetMetadata: null as unknown as Statement,
     listReviewItems: null as unknown as ReturnType<DatabaseType['prepare']>,
     listReviewItemsByStatus: null as unknown as ReturnType<DatabaseType['prepare']>,
     listReviewItemsByBudget: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1064,6 +1089,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectStrandedIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
     updateStrandedIdempotencyStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertAudit: null as unknown as ReturnType<DatabaseType['prepare']>,
+    selectAuditById: null as unknown as Statement,
     selectAuditByClassification: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectAuditByProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectAuditCount: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1200,6 +1226,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   readonly governance: SpaceGovernance;
   readonly liquidity: LiquidityWorkflow;
+  readonly merchant: MerchantWorkflow;
   constructor(filename: string = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
@@ -1215,16 +1242,75 @@ export class SqliteWorkflowStore implements WorkflowStore {
     `);
 
     // (2-3) Run ordered transactional migrations
-    this.runMigrations();
+    try {
+      this.runMigrations();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
 
     // (4) Prepare runtime statements
     this.prepareStatements();
     this.governance = new SpaceGovernance(this.db);
     this.liquidity = new LiquidityWorkflow(this.db, (row) => rowToProposal(row as ProposalRow), this.governance);
+    this.merchant = new MerchantWorkflow(this.db);
   }
   /** Release the database connection. */
   close(): void {
     this.db.close();
+  }
+
+  /** Restore a consistent SQLite copy to a new destination, quarantining merchant consent/content. */
+  static restoreFromBackup(input: {
+    backupPath: string;
+    destinationPath: string;
+    now: string;
+    authorize: (context: { now: string }) => boolean;
+  }): SqliteWorkflowStore {
+    const parsed = Date.parse(input.now);
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(input.now) ||
+        !Number.isFinite(parsed) ||
+        new Date(parsed).toISOString().replace('.000Z', 'Z') !== input.now.replace('.000Z', 'Z'))
+      throw new Error('Invalid restore ISO UTC timestamp');
+    if (typeof input.authorize !== 'function') throw new Error('Restore authorization required');
+    const backupPath = realpathSync(input.backupPath);
+    if (!lstatSync(input.backupPath).isFile()) throw new Error('Backup must be an existing regular SQLite file');
+    const destinationPath = resolve(realpathSync(dirname(input.destinationPath)), basename(resolve(input.destinationPath)));
+    if (backupPath === destinationPath || existsSync(destinationPath) ||
+        existsSync(`${destinationPath}-wal`) || existsSync(`${destinationPath}-shm`))
+      throw new Error('Restore destination must be a new file, separate from the backup');
+    const source = new Database(backupPath, { fileMustExist: true });
+    let created = false;
+    let restored: SqliteWorkflowStore | undefined;
+    try {
+      source.transaction(() => {
+        const authorized: unknown = input.authorize({ now: input.now });
+        if (typeof authorized !== 'boolean') throw new Error('Restore authorization must be synchronous');
+        if (!authorized) throw new Error('Restore unauthorized');
+        const row = source.prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number | null };
+        if ((row.version ?? 0) > SqliteWorkflowStore.MIGRATIONS.length)
+          throw new Error('Backup schema is newer than this binary');
+      }).immediate();
+      // Exclusive creation prevents overwriting another file or following a destination symlink.
+      const descriptor = openSync(destinationPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+      closeSync(descriptor);
+      created = true;
+      // VACUUM INTO includes committed WAL pages and creates a consistent, synchronous SQLite copy.
+      source.prepare('VACUUM INTO ?').run(destinationPath);
+      restored = new SqliteWorkflowStore(destinationPath);
+      restored.db.transaction(() => reconcileMerchantRestore(restored!.db, input.now)).immediate();
+      restored.db.pragma('wal_checkpoint(TRUNCATE)');
+      return restored;
+    } catch (error) {
+      restored?.close();
+      if (created) {
+        for (const path of [destinationPath, `${destinationPath}-wal`, `${destinationPath}-shm`])
+          if (existsSync(path)) unlinkSync(path);
+      }
+      throw error;
+    } finally {
+      source.close();
+    }
   }
 
   // ── Schema migrations ─────────────────────────────────────────
@@ -1889,6 +1975,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
           ON export_records(actor_id, space_id, budget_id, exported_at);
       `);
     },
+    // Version 24: Scoped merchant content, consent fences, and exact research accounting.
+    migrateMerchant,
+    // Version 25: Complete shared native provenance, including unattributed historical IDs.
+    migrateReviewRuleSets,
+    // Version 26: Factor complete native outcomes through disjoint scoped ID blocks.
+    migrateReviewRuleBlocks,
+    // Version 27: Frozen literal postings and fixed category-filtered OR/AND descriptors.
+    migrateReviewRuleParts,
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -1901,7 +1995,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const current = this.getCurrentSchemaVersion();
     const target = SqliteWorkflowStore.MIGRATIONS.length;
 
-    if (current >= target) return;
+    if (current > target) throw new Error('Database schema version is newer than this binary');
+    if (current === target) return;
 
     for (let v = current + 1; v <= target; v++) {
       const migration = SqliteWorkflowStore.MIGRATIONS[v - 1];
@@ -2086,15 +2181,14 @@ export class SqliteWorkflowStore implements WorkflowStore {
               @provenance, @supersededBy, @supersededReason,
               @freshnessExpiresAt, @version, @createdAt,
               @updatedAt, @sourceTransaction)
-      ON CONFLICT(budget_id, transaction_id, category_id, classifier)
-        WHERE status != 'superseded'
-        DO NOTHING
+      ON CONFLICT DO NOTHING
       RETURNING *
     `);
 
     this.stmt.selectReviewItem = this.db.prepare(`
       SELECT * FROM review_items WHERE id = ?
     `);
+    this.stmt.selectReviewRuleSetMetadata = this.db.prepare('SELECT id,kind,space_id,budget_id,connection_id FROM review_rule_sets WHERE id=?');
 
     this.stmt.selectReviewByIssue = this.db.prepare(`
       SELECT * FROM review_items
@@ -2103,6 +2197,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
          AND category_id = @categoryId
          AND classifier = @classifier
          AND status != 'superseded'
+         AND (classifier!='rule' OR json_extract(evidence,'$.ruleSetRef.kind') IS NULL)
+       LIMIT 1
+    `);
+    this.stmt.selectScopedNativeReviewByIssue = this.db.prepare(`
+      SELECT * FROM review_items
+       WHERE budget_id=@budgetId AND transaction_id=@transactionId AND category_id=@categoryId
+         AND classifier='rule' AND status!='superseded'
+         AND json_extract(evidence,'$.ruleSetRef.kind')='scoped'
+         AND json_extract(evidence,'$.ruleSetRef.scope.spaceId')=@spaceId
+         AND json_extract(evidence,'$.ruleSetRef.scope.budgetId')=@budgetId
+         AND json_extract(evidence,'$.ruleSetRef.scope.connectionId')=@connectionId
        LIMIT 1
     `);
 
@@ -2466,6 +2571,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
               @providerModel, @correlationId, @requestId,
               @result, @isError)
     `);
+
+    this.stmt.selectAuditById = this.db.prepare('SELECT * FROM audit_records WHERE id = ?');
 
     this.stmt.selectAuditByClassification = this.db.prepare(`
       SELECT * FROM audit_records
@@ -3811,7 +3918,122 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Review lifecycle ──────────────────────────────────────────────
 
+  getReviewRuleSet(reference: ReviewRuleSetReference): string[] | null {
+    return resolveReviewRuleSet(this.db, reference);
+  }
+
+  getReviewRuleSetMetadata(id: string): ReviewRuleSetReference | null {
+    if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) return null;
+    const row = this.stmt.selectReviewRuleSetMetadata.get(id) as { id: string; kind: string; space_id: string | null; budget_id: string; connection_id: string | null } | undefined;
+    if (!row || typeof row.budget_id !== 'string' || !row.budget_id.trim()) return null;
+    if (row.kind === 'scoped' && typeof row.space_id === 'string' && row.space_id.trim() &&
+      typeof row.connection_id === 'string' && row.connection_id.trim())
+      return { id: row.id, kind: 'scoped', scope: { spaceId: row.space_id, budgetId: row.budget_id, connectionId: row.connection_id } };
+    if (row.kind === 'historical-unattributed' && row.space_id === null && row.connection_id === null)
+      return { id: row.id, kind: 'historical-unattributed', budgetId: row.budget_id };
+    return null;
+  }
+
+  async createReviewItems(input: CreateReviewItemsInput): Promise<ReviewItem[]> {
+    if (!Array.isArray(input.nativeRuleBlocks) || !Array.isArray(input.nativeRuleParts) || !Array.isArray(input.nativeRuleSets) || !Array.isArray(input.items))
+      throw new Error('Invalid prepared Review publication');
+    if (input.scope) assertReviewRuleSetScope(input.scope);
+    const hasNativeTables = input.nativeRuleBlocks.length || input.nativeRuleParts.length || input.nativeRuleSets.length;
+    if (hasNativeTables && !input.scope) throw new Error('Native Review requires a trusted selected source scope');
+    if (hasNativeTables && typeof input.authorize !== 'function') throw new Error('Native Review publication authority is unavailable');
+    const usedSetIndexes = input.items.filter((item) => item.classifier === 'rule').map((item) => item.ruleSetIndex!);
+    const { blocks, parts, groups } = prepareReviewRuleSets(input.scope, input.nativeRuleBlocks, input.nativeRuleParts, input.nativeRuleSets, usedSetIndexes);
+    const transactionIds = new Set<string>();
+    for (const item of input.items) {
+      if (transactionIds.has(item.transactionId)) throw new Error('Duplicate Review classification transaction');
+      transactionIds.add(item.transactionId);
+      if (input.scope && input.scope.budgetId !== item.budgetId) throw new Error('Review selected source budget changed');
+      if (item.authorize !== undefined) throw new Error('Review batch requires one publication authority callback');
+      if (item.classifier === 'rule') {
+        if (!Number.isInteger(item.ruleSetIndex) || item.ruleSetIndex! < 0 || item.ruleSetIndex! > 0xffff_ffff || !groups[item.ruleSetIndex!])
+          throw new Error('Native Review rule-set index is unavailable');
+        if (!item.sourceTransaction) throw new Error('Invalid canonical review source authority');
+      } else if (item.ruleSetIndex !== undefined || item.evidence?.ruleSetRef !== undefined) {
+        throw new Error('Unexpected native Review provenance');
+      }
+    }
+    return this.db.transaction(() => {
+      const budgets = new Set(input.items.map((item) => item.budgetId));
+      const byTransaction = new Map<string, ReviewItem[]>();
+      for (const budgetId of budgets) {
+        const rows = this.db.prepare('SELECT * FROM review_items WHERE budget_id=?').all(budgetId) as ReviewItemRow[];
+        for (const raw of rows) {
+          const row = rowToReviewItem(raw);
+          const key = JSON.stringify([row.budgetId, row.transactionId]);
+          const previous = byTransaction.get(key) ?? [];
+          previous.push(row);
+          byTransaction.set(key, previous);
+        }
+      }
+      const insertBlock = this.db.prepare(`INSERT INTO review_rule_blocks(id,kind,space_id,budget_id,connection_id,rule_ids_json)
+        VALUES (?,'scoped',?,?,?,?) ON CONFLICT(id) DO NOTHING`);
+      const insertPart = this.db.prepare(`INSERT INTO review_rule_parts(id,kind,space_id,budget_id,connection_id,block_ids_json)
+        VALUES (?,'scoped',?,?,?,?) ON CONFLICT(id) DO NOTHING`);
+      const insertGroup = this.db.prepare(`INSERT INTO review_rule_sets(id,kind,space_id,budget_id,connection_id,expression_json)
+        VALUES (?,'scoped',?,?,?,?) ON CONFLICT(id) DO NOTHING`);
+      const registered = new Set<number>();
+      const registeredBlocks = new Set<number>();
+      const registeredParts = new Set<number>();
+      const protectedStatuses: Partial<Record<ReviewStatus, true>> = { approved: true, correcting: true, applying: true, applied: true, apply_failed: true, rejected: true, skipped: true };
+      const created: ReviewItem[] = [];
+      for (const item of input.items) {
+        const group = item.ruleSetIndex === undefined ? undefined : groups[item.ruleSetIndex];
+        const evidence = { ...item.evidence };
+        if (group) {
+          evidence.ruleSetRef = group.ref;
+          const source = item.sourceTransaction!;
+          evidence.sourceRevision = createHash('sha256').update(canonicalProposalJson([
+            [source.id, source.accountId, source.categoryId, evidence.sourcePayeeId ?? null, evidence.payeeName ?? null, evidence.date ?? null, evidence.money ?? source.amount],
+            item.categoryId, group.ref.scope, group.ref.id,
+          ])).digest('hex');
+        }
+        const previous = (byTransaction.get(JSON.stringify([item.budgetId, item.transactionId])) ?? []).filter((row) => {
+          const ref = row.evidence.ruleSetRef;
+          if (isPlainRecord(ref) && ref.kind === 'historical-unattributed') return false;
+          if (row.classifier !== 'rule') return true;
+          return input.scope !== undefined && isPlainRecord(ref) && ref.kind === 'scoped' && isPlainRecord(ref.scope) &&
+            ref.scope.spaceId === input.scope.spaceId && ref.scope.budgetId === input.scope.budgetId && ref.scope.connectionId === input.scope.connectionId;
+        });
+        if (previous.some((row) => row.status !== 'superseded' && protectedStatuses[row.status])) continue;
+        const sameIssue = previous.find((row) => row.status !== 'superseded' && row.classifier === item.classifier && row.categoryId === item.categoryId);
+        let maxVersion = 0;
+        for (const row of previous) maxVersion = Math.max(maxVersion, row.transactionVersion);
+        const transactionVersion = item.transactionVersion ?? (sameIssue && sameIssue.evidence.sourceRevision === evidence.sourceRevision ? sameIssue.transactionVersion : maxVersion + 1);
+        if (group && !registered.has(item.ruleSetIndex!)) {
+          for (const index of group.partIndexes) if (!registeredParts.has(index)) {
+            const part = parts[index]!;
+            for (const blockIndex of part.blockIndexes) if (!registeredBlocks.has(blockIndex)) {
+              const block = blocks[blockIndex]!;
+              insertBlock.run(block.id, group.ref.scope.spaceId, group.ref.scope.budgetId, group.ref.scope.connectionId, block.json);
+              registeredBlocks.add(blockIndex);
+            }
+            insertPart.run(part.id, group.ref.scope.spaceId, group.ref.scope.budgetId, group.ref.scope.connectionId, part.json);
+            registeredParts.add(index);
+          }
+          insertGroup.run(group.ref.id, group.ref.scope.spaceId, group.ref.scope.budgetId, group.ref.scope.connectionId, group.json);
+          registered.add(item.ruleSetIndex!);
+        }
+        const row = this.createReviewItemInTransaction({ ...item, evidence, transactionVersion }, group !== undefined);
+        for (const obsolete of previous) if (obsolete.status !== 'superseded' && obsolete.id !== row.id && obsolete.id !== sameIssue?.id)
+          this.transitionReviewItemInTransaction(obsolete.id, { toStatus: 'superseded', actor: 'system', expectedVersion: obsolete.version, supersededBy: row.id, reason: 'Superseded by current source classification' });
+        created.push(row);
+      }
+      if (input.authorize !== undefined && (typeof input.authorize !== 'function' || input.authorize() !== true))
+        throw new Error('Review publication authority changed');
+      return created;
+    }).immediate();
+  }
+
   async createReviewItem(input: CreateReviewItemInput): Promise<ReviewItem> {
+    return this.createReviewItemInTransaction(input);
+  }
+
+  private createReviewItemInTransaction(input: CreateReviewItemInput, preparedNativeReference = false): ReviewItem {
     const source = input.sourceTransaction;
     if (source && (
       source.id !== input.transactionId ||
@@ -3822,23 +4044,30 @@ export class SqliteWorkflowStore implements WorkflowStore {
       BigInt(source.amount.minorUnits) > 9_223_372_036_854_775_807n ||
       typeof source.amount.currency !== 'string' || !/^[A-Z]{3}$/.test(source.amount.currency)
     )) throw new Error('Invalid canonical review source authority');
+    if (input.evidence?.ruleIds !== undefined) throw new Error('Inline native Review rule IDs are no longer supported');
+    const ruleRef = input.evidence?.ruleSetRef;
+    const nativeScope = input.classifier === 'rule' && isPlainRecord(ruleRef) && ruleRef.kind === 'scoped' && isPlainRecord(ruleRef.scope)
+      ? ruleRef.scope as unknown as ReviewRuleSetScope : null;
+    if (nativeScope && (nativeScope.budgetId !== input.budgetId || typeof ruleRef !== 'object' || ruleRef === null ||
+      !('id' in ruleRef) || typeof ruleRef.id !== 'string' || (!preparedNativeReference && !this.getReviewRuleSet({ kind: 'scoped', scope: nativeScope, id: ruleRef.id }))))
+      throw new Error('Native Review rule-set reference is unavailable');
+    const findIssue = (): ReviewItemRow | undefined => nativeScope
+      ? this.stmt.selectScopedNativeReviewByIssue.get({ ...nativeScope, transactionId: input.transactionId, categoryId: input.categoryId }) as ReviewItemRow | undefined
+      : this.stmt.selectReviewByIssue.get({ budgetId: input.budgetId, transactionId: input.transactionId, categoryId: input.categoryId, classifier: input.classifier }) as ReviewItemRow | undefined;
     const sourceTransaction = source ? canonicalProposalJson({
       id: source.id, accountId: source.accountId, categoryId: source.categoryId,
       direction: source.direction,
       amount: { minorUnits: source.amount.minorUnits, currency: source.amount.currency },
     }) : null;
     return this.db.transaction(() => {
+    if (input.authorize !== undefined && (typeof input.authorize !== 'function' || input.authorize() !== true))
+      throw new Error('Review publication authority changed');
     const id = randomUUID();
     const now = nowISO();
     const inputVersion = input.transactionVersion ?? 1;
 
     // Check for existing active item for the same issue key
-    const existingActive = this.stmt.selectReviewByIssue.get({
-      budgetId: input.budgetId,
-      transactionId: input.transactionId,
-      categoryId: input.categoryId,
-      classifier: input.classifier,
-    }) as ReviewItemRow | undefined;
+    const existingActive = findIssue();
 
     if (existingActive) {
       if (inputVersion <= existingActive.transaction_version) {
@@ -3940,12 +4169,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
     if (!row) {
       // Rare race: another connection created it; fetch existing
-      const existing = this.stmt.selectReviewByIssue.get({
-        budgetId: input.budgetId,
-        transactionId: input.transactionId,
-        categoryId: input.categoryId,
-        classifier: input.classifier,
-      }) as ReviewItemRow | undefined;
+      const existing = findIssue();
       if (!existing) throw new Error('Failed to create or retrieve review item');
       return rowToReviewItem(existing);
     }
@@ -4003,6 +4227,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
     )
       return false;
     const review = this.stmt.selectReviewItem.get(reviewId) as ReviewItemRow | undefined;
+    if (review && review.classifier === 'rule') {
+      const evidence = rowToReviewItem(review).evidence;
+      if (!isPlainRecord(evidence.ruleSetRef) || evidence.ruleSetRef.kind !== 'scoped') return false;
+      if (preconditions.reviewSourceRevision !== undefined &&
+        (typeof preconditions.reviewSourceRevision !== 'string' || evidence.sourceRevision !== preconditions.reviewSourceRevision)) return false;
+    }
     return !!review &&
       review.id === reviewId &&
       review.budget_id === row.budget_id &&
@@ -4095,11 +4325,18 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async transitionInternalReviewItem(id: string, input: TransitionReviewInput): Promise<ReviewItem> {
+    return this.transitionReviewItemInTransaction(id, input);
+  }
+
+  private transitionReviewItemInTransaction(id: string, input: TransitionReviewInput): ReviewItem {
     return this.db.transaction(() => {
     const now = nowISO();
     const current = this.stmt.selectReviewItemStatus.get(id) as
       { id: string; status: string; version: number; approved_by: string } | undefined;
     if (!current) throw new Error(`Review item ${id} not found`);
+    const fullEvidence = rowToReviewItem(this.stmt.selectReviewItem.get(id) as ReviewItemRow).evidence;
+    if (isPlainRecord(fullEvidence.ruleSetRef) && fullEvidence.ruleSetRef.kind === 'historical-unattributed' && input.toStatus !== 'superseded')
+      throw new Error('Historical native Review requires current source synchronization');
     if (input.authorization) {
       const context = input.authorization;
       const full = this.stmt.selectReviewItem.get(id) as ReviewItemRow;
@@ -4954,7 +5191,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
           limit: options.limit ?? 50,
           offset: options.offset ?? 0,
         }) as ProposalRow[];
-      return rows.map(rowToProposal);
+      return rows.map((row) => rowToProposal(row));
     }
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
@@ -4992,7 +5229,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       }
     }
 
-    return rows.map(rowToProposal);
+    return rows.map((row) => rowToProposal(row));
   }
 
   async countProposals(options?: ListProposalsOptions): Promise<number> {
@@ -5224,6 +5461,64 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async getProposalApprovalSummary(
     input: GetProposalApprovalSummaryInput,
   ): Promise<ProposalApprovalSummary> {
+    return this.getProposalApprovalReadFrame(input, 'envelope').read.summary;
+  }
+
+  /** Admit the same current rows that will be projected, with independent local and complete-output limits. */
+  getProposalApprovalReads(input: GetProposalApprovalReadsInput): ProposalApprovalRead[] {
+    if (!Array.isArray(input.proposalIds) ||
+        (input.privateProjection !== 'preconditions' && input.privateProjection !== 'envelope' && input.privateProjection !== 'detail'))
+      throw new ProposalAcquisitionError('authorization_denied', 'Proposal publication context unavailable');
+    return this.db.transaction(() => {
+      const seen = new Set<string>();
+      const frames: ProposalApprovalReadFrame[] = [];
+      for (const proposalId of input.proposalIds) {
+        if (typeof proposalId !== 'string' || !proposalId.trim())
+          throw new ProposalAcquisitionError('authorization_denied', 'Proposal publication identity unavailable');
+        if (seen.has(proposalId)) continue;
+        seen.add(proposalId);
+        try {
+          frames.push(this.getProposalApprovalReadFrame({ ...input, proposalId }, input.privateProjection));
+        } catch (error) {
+          if (error instanceof ProposalAcquisitionError &&
+              (error.reasonCode === 'authorization_denied' ||
+               error.reasonCode === 'policy_version_mismatch' ||
+               error.reasonCode === 'payload_hash_mismatch')) continue;
+          throw error;
+        }
+      }
+      let operationCount = 0;
+      const grossOutgoing: Record<string, bigint> = {};
+      let overflow = false;
+      for (const frame of frames) {
+        if (!frame.privateReadEligible) continue;
+        if (!frame.disclosure) {
+          overflow = true;
+          continue;
+        }
+        operationCount += frame.disclosure.operationCount;
+        if (!Number.isSafeInteger(operationCount)) overflow = true;
+        for (const [currency, amount] of Object.entries(frame.disclosure.grossOutgoing)) {
+          const total = (grossOutgoing[currency] ?? 0n) + amount;
+          if (total > 9_223_372_036_854_775_807n) overflow = true;
+          grossOutgoing[currency] = total;
+        }
+      }
+      const collection = { operationCount, grossOutgoing };
+      const privateOutputAllowed = !overflow && frames.every((frame) =>
+        !frame.privateReadEligible || frame.admitsDisclosure(collection));
+      return frames.map(({ read }) => privateOutputAllowed ? read : {
+        ...read,
+        preconditions: null,
+        summary: { ...read.summary, privateEnvelopeVisible: false },
+      });
+    }).immediate();
+  }
+
+  private getProposalApprovalReadFrame(
+    input: GetProposalApprovalSummaryInput,
+    projection: GetProposalApprovalReadsInput['privateProjection'],
+  ): ProposalApprovalReadFrame {
     return this.db.transaction(() => {
       const nowMillis = timestampMillis(input.now);
       if (nowMillis === null)
@@ -5285,6 +5580,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       let payload: unknown;
       let preconditions: unknown;
       let facts: ProposalAuthorizationFacts;
+      let sourceReadFacts: ProposalSourceReadFacts | null;
       try {
         payload = JSON.parse(proposal.payload) as unknown;
         preconditions = JSON.parse(proposal.preconditions) as unknown;
@@ -5299,6 +5595,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }) !== proposal.payload_hash)
           throw new Error('Proposal hash mismatch');
         facts = deriveProposalAuthorizationFacts(operation, payload, preconditions);
+        sourceReadFacts = deriveProposalSourceReadFacts(operation, preconditions, proposal.budget_id);
       } catch {
         throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal authorization facts are invalid');
       }
@@ -5355,53 +5652,77 @@ export class SqliteWorkflowStore implements WorkflowStore {
             payload,
             now: input.now,
           });
+      const privateReadResources = [...new Map([
+        ...facts.resources,
+        ...(sourceReadFacts?.resources.filter((resource) => resource.resourceKind !== 'budget') ?? []),
+      ].map((resource) => [`${resource.resourceKind}:${resource.resourceId}`, resource])).values()];
+      let disclosure: GovernanceFinancialDisclosure | null;
+      try {
+        disclosure = deriveProposalDisclosureTotals(operation, payload, preconditions, projection);
+      } catch {
+        disclosure = null;
+      }
+      const authorizePrivateRead = (
+        required: GovernanceAuthorizationInput['required'],
+        limits?: GovernanceReadDisclosureLimits,
+      ) => {
+        const admission = {
+          actorId: input.actorId,
+          spaceId: input.spaceId,
+          membershipId: membership?.id,
+          expectedPolicyVersion: policy.version,
+          phase: 'read' as const,
+          required: [...required, ...(sourceReadFacts?.required ?? [])],
+          now: input.now,
+          auth: input.auth,
+        };
+        // Source, future effects, and returned Money are independent restrictions.
+        const effectRequest: GovernanceAuthorizationInput = {
+          ...admission, operation,
+          payload: { operations: facts.operations, resources: privateReadResources },
+        };
+        const effectRead = limits === undefined
+          ? this.governance.authorize(effectRequest)
+          : this.governance.authorizeReadDisclosure(effectRequest, limits);
+        if (!effectRead.allowed || !sourceReadFacts) return effectRead;
+        const sourceRequest: GovernanceAuthorizationInput = {
+          ...admission, operation: 'merchant:analyze',
+          payload: { operations: sourceReadFacts.operations, resources: privateReadResources },
+        };
+        return limits === undefined
+          ? this.governance.authorize(sourceRequest)
+          : this.governance.authorizeReadDisclosure(sourceRequest, limits);
+      };
+      const fullReadRequired: GovernanceAuthorizationInput['required'] = [
+        {
+          capability: 'full-read', resourceKind: 'budget',
+          resourceId: proposal.budget_id, visibility: 'resource',
+        },
+        ...privateReadResources
+          .filter((resource) =>
+            resource.resourceKind !== 'account' &&
+            resource.resourceKind !== 'category' &&
+            resource.resourceKind !== 'transaction' &&
+            resource.resourceKind !== 'rule')
+          .map((resource) => ({ ...resource, capability: 'full-read' })),
+      ];
+      const exactReadRequired = privateReadResources.map((resource) => ({
+        ...resource, capability: 'full-read',
+      }));
       const fullReadResource = !agentPrincipal && membership
-        ? this.governance.authorize({
-            actorId: input.actorId,
-            spaceId: input.spaceId,
-            membershipId: membership.id,
-            expectedPolicyVersion: policy.version,
-            phase: 'read',
-            operation,
-            required: [
-              {
-                capability: 'full-read',
-                resourceKind: 'budget',
-                resourceId: proposal.budget_id,
-                visibility: 'resource',
-              },
-              ...facts.resources
-                .filter((resource) =>
-                  resource.resourceKind !== 'account' &&
-                  resource.resourceKind !== 'category' &&
-                  resource.resourceKind !== 'transaction' &&
-                  resource.resourceKind !== 'rule')
-                .map((resource) => ({ ...resource, capability: 'full-read' })),
-            ],
-            payload: { operations: facts.operations, resources: facts.resources },
-            now: input.now,
-            auth: input.auth,
-          })
-        : null;
-      const exactPrivateRead = !agentPrincipal && membership && facts.resources.length > 0
-        ? this.governance.authorize({
-            actorId: input.actorId,
-            spaceId: input.spaceId,
-            membershipId: membership.id,
-            expectedPolicyVersion: policy.version,
-            phase: 'read',
-            operation,
-            required: facts.resources.map((resource) => ({ ...resource, capability: 'full-read' })),
-            payload: { operations: facts.operations, resources: facts.resources },
-            now: input.now,
-            auth: input.auth,
-          })
-        : null;
-      const fullReadAllowed =
-        fullReadResource?.allowed === true ||
-        exactPrivateRead?.allowed === true;
+        ? authorizePrivateRead(fullReadRequired) : null;
+      const exactPrivateRead = !agentPrincipal && membership && privateReadResources.length > 0
+        ? authorizePrivateRead(exactReadRequired) : null;
+      const metadataPrivateReadAllowed =
+        fullReadResource?.allowed === true || exactPrivateRead?.allowed === true;
+      const admitsDisclosure = (collection: GovernanceFinancialDisclosure): boolean =>
+        disclosure !== null && (
+          fullReadResource?.allowed === true && authorizePrivateRead(fullReadRequired, { collection, subject: disclosure }).allowed ||
+          exactPrivateRead?.allowed === true && authorizePrivateRead(exactReadRequired, { collection, subject: disclosure }).allowed
+        );
+      const fullReadAllowed = disclosure !== null && admitsDisclosure(disclosure);
       if (
-        !fullReadAllowed &&
+        !metadataPrivateReadAllowed &&
         !approvalRead?.allowed &&
         !executionRead?.allowed &&
         !requesterRead?.allowed
@@ -5505,7 +5826,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }),
         isError: 0,
       });
-      return {
+      const summary: ProposalApprovalSummary = {
         currentGovernancePolicyVersion: policy.version,
         requesterMembershipCurrent: true,
         privateEnvelopeVisible: fullReadAllowed,
@@ -5521,6 +5842,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
         canApprove,
         canExecute,
       };
+      return {
+        read: {
+          proposal: rowToProposal(proposal, payload as GenericActionProposal['payload']) as GenericActionProposal,
+          preconditions: fullReadAllowed ? preconditions as Readonly<Record<string, unknown>> : null,
+          summary,
+        },
+        disclosure,
+        privateReadEligible: metadataPrivateReadAllowed,
+        admitsDisclosure,
+      };
     }).immediate();
   }
 
@@ -5529,6 +5860,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
   async acquireProposalExecution(
     input: AcquireProposalExecutionInput,
   ): Promise<ProposalExecutionAcquisition> {
+    return this.acquireProposalExecutionSync(input);
+  }
+
+  validateAcquiredProposalExecution(input: ValidateAcquiredProposalExecutionInput): void {
+    if (typeof input.acquisitionAuditId !== 'string' || !input.acquisitionAuditId.trim())
+      throw new ProposalAcquisitionError('authorization_denied', 'Exact acquired execution token is required');
+    this.acquireProposalExecutionSync({ ...input, now: nowISO() }, input.acquisitionAuditId);
+  }
+
+  private acquireProposalExecutionSync(
+    input: AcquireProposalExecutionInput,
+    acquisitionAuditId?: string,
+  ): ProposalExecutionAcquisition {
     return this.db.transaction(() => {
       const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
       if (!proposal || !isGenericProposalOperation(proposal.operation))
@@ -5547,6 +5891,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
           ? (this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined)
           : undefined;
       const completedReplay =
+        acquisitionAuditId === undefined &&
         existingAcquisition?.actor_id === input.actorId &&
         existingIdempotency !== undefined &&
         existingIdempotency.proposal_id === input.proposalId &&
@@ -5645,12 +5990,68 @@ export class SqliteWorkflowStore implements WorkflowStore {
           existing.serialised_effect !== input.serialisedEffect
         )
           throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution replay does not match its claim');
+        if (acquisitionAuditId !== undefined) {
+          const leaseExpiresAt = existing.lease_expires_at === null
+            ? null : timestampMillis(existing.lease_expires_at);
+          if (existing.completed !== 0 || existing.idempotency_status !== 'in_progress' ||
+              leaseExpiresAt === null || leaseExpiresAt <= nowMillis ||
+              existing.executed_at !== existingAcquisition.acquired_at)
+            throw new ProposalAcquisitionError('authorization_denied', 'Acquired execution lease is no longer active');
+          if (!this.proposalReviewProvenanceMatches(proposal) ||
+              !this.ruleOverrideSnapshotMatches(spaceId, proposal.budget_id, payload, preconditions))
+            throw new ProposalAcquisitionError('authorization_denied', 'Acquired proposal provenance changed');
+          const audit = this.stmt.selectAuditById.get(acquisitionAuditId) as AuditRow | undefined;
+          if (!audit || audit.classification !== 'execution_started' || audit.is_error !== 0 ||
+              audit.actor_id !== input.actorId || audit.proposal_id !== input.proposalId ||
+              audit.idempotency_key !== input.idempotencyKey || audit.operation !== operation ||
+              audit.payload_hash !== proposal.payload_hash || audit.budget_id !== proposal.budget_id ||
+              audit.policy_version !== proposal.policy_version ||
+              audit.timestamp !== existingAcquisition.acquired_at)
+            throw new ProposalAcquisitionError('authorization_denied', 'Exact acquired execution audit does not match');
+          let approvalIds: string[];
+          try {
+            const result = JSON.parse(audit.result) as unknown;
+            if (!isPlainRecord(result) || result.proposalId !== input.proposalId ||
+                !Array.isArray(result.approvalIds) ||
+                !result.approvalIds.every((id: unknown) => typeof id === 'string' && id.trim()) ||
+                new Set(result.approvalIds).size !== result.approvalIds.length)
+              throw new Error('Invalid acquired approval set');
+            approvalIds = result.approvalIds as string[];
+          } catch {
+            throw new ProposalAcquisitionError('authorization_denied', 'Acquired approval audit is invalid');
+          }
+          const approvals: ApprovalRow[] = [];
+          for (const id of approvalIds) {
+            const approval = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
+            if (!approval || approval.status !== 'consumed' ||
+                approval.consumed_at !== existingAcquisition.acquired_at)
+              throw new ProposalAcquisitionError('approval_required', 'Acquired approval is no longer current');
+            approvals.push(approval);
+          }
+          const eligible = this.eligibleHumanApprovals({
+            proposalId: input.proposalId, payloadHash: proposal.payload_hash, spaceId,
+            policyVersion: policy.version, operation, budgetId: proposal.budget_id, facts, payload, now,
+            approvals,
+          });
+          if (eligible.length !== approvals.length ||
+              eligible.length < requiredProposalApprovers(authorization))
+            throw new ProposalAcquisitionError('approval_required', 'Acquired human approval authority changed');
+          const executionAuthorization = this.authorizeGenericProposal({
+            actorId: input.actorId, auth: input.auth, spaceId, policyVersion: policy.version,
+            phase: 'execute', capability, operation, budgetId: proposal.budget_id, facts, payload, now,
+            verifiedHumanApproval: true,
+          });
+          if (!executionAuthorization.allowed)
+            throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
+        }
         return {
           claim: { record: rowToIdempotency(existing), isOwner: false },
           approvals: [],
           auditRecord: null,
         };
       }
+      if (acquisitionAuditId !== undefined)
+        throw new ProposalAcquisitionError('authorization_denied', 'Execution authority was not acquired');
       if (!this.proposalReviewProvenanceMatches(proposal))
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal review provenance is no longer current');
 
@@ -5979,7 +6380,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
   // ── Authorization ─────────────────────────────────────────────────
 
   private operationalAuthMatches(auth: OperationalAuth, actorId: string, now: string): boolean {
-    if (auth.actorId !== actorId) return false;
+    if (auth.actorId !== actorId || !credentialLifetimeValid(auth, now)) return false;
     if (auth.method === 'session')
       return typeof auth.sessionId === 'string' && auth.sessionId.trim().length > 0;
     if (auth.method === 'human-session')
@@ -6128,15 +6529,23 @@ export class SqliteWorkflowStore implements WorkflowStore {
     readonly facts: ProposalAuthorizationFacts;
     readonly payload: unknown;
     readonly now: string;
+    readonly approvals?: readonly ApprovalRow[];
   }): ApprovalRow[] {
-    const activeApprovals = this.stmt.selectActiveApprovals.all({
+    const nowMillis = timestampMillis(input.now);
+    if (nowMillis === null) return [];
+    const activeApprovals = input.approvals ?? this.stmt.selectActiveApprovals.all({
       proposalId: input.proposalId,
       now: input.now,
     }) as ApprovalRow[];
     const eligible: ApprovalRow[] = [];
     const actors = new Set<string>();
     for (const approval of activeApprovals) {
+      const expiresAt = timestampMillis(approval.expires_at);
       if (
+        approval.proposal_id !== input.proposalId ||
+        approval.superseded_at !== null ||
+        expiresAt === null ||
+        expiresAt <= nowMillis ||
         approval.payload_hash !== input.payloadHash ||
         approval.governance_policy_version !== input.policyVersion ||
         !approval.issuer_membership_id ||
@@ -6471,6 +6880,35 @@ export class SqliteWorkflowStore implements WorkflowStore {
     const params = { budgetId: scope.budgetId, spaceId: scope.spaceId, actorId: scope.actorId };
     const run = (sql: string): number => db.prepare(sql).run(params).changes;
     const transaction = db.transaction(() => {
+      if (['connection', 'space', 'workflow', 'provider', 'user'].includes(dataScope)) {
+        const scopes = db.prepare(`
+          SELECT space_id, budget_id, connection_id, generation FROM merchant_scope_generations
+           WHERE space_id=@spaceId AND budget_id=@budgetId
+        `).all(params) as { space_id: string; budget_id: string; connection_id: string; generation: number }[];
+        deleted.merchantScopes = 0;
+        for (const row of scopes) {
+          const merchantScope = { spaceId: row.space_id, budgetId: row.budget_id, connectionId: row.connection_id };
+          if (!actorOnly) {
+            this.merchant.purge({ scope: merchantScope, now: nowISO(), expectedGeneration: row.generation, authorize: () => true });
+          } else {
+            const key = JSON.stringify([row.space_id, row.budget_id, row.connection_id]);
+            db.prepare('UPDATE merchant_scope_generations SET generation=generation+1 WHERE scope_key=?').run(key);
+            db.prepare("DELETE FROM merchant_decisions WHERE scope_key=? AND (json_extract(value,'$.actorId')=? OR json_extract(value,'$.visibility.privateActorId')=?)").run(key, scope.actorId, scope.actorId);
+            db.prepare("DELETE FROM merchant_evidence WHERE scope_key=? AND json_extract(value,'$.visibility.privateActorId')=?").run(key, scope.actorId);
+            db.prepare("DELETE FROM merchant_enrichment_cache WHERE scope_key=? AND json_extract(value,'$.visibility.privateActorId')=?").run(key, scope.actorId);
+            db.prepare("UPDATE merchant_decisions SET value=json_set(value,'$.generation',?) WHERE scope_key=?").run(row.generation + 1, key);
+            db.prepare(`
+              UPDATE merchant_research_attempts
+                 SET phase=CASE WHEN phase='reserved' THEN 'known_failed' WHEN phase='dispatched' THEN 'uncertain' ELSE phase END,
+                     settled_atoms=CASE WHEN phase='reserved' THEN '0' ELSE settled_atoms END,
+                     source_refs=?, visibility=?, key_hash=?, intent_hash=?, claim_token=CASE WHEN phase IN ('dispatched','uncertain') THEN claim_token ELSE NULL END, content_deleted=1
+               WHERE scope_key=? AND json_extract(visibility,'$.privateActorId')=?
+            `).run(JSON.stringify({ accountIds: [], categoryIds: [], ruleIds: [], transactionIds: [], factsHash: '0'.repeat(64), required: [] }), JSON.stringify({ hash: '0'.repeat(64), privateActorId: null }), '0'.repeat(64), '0'.repeat(64), key, scope.actorId);
+          }
+          deleted.merchantScopes++;
+        }
+        deleted.merchantDerivedCopies = redactMerchantDerivedCopies(db, { spaceId: scope.spaceId, budgetId: scope.budgetId, ...(actorOnly ? { actorId: scope.actorId } : {}) });
+      }
 
       if (['connection', 'space', 'workflow', 'user'].includes(dataScope)) {
         const targetJobs = `
@@ -6479,15 +6917,21 @@ export class SqliteWorkflowStore implements WorkflowStore {
              ${actorOnly ? 'AND actor_id = @actorId' : ''}
         `;
         if (!actorOnly) {
+          const selectedReviews = `SELECT id FROM review_items WHERE budget_id=@budgetId AND
+            (classifier!='rule' OR json_extract(evidence,'$.ruleSetRef.kind') IS NULL OR
+             json_extract(evidence,'$.ruleSetRef.kind')!='scoped' OR json_extract(evidence,'$.ruleSetRef.scope.spaceId')=@spaceId)`;
           deleted.corrections = run(`
             DELETE FROM review_corrections
-             WHERE review_item_id IN (SELECT id FROM review_items WHERE budget_id = @budgetId)
+             WHERE review_item_id IN (${selectedReviews})
           `);
           deleted.reviewActions = run(`
             DELETE FROM review_actions
-             WHERE review_item_id IN (SELECT id FROM review_items WHERE budget_id = @budgetId)
+             WHERE review_item_id IN (${selectedReviews})
           `);
-          deleted.reviewItems = run('DELETE FROM review_items WHERE budget_id = @budgetId');
+          deleted.reviewItems = run(`DELETE FROM review_items WHERE id IN (${selectedReviews})`);
+          deleted.reviewRuleSets = run("DELETE FROM review_rule_sets WHERE budget_id=@budgetId AND (space_id=@spaceId OR kind='historical-unattributed')");
+          deleted.reviewRuleParts = run("DELETE FROM review_rule_parts WHERE budget_id=@budgetId AND (space_id=@spaceId OR kind='historical-unattributed')");
+          deleted.reviewRuleBlocks = run("DELETE FROM review_rule_blocks WHERE budget_id=@budgetId AND (space_id=@spaceId OR kind='historical-unattributed')");
           deleted.suggestions = run('DELETE FROM suggestions WHERE budget_id = @budgetId');
         }
         deleted.failures = run(`

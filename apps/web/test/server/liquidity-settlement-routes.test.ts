@@ -26,6 +26,8 @@ import completionReconcile from '../../server/api/spend-sessions/[id]/completion
 import completionExecute from '../../server/api/spend-sessions/[id]/completions/[proposalId]/execute.post';
 import spendability from '../../server/api/liquidity/spendability.get';
 import proposeTransfer from '../../server/api/transfer/propose.post';
+import savePreference from '../../server/api/liquidity/preferences.put';
+import getPreferences from '../../server/api/liquidity/preferences.get';
 
 const fixture = vi.hoisted(() => ({
   manager: null as unknown,
@@ -771,6 +773,72 @@ describe('fresh human settlement routes', () => {
     expect(completionReconciled).toMatchObject({
       status: 'ok',
       result: { id: completion.id, phase: 'verified' },
+    });
+  });
+
+  it('persists an exact payment preference only with current session-bound human proof', async () => {
+    clockNow = now;
+    vi.setSystemTime(new Date(now));
+    const preferenceActor = {
+      ...actor, now, auth: humanAuth(actorId),
+      governancePolicyVersion: store.governance.getPolicy({ spaceId })!.version,
+    };
+    const before = await service.preferences(preferenceActor);
+    const ordinary = request({});
+    ordinary.node.req.method = 'GET';
+    ordinary.node.req.url = '/api/liquidity/preferences';
+    expect(await getPreferences(ordinary as unknown as H3Event)).toMatchObject({
+      status: 'ok', result: { canManage: true },
+    });
+    const body = { categoryId: 'food', accountId: 'checking', expectedVersion: 0, expiresAt: '2026-09-06T11:00:00.000Z' };
+    const event = (options: { cookie?: string; requestSessionId?: string } = {}) => {
+      const value = request({}, { ...options, body });
+      value.node.req.method = 'PUT';
+      value.node.req.url = '/api/liquidity/preferences';
+      return value as unknown as H3Event;
+    };
+    const cookie = await issueCookie();
+    for (const input of [event(), event({ cookie, requestSessionId: 'another-session' })]) {
+      const denied = await savePreference(input);
+      expect(input.node.res.statusCode).toBe(403);
+      expect(denied).toMatchObject({ status: 'error', result: null });
+      expect((await service.preferences(preferenceActor)).items).toEqual(before.items);
+    }
+    vi.setSystemTime(new Date(Date.parse(now) + 360_000));
+    const expired = event({ cookie });
+    expect(await savePreference(expired)).toMatchObject({ status: 'error', result: null });
+    expect(expired.node.res.statusCode).toBe(403);
+    vi.setSystemTime(new Date(now));
+    expect((await service.preferences(preferenceActor)).items).toEqual(before.items);
+    const ledgerBefore = structuredClone(current.legacySnapshot.transactions);
+    const saved = await savePreference(event({ cookie: await issueCookie() }));
+    expect(saved).toMatchObject({ status: 'ok', result: { items: [{
+      categoryId: body.categoryId, accountId: body.accountId, expiresAt: body.expiresAt, version: 1,
+    }] } });
+    expect((await service.preferences(preferenceActor)).items).toMatchObject([{
+      categoryId: body.categoryId, accountId: body.accountId, expiresAt: body.expiresAt, version: 1,
+    }]);
+    expect(await getPreferences(ordinary as unknown as H3Event)).toMatchObject({
+      status: 'ok', result: { items: [{
+        categoryId: body.categoryId, accountId: body.accountId, expiresAt: body.expiresAt, version: 1,
+      }] },
+    });
+    expect(current.legacySnapshot.transactions).toEqual(ledgerBefore);
+    store.governance.setResourceGrant({
+      spaceId, actorId, membershipId: actor.membershipId!, budgetId,
+      resourceKind: 'budget', resourceId: budgetId, capability: 'approval', granted: false,
+      now, auth: humanAuth(actorId),
+    });
+    expect(await getPreferences(ordinary as unknown as H3Event)).toMatchObject({
+      status: 'ok', result: { canManage: false },
+    });
+    store.governance.setResourceGrant({
+      spaceId, actorId, membershipId: actor.membershipId!, budgetId,
+      resourceKind: 'account', resourceId: 'checking', capability: 'approval', granted: false,
+      now, auth: humanAuth(actorId),
+    });
+    expect(await getPreferences(ordinary as unknown as H3Event)).toMatchObject({
+      status: 'ok', result: { items: [] },
     });
   });
 });

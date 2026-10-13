@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmdirSync,
   rmSync,
@@ -21,6 +22,12 @@ import { createServer } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 
+import {
+  cancelScenarioResearch, initialScenarioManifest, readScenarioManifest, registerScenarioManifestHandle,
+  writeScenarioManifest, writeScenarioPrivateFile,
+  type ScenarioId,
+} from './scenario-manifest.js';
+import type { ScenarioInitialized } from './workflow-setup.js';
 const LOOPBACK_HOST = '127.0.0.1';
 const ROOT_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -305,7 +312,7 @@ function createWebEnvironment(
     NUXT_WORKFLOW_DB_PATH: handle.workflowDbPath,
     BALANCEFRAME_WORKFLOW_DB_PATH: handle.workflowDbPath,
     BALANCEFRAME_CONFIG_PATH: handle.connectionPath,
-    ...(state.demoMode ? { NUXT_DEMO_MANIFEST_PATH: handle.manifestPath } : {}),
+    NUXT_DEMO_MANIFEST_PATH: handle.manifestPath,
     BETTER_AUTH_URL: handle.publicOrigin,
     BETTER_AUTH_SECRET: handle.internalSecret,
     NUXT_BETTER_AUTH_SECRET: handle.internalSecret,
@@ -485,21 +492,29 @@ async function resetActualPassword(
   }
 }
 
-async function allocatePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolveListen, rejectListen) => {
-    server.once('error', rejectListen);
-    server.listen(0, LOOPBACK_HOST, resolveListen);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    server.close();
-    throw new Error('Could not allocate a loopback process port');
+async function allocatePorts(): Promise<readonly [number, number]> {
+  const servers = [createServer(), createServer()] as const;
+  try {
+    for (const server of servers) {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once('error', rejectListen);
+        server.listen(0, LOOPBACK_HOST, resolveListen);
+      });
+    }
+    const [web, actual] = servers.map((server) => server.address());
+    if (!web || typeof web === 'string' || !actual || typeof actual === 'string') {
+      throw new Error('Could not allocate loopback process ports');
+    }
+    return [web.port, actual.port];
+  } finally {
+    await Promise.all(servers.map((server) => new Promise<void>((resolveClose, rejectClose) => {
+      if (!server.listening) {
+        resolveClose();
+        return;
+      }
+      server.close((error) => (error ? rejectClose(error) : resolveClose()));
+    })));
   }
-  await new Promise<void>((resolveClose, rejectClose) => {
-    server.close((error) => (error ? rejectClose(error) : resolveClose()));
-  });
-  return address.port;
 }
 
 function assertWebEntry(webEntryInput: string): string {
@@ -591,23 +606,29 @@ export function createOwnedScenarioRoot(): string {
   }
 }
 
+/** Starts an isolated shell with an explicit proxy origin or its allocated loopback URL. */
 export async function startScenarioShell(options: {
   readonly root: string;
-  readonly publicOrigin: string;
+  readonly publicOrigin?: string;
   readonly webEntry: string;
   readonly demoMode?: boolean;
+  readonly generation?: number;
+  readonly scenarioId?: ScenarioId;
 }): Promise<ScenarioProcesses> {
   const ownership = validateOwnedRoot(options.root);
-  const publicOrigin = assertPublicOrigin(options.publicOrigin);
+  const requestedPublicOrigin = options.publicOrigin === undefined
+    ? undefined
+    : assertPublicOrigin(options.publicOrigin);
   const webEntry = assertWebEntry(options.webEntry);
   const root = ownership.root;
   assertEmptyDirectory(root);
   const directories = createDirectories(root);
-  const webPort = await allocatePort();
-  const actualPort = await allocatePort();
+  const [webPort, actualPort] = await allocatePorts();
+  const webUrl = `http://${LOOPBACK_HOST}:${webPort}`;
+  const publicOrigin = requestedPublicOrigin ?? webUrl;
   const publicHandle: ScenarioProcesses = Object.freeze({
     root,
-    webUrl: `http://${LOOPBACK_HOST}:${webPort}`,
+    webUrl,
     actualUrl: `http://${LOOPBACK_HOST}:${actualPort}`,
     actualSecretKey: makeSecret(),
     seedClientDir: join(root, 'seed-client'),
@@ -619,6 +640,7 @@ export async function startScenarioShell(options: {
     manifestPath: join(root, 'manifest.json'),
     publicOrigin,
   });
+  writeScenarioPrivateFile(publicHandle.root, publicHandle.manifestPath, initialScenarioManifest(publicHandle, options.generation, options.scenarioId));
   const stateWithoutWeb = {
     publicHandle,
     ownership,
@@ -642,6 +664,7 @@ export async function startScenarioShell(options: {
   };
   internalProcesses.set(publicHandle, state);
   activeRoots.set(root, publicHandle);
+  registerScenarioManifestHandle(publicHandle, () => assertScenarioProcessesActive(publicHandle));
   try {
     await waitForHttp(web.process, publicHandle.webUrl, 'Nuxt shell');
   } catch (error) {
@@ -653,10 +676,98 @@ export async function startScenarioShell(options: {
   return publicHandle;
 }
 
-export async function startScenarioActual(handle: ScenarioProcesses): Promise<void> {
+/** A stale or substituted handle may never mutate private files or publish human credentials. */
+export function assertScenarioProcessesActive(handle: ScenarioProcesses): void {
   const state = internalProcesses.get(handle);
-  if (!state || stoppedHandles.has(handle)) throw new Error('Scenario process handle is not owned');
+  if (!state || state.stopPromise || stoppedHandles.has(handle) || activeRoots.get(handle.root) !== handle ||
+    state.web.process.exitCode !== null || state.web.process.signalCode !== null)
+    throw new Error('Scenario process handle is not active');
   validateOwnedRoot(handle.root);
+}
+
+function readChildMemory(child: RuntimeChild | undefined): { rssBytes: number; highWaterBytes: number } | null {
+  if (!child?.process.pid || child.process.exitCode !== null || child.process.signalCode !== null) return null;
+  try {
+    const status = readFileSync(`/proc/${child.process.pid}/status`, 'utf8');
+    const rssBytes = Number(/^VmRSS:\s+(\d+)\s+kB$/m.exec(status)?.[1]) * 1024;
+    const highWaterBytes = Number(/^VmHWM:\s+(\d+)\s+kB$/m.exec(status)?.[1]) * 1024;
+    if (!Number.isSafeInteger(rssBytes) || !Number.isSafeInteger(highWaterBytes) || rssBytes < 0 || highWaterBytes < 0 ||
+      child.process.exitCode !== null || child.process.signalCode !== null) return null;
+    return { rssBytes, highWaterBytes };
+  } catch {
+    return null;
+  }
+}
+
+/** Read approximate Linux RSS/lifetime-HWM counters for active owned entry processes without exposing PIDs. */
+export function readScenarioProcessMemory(handle: ScenarioProcesses): {
+  actual: { rssBytes: number; highWaterBytes: number } | null;
+  web: { rssBytes: number; highWaterBytes: number } | null;
+} {
+  assertScenarioProcessesActive(handle);
+  if (process.platform !== 'linux') return { actual: null, web: null };
+  const state = internalProcesses.get(handle)!;
+  return { actual: readChildMemory(state.actual), web: readChildMemory(state.web) };
+}
+
+/** Publish only current normal human sessions and membership periods verified by the owned child. */
+export async function updateScenarioPersonas(
+  handle: ScenarioProcesses,
+  initialized: ScenarioInitialized,
+  signal?: AbortSignal,
+): Promise<void> {
+  assertScenarioProcessesActive(handle);
+  signal?.throwIfAborted();
+  const manifest = readScenarioManifest(handle);
+  if (!manifest.scenarioId || (manifest.spaceId !== null && manifest.spaceId !== initialized.spaceId) ||
+    (manifest.budgetId !== null && manifest.budgetId !== initialized.budgetId))
+    throw new Error('Scenario persona publication changed the selected scope');
+  const actorIds: string[] = [];
+  for (const persona of Object.values(initialized.personas)) {
+    assertScenarioProcessesActive(handle);
+    if (persona.spaceId !== initialized.spaceId || actorIds.includes(persona.actorId))
+      throw new Error('Scenario persona scope or identity is invalid');
+    const headers = {
+      host: new URL(handle.publicOrigin).host, origin: handle.publicOrigin,
+      'x-balanceframe-demo-internal': handle.internalSecret,
+      'x-balanceframe-space': initialized.spaceId, cookie: persona.cookieHeader,
+    };
+    signal?.throwIfAborted();
+    const sessionResponse = await fetch(new URL('/api/auth/get-session', handle.webUrl), { headers, signal });
+    signal?.throwIfAborted();
+    const session = await sessionResponse.json() as { user?: { id?: string }; session?: { userId?: string } };
+    signal?.throwIfAborted();
+    if (!sessionResponse.ok || session.user?.id !== persona.actorId || session.session?.userId !== persona.actorId)
+      throw new Error('Scenario persona session is not current');
+    signal?.throwIfAborted();
+    const selectedResponse = await fetch(new URL(`/api/spaces/${encodeURIComponent(initialized.spaceId)}`, handle.webUrl), { headers, signal });
+    signal?.throwIfAborted();
+    const selected = await selectedResponse.json() as {
+      result?: { space?: { id?: string; membership?: { id?: string; actorId?: string; revokedAt?: string | null } } };
+    };
+    signal?.throwIfAborted();
+    const space = selected.result?.space;
+    if (!selectedResponse.ok || space?.id !== initialized.spaceId ||
+      space.membership?.id !== persona.membershipId || space.membership.actorId !== persona.actorId || space.membership.revokedAt !== null)
+      throw new Error('Scenario persona membership is not current');
+    actorIds.push(persona.actorId);
+    signal?.throwIfAborted();
+  }
+  assertScenarioProcessesActive(handle);
+  signal?.throwIfAborted();
+  const current = readScenarioManifest(handle);
+  if (current.generation !== manifest.generation || current.scenarioId !== manifest.scenarioId ||
+    current.spaceId !== manifest.spaceId || actorIds.length === 0)
+    throw new Error('Scenario persona publication is stale');
+  signal?.throwIfAborted();
+  writeScenarioManifest(handle, {
+    ...current, phase: 'ready', spaceId: initialized.spaceId, budgetId: initialized.budgetId, actorIds,
+  });
+}
+
+export async function startScenarioActual(handle: ScenarioProcesses): Promise<void> {
+  assertScenarioProcessesActive(handle);
+  const state = internalProcesses.get(handle)!;
   if (state.actual && state.actual.process.exitCode === null && state.actual.process.signalCode === null) {
     return;
   }
@@ -679,18 +790,33 @@ export async function startScenarioActual(handle: ScenarioProcesses): Promise<vo
   }
 }
 
-export async function stopScenarioProcesses(handle: ScenarioProcesses): Promise<void> {
+/**
+ * Stops owned children and normally disposes their root; the first call may retain it for live clients.
+ * A retained root must later be discarded by its allocator after every client has closed.
+ */
+export async function stopScenarioProcesses(
+  handle: ScenarioProcesses,
+  options: { readonly retainRoot?: boolean } = {},
+): Promise<void> {
   if (stoppedHandles.has(handle)) return;
   const state = internalProcesses.get(handle);
   if (!state) throw new Error('Scenario process handle is not owned');
   if (state.stopPromise) return await state.stopPromise;
+  validateOwnedRoot(handle.root);
   state.stopPromise = (async () => {
+    let cancellationError: unknown;
+    try {
+      cancelScenarioResearch(handle);
+    } catch (error) {
+      cancellationError = error;
+    }
     if (state.actual) await stopChild(state.actual.process);
     await stopChild(state.web.process);
-    safeCleanup(state.ownership);
+    if (!options.retainRoot) safeCleanup(state.ownership);
     activeRoots.delete(handle.root);
     internalProcesses.delete(handle);
     stoppedHandles.add(handle);
+    if (cancellationError) throw cancellationError;
   })();
   return await state.stopPromise;
 }

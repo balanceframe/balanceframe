@@ -121,6 +121,89 @@ After both services become healthy, connect BalanceFrame to `http://actual:5006`
 through the application setup. Actual is independently upgradeable and
 removable — removing BalanceFrame never deletes Actual data.
 
+### Optional ValueSerp merchant research
+
+The canonical `compose.yaml` remains provider-off. This feature is an explicit
+operator opt-in; adding the overlay supplies the server configuration path and
+private key but does not grant research authority or consent.
+
+Before enabling it:
+
+1. Obtain the current tariff version, billing currency and exact unit price
+   confirmed by the actual provider account. Set the account's approved
+   versioned installation policy and credential caps (`maxSearchesPerDay` and
+   `maxSpendMinorUnitsPerMonth`) using the
+   [server deployment schema](packages/application/src/merchant-settings.ts).
+   Public price pages, guessed values, sample tariffs and dummy caps are not
+   deployment settings. If account-confirmed pricing or authorized caps are
+   unavailable, keep research off.
+2. Create the operator-owned JSON file at the path in
+   `BALANCEFRAME_MERCHANT_CONFIG_FILE`. It must exist and be readable by the
+   non-root BalanceFrame container user. The strict JSON schema does not accept
+   the API key; do not put secrets in it.
+3. Keep `VALUESERP_API_KEY` in a private, untracked deployment environment
+   file (for example, mode `0600`). Rotate or revoke it through the provider
+   account, replace the server-side value, and recreate the service after
+   rotation. Never put the key in source control, browser settings, Actual, or
+   the JSON file.
+4. Before any external request, independently confirm that installation,
+   selected-space and budget policies all allow the provider, current source
+   authorization and exact scoped `merchant:research` grants are present, and
+   the user explicitly consents to each operation. Ordinary authentication
+   and CSRF checks remain in force. The overlay grants no wildcard, write or
+   research authority.
+
+Only after those prerequisites, explicitly select both compose files:
+
+```bash
+docker compose --env-file /secure/private/balanceframe.env \
+  -f compose.yaml -f compose.research.yaml up -d
+```
+
+Set `BALANCEFRAME_MERCHANT_CONFIG_FILE` and `VALUESERP_API_KEY` in that private
+environment file. The overlay mounts exactly one file read-only at
+`/run/secrets/merchant-research.json` and refuses to create a missing host
+source path. No provider settings are mounted or passed by the canonical
+compose command.
+
+#### Offline and redaction checks
+
+Before deployment, run the offline Compose validator and sentinel regression:
+
+```bash
+COMPOSE_BIN=/path/to/docker-compose tests/deployment/compose-validate.sh
+COMPOSE_BIN=/path/to/docker-compose node --test tests/deployment/compose-research.test.mjs
+```
+
+`COMPOSE_BIN` may name a standalone Compose renderer; without it, the checks use
+`docker compose`. These checks render private sentinel values to Compose JSON
+for semantic parsing and do not start services or contact a provider. They
+prove local manifest isolation and output suppression only, not deployed
+redaction.
+
+Before enabling egress, verify every logging and observability boundary using
+synthetic sentinels with outbound provider traffic blocked:
+
+- Check application/container stdout and stderr, reverse-proxy access/error
+  logs, APM traces, exception capture, and retained/exported logs.
+- Confirm the entire outbound URL including its query, authorization and other
+  sensitive headers, request/response bodies, and secret values are suppressed
+  at each boundary. A path-only URL redaction is insufficient.
+- Search captures and their exports for each sentinel; if any collector cannot
+  be verified, leave external research off. This repository has no deployed
+  proxy/APM environment, so no deployed redaction result is claimed.
+
+Any eventual live check requires separate operator authorization, the actual
+account-confirmed price and caps, and an explicitly bounded single
+public-business request. Do not send transaction or financial details; stop
+after that one request or on uncertain billing. No paid request or service
+deployment is part of these local checks.
+
+Review the account's applicable terms and upstream retention before opt-in.
+Local deletion cannot recall dispatched queries or prove erasure by the provider.
+Use the same explicitly selected overlay files for upgrades and key rotation;
+the canonical upgrade command below intentionally leaves research disabled.
+
 ### Upgrade
 
 ```bash
@@ -201,21 +284,91 @@ Scenario fixture packaging uses Node filesystem APIs, so the build does not requ
 ```bash
 pnpm scenarios list
 pnpm scenarios verify funded-purchase
+pnpm scenarios verify merchant-native-rule-lifecycle
 pnpm scenarios verify --all
 pnpm scenarios verify --faults
 pnpm scenarios run funded-purchase
 pnpm demo --scenario rich-cart
+pnpm demo --scenario governance-scoped-access
+pnpm demo --scenario merchant-research-lifecycle
 ```
 
 `run` and `demo` open the shared fictional workspace at `http://127.0.0.1:3003/demo` by default. Select a story, follow **Open active scenario** to its ordinary application screen, and use **Reset shared demo** to discard all changes and regenerate that scenario. The selector and banner identify the fictional persona and warn that anyone sharing this instance sees its changes. Stop the supervisor with Ctrl-C; it removes only its own disposable workspace. Never connect it to a personal or production Actual budget.
 
-`verify --all` runs the 29 independent authenticated Actual/Nuxt cases and then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with its catalog version, scenario ID, anchor, assertion count, and sanitized evidence mode. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, and interrupted completion writes without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
+`verify --all` runs all **40** independently loadable authenticated Actual/Nuxt stories and their required behavior branches, then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with catalog version, scenario ID, anchor, assertion count, branches, and sanitized evidence mode. Missing stories or branches fail verification even if Vitest exits zero. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, and interrupted completion writes without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
 
 Scenario account attestations are explicit, fictional source evidence, not bank imports; missing or expired attestations keep the Card at `insufficient_data`. Reset regenerates only the active instance's credentials, budget, sessions and attestations; another runner is independent.
+Catalog policy, observation and session expiry durations are materialized at their real submission time, so a fixed historical `--anchor` does not submit an already-expired configuration. Ordinary fixture timestamps remain unchanged; deliberately short expiry stories retain their short lifetime.
+Shared demo load/reset controls enforce a ten-second monotonic cooldown after each attempt; membership, authentication and financial freshness checks keep real time.
 
-Scenario setup creates a real personal/shared space, accepts space-scoped invitations into current membership periods, and installs the catalog's exact resource grants. An explicit selected-budget full-read grant is resolved into finite read-only scopes for the real Actual baseline, including generated balances and default categories; it grants no extra write/control authority. Every persona has independent Better Auth credentials and selected-space cookies, and completions use independent scoped approvers rather than the requester. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this explicitly renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.
+
+Scenario setup creates real personal/shared spaces and installs exact resource grants with development authentication bypass disabled. Active human personas have independent Better Auth credentials and selected-space cookies. Pending invitations have no invented user/session; redemption creates a real separate human membership, and rejoining creates a new membership without inherited grants. The assistant uses a real bounded agent/delegation/API-key binding, not a human login. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.
 
 Scoped completion approvers have explicit selected-budget liquidity admission for Native Card revalidation and exact grants for their completion's canonical accounts and categories. Persona roles infer no private history/source/full-read, execution, or control authority.
+
+#### Release coverage and walkthroughs
+
+The existing 29 spending stories remain selectable, covering v0.5.0 rich carts, opportunity costs and reservations alongside liquidity routing, completion and reconciliation. `coapproval-completion` additionally demonstrates independently attributed approvals, existing space-scoped audit access, actor filters, financial-detail redaction and denial without audit rights.
+
+| Release | Scenario | Entry and expected behavior |
+|---|---|---|
+| v0.6.0 | `governance-scoped-access` | `/spaces`: separate limited human, Checking name/existence only; exact grant changes and membership revocation withhold other resources and financial data. |
+| v0.6.0 | `governance-invitation-lifecycle` | `/spaces`: pending invitation → separate-person redemption → revoke/rejoin with a new membership and no old grants. |
+| v0.6.0 | `governance-delegated-assistant` | `/spaces`: **Probe bounded assistant access** in demo controls displays admitted native Checking metadata and blocked management/history/financial HTTP outcomes; **Revoke assistant delegation**, then probe again to see the same key rejected with 401. |
+| v0.7.0 | `merchant-local-sparse` | `/review`: run **Sync**; Aster's $346.07 debit suggests Groceries from three real categorized observations, with no research/provider call. |
+| v0.7.0 | `merchant-local-insufficient` | `/review`: one categorized observation and an empty-identity target abstain rather than inventing a confident category or rule. |
+| v0.7.0 | `merchant-alias-conflict` | `/review`: imported Aster text versus Dapple notes abstains; independently reset alias confirm/reject decisions persist versions without ledger edits. A normal independently approved correction to Other wins subsequent inference. |
+| v0.7.0 | `merchant-recurrence-calendar` | `/review` and Dashboard: monthly, civil month-end, US business-end/first-business-day, variable $9–$12 and irregular series; independent pattern accept/reject branches. Clearing the calendar or selecting an unsupported jurisdiction preserves ordinary cadence with uncertainty. Local calendar fixtures also cover leap/year and unsupported-year boundaries. |
+| v0.7.0 | `merchant-native-rule-lifecycle` | `/rules` and Review: select Aster's $749.65 queue row and inspect the exact rule impact. **Proposed rules** remains accessible to scoped reviewers with empty transaction queues. Two independent human approvals exclude the author; owner execution creates one real Actual rule, with idempotent replay checked by local acceptance. **Simulate fixture import** uses Actual alone on Savings. Reset, prepare and approve a fresh unexecuted proposal, then **Change native fixture source** and attempt execution: refusal leaves zero rules. |
+| v0.7.0 | `merchant-research-success` | `/review`: explicitly consent to merchant-only fixture research; observe fixture provenance, cache reuse and **Expire fixture research cache** expiry. |
+| v0.7.0 | `merchant-research-outage` | `/review`: consent returns a modeled provider outage/uncertain billing; local Sync and Review remain usable. |
+| v0.7.0 | `merchant-research-lifecycle` | `/review`: held research, non-draining release/cancel/reset, installation/space/budget or exact-grant revocation, daily/monthly limits, and normal deletion with late-result fencing. Each mutually exclusive branch starts from a fresh load. |
+
+Use the selector's declared entry links, persona selector and event controls; normal application authorization, fresh proof, approval and version checks still apply. After switching personas or reopening a guarded normal screen, enter `CONFIRM` in that screen's fresh-confirmation form before making changes; return to demo controls for fixture events. Governance name/existence probes are bounded local tooling backed by the real principal, governance engine and Actual metadata—not a new production resource-list endpoint.
+
+Native-rule reviewers receive finite full-read/approval rights for the complete current Actual source graph and exact published evidence, including generated baseline IDs; they receive neither budget-wide full-read nor execution/control rights. The owner receives only that story's required native-rule intent authority on those resources, not generic write rights for generated balances. Imports and newly created rules extend the same exact native-ID scope through validated normal grant handlers.
+
+Research is a **closed fixture provider through the real coordinator, policies, cache and quota journal**. It never constructs a provider transport, reads paid keys, calls ValueSerp, or falls back to live research. `.invalid` sources are synthetic and uncalibrated; the modeled USD tariff is 250000 atoms ($0.0025) per dispatch, not a live provider price. Only the bounded research clock advances; source freshness and human proof use real time. Disabling or retiring fixture authority fails closed, and reset cancels held work before draining requests. This remains one shared disposable runtime, not per-visitor isolation or a static browser demo.
+
+#### Complete Review measurements (Linux)
+
+With the same source build and an installed Chromium/Chrome, run the real
+Actual → authenticated Sync → persisted queue → rendered Review path:
+
+```bash
+taskset -c 0,1 node scripts/merchant-intelligence/review.mjs \
+  --sizes 50000,250000 --warmups 2 --iterations 20 \
+  --deadline-ms 120000 --dataset-deadline-ms 3300000 \
+  --chromium-path /opt/google/chrome/chrome --output /tmp/review-local-reference.json
+```
+
+Choose an unused output path and your installed browser path. Use an owned
+resource supervisor on a shared host; the reference runs use a 12 GiB whole-job
+cap with no swap, separate from the reported approximate Actual/web entry RSS.
+The tool creates only disposable fictional budgets, compacts their sync history
+with native `sync-reset`, verifies independent financial readback and reconnects
+the same budget under its new sync group. No production budget or paid provider
+is used. First queue population is separate from the warmed 2+20 p95; neither
+is a cold-start or native-only measurement. Full Review p95 is descriptive;
+the existing native latency/memory gates are unchanged. Short, failed or censored
+datasets have no affirmative reference p95; incomplete reports exit 2.
+Reports/screenshots are private and exclusive. Normal handled runs clean up
+owned services/data unless SDK shutdown is unproven. External OOM/SIGKILL can
+bypass report finalization and cleanup: retain the owning supervisor's failure
+evidence, verify its cgroup is released, then remove only its recorded disposable
+workspace. An externally killed run establishes no reference p95.
+The CI publication test reports specific allowlisted Sync failures, HTTP status
+counts and page-error counts; it never prints private reports, cookies or ledger rows.
+The Linux full-suite CI job allows 90 minutes for serial scaled Actual proofs and
+instrumented scenario coverage. This job limit is not a UI/native performance target.
+Actual-adapter test files run serially so the 250,000-row retention check does not compete with credential-key derivation. Its 10-second test timeout, dataset and exact-money/ID assertions remain unchanged.
+
+The separate real-fixture allocation regression is
+`node --test scripts/merchant-intelligence/review-grants.test.mjs`, run serially
+in the locked source environment. Its isolated grant-write RSS ceiling is an
+operational regression check, not the native analysis memory gate; it is not
+part of the ordinary unit suite.
+
 
 ### Release
 

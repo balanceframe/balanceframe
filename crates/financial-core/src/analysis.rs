@@ -16,8 +16,9 @@ use crate::data_quality::{analyze_readiness, DataQualityReport};
 use crate::duplicates::{find_duplicates, DuplicateEvidence};
 use crate::freshness::{CompatibilityMetadata, DataFreshness};
 use crate::merchant::normalize_merchant;
+use crate::merchant_intelligence::{legacy_recurrence_projection, MerchantEvidenceTier};
 use crate::money::Money;
-use crate::snapshots::{Account, BudgetMonth, Category, Payee, Rule, Schedule, Transaction};
+use crate::snapshots::{Account, BudgetMonth, Category, Payee, Rule, Transaction};
 
 // ---------------------------------------------------------------------------
 // UncategorizedBacklog
@@ -76,13 +77,26 @@ pub struct RuleCandidate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecurringCharge {
+    /// Native account identity; display labels never merge accounts.
+    pub account_id: String,
+    /// Present native payee identity; unresolved legacy rows are not grouped.
+    pub payee_id: String,
+    /// Full observed row count, independent of bounded evidence samples.
+    pub occurrences: u32,
+    /// Earliest civil observation date across the full group.
+    pub first_date: String,
+    /// Latest civil observation date across the full group.
+    pub last_date: String,
+    /// Legacy source provenance is unavailable, so these remain provisional.
+    pub tier: MerchantEvidenceTier,
+    /// Explicit source/calendar/cadence limitations, never numeric probabilities.
+    pub reason_codes: Vec<String>,
     pub normalized_merchant: String,
     pub original_name: String,
     pub frequency_label: String,
     pub typical_amount: Money,
     pub transaction_ids: Vec<String>,
     pub dates: Vec<String>,
-    pub confidence: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +167,9 @@ pub struct DeterministicAnalysis {
     pub uncategorized_backlog: UncategorizedBacklog,
     pub repeated_merchants: Vec<RepeatedMerchant>,
     pub deterministic_classifications: Vec<CategorizationCandidate>,
+    pub native_rule_blocks: Vec<crate::merchant_intelligence::MerchantNativeRuleBlock>,
+    pub native_rule_parts: Vec<crate::merchant_intelligence::MerchantNativeRulePart>,
+    pub native_rule_sets: Vec<crate::merchant_intelligence::MerchantNativeRuleSet>,
     pub rule_candidates: Vec<RuleCandidate>,
     pub duplicate_evidence: Vec<DuplicateEvidence>,
     pub recurring_charges: Vec<RecurringCharge>,
@@ -178,7 +195,6 @@ pub fn run_deterministic_analysis(
     categories: &[Category],
     payees: &[Payee],
     rules: &[Rule],
-    schedules: &[Schedule],
     budgets: &[BudgetMonth],
     compatibility: CompatibilityMetadata,
     actual_downloaded_at: Option<String>,
@@ -378,7 +394,7 @@ pub fn run_deterministic_analysis(
         })
         .collect();
 
-    let deterministic_classifications =
+    let (deterministic_classifications, native_rule_blocks, native_rule_parts, native_rule_sets) =
         find_candidates_with_rules(&scoped_txns, payees, &history, categories, rules);
 
     // -----------------------------------------------------------------------
@@ -394,7 +410,7 @@ pub fn run_deterministic_analysis(
     // -----------------------------------------------------------------------
     // 10. Recurring charges (uses filtered transactions)
     // -----------------------------------------------------------------------
-    let recurring_charges = find_recurring_charges(&scoped_txns, schedules);
+    let recurring_charges = legacy_recurrence_projection(&scoped_txns, reference_date);
 
     // -----------------------------------------------------------------------
     // 11. Historical corrections (budget changes — not transaction‑dependent)
@@ -426,6 +442,9 @@ pub fn run_deterministic_analysis(
         uncategorized_backlog,
         repeated_merchants,
         deterministic_classifications,
+        native_rule_blocks,
+        native_rule_parts,
+        native_rule_sets,
         rule_candidates,
         duplicate_evidence,
         recurring_charges,
@@ -878,160 +897,6 @@ pub fn generate_rule_candidates_from_corrections(
 
     candidates.sort_by_key(|b| std::cmp::Reverse(b.matching_tx_count));
     candidates
-}
-
-// ---------------------------------------------------------------------------
-// Recurring charge analysis
-// ---------------------------------------------------------------------------
-
-fn find_recurring_charges(
-    transactions: &[Transaction],
-    schedules: &[Schedule],
-) -> Vec<RecurringCharge> {
-    let mut charges: Vec<RecurringCharge> = Vec::new();
-
-    // Simple heuristic: group by normalized merchant, look for transactions
-    // with similar amounts at regular intervals.
-    let mut groups: HashMap<String, Vec<&Transaction>> = HashMap::new();
-    for tx in transactions {
-        let norm = normalize_merchant(tx.payee_name.as_deref().unwrap_or(""));
-        if norm.is_empty() || !tx.amount.is_negative() {
-            // Only outgoing (negative) transactions are charges; skip incoming.
-            continue;
-        }
-        groups.entry(norm).or_default().push(tx);
-    }
-
-    for (norm, txs) in groups {
-        if txs.len() < 2 {
-            continue;
-        }
-
-        // Sort by date
-        let mut sorted = txs.clone();
-        sorted.sort_by(|a, b| a.date.cmp(&b.date));
-
-        // Check if amounts are similar (within 20% of each other)
-        let amounts: Vec<i64> = sorted.iter().map(|tx| tx.amount.minor_units()).collect();
-        if !amounts_similar(&amounts) {
-            continue;
-        }
-
-        // Check if dates are roughly evenly spaced
-        let dates: Vec<&str> = sorted.iter().map(|tx| tx.date.as_str()).collect();
-        let (frequency_label, confidence) = classify_frequency(&dates);
-
-        if confidence < 0.3 {
-            continue;
-        }
-
-        let typical_amount = amounts[amounts.len() / 2]; // median-ish
-        let currency = sorted[0].amount.currency().to_string();
-
-        charges.push(RecurringCharge {
-            normalized_merchant: norm.clone(),
-            original_name: sorted[0].payee_name.clone().unwrap_or_else(|| norm.clone()),
-            frequency_label,
-            typical_amount: Money::new(typical_amount, &currency),
-            transaction_ids: sorted.iter().map(|tx| tx.id.clone()).collect(),
-            dates: sorted.iter().map(|tx| tx.date.clone()).collect(),
-            confidence,
-        });
-    }
-
-    // Also include scheduled transactions
-    for sched in schedules {
-        let norm = normalize_merchant(sched.payee_name.as_deref().unwrap_or(""));
-        if norm.is_empty() {
-            continue;
-        }
-        // Skip if already covered by transaction-based detection
-        if charges.iter().any(|c| c.normalized_merchant == norm) {
-            continue;
-        }
-        charges.push(RecurringCharge {
-            normalized_merchant: norm,
-            original_name: sched.payee_name.clone().unwrap_or_default(),
-            frequency_label: sched.frequency.clone(),
-            typical_amount: sched.amount.clone(),
-            transaction_ids: vec![],
-            dates: vec![sched.next_expected.clone()],
-            confidence: 0.9,
-        });
-    }
-
-    // Sort by normalized_merchant for deterministic output
-    charges.sort_by(|a, b| a.normalized_merchant.cmp(&b.normalized_merchant));
-    charges
-}
-
-fn amounts_similar(amounts: &[i64]) -> bool {
-    if amounts.len() < 2 {
-        return true;
-    }
-    // Use checked absolute values to avoid panic on i64::MIN
-    let abs_vals: Vec<i64> = amounts.iter().filter_map(|a| a.checked_abs()).collect();
-    if abs_vals.len() < 2 {
-        return false;
-    }
-    let min = *abs_vals.iter().min().unwrap_or(&0);
-    let max = *abs_vals.iter().max().unwrap_or(&0);
-    if min == 0 && max == 0 {
-        return true;
-    }
-    // Avoid division by zero; if min is 0 but max is not, they're not similar
-    if min == 0 {
-        return false;
-    }
-    let ratio = (max as f64) / (min as f64);
-    ratio <= 1.5 // within 50%
-}
-
-fn classify_frequency(dates: &[&str]) -> (String, f64) {
-    if dates.len() < 2 {
-        return ("infrequent".into(), 0.1);
-    }
-
-    let day_diffs: Vec<i64> = dates
-        .windows(2)
-        .filter_map(|w| {
-            let d1 = date_to_days(w[0]);
-            let d2 = date_to_days(w[1]);
-            Some(d2? - d1?)
-        })
-        .collect();
-
-    if day_diffs.is_empty() {
-        return ("infrequent".into(), 0.1);
-    }
-
-    let avg_diff = day_diffs.iter().sum::<i64>() as f64 / day_diffs.len() as f64;
-
-    if (avg_diff - 30.0).abs() < 10.0 {
-        ("monthly".into(), 0.8)
-    } else if (avg_diff - 7.0).abs() < 3.0 {
-        ("weekly".into(), 0.7)
-    } else if (avg_diff - 365.0).abs() < 60.0 {
-        ("yearly".into(), 0.6)
-    } else if (avg_diff - 14.0).abs() < 4.0 {
-        ("biweekly".into(), 0.6)
-    } else if (avg_diff - 1.0).abs() < 1.0 {
-        ("daily".into(), 0.5)
-    } else {
-        ("irregular".into(), 0.3)
-    }
-}
-
-/// Convert "YYYY-MM-DD" to days since epoch (approx).
-fn date_to_days(s: &str) -> Option<i64> {
-    let digits: String = s.chars().take(10).filter(|c| c.is_ascii_digit()).collect();
-    if digits.len() < 8 {
-        return None;
-    }
-    let year: i64 = digits[..4].parse().ok()?;
-    let month: i64 = digits[4..6].parse().ok()?;
-    let day: i64 = digits[6..8].parse().ok()?;
-    Some(year * 365 + month * 30 + day)
 }
 
 // ---------------------------------------------------------------------------

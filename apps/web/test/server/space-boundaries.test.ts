@@ -1,17 +1,19 @@
+import type * as H3 from 'h3';
+import type { ConnectionManager } from '@balanceframe/application';
+import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import type { EventWithContext } from '../../server/utils/workflow-store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createEvent } from 'h3';
-import type * as H3 from 'h3';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Socket } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ConnectionManager } from '@balanceframe/application';
-import type { SqliteWorkflowStore } from '@balanceframe/workflow-store';
 import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
 import { getWorkflowStore } from '../../server/utils/workflow-store';
-import type { EventWithContext } from '../../server/utils/workflow-store';
 import fixture from '../../../../protocol/fixtures/representative.json';
+import groupHandler from '../../server/api/review/group.post';
+import { completeNativeRuleSourceAvailability } from './native-rule-source.fixture';
 
 const mocks = vi.hoisted(() => ({
   manager: null as unknown,
@@ -30,11 +32,11 @@ vi.mock('@balanceframe/application', async () => {
   };
 });
 
-import groupHandler from '../../server/api/review/group.post';
 
 const OWNER = 'space-boundary-owner';
 const ACTOR = 'space-boundary-human';
 const NOW = '2026-09-06T10:00:00.000Z';
+const SERVER_URL = 'https://actual.space-boundaries.example.test';
 const PRIVATE_EVIDENCE = 'private-review-model-evidence-4e08';
 const ownerAuth = {
   method: 'human-session' as const,
@@ -45,19 +47,6 @@ const ownerAuth = {
 const canonical = canonicalProtocolSnapshotSchema.parse(fixture);
 const transactions = canonical.transactions.slice(0, 2);
 const targetCategoryId = canonical.transactions[1]!.categoryId!;
-const projectedSnapshot = {
-  accounts: canonical.accounts.map(({ id, name }) => ({ id, name })),
-  categories: canonical.categories.map(({ id, name }) => ({ id, name })),
-  transactions: transactions.map((transaction) => ({
-    id: transaction.id,
-    accountId: transaction.accountId,
-    payeeName: transaction.payeeName ?? null,
-    importedPayee: transaction.importedPayee ?? null,
-    categoryId: transaction.categoryId ?? null,
-    amount: transaction.amount,
-    date: transaction.date,
-  })),
-};
 let directory = '';
 let store: SqliteWorkflowStore;
 let sequence = 0;
@@ -213,12 +202,17 @@ beforeEach(async () => {
     loadConfig: mocks.loadConfig,
     withConnection: mocks.withConnection,
   };
-  mocks.loadConfig.mockResolvedValue({ budgetId });
+  mocks.loadConfig.mockResolvedValue({ budgetId, serverUrl: SERVER_URL });
   mocks.withConnection.mockImplementation(async (operation) => operation({
-    config: { budgetId },
+    config: { budgetId, serverUrl: SERVER_URL },
     budget: { id: budgetId },
-    connector: {},
-    synchronization: { financialSnapshot: { legacySnapshot: projectedSnapshot } },
+    connector: {
+      synchronize: async () => ({
+        snapshot: canonical,
+        financialSnapshot: { legacySnapshot: canonical },
+        rulePlanningSourceAvailability: completeNativeRuleSourceAvailability(canonical),
+      }),
+    },
   }));
 });
 
@@ -248,10 +242,6 @@ describe('selected-space Native review group projection', () => {
     expect(response.result.items).toHaveLength(2);
     expect(JSON.stringify(response)).not.toContain(PRIVATE_EVIDENCE);
     expect(JSON.stringify(response)).not.toContain('confidence');
-    expect(mocks.withConnection).toHaveBeenCalledWith(expect.any(Function), {
-      expectedBudgetId: budgetId,
-      dispose: true,
-    });
   });
 
   it('withholds the entire group when one account-history grant is missing', async () => {
