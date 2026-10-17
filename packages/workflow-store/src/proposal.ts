@@ -3,10 +3,16 @@ import {
   accountSchema,
   canonicalTransactionSchema,
   categorySchema,
+  consequentialActionPlanSchema,
   moneySchema,
   payeeSchema,
   ruleSchema,
 } from '@balanceframe/protocol-generated/validators';
+import type {
+  AtomicConsequentialActionIntent,
+  ConsequentialActionPlan,
+  ConsequentialActionIntent,
+} from '@balanceframe/protocol-generated';
 import type {
   GovernanceAccountScope,
   GovernanceAuthorizationResult,
@@ -24,6 +30,37 @@ import type {
 
 /** Current implementation version for generic set-category and rule mutations. */
 export const GENERIC_MUTATION_POLICY_VERSION = '1.0';
+type ConsequentialActionAtom = AtomicConsequentialActionIntent;
+export type ConsequentialActionCapabilityPhase = 'propose' | 'approve' | 'execute';
+export const CONSEQUENTIAL_ACTION_CAPABILITY_MAP: Readonly<
+  Record<ConsequentialActionAtom['kind'], Readonly<Record<ConsequentialActionCapabilityPhase, string>>>
+> = {
+  reallocation: {
+    propose: 'reallocation:propose',
+    approve: 'reallocation:approve',
+    execute: 'reallocation:execute',
+  },
+  manual_transaction: {
+    propose: 'transaction:propose',
+    approve: 'transaction:approve',
+    execute: 'transaction:execute',
+  },
+  evidence_projection: {
+    propose: 'ledger_projection:propose',
+    approve: 'ledger_projection:approve',
+    execute: 'ledger_projection:execute',
+  },
+  wallet_materialization: {
+    propose: 'wallet_materialization:propose',
+    approve: 'wallet_materialization:approve',
+    execute: 'wallet_materialization:execute',
+  },
+  transfer: {
+    propose: 'transfer:propose',
+    approve: 'transfer:approve',
+    execute: 'transfer:execute',
+  },
+};
 
 function normalizedJson(value: unknown, active: object[] = []): unknown {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -204,9 +241,12 @@ function collectProposalResources(
 /** Native source reads are independent of the proposal's executable future effects. */
 export function deriveProposalSourceReadFacts(
   operation: GenericProposalOperation,
+  payloadValue: unknown,
   preconditionsValue: unknown,
   budgetId: string,
 ): ProposalSourceReadFacts | null {
+  if (operation === 'consequential_action')
+    return deriveConsequentialActionSourceReadFacts(payloadValue, preconditionsValue, budgetId);
   if (operation !== 'create_rule') return null;
   const preconditions = proposalRecord(preconditionsValue);
   if (!preconditions) throw new Error('Malformed proposal source envelope');
@@ -411,6 +451,8 @@ export function deriveProposalDisclosureTotals(
   preconditionsValue: unknown,
   projection: 'preconditions' | 'envelope' | 'detail',
 ): GovernanceFinancialDisclosure {
+  if (operation === 'consequential_action')
+    return consequentialActionDisclosureTotals(payloadValue, preconditionsValue, projection);
   const preconditions = proposalRecord(preconditionsValue);
   if (!preconditions) throw new Error('Malformed proposal disclosure preconditions');
   const maxMinor = 9223372036854775807n;
@@ -592,6 +634,400 @@ function assertOnlyFields(
 
 function hasOwnField(record: Record<string, unknown>, field: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, field);
+}
+export function consequentialActionPlanFromPayload(payloadValue: unknown): ConsequentialActionPlan {
+  const payload = proposalRecord(payloadValue);
+  if (!payload || payload.kind !== 'consequential_action') throw new Error('Malformed consequential-action payload');
+  assertOnlyFields(payload, ['kind', 'plan'], 'consequential-action payload');
+  return consequentialActionPlanSchema.parse(payload.plan);
+}
+
+function consequentialActionAtoms(plan: ConsequentialActionPlan): readonly ConsequentialActionAtom[] {
+  return plan.action.kind === 'composite' ? plan.action.actions : [plan.action];
+}
+
+export function validateConsequentialActionPreconditions(
+  plan: ConsequentialActionPlan,
+  preconditionsValue: unknown,
+): Record<string, unknown> {
+  const preconditions = proposalRecord(preconditionsValue);
+  if (!preconditions || preconditions.nativeActionHash !== plan.actionHash ||
+      canonicalProposalJson(preconditions.nativeSource) !== canonicalProposalJson(plan.source))
+    throw new Error('Native action source does not match its exact proposal preconditions');
+  proposalText(preconditions.decisionCardPolicyHash, 'decision-card policy hash');
+  const financialPolicy = proposalRecord(preconditions.financialApprovalPolicy);
+  if (!financialPolicy ||
+      financialPolicy.version !== plan.source.financialPolicyVersion ||
+      typeof financialPolicy.policyHash !== 'string' || !financialPolicy.policyHash.trim())
+    throw new Error('Financial approval policy does not match native action source');
+  return preconditions;
+}
+
+function addActionResource(
+  resources: Record<string, GovernanceResourceRef>,
+  kind: GovernanceResourceKind,
+  value: unknown,
+): void {
+  const resourceId = proposalText(value, `${kind} action resource`);
+  resources[`${kind}:${resourceId}`] = { resourceKind: kind, resourceId };
+}
+
+export function consequentialActionAtomResources(
+  atom: ConsequentialActionAtom,
+  budgetId?: string,
+): readonly GovernanceResourceRef[] {
+  const resources: Record<string, GovernanceResourceRef> = {};
+  if (budgetId !== undefined) addActionResource(resources, 'budget', budgetId);
+  switch (atom.kind) {
+    case 'reallocation':
+      for (const assignment of atom.assignments) {
+        addActionResource(resources, 'category', assignment.sourceCategoryId);
+        addActionResource(resources, 'category', assignment.destinationCategoryId);
+      }
+      break;
+    case 'manual_transaction':
+    case 'evidence_projection': {
+      const transaction = atom.transaction;
+      addActionResource(resources, 'account', transaction.accountId);
+      addActionResource(resources, 'transaction', transaction.parentId);
+      if (transaction.categoryId !== null)
+        addActionResource(resources, 'category', transaction.categoryId);
+      for (const split of transaction.splits) addActionResource(resources, 'category', split.categoryId);
+      break;
+    }
+    case 'wallet_materialization':
+      addActionResource(resources, 'wallet', atom.walletId);
+      break;
+    case 'transfer':
+      addActionResource(resources, 'transfer', atom.transferId);
+      addActionResource(resources, 'account', atom.sourceAccountId);
+      addActionResource(resources, 'account', atom.destinationAccountId);
+      break;
+  }
+  return Object.values(resources);
+}
+
+export function consequentialActionPhaseRequirements(
+  plan: ConsequentialActionPlan,
+  budgetId: string,
+  phase: ConsequentialActionCapabilityPhase,
+): readonly (GovernanceResourceRef & { readonly capability: string })[] {
+  const required: Record<string, GovernanceResourceRef & { readonly capability: string }> = {};
+  for (const atom of consequentialActionAtoms(plan)) {
+    const capability = CONSEQUENTIAL_ACTION_CAPABILITY_MAP[atom.kind][phase];
+    for (const resource of consequentialActionAtomResources(atom, budgetId))
+      required[`${resource.resourceKind}:${resource.resourceId}:${capability}`] = { ...resource, capability };
+  }
+  return Object.values(required);
+}
+
+export function consequentialActionResources(plan: ConsequentialActionPlan): readonly GovernanceResourceRef[] {
+  const resources: Record<string, GovernanceResourceRef> = {};
+  for (const atom of consequentialActionAtoms(plan))
+    for (const resource of consequentialActionAtomResources(atom))
+      resources[`${resource.resourceKind}:${resource.resourceId}`] = resource;
+  for (const reference of plan.evidenceReferences) {
+    addActionResource(resources, 'evidence', reference.evidenceId);
+    addActionResource(resources, 'evidence', reference.subjectId);
+  }
+  for (const postcondition of plan.expectedPostconditions) {
+    switch (postcondition.kind) {
+      case 'assignment':
+        addActionResource(resources, 'category', postcondition.categoryId);
+        break;
+      case 'account_balance':
+        addActionResource(resources, 'account', postcondition.accountId);
+        break;
+      case 'transaction':
+        addActionResource(resources, 'transaction', postcondition.parentId);
+        addActionResource(resources, 'account', postcondition.accountId);
+        if (postcondition.categoryId !== null)
+          addActionResource(resources, 'category', postcondition.categoryId);
+        for (const split of postcondition.splits) addActionResource(resources, 'category', split.categoryId);
+        break;
+      case 'wallet_mapping':
+        addActionResource(resources, 'wallet', postcondition.walletId);
+        break;
+      case 'transfer_ledger_entry':
+        addActionResource(resources, 'transfer', postcondition.transferId);
+        addActionResource(resources, 'account', postcondition.sourceAccountId);
+        addActionResource(resources, 'account', postcondition.destinationAccountId);
+        break;
+    }
+  }
+  return Object.values(resources);
+}
+function actionMoney(value: unknown): { amount: { minorUnits: string; currency: string }; direction: 'incoming' | 'outgoing' } {
+  const money = moneySchema.strict().parse(value);
+  const minor = BigInt(money.minorUnits);
+  return {
+    amount: { minorUnits: (minor < 0n ? -minor : minor).toString(), currency: money.currency },
+    direction: minor < 0n ? 'outgoing' : 'incoming',
+  };
+}
+
+function consequentialActionOperations(plan: ConsequentialActionPlan): GovernanceOperation[] {
+  const operations: GovernanceOperation[] = [];
+  for (const atom of consequentialActionAtoms(plan)) {
+    switch (atom.kind) {
+      case 'reallocation':
+        for (const assignment of atom.assignments) {
+          const { amount } = actionMoney(assignment.amount);
+          operations.push({
+            operation: 'reallocation',
+            direction: 'outgoing',
+            amount,
+            sourceCategoryId: assignment.sourceCategoryId,
+            destinationCategoryId: assignment.destinationCategoryId,
+          });
+        }
+        break;
+      case 'manual_transaction':
+      case 'evidence_projection': {
+        const transaction = atom.transaction;
+        const money = actionMoney(transaction.amount);
+        const operation = atom.kind === 'manual_transaction' ? 'transaction' : 'ledger_projection';
+        operations.push({
+          operation,
+          transactionId: transaction.parentId,
+          accountId: transaction.accountId,
+          ...(transaction.categoryId === null ? {} : { categoryId: transaction.categoryId }),
+          direction: money.direction,
+          amount: money.amount,
+        });
+        for (const split of transaction.splits)
+          operations.push({
+            operation,
+            transactionId: transaction.parentId,
+            accountId: transaction.accountId,
+            categoryId: split.categoryId,
+            direction: money.direction,
+          });
+        break;
+      }
+      case 'wallet_materialization':
+        operations.push({
+          operation: 'wallet_materialization',
+          resourceKind: 'wallet',
+          resourceId: atom.walletId,
+        });
+        break;
+      case 'transfer': {
+        const { amount } = actionMoney(atom.amount);
+        operations.push({
+          operation: 'transfer',
+          direction: 'outgoing',
+          amount,
+          sourceAccountId: atom.sourceAccountId,
+          destinationAccountId: atom.destinationAccountId,
+        });
+        break;
+      }
+    }
+  }
+  return operations;
+}
+
+function deriveConsequentialActionSourceReadFacts(
+  payloadValue: unknown,
+  preconditionsValue: unknown,
+  budgetId: string,
+): ProposalSourceReadFacts {
+  const plan = consequentialActionPlanFromPayload(payloadValue);
+  const preconditions = validateConsequentialActionPreconditions(plan, preconditionsValue);
+  const resources: Record<string, GovernanceResourceRef> = {};
+  collectProposalResources(preconditions, resources);
+  for (const resource of consequentialActionResources(plan))
+    resources[`${resource.resourceKind}:${resource.resourceId}`] = resource;
+  addActionResource(resources, 'budget', budgetId);
+
+  const required: Record<string, GovernanceResourceRef & {
+    readonly capability: string;
+    readonly visibility: 'resource';
+  }> = {};
+  const capabilities: Record<GovernanceResourceKind, readonly string[]> = {
+    space: ['existence'],
+    budget: ['observe', 'source'],
+    account: ['existence', 'history', 'name', 'source'],
+    category: ['existence', 'name', 'source'],
+    transaction: ['transaction.view', 'source'],
+    rule: ['rule:view'],
+    evidence: ['evidence', 'normalized-evidence'],
+    wallet: ['existence', 'history', 'name'],
+    receipt: ['receipt:view'],
+    commitment: ['commitment:view'],
+    scenario: ['scenario:view'],
+    reservation: ['reservation:view'],
+    purchase: ['purchase:view'],
+    transfer: ['transfer.view', 'source'],
+    ledger_effect: ['source'],
+    session: ['session:view'],
+    proposal: ['proposal:view'],
+  };
+  for (const resource of Object.values(resources)) {
+    for (const capability of capabilities[resource.resourceKind])
+      required[`${resource.resourceKind}:${resource.resourceId}:${capability}`] = {
+        ...resource,
+        capability,
+        visibility: 'resource',
+      };
+  }
+  return {
+    resources: Object.values(resources),
+    required: Object.values(required),
+    operations: consequentialActionOperations(plan),
+  };
+}
+export function consequentialActionStableIdentity(
+  atom: ConsequentialActionAtom,
+): Record<string, unknown> {
+  switch (atom.kind) {
+    case 'reallocation':
+      return {
+        assignments: atom.assignments.map((assignment) => ({
+          sourceCategoryId: assignment.sourceCategoryId,
+          sourceAsOfMonth: assignment.sourceAsOfMonth,
+          destinationCategoryId: assignment.destinationCategoryId,
+          destinationAsOfMonth: assignment.destinationAsOfMonth,
+          amount: assignment.amount,
+        })),
+      };
+    case 'manual_transaction':
+      return { parentId: atom.transaction.parentId };
+    case 'evidence_projection':
+      return {
+        parentId: atom.transaction.parentId,
+        evidenceIds: [...atom.evidenceIds],
+        economicEffect: {
+          accountId: atom.transaction.accountId,
+          date: atom.transaction.date,
+          amount: atom.transaction.amount,
+          categoryId: atom.transaction.categoryId,
+          splits: atom.transaction.splits,
+        },
+      };
+    case 'wallet_materialization':
+      return { walletId: atom.walletId };
+    case 'transfer':
+      return { transferId: atom.transferId };
+  }
+}
+
+export function consequentialActionHoldKeys(
+  plan: ConsequentialActionPlan,
+  sourceLedgerNamespace: string,
+): readonly string[] {
+  if (!sourceLedgerNamespace.trim()) throw new Error('Missing consequential-action ledger namespace');
+  const keys = new Set<string>();
+  const evidenceById = new Map(plan.evidenceReferences.map((reference) => [reference.evidenceId, reference]));
+  const categoryMonth = (categoryId: string, month: string) =>
+    keys.add(`category-month:${categoryId}:${month}`);
+  for (const atom of consequentialActionAtoms(plan)) {
+    switch (atom.kind) {
+      case 'reallocation':
+        for (const assignment of atom.assignments) {
+          categoryMonth(assignment.sourceCategoryId, assignment.sourceAsOfMonth);
+          categoryMonth(assignment.destinationCategoryId, assignment.destinationAsOfMonth);
+        }
+        break;
+      case 'manual_transaction':
+        keys.add(`transaction-parent:${atom.transaction.parentId}`);
+        for (const categoryId of [
+          ...(atom.transaction.categoryId === null ? [] : [atom.transaction.categoryId]),
+          ...atom.transaction.splits.map((split) => split.categoryId),
+        ])
+          categoryMonth(categoryId, atom.transaction.date.slice(0, 7));
+        break;
+      case 'evidence_projection': {
+        const transaction = atom.transaction;
+        keys.add(`transaction-parent:${transaction.parentId}`);
+        for (const categoryId of [
+          ...(transaction.categoryId === null ? [] : [transaction.categoryId]),
+          ...transaction.splits.map((split) => split.categoryId),
+        ])
+          categoryMonth(categoryId, transaction.date.slice(0, 7));
+        for (const evidenceId of atom.evidenceIds) {
+          const reference = evidenceById.get(evidenceId);
+          if (!reference) throw new Error('Evidence projection lacks its exact native reference');
+          keys.add(`evidence-effect:${canonicalProposalJson({
+            sourceLedgerNamespace,
+            subjectId: reference.subjectId,
+          })}`);
+        }
+        break;
+      }
+      case 'wallet_materialization':
+        keys.add(`wallet:${atom.walletId}`);
+        break;
+      case 'transfer':
+        keys.add(`transfer:${atom.transferId}`);
+        break;
+    }
+  }
+  return [...keys].sort();
+}
+function countMoneyOccurrences(value: unknown): number {
+  if (Array.isArray(value)) {
+    let count = 0;
+    for (const item of value) count += countMoneyOccurrences(item);
+    if (!Number.isSafeInteger(count)) throw new Error('Proposal disclosure count overflow');
+    return count;
+  }
+  const object = proposalRecord(value);
+  if (!object) return 0;
+  if (hasOwnField(object, 'minorUnits')) {
+    moneySchema.strict().parse(object);
+    return 1;
+  }
+  let count = 0;
+  for (const item of Object.values(object)) count += countMoneyOccurrences(item);
+  if (!Number.isSafeInteger(count)) throw new Error('Proposal disclosure count overflow');
+  return count;
+}
+
+function consequentialActionDisclosureTotals(
+  payloadValue: unknown,
+  preconditionsValue: unknown,
+  projection: 'preconditions' | 'envelope' | 'detail',
+): GovernanceFinancialDisclosure {
+  const preconditions = proposalRecord(preconditionsValue);
+  if (!preconditions) throw new Error('Malformed proposal disclosure preconditions');
+  let operationCount = countMoneyOccurrences(preconditions);
+  const grossOutgoing: Record<string, bigint> = {};
+  if (projection !== 'preconditions') {
+    const plan = consequentialActionPlanFromPayload(payloadValue);
+    validateConsequentialActionPreconditions(plan, preconditions);
+    operationCount += countMoneyOccurrences(plan);
+    if (!Number.isSafeInteger(operationCount)) throw new Error('Proposal disclosure count overflow');
+    const addOutgoing = (value: unknown, signed: boolean): void => {
+      const money = moneySchema.strict().parse(value);
+      const minor = BigInt(money.minorUnits);
+      const outgoing = signed ? minor < 0n ? -minor : 0n : minor;
+      if (outgoing < 0n || outgoing > 9223372036854775807n)
+        throw new Error('Proposal disclosure gross outgoing overflow');
+      const gross = (grossOutgoing[money.currency] ?? 0n) + outgoing;
+      if (gross > 9223372036854775807n)
+        throw new Error('Proposal disclosure gross outgoing overflow');
+      grossOutgoing[money.currency] = gross;
+    };
+    for (const atom of consequentialActionAtoms(plan)) {
+      switch (atom.kind) {
+        case 'reallocation':
+          for (const assignment of atom.assignments) addOutgoing(assignment.amount, false);
+          break;
+        case 'manual_transaction':
+        case 'evidence_projection':
+          addOutgoing(atom.transaction.amount, true);
+          break;
+        case 'transfer':
+          addOutgoing(atom.amount, false);
+          break;
+        case 'wallet_materialization':
+          break;
+      }
+    }
+  }
+  return { operationCount, grossOutgoing };
 }
 
 function addRuleResource(
@@ -837,6 +1273,15 @@ export function deriveProposalAuthorizationFacts(
   if (!payload || !preconditions) throw new Error('Malformed generic proposal envelope');
   if (payload.kind !== operation)
     throw new Error('Proposal payload kind does not match operation');
+  if (operation === 'consequential_action') {
+    const plan = consequentialActionPlanFromPayload(payload);
+    validateConsequentialActionPreconditions(plan, preconditions);
+    const resources: Record<string, GovernanceResourceRef> = {};
+    collectProposalResources(preconditions, resources);
+    for (const resource of consequentialActionResources(plan))
+      resources[`${resource.resourceKind}:${resource.resourceId}`] = resource;
+    return { resources: Object.values(resources), operations: consequentialActionOperations(plan) };
+  }
 
   const resources: Record<string, GovernanceResourceRef> = {};
   collectProposalResources(payload, resources);

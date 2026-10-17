@@ -39,10 +39,19 @@ export type {
   TransactionQuery,
   ManualTransactionSplit,
   ManualTransactionInput,
+  ManualTransactionPrecondition,
   ManualTransactionErrorCode,
   ManualTransactionSuccess,
   ManualTransactionFailure,
   ManualTransactionResult,
+  BudgetAssignmentPrecondition,
+  BudgetAssignmentResult,
+  WalletAccountInput,
+  WalletAccountPrecondition,
+  WalletAccountResult,
+  LedgerTransferInput,
+  LedgerTransferPrecondition,
+  LedgerTransferResult,
   ImportTransaction,
   ImportOptions,
   ImportResult,
@@ -72,7 +81,7 @@ export type {
 } from './types.js';
 export { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from './types.js';
 
-export type { ActualClient, ActualConnectorConfig } from './connector.js';
+export type { ActualBudgetMonth, ActualClient, ActualConnectorConfig } from './connector.js';
 export { ActualConnector, createDefaultActualClient } from './connector.js';
 
 export type { CredentialStore, ActualCredentials } from './credentials.js';

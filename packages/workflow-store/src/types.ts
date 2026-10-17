@@ -11,7 +11,14 @@
  *   recovery — the same token always yields the same result.
  */
 
-import type { CategoryReallocation, MerchantNativeRuleBlock, MerchantNativeRulePart, MerchantNativeRuleSet, TransferPlan } from '@balanceframe/protocol-generated';
+import type {
+  CategoryReallocation,
+  ConsequentialActionPlan,
+  MerchantNativeRuleBlock,
+  MerchantNativeRulePart,
+  MerchantNativeRuleSet,
+  TransferPlan,
+} from '@balanceframe/protocol-generated';
 import type { TransferState } from './liquidity-types.js';
 import type { LiquidityWorkflow } from './liquidity.js';
 import type { SpaceGovernance } from './governance.js';
@@ -1280,21 +1287,19 @@ export interface WorkflowStore {
   /** Atomically grant the same reauthenticated human approval to exact proposals in one space. */
   createApprovals(input: CreateApprovalsInput): Promise<ProposalApproval[]>;
 
-  /**
-   * Atomically authorize and acquire the one generic proposal write intent,
-   * consuming its complete distinct human approval set with durable audit.
-   */
-  acquireProposalExecution(
-    input: AcquireProposalExecutionInput,
-  ): Promise<ProposalExecutionAcquisition>;
+  /** Atomically authorize and acquire a generic proposal write intent with its complete approval set. */
+  acquireProposalExecution(input: AcquireProposalExecutionInput): Promise<ProposalExecutionAcquisition>;
 
-  /**
-   * Synchronously reauthorize the exact acquired write at the final SDK boundary.
-   * Throws on revoked authority, changed approvals, or an expired/inactive claim.
-   * Call immediately before invoking the mutation, with no intervening await.
-   */
+  /** Synchronous exact authority fence; call immediately before every SDK mutation. */
   validateAcquiredProposalExecution(input: ValidateAcquiredProposalExecutionInput): void;
 
+  /** Durably records one exact aggregate result per native atom before the next atom can dispatch. */
+  recordConsequentialActionEffect(input: RecordConsequentialActionEffectInput): Promise<ConsequentialActionState>;
+
+  /** Finalizes only complete native-verified effects, holds uncertainty, or accepts exact fenced no-dispatch proof. */
+  finalizeConsequentialActionExecution(
+    input: FinalizeConsequentialActionExecutionInput,
+  ): Promise<ConsequentialActionState>;
   /** Retrieve a single approval by ID, or null. */
   getApproval(id: string): Promise<ProposalApproval | null>;
 
@@ -1908,14 +1913,16 @@ export type ProposalOperation =
   | 'update_rule'
   | 'delete_rule'
   | 'transfer'
-  | 'session_completion';
+  | 'session_completion'
+  | 'consequential_action';
 
 /** Operations admitted by the native generic proposal lifecycle. */
 export type GenericProposalOperation =
   | 'set_category'
   | 'create_rule'
   | 'update_rule'
-  | 'delete_rule';
+  | 'delete_rule'
+  | 'consequential_action';
 
 /** Exact signed amount accepted by the Actual manual-transaction boundary. */
 export interface SessionCompletionMoney {
@@ -2042,6 +2049,41 @@ export type ProposalJsonValue =
 export interface ProposalJsonObject {
   readonly [key: string]: ProposalJsonValue;
 }
+/** Immutable aggregate adapter results for one native atom, recorded in action order. */
+export interface ConsequentialActionEffect {
+  readonly effectIndex: number;
+  readonly atomIndex: number;
+  readonly dispatchIndex: 0;
+  readonly actionKind: string;
+  readonly stableIdentity: ProposalJsonObject;
+  readonly result: ProposalJsonValue;
+  readonly recordedAt: string;
+}
+
+/** Durable one-shot execution identity bound to the acquired audit record. */
+export interface ConsequentialActionAcquisition {
+  readonly actorId: string;
+  readonly payloadHash: string;
+  readonly idempotencyKey: string;
+  readonly acquisitionAuditId: string;
+  readonly acquiredAt: string;
+}
+
+/** State persisted in the existing action proposal row. */
+export interface ConsequentialActionState {
+  readonly phase:
+    | 'proposed'
+    | 'approved'
+    | 'write_intent'
+    | 'verified'
+    | 'review_required'
+    | 'invalidated_no_dispatch';
+  readonly outcome: string | null;
+  readonly effects: readonly ConsequentialActionEffect[];
+  readonly acquisition?: ConsequentialActionAcquisition;
+  readonly result?: ProposalJsonValue;
+  readonly observedState?: ProposalJsonValue;
+}
 
 /** Complete frozen composite envelope; each component array participates in hashing and authorization. */
 export interface GenericProposalComposite {
@@ -2084,8 +2126,13 @@ export interface DeleteRuleActionPayload {
   readonly ruleId: string;
   readonly composite?: GenericProposalComposite;
 }
+/** Native-produced immutable consequential-action plan payload. */
+export interface ConsequentialActionPayload {
+  readonly kind: 'consequential_action';
+  readonly plan: ConsequentialActionPlan;
+}
 
-/** All proposal variants, including the specialized completion operation. */
+/** All proposal variants, including specialized lifecycles. */
 export type ActionProposal =
   | (
       ActionProposalBase<TransferState> &
@@ -2108,6 +2155,10 @@ export type ActionProposal =
   | (ActionProposalBase<SessionCompletionState> & {
       readonly operation: 'session_completion';
       readonly payload: SessionCompletionPayload;
+    })
+  | (ActionProposalBase<ConsequentialActionState> & {
+      readonly operation: 'consequential_action';
+      readonly payload: ConsequentialActionPayload;
     });
 
 /** Specialized completion proposal extracted from the shared action union. */
@@ -2118,7 +2169,12 @@ export interface CreateProposalInput {
   readonly operation: GenericProposalOperation;
   readonly budgetId: string;
   readonly spaceId: string;
-  readonly payload: CategoryActionPayload | RuleActionPayload | UpdateRuleActionPayload | DeleteRuleActionPayload;
+  readonly payload:
+    | CategoryActionPayload
+    | RuleActionPayload
+    | UpdateRuleActionPayload
+    | DeleteRuleActionPayload
+    | ConsequentialActionPayload;
   /** Current generic mutation algorithm version. */
   readonly policyVersion: string;
   /** JSON-encoded, server-derived facts and execution preconditions. */
@@ -2176,6 +2232,42 @@ export type ValidateAcquiredProposalExecutionInput =
   Omit<AcquireProposalExecutionInput, 'now' | 'approvalId'> & {
     readonly acquisitionAuditId: string;
   };
+/** Exact acquired identity required to mutate, record results, or finalize the durable action state. */
+export interface ConsequentialActionExecutionIdentity {
+  readonly proposalId: string;
+  readonly payloadHash: string;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly acquisitionAuditId: string;
+}
+
+declare const consequentialActionVerificationTokenBrand: unique symbol;
+/** Opaque token issued only by the server-internal native verification boundary. */
+export interface ConsequentialActionVerificationToken {
+  readonly [consequentialActionVerificationTokenBrand]: true;
+}
+
+declare const consequentialActionInvalidationTokenBrand: unique symbol;
+/** Opaque token issued only after dispatch is proven absent and the worker fenced. */
+export interface ConsequentialActionInvalidationToken {
+  readonly [consequentialActionInvalidationTokenBrand]: true;
+}
+
+/** One immutable aggregate result for a native atom, saved before the next atom dispatches. */
+export interface RecordConsequentialActionEffectInput extends ConsequentialActionExecutionIdentity {
+  readonly effectIndex: number;
+  readonly atomIndex: number;
+  readonly dispatchIndex: 0;
+  readonly result: unknown;
+}
+
+/** Verified completion requires all atom results plus a server-issued native proof; uncertainty retains ownership. */
+export interface FinalizeConsequentialActionExecutionInput extends ConsequentialActionExecutionIdentity {
+  readonly outcome:
+    | { readonly kind: 'verified'; readonly verificationToken: ConsequentialActionVerificationToken }
+    | { readonly kind: 'review_required'; readonly reason: string; readonly observedState?: unknown }
+    | { readonly kind: 'invalidated_no_dispatch'; readonly invalidationToken: ConsequentialActionInvalidationToken };
+}
 
 /** Atomic authorization, idempotency claim, approval consumption and audit result. */
 export interface ProposalExecutionAcquisition {

@@ -1,0 +1,225 @@
+{
+  "evaluatedAt": "2026-09-06T10:00:00Z",
+  "financialPolicyVersion": "financial-policy-1",
+  "idempotencyKey": "consequential-action-reallocation-1",
+  "intent": {
+    "kind": "reallocation",
+    "assignments": [
+      {
+        "sourceCategoryId": "reserve",
+        "sourceAsOfMonth": "2026-09",
+        "destinationCategoryId": "food",
+        "destinationAsOfMonth": "2026-09",
+        "amount": { "minorUnits": "2000", "currency": "USD" }
+      }
+    ]
+  },
+  "expectedReallocationImpact": {
+    "sourceCategoryId": "reserve",
+    "destinationCategoryId": "food",
+    "safeToRedirectAfter": { "minorUnits": "1000", "currency": "USD" }
+  },
+  "alternateDonorIntent": {
+    "kind": "reallocation",
+    "assignments": [
+      {
+        "sourceCategoryId": "reserve-two",
+        "sourceAsOfMonth": "2026-09",
+        "destinationCategoryId": "food",
+        "destinationAsOfMonth": "2026-09",
+        "amount": { "minorUnits": "2000", "currency": "USD" }
+      }
+    ]
+  },
+  "alternateDonorEligibility": [
+    { "categoryId": "reserve", "donorEligible": false },
+    { "categoryId": "reserve-two", "donorEligible": true }
+  ],
+  "compositeIntent": {
+    "kind": "composite",
+    "actions": [
+      {
+        "kind": "reallocation",
+        "assignments": [
+          {
+            "sourceCategoryId": "reserve",
+            "sourceAsOfMonth": "2026-09",
+            "destinationCategoryId": "food",
+            "destinationAsOfMonth": "2026-09",
+            "amount": { "minorUnits": "2000", "currency": "USD" }
+          }
+        ]
+      },
+      {
+        "kind": "manual_transaction",
+        "transaction": {
+          "parentId": "manual-parent-composite-1",
+          "correlationId": "manual-correlation-composite-1",
+          "accountId": "checking",
+          "amount": { "minorUnits": "-2000", "currency": "USD" },
+          "date": "2026-09-06",
+          "categoryId": "food",
+          "payeeName": "Local shop",
+          "notes": null,
+          "splits": []
+        }
+      }
+    ]
+  },
+  "evidenceProjectionIntent": {
+    "kind": "evidence_projection",
+    "transaction": {
+      "parentId": "manual-parent-evidence-1",
+      "correlationId": "manual-correlation-evidence-1",
+      "accountId": "checking",
+      "amount": { "minorUnits": "-500", "currency": "USD" },
+      "date": "2026-09-06",
+      "categoryId": "food",
+      "payeeName": "Local shop",
+      "notes": null,
+      "splits": []
+    },
+    "evidenceIds": ["fd-transaction-pending"]
+  },
+  "sourceObservation": {
+    "kind": "economic_event_resolution",
+    "scope": { "kind": "transaction", "id": "manual-parent-evidence-1" },
+    "state": "resolved",
+    "observedAt": "2026-09-06T09:30:00Z",
+    "contentHash": "fd-transaction-pending-content-1",
+    "version": "fd-resolution/1",
+    "ledgerEffect": {
+      "accountId": "checking",
+      "amount": { "minorUnits": "-500", "currency": "USD" },
+      "date": "2026-09-06",
+      "categoryId": "food",
+      "payeeName": "Local shop",
+      "notes": null,
+      "splits": []
+    },
+    "evidence": [
+      {
+        "evidenceId": "fd-transaction-pending",
+        "kind": "economic_event_resolution",
+        "authorized": true,
+        "redaction": "visible"
+      }
+    ]
+  },
+  "currentLedger": {
+    "accounts": [
+      {
+        "accountId": "checking",
+        "name": "Checking",
+        "onBudget": true,
+        "closed": false,
+        "currency": "USD",
+        "balance": { "minorUnits": "13000", "currency": "USD" }
+      },
+      {
+        "accountId": "savings",
+        "name": "Savings",
+        "onBudget": true,
+        "closed": false,
+        "currency": "USD",
+        "balance": { "minorUnits": "20000", "currency": "USD" }
+      }
+    ],
+    "categories": [
+      { "categoryId": "food" },
+      { "categoryId": "reserve" },
+      { "categoryId": "reserve-two" }
+    ],
+    "assignments": [
+      {
+        "categoryId": "food",
+        "asOfMonth": "2026-09",
+        "amount": { "minorUnits": "0", "currency": "USD" }
+      },
+      {
+        "categoryId": "reserve",
+        "asOfMonth": "2026-09",
+        "amount": { "minorUnits": "6000", "currency": "USD" }
+      },
+      {
+        "categoryId": "reserve-two",
+        "asOfMonth": "2026-09",
+        "amount": { "minorUnits": "6000", "currency": "USD" }
+      }
+    ],
+    "wallets": [],
+    "transactions": [],
+    "transfers": []
+  },
+  "postconditions": {
+    "reallocation": {
+      "currentLedger": {
+        "accounts": [
+          { "accountId": "checking", "name": "Checking", "onBudget": true, "closed": false, "currency": "USD", "balance": { "minorUnits": "13000", "currency": "USD" } },
+          { "accountId": "savings", "name": "Savings", "onBudget": true, "closed": false, "currency": "USD", "balance": { "minorUnits": "20000", "currency": "USD" } }
+        ],
+        "categories": [{ "categoryId": "food" }, { "categoryId": "reserve" }, { "categoryId": "reserve-two" }],
+        "assignments": [
+          { "categoryId": "food", "asOfMonth": "2026-09", "amount": { "minorUnits": "2000", "currency": "USD" } },
+          { "categoryId": "reserve", "asOfMonth": "2026-09", "amount": { "minorUnits": "4000", "currency": "USD" } },
+          { "categoryId": "reserve-two", "asOfMonth": "2026-09", "amount": { "minorUnits": "6000", "currency": "USD" } }
+        ],
+        "wallets": [],
+        "transactions": [],
+        "transfers": []
+      },
+      "financialSnapshot": {
+        "accountBalances": [
+          { "accountId": "checking", "balance": { "minorUnits": "13000", "currency": "USD" } }
+        ],
+        "categoryAvailability": [
+          { "categoryId": "food", "amount": { "minorUnits": "2000", "currency": "USD" } },
+          { "categoryId": "reserve", "amount": { "minorUnits": "4000", "currency": "USD" } }
+        ]
+      }
+    },
+    "composite": {
+      "currentLedger": {
+        "accounts": [
+          { "accountId": "checking", "name": "Checking", "onBudget": true, "closed": false, "currency": "USD", "balance": { "minorUnits": "11000", "currency": "USD" } },
+          { "accountId": "savings", "name": "Savings", "onBudget": true, "closed": false, "currency": "USD", "balance": { "minorUnits": "20000", "currency": "USD" } }
+        ],
+        "categories": [{ "categoryId": "food" }, { "categoryId": "reserve" }, { "categoryId": "reserve-two" }],
+        "assignments": [
+          { "categoryId": "food", "asOfMonth": "2026-09", "amount": { "minorUnits": "2000", "currency": "USD" } },
+          { "categoryId": "reserve", "asOfMonth": "2026-09", "amount": { "minorUnits": "4000", "currency": "USD" } },
+          { "categoryId": "reserve-two", "asOfMonth": "2026-09", "amount": { "minorUnits": "6000", "currency": "USD" } }
+        ],
+        "wallets": [],
+        "transactions": [
+          { "parentId": "manual-parent-composite-1", "accountId": "checking", "amount": { "minorUnits": "-2000", "currency": "USD" }, "date": "2026-09-06", "categoryId": "food", "payeeName": "Local shop", "notes": null, "splits": [], "transferAccountId": null }
+        ],
+        "transfers": []
+      },
+      "financialSnapshot": {
+        "accountBalances": [
+          { "accountId": "checking", "balance": { "minorUnits": "11000", "currency": "USD" } }
+        ],
+        "categoryAvailability": [
+          { "categoryId": "food", "amount": { "minorUnits": "0", "currency": "USD" } },
+          { "categoryId": "reserve", "amount": { "minorUnits": "4000", "currency": "USD" } }
+        ]
+      }
+    }
+  },
+  "resolvedEvidence": [
+    {
+      "evidenceId": "checking-freshness",
+      "subjectId": "checking",
+      "state": "resolved",
+      "contentHash": "checking-freshness-content-1"
+    },
+    {
+      "evidenceId": "fd-transaction-pending",
+      "subjectId": "manual-parent-evidence-1",
+      "state": "resolved",
+      "contentHash": "fd-transaction-pending-content-1",
+      "version": "fd-resolution/1"
+    }
+  ]
+}

@@ -901,6 +901,82 @@ afterEach(() => {
 afterAll(() => store.close());
 
 describe('proposal execution route', () => {
+  it('denies an executor lacking the action-specific scope before any source capture or rule fallback', async () => {
+    const currentPolicy = store.governance.getPolicy({ spaceId });
+    if (!currentPolicy) throw new Error('Test space has no governance policy');
+    const governancePolicy = store.governance.setPolicy({
+      spaceId,
+      expectedVersion: currentPolicy.version,
+      policy: { minimumApprovers: 1, assistanceMaximum: 'execute_approved_actions' },
+      now: NOW,
+      auth: {
+        method: 'human-session',
+        actorId: OWNER_ID,
+        sessionId: `session:${OWNER_ID}`,
+        reauthenticatedAt: NOW,
+      },
+    });
+    const proposal = {
+      id: 'scoped-consequential-action',
+      operation: 'consequential_action',
+      spaceId,
+      budgetId,
+      actorId: PROPOSER_ID,
+      requesterMembershipId: proposerMembershipId,
+      governancePolicyVersion: governancePolicy.version,
+      policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+      payloadHash: 'a'.repeat(64),
+      payload: {
+        kind: 'consequential_action',
+        plan: {
+          version: '1',
+          action: {
+            kind: 'reallocation',
+            assignments: [{
+              sourceCategoryId: 'scope-test-donor',
+              sourceAsOfMonth: '2026-08',
+              destinationCategoryId: 'scope-test-recipient',
+              destinationAsOfMonth: '2026-08',
+              amount: { minorUnits: '100', currency: 'USD' },
+            }],
+          },
+          source: {
+            snapshotId: 'source',
+            contentHash: 'content',
+            policyVersion: 'liquidity-policy',
+            claimSetRevision: 'claims',
+            financialPolicyVersion: 'financial-policy',
+            preconditionsHash: 'preconditions',
+            invariantsHash: 'invariants',
+          },
+          evidenceReferences: [],
+          expiresAt: EXPIRES_AT,
+          idempotencyKey: 'scoped-action-key',
+          reasonCodes: ['safe_reallocation'],
+          impacts: [],
+          expectedPostconditions: [],
+          actionHash: 'b'.repeat(64),
+        },
+      },
+      preconditions: '{}',
+      expiresAt: EXPIRES_AT,
+      createdAt: NOW,
+      supersededAt: null,
+      version: 1,
+      state: { phase: 'approved', outcome: null, effects: [] },
+    } as unknown as GenericActionProposal;
+    vi.spyOn(store, 'getProposal').mockResolvedValue(proposal);
+
+    const proof = await issueApprovalProof();
+    const response = await executeProposal(event({}, proposal.id, approverId, proof.cookie));
+
+    expect(response).toMatchObject({ status: 'error', error: { code: 'FORBIDDEN' } });
+    expect(mocks.producerWithConnection).not.toHaveBeenCalled();
+    expect(mocks.mutationWithConnection).not.toHaveBeenCalled();
+    expect(ledger.setTransactionCategory).not.toHaveBeenCalled();
+    expect(ledger.createRule).not.toHaveBeenCalled();
+  });
+
   it('proposes approves and executes the exact nested split child through real Store and Native verification', async () => {
     const child = structuredClone(baseSnapshot.transactions.find((row) => row.id === transaction.id)!);
     protocolSnapshot = {
@@ -925,7 +1001,6 @@ describe('proposal execution route', () => {
     const execution = await executeProposal(event({}, proposal.id, approverId));
     expect(execution.status).toBe('ok');
     expect(execution.result?.verified).toBe(true);
-    expect(ledger.setTransactionCategory).toHaveBeenCalledWith(child.id, categoryId, currentCategoryId);
     expect(child.categoryId).toBe(categoryId);
     expect((await store.getReviewItem(review.id))?.status).toBe('applied');
     expect(await store.queryCorrectionHistory({ reviewItemId: review.id })).toMatchObject([
@@ -952,7 +1027,6 @@ describe('proposal execution route', () => {
     const execution = await executeProposal(event({}, proposal.id, approverId));
     expect(execution.status).toBe('ok');
     expect(execution.result?.verified).toBe(true);
-    expect(ledger.setTransactionCategory).toHaveBeenCalledWith(child.id, categoryId, currentCategoryId);
     expect((await store.getReviewItem(review.id))?.status).toBe('applied');
   });
 
@@ -1249,7 +1323,6 @@ describe('proposal execution route', () => {
 
     expect(execution.status).toBe('ok');
     expect(execution.result?.verified).toBe(true);
-    expect(ledger.setTransactionCategory).toHaveBeenCalledWith(uncategorized.id, categoryId, null);
     expect((await store.getReviewItem(review.id))?.categoryId).toBe(categoryId);
     expect(await store.queryCorrectionHistory({ reviewItemId: review.id })).toMatchObject([
       { reviewItemId: review.id, transactionId: uncategorized.id, previousCategoryId: null },

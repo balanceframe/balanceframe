@@ -57,10 +57,19 @@ import type {
   AccountQuery,
   TransactionQuery,
   ManualTransactionInput,
+  ManualTransactionPrecondition,
   ManualTransactionResult,
   ManualTransactionFailure,
   ManualTransactionSuccess,
   ManualTransactionErrorCode,
+  BudgetAssignmentPrecondition,
+  BudgetAssignmentResult,
+  WalletAccountInput,
+  WalletAccountPrecondition,
+  WalletAccountResult,
+  LedgerTransferInput,
+  LedgerTransferPrecondition,
+  LedgerTransferResult,
   ImportTransaction,
   ImportOptions,
   ImportResult,
@@ -68,6 +77,7 @@ import type {
   MutationPrecondition,
   MutationResult,
   SetCategoryResult,
+  SetCategoryPrecondition,
   AutomationRule,
   RuleProposal,
   RuleDeletePrecondition,
@@ -410,6 +420,13 @@ function sha256(value: unknown): string {
 // ActualClient interface (DI seam)
 // ---------------------------------------------------------------------------
 
+/** Raw Actual month fields needed for exact category-assignment readback. */
+export interface ActualBudgetMonth {
+  month: string;
+  categoryGroups: Array<Record<string, unknown> & { categories?: Record<string, unknown>[] }>;
+  [key: string]: unknown;
+}
+
 /**
  * The Actual Budget API surface consumed by the connector.
  *
@@ -417,6 +434,7 @@ function sha256(value: unknown): string {
  * for production, or provide a mock for deterministic testing.
  * All methods named to match the @actual-app/api exports.
  */
+
 export interface ActualClient {
   init(config?: InitConfigLike): Promise<ActualInitResult>;
   shutdown(): Promise<void>;
@@ -438,11 +456,7 @@ export interface ActualClient {
   }): Promise<(APICategoryEntity | APICategoryGroupEntity)[]>;
   getCategoryGroups(opts?: { hidden?: boolean }): Promise<APICategoryGroupEntity[]>;
   getBudgetMonths(): Promise<string[]>;
-  getBudgetMonth(month: string): Promise<{
-    month: string;
-    categoryGroups: Array<Record<string, unknown> & { categories?: Record<string, unknown>[] }>;
-    [key: string]: unknown;
-  }>;
+  getBudgetMonth(month: string): Promise<ActualBudgetMonth>;
   getRules(): Promise<RuleEntity[]>;
   getSchedules(): Promise<APIScheduleEntity[]>;
   getTags(): Promise<APITagEntity[]>;
@@ -682,12 +696,24 @@ export class ActualConnector implements BudgetLedger {
       }
 
       const capturedAt = new Date().toISOString();
-      const { snapshot, financialSnapshot, transferSettlementRecords, rulePlanningSourceAvailability, accountRead } =
-        await this.buildSnapshot(capturedAt);
+      const {
+        snapshot,
+        financialSnapshot,
+        transferSettlementRecords,
+        rulePlanningSourceAvailability,
+        accountRead,
+      } = await this.buildSnapshot(capturedAt);
       const health = await this.buildHealthReport(accountRead);
       const completedWatermark = this.getWatermark(budgetId);
 
-      return { snapshot, financialSnapshot, transferSettlementRecords, rulePlanningSourceAvailability, health, watermark: completedWatermark };
+      return {
+        snapshot,
+        financialSnapshot,
+        transferSettlementRecords,
+        rulePlanningSourceAvailability,
+        health,
+        watermark: completedWatermark,
+      };
     });
   }
 
@@ -719,19 +745,34 @@ export class ActualConnector implements BudgetLedger {
       for (const account of accounts.items) {
         if (!admittedAccounts.has(account.id)) continue;
         transactions.push({
-          accountId: account.id, startDate: '0001-01-01', endDate: '9999-12-31',
-          read: await merchantRead(() => this.client.getTransactions(account.id, '0001-01-01', '9999-12-31')),
+          accountId: account.id,
+          startDate: '0001-01-01',
+          endDate: '9999-12-31',
+          read: await merchantRead(() =>
+            this.client.getTransactions(account.id, '0001-01-01', '9999-12-31'),
+          ),
         });
       }
-      const categories: ActualMerchantCollection<APICategoryEntity> = categoryRead.state === 'unavailable'
-        ? { state: 'unavailable', items: [] }
-        : {
-            state: groups.state === 'unavailable' ? 'partial' : categoryRead.state,
-            items: categoryRead.items.filter((entity): entity is APICategoryEntity => 'group_id' in entity),
-          };
+      const categories: ActualMerchantCollection<APICategoryEntity> =
+        categoryRead.state === 'unavailable'
+          ? { state: 'unavailable', items: [] }
+          : {
+              state: groups.state === 'unavailable' ? 'partial' : categoryRead.state,
+              items: categoryRead.items.filter(
+                (entity): entity is APICategoryEntity => 'group_id' in entity,
+              ),
+            };
       const source = normalizeActualMerchantSource({
-        ...options, currency: options.currency ?? this.currency, capturedAt, accounts: accounts.items, transactions, payees, categories,
-        categoryGroups: groups.items, rules, schedules,
+        ...options,
+        currency: options.currency ?? this.currency,
+        capturedAt,
+        accounts: accounts.items,
+        transactions,
+        payees,
+        categories,
+        categoryGroups: groups.items,
+        rules,
+        schedules,
       });
       return consume(source);
     });
@@ -818,9 +859,10 @@ export class ActualConnector implements BudgetLedger {
       (category): category is APICategoryEntity => 'group_id' in category,
     );
     const groupIds = new Set(groups.map((group) => group.id));
-    const members = Object.fromEntries(
-      groups.map((group) => [group.id, [] as string[]]),
-    ) as Record<string, string[]>;
+    const members = Object.fromEntries(groups.map((group) => [group.id, [] as string[]])) as Record<
+      string,
+      string[]
+    >;
 
     for (const category of categories) {
       const groupId = category.group_id;
@@ -854,7 +896,10 @@ export class ActualConnector implements BudgetLedger {
    * The application owns approval. The adapter owns current Actual
    * preconditions, duplicate/import review, synchronization, and verification.
    */
-  async createManualTransaction(input: ManualTransactionInput): Promise<ManualTransactionResult> {
+  async createManualTransaction(
+    input: ManualTransactionInput,
+    precondition: ManualTransactionPrecondition,
+  ): Promise<ManualTransactionResult> {
     this.assertMutationAllowed('createManualTransaction');
 
     const failure = (
@@ -874,6 +919,19 @@ export class ActualConnector implements BudgetLedger {
       return failure(
         'BUDGET_NOT_SELECTED',
         'No budget selected. Call selectBudget() before creating a manual transaction.',
+      );
+    }
+
+    if (
+      !hasNonBlankString(precondition.budgetId) ||
+      typeof precondition.assertExecutionCurrent !== 'function'
+    ) {
+      return failure('INVALID_INPUT', 'Manual transaction execution precondition is invalid.');
+    }
+    if (precondition.budgetId !== this._budgetInfo.id) {
+      return failure(
+        'BUDGET_PRECONDITION_FAILED',
+        'Selected Actual budget does not match the manual transaction precondition.',
       );
     }
 
@@ -961,6 +1019,12 @@ export class ActualConnector implements BudgetLedger {
 
     const budgetId = this._budgetInfo.id;
     return this.withCacheLock(budgetId, async (): Promise<ManualTransactionResult> => {
+      if (this._budgetInfo?.id !== budgetId) {
+        return failure(
+          'BUDGET_PRECONDITION_FAILED',
+          'Selected Actual budget changed before the manual transaction write.',
+        );
+      }
       try {
         await this.client.sync();
       } catch (err) {
@@ -1124,6 +1188,7 @@ export class ActualConnector implements BudgetLedger {
         account: input.accountId,
         amount: input.amount,
         date: input.date,
+        cleared: false,
       };
       if (input.categoryId !== undefined && input.categoryId !== null) {
         parent.category = input.categoryId;
@@ -1138,12 +1203,20 @@ export class ActualConnector implements BudgetLedger {
           account: split.accountId,
           date: split.date,
           category: split.categoryId,
+          cleared: false,
           parent_id: input.parentId,
           is_child: true,
           is_parent: false,
         }));
       }
 
+      if (this._budgetInfo?.id !== budgetId) {
+        return failure(
+          'BUDGET_PRECONDITION_FAILED',
+          'Selected Actual budget changed before the manual transaction write.',
+        );
+      }
+      precondition.assertExecutionCurrent();
       try {
         const addResult = await this.client.addTransactions(input.accountId, [parent], {
           learnCategories: false,
@@ -1307,7 +1380,10 @@ export class ActualConnector implements BudgetLedger {
       try {
         precondition.assertExecutionCurrent();
       } catch (error) {
-        throw new Error('Actual rule creation was dispatched; private result withheld, not rolled back', { cause: error });
+        throw new Error(
+          'Actual rule creation was dispatched; private result withheld, not rolled back',
+          { cause: error },
+        );
       }
 
       // Persist changes to the server — if sync fails, the rule may not be persisted
@@ -1324,7 +1400,10 @@ export class ActualConnector implements BudgetLedger {
       try {
         precondition.assertExecutionCurrent();
       } catch (error) {
-        throw new Error('Actual rule creation was dispatched; private result withheld, not rolled back', { cause: error });
+        throw new Error(
+          'Actual rule creation was dispatched; private result withheld, not rolled back',
+          { cause: error },
+        );
       }
 
       return {
@@ -1334,18 +1413,491 @@ export class ActualConnector implements BudgetLedger {
     });
   }
 
-
   async setBudgetAmount(
-    _month: string,
-    _categoryId: LedgerId,
-    _amount: number,
-    _precondition?: MutationPrecondition,
-  ): Promise<MutationResult> {
-    this.assertInitialized();
-    throw new Error(
-      'setBudgetAmount() is not yet implemented in any connection mode. ' +
-        'This method will be available in a future update.',
-    );
+    month: string,
+    categoryId: LedgerId,
+    amount: number,
+    precondition: BudgetAssignmentPrecondition,
+  ): Promise<BudgetAssignmentResult> {
+    this.assertMutationAllowed('setBudgetAmount');
+    const failure = (
+      code: Extract<BudgetAssignmentResult, { success: false }>['code'],
+      error: string,
+      reviewRequired = false,
+    ): BudgetAssignmentResult => ({
+      success: false,
+      error,
+      code,
+      ...(reviewRequired ? { reviewRequired: true } : {}),
+    });
+    if (!this._budgetInfo) return failure('BUDGET_NOT_SELECTED', 'No Actual budget is selected.');
+    const budgetId = this._budgetInfo.id;
+
+    return this.withCacheLock(budgetId, async () => {
+      if (this._budgetInfo?.id !== budgetId)
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Selected Actual budget changed before assignment.',
+        );
+      if (
+        precondition.budgetId !== budgetId ||
+        precondition.currency !== this.currency ||
+        typeof precondition.assertExecutionCurrent !== 'function'
+      ) {
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Budget assignment authority does not match the selected source.',
+        );
+      }
+      if (
+        !/^\d{4}-(0[1-9]|1[0-2])$/.test(month) ||
+        !hasNonBlankString(categoryId) ||
+        !Number.isSafeInteger(amount) ||
+        !Number.isSafeInteger(precondition.expectedAmount)
+      ) {
+        return failure('INVALID_INPUT', 'Budget assignment month, category, or amount is invalid.');
+      }
+      try {
+        await this.client.sync();
+      } catch (error) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          `Unable to synchronize the current budget assignment: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
+      let categories: (APICategoryEntity | APICategoryGroupEntity)[];
+      let currentMonth: ActualBudgetMonth;
+      try {
+        [categories, currentMonth] = await Promise.all([
+          this.client.getCategories(),
+          this.client.getBudgetMonth(month),
+        ]);
+      } catch (error) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          `Unable to read the current budget assignment: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const currentCategory = categories.find(
+        (candidate) => candidate.id === categoryId && 'group_id' in candidate,
+      ) as (APICategoryEntity & { tombstone?: boolean }) | undefined;
+      if (!currentCategory || currentCategory.tombstone === true)
+        return failure('CATEGORY_NOT_FOUND', `Category ${categoryId} is not available in Actual.`);
+      const assignment = currentMonth.categoryGroups
+        .flatMap((group) => group.categories ?? [])
+        .find((candidate) => candidate.id === categoryId);
+      const currentAmount = assignment?.budgeted;
+      if (
+        currentMonth.month !== month ||
+        typeof currentAmount !== 'number' ||
+        !Number.isSafeInteger(currentAmount)
+      ) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          'Actual returned no safe assignment for the requested category and month.',
+        );
+      }
+      if (currentAmount !== precondition.expectedAmount)
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'The current category assignment changed since the plan was captured.',
+        );
+      if (this._budgetInfo?.id !== budgetId)
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Selected Actual budget changed before assignment.',
+        );
+
+      precondition.assertExecutionCurrent();
+      try {
+        await this.client.setBudgetAmount(month, categoryId, amount);
+      } catch (error) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Actual assignment write was attempted but its result is uncertain: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        );
+      }
+
+      try {
+        await this.client.sync();
+        const readback = await this.client.getBudgetMonth(month);
+        const observedAmount = readback.categoryGroups
+          .flatMap((group) => group.categories ?? [])
+          .find((candidate) => candidate.id === categoryId)?.budgeted;
+        if (readback.month !== month || observedAmount !== amount)
+          throw new Error('Actual assignment readback did not match the requested value');
+      } catch (error) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Actual assignment may have persisted but could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        );
+      }
+      return { success: true, id: categoryId, verified: true };
+    });
+  }
+
+  async createWalletAccount(
+    input: WalletAccountInput,
+    precondition: WalletAccountPrecondition,
+  ): Promise<WalletAccountResult> {
+    this.assertMutationAllowed('createWalletAccount');
+    const failure = (
+      code: Extract<WalletAccountResult, { success: false }>['code'],
+      error: string,
+      reviewRequired = false,
+    ): WalletAccountResult => ({
+      success: false,
+      code,
+      error,
+      ...(reviewRequired ? { reviewRequired: true } : {}),
+    });
+    if (!this._budgetInfo) return failure('BUDGET_NOT_SELECTED', 'No Actual budget is selected.');
+    const budgetId = this._budgetInfo.id;
+    if (!hasNonBlankString(input.walletId) || !hasNonBlankString(input.accountName))
+      return failure('INVALID_INPUT', 'Wallet ID and account name are required.');
+    if (
+      precondition.budgetId !== budgetId ||
+      input.currency !== this.currency ||
+      typeof precondition.assertExecutionCurrent !== 'function'
+    ) {
+      return failure(
+        'PRECONDITION_MISMATCH',
+        'Wallet authority or currency does not match the selected source.',
+      );
+    }
+
+    return this.withCacheLock(budgetId, async () => {
+      if (this._budgetInfo?.id !== budgetId)
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Selected Actual budget changed before wallet creation.',
+        );
+      let currentAccounts: APIAccountEntity[];
+      try {
+        await this.client.sync();
+        currentAccounts = await this.client.getAccounts();
+      } catch (error) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          `Unable to read current Actual accounts: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (currentAccounts.some((account) => account.name === input.accountName))
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'An account with this wallet name already exists; its identity cannot be recovered safely.',
+        );
+      if (this._budgetInfo?.id !== budgetId)
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Selected Actual budget changed before wallet creation.',
+        );
+
+      precondition.assertExecutionCurrent();
+      let accountId: string;
+      try {
+        accountId = await this.client.createAccount({
+          name: input.accountName,
+          offbudget: false,
+          closed: false,
+        });
+      } catch (error) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Actual wallet creation was attempted but its generated identity is uncertain: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        );
+      }
+      if (!hasNonBlankString(accountId))
+        return failure(
+          'WRITE_UNCERTAIN',
+          'Actual wallet creation returned no generated account ID.',
+          true,
+        );
+
+      try {
+        await this.client.sync();
+        const [readbackAccounts, balance] = await Promise.all([
+          this.client.getAccounts(),
+          this.client.getAccountBalance(accountId),
+        ]);
+        const matchingAccounts = readbackAccounts.filter((account) => account.id === accountId);
+        const account = matchingAccounts[0];
+        if (
+          matchingAccounts.length !== 1 ||
+          currentAccounts.some((candidate) => candidate.id === accountId) ||
+          !account ||
+          account.name !== input.accountName ||
+          account.offbudget !== false ||
+          account.closed !== false ||
+          (account.balance_current !== null &&
+            account.balance_current !== undefined &&
+            account.balance_current !== 0) ||
+          !Number.isSafeInteger(balance) ||
+          balance !== 0
+        ) {
+          throw new Error(
+            'Generated wallet account readback did not match the requested zero-balance account',
+          );
+        }
+      } catch (error) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Actual wallet may have been created but could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        );
+      }
+      return { success: true, walletId: input.walletId, accountId, verified: true };
+    });
+  }
+
+  async createLedgerTransfer(
+    input: LedgerTransferInput,
+    precondition: LedgerTransferPrecondition,
+  ): Promise<LedgerTransferResult> {
+    this.assertMutationAllowed('createLedgerTransfer');
+    const failure = (
+      code: Extract<LedgerTransferResult, { success: false }>['code'],
+      error: string,
+      reviewRequired = false,
+    ): LedgerTransferResult => ({
+      success: false,
+      code,
+      error,
+      ...(reviewRequired ? { reviewRequired: true } : {}),
+    });
+    if (!this._budgetInfo) return failure('BUDGET_NOT_SELECTED', 'No Actual budget is selected.');
+    const budgetId = this._budgetInfo.id;
+    if (
+      !hasNonBlankString(input.transferId) ||
+      !hasNonBlankString(input.correlationId) ||
+      !hasNonBlankString(input.sourceAccountId) ||
+      !hasNonBlankString(input.destinationAccountId) ||
+      input.sourceAccountId === input.destinationAccountId ||
+      !isManualDate(input.date) ||
+      !Number.isSafeInteger(input.amount) ||
+      input.amount <= 0
+    ) {
+      return failure('INVALID_INPUT', 'Transfer identity, accounts, date, or amount is invalid.');
+    }
+    if (
+      precondition.budgetId !== budgetId ||
+      precondition.currency !== this.currency ||
+      typeof precondition.assertExecutionCurrent !== 'function' ||
+      !Number.isSafeInteger(precondition.sourceBalance) ||
+      !Number.isSafeInteger(precondition.destinationBalance) ||
+      !Number.isSafeInteger(precondition.sourceBalance - input.amount) ||
+      !Number.isSafeInteger(precondition.destinationBalance + input.amount)
+    ) {
+      return failure(
+        'PRECONDITION_MISMATCH',
+        'Transfer authority, currency, or source balances are invalid.',
+      );
+    }
+    const marker = `balanceframe:transfer:${input.transferId}:${input.correlationId}`;
+
+    return this.withCacheLock(budgetId, async () => {
+      if (this._budgetInfo?.id !== budgetId)
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Selected Actual budget changed before transfer creation.',
+        );
+      let accounts: APIAccountEntity[];
+      let payees: APIPayeeEntity[];
+      let sourceBalance: number;
+      let destinationBalance: number;
+      let sourceTransactions: TransactionEntity[];
+      let destinationTransactions: TransactionEntity[];
+      try {
+        await this.client.sync();
+        accounts = await this.client.getAccounts();
+        const sourceAccounts = accounts.filter((account) => account.id === input.sourceAccountId);
+        const destinationAccounts = accounts.filter(
+          (account) => account.id === input.destinationAccountId,
+        );
+        if (
+          sourceAccounts.length !== 1 ||
+          destinationAccounts.length !== 1 ||
+          sourceAccounts[0]?.closed === true ||
+          destinationAccounts[0]?.closed === true
+        ) {
+          return failure(
+            'PRECONDITION_MISMATCH',
+            'Transfer accounts must be distinct, current, and open.',
+          );
+        }
+        [sourceBalance, destinationBalance, payees, sourceTransactions, destinationTransactions] =
+          await Promise.all([
+            this.client.getAccountBalance(input.sourceAccountId),
+            this.client.getAccountBalance(input.destinationAccountId),
+            this.client.getPayees(),
+            this.client.getTransactions(input.sourceAccountId, '0001-01-01', '9999-12-31'),
+            this.client.getTransactions(input.destinationAccountId, '0001-01-01', '9999-12-31'),
+          ]);
+      } catch (error) {
+        return failure(
+          'PRECONDITION_READ_FAILED',
+          `Unable to read current transfer source: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (
+        sourceBalance !== precondition.sourceBalance ||
+        destinationBalance !== precondition.destinationBalance ||
+        !Number.isSafeInteger(sourceBalance) ||
+        !Number.isSafeInteger(destinationBalance)
+      ) {
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Transfer account balances changed since the plan was captured.',
+        );
+      }
+      const sourceTransferPayees = payees.filter(
+        (payee) => payee.transfer_acct === input.sourceAccountId,
+      );
+      const destinationTransferPayees = payees.filter(
+        (payee) => payee.transfer_acct === input.destinationAccountId,
+      );
+      if (
+        sourceTransferPayees.length !== 1 ||
+        destinationTransferPayees.length !== 1 ||
+        !hasNonBlankString(sourceTransferPayees[0]?.id) ||
+        !hasNonBlankString(destinationTransferPayees[0]?.id)
+      ) {
+        return failure('PRECONDITION_MISMATCH', 'Actual transfer payees are missing or ambiguous.');
+      }
+      if (
+        [...sourceTransactions, ...destinationTransactions].some(
+          (transaction) => transaction.notes === marker,
+        )
+      ) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          'A transaction with this transfer recovery marker already exists; no retry was attempted.',
+          true,
+        );
+      }
+      if (this._budgetInfo?.id !== budgetId)
+        return failure(
+          'PRECONDITION_MISMATCH',
+          'Selected Actual budget changed before transfer creation.',
+        );
+
+      precondition.assertExecutionCurrent();
+      try {
+        const result = await this.client.addTransactions(
+          input.sourceAccountId,
+          [
+            {
+              amount: -input.amount,
+              date: input.date,
+              payee: destinationTransferPayees[0]!.id,
+              notes: marker,
+              cleared: false,
+            },
+          ],
+          { learnCategories: false, runTransfers: true },
+        );
+        if (result !== 'ok') throw new Error('Actual did not confirm transfer dispatch');
+      } catch (error) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Actual transfer write was attempted but its result is uncertain: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        );
+      }
+
+      try {
+        await this.client.sync();
+        const [
+          readbackAccounts,
+          readbackPayees,
+          readbackSourceBalance,
+          readbackDestinationBalance,
+          readbackSourceTransactions,
+          readbackDestinationTransactions,
+        ] = await Promise.all([
+          this.client.getAccounts(),
+          this.client.getPayees(),
+          this.client.getAccountBalance(input.sourceAccountId),
+          this.client.getAccountBalance(input.destinationAccountId),
+          this.client.getTransactions(input.sourceAccountId, '0001-01-01', '9999-12-31'),
+          this.client.getTransactions(input.destinationAccountId, '0001-01-01', '9999-12-31'),
+        ]);
+        const sourceAccount = readbackAccounts.filter(
+          (account) => account.id === input.sourceAccountId,
+        );
+        const destinationAccount = readbackAccounts.filter(
+          (account) => account.id === input.destinationAccountId,
+        );
+        const sourcePayee = readbackPayees.filter(
+          (payee) =>
+            payee.id === sourceTransferPayees[0]!.id &&
+            payee.transfer_acct === input.sourceAccountId,
+        );
+        const destinationPayee = readbackPayees.filter(
+          (payee) =>
+            payee.id === destinationTransferPayees[0]!.id &&
+            payee.transfer_acct === input.destinationAccountId,
+        );
+        const sourceMatches = readbackSourceTransactions.filter(
+          (transaction) => transaction.notes === marker,
+        );
+        const destinationMatches = readbackDestinationTransactions.filter(
+          (transaction) => transaction.notes === marker,
+        );
+        const source = sourceMatches[0];
+        const destination = destinationMatches[0];
+        if (
+          sourceAccount.length !== 1 ||
+          destinationAccount.length !== 1 ||
+          sourceAccount[0]?.closed === true ||
+          destinationAccount[0]?.closed === true ||
+          readbackSourceBalance !== precondition.sourceBalance - input.amount ||
+          readbackDestinationBalance !== precondition.destinationBalance + input.amount ||
+          sourcePayee.length !== 1 ||
+          destinationPayee.length !== 1 ||
+          sourceMatches.length !== 1 ||
+          destinationMatches.length !== 1 ||
+          !source ||
+          !destination ||
+          !hasNonBlankString(source.id) ||
+          !hasNonBlankString(destination.id) ||
+          source.id === destination.id ||
+          source.account !== input.sourceAccountId ||
+          destination.account !== input.destinationAccountId ||
+          source.date !== input.date ||
+          destination.date !== input.date ||
+          source.amount !== -input.amount ||
+          destination.amount !== input.amount ||
+          source.payee !== destinationTransferPayees[0]!.id ||
+          destination.payee !== sourceTransferPayees[0]!.id ||
+          source.notes !== marker ||
+          destination.notes !== marker ||
+          source.transfer_id !== destination.id ||
+          destination.transfer_id !== source.id
+        ) {
+          throw new Error(
+            'Actual transfer readback did not contain one exact reciprocal ledger pair',
+          );
+        }
+        return {
+          success: true,
+          transferId: input.transferId,
+          sourceTransactionId: source.id,
+          destinationTransactionId: destination.id,
+          verified: true,
+        };
+      } catch (error) {
+        return failure(
+          'WRITE_UNCERTAIN',
+          `Actual transfer may have persisted but could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+          true,
+        );
+      }
+    });
   }
 
   async deleteRule(id: LedgerId, precondition: RuleDeletePrecondition): Promise<void> {
@@ -1374,8 +1926,7 @@ export class ActualConnector implements BudgetLedger {
       precondition.assertExecutionCurrent();
       const deleted = await this.client.deleteRule(id);
       precondition.assertExecutionCurrent();
-      if (!deleted)
-        throw new Error('Rule is referenced by a schedule and cannot be deleted');
+      if (!deleted) throw new Error('Rule is referenced by a schedule and cannot be deleted');
       await this.client.sync();
       precondition.assertExecutionCurrent();
 
@@ -1414,6 +1965,7 @@ export class ActualConnector implements BudgetLedger {
     transactionId: LedgerId,
     proposedCategoryId: LedgerId,
     currentCategoryId: LedgerId | null,
+    precondition: SetCategoryPrecondition,
   ): Promise<SetCategoryResult> {
     this.assertMutationAllowed('setTransactionCategory');
 
@@ -1426,8 +1978,9 @@ export class ActualConnector implements BudgetLedger {
       } as SetCategoryResult;
     }
 
-    // Serialize the read/check/update/reread under the budget lock
-    return this.withCacheLock(this._budgetInfo.id, async (): Promise<SetCategoryResult> => {
+    const budgetId = this._budgetInfo.id;
+    // Serialize the read/check/update/reread under the budget lock.
+    return this.withCacheLock(budgetId, async (): Promise<SetCategoryResult> => {
       // Read current transaction state to check precondition
       const allAccounts = await this.client.getAccounts();
       const activeAccounts = allAccounts.filter((a) => !a.closed);
@@ -1496,6 +2049,10 @@ export class ActualConnector implements BudgetLedger {
       // Generate idempotency key for replay detection
       const idempotencyKey = `${transactionId}_${proposedCategoryId}_${Date.now()}_${randomUUID()}`;
       // Call Actual update API with the new category
+      this.assertMutationAllowed('setTransactionCategory');
+      if (this._budgetInfo?.id !== budgetId)
+        throw new Error('Selected Actual budget changed before categorization');
+      precondition.assertExecutionCurrent();
       await this.client.updateTransaction(transactionId, { category: proposedCategoryId });
 
       // Persist changes to the server before re-reading — if sync fails, the
@@ -2011,17 +2568,25 @@ export class ActualConnector implements BudgetLedger {
         transactions.push(transaction);
       }
     }
-    const activeTransactionReads = transactionReads.filter(({ accountId }) => activeAccountIds.has(accountId));
-    const rulePlanningSourceAvailability: NonNullable<LedgerSnapshotResult['rulePlanningSourceAvailability']> = {
+    const activeTransactionReads = transactionReads.filter(({ accountId }) =>
+      activeAccountIds.has(accountId),
+    );
+    const rulePlanningSourceAvailability: NonNullable<
+      LedgerSnapshotResult['rulePlanningSourceAvailability']
+    > = {
       accounts: accountRead.available ? 'complete' : 'unavailable',
       payees: payeeRead.available ? 'complete' : 'unavailable',
       categories: categoryRead.available ? 'complete' : 'unavailable',
       categoryGroups: categoryGroupRead.available ? 'complete' : 'unavailable',
       rules: ruleRead.available ? 'complete' : 'unavailable',
-      history: transactionReads.map(({ accountId, read }) => ({
-        accountId, state: read.available ? 'complete' as const : 'unavailable' as const,
-        startDate: '0001-01-01', endDate: '9999-12-31',
-      })).sort((a, b) => a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0),
+      history: transactionReads
+        .map(({ accountId, read }) => ({
+          accountId,
+          state: read.available ? ('complete' as const) : ('unavailable' as const),
+          startDate: '0001-01-01',
+          endDate: '9999-12-31',
+        }))
+        .sort((a, b) => (a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0)),
     };
 
     const budgets: BudgetMonth[] = [];
@@ -2185,10 +2750,12 @@ export class ActualConnector implements BudgetLedger {
       first: TransactionEntity;
       second?: TransactionEntity;
     };
-    let duplicateCandidates: Map<
-      string,
-      Map<string, Map<number, Map<string | null | undefined, DuplicateCandidateBucket>>>
-    > | undefined;
+    let duplicateCandidates:
+      | Map<
+          string,
+          Map<string, Map<number, Map<string | null | undefined, DuplicateCandidateBucket>>>
+        >
+      | undefined;
     for (const transaction of observableTransactions) {
       const transactionEvidence = [visibleEvidence(transaction.id, 'transaction')];
       const accountScope = { kind: 'account' as const, id: transaction.account };
@@ -2350,6 +2917,12 @@ export class ActualConnector implements BudgetLedger {
       capturedAt,
       this.currency,
     );
-    return { snapshot, financialSnapshot, transferSettlementRecords, rulePlanningSourceAvailability, accountRead };
+    return {
+      snapshot,
+      financialSnapshot,
+      transferSettlementRecords,
+      rulePlanningSourceAvailability,
+      accountRead,
+    };
   }
 }

@@ -76,11 +76,19 @@ export interface ApprovalThreshold {
   readonly requiredApprovers: number;
 }
 
+/** Maximum workflow assistance permitted by a versioned governance policy. */
+export type AssistanceMaximum =
+  | 'analysis_only'
+  | 'recommend_actions'
+  | 'create_approval_proposal'
+  | 'execute_approved_actions';
+
 /** Versioned space approval policy, independent from native financial policy. */
 export interface GovernancePolicy {
   readonly minimumApprovers: number;
   readonly approvalThresholds: readonly ApprovalThreshold[];
   readonly operationApprovers?: Readonly<Record<string, number>>;
+  readonly assistanceMaximum?: AssistanceMaximum;
 }
 
 /** A persisted governance-policy version. */
@@ -96,6 +104,7 @@ export interface GovernancePolicyInput {
   readonly minimumApprovers?: unknown;
   readonly approvalThresholds?: unknown;
   readonly operationApprovers?: unknown;
+  readonly assistanceMaximum?: unknown;
 }
 
 /** Resource categories supported by the single resource_grants authority. */
@@ -219,6 +228,8 @@ export interface GovernanceOperation {
   readonly sourceAccountId?: string;
   readonly destinationAccountId?: string;
   readonly categoryId?: string;
+  readonly sourceCategoryId?: string;
+  readonly destinationCategoryId?: string;
   readonly transactionId?: string;
   readonly ruleId?: string;
   readonly evidenceId?: string;

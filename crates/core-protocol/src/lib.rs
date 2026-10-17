@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod account_aware_liquidity;
+mod consequential_action;
 mod decision_card;
 mod financial_snapshot;
 mod merchant_intelligence;
@@ -36,10 +37,25 @@ pub use balanceframe_financial_core::{
     DecisionIssue, DecisionIssueCode, DecisionIssueEffect, DecisionIssueSeverity, DecisionScope,
     EvidenceReference, RedactionState, Remediation,
 };
+pub use consequential_action::{
+    plan_consequential_action, verify_consequential_action, AtomicConsequentialActionIntent,
+    ConsequentialActionAccount, ConsequentialActionAccountBalancePrecondition,
+    ConsequentialActionAssignment, ConsequentialActionAssignmentPrecondition,
+    ConsequentialActionCategory, ConsequentialActionDispatchPrecondition,
+    ConsequentialActionEvidence, ConsequentialActionImpact, ConsequentialActionIntent,
+    ConsequentialActionInvalidatedSupplementalFacts, ConsequentialActionLedger,
+    ConsequentialActionPlan, ConsequentialActionPostcondition, ConsequentialActionReasonCode,
+    ConsequentialActionSource, ConsequentialActionSupplementalFactPath,
+    ConsequentialActionSupplementalField, ConsequentialActionSupplementalObservation,
+    ConsequentialActionVerification, ConsequentialActionVerificationReason, EvidenceState,
+    LedgerTransaction, ManualTransactionIntent, ManualTransactionSplit,
+    PlanConsequentialActionRequest, ReadinessState, ReallocationAssignment, TransferMapping,
+    VerificationPhase, VerifyConsequentialActionRequest, WalletMapping,
+};
 pub use financial_snapshot::{
-    CoverageState, FinancialSnapshot, InclusionScope, ObservationKind, ObservationState,
-    PendingActivityTreatment, SnapshotCoverage, SnapshotSource, SourceObservation,
-    UnclearedActivityTreatment,
+    CoverageState, EconomicEventLedgerEffect, FinancialSnapshot, InclusionScope, ObservationKind,
+    ObservationState, PendingActivityTreatment, SnapshotCoverage, SnapshotSource,
+    SourceObservation, UnclearedActivityTreatment,
 };
 pub use merchant_intelligence::{
     analyze_merchant_intelligence, MerchantAccountCoverage, MerchantAlias, MerchantAliasState,

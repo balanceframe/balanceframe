@@ -3297,6 +3297,13 @@ describe('generic proposal approval and execution acquisition', () => {
       const replay = await store.acquireProposalExecution(executionInput);
       expect(replay.claim.isOwner).toBe(false);
       expect(replay.auditRecord).toBeNull();
+      const completed = await store.completeIdempotencyRecord(
+        executionInput.idempotencyKey,
+        null,
+        false,
+        JSON.stringify({ verified: true, ruleId: rule.id }),
+      );
+      expect(completed.status).toBe('succeeded');
     }
 
     const nullStageRule = nativeRuleSnapshot('rule-null-stage', null);
@@ -3942,15 +3949,23 @@ describe('generic proposal approval and execution acquisition', () => {
       expect(JSON.parse(proposal.preconditions).categoryGroupMembers)
         .toEqual({ 'group-empty': [] });
       await approveNativeRuleMutation(proposal as unknown as GenericProposal, 'approver-a');
+      const idempotencyKey = `execute:empty-group:${operation}`;
       const execution = await store.acquireProposalExecution(
         nativeRuleExecutionInput(
           proposal as unknown as GenericProposal,
           operation,
-          `execute:empty-group:${operation}`,
+          idempotencyKey,
         ),
       );
       expect(execution.claim.isOwner).toBe(true);
       expect(execution.approvals.map(({ actorId }) => actorId)).toEqual(['approver-a']);
+      const completed = await store.completeIdempotencyRecord(
+        idempotencyKey,
+        null,
+        false,
+        JSON.stringify({ verified: true, ruleId: rule.id }),
+      );
+      expect(completed.status).toBe('succeeded');
     }
   });
 
@@ -4026,5 +4041,22 @@ describe('generic proposal approval and execution acquisition', () => {
     await expect(createProposal(proposalInput({
       preconditions: JSON.stringify(mismatched),
     }))).rejects.toMatchObject({ reasonCode: 'authorization_denied' });
+  });
+
+  it('preserves category and rule proposal behavior when consequential-action assistance defaults to analysis-only', async () => {
+    await setup();
+
+    const currentPolicy = governance.getPolicy({ spaceId: currentSpaceId });
+    if (!currentPolicy) throw new Error('New governance space has no current policy');
+    expect(
+      (currentPolicy as typeof currentPolicy & { assistanceMaximum?: string }).assistanceMaximum
+        ?? 'analysis_only',
+    ).toBe('analysis_only');
+
+    const categoryProposal = await createProposal();
+    expect(categoryProposal.operation).toBe('set_category');
+
+    const { proposal: ruleProposal } = await createNativeRuleMutationProposal('update_rule');
+    expect(ruleProposal.operation).toBe('update_rule');
   });
 });

@@ -13,6 +13,8 @@ import fixture from '../../../../protocol/fixtures/representative.json';
 import listProposals from '../../server/api/proposal/index.get';
 import proposalDetail from '../../server/api/proposal/[id].get';
 
+import * as actionServices from '../../server/utils/liquidity-service';
+import type { ConsequentialActionService } from '@balanceframe/application';
 vi.mock('@balanceframe/application', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   createDefaultConnectionManager: () => ({ loadConfig: async () => ({ budgetId }) }),
@@ -326,6 +328,57 @@ afterEach(() => vi.useRealTimers());
 afterAll(() => store.close());
 
 describe('proposal list route', () => {
+  it('withholds legacy financial data when its disclosure limit tightens during action capture', async () => {
+    const legacy = await seed('set_category');
+    const initial = await listProposals(event());
+    expect(JSON.parse(initial.result!.proposals[0]!.preconditions).transaction.amount).toEqual(amount);
+    const delayedAction = {
+      ...legacy,
+      id: 'action-await-boundary',
+      operation: 'consequential_action',
+    } as unknown as GenericActionProposal;
+    const actualReads = store.getProposalApprovalReads.bind(store);
+    const [legacyFrame] = actualReads({
+      proposalIds: [legacy.id], spaceId, actorId: ACTOR_ID,
+      auth: { method: 'session', actorId: ACTOR_ID, sessionId: `session:${ACTOR_ID}` },
+      now: NOW, privateProjection: 'preconditions',
+    });
+    if (!legacyFrame) throw new Error('Canonical legacy read frame is required');
+    vi.spyOn(store, 'listProposals').mockResolvedValue([legacy, delayedAction]);
+    vi.spyOn(store, 'getProposalApprovalReads').mockImplementation((input) => [
+      ...actualReads({ ...input, proposalIds: input.proposalIds.filter((id) => id !== delayedAction.id) }),
+      ...(input.proposalIds.includes(delayedAction.id)
+        ? [{ ...legacyFrame, proposal: delayedAction, preconditions: null }]
+        : []),
+    ]);
+    let entered!: () => void;
+    let resume!: () => void;
+    const captured = new Promise<void>((resolve) => { entered = resolve; });
+    const suspended = new Promise<void>((resolve) => { resume = resolve; });
+    vi.spyOn(actionServices, 'createWebConsequentialActionService').mockResolvedValue({
+      getProposals: async () => {
+        entered();
+        await suspended;
+        return [];
+      },
+    } as unknown as ConsequentialActionService);
+    try {
+      const pending = listProposals(event());
+      await captured;
+      privateReadLimit({ maxOperationCount: 0 });
+      resume();
+      const response = await pending;
+      expect(response.status).toBe('ok');
+      const published = response.result!.proposals.find(({ id }) => id === legacy.id);
+      expect(published?.preconditions).toBe('null');
+      expect(published?.transactionId).toBeNull();
+      expect(published?.categoryId).toBeNull();
+    } finally {
+      resume();
+      vi.restoreAllMocks();
+    }
+  });
+
   it.each(['current', 'expired', 'withheld'] as const)(
     'returns the complete reviewed native rule simulation with %s publication authority', async (state) => {
       const reviewedSimulation = {

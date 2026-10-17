@@ -4,6 +4,7 @@ import type {
   AddMembershipInput,
   AcceptInvitedMembershipInput,
   AgentDelegation,
+  AssistanceMaximum,
   ApprovalThreshold,
   BindBudgetInput,
   CreateSpaceInput,
@@ -55,6 +56,12 @@ const CONTROL_CAPABILITIES = [
   'credential:manage',
   'audit:read',
 ] as const;
+const ASSISTANCE_MAXIMUMS: Record<string, true> = {
+  analysis_only: true,
+  recommend_actions: true,
+  create_approval_proposal: true,
+  execute_approved_actions: true,
+};
 function nonDelegableAgentCapability(capability: string): boolean {
   return CONTROL_CAPABILITIES.includes(capability as typeof CONTROL_CAPABILITIES[number]) ||
     /manage|approv|settle|confirm|control/i.test(capability) || capability === 'initiation-report';
@@ -234,7 +241,18 @@ function parsePolicy(value: unknown): GovernancePolicy {
     requireText(operation, 'operation');
     operationApprovers[operation] = safeCount(count);
   }
-  return { minimumApprovers, approvalThresholds, operationApprovers };
+  const assistanceMaximum = input.assistanceMaximum;
+  if (assistanceMaximum !== undefined && assistanceMaximum !== null &&
+      (typeof assistanceMaximum !== 'string' || ASSISTANCE_MAXIMUMS[assistanceMaximum] !== true))
+    throw new Error('Invalid assistance maximum');
+  return {
+    minimumApprovers,
+    approvalThresholds,
+    operationApprovers,
+    ...(typeof assistanceMaximum === 'string'
+      ? { assistanceMaximum: assistanceMaximum as AssistanceMaximum }
+      : {}),
+  };
 }
 
 function rowToSpace(row: Row): Space {
@@ -1130,45 +1148,69 @@ export class SpaceGovernance {
     }).immediate();
   }
 
-  /** Returns the current governance policy, or null before the first explicit version. */
+  /** Returns the current policy, normalizing legacy assistance to its safe ceiling. */
   getPolicy(input: { readonly spaceId: string }): VersionedGovernancePolicy | null {
     const row = this.db.prepare('SELECT * FROM governance_policies WHERE space_id=? AND is_current=1')
       .get(input.spaceId) as Row | undefined;
     if (!row) return null;
-    const policy = JSON.parse(row.policy as string) as GovernancePolicy;
-    return { ...policy, spaceId: row.space_id as string, version: row.version as string,
-      actorId: row.actor_id as string, createdAt: row.created_at as string };
+    const policy = parsePolicy(JSON.parse(row.policy as string));
+    return {
+      ...policy,
+      assistanceMaximum: policy.assistanceMaximum ?? 'analysis_only',
+      spaceId: row.space_id as string,
+      version: row.version as string,
+      actorId: row.actor_id as string,
+      createdAt: row.created_at as string,
+    };
   }
 
   /** Appends a policy version with optimistic version matching and fresh human control proof. */
   setPolicy(input: SetGovernancePolicyInput): VersionedGovernancePolicy {
     this.controlAuth(input.auth, input.auth.actorId, input.now);
     const manager = this.requireManager(input.spaceId, input.auth.actorId, 'policy:manage', input.now, 'policy:update');
-    const policy = parsePolicy(input.policy);
     isoTime(input.now);
     return this.db.transaction(() => {
       const current = this.getPolicy({ spaceId: input.spaceId });
       if ((current?.version ?? null) !== input.expectedVersion) throw new Error('Governance policy version conflict');
+      const rawPolicy = record(input.policy);
+      if (!rawPolicy) throw new Error('Invalid governance policy');
+      const policy = parsePolicy({
+        ...rawPolicy,
+        ...(rawPolicy.assistanceMaximum === undefined && current
+          ? { assistanceMaximum: current.assistanceMaximum }
+          : {}),
+      });
       const version = String(Number(current?.version ?? '0') + 1);
       if (!Number.isSafeInteger(Number(version))) throw new Error('Governance policy version exhausted');
       this.db.prepare('UPDATE governance_policies SET is_current=0 WHERE space_id=? AND is_current=1').run(input.spaceId);
       this.db.prepare(`INSERT INTO governance_policies(space_id,version,policy,actor_id,created_at,is_current)
         VALUES (?,?,?,?,?,1)`).run(input.spaceId, version, JSON.stringify(policy), manager.actorId, input.now);
       this.audit(input.spaceId, manager.actorId, 'policy_changed', version, input.now);
-      return { ...policy, spaceId: input.spaceId, version, actorId: manager.actorId, createdAt: input.now };
+      return {
+        ...policy,
+        assistanceMaximum: policy.assistanceMaximum ?? 'analysis_only',
+        spaceId: input.spaceId,
+        version,
+        actorId: manager.actorId,
+        createdAt: input.now,
+      };
     }).immediate();
   }
 
-  /** Lists all retained policy versions in order. */
+  /** Lists all retained policy versions in order with safe legacy defaults. */
   listPolicyHistory(input: { readonly spaceId: string }): VersionedGovernancePolicy[] {
     return (this.db.prepare('SELECT * FROM governance_policies WHERE space_id=? ORDER BY CAST(version AS INTEGER)')
-      .all(input.spaceId) as Row[]).map((row) => ({
-        ...(JSON.parse(row.policy as string) as GovernancePolicy),
-        spaceId: row.space_id as string,
-        version: row.version as string,
-        actorId: row.actor_id as string,
-        createdAt: row.created_at as string,
-      }));
+      .all(input.spaceId) as Row[]).map((row) => {
+        const policy = parsePolicy(JSON.parse(row.policy as string));
+        return {
+          ...policy,
+          assistanceMaximum: policy.assistanceMaximum ?? 'analysis_only',
+          spaceId: row.space_id as string,
+          version: row.version as string,
+          actorId: row.actor_id as string,
+          createdAt: row.created_at as string,
+        };
+      });
   }
 
 

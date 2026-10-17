@@ -1,5 +1,5 @@
-import { mount, type VueWrapper } from '@vue/test-utils';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { computed } from 'vue';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DecisionIssue, EvidenceReference } from '@balanceframe/protocol-generated';
 
@@ -9,7 +9,10 @@ import FreshnessBanner from '../app/components/FreshnessBanner.vue';
 import InsufficientDataPanel from '../app/components/InsufficientDataPanel.vue';
 import ReasonCodeList from '../app/components/ReasonCodeList.vue';
 import SemanticAmount from '../app/components/SemanticAmount.vue';
-import { flushPromises } from '@vue/test-utils';
+import type { PublicDecisionCard } from '@balanceframe/application';
+import DecisionCardView from '../app/components/DecisionCardView.vue';
+import actionFixture from '../../../protocol/fixtures/consequential-action.json';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import rawFixture from '../../../protocol/fixtures/merchant-intelligence.json';
 import { merchantAnalysisRequestSchema, merchantAnalysisResultSchema } from '@balanceframe/protocol-generated/validators';
 import MerchantEvidence from '../app/components/MerchantEvidence.vue';
@@ -961,5 +964,47 @@ describe('merchant intelligence Review controls', () => {
     expect(wrapper.text()).toContain('Refresh and review');
     expect(fetcher.mock.calls.filter(([url]) => url === '/api/merchant/space-policy')).toHaveLength(1);
     expect(fetcher.mock.calls.some(([url]) => url === '/api/merchant/policy')).toBe(false);
+  });
+});
+
+describe('DecisionCardView consequential proposal intent', () => {
+  beforeEach(() => vi.stubGlobal('computed', computed));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('emits only the exact selected native-safe reallocation intent', async () => {
+    const assignment = actionFixture.intent.assignments[0]!;
+    const state = {
+      categories: [], accounts: [], backing: { feasible: true, lines: [], reasons: [] },
+      goals: [], obligations: [], runway: null,
+    };
+    const card = {
+      outcome: 'safe_with_reallocation', budgetFundingStatus: 'funded', paymentLiquidityStatus: 'ready',
+      selectedAccountId: 'checking', before: state, after: state,
+      fundingPaths: [{
+        kind: 'category_reallocation', ...assignment, approvalRequired: true,
+        tradeoffs: ['Reserve remains above its retained floor.'],
+        before: { sourceAvailability: { minorUnits: '6000', currency: 'USD' }, destinationAvailability: { minorUnits: '0', currency: 'USD' } },
+        after: { sourceAvailability: { minorUnits: '4000', currency: 'USD' }, destinationAvailability: { minorUnits: '2000', currency: 'USD' } },
+      }],
+      evidence: [], blockers: [], cart: null, warnings: [], trimAlternatives: [],
+      opportunityCosts: [], conflicts: [], authorizationRequirements: [], reasons: ['safe_reallocation'],
+      assumptions: [], expiresAt: '2026-09-06T18:00:00Z',
+    } as unknown as PublicDecisionCard;
+    const wrapper = mount(DecisionCardView, {
+      props: {
+        card,
+        catalog: {
+          categories: [{ id: 'reserve', name: 'Reserve' }, { id: 'food', name: 'Food' }],
+          accounts: [{ id: 'checking', name: 'Checking' }],
+        } as never,
+      },
+      global: presentationGlobal,
+    });
+
+    await wrapper.get('[data-testid="propose-action"]').trigger('click');
+
+    expect(wrapper.emitted('propose')).toEqual([[
+      { kind: 'reallocation', assignments: [assignment] },
+    ]]);
   });
 });

@@ -1,26 +1,12 @@
 import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
-import type { ActionProposal, GenericProposalOperation } from '@balanceframe/workflow-store';
+import type { ConsequentialActionProposal, ConsequentialActionService } from '@balanceframe/application';
+import type { ActionProposal, ListProposalsOptions } from '@balanceframe/workflow-store';
+import { createWebConsequentialActionService, selectedLiquidityActor } from '../../utils/liquidity-service';
 import { requireSelectedSpace } from '../../utils/space-context';
 import type { EventWithContext } from '../../utils/workflow-store';
 import { errorEnvelope, getWorkflowStore, okEnvelope, sanitizeError } from '../../utils/workflow-store';
+import { projectConsequentialActionProposal } from '../../utils/proposal-route';
 
-interface ActionProposalListItem {
-  readonly id: string;
-  readonly operation: GenericProposalOperation;
-  readonly budgetId: string;
-  readonly transactionId: string | null;
-  readonly categoryId: string | null;
-  readonly ruleId: string | null;
-  readonly preconditions: string;
-  readonly expiresAt: string;
-  readonly actorId: string;
-  readonly provenance: string;
-  readonly providerModel: string | null;
-  readonly correlationId: string | null;
-  readonly supersededAt: string | null;
-  readonly createdAt: string;
-  readonly simulationStatus: 'present' | 'missing' | 'stale';
-}
 
 export default defineEventHandler(async (event) => {
   const requestId = crypto.randomUUID();
@@ -39,12 +25,14 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    const proposals = await workflow.store.listProposals({
+    const listOptions: ListProposalsOptions = {
       budgetId: selected.space.budgetId,
       superseded: false,
-      operations: ['set_category', 'create_rule', 'update_rule', 'delete_rule'],
+      operations: ['set_category', 'create_rule', 'update_rule', 'delete_rule', 'consequential_action'],
       limit: -1,
-    });
+    };
+    const proposals = await workflow.store.listProposals(listOptions);
+    const now = new Date().toISOString();
     const reads = workflow.store.getProposalApprovalReads({
       proposalIds: proposals
         .filter((proposal) => proposal.spaceId === selected.space.id)
@@ -52,13 +40,79 @@ export default defineEventHandler(async (event) => {
       spaceId: selected.space.id,
       actorId: selected.auth.actorId,
       auth: selected.auth,
-      now: new Date().toISOString(),
+      now,
       requestId,
       privateProjection: 'preconditions',
     });
-    const items: ActionProposalListItem[] = reads.map(({ proposal, summary, preconditions }) => {
+    const actionActor = selectedLiquidityActor(workflow.store, selected);
+    let actionService: ConsequentialActionService | null = null;
+    const actionCaptureAttempted = !!actionActor && reads.some(({ proposal }) => proposal.operation === 'consequential_action');
+    if (actionCaptureAttempted) {
+      try {
+        actionService = await createWebConsequentialActionService(workflow.store);
+      } catch {
+        // No action metadata is published without a current scoped projection.
+      }
+    }
+    const actionProjections = new Map<string, ConsequentialActionProposal>();
+    if (actionService && actionActor) {
+      try {
+        const projections = await actionService.getProposals(
+          actionActor,
+          reads.filter(({ proposal }) => proposal.operation === 'consequential_action')
+            .map(({ proposal }) => proposal.id),
+        );
+        for (const projection of projections) actionProjections.set(projection.id, projection);
+      } catch {
+        // Never fall back to persisted native plans or private preconditions.
+      }
+    }
+    let publicationReads = reads;
+    const actionDetails = new Map<string, (typeof reads)[number]>();
+    if (actionCaptureAttempted) {
+      const currentProposals = await workflow.store.listProposals(listOptions);
+      const current = requireSelectedSpace(event as unknown as EventWithContext);
+      if (!current.ok) return current.response;
+      if (current.space.id !== selected.space.id ||
+          current.space.budgetId !== selected.space.budgetId ||
+          current.auth.actorId !== selected.auth.actorId) {
+        setResponseStatus(event, 403);
+        return errorEnvelope('FORBIDDEN', 'The selected proposal scope changed.', null, false, requestId);
+      }
+      const publication = {
+        proposalIds: currentProposals.filter((proposal) => proposal.spaceId === current.space.id)
+          .map((proposal) => proposal.id),
+        spaceId: current.space.id,
+        actorId: current.auth.actorId,
+        auth: current.auth,
+        now: new Date().toISOString(),
+        requestId,
+      };
+      publicationReads = workflow.store.getProposalApprovalReads({
+        ...publication, privateProjection: 'preconditions',
+      });
+      if (actionProjections.size)
+        for (const read of workflow.store.getProposalApprovalReads({
+          ...publication, privateProjection: 'detail',
+        })) actionDetails.set(read.proposal.id, read);
+    }
+    const currentAssistanceMaximum =
+      workflow.store.governance.getPolicy({ spaceId: selected.space.id })?.assistanceMaximum ?? 'analysis_only';
+    const items = publicationReads.flatMap<Record<string, unknown>>(({ proposal, summary, preconditions }) => {
+      if (proposal.operation === 'consequential_action') {
+        const projection = actionProjections.get(proposal.id);
+        const detail = actionDetails.get(proposal.id);
+        return projection && detail?.summary.privateEnvelopeVisible &&
+          detail.proposal.payloadHash === projection.payloadHash
+          ? [projectConsequentialActionProposal(
+              projection,
+              { ...detail.summary, disposition: detail.summary.disposition.kind },
+              currentAssistanceMaximum,
+            )]
+          : [];
+      }
       const payload = summary.privateEnvelopeVisible ? proposal.payload : null;
-      return {
+      return [{
         id: proposal.id,
         operation: proposal.operation,
         budgetId: proposal.budgetId,
@@ -74,7 +128,11 @@ export default defineEventHandler(async (event) => {
         supersededAt: proposal.supersededAt,
         createdAt: proposal.createdAt,
         simulationStatus: computeSimulationStatus(proposal, preconditions),
-      };
+        requiredApprovers: summary.requiredApprovers,
+        approverCount: summary.approvers.length,
+        canApprove: summary.canApprove && summary.privateEnvelopeVisible,
+        canExecute: summary.canExecute,
+      }];
     });
     return okEnvelope({ proposals: items, total: items.length }, null, requestId);
   } catch (error) {

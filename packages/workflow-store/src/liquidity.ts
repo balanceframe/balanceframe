@@ -19,6 +19,7 @@ import type {
   AdmitSessionCompletionInput,
   ApproveSessionCompletionInput,
   BeginSessionCompletionWriteInput,
+  ValidateSessionCompletionWriteInput,
   FinishSessionCompletionWriteInput,
   ReconcileSessionCompletionInput,
   SessionCompletionReconciliation,
@@ -45,6 +46,7 @@ import type {
   SaveProspectiveClaimInput,
   SaveTransferPreviewInput,
   StoredProspectiveClaim,
+  TransferApprovalPolicy,
   TransferApprovalSummary,
   TransferPreview,
   VisibleStoredProspectiveClaim,
@@ -63,6 +65,33 @@ import type {
 } from './liquidity-types.js';
 
 type EligibleHumanApproval = { id: string; approval: CurrentHumanApproval };
+function parseFinancialApprovalPolicy(value: unknown, fallback: TransferApprovalPolicy): TransferApprovalPolicy {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new Error('Invalid financial approval policy');
+  const policy = value as Record<string, unknown>;
+  if (Object.keys(policy).length === 0) return fallback;
+  if (!Number.isSafeInteger(policy.minimumApprovers) || (policy.minimumApprovers as number) < 1)
+    throw new Error('Invalid financial approval minimum');
+  const thresholdsValue = policy.thresholds;
+  if (!Array.isArray(thresholdsValue)) throw new Error('Invalid financial approval thresholds');
+  const thresholds = thresholdsValue.map((value) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value))
+      throw new Error('Invalid financial approval threshold');
+    const threshold = value as Record<string, unknown>;
+    if (typeof threshold.currency !== 'string' || !/^[A-Z]{3}$/.test(threshold.currency) ||
+        typeof threshold.minimumMinorUnits !== 'string' ||
+        !/^(0|[1-9]\d*)$/.test(threshold.minimumMinorUnits) ||
+        BigInt(threshold.minimumMinorUnits) > 9223372036854775807n ||
+        !Number.isSafeInteger(threshold.minimumApprovers) || (threshold.minimumApprovers as number) < 1)
+      throw new Error('Invalid financial approval threshold');
+    return {
+      currency: threshold.currency,
+      minimumMinorUnits: threshold.minimumMinorUnits,
+      minimumApprovers: threshold.minimumApprovers as number,
+    };
+  });
+  return { minimumApprovers: policy.minimumApprovers as number, thresholds };
+}
 
 function currentHumanApprovers(
   eligible: readonly EligibleHumanApproval[],
@@ -98,6 +127,99 @@ function identity(value: unknown): string {
       : value;
   return createHash('sha256').update(canonical(intent)).digest('hex');
 }
+
+/** One acquired action or initiated session completion owns a budget's write baseline. */
+export function hasConflictingBudgetMutationOwner(
+  db: Database,
+  budgetId: string,
+  proposalId: string,
+): boolean {
+  return !!db.prepare(`
+    SELECT 1
+     WHERE EXISTS (
+       SELECT 1 FROM action_proposals p
+        WHERE p.budget_id=? AND p.id<>? AND (
+          p.operation='consequential_action' AND
+            json_extract(p.state,'$.phase') IN ('write_intent','review_required')
+          OR p.operation='session_completion' AND
+            json_extract(p.state,'$.phase') IN ('write_intent','review_required') AND
+            EXISTS (
+              SELECT 1 FROM session_completion_writes w
+               WHERE w.budget_id=p.budget_id AND w.proposal_id=p.id
+                 AND w.status IN ('write_intent','review_required')
+            )
+        )
+     )
+       OR EXISTS (
+         SELECT 1 FROM idempotency_records i
+         JOIN action_proposals p ON p.id=i.proposal_id
+          WHERE p.budget_id=? AND p.id<>? AND (
+            i.idempotency_status='in_progress'
+            OR i.idempotency_status IN ('retryable_failed','terminal_failed')
+              AND NOT (
+                p.operation IN ('consequential_action','session_completion')
+                  AND json_extract(p.state,'$.phase') IN ('verified','invalidated_no_dispatch')
+                OR
+                p.operation='set_category' AND i.operation=p.operation AND EXISTS (
+                  SELECT 1
+                    FROM audit_records failure
+                    JOIN audit_records acquisition
+                      ON acquisition.id = CASE
+                        WHEN json_valid(failure.observed_result_state)
+                        THEN json_extract(failure.observed_result_state,'$.acquisitionAuditId')
+                      END
+                   WHERE failure.classification='execution_failed'
+                     AND failure.is_error=1
+                     AND failure.operation=p.operation
+                     AND failure.proposal_id=p.id
+                     AND failure.payload_hash=p.payload_hash
+                     AND failure.budget_id=p.budget_id
+                     AND failure.idempotency_key=i.idempotency_key
+                     AND CASE WHEN json_valid(failure.observed_result_state)
+                              THEN json_extract(failure.observed_result_state,'$.kind') END='categorization_dispatch'
+                     AND CASE WHEN json_valid(failure.observed_result_state)
+                              THEN json_type(failure.observed_result_state,'$.dispatchStarted') END='false'
+                     AND CASE WHEN json_valid(failure.observed_result_state)
+                              THEN json_type(failure.observed_result_state,'$.acquisitionAuditId') END='text'
+                     AND failure.rowid > acquisition.rowid
+                     AND acquisition.classification='execution_started'
+                     AND acquisition.is_error=0
+                     AND acquisition.operation=p.operation
+                     AND acquisition.proposal_id=p.id
+                     AND acquisition.payload_hash=p.payload_hash
+                     AND acquisition.budget_id=p.budget_id
+                     AND acquisition.idempotency_key=i.idempotency_key
+                     AND acquisition.rowid = (
+                       SELECT MAX(original.rowid)
+                         FROM audit_records original
+                        WHERE original.classification='execution_started'
+                          AND original.is_error=0
+                          AND original.operation=p.operation
+                          AND original.proposal_id=p.id
+                          AND original.payload_hash=p.payload_hash
+                          AND original.budget_id=p.budget_id
+                          AND original.idempotency_key=i.idempotency_key
+                     )
+                )
+              )
+          )
+       )
+     LIMIT 1
+  `).get(budgetId, proposalId, budgetId, proposalId);
+}
+
+function completionWriteAuthorizationHash(input: LiquidityActor): string {
+  return createHash('sha256').update(canonical({
+    actorId: input.actorId,
+    spaceId: input.spaceId ?? null,
+    membershipId: input.membershipId ?? null,
+    governancePolicyVersion: input.governancePolicyVersion ?? null,
+    agentId: input.agentId ?? null,
+    delegationId: input.delegationId ?? null,
+    auth: input.auth ?? null,
+  })).digest('hex');
+}
+
 type CompletionCreationIntent = LiquidityActor & {
   sessionId: string;
   expectedSessionVersion: number;
@@ -1811,9 +1933,16 @@ export class LiquidityWorkflow {
             }),
             payload: null,
             acquiredWriteIntent: false,
+            intentId: replay.intentId ?? null,
+            claimSetRevision: replay.claimSetRevision ?? null,
           };
         }
-        if (['write_intent', 'verified', 'review_required'].includes(proposal.state.phase))
+        if (['write_intent', 'verified', 'review_required'].includes(proposal.state.phase)) {
+          const write = this.db.prepare(
+            'SELECT intent_id,claim_set_revision FROM session_completion_writes WHERE budget_id=? AND proposal_id=?',
+          ).get(input.budgetId, proposal.id) as
+            | { intent_id: string; claim_set_revision: string }
+            | undefined;
           return {
             proposal: this.completionView({
               actorId: input.actorId,
@@ -1823,18 +1952,21 @@ export class LiquidityWorkflow {
             }),
             payload: null,
             acquiredWriteIntent: false,
+            intentId: write?.intent_id ?? null,
+            claimSetRevision: write?.claim_set_revision ?? null,
           };
+        }
         if (proposal.version !== input.expectedVersion)
           throw new Error('Proposal version conflict');
         if (proposal.state.phase !== 'approved') throw new Error('Current approval required');
+        if (hasConflictingBudgetMutationOwner(this.db, input.budgetId, proposal.id))
+          throw new Error('Another acquired budget mutation owns the write fence');
         future(proposal.expiresAt, input.now);
         const policy = this.currentPolicy(input.budgetId);
         if (proposal.policyVersion !== policy.policy.version) throw new Error('Policy changed');
         validateCompletionCooldown(proposal.payload, policy, input.now, false);
-        if (
-          this.completionApprovals(proposal, input.now).length <
-          this.completionRequiredApprovals(proposal, input.now)
-        )
+        const approvals = this.completionApprovals(proposal, input.now);
+        if (approvals.length < this.completionRequiredApprovals(proposal, input.now))
           throw new Error('Current authorized approvals required');
         try {
           this.validate(
@@ -1853,31 +1985,35 @@ export class LiquidityWorkflow {
           };
         }
         const intentId = randomUUID();
-        this.db
-          .prepare(
-            'INSERT INTO session_completion_writes (budget_id,proposal_id,intent_id,payload_hash,parent_id,correlation_id,status,result,evidence_id,initiated_at,finished_at) VALUES (?,?,?,?,?,?,\'write_intent\',NULL,NULL,?,NULL)',
-          )
-          .run(
-            input.budgetId,
-            proposal.id,
-            intentId,
-            proposal.payloadHash,
-            proposal.payload.manualInput.parentId,
-            proposal.payload.manualInput.correlationId,
-            input.now,
-          );
-        for (const approval of this.completionApprovals(proposal, input.now))
-          this.db
-            .prepare(
-              "UPDATE proposal_approvals SET status='consumed',consumed_at=? WHERE id=? AND status='active'",
-            )
-            .run(input.now, approval.id);
-        this.changeCompletionClaim(proposal, 'initiated');
-        const updated = this.updateCompletion(
-          proposal,
-          completionState('write_intent'),
+        this.db.prepare(`
+          INSERT INTO session_completion_writes
+            (budget_id,proposal_id,intent_id,payload_hash,parent_id,correlation_id,status,result,evidence_id,
+             initiated_at,finished_at,authorization_hash,claim_set_revision,approval_ids)
+          VALUES (?,?,?,?,?,?,'write_intent',NULL,NULL,?,NULL,?,?,?)
+        `).run(
+          input.budgetId,
+          proposal.id,
+          intentId,
+          proposal.payloadHash,
+          proposal.payload.manualInput.parentId,
+          proposal.payload.manualInput.correlationId,
           input.now,
+          completionWriteAuthorizationHash(input),
+          input.expectedClaimSetRevision,
+          JSON.stringify(approvals.map(({ id }) => id).sort()),
         );
+        for (const approval of approvals)
+          this.db.prepare(
+            "UPDATE proposal_approvals SET status='consumed',consumed_at=? WHERE id=? AND status='active'",
+          ).run(input.now, approval.id);
+        this.changeCompletionClaim(proposal, 'initiated');
+        const claimSetRevision = this.claimSet(input.budgetId, input.now, input.actorId).revision;
+        const claimUpdated = this.db.prepare(`
+          UPDATE session_completion_writes SET claim_set_revision=?
+           WHERE budget_id=? AND proposal_id=? AND intent_id=? AND status='write_intent'
+        `).run(claimSetRevision, input.budgetId, proposal.id, intentId);
+        if (claimUpdated.changes !== 1) throw new Error('Session completion write intent changed');
+        const updated = this.updateCompletion(proposal, completionState('write_intent'), input.now);
         const result: SessionCompletionWriteIntentResult = {
           proposal: this.completionView({
             actorId: input.actorId,
@@ -1887,6 +2023,8 @@ export class LiquidityWorkflow {
           }),
           payload: structuredClone(proposal.payload),
           acquiredWriteIntent: true,
+          intentId,
+          claimSetRevision,
         };
         this.record(input, 'session_completion:begin_write', updated.id, input, result);
         return result;
@@ -1895,9 +2033,117 @@ export class LiquidityWorkflow {
     if (outcome && 'staleError' in outcome) throw new Error(outcome.staleError);
     return outcome;
   }
+  /** Synchronously fences every session-completion SDK write against its exact durable intent. */
+  validateSessionCompletionWrite(input: ValidateSessionCompletionWriteInput): void {
+    if (typeof input.intentId !== 'string' || !input.intentId.trim() ||
+        typeof input.expectedClaimSetRevision !== 'string' || !input.expectedClaimSetRevision.trim())
+      throw new Error('Exact session completion write token is required');
+    this.db.transaction(() => {
+      const { proposal } = this.completionCommand(input, 'confirmation', true);
+      if (proposal.state.phase !== 'write_intent' || proposal.version !== input.expectedVersion)
+        throw new Error('Session completion write intent is no longer current');
+      const write = this.db.prepare(`
+        SELECT intent_id,payload_hash,parent_id,correlation_id,status,initiated_at,
+               authorization_hash,claim_set_revision,approval_ids
+          FROM session_completion_writes WHERE budget_id=? AND proposal_id=?
+      `).get(input.budgetId, proposal.id) as {
+        intent_id: string;
+        payload_hash: string;
+        parent_id: string;
+        correlation_id: string;
+        status: string;
+        initiated_at: string;
+        authorization_hash: string;
+        claim_set_revision: string;
+        approval_ids: string;
+      } | undefined;
+      if (!write || write.status !== 'write_intent' || write.intent_id !== input.intentId ||
+          write.payload_hash !== proposal.payloadHash ||
+          write.parent_id !== proposal.payload.manualInput.parentId ||
+          write.correlation_id !== proposal.payload.manualInput.correlationId ||
+          write.authorization_hash !== completionWriteAuthorizationHash(input) ||
+          write.claim_set_revision !== input.expectedClaimSetRevision ||
+          this.claimSet(input.budgetId, input.now, input.actorId).revision !== write.claim_set_revision)
+        throw new Error('Session completion write fence changed');
+      let approvalIds: unknown;
+      try {
+        approvalIds = JSON.parse(write.approval_ids) as unknown;
+      } catch {
+        throw new Error('Session completion approval token is invalid');
+      }
+      if (!Array.isArray(approvalIds) ||
+          !approvalIds.every((id: unknown) => typeof id === 'string' && id.trim()) ||
+          new Set(approvalIds).size !== approvalIds.length)
+        throw new Error('Session completion approval token is invalid');
+      const currentApprovals = this.completionApprovals(proposal, input.now, true);
+      const currentIds = currentApprovals.map(({ id }) => id).sort();
+      if (canonical(currentIds) !== canonical([...approvalIds].sort()) ||
+          currentIds.length < this.completionRequiredApprovals(proposal, input.now))
+        throw new Error('Session completion approval authority changed');
+      for (const id of approvalIds) {
+        const approval = this.db.prepare(`
+          SELECT status,consumed_at,payload_hash FROM proposal_approvals
+           WHERE id=? AND proposal_id=?
+        `).get(id, proposal.id) as
+          | { status: string; consumed_at: string | null; payload_hash: string }
+          | undefined;
+        if (!approval || approval.status !== 'consumed' ||
+            approval.consumed_at !== write.initiated_at ||
+            approval.payload_hash !== proposal.payloadHash)
+          throw new Error('Session completion approval token changed');
+      }
+      const policy = this.currentPolicy(input.budgetId);
+      if (policy.policy.version !== proposal.policyVersion)
+        throw new Error('Session completion financial policy changed');
+      validateCompletionCooldown(proposal.payload, policy, input.now, false);
+      const claim = this.db.prepare(`
+        SELECT proposal_id,operation,completed,idempotency_status,serialised_effect
+          FROM idempotency_records WHERE idempotency_key=?
+      `).get(input.idempotencyKey) as {
+        proposal_id: string;
+        operation: string;
+        completed: number;
+        idempotency_status: string;
+        serialised_effect: string;
+      } | undefined;
+      if (!claim || claim.proposal_id !== proposal.id ||
+          claim.operation !== 'session_completion:begin_write' || claim.completed !== 1 ||
+          claim.idempotency_status !== 'succeeded')
+        throw new Error('Session completion write claim is unavailable');
+      let result: unknown;
+      try {
+        result = JSON.parse(claim.serialised_effect) as unknown;
+      } catch {
+        throw new Error('Session completion write claim is invalid');
+      }
+      if (result === null || typeof result !== 'object' || Array.isArray(result) ||
+          (result as Record<string, unknown>).acquiredWriteIntent !== true ||
+          (result as Record<string, unknown>).intentId !== write.intent_id ||
+          (result as Record<string, unknown>).claimSetRevision !== write.claim_set_revision)
+        throw new Error('Session completion write claim is invalid');
+    }).immediate();
+  }
   finishSessionCompletionWrite(
-    input: FinishSessionCompletionWriteInput,
+    input: FinishSessionCompletionWriteInput & {
+      expectedClaimSetRevision?: string;
+      writeIntentIdempotencyKey?: string;
+      result: FinishSessionCompletionWriteInput['result'] & {
+        dispatchOutcome?: 'not_dispatched';
+      };
+    },
   ): SessionCompletionProposalView {
+    const noDispatch = input.result.dispatchOutcome === 'not_dispatched';
+    if (noDispatch && (
+      input.result.success ||
+      input.result.verified ||
+      input.result.code !== 'PREWRITE_DENIED' ||
+      input.result.reviewRequired !== true ||
+      typeof input.expectedClaimSetRevision !== 'string' ||
+      !input.expectedClaimSetRevision.trim() ||
+      typeof input.writeIntentIdempotencyKey !== 'string' ||
+      !input.writeIntentIdempotencyKey.trim()
+    ))
+      throw new Error('Exact pre-dispatch completion fence is required');
     return this.db
       .transaction(() => {
         const proposal = this.loadCompletion(input.proposalId);
@@ -1907,8 +2153,12 @@ export class LiquidityWorkflow {
           throw new Error('Payload hash mismatch');
         validateCompletionPayload(proposal.payload, input.now);
         this.requireHumanReconciliation(input);
-        this.authorizeCompletion(input, proposal.payload, 'confirmation', false, 'read');
-        this.completionSession(input, proposal.payload, input.now, true, false, true);
+        if (noDispatch) {
+          this.completionSession(input, proposal.payload, input.now, true, false, true);
+        } else {
+          this.authorizeCompletion(input, proposal.payload, 'confirmation', false, 'read');
+          this.completionSession(input, proposal.payload, input.now, true, false, true);
+        }
         const replay = this.replay<SessionCompletionProposalView>(
           input,
           'session_completion:finish_write',
@@ -1927,19 +2177,73 @@ export class LiquidityWorkflow {
           throw new Error('Write intent unavailable');
         const write = this.db
           .prepare(
-            'SELECT status,intent_id,parent_id,correlation_id FROM session_completion_writes WHERE budget_id=? AND proposal_id=? AND payload_hash=?',
+            'SELECT status,intent_id,parent_id,correlation_id,authorization_hash,claim_set_revision FROM session_completion_writes WHERE budget_id=? AND proposal_id=? AND payload_hash=?',
           )
           .get(input.budgetId, proposal.id, proposal.payloadHash) as
-          | { status: string; intent_id: string; parent_id: string; correlation_id: string }
+          | {
+              status: string;
+              intent_id: string;
+              parent_id: string;
+              correlation_id: string;
+              authorization_hash: string;
+              claim_set_revision: string;
+            }
           | undefined;
         if (
           !write ||
           write.status !== 'write_intent' ||
           !write.intent_id.trim() ||
+          write.intent_id !== input.intentId ||
           write.parent_id !== proposal.payload.manualInput.parentId ||
-          write.correlation_id !== proposal.payload.manualInput.correlationId
+          write.correlation_id !== proposal.payload.manualInput.correlationId ||
+          (input.expectedClaimSetRevision !== undefined &&
+            write.claim_set_revision !== input.expectedClaimSetRevision) ||
+          (input.writeIntentIdempotencyKey !== undefined &&
+            write.authorization_hash !== completionWriteAuthorizationHash(input))
         )
           throw new Error('Write intent unavailable');
+        if (noDispatch || input.writeIntentIdempotencyKey !== undefined) {
+          const intentClaim = input.writeIntentIdempotencyKey
+            ? this.db.prepare(`
+                SELECT proposal_id,operation,completed,idempotency_status,serialised_effect
+                  FROM idempotency_records WHERE idempotency_key=?
+              `).get(input.writeIntentIdempotencyKey) as
+                | {
+                    proposal_id: string;
+                    operation: string;
+                    completed: number;
+                    idempotency_status: string;
+                    serialised_effect: string;
+                  }
+                | undefined
+            : undefined;
+          let intentResult: unknown;
+          try {
+            intentResult = JSON.parse(intentClaim?.serialised_effect ?? '') as unknown;
+          } catch {
+            throw new Error('Session completion write claim is invalid');
+          }
+          if (
+            !intentClaim ||
+            intentClaim.proposal_id !== proposal.id ||
+            intentClaim.operation !== 'session_completion:begin_write' ||
+            intentClaim.completed !== 1 ||
+            intentClaim.idempotency_status !== 'succeeded' ||
+            intentResult === null ||
+            typeof intentResult !== 'object' ||
+            Array.isArray(intentResult)
+          )
+            throw new Error('Session completion write claim is invalid');
+          if (
+            !('acquiredWriteIntent' in intentResult) ||
+            intentResult.acquiredWriteIntent !== true ||
+            !('intentId' in intentResult) ||
+            intentResult.intentId !== write.intent_id ||
+            !('claimSetRevision' in intentResult) ||
+            intentResult.claimSetRevision !== write.claim_set_revision
+          )
+            throw new Error('Session completion write claim is invalid');
+        }
         const result = input.result;
         if (
           result.parentId !== proposal.payload.manualInput.parentId ||
@@ -2268,7 +2572,20 @@ export class LiquidityWorkflow {
   getPolicy(input: LiquidityActor): LiquidityPolicyRecord | null {
     this.budget(input, 'policy');
     try {
-      return this.currentPolicy(input.budgetId);
+      const current = this.currentPolicy(input.budgetId);
+      const row = this.db
+        .prepare(`
+          SELECT p.approval_policy
+            FROM liquidity_policy_versions p
+            JOIN liquidity_current_policy c ON c.budget_id=p.budget_id AND c.version=p.version
+           WHERE p.budget_id=?
+        `)
+        .get(input.budgetId) as { approval_policy: string } | undefined;
+      if (!row) return null;
+      return {
+        ...current,
+        approvalPolicy: parseFinancialApprovalPolicy(JSON.parse(row.approval_policy) as unknown, current.approvalPolicy),
+      };
     } catch {
       return null;
     }
@@ -2288,6 +2605,10 @@ export class LiquidityWorkflow {
           minimumApprovers: threshold.requiredApprovers,
         })) ?? []
       : input.approvalPolicy.thresholds;
+    const approvalPolicy = parseFinancialApprovalPolicy({
+      minimumApprovers: input.approvalPolicy.minimumApprovers,
+      thresholds,
+    }, { minimumApprovers: 1, thresholds: [] });
     const operationApprovers = currentGovernancePolicy?.operationApprovers ?? {};
     return this.db
       .transaction(() => {
@@ -2300,13 +2621,16 @@ export class LiquidityWorkflow {
           spaceId: context.spaceId,
           expectedVersion: input.expectedGovernancePolicyVersion,
           policy: {
-            minimumApprovers: input.approvalPolicy.minimumApprovers,
-            approvalThresholds: thresholds.map((threshold) => ({
+            minimumApprovers: approvalPolicy.minimumApprovers,
+            approvalThresholds: (approvalPolicy.thresholds ?? []).map((threshold) => ({
               currency: threshold.currency,
               amountMinorUnits: threshold.minimumMinorUnits,
               requiredApprovers: threshold.minimumApprovers,
             })),
             operationApprovers,
+            ...(currentGovernancePolicy
+              ? { assistanceMaximum: currentGovernancePolicy.assistanceMaximum }
+              : {}),
           },
           now: input.now,
           auth: input.auth,
@@ -2317,7 +2641,7 @@ export class LiquidityWorkflow {
             input.budgetId,
             governedPolicy.version,
             JSON.stringify(governedPolicy),
-            '{}',
+            JSON.stringify(approvalPolicy),
             input.actorId,
             input.now,
           );
@@ -2328,7 +2652,7 @@ export class LiquidityWorkflow {
           .run(input.budgetId, governedPolicy.version);
         this.invalidateProposals(input.budgetId, input.now);
         this.audit(input, 'liquidity_policy_changed', null, input.now, null);
-        return this.currentPolicy(input.budgetId);
+        return { ...this.currentPolicy(input.budgetId), approvalPolicy };
       })
       .immediate();
   }
@@ -2562,6 +2886,7 @@ export class LiquidityWorkflow {
     now: string,
     idempotencyKey: string | null,
   ): void {
+    const auditOperation = operation.startsWith('session_completion:') ? operation : 'transfer';
     this.db
       .prepare(
         'INSERT INTO audit_records (id,classification,timestamp,actor_id,operation,proposal_id,budget_id,result,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?)',
@@ -2571,7 +2896,7 @@ export class LiquidityWorkflow {
         'workflow_transition',
         now,
         input.actorId,
-        'transfer',
+        auditOperation,
         proposalId,
         input.budgetId,
         operation,

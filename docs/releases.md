@@ -1,5 +1,14 @@
 # Release Policy
 
+## Unreleased — Phase 9 controlled consequential actions
+
+- Exact reallocation proposals reuse ordinary selected-space authorization, immutable native planning, distinct-human approval, durable acquisition, Actual write/readback and native postcondition verification. Space assistance is a maximum; absent legacy configuration disables the new action workflow without changing existing categorization or rule permissions.
+- The shared action contract covers manual/split debits, source-resolved ledger projections, zero-opening-balance wallet accounts, ledger-only transfers and ordered composites. Native amounts, availability, assignment deltas and intermediate dispatch states are separate; a transfer record does not establish institution settlement.
+- Budget-wide acquired ownership excludes competing local mutations across workflow connections; stable economic identities prevent duplicate projections. Uncertain or interrupted writes retain ownership for native-proven read-only recovery, not automatic retry, rollback or lease takeover. Lost generated wallet identity requires review.
+- Existing workflow databases receive an append-only completion-intent fence migration. Back up the workflow database before upgrade; historical uncertain intents remain held and are not silently reauthorized.
+- Operators must ensure exclusive mutation ownership of the selected Actual budget during execution. The SDK has no compare-and-set; another Actual editor or deployment using a separate workflow database can race outside BalanceFrame's fence. Matching final readback is not proof that no intervening external edit was overwritten.
+- Purchase Check, Spend Sessions, scoped proposal review and the CLI expose exact envelope/cash tradeoffs and separate approval/execution controls. Private source hashes, supplemental records and execution proofs are withheld. See [Phase 9](roadmap/post-mvp/09-controlled-reallocations.md) and [ADR 0003](adr/0003-space-governance-and-exact-authority.md) for acceptance evidence and operating limits.
+
 ## Unreleased — Phase 11 merchant intelligence
 
 - Local Rust analysis adds scoped merchant/category evidence, conservative recurrence/calendar reasoning and human alias, correction and pattern intent. Review, Dashboard and authenticated CLI share current source and authorization checks. Native Actual rule proposals retain complete simulation/provenance and execute independently of BalanceFrame; enrichment never supplies financial permission.

@@ -64,6 +64,27 @@ balanceframe proposals show prop_123 --json
 balanceframe proposals approve prop_123 --payload-hash DISPLAYED_HASH --json
 ```
 
+Controlled consequential actions use the same proposal commands:
+
+```sh
+balanceframe proposals action --action-file action.json --json
+balanceframe proposals show prop_123 --json
+balanceframe proposals approve prop_123 --payload-hash DISPLAYED_HASH --json
+balanceframe proposals execute prop_123 --json
+```
+
+The file contains only `action` and optional `decision`; the server captures financial
+source, policy, evidence and approval requirements. Reallocation decisions bind either
+the exact purchase cart or `{ "origin": { "sessionId": "SESSION_ID", "sessionVersion": 1 } }`.
+Action variants are reallocation, manual/split debit, resolved-evidence projection,
+zero-balance wallet materialization, ledger-only transfer, and an ordered composite.
+Do not supply hashes, proof tokens, approvals or source snapshots in the file.
+New dispatch requires current executor authority and a recently reauthenticated human
+session; when both credentials are configured, execution selects the human cookie.
+An uncertain execution is read-only recovery, never a reason to repeat the action.
+Keep other Actual editors and independently configured writers out of the budget during
+execution; the SDK has no compare-and-set. See [ADR 0003](../../docs/adr/0003-space-governance-and-exact-authority.md).
+
 `--actor-id` is only an audit filter; it never selects the caller. Server responses are
 validated as versioned API envelopes, and server errors remain errors.
 

@@ -93,6 +93,15 @@
         <label class="block max-w-xs space-y-1 text-sm"><span class="font-medium">Minimum approvers</span><input v-model.number="minimumApprovers" type="number" min="1" step="1" required class="w-full rounded border px-3 py-2 dark:border-gray-700 dark:bg-gray-950" /></label>
         <label class="block space-y-1 text-sm"><span class="font-medium">Gross-outgoing thresholds (JSON array)</span><textarea v-model="thresholdsJson" rows="3" spellcheck="false" class="w-full rounded border px-3 py-2 font-mono text-xs dark:border-gray-700 dark:bg-gray-950" /></label>
         <label class="block space-y-1 text-sm"><span class="font-medium">Operation approver counts (JSON object)</span><textarea v-model="operationApproversJson" rows="3" spellcheck="false" class="w-full rounded border px-3 py-2 font-mono text-xs dark:border-gray-700 dark:bg-gray-950" /></label>
+        <label class="block max-w-xs space-y-1 text-sm">
+          <span class="font-medium">Maximum consequential-action assistance</span>
+          <select v-model="assistanceMaximum" aria-label="Maximum consequential-action assistance" class="w-full rounded border px-3 py-2 dark:border-gray-700 dark:bg-gray-950">
+            <option value="analysis_only">Analysis only</option>
+            <option value="recommend_actions">Recommend actions</option>
+            <option value="create_approval_proposal">Create approval proposal</option>
+            <option value="execute_approved_actions">Execute approved actions</option>
+          </select>
+        </label>
         <button type="submit" :disabled="busy" class="rounded bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">Save policy version</button>
       </form>
       <h3 class="mt-5 font-medium">Policy history</h3>
@@ -194,9 +203,17 @@ const Membership = z.object({
   revokedAt: z.string().nullable(), origin: z.string(),
 }).passthrough();
 const MembershipList = z.object({ memberships: z.array(Membership) });
+const AssistanceMaximum = z.enum([
+  'analysis_only',
+  'recommend_actions',
+  'create_approval_proposal',
+  'execute_approved_actions',
+]);
 const VersionedPolicy = z.object({
   minimumApprovers: z.number(), approvalThresholds: z.array(z.object({ currency: z.string(), amountMinorUnits: z.string(), requiredApprovers: z.number() })),
-  operationApprovers: z.record(z.string(), z.number()).optional(), spaceId: z.string(), version: z.string(), actorId: z.string(), createdAt: z.string(),
+  operationApprovers: z.record(z.string(), z.number()).optional(),
+  assistanceMaximum: AssistanceMaximum.optional(),
+  spaceId: z.string(), version: z.string(), actorId: z.string(), createdAt: z.string(),
 }).passthrough();
 const PolicyView = z.object({ policy: VersionedPolicy.nullable(), history: z.array(VersionedPolicy) });
 const Grant = z.object({
@@ -267,6 +284,7 @@ const busy = ref(false);
 const error = ref('');
 const success = ref('');
 const password = ref('');
+const assistanceMaximum = ref<z.infer<typeof AssistanceMaximum>>('analysis_only');
 const reauthenticated = ref(false);
 const reauthenticating = ref(false);
 const createName = ref('');
@@ -353,8 +371,8 @@ async function loadControls(): Promise<void> {
   agents.value = agentResult?.agents ?? null;
   delegations.value = delegationResult?.delegations ?? null;
   credentials.value = credentialResult?.credentials ?? null;
-  audit.value = auditResult;
   connectionControl.value = connectionResult;
+  assistanceMaximum.value = policyResult?.policy?.assistanceMaximum ?? 'analysis_only';
   if (policyResult?.policy) {
     minimumApprovers.value = policyResult.policy.minimumApprovers;
     thresholdsJson.value = JSON.stringify(policyResult.policy.approvalThresholds, null, 2);
@@ -525,6 +543,7 @@ async function savePolicy(): Promise<void> {
           minimumApprovers: minimumApprovers.value,
           approvalThresholds: parseJson(thresholdsJson.value, 'Approval thresholds'),
           operationApprovers: parseJson(operationApproversJson.value, 'Operation approvers'),
+          assistanceMaximum: assistanceMaximum.value,
         },
       },
     });

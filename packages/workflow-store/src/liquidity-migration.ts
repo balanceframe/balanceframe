@@ -73,6 +73,9 @@ export function migrateSessionCompletion(db: Database): void {
       evidence_id TEXT,
       initiated_at TEXT NOT NULL,
       finished_at TEXT,
+      authorization_hash TEXT NOT NULL DEFAULT '',
+      claim_set_revision TEXT NOT NULL DEFAULT '',
+      approval_ids TEXT NOT NULL DEFAULT '[]',
       PRIMARY KEY(budget_id,proposal_id),
       UNIQUE(budget_id,parent_id)
     );
@@ -89,6 +92,26 @@ export function migrateSessionCompletion(db: Database): void {
       PRIMARY KEY(budget_id,evidence_id)
     );
   `);
+  addSessionCompletionWriteFenceColumns(db);
+}
+
+function addSessionCompletionWriteFenceColumns(db: Database): void {
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(session_completion_writes)').all() as { name: string }[])
+      .map(({ name }) => name),
+  );
+  for (const [name, definition] of [
+    ['authorization_hash', "TEXT NOT NULL DEFAULT ''"],
+    ['claim_set_revision', "TEXT NOT NULL DEFAULT ''"],
+    ['approval_ids', "TEXT NOT NULL DEFAULT '[]'"],
+  ] as const)
+    if (!columns.has(name))
+      db.exec(`ALTER TABLE session_completion_writes ADD COLUMN ${name} ${definition}`);
+}
+
+/** Adds fail-closed execution fences to persisted completion intents. */
+export function migrateSessionCompletionWriteFences(db: Database): void {
+  addSessionCompletionWriteFenceColumns(db);
 }
 
 /** Upgrades previously persisted prospective scopes to distinct economic identities. */

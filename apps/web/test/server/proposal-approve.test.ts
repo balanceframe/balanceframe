@@ -543,6 +543,20 @@ describe('POST proposal approval authorization', () => {
     expect(noProof.status).toBe('error');
     expect(await store.findActiveApprovals(proposal.id)).toEqual([]);
   });
+  it('does not let a machine principal create human approval state', async () => {
+    grantProposerFor('create_rule');
+    grant(APPROVER_ID, approverMembershipId, 'rule:approve', 'budget', budgetId);
+    for (const [kind, id] of proposalResources('create_rule'))
+      grant(APPROVER_ID, approverMembershipId, 'rule:approve', kind, id);
+    const proposal = await seed();
+    const request = makeEvent(proposal.id, { payloadHash: proposal.payloadHash });
+    Object.assign(request.context.auth, { principalType: 'agent' });
+
+    const response = await handler(request);
+
+    expect(response.status).toBe('error');
+    expect(await store.findActiveApprovals(proposal.id)).toEqual([]);
+  });
 
   it('rejects malformed and forged displayed hashes without creating approval state', async () => {
     grantProposerFor('create_rule');

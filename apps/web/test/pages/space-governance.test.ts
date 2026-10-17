@@ -1,3 +1,4 @@
+import type { VersionedGovernancePolicy } from '@balanceframe/workflow-store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { computed, onMounted, ref } from 'vue';
@@ -16,6 +17,7 @@ const proofFetch = vi.fn();
 const pages: VueWrapper[] = [];
 let memberships: Record<string, unknown>[];
 let policyConflict = false;
+let currentPolicy: VersionedGovernancePolicy;
 
 function ok(result: unknown) {
   return { status: 'ok', result, error: null };
@@ -29,6 +31,7 @@ function mountPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.mockReset();
   proofFetch.mockReset();
   proofFetch.mockResolvedValue(new Response(JSON.stringify({ status: 'success' })));
   vi.stubGlobal('fetch', proofFetch);
@@ -39,6 +42,11 @@ beforeEach(() => {
     createdAt: '2098-01-01T00:00:00.000Z', origin: 'created',
   }];
   policyConflict = false;
+  currentPolicy = {
+    minimumApprovers: 1, approvalThresholds: [], operationApprovers: {},
+    assistanceMaximum: 'analysis_only', spaceId: 'space-selected', version: '1',
+    actorId: 'owner', createdAt: '2098-01-01T00:00:00.000Z',
+  };
   api.mockImplementation(async (url, options) => {
     if (url === '/api/spaces') return ok({
       spaces: [{ id: 'space-selected', name: 'Household', kind: 'shared' }],
@@ -65,8 +73,16 @@ beforeEach(() => {
       result: null,
       error: { code: 'POLICY_VERSION_CONFLICT', message: 'The governance version changed. Reload the current state and retry.', retryable: false },
     };
+    if (url.endsWith('/policy') && options?.method === 'PUT') {
+      currentPolicy = {
+        ...currentPolicy,
+        ...(options.body?.policy as Partial<VersionedGovernancePolicy>),
+        spaceId: 'space-selected', version: '2', actorId: 'owner', createdAt: '2098-01-01T00:00:00.000Z',
+      };
+      return ok({ policy: currentPolicy });
+    }
     if (url.endsWith('/policy') && options?.method !== 'PUT') return ok({
-      policy: { minimumApprovers: 1, approvalThresholds: [], operationApprovers: {}, spaceId: 'space-selected', version: '1', actorId: 'owner', createdAt: '2098-01-01T00:00:00.000Z' },
+      policy: currentPolicy,
       history: [],
     });
     if (url.endsWith('/grants')) return ok({ grants: [] });
@@ -156,6 +172,58 @@ describe('space governance page', () => {
       options?.method === 'PUT' && options.body?.expectedVersion === '1')).toBe(true);
     expect(page.text()).toContain('The governance version changed. Reload the current state and retry.');
   });
+  it('fails closed to analysis_only for a policy response without an assistance ceiling', async () => {
+    const { assistanceMaximum, ...legacyPolicy } = currentPolicy;
+    expect(assistanceMaximum).toBe('analysis_only');
+    currentPolicy = legacyPolicy;
+    const page = mountPage();
+    await flushPromises();
+    const policyForm = page.findAll('form').find((form) => form.text().includes('Save policy version'));
+    if (!policyForm) throw new Error('Missing policy form');
+    expect(policyForm.get<HTMLSelectElement>('[aria-label="Maximum consequential-action assistance"]').element.value)
+      .toBe('analysis_only');
+  });
+
+  it('exposes the authoritative consequential-action ceiling and saves it in the versioned policy', async () => {
+    const page = mountPage();
+    await flushPromises();
+    const policyForm = page.findAll('form').find((form) => form.text().includes('Save policy version'));
+    if (!policyForm) throw new Error('Missing policy form');
+    const mode = policyForm.get<HTMLSelectElement>('[aria-label="Maximum consequential-action assistance"]');
+    expect(mode.element.value).toBe('analysis_only');
+    await mode.setValue('create_approval_proposal');
+    await page.get('#governance-password').setValue('one-time-password');
+    await page.get('button[aria-label="Reauthenticate for space changes"]').trigger('click');
+    await flushPromises();
+    await policyForm.trigger('submit');
+    await flushPromises();
+    const mutation = api.mock.calls.find(([url, options]) =>
+      url === '/api/spaces/space-selected/policy' && options?.method === 'PUT');
+    expect(mutation?.[1]?.body).toMatchObject({
+      expectedVersion: '1',
+      policy: { assistanceMaximum: 'create_approval_proposal' },
+    });
+  });
+
+  it('preserves the existing assistance ceiling when saving another governance policy field', async () => {
+    currentPolicy = { ...currentPolicy, assistanceMaximum: 'execute_approved_actions' };
+    const page = mountPage();
+    await flushPromises();
+    const policyForm = page.findAll('form').find((form) => form.text().includes('Save policy version'));
+    if (!policyForm) throw new Error('Missing policy form');
+    await policyForm.get('input[type="number"]').setValue('2');
+    await page.get('#governance-password').setValue('one-time-password');
+    await page.get('button[aria-label="Reauthenticate for space changes"]').trigger('click');
+    await flushPromises();
+    await policyForm.trigger('submit');
+    await flushPromises();
+    const mutation = api.mock.calls.find(([url, options]) =>
+      url === '/api/spaces/space-selected/policy' && options?.method === 'PUT');
+    expect(mutation?.[1]?.body).toMatchObject({
+      policy: { minimumApprovers: 2, assistanceMaximum: 'execute_approved_actions' },
+    });
+  });
+
   it('uses explicit disposable-demo confirmation instead of sending CONFIRM as an account password', async () => {
     vi.stubGlobal('useRuntimeConfig', () => ({ public: { demoMode: true } }));
     proofFetch.mockResolvedValueOnce(new Response(JSON.stringify({

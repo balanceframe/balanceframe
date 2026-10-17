@@ -68,7 +68,9 @@ export default defineEventHandler(async (event) => {
       ? 'categorization:execute'
       : proposal.operation === 'create_rule' || proposal.operation === 'update_rule' || proposal.operation === 'delete_rule'
         ? 'rule:execute'
-        : null;
+        : proposal.operation === 'consequential_action'
+          ? 'consequential_action:execute'
+          : null;
     if (!capability) {
       setResponseStatus(event, 404);
       return errorEnvelope('PROPOSAL_NOT_FOUND', 'Proposal not found.', null, false, requestId);

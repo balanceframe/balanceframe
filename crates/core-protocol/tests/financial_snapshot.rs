@@ -115,6 +115,9 @@ fn observation(
         scope,
         state,
         observed_at: observed_at.map(str::to_owned),
+        content_hash: None,
+        version: None,
+        ledger_effect: None,
         evidence: evidence
             .iter()
             .map(|(evidence_id, kind)| EvidenceReference {

@@ -7,6 +7,7 @@
  * Usage:
  *   balanceframe transactions pending-review --json
  *   balanceframe reviews show REVIEW_ID --json
+ *   balanceframe proposals action --action-file ACTION.json --json
  *   balanceframe proposals approve PROPOSAL_ID --payload-hash HASH --json
  *   balanceframe reviews approve-bulk REVIEW_ID... --payload-hashes JSON --json
  *   balanceframe spaces policy set --expected-version VERSION --policy JSON --json
@@ -38,7 +39,7 @@ export interface CliCommand {
   proposalId?: string;
   /** Rule ID for rule show command. */
   ruleId?: string;
-  /** Extra command options parsed from flags (proposals create, audit query). */
+  /** Extra command options parsed from flags (proposal and audit commands). */
   options?: Record<string, string>;
 }
 
@@ -435,6 +436,7 @@ export function parseArgs(argv: string[]): ParseResult {
     '--sort': true,
     '--detailed': true,
     '--category-group': true,
+    '--action-file': true,
     '--payload-hashes': true,
     '--payload-hash': true,
     '--kind': true,
@@ -1032,6 +1034,16 @@ export function parseArgs(argv: string[]): ParseResult {
   // Proposal commands
   // -----------------------------------------------------------------------
 
+  if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'action') {
+    return parseFlagCommand(
+      'proposals.action',
+      format,
+      normalized,
+      cleanArgs.slice(2),
+      ['action-file'],
+      ['action-file'],
+    );
+  }
   if (cleanArgs[0] === 'proposals' && cleanArgs[1] === 'create') {
     const options: Record<string, string> = {};
     const remaining = cleanArgs.slice(2);

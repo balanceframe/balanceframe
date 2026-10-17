@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { loadNativeBindings } from './composition.js';
 import type { ConnectionManager, ConnectedBudget } from './connection-manager.js';
 import type {
   WorkflowStore,
@@ -22,6 +23,8 @@ import type {
   AccountAwareSpendabilityResult,
   FinancialSnapshot,
   DecisionCard,
+  DecisionCardAdjustment,
+  DecisionCardWarningThreshold,
   DecisionCardItem,
   DecisionCardRequest,
   LiquidityPurchaseItem,
@@ -46,7 +49,11 @@ import {
   mergeUserAttestedLiquidityObservations,
   persistedUserAttestedLiquidityObservationSchema,
 } from '@balanceframe/actual-adapter';
-import type { ManualTransactionInput, ManualTransactionResult } from '@balanceframe/actual-adapter';
+import type {
+  ManualTransactionInput,
+  ManualTransactionPrecondition,
+  ManualTransactionResult,
+} from '@balanceframe/actual-adapter';
 import type {
   PublicDecisionCard,
   PublicLiquidityConfiguration,
@@ -77,7 +84,26 @@ import {
   transferProposalInputSchema,
 } from './liquidity-inputs.js';
 import type { SpendSessionIntent } from './liquidity-inputs.js';
-import { loadNativeBindings } from './composition.js';
+export type ConsequentialActionDecision =
+  | { readonly origin: { readonly sessionId: string; readonly sessionVersion: number } }
+  | {
+      readonly accountId: string | null;
+      readonly items: SpendSessionIntent['items'];
+      readonly adjustments?: DecisionCardAdjustment[];
+      readonly warningThresholds?: DecisionCardWarningThreshold[];
+      readonly expiresAt?: string;
+    };
+export interface ConsequentialActionCapture {
+  readonly snapshot: FinancialSnapshot;
+  readonly transferSettlementRecords: readonly TransferSettlementRecord[] | null;
+  readonly policy: LiquidityPolicyRecord | null;
+  readonly claimSet: LiquidityClaimSet;
+  readonly now: string;
+  readonly projector: LiquidityProjector;
+  /** Exact persisted record for internal source binding; never part of public projections. */
+  readonly supplemental: SupplementalFactsRecord | null;
+  decisionCardRequest(decision: ConsequentialActionDecision): DecisionCardRequest;
+}
 import {
   InAppChannelAdapter,
   NotificationRuntime,
@@ -119,6 +145,63 @@ export class LiquidityService {
   private readonly clock: () => Date;
   constructor(private readonly options: LiquidityServiceOptions) {
     this.clock = options.clock ?? (() => new Date());
+  }
+  /** Reuses the canonical trusted source and Decision Card path for governed actions. */
+  withConsequentialActionCapture<T>(
+    actor: LiquidityActor,
+    operation: (capture: ConsequentialActionCapture, connected: ConnectedBudget) => Promise<T>,
+    options?: { mutation?: boolean },
+  ): Promise<T> {
+    const manager = options?.mutation ? this.options.mutationConnectionManager : undefined;
+    if (options?.mutation && !manager) throw new Error('Mutation connection unavailable');
+    return this.capture(actor, async (capture, connected) => {
+      const decisionCardRequest = (decision: ConsequentialActionDecision): DecisionCardRequest => {
+        let items: DecisionCardItem[];
+        let expiresAt: string | undefined;
+        let cart: Pick<SpendSession, 'adjustments' | 'warningThresholds'> | undefined;
+        if ('origin' in decision) {
+          const session = this.options.store.liquidity.getSpendSession({
+            ...actor, id: decision.origin.sessionId, now: capture.now,
+          });
+          if (
+            !session || session.version !== decision.origin.sessionVersion ||
+            Date.parse(session.expiresAt) <= Date.parse(capture.now)
+          ) throw new Error('Saved session unavailable or changed');
+          items = this.sessionItems(actor, capture, session);
+          expiresAt = session.expiresAt;
+          cart = session;
+        } else {
+          expiresAt = decision.expiresAt;
+          const canonicalItems = this.items(actor, capture, decision.items, decision.accountId);
+          items = canonicalItems.map((item, index) => {
+            const source = decision.items[index];
+            if (!source) throw new Error('Decision item unavailable');
+            return {
+              ...item,
+              priority: source.priority ?? 'planned',
+              ...(source.quantity === undefined ? {} : { quantity: source.quantity }),
+              ...(source.categoryAllocations ? { categoryAllocations: source.categoryAllocations } : {}),
+              ...(source.priceProvenance ? { priceProvenance: source.priceProvenance } : {}),
+              ...(source.barcode ? { barcode: source.barcode } : {}),
+            };
+          });
+          cart = decision;
+        }
+        const request = this.decisionCardRequest(capture, items, expiresAt, cart);
+        if (!request) throw new Error('Current financial decision policy unavailable');
+        return request;
+      };
+      return operation({
+        snapshot: capture.snapshot,
+        transferSettlementRecords: capture.records,
+        policy: capture.state.policy,
+        claimSet: capture.state.claimSet,
+        now: capture.now,
+        projector: capture.projector,
+        supplemental: capture.state.supplemental,
+        decisionCardRequest,
+      }, connected);
+    }, false, manager ?? this.options.connectionManager);
   }
   private require(
     actor: LiquidityActor,
@@ -519,12 +602,12 @@ export class LiquidityService {
       return evaluated.view;
     });
   }
-  private nativeDecisionCard(
+  private decisionCardRequest(
     capture: Capture,
     items: DecisionCardItem[],
     expiresAt?: string,
     cart?: Pick<SpendSession, 'adjustments' | 'warningThresholds'>,
-  ): DecisionCard | null {
+  ): DecisionCardRequest | null {
     const input = this.input(capture, { kind: 'purchases', items }, expiresAt);
     if (!input) return null;
     const configured = new Map(
@@ -555,7 +638,7 @@ export class LiquidityService {
         });
       }
     }
-    const request = decisionCardRequestSchema.parse({
+    return decisionCardRequestSchema.parse({
       financialSnapshot: input.financialSnapshot,
       context: input.context,
       liquidityPolicy: input.liquidityPolicy,
@@ -570,9 +653,17 @@ export class LiquidityService {
       correlationId: randomUUID(),
       decisionId: randomUUID(),
     } satisfies DecisionCardRequest);
-    return decisionCardSchema.parse(
+  }
+  private nativeDecisionCard(
+    capture: Capture,
+    items: DecisionCardItem[],
+    expiresAt?: string,
+    cart?: Pick<SpendSession, 'adjustments' | 'warningThresholds'>,
+  ): DecisionCard | null {
+    const request = this.decisionCardRequest(capture, items, expiresAt, cart);
+    return request ? decisionCardSchema.parse(
       JSON.parse(this.options.native.evaluateDecisionCard(JSON.stringify(request))) as unknown,
-    );
+    ) : null;
   }
   private decisionCard(
     capture: Capture,
@@ -1559,6 +1650,11 @@ export class LiquidityService {
         session.governancePolicyVersion !== actor.governancePolicyVersion
       )
         return { valid: false, reason: 'Current session authorization changed' };
+      if (
+        capture.state.policy?.policy.version !== context.policy.policy.version ||
+        capture.state.policy?.governancePolicyVersion !== context.policy.governancePolicyVersion
+      )
+        return { valid: false, reason: 'Captured financial or governance policy changed' };
       const importedCandidateReview =
         allowImportedCandidateReview &&
         this.completionImportedCandidates(
@@ -1869,7 +1965,10 @@ export class LiquidityService {
     this.requireCompletionResources(actor, preflight.payload, 'confirmation');
     return this.capture(actor, async (capture, connected) => {
       const writable = connected.connector as typeof connected.connector & {
-        createManualTransaction?: (input: ManualTransactionInput) => Promise<ManualTransactionResult>;
+        createManualTransaction?: (
+          input: ManualTransactionInput,
+          precondition: ManualTransactionPrecondition,
+        ) => Promise<ManualTransactionResult>;
       };
       if (typeof writable.createManualTransaction !== 'function')
         throw new Error('Mutation connection unavailable');
@@ -1884,6 +1983,10 @@ export class LiquidityService {
       }, this.completionValidator(actor, capture, original.payload, true));
       if (!started.acquiredWriteIntent || !started.payload)
         return this.completionProjection(actor, capture, started.proposal);
+      const intentId = started.intentId;
+      const expectedClaimSetRevision = started.claimSetRevision;
+      if (!intentId || !expectedClaimSetRevision)
+        throw new Error('Acquired completion write intent is missing its exact fence');
       const input = started.payload.manualInput;
       const importedCandidates = this.completionImportedCandidates(
         capture.snapshot,
@@ -1891,6 +1994,7 @@ export class LiquidityService {
         started.payload.categoryCharges[0]?.amount.currency ?? '',
       );
       let result: ManualTransactionResult;
+      let prewriteFenceDenied = false;
       if (importedCandidates.length > 0) {
         const ambiguous = importedCandidates.length > 1;
         result = {
@@ -1907,10 +2011,31 @@ export class LiquidityService {
       } else {
         try {
           const { splits, ...parentInput } = input;
+          const assertExecutionCurrent = (): void => {
+            try {
+              this.options.store.liquidity.validateSessionCompletionWrite({
+                ...actor,
+                proposalId,
+                payloadHash: intent.payloadHash,
+                expectedVersion: started.proposal.version,
+                expectedClaimSetRevision,
+                idempotencyKey: intent.idempotencyKey,
+                now: this.clock().toISOString(),
+                intentId,
+              });
+            } catch (error) {
+              prewriteFenceDenied = true;
+              throw error;
+            }
+          };
+          const precondition: ManualTransactionPrecondition = {
+            budgetId: actor.budgetId,
+            assertExecutionCurrent,
+          };
           result = await writable.createManualTransaction({
             ...parentInput,
             ...(splits ? { splits: splits.map((split) => ({ ...split })) } : {}),
-          });
+          }, precondition);
         } catch {
           result = {
             success: false, verified: false, parentId: input.parentId,
@@ -1922,12 +2047,20 @@ export class LiquidityService {
       const finished = this.options.store.liquidity.finishSessionCompletionWrite({
         ...actor, proposalId, payloadHash: intent.payloadHash,
         expectedVersion: started.proposal.version,
-        idempotencyKey: `finish:${intent.idempotencyKey}`, now: capture.now,
+        expectedClaimSetRevision,
+        writeIntentIdempotencyKey: intent.idempotencyKey,
+        idempotencyKey: `finish:${intent.idempotencyKey}`,
+        now: this.clock().toISOString(),
+        intentId,
         result: result.success
           ? { success: true, verified: true, parentId: result.parentId,
               transactionId: result.transactionId }
-          : { success: false, verified: false, parentId: result.parentId,
-              code: result.code, reviewRequired: true },
+          : prewriteFenceDenied
+            ? { success: false, verified: false, parentId: result.parentId,
+                code: 'PREWRITE_DENIED', reviewRequired: true,
+                dispatchOutcome: 'not_dispatched' }
+            : { success: false, verified: false, parentId: result.parentId,
+                code: result.code, reviewRequired: true },
       });
       return this.completionProjection(actor, capture, finished);
     }, false, manager);

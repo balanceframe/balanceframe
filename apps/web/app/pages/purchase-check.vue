@@ -105,8 +105,8 @@
           </label>
 
           <p class="text-xs text-gray-500 dark:text-gray-400 sm:col-span-2">
-            Leave timing blank for an immediate check at the server's evaluation time. Set a future
-            purchase time to review a transfer; an omitted payment deadline uses the purchase time.
+            Leave timing blank to evaluate at request time. Set a future purchase time to review a
+            transfer; an omitted payment deadline uses the purchase time.
           </p>
 
           <div class="flex flex-wrap items-center gap-3 sm:col-span-2">
@@ -131,8 +131,11 @@
         v-if="card"
         :card="card"
         :catalog="catalog ?? undefined"
+        :proposal-disabled="proposalBusy || !evaluatedDecision"
         @plan-transfer="previewTransfer"
+        @propose="proposeAction"
       />
+      <p v-if="proposalError" role="alert" class="my-3 text-red-600">{{ proposalError }}</p>
       <p v-if="transferError" role="alert" class="my-3 text-red-600">{{ transferError }}</p>
       <p v-if="transferLoading" role="status">Preparing read-only transfer review…</p>
       <TransferPlanReview
@@ -148,6 +151,7 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from 'vue';
+import type { ConsequentialActionIntent } from '@balanceframe/protocol-generated';
 import type { PublicDecisionCard, PublicLiquidityView, PublicTransferPreview } from '@balanceframe/application';
 import DecisionCardView from '../components/DecisionCardView.vue';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
@@ -240,8 +244,26 @@ const purchaseAt = ref('');
 const requiredBy = ref('');
 const transferPreview = ref<PublicTransferPreview | null>(null);
 const transferLoading = ref(false);
+const proposalBusy = ref(false);
+const proposalError = ref('');
+const evaluatedDecision = ref<EvaluatedPurchaseDecision | null>(null);
 const transferError = ref('');
 const demoMode = ref(demoModeConfigured());
+interface EvaluatedPurchaseDecision {
+  accountId: string | null;
+  items: [{
+    id: 'purchase';
+    categoryId: string;
+    amount: { minorUnits: string; currency: string };
+    accountId: string | null;
+    purchaseAt: string;
+    requiredBy: string;
+    priority: 'planned';
+  }];
+  adjustments: [];
+  warningThresholds: [];
+  expiresAt: string;
+}
 let evaluationRevision = 0;
 let catalogRequestRevision = 0;
 let demoEntryRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -250,9 +272,14 @@ watch(
   [categoryId, amountStr, currency, accountId, purchaseAt, requiredBy],
   () => {
     evaluationRevision += 1;
+    loading.value = false;
+    transferLoading.value = false;
+    error.value = null;
     card.value = null;
+    evaluatedDecision.value = null;
     transferPreview.value = null;
     transferError.value = '';
+    proposalError.value = '';
   },
   { flush: 'sync' },
 );
@@ -428,9 +455,9 @@ async function previewTransfer(_purchaseItemId?: string) {
     });
     if (revision === evaluationRevision) transferPreview.value = preview;
   } catch (e) {
-    transferError.value = liquidityError(e);
+    if (revision === evaluationRevision) transferError.value = liquidityError(e);
   } finally {
-    transferLoading.value = false;
+    if (revision === evaluationRevision) transferLoading.value = false;
   }
 }
 
@@ -439,36 +466,92 @@ const canEvaluate = computed(() =>
 );
 
 async function evaluate() {
+  const revision = ++evaluationRevision;
   loading.value = true;
   error.value = null;
   card.value = null;
+  evaluatedDecision.value = null;
   transferPreview.value = null;
-  const revision = evaluationRevision;
   try {
-    const query: Record<string, string> = {
-      categoryId: String(categoryId.value ?? '').trim(),
-      amount: String(amountStr.value ?? '').trim(),
+    const category = String(categoryId.value ?? '').trim();
+    const minorUnits = String(amountStr.value ?? '').trim();
+    const normalizedCurrency = String(currency.value ?? '').trim() || 'USD';
+    const selectedAccountId = String(accountId.value ?? '').trim() || null;
+    const evaluatedAt = new Date().toISOString();
+    const purchaseTime = purchaseAt.value
+      ? new Date(`${purchaseAt.value}Z`).toISOString()
+      : evaluatedAt;
+    const deadline = requiredBy.value
+      ? new Date(`${requiredBy.value}Z`).toISOString()
+      : purchaseTime;
+    const snapshot = {
+      categoryId: category,
+      amount: { minorUnits, currency: normalizedCurrency },
+      accountId: selectedAccountId,
+      purchaseAt: purchaseTime,
+      requiredBy: deadline,
     };
-    const normalizedCurrency = String(currency.value ?? '').trim();
-    const normalizedAccountId = String(accountId.value ?? '').trim();
-    if (normalizedCurrency) query.currency = normalizedCurrency;
-    if (normalizedAccountId) query.accountId = normalizedAccountId;
-    if (purchaseAt.value) query.purchaseAt = new Date(`${purchaseAt.value}Z`).toISOString();
-    if (requiredBy.value) query.requiredBy = new Date(`${requiredBy.value}Z`).toISOString();
+    const query: Record<string, string> = {
+      categoryId: snapshot.categoryId,
+      amount: snapshot.amount.minorUnits,
+      currency: snapshot.amount.currency,
+      purchaseAt: snapshot.purchaseAt,
+      requiredBy: snapshot.requiredBy,
+    };
+    if (snapshot.accountId) query.accountId = snapshot.accountId;
 
     const response = await $fetch<{
       status: string;
       result: { card: PublicDecisionCard } | null;
     }>('/api/purchase/evaluate', { query });
+    if (revision !== evaluationRevision) return;
     if (response.status !== 'ok' || !response.result?.card) {
       error.value = { code: 'EVAL_FAILED', message: 'Evaluation returned no Decision Card.' };
-    } else if (revision === evaluationRevision) {
-      card.value = response.result.card;
+    } else {
+      const evaluatedCard = response.result.card;
+      card.value = evaluatedCard;
+      evaluatedDecision.value = evaluatedCard.expiresAt
+        ? {
+            accountId: snapshot.accountId,
+            items: [{
+              id: 'purchase',
+              categoryId: snapshot.categoryId,
+              amount: snapshot.amount,
+              accountId: snapshot.accountId,
+              purchaseAt: snapshot.purchaseAt,
+              requiredBy: snapshot.requiredBy,
+              priority: 'planned',
+            }],
+            adjustments: [],
+            warningThresholds: [],
+            expiresAt: evaluatedCard.expiresAt,
+          }
+        : null;
     }
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: liquidityError(e) };
+    if (revision === evaluationRevision)
+      error.value = { code: 'FETCH_ERROR', message: liquidityError(e) };
   } finally {
-    loading.value = false;
+    if (revision === evaluationRevision) loading.value = false;
+  }
+}
+
+async function proposeAction(action: Extract<ConsequentialActionIntent, { kind: 'reallocation' }>) {
+  const decision = evaluatedDecision.value;
+  if (!decision || proposalBusy.value) return;
+  proposalBusy.value = true;
+  proposalError.value = '';
+  try {
+    const result = await liquidityRequest<{ proposal: { id: string } }>(
+      '/api/proposal/action',
+      'POST',
+      { action, decision },
+    );
+    await navigateTo(`/proposals/${encodeURIComponent(result.proposal.id)}`);
+  } catch (cause) {
+    proposalError.value = liquidityError(cause);
+  } finally {
+    proposalBusy.value = false;
   }
 }
 </script>

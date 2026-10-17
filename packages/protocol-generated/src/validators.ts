@@ -998,6 +998,7 @@ export const observationKindSchema = z.enum([
   'duplicate_candidate',
   'transfer_ambiguity',
   'reconciliation',
+  'economic_event_resolution',
   'currency_compatibility',
 ]);
 
@@ -1005,6 +1006,7 @@ export const observationStateSchema = z.enum([
   'fresh',
   'stale',
   'unavailable',
+  'resolved',
   'unknown',
   'included',
   'complete',
@@ -1014,15 +1016,76 @@ export const observationStateSchema = z.enum([
   'incompatible',
 ]);
 
+export const economicEventLedgerEffectSchema = z
+  .object({
+    accountId: z.string().min(1),
+    amount: moneySchema.strict(),
+    date: canonicalDateSchema,
+    categoryId: z.string().min(1).nullable(),
+    payeeName: z.string().nullable(),
+    notes: z.string().nullable(),
+    splits: z.array(z.object({
+      categoryId: z.string().min(1),
+      amount: moneySchema.strict(),
+    }).strict()),
+  })
+  .strict();
+
 export const sourceObservationSchema = z
   .object({
     kind: observationKindSchema,
     scope: decisionScopeSchema,
     state: observationStateSchema,
     observedAt: canonicalUtcTimestampSchema.nullable(),
+    contentHash: z.string().min(1).optional(),
+    version: z.string().min(1).optional(),
+    ledgerEffect: economicEventLedgerEffectSchema.optional(),
     evidence: z.array(evidenceReferenceSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((observation, context) => {
+    if (observation.kind === 'economic_event_resolution') {
+      if (observation.scope.kind !== 'transaction' || observation.scope.id.trim().length === 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Economic-event resolution must bind a nonempty transaction subject',
+          path: ['scope'],
+        });
+      }
+      if (
+        observation.state !== 'resolved' ||
+        observation.observedAt === null ||
+        observation.contentHash === undefined ||
+        observation.version === undefined ||
+        observation.ledgerEffect === undefined ||
+        observation.evidence.length === 0 ||
+        new Set(observation.evidence.map((reference) => reference.evidenceId)).size !==
+          observation.evidence.length ||
+        observation.evidence.some(
+          (reference) =>
+            reference.kind !== 'economic_event_resolution' ||
+            !reference.authorized ||
+            reference.redaction !== 'visible' ||
+            reference.evidenceId.trim().length === 0,
+        )
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Economic-event resolution requires current trusted content and evidence',
+        });
+      }
+    } else if (
+      observation.state === 'resolved' ||
+      observation.contentHash !== undefined ||
+      observation.version !== undefined ||
+      observation.ledgerEffect !== undefined
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Resolution metadata is only valid for economic-event resolutions',
+      });
+    }
+  });
 
 const financialSnapshotTransactionSchema = canonicalTransactionSchema.superRefine(
   (transaction, context) => {
@@ -1844,5 +1907,347 @@ export const decisionCardSchema = z
 
 export type DecisionCardRequest = z.infer<typeof decisionCardRequestSchema>;
 export type DecisionCard = z.infer<typeof decisionCardSchema>;
+const actionString = z.string().min(1);
+const actionHash = z.string().regex(/^[0-9a-f]{64}$/);
+const actionMoney = moneySchema.strict();
+const actionPositiveMoney = actionMoney.refine((value) => /^[1-9]\d*$/.test(value.minorUnits));
+const actionMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+const actionSplit = z.object({
+  categoryId: actionString,
+  amount: actionMoney,
+}).strict();
+
+const reallocationAssignment = z.object({
+  sourceCategoryId: actionString,
+  sourceAsOfMonth: actionMonth,
+  destinationCategoryId: actionString,
+  destinationAsOfMonth: actionMonth,
+  amount: actionPositiveMoney,
+}).strict();
+
+const manualTransactionIntent = z.object({
+  parentId: actionString,
+  correlationId: actionString,
+  accountId: actionString,
+  amount: actionMoney,
+  date: canonicalDateSchema,
+  categoryId: actionString.nullable(),
+  payeeName: z.string().nullable(),
+  notes: z.string().nullable(),
+  splits: z.array(actionSplit),
+}).strict();
+
+const atomicAction = z.union([
+  z.object({ kind: z.literal('reallocation'), assignments: z.array(reallocationAssignment).min(1) }).strict(),
+  z.object({ kind: z.literal('manual_transaction'), transaction: manualTransactionIntent }).strict(),
+  z.object({
+    kind: z.literal('evidence_projection'),
+    transaction: manualTransactionIntent,
+    evidenceIds: z.array(actionString).min(1),
+  }).strict(),
+  z.object({
+    kind: z.literal('wallet_materialization'),
+    walletId: actionString,
+    accountName: actionString,
+    currency: z.string().regex(/^[A-Z]{3}$/),
+  }).strict(),
+  z.object({
+    kind: z.literal('transfer'),
+    transferId: actionString,
+    correlationId: actionString,
+    sourceAccountId: actionString,
+    destinationAccountId: actionString,
+    amount: actionPositiveMoney,
+    date: canonicalDateSchema,
+  }).strict().refine((action) => action.sourceAccountId !== action.destinationAccountId),
+]);
+
+export const consequentialActionIntentSchema = z.union([
+  atomicAction,
+  z.object({
+    kind: z.literal('composite'),
+    actions: z.array(atomicAction).min(1),
+  }).strict(),
+]);
+
+const actionAccount = z.object({
+  accountId: actionString,
+  name: actionString,
+  onBudget: z.boolean(),
+  closed: z.boolean(),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  balance: actionMoney,
+}).strict();
+const actionCategory = z.object({ categoryId: actionString }).strict();
+const actionAssignment = z.object({
+  categoryId: actionString,
+  asOfMonth: actionMonth,
+  amount: actionMoney,
+}).strict();
+const actionWallet = z.object({ walletId: actionString, accountId: actionString }).strict();
+const actionLedgerTransaction = z.object({
+  parentId: actionString,
+  accountId: actionString,
+  amount: actionMoney,
+  date: canonicalDateSchema,
+  categoryId: actionString.nullable(),
+  payeeName: z.string().nullable(),
+  notes: z.string().nullable(),
+  splits: z.array(actionSplit),
+  transferAccountId: actionString.nullable(),
+}).strict();
+const actionTransfer = z.object({
+  transferId: actionString,
+  correlationId: actionString,
+  marker: actionString,
+  sourceTransactionId: actionString,
+  destinationTransactionId: actionString,
+  sourceAccountId: actionString,
+  destinationAccountId: actionString,
+  amount: actionPositiveMoney,
+  date: canonicalDateSchema,
+}).strict().refine((mapping) => mapping.sourceAccountId !== mapping.destinationAccountId);
+
+export const consequentialActionLedgerSchema = z.object({
+  accounts: z.array(actionAccount),
+  categories: z.array(actionCategory),
+  assignments: z.array(actionAssignment),
+  wallets: z.array(actionWallet),
+  transactions: z.array(actionLedgerTransaction),
+  transfers: z.array(actionTransfer),
+}).strict();
+
+const actionEvidence = z.object({
+  evidenceId: actionString,
+  subjectId: actionString,
+  state: z.enum(['resolved', 'stale', 'missing']),
+  contentHash: actionString.nullable(),
+  version: actionString.optional(),
+}).strict();
+
+const actionSupplementalField = z.enum([
+  'currency',
+  'kind',
+  'owned',
+  'currentLedgerConfirmed',
+  'holds',
+  'unsettledFlows',
+  'obligations',
+  'credit',
+]);
+const actionSupplementalFactPath = z.enum([
+  'currency',
+  'currencyEvidence',
+  'kind',
+  'kindEvidence',
+  'owned',
+  'ownershipEvidence',
+  'freshnessEvidence',
+  'holds',
+  'holdsEvidence',
+  'activityEvidence',
+  'scheduleEvidence',
+  'credit',
+]);
+const supplementalObservation = z.object({
+  accountId: actionString,
+  fields: z.array(actionSupplementalField).refine((fields) => new Set(fields).size === fields.length),
+  flowIds: z.array(actionString).refine((ids) => new Set(ids).size === ids.length),
+  obligationIds: z.array(actionString).refine((ids) => new Set(ids).size === ids.length),
+}).strict();
+const invalidatedSupplementalFacts = z.object({
+  accountId: actionString,
+  fields: z.array(actionSupplementalField).refine((fields) => new Set(fields).size === fields.length),
+  paths: z.array(actionSupplementalFactPath).refine((paths) => new Set(paths).size === paths.length),
+  flowIds: z.array(actionString).refine((ids) => new Set(ids).size === ids.length),
+  obligationIds: z.array(actionString).refine((ids) => new Set(ids).size === ids.length),
+}).strict();
+
+export const planConsequentialActionRequestSchema = z.object({
+  decisionCardRequest: decisionCardRequestSchema,
+  intent: consequentialActionIntentSchema,
+  currentLedger: consequentialActionLedgerSchema,
+  resolvedEvidence: z.array(actionEvidence),
+  financialPolicyVersion: actionString,
+  evaluatedAt: canonicalUtcTimestampSchema,
+  idempotencyKey: actionString,
+  supplementalObservations: z.array(supplementalObservation)
+    .refine((observations) => new Set(observations.map(({ accountId }) => accountId)).size === observations.length),
+}).strict();
+
+const manualPayeeBinding = z.object({
+  parentId: actionString,
+  payeeName: actionString,
+  existingPayeeId: actionString.nullable(),
+}).strict();
+
+const actionSource = z.object({
+  snapshotId: actionString,
+  contentHash: actionString,
+  policyVersion: actionString,
+  claimSetRevision: actionString,
+  financialPolicyVersion: actionString,
+  evidenceHash: actionHash,
+  invalidatedFreshnessAccounts: z.array(actionString).refine((accounts) => new Set(accounts).size === accounts.length),
+  manualPayeeBindings: z.array(manualPayeeBinding),
+  invalidatedSupplementalFacts: z.array(invalidatedSupplementalFacts)
+    .refine((facts) => new Set(facts.map(({ accountId }) => accountId)).size === facts.length),
+  accountsCoverageBefore: coverageStateSchema,
+  transactionsCoverageBefore: coverageStateSchema,
+  preconditionsHash: actionHash,
+  invariantsHash: actionHash,
+}).strict();
+
+const actionReason = z.enum([
+  'safe_reallocation',
+  'account_readiness',
+  'payment_route',
+  'transfer_need',
+  'reservation_commitment',
+  'evidence_resolution',
+]);
+const readinessState = z.enum(['ready', 'blocked']);
+const actionImpact = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('category_reallocation'),
+    sourceCategoryId: actionString,
+    sourceAsOfMonth: actionMonth,
+    destinationCategoryId: actionString,
+    destinationAsOfMonth: actionMonth,
+    amount: actionPositiveMoney,
+    sourceProtected: z.boolean(),
+    sourceAvailabilityBefore: actionMoney,
+    sourceAvailabilityAfter: actionMoney,
+    sourceUncommittedAvailabilityBefore: actionMoney,
+    sourceUncommittedAvailabilityAfter: actionMoney,
+    minimumRetained: actionMoney,
+    projectedRemainingNeed: actionMoney,
+    safeToRedirectAfter: actionMoney,
+    rationale: z.literal('donor_category_surplus_redirected'),
+  }).strict(),
+  z.object({ kind: z.literal('account_readiness'), accountId: actionString, state: readinessState }).strict(),
+  z.object({ kind: z.literal('payment_route'), accountId: actionString, state: readinessState }).strict(),
+  z.object({ kind: z.literal('transfer_need'), accountId: actionString, amount: actionPositiveMoney }).strict(),
+  z.object({
+    kind: z.literal('reservation_commitment'),
+    categoryId: actionString,
+    commitments: actionMoney,
+    reservations: actionMoney,
+  }).strict(),
+  z.object({
+    kind: z.literal('evidence_resolution'),
+    evidenceId: actionString,
+    state: z.literal('resolved'),
+  }).strict(),
+]);
+
+const actionPostcondition = z.union([
+  z.object({
+    kind: z.literal('assignment'),
+    categoryId: actionString,
+    asOfMonth: actionMonth,
+    amount: actionMoney,
+  }).strict(),
+  z.object({ kind: z.literal('account_balance'), accountId: actionString, balance: actionMoney }).strict(),
+  z.object({
+    kind: z.literal('transaction'),
+    parentId: actionString,
+    accountId: actionString,
+    amount: actionMoney,
+    date: canonicalDateSchema,
+    categoryId: actionString.nullable(),
+    payeeName: z.string().nullable(),
+    notes: z.string().nullable(),
+    splits: z.array(actionSplit),
+  }).strict(),
+  z.object({
+    kind: z.literal('wallet_mapping'),
+    walletId: actionString,
+    accountName: actionString,
+    onBudget: z.literal(true),
+    closed: z.literal(false),
+    openingBalance: actionMoney,
+  }).strict(),
+  z.object({
+    kind: z.literal('transfer_ledger_entry'),
+    transferId: actionString,
+    correlationId: actionString,
+    sourceAccountId: actionString,
+    destinationAccountId: actionString,
+    amount: actionPositiveMoney,
+    date: canonicalDateSchema,
+  }).strict().refine((value) => value.sourceAccountId !== value.destinationAccountId),
+]);
+
+const dispatchPrecondition = z.object({
+  atomIndex: z.number().int().nonnegative(),
+  accountBalances: z.array(z.object({
+    accountId: actionString,
+    balance: actionMoney,
+  }).strict()).refine((balances) => new Set(balances.map(({ accountId }) => accountId)).size === balances.length),
+  assignments: z.array(z.object({
+    categoryId: actionString,
+    asOfMonth: actionMonth,
+    amount: actionMoney,
+    postAmount: actionMoney,
+  }).strict()).refine((assignments) =>
+    new Set(assignments.map(({ categoryId, asOfMonth }) => `${categoryId}\u0000${asOfMonth}`)).size === assignments.length),
+}).strict();
+
+export const consequentialActionPlanSchema = z.object({
+  version: z.literal('1'),
+  action: consequentialActionIntentSchema,
+  source: actionSource,
+  evidenceReferences: z.array(actionEvidence),
+  expiresAt: canonicalUtcTimestampSchema,
+  idempotencyKey: actionString,
+  reasonCodes: z.array(actionReason),
+  impacts: z.array(actionImpact),
+  expectedPostconditions: z.array(actionPostcondition),
+  dispatchPreconditions: z.array(dispatchPrecondition).refine((preconditions) =>
+    preconditions.every((precondition, index) =>
+      index === 0 || preconditions[index - 1]!.atomIndex < precondition.atomIndex)),
+  actionHash,
+}).strict();
+
+export const verifyConsequentialActionRequestSchema = z.object({
+  plan: consequentialActionPlanSchema,
+  phase: z.enum(['preconditions', 'postconditions']),
+  decisionCardRequest: decisionCardRequestSchema,
+  currentLedger: consequentialActionLedgerSchema,
+  resolvedEvidence: z.array(actionEvidence),
+  evaluatedAt: canonicalUtcTimestampSchema,
+  financialPolicyVersion: actionString,
+}).strict();
+
+export const consequentialActionVerificationSchema = z.object({
+  valid: z.boolean(),
+  reason: z.enum([
+    'expired',
+    'source_changed',
+    'evidence_changed',
+    'policy_changed',
+    'claims_changed',
+    'target_changed',
+    'postcondition_mismatch',
+    'invalid_plan',
+  ]).nullable(),
+  actionHash,
+}).strict().superRefine((result, context) => {
+  if (result.valid !== (result.reason === null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Verification validity and reason do not agree',
+      path: ['reason'],
+    });
+  }
+});
+
+export type ConsequentialActionIntent = z.infer<typeof consequentialActionIntentSchema>;
+export type ConsequentialActionLedger = z.infer<typeof consequentialActionLedgerSchema>;
+export type PlanConsequentialActionRequest = z.infer<typeof planConsequentialActionRequestSchema>;
+export type ConsequentialActionPlan = z.infer<typeof consequentialActionPlanSchema>;
+export type VerifyConsequentialActionRequest = z.infer<typeof verifyConsequentialActionRequestSchema>;
+export type ConsequentialActionVerification = z.infer<typeof consequentialActionVerificationSchema>;
 
 export * from './merchant-validators.ts';
