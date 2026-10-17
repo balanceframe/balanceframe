@@ -3883,10 +3883,12 @@ fn reverse_action_in_value(
                     account_name,
                     currency,
                 )?;
-                ledger["accounts"]
-                    .as_array_mut()
-                    .ok_or("account_collection_missing")?
-                    .remove(account_index);
+                std::vec::Vec::remove(
+                    ledger["accounts"]
+                        .as_array_mut()
+                        .ok_or("account_collection_missing")?,
+                    account_index,
+                );
                 ledger["wallets"]
                     .as_array_mut()
                     .ok_or("wallet_mapping_missing")?
