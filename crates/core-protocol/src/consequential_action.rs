@@ -3841,14 +3841,14 @@ fn reverse_action_in_value(
                             .to_owned(),
                     )
                 };
-                let (account_index, account) = {
+                let account = {
                     let accounts = ledger["accounts"]
                         .as_array()
                         .ok_or("account_collection_missing")?;
                     let index = unique_row_index(accounts, |row| {
                         row["accountId"].as_str() == Some(&account_id)
                     })?;
-                    (index, accounts[index].clone())
+                    accounts[index].clone()
                 };
                 let (balance, balance_currency) = parse_money(&account["balance"])?;
                 if account["name"] != *account_name
@@ -3883,12 +3883,10 @@ fn reverse_action_in_value(
                     account_name,
                     currency,
                 )?;
-                std::vec::Vec::remove(
-                    ledger["accounts"]
-                        .as_array_mut()
-                        .ok_or("account_collection_missing")?,
-                    account_index,
-                );
+                ledger["accounts"]
+                    .as_array_mut()
+                    .ok_or("account_collection_missing")?
+                    .retain(|row| row["accountId"].as_str() != Some(account_id.as_str()));
                 ledger["wallets"]
                     .as_array_mut()
                     .ok_or("wallet_mapping_missing")?
