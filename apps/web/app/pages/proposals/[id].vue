@@ -200,6 +200,12 @@
           <h3 class="font-semibold">Execution result</h3>
           <p>Phase: {{ state.phase }} · outcome: {{ state.outcome ?? 'not executed' }}</p>
           <p v-if="requiresReadOnlyRefresh" role="status">The write is uncertain or needs review. Refresh is read-only; do not repeat the financial action.</p>
+          <template v-if="requiresReadOnlyRefresh">
+            <p>Check prior execution reads Actual without repeating the action. Only the original executor can reconcile after the proposal expires. Unproven outcomes remain held for review.</p>
+            <button data-testid="proposal-reconcile" type="button" class="mt-2 rounded border px-3 py-2 disabled:opacity-50" :disabled="busy || loading" @click="reconcile">
+              {{ busy ? 'Checking…' : 'Check prior execution' }}
+            </button>
+          </template>
         </section>
 
         <section class="space-y-3 border-t pt-4">
@@ -419,6 +425,21 @@ async function load() {
     error.value = { code: 'PROPOSAL_READ_FAILED', message: liquidityError(cause) };
   } finally {
     loading.value = false;
+  }
+}
+
+async function reconcile() {
+  const current = proposal.value;
+  if (!current || !requiresReadOnlyRefresh.value || busy.value) return;
+  busy.value = true;
+  error.value = null;
+  try {
+    await liquidityRequest<unknown>(`/api/proposal/${encodeURIComponent(current.id)}/reconcile`, 'POST');
+    await load();
+  } catch (cause) {
+    error.value = { code: 'PROPOSAL_RECONCILIATION_FAILED', message: liquidityError(cause) };
+  } finally {
+    busy.value = false;
   }
 }
 

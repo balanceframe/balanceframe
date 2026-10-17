@@ -1,7 +1,10 @@
 import {
+  createCategory,
   downloadBudget,
+  getAccountBalance,
   getAccounts,
   getBudgetMonth,
+  getCategories,
   getPayees,
   getTransactions,
   init,
@@ -13,7 +16,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
+import { SqliteWorkflowStore, type GovernanceResourceKind } from '@balanceframe/workflow-store';
+import {
+  deriveProposalAuthorizationFacts,
+  deriveProposalSourceReadFacts,
+} from '../../../workflow-store/src/proposal.js';
 
 import type { LoadedScenario } from '../../src/loader.js';
 import { scenarioRequest, withScenario } from './support.js';
@@ -83,8 +90,8 @@ type Proposal = {
 type ActualRow = Record<string, unknown> & { id?: string; account?: string };
 type ActualSnapshot = {
   assignments: Record<string, number | undefined>;
-  cash: Record<string, number | undefined>;
-  accounts: Array<{ id: string; name?: string; offbudget?: boolean; closed?: boolean; balance_current?: number }>;
+  cash: Record<string, number>;
+  accounts: Array<{ id: string; name?: string; offbudget?: boolean; closed?: boolean; balance_current: number }>;
   transactions: ActualRow[];
 };
 type Reallocation = {
@@ -105,12 +112,12 @@ type Decision = {
   warningThresholds?: unknown[];
 };
 type ActionResource = {
-  resourceKind: 'budget' | 'account' | 'category' | 'wallet' | 'transfer' | 'transaction' | 'ledger_effect';
+  resourceKind: 'budget' | 'account' | 'category' | 'wallet' | 'transfer' | 'transaction' | 'ledger_effect' | 'evidence';
   resourceId: string;
 };
 
 function resultOf<T>(response: { status: number; body: unknown }, label: string): T {
-  expect(response.status, `${label} HTTP status`).toBe(200);
+  expect(response.status, `${label} HTTP status: ${JSON.stringify(response.body)}`).toBe(200);
   const envelope = response.body as Envelope<T>;
   expect(envelope.status, `${label} envelope`).toBe('ok');
   expect(envelope.result, `${label} result`).toBeDefined();
@@ -139,7 +146,7 @@ function expectSafePublicProposal(proposal: Proposal): void {
 }
 
 function expectRejected(response: { status: number; body: unknown }, label: string): void {
-  expect(response.status, `${label} HTTP status`).toBeGreaterThanOrEqual(400);
+  expect(response.status, `${label} HTTP status: ${JSON.stringify(response.body)}`).toBeGreaterThanOrEqual(400);
   expect((response.body as Envelope<unknown>).status, `${label} envelope`).toBe('error');
 }
 
@@ -147,8 +154,8 @@ function purchaseInput(handle: LoadedScenario): PurchaseInput {
   if (handle.initialized.entry.kind !== 'purchase')
     throw new Error('Expected a purchase scenario entry');
   const input = handle.initialized.entry.input;
-  const now = new Date().toISOString();
-  return { ...input, purchaseAt: input.purchaseAt ?? now, requiredBy: input.requiredBy ?? now };
+  const future = new Date(Date.now() + 5 * 60_000).toISOString();
+  return { ...input, purchaseAt: input.purchaseAt ?? future, requiredBy: input.requiredBy ?? future };
 }
 
 function purchaseDecision(input: PurchaseInput, id = 'phase9-reallocation-purchase'): Decision {
@@ -208,6 +215,42 @@ function requireApprovers(handle: LoadedScenario): void {
   expect(new Set([owner.actorId, coapprover.actorId, approver.actorId]).size).toBe(3);
 }
 
+type ReadGrant = { resourceKind: GovernanceResourceKind; resourceId: string; capability: string };
+
+async function grantExactReads(handle: LoadedScenario, personaId: string, grants: readonly ReadGrant[]): Promise<void> {
+  const persona = handle.initialized.personas[personaId];
+  if (!persona) throw new Error(`Missing fictional persona ${personaId}`);
+  const unique = new Map(grants.map((grant) => [
+    `${grant.resourceKind}:${grant.resourceId}:${grant.capability}`, grant,
+  ]));
+  for (const grant of unique.values())
+    resultOf(await scenarioRequest(handle, `/api/spaces/${encodeURIComponent(handle.initialized.spaceId)}/grants`, {
+      method: 'PUT', body: { membershipId: persona.membershipId, ...grant, granted: true },
+    }), `exact source read for ${personaId}`);
+}
+
+async function grantProposalReads(handle: LoadedScenario, proposalId: string, personaId: string): Promise<void> {
+  const store = new SqliteWorkflowStore(handle.processes.workflowDbPath);
+  let grants: ReadGrant[];
+  try {
+    const stored = await store.getProposal(proposalId);
+    if (!stored || stored.operation !== 'consequential_action') throw new Error('Expected a stored action proposal');
+    const preconditions = JSON.parse(stored.preconditions) as unknown;
+    const source = deriveProposalSourceReadFacts(stored.operation, stored.payload, preconditions, stored.budgetId);
+    if (!source) throw new Error('Expected the exact action source-read closure');
+    const effect = deriveProposalAuthorizationFacts(stored.operation, stored.payload, preconditions);
+    grants = [
+      ...source.required.map(({ resourceKind, resourceId, capability }) => ({ resourceKind, resourceId, capability })),
+      ...[...source.resources, ...effect.resources]
+        .filter(({ resourceKind }) => resourceKind !== 'budget')
+        .map((resource) => ({ ...resource, capability: 'full-read' })),
+    ];
+  } finally {
+    store.close();
+  }
+  await grantExactReads(handle, personaId, grants);
+}
+
 async function configureAssistancePolicy(handle: LoadedScenario, minimumApprovers: number): Promise<void> {
   const path = `/api/spaces/${encodeURIComponent(handle.initialized.spaceId)}/policy`;
   const current = resultOf<{ policy: {
@@ -235,12 +278,27 @@ async function configureAssistancePolicy(handle: LoadedScenario, minimumApprover
       },
     },
   }), 'versioned consequential-action assistance policy');
+  await grantExactReads(handle, 'owner', [
+    ...['observe', 'source'].map((capability) => ({
+      resourceKind: 'budget' as const, resourceId: handle.seeded.budgetId, capability,
+    })),
+    ...handle.seeded.readResources
+      .filter(({ resourceKind }) => resourceKind === 'account' || resourceKind === 'transaction')
+      .flatMap(({ resourceId, resourceKind }) => [
+        ...['evidence', 'normalized-evidence', 'full-read'].map((capability) => ({
+          resourceKind: 'evidence' as const, resourceId, capability,
+        })),
+        ...(resourceKind === 'transaction'
+          ? [{ resourceKind: 'evidence' as const, resourceId, capability: 'ledger-effect' }]
+          : []),
+      ]),
+  ]);
 }
 
 async function grantActionPhase(
   handle: LoadedScenario,
   personaId: string,
-  actionKind: 'reallocation' | 'transaction' | 'wallet_materialization' | 'transfer',
+  actionKind: 'reallocation' | 'transaction' | 'ledger_projection' | 'wallet_materialization' | 'transfer',
   phase: 'propose' | 'approve' | 'execute',
   resources: readonly ActionResource[],
 ): Promise<void> {
@@ -260,6 +318,16 @@ async function grantActionPhase(
         },
       },
     ), `${actionKind}:${phase} grant for ${personaId}`);
+  }
+  if (phase === 'propose') {
+    const capabilities: Partial<Record<GovernanceResourceKind, readonly string[]>> = {
+      transaction: ['transaction.view', 'history', 'source', 'full-read'],
+      ledger_effect: ['full-read'],
+      wallet: ['existence', 'history', 'name', 'full-read'],
+      transfer: ['transfer.view', 'source', 'full-read'],
+    };
+    await grantExactReads(handle, personaId, resources.flatMap((resource) =>
+      (capabilities[resource.resourceKind] ?? []).map((capability) => ({ ...resource, capability }))));
   }
 }
 
@@ -390,13 +458,15 @@ async function actualSnapshot(
       name?: string;
       offbudget?: boolean;
       closed?: boolean;
-      balance_current?: number;
     }>;
-    const accountsReadback = accounts
-      .filter((account): account is { id: string; name?: string; offbudget?: boolean; closed?: boolean; balance_current?: number } =>
-        typeof account.id === 'string')
-      .map(({ id, name, offbudget, closed, balance_current }) => ({ id, name, offbudget, closed, balance_current }))
-      .sort((left, right) => left.id.localeCompare(right.id));
+    const accountsReadback: ActualSnapshot['accounts'] = [];
+    for (const { id, name, offbudget, closed } of accounts) {
+      if (typeof id !== 'string') throw new Error('Actual account ID missing');
+      const balance_current = await getAccountBalance(id);
+      expect(Number.isSafeInteger(balance_current), `Actual cash for ${id}`).toBe(true);
+      accountsReadback.push({ id, name, offbudget, closed, balance_current });
+    }
+    accountsReadback.sort((left, right) => left.id.localeCompare(right.id));
     const cash = Object.fromEntries(accountsReadback.map((account) => [account.id, account.balance_current]));
     const transactions: ActualRow[] = [];
     for (const account of accounts) {
@@ -462,6 +532,7 @@ async function proposalDetail(handle: LoadedScenario, id: string, personaId = 'o
 }
 
 async function approve(handle: LoadedScenario, proposal: Proposal, personaId: string): Promise<void> {
+  await grantProposalReads(handle, proposal.id, personaId);
   resultOf(await scenarioRequest<Envelope<unknown>>(
     handle,
     `/api/proposal/${encodeURIComponent(proposal.id)}/approve`,
@@ -496,10 +567,21 @@ function sessionDecision(session: Session): Decision {
 async function readSession(handle: LoadedScenario, key: string): Promise<Session> {
   const id = handle.initialized.sessions[key];
   if (!id) throw new Error(`Missing initialized session ${key}`);
-  return resultOf<Session>(
-    await scenarioRequest<Envelope<Session>>(handle, `/api/spend-sessions/${encodeURIComponent(id)}`),
-    `session ${key}`,
-  );
+  const path = `/api/spend-sessions/${encodeURIComponent(id)}`;
+  const session = resultOf<Session>(await scenarioRequest<Envelope<Session>>(handle, path), `session ${key}`);
+  const future = new Date(Date.now() + 5 * 60_000).toISOString();
+  expect(Date.parse(future)).toBeLessThan(Date.parse(session.expiresAt));
+  return resultOf<Session>(await scenarioRequest<Envelope<Session>>(handle, path, {
+    method: 'PUT',
+    body: {
+      expectedVersion: session.version,
+      accountId: typeof session.accountId === 'string' ? session.accountId : null,
+      expiresAt: session.expiresAt,
+      items: session.items.map((item) => ({ ...item, purchaseAt: future, requiredBy: future })),
+      ...(Array.isArray(session.adjustments) ? { adjustments: session.adjustments } : {}),
+      ...(Array.isArray(session.warningThresholds) ? { warningThresholds: session.warningThresholds } : {}),
+    },
+  }), `future session ${key}`);
 }
 
 async function approveWithTwoHumans(handle: LoadedScenario, proposal: Proposal): Promise<void> {
@@ -585,7 +667,7 @@ describe('authenticated Actual-backed consequential action scenarios', () => {
         });
         expect(after.cash).toEqual(before.cash);
         expect(after.transactions).toEqual(before.transactions);
-        expect(execution).toMatchObject({ proposalId: proposed.id, verified: true });
+        expect(execution).toMatchObject({ id: proposed.id, phase: 'verified' });
 
         const replay = resultOf<Record<string, unknown>>(
           await scenarioRequest<Envelope<Record<string, unknown>>>(
@@ -634,6 +716,47 @@ describe('authenticated Actual-backed consequential action scenarios', () => {
             })),
           },
         };
+        const source = before.transactions.find((row) => row.account === accountId && typeof row.id === 'string');
+        if (!source?.id) throw new Error('Expected current Actual transaction evidence');
+        const projection = { kind: 'evidence_projection', evidenceIds: [source.id], transaction: action.transaction };
+        const forged = await scenarioRequest<Envelope<unknown>>(handle, '/api/proposal/action', {
+          method: 'POST',
+          body: {
+            action: projection,
+            resolvedEvidence: [{
+              evidenceId: source.id,
+              subjectId: source.id,
+              state: 'resolved',
+              contentHash: 'client-asserted-content',
+              version: 'client-asserted-version',
+              observedAt: new Date().toISOString(),
+            }],
+          },
+        });
+        expect(forged.status).toBe(400);
+        expect(forged.body.status).toBe('error');
+        expect(forged.body.error?.code).toBe('INVALID_BODY');
+        expect(await actualSnapshot(handle, [month], categoryIds)).toEqual(before);
+
+        await grantActionPhase(handle, 'owner', 'ledger_projection', 'propose', [
+          { resourceKind: 'budget', resourceId: handle.seeded.budgetId },
+          { resourceKind: 'account', resourceId: accountId },
+          ...categoryIds.map((resourceId) => ({ resourceKind: 'category' as const, resourceId })),
+          { resourceKind: 'transaction', resourceId: parentId },
+          { resourceKind: 'ledger_effect', resourceId: parentId },
+          { resourceKind: 'evidence', resourceId: source.id },
+        ]);
+        await grantExactReads(handle, 'owner', [
+          { resourceKind: 'evidence', resourceId: source.id, capability: 'source' },
+        ]);
+        const absentResolution = await scenarioRequest<Envelope<unknown>>(handle, '/api/proposal/action', {
+          method: 'POST', body: { action: projection },
+        });
+        expect(absentResolution.status).toBe(409);
+        expect(absentResolution.body.status).toBe('error');
+        expect(absentResolution.body.error?.code).toBe('ACTION_STATE_CHANGED');
+        expect(await actualSnapshot(handle, [month], categoryIds)).toEqual(before);
+
         const proposed = await proposeAction(handle, action);
         expect(proposed.operation).toBe('consequential_action');
         expect(proposed.payload.plan.action).toEqual(action);
@@ -669,7 +792,11 @@ describe('authenticated Actual-backed consequential action scenarios', () => {
         expect(after.assignments).toEqual(before.assignments);
         expect(after.cash[accountId]).toBe(before.cash[accountId]! + Number(amount.minorUnits));
         expect(execution).toMatchObject({ id: proposed.id, phase: 'verified' });
-      }, { branches: ['split-manual-debit-approved-executed'] });
+      }, { branches: [
+        'caller-resolved-evidence-rejected',
+        'economic-event-resolution-required',
+        'split-manual-debit-approved-executed',
+      ] });
     });
 
 
@@ -705,12 +832,24 @@ describe('authenticated Actual-backed consequential action scenarios', () => {
       await withScenario('protected-category', async (handle) => {
         const input = purchaseInput(handle);
         const groceriesId = handle.seeded.categoryIds['cat-groceries']!;
-        const destinationId = handle.seeded.categoryIds['cat-entertainment']!;
+        const destinationId = await actualClient(handle, async () => {
+          await downloadBudget(handle.seeded.groupId);
+          const categories = await getCategories();
+          const protectedCategory = categories.find((category) => category.id === groceriesId);
+          if (!protectedCategory?.group_id) throw new Error('Protected category group is missing');
+          const id = await createCategory({ name: 'Controlled action destination', group_id: protectedCategory.group_id });
+          if (typeof id !== 'string') throw new Error('Destination category ID is missing');
+          await sync();
+          return id;
+        });
+        await grantExactReads(handle, 'owner', ['existence', 'balance', 'history', 'liquidity', 'name', 'full-read'].map((capability) => ({
+          resourceKind: 'category', resourceId: destinationId, capability,
+        })));
         const month = input.purchaseAt!.slice(0, 7);
         await configureReallocationActors(handle, [groceriesId, destinationId], 1);
         const before = await actualSnapshot(handle, [month], [groceriesId, destinationId]);
         const card = await evaluatePurchase(handle, input);
-        expect(card.outcome).toBe('plan_breaking');
+        expect(card.outcome, JSON.stringify(card)).toBe('plan_breaking');
         expect(card.fundingPaths.some(({ kind }) => kind === 'category_reallocation')).toBe(false);
         const response = await scenarioRequest<Envelope<unknown>>(handle, '/api/proposal/action', {
           method: 'POST',
@@ -728,7 +867,8 @@ describe('authenticated Actual-backed consequential action scenarios', () => {
             decision: purchaseDecision(input),
           },
         });
-        expectRejected(response, 'protected-category reallocation');
+        expect(response.status, JSON.stringify(response.body)).toBe(409);
+        expect(response.body.error?.code).toBe('ACTION_STATE_CHANGED');
         expect(await actualSnapshot(handle, [month], [groceriesId, destinationId])).toEqual(before);
       });
     });
@@ -837,7 +977,8 @@ describe('authenticated Actual-backed consequential action scenarios', () => {
         const sourceAccountId = String(leg.sourceAccountId);
         const destinationAccountId = String(leg.destinationAccountId);
         const amount = leg.amount as Money;
-        const date = input.requiredBy!.slice(0, 10);
+        // The transfer posts now; the purchase deadline can be on the following UTC date.
+        const date = handle.scenario.anchor.slice(0, 10);
         await configureTransferActors(handle, transferId, sourceAccountId, destinationAccountId);
         const before = await actualSnapshot(handle, [], []);
         const legacyPath = `/api/transfer/${encodeURIComponent(transferId)}`;

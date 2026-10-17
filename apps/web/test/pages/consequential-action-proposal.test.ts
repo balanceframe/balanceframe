@@ -221,6 +221,67 @@ describe('consequential-action proposal review page', () => {
     expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0);
   });
 
+  it.each(['write_intent', 'review_required'] as const)('checks prior %s execution without reauthentication or redispatch', async (phase) => {
+    let current = detail(phase, { canApprove: false, canExecute: false });
+    request.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (url.endsWith('/reconcile') && options?.method === 'POST') {
+        current = detail('verified', { canApprove: false, canExecute: false });
+        return ok({ id: 'proposal-action', phase: 'verified', outcome: 'verified' });
+      }
+      return ok(current);
+    });
+    const wrapper = mountPage();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
+    await flushPromises();
+
+    expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toEqual([
+      ['/api/proposal/proposal-action/reconcile', expect.objectContaining({ method: 'POST' })],
+    ]);
+    expect(reauth).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain('Phase: verified');
+    expect(wrapper.find('[data-testid="proposal-reconcile"]').exists()).toBe(false);
+  });
+
+  it('keeps unresolved checks visible and never enables a repeat execution', async () => {
+    request.mockResolvedValue(ok(detail('review_required', { canExecute: true })));
+    const wrapper = mountPage();
+    await flushPromises();
+    await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Review required');
+    expect(wrapper.text()).toContain('Only the original executor can reconcile after the proposal expires');
+    expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-testid="proposal-reconcile"]').exists()).toBe(true);
+  });
+
+  it.each(['reconciliation', 'refresh'])('keeps execution disabled when the %s response is lost', async (failure) => {
+    let checking = false;
+    request.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (url.endsWith('/reconcile') && options?.method === 'POST') {
+        checking = true;
+        if (failure === 'reconciliation') throw new Error('connection lost');
+        return ok({ id: 'proposal-action', phase: 'review_required', outcome: 'review_required' });
+      }
+      if (checking && failure === 'refresh') throw new Error('connection lost');
+      return ok(detail('review_required', { canExecute: true }));
+    });
+    const wrapper = mountPage();
+    await flushPromises();
+    await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.get('[role="alert"]').text()).toContain('connection lost');
+    const execute = wrapper.find('[data-testid="proposal-execute"]');
+    expect(!execute.exists() || execute.attributes('disabled') !== undefined).toBe(true);
+    expect(wrapper.findAll('button').find((button) => button.text().includes('Refresh current proposal'))!.attributes('disabled')).toBeUndefined();
+    expect(reauth).not.toHaveBeenCalled();
+    expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toEqual([
+      ['/api/proposal/proposal-action/reconcile', expect.objectContaining({ method: 'POST' })],
+    ]);
+  });
+
   it('requires read-only recovery after an execute request loses its connection', async () => {
     const approved = detail('approved', {
       canApprove: false, canExecute: true, currentAssistanceMaximum: 'execute_approved_actions',

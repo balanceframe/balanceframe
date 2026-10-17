@@ -792,8 +792,7 @@ function consequentialActionOperations(plan: ConsequentialActionPlan): Governanc
           transactionId: transaction.parentId,
           accountId: transaction.accountId,
           ...(transaction.categoryId === null ? {} : { categoryId: transaction.categoryId }),
-          direction: money.direction,
-          amount: money.amount,
+          ...(transaction.splits.length === 0 ? money : {}),
         });
         for (const split of transaction.splits)
           operations.push({
@@ -801,7 +800,7 @@ function consequentialActionOperations(plan: ConsequentialActionPlan): Governanc
             transactionId: transaction.parentId,
             accountId: transaction.accountId,
             categoryId: split.categoryId,
-            direction: money.direction,
+            ...actionMoney(split.amount),
           });
         break;
       }

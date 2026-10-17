@@ -102,7 +102,11 @@ export interface ConsequentialActionCapture {
   readonly projector: LiquidityProjector;
   /** Exact persisted record for internal source binding; never part of public projections. */
   readonly supplemental: SupplementalFactsRecord | null;
-  decisionCardRequest(decision: ConsequentialActionDecision): DecisionCardRequest;
+  /** Build a current request, omitting only approved new rows from historical route inference during readback. */
+  decisionCardRequest(
+    decision: ConsequentialActionDecision,
+    excludedHistoricalTransactionIds?: readonly string[],
+  ): DecisionCardRequest;
 }
 import {
   InAppChannelAdapter,
@@ -155,7 +159,10 @@ export class LiquidityService {
     const manager = options?.mutation ? this.options.mutationConnectionManager : undefined;
     if (options?.mutation && !manager) throw new Error('Mutation connection unavailable');
     return this.capture(actor, async (capture, connected) => {
-      const decisionCardRequest = (decision: ConsequentialActionDecision): DecisionCardRequest => {
+      const decisionCardRequest = (
+        decision: ConsequentialActionDecision,
+        excludedHistoricalTransactionIds: readonly string[] = [],
+      ): DecisionCardRequest => {
         let items: DecisionCardItem[];
         let expiresAt: string | undefined;
         let cart: Pick<SpendSession, 'adjustments' | 'warningThresholds'> | undefined;
@@ -167,12 +174,12 @@ export class LiquidityService {
             !session || session.version !== decision.origin.sessionVersion ||
             Date.parse(session.expiresAt) <= Date.parse(capture.now)
           ) throw new Error('Saved session unavailable or changed');
-          items = this.sessionItems(actor, capture, session);
+          items = this.sessionItems(actor, capture, session, excludedHistoricalTransactionIds);
           expiresAt = session.expiresAt;
           cart = session;
         } else {
           expiresAt = decision.expiresAt;
-          const canonicalItems = this.items(actor, capture, decision.items, decision.accountId);
+          const canonicalItems = this.items(actor, capture, decision.items, decision.accountId, excludedHistoricalTransactionIds);
           items = canonicalItems.map((item, index) => {
             const source = decision.items[index];
             if (!source) throw new Error('Decision item unavailable');
@@ -383,6 +390,7 @@ export class LiquidityService {
     capture: Capture,
     input: SpendSessionIntent['items'],
     accountId: string | null,
+    excludedHistoricalTransactionIds: readonly string[] = [],
   ): LiquidityPurchaseItem[] {
     let preferences: PaymentPreferenceRecord[] = [];
     if (capture.projector.allowed('budget', actor.budgetId, 'liquidity'))
@@ -407,6 +415,7 @@ export class LiquidityService {
       const historical = capture.snapshot.legacySnapshot.transactions
         .filter(
           (transaction) =>
+            !excludedHistoricalTransactionIds.includes(transaction.id) &&
             transaction.categoryId === item.categoryId &&
             transaction.date <= item.purchaseAt.slice(0, 10) &&
             !transaction.transferAccountId &&
@@ -1307,8 +1316,11 @@ export class LiquidityService {
       return this.sessionProjection(actor, capture, session);
     });
   }
-  private sessionItems(actor: LiquidityActor, capture: Capture, session: SpendSession): DecisionCardItem[] {
-    const routes = this.items(actor, capture, session.items, session.accountId);
+  private sessionItems(
+    actor: LiquidityActor, capture: Capture, session: SpendSession,
+    excludedHistoricalTransactionIds: readonly string[] = [],
+  ): DecisionCardItem[] {
+    const routes = this.items(actor, capture, session.items, session.accountId, excludedHistoricalTransactionIds);
     return session.items.map((item, index) => {
       const route = routes[index];
       if (!route) throw new Error('Session route unavailable');

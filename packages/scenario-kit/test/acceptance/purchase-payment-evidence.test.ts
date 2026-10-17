@@ -870,7 +870,7 @@ describe('live purchase, payment, and evidence scenarios', () => {
     });
   });
   it(
-    'evidence-projection rejects caller-asserted resolution and fresh financial capture without a current explicit source event',
+    'evidence-projection stays disabled in the uncategorized story after a fresh financial capture',
     { timeout: SCENARIO_TIMEOUT },
     async () => {
       await withScenario('uncategorized-debit', async (handle) => {
@@ -886,7 +886,6 @@ describe('live purchase, payment, and evidence scenarios', () => {
           throw new Error('The fixture Actual transaction must provide a date for projection intent');
         expect(source).toMatchObject({ id: transactionId, account: accountId, amount: -1000, category: null });
 
-        // A fresh Actual-backed purchase evaluation is not an economic-event resolution.
         const freshCard = await evaluatePurchase(handle);
         expect(freshCard.outcome).toBe('insufficient_data');
         expectReason(freshCard.blockers, 'uncategorized_transaction_activity');
@@ -920,19 +919,21 @@ describe('live purchase, payment, and evidence scenarios', () => {
             }],
           },
         });
-        expect(forged.status).toBe(400);
+        expect(forged.status).toBe(403);
         expect(forged.body.status).toBe('error');
+        expect(forged.body.error?.code).toBe('DEMO_OPERATION_DISABLED');
 
         const absentResolution = await scenarioRequest<Envelope<unknown>>(handle, '/api/proposal/action', {
           method: 'POST',
           body: { action },
         });
-        expect(absentResolution.status).not.toBe(200);
+        expect(absentResolution.status).toBe(403);
         expect(absentResolution.body.status).toBe('error');
+        expect(absentResolution.body.error?.code).toBe('DEMO_OPERATION_DISABLED');
         const after = await actualRows(handle);
         expect(ledgerFingerprint(after)).toEqual(ledgerFingerprint(before));
         expect(ledgerTotal(after)).toBe(ledgerTotal(before));
-      }, { branches: ['economic-event-resolution-required'] });
+      }, { branches: ['uncategorized-evidence-projection-boundary-denied'] });
     },
   );
 

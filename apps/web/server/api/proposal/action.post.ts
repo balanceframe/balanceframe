@@ -1,7 +1,7 @@
 import { defineEventHandler, readBody, setHeader, setResponseStatus } from 'h3';
 import { consequentialActionIntentSchema } from '@balanceframe/protocol-generated/validators';
 import { ApplicationError, spendSessionInputSchema } from '@balanceframe/application';
-import { z } from 'zod/v3';
+import { z } from 'zod';
 import { createWebConsequentialActionService, selectedLiquidityActor } from '../../utils/liquidity-service';
 import { requireSelectedSpace } from '../../utils/space-context';
 import type { EventWithContext } from '../../utils/workflow-store';
@@ -115,7 +115,7 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 403);
       return errorEnvelope('FORBIDDEN', 'The action or its current resources are not authorized.', null, false, requestId);
     }
-    if (/changed|stale|conflict|expired|insufficient|precondition|evidence|funding|target/i.test(message)) {
+    if (/changed|stale|conflict|expired|insufficient|precondition|evidence|funding|target|reallocation_not_safe_in_decision_card/i.test(message)) {
       setResponseStatus(event, 409);
       return errorEnvelope('ACTION_STATE_CHANGED', 'The current action source or authorization changed. Refresh and review before proposing again.', null, false, requestId);
     }

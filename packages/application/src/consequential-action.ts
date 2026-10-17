@@ -508,17 +508,40 @@ function currentDecisionRequest(
   preconditions: ActionPreconditions,
   store: WorkflowStore,
   actor: LiquidityActor,
-  recoverSavedSession = false,
+  postconditions = false,
+  recoveryEvaluatedAt?: string,
 ): DecisionCardRequest {
-  const decision = recoverSavedSession && preconditions.decision && 'origin' in preconditions.decision
+  if (!postconditions && preconditions.decision) {
+    const explicit = 'origin' in preconditions.decision
+      ? preconditions.sessionCart
+      : preconditions.decision;
+    if (!explicit) throw new Error('Saved-session decision binding unavailable');
+    const now = Date.parse(capture.now);
+    if (explicit.items.some((item) =>
+      Date.parse(item.purchaseAt) < now || Date.parse(item.requiredBy) < now))
+      throw new Error('Explicit decision deadline expired');
+  }
+  const decision = recoveryEvaluatedAt && preconditions.decision && 'origin' in preconditions.decision
     ? preconditions.recoveryDecision
     : savedDecision(action, preconditions.decision, store, actor, capture.now);
   if (!decision) throw new Error('Saved-session recovery cart unavailable');
-  const request = capture.decisionCardRequest(decision);
+  const excludedHistoricalTransactionIds = postconditions ? atoms(action).flatMap((atom) =>
+    atom.kind === 'manual_transaction' || atom.kind === 'evidence_projection'
+      ? [atom.transaction.parentId] : []) : [];
+  const request = capture.decisionCardRequest(
+    recoveryEvaluatedAt && !('origin' in decision) ? { ...decision, expiresAt: undefined } : decision,
+    excludedHistoricalTransactionIds,
+  );
+  // Readback replays the pinned decision clock; the verification clock remains current.
+  const context = {
+    ...request.context,
+    ...(recoveryEvaluatedAt ? { evaluatedAt: recoveryEvaluatedAt } : {}),
+    horizon: preconditions.decisionHorizon,
+  };
   const approvedItems = preconditions.decisionContext?.items;
   if (!approvedItems) return decisionCardRequestSchema.parse({
     ...request,
-    context: { ...request.context, horizon: preconditions.decisionHorizon },
+    context,
     validUntil: preconditions.decisionValidUntil,
   });
   const approvedById = new Map(approvedItems.map((item) => [item.id, item]));
@@ -531,7 +554,7 @@ function currentDecisionRequest(
       if (!approved) throw new Error('Captured decision item unavailable');
       return { ...item, purchaseAt: approved.purchaseAt, requiredBy: approved.requiredBy };
     }),
-    context: { ...request.context, horizon: preconditions.decisionHorizon },
+    context,
     validUntil: preconditions.decisionValidUntil,
   });
 }
@@ -1101,6 +1124,44 @@ export class ConsequentialActionService {
       .map((proposal) => proposal.id);
   }
 
+  /** Reconcile an acquired action by readback without acquiring or dispatching financial writes. */
+  async reconcile(actor: LiquidityActor, proposalId: string): Promise<ConsequentialActionExecution> {
+    const now = this.clock().toISOString();
+    const initialActor = this.currentActor(actor, now);
+    const stored = await this.options.store.getProposal(proposalId);
+    if (!stored || stored.operation !== 'consequential_action' || stored.budgetId !== actor.budgetId)
+      throw new Error('Consequential action proposal unavailable');
+    const plan = stored.payload.plan;
+    if (
+      stored.state.phase !== 'verified' &&
+      stored.state.phase !== 'invalidated_no_dispatch' &&
+      stored.state.phase !== 'review_required' &&
+      stored.state.phase !== 'write_intent'
+    ) throw new Error('Acquired consequential action required for reconciliation');
+    // Recovery needs current action-read authority, not permission to publish its financial details.
+    const [read] = this.options.store.getProposalApprovalReads({
+      proposalIds: [stored.id],
+      spaceId: this.requireSpace(initialActor),
+      actorId: initialActor.actorId,
+      auth: this.requireAuth(initialActor),
+      now,
+      privateProjection: 'detail',
+    });
+    if (
+      !read ||
+      !(
+        read.summary.privateEnvelopeVisible ||
+        read.summary.approvalAuthorized ||
+        read.summary.executionAuthorized
+      )
+    ) throw new Error('Current consequential-action read authority required');
+    if (stored.state.phase === 'verified' || stored.state.phase === 'invalidated_no_dispatch')
+      return this.execution(stored.id, stored.state);
+    const preconditions = this.parsePreconditions(stored.preconditions);
+    this.requirePreconditionsForPlan(plan, preconditions);
+    return this.recover(initialActor, stored, preconditions);
+  }
+
   async execute(actor: LiquidityActor, proposalId: string): Promise<ConsequentialActionExecution> {
     const now = this.clock().toISOString();
     const initialActor = this.currentActor(actor, now);
@@ -1115,28 +1176,7 @@ export class ConsequentialActionService {
       stored.state.phase === 'review_required' ||
       stored.state.phase === 'write_intent'
     ) {
-      // Recovery needs current action-read authority, not permission to publish its financial details.
-      const [read] = this.options.store.getProposalApprovalReads({
-        proposalIds: [stored.id],
-        spaceId: this.requireSpace(initialActor),
-        actorId: initialActor.actorId,
-        auth: this.requireAuth(initialActor),
-        now,
-        privateProjection: 'detail',
-      });
-      if (
-        !read ||
-        !(
-          read.summary.privateEnvelopeVisible ||
-          read.summary.approvalAuthorized ||
-          read.summary.executionAuthorized
-        )
-      ) throw new Error('Current consequential-action read authority required');
-      if (stored.state.phase === 'verified' || stored.state.phase === 'invalidated_no_dispatch')
-        return this.execution(stored.id, stored.state);
-      const preconditions = this.parsePreconditions(stored.preconditions);
-      this.requirePreconditionsForPlan(plan, preconditions);
-      return this.recover(initialActor, stored, preconditions);
+      return this.reconcile(initialActor, proposalId);
     }
     this.requireAssistance(initialActor, 'execute');
     this.requireAction(initialActor, action, 'execute', 'read');
@@ -1280,7 +1320,7 @@ export class ConsequentialActionService {
             plan,
             phase: 'postconditions',
             decisionCardRequest: currentDecisionRequest(
-              capture, action, preconditions, this.options.store, actorNow,
+              capture, action, preconditions, this.options.store, actorNow, true,
             ),
             currentLedger: ledger,
             resolvedEvidence: evidence,
@@ -1953,7 +1993,7 @@ export class ConsequentialActionService {
           plan: proposal.payload.plan,
           phase: 'postconditions',
           decisionCardRequest: currentDecisionRequest(
-            capture, action, preconditions, this.options.store, current, true,
+            capture, action, preconditions, this.options.store, current, true, proposal.createdAt,
           ),
           currentLedger: ledger,
           resolvedEvidence: evidence,

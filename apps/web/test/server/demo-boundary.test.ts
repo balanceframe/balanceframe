@@ -298,6 +298,14 @@ describe('enforceDemoBoundary', () => {
   });
 
   it.each([
+    ...['donor-reallocation', 'coapproval-completion', 'donor-competition', 'protected-category', 'account-transfer'].flatMap((scenario) => [
+      [scenario, '/api/spaces/space-demo/policy', 'PUT'],
+      [scenario, '/api/spaces/space-demo/grants', 'PUT'],
+      [scenario, '/api/proposal/action', 'POST'],
+      [scenario, '/api/proposal/proposal-demo/approve', 'POST'],
+      [scenario, '/api/proposal/proposal-demo/execute', 'POST'],
+      [scenario, '/api/proposal/proposal-demo/reconcile', 'POST'],
+    ]),
     ['governance-scoped-access', '/api/spaces/space-demo/grants', 'PUT'],
     ['governance-invitation-lifecycle', '/api/spaces/space-demo/memberships/member-demo/revoke', 'POST'],
     ['governance-invitation-lifecycle', '/api/spaces/space-demo/grants', 'PUT'],
@@ -407,6 +415,27 @@ describe('enforceDemoBoundary', () => {
           'x-forwarded-host': 'demo.example.test',
           'x-balanceframe-demo-internal': 'browser-injected-secret',
         });
+        expect(enforceDemoBoundary(event)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+        expect(event.status).toBe(403);
+      }
+    },
+  );
+
+  it.each(['donor-reallocation', 'coapproval-completion', 'donor-competition', 'protected-category', 'account-transfer'])(
+    'keeps unrelated writes blocked for controlled action scenario %s', (scenarioId) => {
+      writeManifest({ scenarioId });
+      for (const [path, method] of [
+        ['/api/spaces/unrelated-space/policy', 'PUT'],
+        ['/api/spaces/unrelated-space/grants', 'PUT'],
+        ['/api/proposal', 'POST'],
+        ['/api/proposal/proposal-demo/discard', 'POST'],
+        ['/api/proposal/proposal-demo/execute/extra', 'POST'],
+        ['/api/spaces/space-demo/credentials', 'POST'],
+        ['/api/spaces/space-demo/memberships/member-demo/revoke', 'POST'],
+        ['/api/auth/api-key/create', 'POST'],
+        ['/api/connection', 'POST'],
+      ]) {
+        const event = makeEvent(path!, method!, { 'x-balanceframe-space': 'space-demo' });
         expect(enforceDemoBoundary(event)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
         expect(event.status).toBe(403);
       }

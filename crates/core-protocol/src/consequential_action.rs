@@ -1384,12 +1384,62 @@ fn category_fact<'a>(
         .find(|category| category.category_id == id && category.as_of_month == month)
 }
 
+fn matches_positive_debit(purchase: &Money, debit: &Money) -> bool {
+    debit
+        .minor_units()
+        .checked_neg()
+        .filter(|amount| *amount > 0)
+        == Some(purchase.minor_units())
+        && debit.currency() == purchase.currency()
+}
+
 fn evaluate_card(request: &PlanConsequentialActionRequest) -> Result<DecisionCard, String> {
     if request.decision_card_request.items.is_empty() {
         return Err("purchase_card_required_for_category_action".into());
     }
     let mut source = request.decision_card_request.clone();
     source.context.evaluated_at = request.evaluated_at.clone();
+    // Approval delay advances only exact immediate debit projections, never their hashed source.
+    for atom in request.intent.atoms() {
+        let transaction = match atom {
+            AtomicConsequentialActionIntent::ManualTransaction { transaction }
+            | AtomicConsequentialActionIntent::EvidenceProjection { transaction, .. } => {
+                transaction
+            }
+            _ => continue,
+        };
+        for item in &mut source.items {
+            if item.purchase_at != source.context.horizon.starts_at
+                || item.required_by != item.purchase_at
+                || item.purchase_at.get(..10) != request.evaluated_at.get(..10)
+                || parse_utc(&item.purchase_at) >= parse_utc(&request.evaluated_at)
+                || item.route_selection.explicit_account_id.as_deref()
+                    != Some(&transaction.account_id)
+                || item.route_selection.session_account_id.is_some()
+                || item.quantity.is_some()
+                || item.category_allocations.is_some()
+                || item.price_provenance.is_some()
+                || item.barcode.is_some()
+            {
+                continue;
+            }
+            let matches = if transaction.splits.is_empty() {
+                item.id == transaction.parent_id
+                    && transaction.category_id.as_deref() == Some(item.category_id.as_str())
+                    && matches_positive_debit(&item.amount, &transaction.amount)
+            } else {
+                transaction.splits.iter().enumerate().any(|(index, split)| {
+                    item.id == format!("{}:split:{index}", transaction.parent_id)
+                        && item.category_id == split.category_id
+                        && matches_positive_debit(&item.amount, &split.amount)
+                })
+            };
+            if matches {
+                item.purchase_at = request.evaluated_at.clone();
+                item.required_by = request.evaluated_at.clone();
+            }
+        }
+    }
     let card = evaluate_decision_card(source);
     if !card.blockers.is_empty() || card.outcome == "insufficient_data" {
         let class = if card
@@ -4299,7 +4349,7 @@ where
             obligation_ids: facts.obligation_ids.clone(),
         })
         .collect();
-    let restored = PlanConsequentialActionRequest {
+    let mut restored = PlanConsequentialActionRequest {
         decision_card_request: restored_card,
         intent: request.plan.action.clone(),
         current_ledger: restored_ledger,
@@ -4320,7 +4370,7 @@ where
         return Ok(invalid(ConsequentialActionVerificationReason::InvalidPlan));
     }
     let invalidated_freshness_accounts = request.plan.source.invalidated_freshness_accounts.clone();
-    let source_hash_material = SourceHashMaterial {
+    let mut source_hash_material = SourceHashMaterial {
         decision_card_request: &restored.decision_card_request,
         action: &restored.intent,
         ledger: &restored.current_ledger,
@@ -4331,11 +4381,38 @@ where
         invalidated_supplemental_facts: &request.plan.source.invalidated_supplemental_facts,
         manual_payee_bindings: &request.plan.source.manual_payee_bindings,
     };
-    let invariant_hash = hash_material(&source_hash_material, true)?;
-    if invariant_hash != request.plan.source.invariants_hash {
-        return Ok(invalid(
-            ConsequentialActionVerificationReason::SourceChanged,
-        ));
+    if hash_material(&source_hash_material, true)? != request.plan.source.invariants_hash {
+        let snapshot = &restored.decision_card_request.financial_snapshot;
+        let creates_payee = request
+            .plan
+            .source
+            .manual_payee_bindings
+            .iter()
+            .any(|binding| binding.existing_payee_id.is_none())
+            || request.plan.action.atoms().iter().any(|atom| {
+                matches!(
+                    atom,
+                    AtomicConsequentialActionIntent::WalletMaterialization { .. }
+                )
+            });
+        if snapshot.coverage.payees != CoverageState::Complete
+            || !snapshot.legacy_snapshot.payees.is_empty()
+            || !creates_payee
+        {
+            return Ok(invalid(
+                ConsequentialActionVerificationReason::SourceChanged,
+            ));
+        }
+        // Restore first-payee coverage only when the exact approved source hash proves it.
+        let mut empty_payee_card = restored.decision_card_request.clone();
+        empty_payee_card.financial_snapshot.coverage.payees = CoverageState::Empty;
+        source_hash_material.decision_card_request = &empty_payee_card;
+        if hash_material(&source_hash_material, true)? != request.plan.source.invariants_hash {
+            return Ok(invalid(
+                ConsequentialActionVerificationReason::SourceChanged,
+            ));
+        }
+        restored.decision_card_request = empty_payee_card;
     }
     // Replanning after this write would require a freshness attestation the source correctly invalidated.
     if invalidated_freshness_accounts.is_empty() {
@@ -4875,7 +4952,7 @@ fn normalize_actual_generated_observation_clocks(
             && observation.get("version").is_none()
             && observation.get("ledgerEffect").is_none();
         let generated = match observation["kind"].as_str() {
-            Some("account_collection_coverage") => {
+            Some("account_collection_coverage" | "currency_compatibility") => {
                 observation["scope"]["kind"] == "global"
                     && observation["state"] == "complete"
                     && observation["evidence"]
@@ -5316,4 +5393,33 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let day_of_year = (153 * adjusted_month + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146097 + day_of_era - 719468
+}
+
+#[cfg(test)]
+mod temporal_debit_tests {
+    use super::matches_positive_debit;
+    use balanceframe_financial_core::Money;
+
+    #[test]
+    fn retiming_matches_only_exact_checked_positive_debits() {
+        for (purchase, debit, matches) in [
+            (1, -1, true),
+            (i64::MAX, -i64::MAX, true),
+            (2, -1, false),
+            (0, 0, false),
+            (-1, 1, false),
+            (i64::MIN, i64::MIN, false),
+            (i64::MAX, i64::MIN, false),
+        ] {
+            assert_eq!(
+                matches_positive_debit(&Money::new(purchase, "USD"), &Money::new(debit, "USD")),
+                matches,
+                "purchase={purchase}, debit={debit}"
+            );
+        }
+        assert!(!matches_positive_debit(
+            &Money::new(1, "EUR"),
+            &Money::new(-1, "USD")
+        ));
+    }
 }

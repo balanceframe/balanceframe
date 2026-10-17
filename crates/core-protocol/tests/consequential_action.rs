@@ -2421,9 +2421,9 @@ fn postconditions_allow_only_invalidated_supplemental_facts_for_mutated_accounts
     assert_eq!(changed_unknown_fact["reason"], "source_changed");
 }
 
-#[test]
-fn readback_reverses_first_transaction_coverage_and_shared_new_payee_once() {
+fn shared_new_payee_readback(before: &str) -> (Value, Value) {
     let mut input = request();
+    input["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!(before);
     fund_food(&mut input, 2_000);
     input["decisionCardRequest"]["financialSnapshot"]["coverage"]["transactions"] = json!("empty");
     let first = manual_transaction(money(-1_000, "USD"), vec![]);
@@ -2484,6 +2484,7 @@ fn readback_reverses_first_transaction_coverage_and_shared_new_payee_once() {
         }));
     input["decisionCardRequest"]["financialSnapshot"]["coverage"]["transactions"] =
         json!("complete");
+    input["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!("complete");
     let observations = input["decisionCardRequest"]["financialSnapshot"]["observations"]
         .as_array_mut()
         .unwrap();
@@ -2503,11 +2504,39 @@ fn readback_reverses_first_transaction_coverage_and_shared_new_payee_once() {
     }
     recapture_actual_source(&mut input, "2026-09-06T10:01:00Z");
     apply_actual_account_projection(&mut input, "checking", "2026-09-06T10:01:00Z");
-    assert_eq!(
-        verify(verify_request(planned, input, "postconditions"))["valid"],
-        true,
-        "readback removes only both action-created observations and restores the empty coverage"
-    );
+    (planned, input)
+}
+
+#[test]
+fn readback_reverses_first_transaction_coverage_and_shared_new_payee_once() {
+    for before in ["empty", "complete"] {
+        let (planned, input) = shared_new_payee_readback(before);
+        assert_eq!(
+            verify(verify_request(planned.clone(), input.clone(), "postconditions"))["valid"],
+            true,
+            "readback removes only both action-created observations and restores the empty coverage"
+        );
+        for coverage in ["unknown", "partial", "unavailable"] {
+            let mut changed = input.clone();
+            changed["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] =
+                json!(coverage);
+            assert_eq!(
+                verify(verify_request(planned.clone(), changed, "postconditions"))["valid"],
+                false
+            );
+        }
+        let mut changed = input.clone();
+        changed["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "id": "unrelated-payee", "name": "Other", "transferAccountId": null, "mtid": null
+            }));
+        assert_eq!(
+            verify(verify_request(planned, changed, "postconditions"))["valid"],
+            false
+        );
+    }
 }
 
 #[test]
@@ -2531,10 +2560,12 @@ fn wallet_readback_removes_only_its_generated_account_observations() {
             "evidence": []
         }));
     recapture_actual_source(&mut input, "2026-09-06T10:00:00Z");
+    input["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!("empty");
     let planned = plan(input.clone());
     assert_eq!(planned["source"]["accountsCoverageBefore"], "empty");
     let account_id = "actual-wallet-account-1";
     apply_wallet_postconditions(&mut input, true);
+    input["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!("complete");
     input["decisionCardRequest"]["financialSnapshot"]["coverage"]["accounts"] = json!("complete");
     input["decisionCardRequest"]["financialSnapshot"]["observations"]
         .as_array_mut()
@@ -2565,11 +2596,73 @@ fn wallet_readback_removes_only_its_generated_account_observations() {
                 }]
             }),
         ]);
+    for (kind, state, observed_at) in [
+        ("account_freshness", "unknown", Value::Null),
+        ("account_type", "complete", json!("2026-09-06T10:01:00Z")),
+        (
+            "credit_card_obligation_coverage",
+            "unavailable",
+            Value::Null,
+        ),
+    ] {
+        let mut observation = json!({
+            "kind": kind, "scope": {"kind": "account", "id": account_id}, "state": state,
+            "evidence": [{"evidenceId": account_id, "kind": "account", "authorized": true, "redaction": "visible"}]
+        });
+        if !observed_at.is_null() {
+            observation["observedAt"] = observed_at;
+        }
+        input["decisionCardRequest"]["financialSnapshot"]["observations"]
+            .as_array_mut()
+            .unwrap()
+            .push(observation);
+    }
     recapture_actual_source(&mut input, "2026-09-06T10:01:00Z");
     assert_eq!(
-        verify(verify_request(planned, input, "postconditions"))["valid"],
+        verify(verify_request(
+            planned.clone(),
+            input.clone(),
+            "postconditions"
+        ))["valid"],
         true,
         "wallet observations are removed by exact generated-account scope"
+    );
+    let mut duplicated = input.clone();
+    let duplicate = duplicated["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    duplicated["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate);
+    assert_eq!(
+        verify(verify_request(
+            planned.clone(),
+            duplicated,
+            "postconditions"
+        ))["valid"],
+        false
+    );
+    for coverage in ["unknown", "partial", "unavailable"] {
+        let mut changed = input.clone();
+        changed["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!(coverage);
+        assert_eq!(
+            verify(verify_request(planned.clone(), changed, "postconditions"))["valid"],
+            false
+        );
+    }
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "id": "unrelated-payee", "name": "Other", "transferAccountId": null, "mtid": null
+        }));
+    assert_eq!(
+        verify(verify_request(planned, input, "postconditions"))["valid"],
+        false
     );
 }
 
@@ -3173,4 +3266,1051 @@ fn postcondition_inverses_preserve_unrelated_current_ledger_edits() {
     let transfer_result = verify(verify_request(transfer_plan, transfer, "postconditions"));
     assert_eq!(transfer_result["valid"], false);
     assert_eq!(transfer_result["reason"], "source_changed");
+}
+
+#[test]
+fn currency_capture_clock_is_normalized_only_for_generated_actual_observations() {
+    let mut input = request();
+    recapture_actual_source(&mut input, EVALUATED_AT);
+    let observations = input["decisionCardRequest"]["financialSnapshot"]["observations"]
+        .as_array_mut()
+        .unwrap();
+    let index = observations.len();
+    observations.push(json!({
+        "kind": "currency_compatibility", "scope": {"kind": "global"},
+        "state": "complete", "observedAt": EVALUATED_AT, "evidence": []
+    }));
+    let planned = plan(input.clone());
+    recapture_actual_source(&mut input, "2026-09-06T10:01:00Z");
+    input["decisionCardRequest"]["financialSnapshot"]["observations"][index]["observedAt"] =
+        json!("2026-09-06T10:01:00Z");
+    assert_eq!(
+        verify(verify_request(
+            planned.clone(),
+            input.clone(),
+            "preconditions"
+        ))["valid"],
+        true
+    );
+    for (field, value) in [
+        ("observedAt", json!("2026-09-06T09:30:00Z")),
+        ("state", json!("unknown")),
+        ("contentHash", json!("changed-source")),
+        (
+            "evidence",
+            json!([{
+                "evidenceId": "external", "kind": "currency", "authorized": true, "redaction": "visible"
+            }]),
+        ),
+    ] {
+        let mut changed = input.clone();
+        changed["decisionCardRequest"]["financialSnapshot"]["observations"][index][field] = value;
+        assert_eq!(
+            verify(verify_request(planned.clone(), changed, "preconditions"))["valid"],
+            false
+        );
+    }
+    input["currentLedger"]["accounts"][0]["currency"] = json!("EUR");
+    assert_eq!(
+        verify(verify_request(planned, input, "preconditions"))["valid"],
+        false
+    );
+}
+
+fn immediate_manual_request(kind: &str) -> Value {
+    let mut input = if kind == "evidence" {
+        evidence_projection_request()
+    } else {
+        request()
+    };
+    fund_food(&mut input, 2_000);
+    if kind != "evidence" {
+        let splits = if kind == "split" {
+            vec![
+                json!({"categoryId": "food", "amount": money(-1_000, "USD")}),
+                json!({"categoryId": "food", "amount": money(-1_000, "USD")}),
+            ]
+        } else {
+            vec![]
+        };
+        input["intent"] = json!({"kind": "manual_transaction", "transaction": manual_transaction(money(-2_000, "USD"), splits)});
+    }
+    let transaction = input["intent"]["transaction"].clone();
+    let template = input["decisionCardRequest"]["items"][0].clone();
+    let effects = if kind == "split" {
+        transaction["splits"].as_array().unwrap().clone()
+    } else {
+        vec![transaction.clone()]
+    };
+    input["decisionCardRequest"]["items"] = Value::Array(effects.iter().enumerate().map(|(index, effect)| {
+        let mut item = template.clone();
+        item["id"] = if kind == "split" { json!(format!("{}:split:{index}", transaction["parentId"].as_str().unwrap())) } else { transaction["parentId"].clone() };
+        item["categoryId"] = effect["categoryId"].clone();
+        item["amount"] = money(-effect["amount"]["minorUnits"].as_str().unwrap().parse::<i64>().unwrap(), "USD");
+        item["purchaseAt"] = json!(EVALUATED_AT);
+        item["requiredBy"] = json!(EVALUATED_AT);
+        item["routeSelection"] = json!({"explicitAccountId": "checking", "sessionAccountId": null, "approvedPreference": null, "historicalRoute": null});
+        item
+    }).collect());
+    input["decisionCardRequest"]["context"]["horizon"]["startsAt"] = json!(EVALUATED_AT);
+    input
+}
+
+#[test]
+fn immediate_manual_debits_survive_approval_delay_without_retiming_source() {
+    for kind in ["single", "split", "evidence"] {
+        let mut input = immediate_manual_request(kind);
+        let planned = plan(input.clone());
+        input["evaluatedAt"] = json!("2026-09-06T10:00:07Z");
+        input["decisionCardRequest"]["context"]["evaluatedAt"] = input["evaluatedAt"].clone();
+        assert_eq!(
+            verify(verify_request(
+                planned.clone(),
+                input.clone(),
+                "preconditions"
+            ))["valid"],
+            true,
+            "{kind}"
+        );
+        assert_eq!(
+            plan(input.clone()),
+            planned,
+            "{kind}: source hash is unchanged"
+        );
+        assert_eq!(
+            input["decisionCardRequest"]["items"][0]["purchaseAt"],
+            EVALUATED_AT
+        );
+        for (change, reason) in [
+            ("amount", "source_changed"),
+            ("account", "source_changed"),
+            ("claims", "claims_changed"),
+            ("expired", "expired"),
+            ("stale", "evidence_changed"),
+            ("source", "source_changed"),
+        ] {
+            let mut changed = input.clone();
+            match change {
+                "amount" => changed["decisionCardRequest"]["items"][0]["amount"] = money(1, "USD"),
+                "account" => {
+                    changed["decisionCardRequest"]["items"][0]["routeSelection"]
+                        ["explicitAccountId"] = json!("savings")
+                }
+                "claims" => {
+                    changed["decisionCardRequest"]["claimSet"]["revision"] = json!("changed")
+                }
+                "expired" => changed["evaluatedAt"] = planned["expiresAt"].clone(),
+                "stale" => {
+                    account_fact_mut(&mut changed, "checking")["freshnessEvidence"]["state"] =
+                        json!("unknown")
+                }
+                "source" => {
+                    ledger_account_mut(&mut changed, "checking")["name"] = json!("Changed checking")
+                }
+                _ => unreachable!(),
+            }
+            let result = verify(verify_request(planned.clone(), changed, "preconditions"));
+            assert_eq!(result["valid"], false, "{kind}: {change}");
+            assert_eq!(result["reason"], reason, "{kind}: {change}");
+        }
+    }
+}
+
+#[test]
+fn approval_delay_does_not_retime_unrelated_or_scheduled_cart_items() {
+    for mode in [
+        "unrelated",
+        "scheduled",
+        "quantity",
+        "allocations",
+        "barcode",
+        "price",
+        "session",
+        "history",
+        "preference",
+    ] {
+        let mut input = immediate_manual_request("single");
+        let item = &mut input["decisionCardRequest"]["items"][0];
+        match mode {
+            "unrelated" => item["id"] = json!("user-cart-item"),
+            "scheduled" => {
+                item["purchaseAt"] = json!("2026-09-06T10:00:03Z");
+                item["requiredBy"] = json!("2026-09-06T10:00:03Z");
+            }
+            "quantity" => item["quantity"] = json!(1),
+            "allocations" => {
+                item["categoryAllocations"] =
+                    json!([{"categoryId": "food", "amount": money(2_000, "USD")}])
+            }
+            "barcode" => item["barcode"] = json!("123456789"),
+            "price" => {
+                item["priceProvenance"] = json!({"kind": "current_session_manual", "observedAt": EVALUATED_AT, "estimate": false})
+            }
+            "session" => item["routeSelection"]["sessionAccountId"] = json!("checking"),
+            "preference" => {
+                item["routeSelection"]["approvedPreference"] =
+                    json!({"accountId": "savings", "referenceId": "approved-route"})
+            }
+            "history" => {
+                item["routeSelection"]["historicalRoute"] =
+                    json!({"accountId": "savings", "referenceId": "prior-purchase"})
+            }
+            _ => unreachable!(),
+        }
+        let planned = plan(input.clone());
+        if mode == "scheduled" {
+            input["evaluatedAt"] = json!("2026-09-06T10:00:01Z");
+            assert_eq!(
+                verify(verify_request(
+                    planned.clone(),
+                    input.clone(),
+                    "preconditions"
+                ))["valid"],
+                true
+            );
+        }
+        input["evaluatedAt"] = json!("2026-09-06T10:00:07Z");
+        assert_eq!(
+            verify(verify_request(planned, input, "preconditions"))["valid"],
+            matches!(mode, "history" | "preference"),
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn approval_delay_keeps_current_evidence_expiry_clock() {
+    for kind in ["single", "split", "evidence"] {
+        let mut input = immediate_manual_request(kind);
+        account_fact_mut(&mut input, "checking")["freshnessEvidence"]["expiresAt"] =
+            json!("2026-09-06T10:00:05Z");
+        let planned = plan(input.clone());
+        input["evaluatedAt"] = json!("2026-09-06T10:00:04Z");
+        assert_eq!(
+            verify(verify_request(
+                planned.clone(),
+                input.clone(),
+                "preconditions"
+            ))["valid"],
+            true,
+            "{kind}: before evidence expiry"
+        );
+        input["evaluatedAt"] = json!("2026-09-06T10:00:05Z");
+        let result = verify(verify_request(planned, input, "preconditions"));
+        assert_eq!(result["valid"], false, "{kind}: at evidence expiry");
+        assert_eq!(result["reason"], "evidence_changed", "{kind}");
+    }
+}
+
+#[test]
+fn approval_delay_does_not_cross_utc_date_even_before_proposal_expiry() {
+    for kind in ["single", "split", "evidence"] {
+        let mut input = immediate_manual_request(kind);
+        let created_at = "2026-09-06T23:59:55Z";
+        input["evaluatedAt"] = json!(created_at);
+        input["decisionCardRequest"]["context"]["evaluatedAt"] = json!(created_at);
+        input["decisionCardRequest"]["context"]["horizon"]["startsAt"] = json!(created_at);
+        input["decisionCardRequest"]["financialSnapshot"]["capturedAt"] = json!(created_at);
+        input["decisionCardRequest"]["liquidityPolicy"]["expiresAt"] =
+            json!("2026-09-07T01:00:00Z");
+        input["decisionCardRequest"]["validUntil"] = json!("2026-09-07T00:30:00Z");
+        for item in input["decisionCardRequest"]["items"]
+            .as_array_mut()
+            .unwrap()
+        {
+            item["purchaseAt"] = json!(created_at);
+            item["requiredBy"] = json!(created_at);
+        }
+        let planned = plan(input.clone());
+        input["evaluatedAt"] = json!("2026-09-06T23:59:59Z");
+        assert_eq!(
+            verify(verify_request(
+                planned.clone(),
+                input.clone(),
+                "preconditions"
+            ))["valid"],
+            true,
+            "{kind}: same UTC date"
+        );
+        input["evaluatedAt"] = json!("2026-09-07T00:00:02Z");
+        let result = verify(verify_request(planned, input, "preconditions"));
+        assert_eq!(result["valid"], false, "{kind}: next UTC date");
+        assert_eq!(
+            result["reason"], "source_changed",
+            "{kind}: proposal is still unexpired"
+        );
+    }
+}
+
+#[test]
+fn approval_delay_does_not_retime_extra_unrelated_or_scheduled_items() {
+    for kind in ["single", "split", "evidence"] {
+        for scheduled in [false, true] {
+            let mut input = immediate_manual_request(kind);
+            fund_food(&mut input, 3_000);
+            let mut extra = input["decisionCardRequest"]["items"][0].clone();
+            extra["id"] = json!("extra-cart-item");
+            extra["amount"] = money(500, "USD");
+            let mut extra_transaction = manual_transaction(money(-500, "USD"), vec![]);
+            extra_transaction["parentId"] = json!("extra-manual-parent");
+            extra_transaction["correlationId"] = json!("extra-manual-correlation");
+            input["intent"] = json!({"kind": "composite", "actions": [
+                input["intent"].clone(),
+                {"kind": "manual_transaction", "transaction": extra_transaction}
+            ]});
+            if scheduled {
+                extra["id"] = json!("extra-manual-parent");
+                extra["purchaseAt"] = json!("2026-09-06T10:00:03Z");
+                extra["requiredBy"] = extra["purchaseAt"].clone();
+            }
+            input["decisionCardRequest"]["items"]
+                .as_array_mut()
+                .unwrap()
+                .push(extra);
+            let planned = plan(input.clone());
+            if scheduled {
+                input["evaluatedAt"] = json!("2026-09-06T10:00:01Z");
+                assert_eq!(
+                    verify(verify_request(
+                        planned.clone(),
+                        input.clone(),
+                        "preconditions"
+                    ))["valid"],
+                    true,
+                    "{kind}: scheduled item is still in the future"
+                );
+            }
+            input["evaluatedAt"] = json!("2026-09-06T10:00:07Z");
+            let result = verify(verify_request(planned, input, "preconditions"));
+            assert_eq!(result["valid"], false, "{kind}: scheduled={scheduled}");
+            assert_eq!(
+                result["reason"], "source_changed",
+                "{kind}: scheduled={scheduled}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reallocation_cannot_authorize_a_purchase_that_still_needs_a_transfer() {
+    let mut input = request();
+    ledger_account_mut(&mut input, "checking")["balance"] = money(9_000, "USD");
+    account_fact_mut(&mut input, "checking")["recordedBalance"] = money(9_000, "USD");
+    assert_eq!(
+        plan_request(input).unwrap_err(),
+        "reallocation_not_safe_in_decision_card"
+    );
+}
+
+#[test]
+fn reallocation_readback_restores_legacy_budget_assignments_exactly() {
+    let mut input = request();
+    let mut categories = serde_json::Map::new();
+    for (id, amount) in [("food", 0), ("reserve", 6_000), ("reserve-two", 6_000)] {
+        categories.insert(id.into(), json!({"categoryId": id, "amount": money(amount, "USD"),
+            "carryover": money(0, "USD"), "carryoverFromPrevious": money(0, "USD"), "carriesOver": false}));
+    }
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"] =
+        json!([{"id": "budget-september", "month": "2026-09", "categories": categories}]);
+    let planned = plan(input.clone());
+    apply_reallocation_postconditions(&mut input);
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"][0]
+        ["categories"]["food"]["amount"] = money(2_000, "USD");
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"][0]
+        ["categories"]["reserve"]["amount"] = money(4_000, "USD");
+    assert_eq!(
+        verify(verify_request(
+            planned.clone(),
+            input.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    for change in ["amount", "currency", "duplicate", "missing"] {
+        let mut changed = input.clone();
+        let budgets =
+            &mut changed["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["budgets"];
+        match change {
+            "amount" => budgets[0]["categories"]["reserve"]["amount"] = money(3_999, "USD"),
+            "currency" => budgets[0]["categories"]["reserve"]["amount"] = money(4_000, "EUR"),
+            "duplicate" => {
+                let duplicate = budgets[0].clone();
+                budgets.as_array_mut().unwrap().push(duplicate);
+            }
+            "missing" => {
+                budgets[0]["categories"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("reserve");
+            }
+            _ => unreachable!(),
+        }
+        let result = verify(verify_request(planned.clone(), changed, "postconditions"));
+        assert_eq!(result["valid"], false, "{change}");
+        assert_eq!(result["reason"], "source_changed", "{change}");
+    }
+}
+
+#[test]
+fn resolved_split_evidence_requires_exact_checked_conservation() {
+    let mut input = evidence_projection_request();
+    let transaction = &mut input["intent"]["transaction"];
+    transaction["categoryId"] = Value::Null;
+    transaction["splits"] = json!([
+        {"categoryId": "food", "amount": money(-200, "USD")},
+        {"categoryId": "food", "amount": money(-300, "USD")}
+    ]);
+    let splits = transaction["splits"].clone();
+    let effect =
+        &mut input["decisionCardRequest"]["financialSnapshot"]["observations"][1]["ledgerEffect"];
+    effect["categoryId"] = Value::Null;
+    effect["splits"] = splits;
+    let planned = plan(input.clone());
+    assert_eq!(
+        verify(verify_request(planned, input.clone(), "preconditions"))["valid"],
+        true
+    );
+    for (change, reason) in [
+        ("sum", "invalid_economic_event_ledger_effect"),
+        ("category", "invalid_economic_event_ledger_effect"),
+        ("currency", "invalid_economic_event_ledger_effect"),
+        ("overflow", "money_arithmetic_overflow"),
+    ] {
+        let mut changed = input.clone();
+        let splits = &mut changed["decisionCardRequest"]["financialSnapshot"]["observations"][1]
+            ["ledgerEffect"]["splits"];
+        match change {
+            "sum" => splits[1]["amount"] = money(-301, "USD"),
+            "category" => splits[0]["categoryId"] = json!(" "),
+            "currency" => splits[0]["amount"] = money(-200, "EUR"),
+            "overflow" => {
+                splits[0]["amount"] = money(i64::MIN, "USD");
+                splits[1]["amount"] = money(-1, "USD");
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(plan_request(changed).unwrap_err(), reason, "{change}");
+    }
+}
+
+#[test]
+fn manual_payee_resolution_requires_complete_unambiguous_coverage() {
+    let input = immediate_manual_request("single");
+    for coverage in ["unknown", "partial", "unavailable"] {
+        let mut changed = input.clone();
+        changed["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!(coverage);
+        assert_eq!(
+            plan_request(changed).unwrap_err(),
+            "manual_payee_coverage_incomplete",
+            "{coverage}"
+        );
+    }
+    let mut ambiguous = input.clone();
+    ambiguous["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!("complete");
+    ambiguous["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"] = json!([
+        {"id": "shop-1", "name": "Local shop", "transferAccountId": null, "mtid": null},
+        {"id": "shop-2", "name": " Local shop ", "transferAccountId": null, "mtid": null}
+    ]);
+    assert_eq!(
+        plan_request(ambiguous.clone()).unwrap_err(),
+        "manual_payee_ambiguous"
+    );
+    ambiguous["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] = json!("empty");
+    assert_eq!(
+        plan_request(ambiguous).unwrap_err(),
+        "manual_payee_coverage_incomplete"
+    );
+    let mut unnamed = input;
+    unnamed["intent"]["transaction"]["payeeName"] = Value::Null;
+    let planned = plan(unnamed.clone());
+    assert_eq!(planned["source"]["manualPayeeBindings"], json!([]));
+    let transaction = unnamed["intent"]["transaction"].clone();
+    apply_manual_postconditions(&mut unnamed, &transaction, 11_000, 0);
+    assert_eq!(
+        verify(verify_request(planned, unnamed, "postconditions"))["valid"],
+        true
+    );
+}
+
+#[test]
+fn action_clock_and_resolved_evidence_reject_invalid_external_identities() {
+    for evaluated_at in [
+        "2026-09-06T10:00:00+00:00",
+        "2026-09-06T10:00:00.Z",
+        "2026-09-06T10:00:00.1234567890Z",
+        "2026-09-06T24:00:00Z",
+        "2026-09-06T10:60:00Z",
+        "2026-09-06T10:00:60Z",
+        "2026-09-06T1a:00:00Z",
+        "2026-02-29T10:00:00Z",
+    ] {
+        let mut input = request();
+        input["evaluatedAt"] = json!(evaluated_at);
+        assert_eq!(
+            plan_request(input).unwrap_err(),
+            "invalid_evaluated_at",
+            "{evaluated_at}"
+        );
+    }
+    for (field, value, reason) in [
+        ("evidenceId", " ", "invalid_or_duplicate_evidence"),
+        ("subjectId", "", "invalid_or_duplicate_evidence"),
+        ("contentHash", " ", "invalid_evidence_identity"),
+        ("version", " ", "invalid_evidence_identity"),
+    ] {
+        let mut input = request();
+        input["resolvedEvidence"][0][field] = json!(value);
+        assert_eq!(plan_request(input).unwrap_err(), reason, "{field}");
+    }
+}
+
+#[test]
+fn supplemental_authority_rejects_duplicate_and_aliased_obligations() {
+    let mut input = immediate_manual_request("single");
+    add_user_attested_flow_and_obligation(&mut input, "checking");
+    assert!(plan_request(input.clone()).is_ok());
+    for (change, reason) in [
+        ("account", "invalid_or_duplicate_supplemental_account"),
+        ("field", "duplicate_supplemental_field"),
+        ("source", "supplemental_field_source_mismatch"),
+        (
+            "obligation_alias",
+            "invalid_supplemental_obligation_binding",
+        ),
+        (
+            "obligation_baseline",
+            "invalid_supplemental_obligation_binding",
+        ),
+        ("flow_alias", "invalid_supplemental_flow_binding"),
+    ] {
+        let mut changed = input.clone();
+        match change {
+            "account" => {
+                let duplicate = changed["supplementalObservations"][0].clone();
+                changed["supplementalObservations"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "field" => {
+                changed["supplementalObservations"][0]["fields"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("currency"));
+            }
+            "source" => {
+                account_fact_mut(&mut changed, "checking")["currencyEvidence"]["source"] =
+                    json!("actual_ledger")
+            }
+            "obligation_alias" => {
+                let account = account_fact_mut(&mut changed, "checking");
+                let mut alias = account["obligations"][0].clone();
+                alias["id"] = json!("second-name-for-same-obligation");
+                account["obligations"].as_array_mut().unwrap().push(alias);
+            }
+            "obligation_baseline" => {
+                let account = account_fact_mut(&mut changed, "checking");
+                account["baselineTransactionIds"] = json!(["already-counted"]);
+                account["obligations"][0]["matchedTransactionIds"] = json!(["already-counted"]);
+            }
+            "flow_alias" => {
+                let account = account_fact_mut(&mut changed, "checking");
+                let mut alias = account["unsettledFlows"][0].clone();
+                alias["id"] = json!("second-name-for-same-flow");
+                account["unsettledFlows"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(alias);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(plan_request(changed).unwrap_err(), reason, "{change}");
+    }
+}
+
+#[test]
+fn recovery_rejects_ambiguous_created_payees_and_duplicate_actual_projections() {
+    let (planned, input) = shared_new_payee_readback("complete");
+    assert_eq!(
+        verify(verify_request(
+            planned.clone(),
+            input.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    for change in [
+        "payee_duplicate",
+        "payee_name",
+        "payee_transfer",
+        "payee_import",
+        "observation_duplicate",
+        "baseline_duplicate",
+        "flow_duplicate",
+        "flow_matching",
+        "cleared",
+    ] {
+        let mut changed = input.clone();
+        let snapshot = &mut changed["decisionCardRequest"]["financialSnapshot"];
+        match change {
+            "payee_duplicate" => {
+                let duplicate = snapshot["legacySnapshot"]["payees"][0].clone();
+                snapshot["legacySnapshot"]["payees"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "payee_name" => snapshot["legacySnapshot"]["payees"][0]["name"] = json!("Other shop"),
+            "payee_transfer" => {
+                snapshot["legacySnapshot"]["payees"][0]["transferAccountId"] = json!("savings")
+            }
+            "payee_import" => {
+                snapshot["legacySnapshot"]["payees"][0]["mtid"] = json!("externally-imported")
+            }
+            "observation_duplicate" => {
+                let duplicate = snapshot["observations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|observation| observation["kind"] == "pending_activity")
+                    .unwrap()
+                    .clone();
+                snapshot["observations"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "baseline_duplicate" => {
+                let account = account_fact_mut(&mut changed, "checking");
+                account["baselineTransactionIds"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("manual-parent-2"));
+            }
+            "flow_duplicate" => {
+                let account = account_fact_mut(&mut changed, "checking");
+                let duplicate = account["unsettledFlows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|flow| flow["id"] == "manual-parent-2")
+                    .unwrap()
+                    .clone();
+                account["unsettledFlows"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "flow_matching" => {
+                let account = account_fact_mut(&mut changed, "checking");
+                let flow = account["unsettledFlows"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|flow| flow["id"] == "manual-parent-2")
+                    .unwrap();
+                flow["matchedTransactionIds"] = json!(["unrelated-bank-row"]);
+            }
+            "cleared" => snapshot["legacySnapshot"]["transactions"][0]["cleared"] = json!(true),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            verify(verify_request(planned.clone(), changed, "postconditions"))["valid"],
+            false,
+            "{change}"
+        );
+    }
+}
+
+#[test]
+fn transfer_invalidates_attested_card_credit_without_reusing_its_authority() {
+    let mut input = request();
+    input["intent"] = json!({"kind": "transfer", "transferId": "credit-payment", "correlationId": "credit-payment-correlation",
+        "sourceAccountId": "checking", "destinationAccountId": "savings", "amount": money(1_000, "USD"), "date": "2026-09-06"});
+    ledger_account_mut(&mut input, "savings")["balance"] = money(-5_000, "USD");
+    let savings = account_fact_mut(&mut input, "savings");
+    savings["recordedBalance"] = money(-5_000, "USD");
+    savings["kind"] = json!("credit");
+    savings["credit"] = json!({
+        "authorizationAvailable": money(5_000, "USD"), "pendingIncludedInAuthorization": true,
+        "paymentAccountId": "checking", "paymentCategoryId": "reserve", "dueAt": "2026-09-20T09:00:00Z",
+        "reservedCash": money(0, "USD"), "economicObligationId": "card-payment-obligation",
+        "evidence": savings["kindEvidence"].clone()
+    });
+    category_fact_mut(&mut input, "reserve")["kind"] = json!("credit_payment");
+    for account_id in ["checking", "savings"] {
+        add_legacy_account_from_current_ledger(&mut input, account_id);
+    }
+    add_supplemental_observations(&mut input, &["savings"]);
+    input["supplementalObservations"][0]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("credit"));
+    recapture_actual_source(&mut input, EVALUATED_AT);
+    set_actual_base_balance_evidence(&mut input, "savings", EVALUATED_AT);
+    let planned = plan(input.clone());
+    assert!(
+        planned["source"]["invalidatedSupplementalFacts"][0]["paths"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("credit"))
+    );
+    let mut false_provenance = input.clone();
+    account_fact_mut(&mut false_provenance, "savings")["credit"]["evidence"]["source"] =
+        json!("actual_ledger");
+    assert_eq!(
+        plan_request(false_provenance).unwrap_err(),
+        "supplemental_field_source_mismatch"
+    );
+    apply_transfer_postconditions(
+        &mut input,
+        "credit-payment",
+        "credit-payment-correlation",
+        true,
+    );
+    ledger_account_mut(&mut input, "savings")["balance"] = money(-4_000, "USD");
+    recapture_actual_source(&mut input, "2026-09-06T10:01:00Z");
+    apply_actual_account_projection(&mut input, "savings", "2026-09-06T10:01:00Z");
+    let recovered = verify(verify_request(
+        planned.clone(),
+        input.clone(),
+        "postconditions",
+    ));
+    assert_eq!(recovered["valid"], true, "{recovered}");
+    let mut retained_credit = input.clone();
+    account_fact_mut(&mut retained_credit, "savings")["credit"] = json!({
+        "authorizationAvailable": money(5_000, "USD"), "pendingIncludedInAuthorization": true,
+        "paymentAccountId": "checking", "paymentCategoryId": "reserve", "dueAt": "2026-09-20T09:00:00Z",
+        "reservedCash": money(0, "USD"), "economicObligationId": "card-payment-obligation",
+        "evidence": actual_fact_evidence("unknown", "2026-09-06T10:01:00Z", &[])
+    });
+    assert_eq!(
+        verify(verify_request(planned, retained_credit, "postconditions"))["valid"],
+        false
+    );
+}
+
+#[test]
+fn legacy_manual_readback_preserves_existing_payees_and_allows_no_payee() {
+    for named in [false, true] {
+        let mut input = immediate_manual_request("single");
+        if named {
+            input["decisionCardRequest"]["financialSnapshot"]["coverage"]["payees"] =
+                json!("complete");
+            input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"] = json!([
+                {"id": "existing-shop", "name": "Local shop", "transferAccountId": null, "mtid": null}
+            ]);
+        } else {
+            input["intent"]["transaction"]["payeeName"] = Value::Null;
+        }
+        add_legacy_account_from_current_ledger(&mut input, "checking");
+        recapture_actual_source(&mut input, EVALUATED_AT);
+        let planned = plan(input.clone());
+        let transaction = input["intent"]["transaction"].clone();
+        apply_manual_postconditions(&mut input, &transaction, 11_000, 0);
+        set_legacy_account_balance(&mut input, "checking", money(11_000, "USD"));
+        input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"] = json!([{
+            "id": transaction["parentId"], "accountId": "checking", "date": "2026-09-06",
+            "payeeId": if named { json!("existing-shop") } else { Value::Null }, "payeeName": transaction["payeeName"],
+            "categoryId": "food", "categoryName": null, "amount": money(-2_000, "USD"), "cleared": false,
+            "reconciled": false, "importedId": null, "importedPayee": null, "notes": null, "tags": [],
+            "transferAccountId": null, "subtransactions": []
+        }]);
+        assert_eq!(
+            verify(verify_request(
+                planned.clone(),
+                input.clone(),
+                "postconditions"
+            ))["valid"],
+            true,
+            "named={named}"
+        );
+        let mut wrong_payee = input.clone();
+        wrong_payee["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"]
+            [0]["payeeId"] = json!("different-shop");
+        assert_eq!(
+            verify(verify_request(
+                planned.clone(),
+                wrong_payee,
+                "postconditions"
+            ))["valid"],
+            false,
+            "named={named}"
+        );
+        if named {
+            let mut wrong_binding = input.clone();
+            wrong_binding["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]
+                ["transactions"][0]["payeeId"] = json!("second-shop");
+            wrong_binding["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["payees"].as_array_mut().unwrap().push(json!({
+                "id": "second-shop", "name": "Local shop", "transferAccountId": null, "mtid": null
+            }));
+            assert_eq!(
+                verify(verify_request(planned, wrong_binding, "postconditions"))["valid"],
+                false
+            );
+        }
+    }
+}
+
+#[test]
+fn ledger_contract_rejects_orphaned_and_duplicate_financial_rows() {
+    for (change, reason) in [
+        ("account", "invalid_or_duplicate_ledger_account"),
+        ("category", "invalid_or_duplicate_ledger_category"),
+        ("assignment", "invalid_or_duplicate_assignment"),
+        ("wallet", "invalid_or_duplicate_wallet_mapping"),
+        ("transaction_account", "transaction_account_missing"),
+        (
+            "transaction_date",
+            "invalid_or_duplicate_ledger_transaction",
+        ),
+        (
+            "transaction_split",
+            "invalid_or_duplicate_ledger_transaction",
+        ),
+        (
+            "transaction_transfer",
+            "transaction_transfer_account_missing",
+        ),
+    ] {
+        let mut input = request();
+        match change {
+            "account" => {
+                let duplicate = input["currentLedger"]["accounts"][0].clone();
+                input["currentLedger"]["accounts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "category" => {
+                let duplicate = input["currentLedger"]["categories"][0].clone();
+                input["currentLedger"]["categories"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "assignment" => {
+                input["currentLedger"]["assignments"][0]["asOfMonth"] = json!("2026-13")
+            }
+            "wallet" => {
+                input["currentLedger"]["wallets"] =
+                    json!([{"walletId": "orphan-wallet", "accountId": "missing-account"}])
+            }
+            _ => {
+                let mut transaction =
+                    actual_manual_row(&manual_transaction(money(-100, "USD"), vec![]));
+                match change {
+                    "transaction_account" => transaction["accountId"] = json!("missing-account"),
+                    "transaction_date" => transaction["date"] = json!("2026-09-31"),
+                    "transaction_split" => {
+                        transaction["splits"] = json!([{"categoryId": "missing-category", "amount": money(-100, "USD")}])
+                    }
+                    "transaction_transfer" => {
+                        transaction["transferAccountId"] = json!("missing-account")
+                    }
+                    _ => unreachable!(),
+                }
+                input["currentLedger"]["transactions"] = json!([transaction]);
+            }
+        }
+        assert_eq!(plan_request(input).unwrap_err(), reason, "{change}");
+    }
+}
+
+#[test]
+fn existing_transfer_mappings_require_distinct_exact_linked_ledger_rows() {
+    let mut input = request();
+    apply_transfer_postconditions(
+        &mut input,
+        "existing-transfer",
+        "existing-correlation",
+        true,
+    );
+    input["intent"] = json!({"kind": "wallet_materialization", "walletId": "wallet-new-1",
+        "accountName": "Emergency savings", "currency": "USD"});
+    assert!(plan_request(input.clone()).is_ok());
+    for (change, reason) in [
+        ("duplicate", "invalid_or_duplicate_transfer_mapping"),
+        ("identity", "invalid_or_duplicate_transfer_mapping"),
+        ("source", "transfer_source_row_missing"),
+        ("destination", "transfer_destination_row_missing"),
+        ("same_row", "invalid_or_duplicate_transfer_mapping"),
+        ("counterparty", "transfer_mapping_mismatch"),
+        ("marker", "transfer_mapping_mismatch"),
+        ("amount", "transfer_mapping_mismatch"),
+        ("category", "transfer_mapping_mismatch"),
+    ] {
+        let mut changed = input.clone();
+        match change {
+            "duplicate" => {
+                let duplicate = changed["currentLedger"]["transfers"][0].clone();
+                changed["currentLedger"]["transfers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(duplicate);
+            }
+            "identity" => changed["currentLedger"]["transfers"][0]["correlationId"] = json!(" "),
+            "source" => {
+                changed["currentLedger"]["transfers"][0]["sourceTransactionId"] =
+                    json!("missing-source")
+            }
+            "destination" => {
+                changed["currentLedger"]["transfers"][0]["destinationTransactionId"] =
+                    json!("missing-destination")
+            }
+            "same_row" => {
+                changed["currentLedger"]["transfers"][0]["destinationTransactionId"] =
+                    changed["currentLedger"]["transfers"][0]["sourceTransactionId"].clone()
+            }
+            "counterparty" => {
+                changed["currentLedger"]["transactions"][0]["transferAccountId"] = Value::Null
+            }
+            "marker" => {
+                changed["currentLedger"]["transactions"][0]["notes"] = json!("other-marker")
+            }
+            "amount" => changed["currentLedger"]["transfers"][0]["amount"] = money(0, "USD"),
+            "category" => changed["currentLedger"]["transactions"][0]["categoryId"] = json!("food"),
+            _ => unreachable!(),
+        }
+        assert_eq!(plan_request(changed).unwrap_err(), reason, "{change}");
+    }
+}
+
+#[test]
+fn source_contract_requires_identity_coverage_and_nonfuture_resolution_observations() {
+    for (change, reason) in [
+        ("identity", "missing_action_identity"),
+        ("snapshot", "source_identity_mismatch"),
+        ("coverage", "source_coverage_incomplete"),
+        ("items", "purchase_card_required_for_category_action"),
+        ("composite", "composite_action_empty"),
+        ("future", "invalid_or_future_observation_time"),
+        ("scope", "invalid_economic_event_resolution_scope"),
+        ("resolved_metadata", "resolution_metadata_not_allowed"),
+    ] {
+        let mut input = request();
+        match change {
+            "identity" => input["idempotencyKey"] = json!(" "),
+            "snapshot" => {
+                input["decisionCardRequest"]["context"]["snapshotId"] = json!("different-source")
+            }
+            "coverage" => {
+                input["decisionCardRequest"]["financialSnapshot"]["coverage"]["accounts"] =
+                    json!("unknown")
+            }
+            "items" => input["decisionCardRequest"]["items"] = json!([]),
+            "composite" => input["intent"] = json!({"kind": "composite", "actions": []}),
+            "future" => {
+                input["decisionCardRequest"]["financialSnapshot"]["observations"][0]["observedAt"] =
+                    json!("2026-09-06T10:00:00.000000001Z")
+            }
+            "scope" => {
+                input["decisionCardRequest"]["financialSnapshot"]["observations"][1]["scope"] =
+                    json!({"kind": "global"})
+            }
+            "resolved_metadata" => {
+                input["decisionCardRequest"]["financialSnapshot"]["observations"][0]["state"] =
+                    json!("resolved")
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(plan_request(input).unwrap_err(), reason, "{change}");
+    }
+}
+
+#[test]
+fn actual_transfer_readback_removes_only_its_pair_and_unverified_credit_projection() {
+    let mut input = request();
+    input["intent"] = json!({"kind": "transfer", "transferId": "ledger-transfer-1", "correlationId": "transfer-correlation-1",
+        "sourceAccountId": "checking", "destinationAccountId": "savings", "amount": money(1_000, "USD"), "date": "2026-09-06"});
+    for account_id in ["checking", "savings"] {
+        add_legacy_account_from_current_ledger(&mut input, account_id);
+        set_actual_base_balance_evidence(&mut input, account_id, EVALUATED_AT);
+    }
+    add_supplemental_observations(&mut input, &["checking", "savings"]);
+    recapture_actual_source(&mut input, EVALUATED_AT);
+    let planned = plan(input.clone());
+    apply_transfer_postconditions(
+        &mut input,
+        "ledger-transfer-1",
+        "transfer-correlation-1",
+        true,
+    );
+    let legacy_rows: Vec<_> = input["currentLedger"]["transactions"].as_array().unwrap().iter().map(|transaction| {
+        json!({"id": transaction["parentId"], "accountId": transaction["accountId"], "date": transaction["date"],
+            "payeeId": null, "payeeName": null, "categoryId": null, "categoryName": null, "amount": transaction["amount"],
+            "cleared": false, "reconciled": false, "importedId": null, "importedPayee": null,
+            "notes": transaction["notes"], "tags": [], "transferAccountId": transaction["transferAccountId"], "subtransactions": []})
+    }).collect();
+    input["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]["transactions"] =
+        json!(legacy_rows);
+    set_legacy_account_balance(&mut input, "checking", money(12_000, "USD"));
+    set_legacy_account_balance(&mut input, "savings", money(21_000, "USD"));
+    recapture_actual_source(&mut input, "2026-09-06T10:01:00Z");
+    for account_id in ["checking", "savings"] {
+        apply_actual_account_projection(&mut input, account_id, "2026-09-06T10:01:00Z");
+    }
+    assert_eq!(
+        account_fact_mut(&mut input, "savings")["activityEvidence"]["reasons"],
+        json!(["manual_transfer_credit_unverified"])
+    );
+    assert_eq!(
+        verify(verify_request(
+            planned.clone(),
+            input.clone(),
+            "postconditions"
+        ))["valid"],
+        true
+    );
+    for change in [
+        "partial_pair",
+        "imported",
+        "counterparty",
+        "notes",
+        "duplicate_pair",
+    ] {
+        let mut changed = input.clone();
+        let rows = &mut changed["decisionCardRequest"]["financialSnapshot"]["legacySnapshot"]
+            ["transactions"];
+        match change {
+            "partial_pair" => {
+                rows.as_array_mut().unwrap().pop();
+            }
+            "imported" => rows[0]["importedId"] = json!("new-bank-import"),
+            "counterparty" => rows[0]["transferAccountId"] = json!("checking"),
+            "notes" => rows[0]["notes"] = json!("unrelated-row"),
+            "duplicate_pair" => {
+                let duplicate = rows[0].clone();
+                rows.as_array_mut().unwrap().push(duplicate);
+            }
+            _ => unreachable!(),
+        }
+        let result = verify(verify_request(planned.clone(), changed, "postconditions"));
+        assert_eq!(result["valid"], false, "{change}");
+        assert_eq!(result["reason"], "postcondition_mismatch", "{change}");
+    }
+}
+
+#[test]
+fn composite_manual_and_transfer_can_reach_the_exact_protected_buffer() {
+    for transfer_first in [false, true] {
+        let mut input = immediate_manual_request("single");
+        let manual = input["intent"].clone();
+        let transfer = json!({"kind": "transfer", "transferId": "buffer-boundary", "correlationId": "buffer-boundary-correlation",
+            "sourceAccountId": "checking", "destinationAccountId": "savings", "amount": money(1_000, "USD"), "date": "2026-09-06"});
+        input["intent"] = json!({"kind": "composite", "actions": if transfer_first { vec![transfer, manual] } else { vec![manual, transfer] }});
+        let planned = plan(input.clone());
+        assert!(planned["expectedPostconditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|condition| condition["kind"] == "account_balance"
+                && condition["accountId"] == "checking"
+                && condition["balance"] == money(10_000, "USD")));
+        assert_eq!(
+            verify(verify_request(planned, input, "preconditions"))["valid"],
+            true,
+            "transfer_first={transfer_first}"
+        );
+    }
 }

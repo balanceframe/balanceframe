@@ -25,6 +25,8 @@ import {
 import type { GovernancePolicyInput, GovernanceResourceRef } from '../src/governance-types.js';
 import type { ConsequentialActionExecutionIdentity } from '../src/types.js';
 import {
+  consequentialActionHoldKeys,
+  consequentialActionStableIdentity,
   canonicalProposalHash,
   canonicalProposalJson,
   CONSEQUENTIAL_ACTION_CAPABILITY_MAP,
@@ -322,7 +324,7 @@ function atomResources(atom: ActionAtom): Resource[] {
     case 'evidence_projection':
       add('account', atom.transaction.accountId);
       add('transaction', atom.transaction.parentId);
-      add('category', atom.transaction.categoryId);
+      if (atom.transaction.categoryId !== null) add('category', atom.transaction.categoryId);
       for (const split of atom.transaction.splits) add('category', split.categoryId);
       break;
     case 'wallet_materialization':
@@ -776,6 +778,90 @@ afterEach(() => {
 });
 
 describe('consequential_action workflow-store lifecycle', () => {
+  it.each(['4000', '4001'])('admits composite split debits with an exact %s gross approval threshold', async (threshold) => {
+    const intent = structuredClone(actionFixture.compositeIntent);
+    const manual = atomsOf(intent).find((atom) => atom.kind === 'manual_transaction');
+    if (!manual || manual.kind !== 'manual_transaction') throw new Error('Canonical manual atom required');
+    manual.transaction.categoryId = null;
+    manual.transaction.splits = [
+      { categoryId: 'food', amount: MONEY(-1_200) },
+      { categoryId: 'food', amount: MONEY(-800) },
+    ];
+    const { plan } = makePlan({ intent, idempotencyKey: 'composite-split-governance' });
+    const current = store.governance.getPolicy({ spaceId })!;
+    store.governance.setPolicy({
+      spaceId, expectedVersion: current.version,
+      policy: { minimumApprovers: 2, assistanceMaximum: 'execute_approved_actions',
+        approvalThresholds: [{ currency: 'USD', amountMinorUnits: threshold, requiredApprovers: 4 }] },
+      now: currentTime(), auth: ownerAuth('owner'),
+    });
+    const operations = proposalFacts(plan).operations;
+    expect(operations.filter((operation) => operation.direction === 'outgoing')
+      .map((operation) => operation.amount?.minorUnits)).toEqual(['2000', '1200', '800']);
+    setAssistanceMaximum('execute_approved_actions');
+    grantActionActors(plan);
+    const proposal = await createActionProposal(plan);
+    await approve(proposal, 'approver-a');
+    await approve(proposal, 'approver-b');
+    expect(proposalState(proposal.id).phase).toBe('proposed');
+    await approve(proposal, 'approver-c');
+    expect(proposalState(proposal.id).phase).toBe(threshold === '4000' ? 'proposed' : 'approved');
+    await approve(proposal, 'approver-d');
+    expect(proposalState(proposal.id).phase).toBe('approved');
+  });
+
+  it('rejects changed native source and financial policy bindings before authorizing resources', () => {
+    const { plan } = makePlan();
+    const preconditions = preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash);
+    for (const changed of [
+      { ...preconditions, nativeActionHash: 'changed' },
+      { ...preconditions, nativeSource: { ...plan.source, financialPolicyVersion: 'changed' } },
+      { ...preconditions, financialApprovalPolicy: { version: 'changed', policyHash: 'changed' } },
+      { ...preconditions, financialApprovalPolicy: { version: plan.source.financialPolicyVersion, policyHash: ' ' } },
+    ]) expect(() => proposalFacts(plan, changed)).toThrow(/source/);
+  });
+
+  it('counts composite manual and evidence debits in disclosure limits', () => {
+    for (const [intent, expected] of [
+      [actionFixture.compositeIntent, 4_000n],
+      [actionFixture.evidenceProjectionIntent, 500n],
+    ] as const) {
+      const { plan } = makePlan({ intent });
+      expect(deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan },
+        preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash), 'detail').grossOutgoing)
+        .toEqual({ USD: expected });
+    }
+  });
+
+  it('refuses aggregate disclosure overflow instead of wrapping two individually valid amounts', () => {
+    const { plan } = makePlan();
+    if (plan.action.kind !== 'reallocation') throw new Error('Canonical reallocation required');
+    const assignment = plan.action.assignments[0]!;
+    plan.action.assignments = [
+      { ...assignment, amount: MONEY('9223372036854775807') },
+      { ...assignment, amount: MONEY(1) },
+    ];
+    expect(() => deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan },
+      preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash), 'detail'))
+      .toThrow('Proposal disclosure gross outgoing overflow');
+  });
+
+  it('binds evidence identity to economic effects and rejects missing native evidence hold references', () => {
+    const { plan } = makePlan({ intent: actionFixture.evidenceProjectionIntent });
+    if (plan.action.kind !== 'evidence_projection') throw new Error('Canonical evidence projection required');
+    const atom = plan.action;
+    expect(consequentialActionStableIdentity(atom)).toEqual({
+      parentId: atom.transaction.parentId, evidenceIds: atom.evidenceIds,
+      economicEffect: {
+        accountId: atom.transaction.accountId, date: atom.transaction.date,
+        amount: atom.transaction.amount, categoryId: atom.transaction.categoryId,
+        splits: atom.transaction.splits,
+      },
+    });
+    expect(() => consequentialActionHoldKeys({ ...plan, evidenceReferences: [] }, 'actual-fixture'))
+      .toThrow('Evidence projection lacks its exact native reference');
+  });
+
   it('counts nested Money without treating currency-only account metadata as an amount', () => {
     const { plan } = makePlan();
     const payload = { kind: 'consequential_action' as const, plan };
@@ -1351,6 +1437,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     });
     const firstWallet = makePlan({ intent: wallet('Emergency savings'), idempotencyKey: 'wallet-first' });
     const secondWallet = makePlan({ intent: wallet('Emergency savings renamed'), idempotencyKey: 'wallet-second' });
+    expect(consequentialActionStableIdentity(firstWallet.plan.action as ActionAtom)).toEqual({ walletId: 'wallet-stable-phase9' });
+    expect(deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan: firstWallet.plan },
+      preconditionsFor(firstWallet.plan, liquidityFixture.liquidityPolicy.policyHash), 'detail').grossOutgoing).toEqual({});
     grantActionActors(firstWallet.plan);
     grantActionActors(secondWallet.plan);
     await createActionProposal(firstWallet.plan);
@@ -1367,6 +1456,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     });
     const firstTransfer = makePlan({ intent: transfer('transfer-correlation-first'), idempotencyKey: 'transfer-first' });
     const secondTransfer = makePlan({ intent: transfer('transfer-correlation-second'), idempotencyKey: 'transfer-second' });
+    expect(consequentialActionStableIdentity(firstTransfer.plan.action as ActionAtom)).toEqual({ transferId: 'ledger-transfer-stable-phase9' });
+    expect(deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan: firstTransfer.plan },
+      preconditionsFor(firstTransfer.plan, liquidityFixture.liquidityPolicy.policyHash), 'detail').grossOutgoing).toEqual({ USD: 1_000n });
     grantActionActors(firstTransfer.plan);
     grantActionActors(secondTransfer.plan);
     await createActionProposal(firstTransfer.plan);

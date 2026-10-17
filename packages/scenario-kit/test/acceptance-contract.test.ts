@@ -47,6 +47,38 @@ describe('scenario acceptance coverage', () => {
     expect(() => verifyScenarioCoverage([record('funded-purchase')], selected)).not.toThrow();
   });
 
+  it('requires evidence refusal receipts from the story that exercised each boundary', () => {
+    const uncategorized = record('uncategorized-debit', ['uncategorized-evidence-projection-boundary-denied']);
+    const coapproval = record('coapproval-completion', [
+      'coapproval.scoped-proposal-visible-private-session-denied',
+      'coapproval.requester-excluded-independent-human-approvals-retained',
+      'coapproval.peer-execution-denied-owner-native-debit',
+      'coapproval-audit',
+      'split-manual-debit-approved-executed',
+      'wallet-materialization-replay-safe',
+      'economic-event-resolution-required',
+      'caller-resolved-evidence-rejected',
+    ]);
+    const others = completeRecords().filter(({ scenarioId }) =>
+      scenarioId !== uncategorized.scenarioId && scenarioId !== coapproval.scenarioId);
+    expect(() => verifyScenarioCoverage(
+      [...others, uncategorized, coapproval], SCENARIO_ACCEPTANCE_CONTRACT,
+    )).not.toThrow();
+
+    for (const [owner, other, branch] of [
+      [uncategorized, coapproval, 'uncategorized-evidence-projection-boundary-denied'],
+      [coapproval, uncategorized, 'economic-event-resolution-required'],
+      [coapproval, uncategorized, 'caller-resolved-evidence-rejected'],
+      [coapproval, uncategorized, 'split-manual-debit-approved-executed'],
+    ] as const) {
+      expect(() => verifyScenarioCoverage([
+        ...others,
+        { ...owner, branches: owner.branches.filter((value) => value !== branch) },
+        { ...other, branches: [...other.branches, branch] },
+      ], SCENARIO_ACCEPTANCE_CONTRACT)).toThrow(`${owner.scenarioId}:${branch}`);
+    }
+  });
+
   it.each(Object.keys(SCENARIO_ACCEPTANCE_CONTRACT))('rejects zero-exit coverage missing registered story %s', (id) => {
     const records = completeRecords().filter((entry) => entry.scenarioId !== id);
     expect(() => verifyScenarioCoverage(records, SCENARIO_ACCEPTANCE_CONTRACT)).toThrow();

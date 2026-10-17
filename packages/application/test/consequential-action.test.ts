@@ -284,6 +284,7 @@ function snapshot(state: SourceState, capturedAt = now): FinancialSnapshot {
       categories: 'complete' as const,
       budgets: 'complete' as const,
       transactions: state.transactionCoverage,
+      payees: state.payees.length ? 'complete' as const : 'empty' as const,
     },
     observations,
   };
@@ -312,8 +313,12 @@ function manualRow(input: ManualTransactionInput, id = input.parentId): Transact
     date: input.date,
     amount: money(String(input.amount)),
     categoryId: input.splits?.length ? null : input.categoryId ?? null,
+    payeeId: input.payeeName ? `manual-payee-${input.payeeName}` : null,
     payeeName: input.payeeName ?? null,
     notes: input.notes ?? null,
+    cleared: false,
+    reconciled: false,
+    tags: [],
     importedId: null,
     importedPayee: null,
     transferAccountId: null,
@@ -326,6 +331,9 @@ function manualRow(input: ManualTransactionInput, id = input.parentId): Transact
       categoryId: split.categoryId,
       payeeName: null,
       notes: null,
+      cleared: false,
+      reconciled: false,
+      tags: [],
       importedId: null,
       importedPayee: null,
       transferAccountId: null,
@@ -352,6 +360,9 @@ function transferRow(
     categoryId: null,
     payeeName: 'Transfer',
     notes: marker,
+    cleared: false,
+    reconciled: false,
+    tags: [],
     importedId: null,
     importedPayee: null,
     transferAccountId: counterparty,
@@ -558,8 +569,8 @@ async function createFixture(): Promise<Fixture> {
     ['evidence', 'checking-freshness'],
     ['evidence', 'economic-event-resolution-purchase-1'],
     ['evidence', 'checking'], ['evidence', 'bank-event-purchase-1'],
-    ['wallet', 'wallet-one'], ['transfer', 'transfer-one'],
-    ...['manual-single', 'manual-split', 'evidence-projection', 'manual-parent-composite-1']
+    ['wallet', 'wallet-one'], ['transfer', 'transfer-one'], ['transfer', 'transfer-prefix'],
+    ...['manual-single', 'manual-split', 'evidence-projection', 'manual-parent-composite-1', 'manual-current-decision-time', 'manual-prefix-transfer']
       .flatMap((id) => [['transaction', id], ['ledger_effect', id]] as const),
   ] as const;
   for (const [kind, id] of resources) {
@@ -638,6 +649,9 @@ async function createFixture(): Promise<Fixture> {
           };
         precondition.assertExecutionCurrent();
         writes.push({ kind: 'manual', parentId: input.parentId, amount: input.amount, splits: input.splits?.length ?? 0 });
+        if (input.payeeName && !state.payees.some((payee) => payee.name === input.payeeName))
+          state.payees.push({ id: `manual-payee-${input.payeeName}`, name: input.payeeName,
+            transferAccountId: null, mtid: null });
         state.transactions = [...state.transactions, manualRow(input)];
         state.accounts[input.accountId]!.balance += input.amount;
         for (const split of input.splits ?? []) state.spent[split.categoryId] = (state.spent[split.categoryId] ?? 0) + split.amount;
@@ -921,7 +935,7 @@ function manualIntent(parentId = 'manual-parent-1') {
     },
   };
 }
-async function proposal(fixture: Fixture, intent = reallocationIntent()) {
+async function proposal(fixture: Fixture, intent: unknown = reallocationIntent()) {
   try {
     const result = await fixture.service.propose(fixture.actor, intent);
     if (result.operation !== 'consequential_action') throw new Error('Consequential proposal required');
@@ -973,7 +987,25 @@ async function proposal(fixture: Fixture, intent = reallocationIntent()) {
     throw error;
   }
 }
-async function approveAndExecute(fixture: Fixture, intent = reallocationIntent()) {
+async function grantProposalDetail(fixture: Fixture, actor: LiquidityActor, proposalId: string) {
+  const stored = await fixture.store.getProposal(proposalId);
+  if (!stored || stored.operation !== 'consequential_action') throw new Error('Fixture action proposal required');
+  const reads = deriveProposalSourceReadFacts(
+    stored.operation, stored.payload, JSON.parse(stored.preconditions) as unknown, stored.budgetId,
+  );
+  if (!reads) throw new Error('Fixture action source-read closure required');
+  for (const required of reads.required)
+    fixture.grant(actor, required.resourceKind, required.resourceId, required.capability);
+  for (const resource of reads.resources)
+    if (!['account', 'category', 'transaction', 'rule'].includes(resource.resourceKind))
+      fixture.grant(actor, resource.resourceKind, resource.resourceId, 'full-read');
+}
+
+async function approveAndExecute(
+  fixture: Fixture,
+  intent: unknown = reallocationIntent(),
+  beforeExecute?: () => void,
+) {
   const proposed = await proposal(fixture, intent);
   const approver = await fixture.addMember(`approver-${proposed.id}`);
   const plan = proposed.payload.plan;
@@ -1007,6 +1039,7 @@ async function approveAndExecute(fixture: Fixture, intent = reallocationIntent()
       for (const evidenceId of action.evidenceIds)
         fixture.grant(approver, 'evidence', evidenceId, 'source');
   await fixture.approve(proposed.id, approver);
+  beforeExecute?.();
   return { proposed, approver, result: await fixture.service.execute(fixture.actor, proposed.id) };
 }
 
@@ -1494,7 +1527,7 @@ describe('common governed consequential-action service', () => {
           ['budget', fixture.actor.budgetId],
           ['account', 'checking'],
           ['category', 'food'],
-          ['category', 'reserve'],
+          ['category', 'reserve'], ['category', 'reserve-two'],
         ] as const) fixture.grant(target, kind, id, capability);
         for (const id of parentIds)
           for (const kind of ['transaction', 'ledger_effect'] as const)
@@ -1606,8 +1639,8 @@ describe('common governed consequential-action service', () => {
         categoryId: 'food',
         accountId: 'checking',
         amount: money('2000'),
-        purchaseAt: now,
-        requiredBy: now,
+        purchaseAt: '2026-09-06T10:02:00.000Z',
+        requiredBy: '2026-09-06T10:02:00.000Z',
       }],
     });
     fixture.grant(fixture.actor, 'session', session.id, 'session:view');
@@ -1616,6 +1649,9 @@ describe('common governed consequential-action service', () => {
       action: structuredClone(actionFixture.intent),
       decision: { origin: { sessionId: session.id, sessionVersion: session.version } },
     });
+    expect(created.decisionContext?.items).toMatchObject([
+      { purchaseAt: '2026-09-06T10:02:00.000Z', requiredBy: '2026-09-06T10:02:00.000Z' },
+    ]);
     const approver = await fixture.addMember(`saved-cart-time-${created.id}`);
     for (const [kind, id] of [
       ['budget', fixture.actor.budgetId],
@@ -1978,6 +2014,9 @@ describe('common governed consequential-action service', () => {
     await expect(fixture.service.execute(fixture.actor, created.id)).rejects.toThrow(/assignment source changed/i);
     const stored = await fixture.store.getProposal(created.id);
     expect(stored?.state).toMatchObject({ phase: 'invalidated_no_dispatch', effects: [] });
+    await expect(fixture.service.reconcile(fixture.actor, created.id)).resolves.toMatchObject({
+      phase: 'invalidated_no_dispatch',
+    });
     expect(fixture.writes).toEqual([]);
   });
   it('rechecks the manual transaction capability after awaited adapter reads and before SDK dispatch', async () => {
@@ -2122,6 +2161,7 @@ describe('common governed consequential-action service', () => {
   });
 
   it('binds server-derived manual decision items to the captured current time', async () => {
+    fixture.state.assignments.food = 500;
     const intent = manualIntent('manual-current-decision-time');
     intent.action.transaction.date = '2026-09-05';
 
@@ -2139,6 +2179,177 @@ describe('common governed consequential-action service', () => {
       }),
     ]);
   });
+  it.each(['single', 'split', 'evidence'] as const)(
+    'executes an immediate %s debit after the approval clock advances',
+    async (kind) => {
+      fixture.state.assignments.food = 1800;
+      const parentId = kind === 'evidence' ? 'evidence-projection' : `manual-${kind}`;
+      const transaction = manualIntent(parentId).action.transaction;
+      const event = fixture.state.resolution;
+      if (!event) throw new Error('Trusted economic event fixture required');
+      const action = kind === 'evidence'
+        ? { kind: 'evidence_projection' as const, transaction, evidenceIds: [event.evidenceId] }
+        : { kind: 'manual_transaction' as const, transaction: kind === 'split'
+          ? { ...transaction, categoryId: null, splits: [
+            { categoryId: 'food', amount: money('-300') },
+            { categoryId: 'reserve', amount: money('-200') },
+          ] }
+          : transaction };
+      const { proposed, result } = await approveAndExecute(fixture, { action }, () => {
+        fixture.setClock('2026-09-06T10:00:30.000Z');
+      });
+      expect(proposed.decisionContext?.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ purchaseAt: now, requiredBy: now }),
+      ]));
+      expect(result.phase).toBe('verified');
+      expect(fixture.writes).toEqual([
+        { kind: 'manual', parentId, amount: -500, splits: kind === 'split' ? 2 : 0 },
+      ]);
+    },
+  );
+
+  it('keeps an explicit cart deadline binding when its shape matches a composite manual debit', async () => {
+    const parentId = 'manual-parent-composite-1';
+    const reallocation = structuredClone(actionFixture.intent);
+    reallocation.assignments[0]!.amount = money('500');
+    const created = await proposal(fixture, {
+      action: { kind: 'composite', actions: [reallocation, manualIntent(parentId).action] },
+      decision: {
+        accountId: null,
+        items: [{
+          id: parentId, categoryId: 'food', accountId: 'checking',
+          amount: money('500'), purchaseAt: now, requiredBy: now,
+        }],
+      },
+    });
+    const approver = await fixture.addMember(`deadline-${created.id}`);
+    for (const capability of ['reallocation:approve', 'transaction:approve'])
+      for (const [kind, id] of [
+        ['budget', fixture.actor.budgetId], ['category', 'reserve'], ['category', 'food'],
+        ['account', 'checking'], ['transaction', parentId], ['ledger_effect', parentId],
+      ] as const) fixture.grant(approver, kind, id, capability);
+    await fixture.approve(created.id, approver);
+    fixture.setClock('2026-09-06T10:00:30.000Z');
+    await expect(fixture.service.execute(fixture.actor, created.id))
+      .rejects.toThrow(/precondition|expired|source|decision/i);
+    expect(fixture.writes).toEqual([]);
+  });
+
+  it('keeps saved-session deadlines binding when the cart matches a composite manual debit', async () => {
+    const parentId = 'manual-parent-composite-1';
+    const session = await fixture.liquidity.saveSession(fixture.actor, null, {
+      accountId: null,
+      expiresAt,
+      items: [{
+        id: parentId, categoryId: 'food', accountId: 'checking',
+        amount: money('500'), purchaseAt: now, requiredBy: now,
+      }],
+    });
+    for (const capability of ['session:view', 'full-read'])
+      fixture.grant(fixture.actor, 'session', session.id, capability);
+    const reallocation = structuredClone(actionFixture.intent);
+    reallocation.assignments[0]!.amount = money('500');
+    const created = await proposal(fixture, {
+      action: { kind: 'composite', actions: [reallocation, manualIntent(parentId).action] },
+      decision: { origin: { sessionId: session.id, sessionVersion: session.version } },
+    });
+    const approver = await fixture.addMember(`saved-deadline-${created.id}`);
+    for (const capability of ['reallocation:approve', 'transaction:approve'])
+      for (const [kind, id] of [
+        ['budget', fixture.actor.budgetId], ['category', 'reserve'], ['category', 'food'],
+        ['account', 'checking'], ['transaction', parentId], ['ledger_effect', parentId],
+      ] as const) fixture.grant(approver, kind, id, capability);
+    await fixture.approve(created.id, approver);
+
+    fixture.setClock('2026-09-06T10:00:30.000Z');
+    await expect(fixture.service.execute(fixture.actor, created.id))
+      .rejects.toThrow(/decision.*expired/i);
+    expect(fixture.writes).toEqual([]);
+    expect(await fixture.store.getProposal(created.id))
+      .toMatchObject({ state: { phase: 'invalidated_no_dispatch', effects: [] } });
+  });
+
+  it('rejects an elapsed requiredBy deadline even when the explicit purchaseAt remains future', async () => {
+    const intent = reallocationIntent();
+    intent.decision.items[0]!.purchaseAt = '2026-09-06T10:02:00.000Z';
+    await expect(approveAndExecute(fixture, intent, () => {
+      fixture.setClock('2026-09-06T10:00:30.000Z');
+    })).rejects.toThrow(/decision.*expired/i);
+    expect(fixture.writes).toEqual([]);
+  });
+
+  it('allows an explicit cart deadline exactly at the execution capture time', async () => {
+    const intent = reallocationIntent();
+    intent.decision.items[0]!.purchaseAt = '2026-09-06T10:00:30.000Z';
+    intent.decision.items[0]!.requiredBy = '2026-09-06T10:00:30.000Z';
+    const { result } = await approveAndExecute(fixture, intent, () => {
+      fixture.setClock('2026-09-06T10:00:30.000Z');
+    });
+    expect(result.phase).toBe('verified');
+    expect(fixture.writes).toHaveLength(2);
+  });
+
+  it('executes a future explicit cart with an appended immediate server-generated debit', async () => {
+    const parentId = 'manual-parent-composite-1';
+    const appendedParentId = 'manual-single';
+    const reallocation = structuredClone(actionFixture.intent);
+    reallocation.assignments[0]!.amount = money('1000');
+    const created = await proposal(fixture, {
+      action: { kind: 'composite', actions: [
+        reallocation, manualIntent(parentId).action, manualIntent(appendedParentId).action,
+      ] },
+      decision: {
+        accountId: null,
+        items: [{
+          id: 'future-explicit-purchase', categoryId: 'food', accountId: 'checking',
+          amount: money('500'), purchaseAt: '2026-09-06T10:02:00.000Z',
+          requiredBy: '2026-09-06T10:02:00.000Z',
+        }],
+      },
+    });
+    expect(created.decisionContext?.items).toMatchObject([
+      { id: 'future-explicit-purchase', purchaseAt: '2026-09-06T10:02:00.000Z' },
+      { id: appendedParentId, purchaseAt: now, requiredBy: now },
+    ]);
+    const approver = await fixture.addMember(`future-deadline-${created.id}`);
+    for (const capability of ['reallocation:approve', 'transaction:approve'])
+      for (const [kind, id] of [
+        ['budget', fixture.actor.budgetId], ['category', 'reserve'], ['category', 'food'],
+        ['account', 'checking'], ['transaction', parentId], ['ledger_effect', parentId],
+        ['transaction', appendedParentId], ['ledger_effect', appendedParentId],
+      ] as const) fixture.grant(approver, kind, id, capability);
+    await fixture.approve(created.id, approver);
+
+    fixture.setClock('2026-09-06T10:00:30.000Z');
+    await expect(fixture.service.execute(fixture.actor, created.id))
+      .resolves.toMatchObject({ phase: 'verified' });
+    expect(fixture.writes).toEqual([
+      { kind: 'assignment', month: '2026-09', categoryId: 'reserve', amount: 5000, expectedAmount: 6000 },
+      { kind: 'assignment', month: '2026-09', categoryId: 'food', amount: 1000, expectedAmount: 0 },
+      { kind: 'manual', parentId, amount: -500, splits: 0 },
+      { kind: 'manual', parentId: appendedParentId, amount: -500, splits: 0 },
+    ]);
+  });
+
+  it.each([false, true])('preserves prior historical routing and detects unrelated source drift (%s)', async (drift) => {
+    fixture.state.assignments.food = 1800;
+    const prior = manualRow({
+      parentId: 'prior-purchase', correlationId: 'prior-correlation', accountId: 'checking',
+      amount: -100, categoryId: 'food', date: '2026-09-05',
+    });
+    fixture.state.transactions = [prior];
+    fixture.state.transactionCoverage = 'complete';
+    await fixture.refreshObservations();
+    fixture.pauseBeforeManualFence = async () => {
+      if (drift) fixture.state.transactions = [{ ...prior, notes: 'unrelated external edit' }];
+    };
+    const { result } = await approveAndExecute(fixture, manualIntent('manual-single'));
+    expect(result.phase).toBe(drift ? 'review_required' : 'verified');
+    expect(fixture.writes).toEqual([
+      { kind: 'manual', parentId: 'manual-single', amount: -500, splits: 0 },
+    ]);
+  });
+
   it('reuses the manual/split and evidence-projection pipeline, deriving evidence only from current server source', async () => {
     fixture.state.assignments.food = 1800;
     const single = manualIntent('manual-single');
@@ -2299,6 +2510,7 @@ describe('common governed consequential-action service', () => {
     for (const capability of ['conclusion', 'observe', 'source', 'full-read'] as const)
       fixture.grant(result.approver, 'budget', fixture.actor.budgetId, capability);
     fixture.grant(result.approver, 'wallet', 'wallet-one', 'full-read');
+    await grantProposalDetail(fixture, result.approver, result.proposed.id);
     const approvalDetail = await fixture.service.getProposal(result.approver, result.proposed.id);
     expect(approvalDetail?.payload.plan.expectedPostconditions).toContainEqual(expect.objectContaining({
       kind: 'wallet_mapping', walletId: 'wallet-one',
@@ -2310,6 +2522,7 @@ describe('common governed consequential-action service', () => {
     for (const capability of ['conclusion', 'observe', 'source', 'full-read'] as const)
       fixture.grant(executor, 'budget', fixture.actor.budgetId, capability);
     fixture.grant(executor, 'wallet', 'wallet-one', 'full-read');
+    await grantProposalDetail(fixture, executor, result.proposed.id);
     const executionDetail = await fixture.service.getProposal(executor, result.proposed.id);
     expect(executionDetail?.payload.plan.expectedPostconditions).toContainEqual(expect.objectContaining({
       kind: 'wallet_mapping', walletId: 'wallet-one',
@@ -2337,6 +2550,7 @@ describe('common governed consequential-action service', () => {
       for (const capability of ['existence', 'history', 'name', 'source', 'balance', 'full-read'] as const)
         fixture.grant(result.approver, 'account', id, capability);
     fixture.grant(result.approver, 'transfer', 'transfer-one', 'full-read');
+    await grantProposalDetail(fixture, result.approver, result.proposed.id);
     const approvalDetail = await fixture.service.getProposal(result.approver, result.proposed.id);
     expect(approvalDetail?.payload.plan.expectedPostconditions).toContainEqual(expect.objectContaining({
       kind: 'transfer_ledger_entry', transferId: 'transfer-one',
@@ -2352,6 +2566,7 @@ describe('common governed consequential-action service', () => {
       for (const capability of ['existence', 'history', 'name', 'source', 'balance', 'full-read'] as const)
         fixture.grant(executor, 'account', id, capability);
     fixture.grant(executor, 'transfer', 'transfer-one', 'full-read');
+    await grantProposalDetail(fixture, executor, result.proposed.id);
     const executionDetail = await fixture.service.getProposal(executor, result.proposed.id);
     expect(executionDetail?.payload.plan.expectedPostconditions).toContainEqual(expect.objectContaining({
       kind: 'transfer_ledger_entry', transferId: 'transfer-one',
@@ -2453,6 +2668,8 @@ describe('common governed consequential-action service', () => {
     for (const [kind, id, capability] of [
       ['budget', fixture.actor.budgetId, 'reallocation:approve'],
       ['category', 'reserve', 'reallocation:approve'], ['category', 'food', 'reallocation:approve'],
+      ['budget', fixture.actor.budgetId, 'transaction:approve'],
+      ['category', 'food', 'transaction:approve'],
       ['account', 'checking', 'transaction:approve'],
       ['transaction', 'manual-parent-composite-1', 'transaction:approve'],
       ['ledger_effect', 'manual-parent-composite-1', 'transaction:approve'],
@@ -2464,7 +2681,7 @@ describe('common governed consequential-action service', () => {
     };
     fixture.grant(fixture.actor, 'wallet', 'wallet-two', 'wallet_materialization:propose');
     fixture.grant(fixture.actor, 'wallet', 'wallet-two', 'wallet_materialization:execute');
-    for (const capability of ['existence', 'history', 'name'] as const)
+    for (const capability of ['existence', 'history', 'name', 'full-read'] as const)
       fixture.grant(fixture.actor, 'wallet', 'wallet-two', capability);
     const walletProposal = await proposal(fixture, walletIntent);
     fixture.grant(approver, 'budget', fixture.actor.budgetId, 'wallet_materialization:approve');
@@ -2481,18 +2698,18 @@ describe('common governed consequential-action service', () => {
       readonly effects?: readonly {
         readonly atomIndex: number;
         readonly actionKind: string;
-        readonly stableIdentity: string;
+        readonly stableIdentity: unknown;
         readonly result: unknown;
       }[];
     } | undefined;
     expect(state?.effects).toEqual([
       expect.objectContaining({
         atomIndex: 0, actionKind: 'reallocation',
-        stableIdentity: expect.any(String), result: expect.any(Object),
+        stableIdentity: { assignments: actionFixture.intent.assignments }, result: expect.any(Object),
       }),
       expect.objectContaining({
         atomIndex: 1, actionKind: 'manual_transaction',
-        stableIdentity: expect.any(String), result: expect.any(Object),
+        stableIdentity: { parentId: 'manual-parent-composite-1' }, result: expect.any(Object),
       }),
     ]);
     await expect(fixture.service.execute(fixture.actor, walletProposal.id)).rejects.toThrow();
@@ -2506,14 +2723,52 @@ describe('common governed consequential-action service', () => {
       phase: 'review_required',
     });
     expect(fixture.writes).toEqual(writesAfterAmbiguousAction);
+    fixture.setClock('2026-09-07T10:00:00.000Z');
+    await expect(fixture.service.reconcile(fixture.actor, created.id)).resolves.toMatchObject({
+      phase: 'review_required',
+    });
+    expect(fixture.writes).toEqual(writesAfterAmbiguousAction);
+  });
+
+  it('refuses reconciliation of proposed and approved actions without acquiring or dispatching', async () => {
+    const created = await proposal(fixture, reallocationIntent());
+    const acquire = vi.spyOn(fixture.store, 'acquireProposalExecution');
+    await expect(fixture.service.reconcile(fixture.actor, created.id)).rejects.toThrow(/reconciliation/i);
+    const approver = await fixture.addMember(`reconcile-${created.id}`);
+    for (const [kind, id] of [
+      ['budget', fixture.actor.budgetId], ['category', 'reserve'], ['category', 'food'],
+    ] as const) fixture.grant(approver, kind, id, 'reallocation:approve');
+    await fixture.approve(created.id, approver);
+    await expect(fixture.service.reconcile(fixture.actor, created.id)).rejects.toThrow(/reconciliation/i);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(fixture.writes).toEqual([]);
+    expect(await fixture.store.getProposal(created.id)).toMatchObject({ state: { phase: 'approved' } });
+  });
+
+  it('refuses reconciliation without current action-read authority or the selected budget', async () => {
+    const { proposed } = await approveAndExecute(fixture);
+    const outsider = await fixture.addMember('reconcile-outsider');
+    await expect(fixture.service.reconcile(outsider, proposed.id))
+      .rejects.toThrow(/read authority/i);
+    await expect(fixture.service.reconcile({ ...fixture.actor, budgetId: 'other-budget' }, proposed.id))
+      .rejects.toThrow(/unavailable/i);
+    await expect(fixture.service.reconcile(fixture.actor, 'missing-proposal'))
+      .rejects.toThrow(/unavailable/i);
+    expect(fixture.writes).toHaveLength(2);
   });
 
   it('recovers only by readback after proposal expiry and cannot redispatch an expired action', async () => {
     let interruptPostcondition = true;
+    const verificationRequests: Array<{
+      phase?: string;
+      evaluatedAt: string;
+      decisionCardRequest: { context: { evaluatedAt: string }; validUntil: string };
+    }> = [];
     const native: ConsequentialActionNative = {
       planConsequentialAction: (input) => nativeModule.planConsequentialAction(input),
       verifyConsequentialAction: (input) => {
-        const request = JSON.parse(input) as { phase?: string };
+        const request = JSON.parse(input) as (typeof verificationRequests)[number];
+        verificationRequests.push(request);
         if (request.phase === 'postconditions' && interruptPostcondition) {
           interruptPostcondition = false;
           throw new Error('Simulated interruption before verification finalization');
@@ -2534,6 +2789,7 @@ describe('common governed consequential-action service', () => {
     };
     const created = await proposal(fixture, intent);
     const approver = await fixture.addMember(`expired-recovery-${created.id}`);
+    expect(created.decisionContext?.items).toMatchObject([{ purchaseAt: now, requiredBy: now }]);
     for (const [kind, id] of [
       ['budget', fixture.actor.budgetId], ['category', 'reserve'], ['category', 'food'],
     ] as const) fixture.grant(approver, kind, id, 'reallocation:approve');
@@ -2542,9 +2798,33 @@ describe('common governed consequential-action service', () => {
     expect(await fixture.service.execute(fixture.actor, created.id))
       .toMatchObject({ phase: 'review_required' });
     const writesBeforeRecovery = [...fixture.writes];
+    expect(await fixture.service.reconcile(fixture.actor, created.id))
+      .toMatchObject({ phase: 'review_required' });
+    fixture.setClock('2026-09-06T10:05:00.000Z');
+    expect(await fixture.service.reconcile(fixture.actor, created.id))
+      .toMatchObject({ phase: 'review_required' });
     fixture.setClock('2026-09-06T10:06:00.000Z');
+    expect(await fixture.service.reconcile(approver, created.id))
+      .toMatchObject({ phase: 'review_required' });
+    fixture.state.assignments.food! -= 1;
+    expect(await fixture.service.reconcile(fixture.actor, created.id))
+      .toMatchObject({ phase: 'review_required' });
+    expect(fixture.writes).toEqual(writesBeforeRecovery);
+    fixture.state.assignments.food! += 1;
+    expect(await fixture.service.reconcile(fixture.actor, created.id))
+      .toMatchObject({ phase: 'verified' });
+    expect(await fixture.service.reconcile(fixture.actor, created.id))
+      .toMatchObject({ phase: 'verified' });
     expect(await fixture.service.execute(fixture.actor, created.id))
       .toMatchObject({ phase: 'verified' });
+    expect(verificationRequests.at(-1)).toMatchObject({
+      phase: 'postconditions',
+      evaluatedAt: fixture.clockNow,
+      decisionCardRequest: {
+        context: { evaluatedAt: created.createdAt },
+        validUntil: created.expiresAt,
+      },
+    });
     expect(fixture.writes).toEqual(writesBeforeRecovery);
     expect(fixture.writes).toHaveLength(2);
   });
