@@ -18,9 +18,17 @@ Use these four roles actively for substantial feature work:
 | Role | Responsibility | Model and effort |
 | --- | --- | --- |
 | `planning` | Map requirements to current code, identify gaps and dependencies, and produce a concise implementation plan. | `gpt-6-astra`, `high` |
-| `implementation` | Implement the agreed scope with regression-first tests and verification. | Inherit the parent session. |
-| `correctness_review` | Independently review behavior, authorization, financial invariants, failure paths, and test evidence. | Inherit the parent session. |
-| `complexity_review` | Independently check for unnecessary scope, duplication, and simpler complete solutions. | Inherit the parent session. |
+| `implementation` | Implement the agreed scope with regression-first tests and verification. | `gpt-6.1-sol`, `high` |
+| `correctness_review` | Independently review behavior, authorization, financial invariants, failure paths, and test evidence. | `gpt-6.1-sol`, `high` |
+| `complexity_review` | Independently check for unnecessary scope, duplication, and simpler complete solutions. | `gpt-6.1-sol`, `high` |
+
+Limit this project to **two active subagents in addition to the lead**. Select
+`gpt-6.1-sol` with `high` reasoning explicitly for implementation and routine
+review. Reserve `gpt-6-astra` with `high` reasoning for planning or genuinely
+difficult decisions; do not repurpose an Astra planning worker for routine
+implementation or packaging. Do not rely on unknown inherited settings. If a
+running worker cannot be reconfigured, checkpoint and stop it before starting
+a replacement with explicit settings. Report unsupported model selection.
 
 Give parallel workers distinct file ownership and integrate dependent changes
 in order. Reviewers must not sign off their own implementation as independent
