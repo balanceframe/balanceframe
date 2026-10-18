@@ -44,6 +44,9 @@ jobs:
       - name: Lint workspace
         run: nix develop --command pnpm lint
 
+      - name: Test dependency security regressions
+        run: nix develop --command pnpm test:dependency-security
+
       - name: Validate offline deployment and release contracts
         run: nix develop .#release --command bash -c 'COMPOSE_BIN="$(command -v docker-compose)" just compose-validate'
 
