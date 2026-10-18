@@ -9,7 +9,7 @@ overrides:
 
 patchedDependencies:
   '@actual-app/api@26.10.0':
-    hash: b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9
+    hash: 04bc33c3160b56ef048a37f6f62fbca81635824106f6a58eb175ac9a68dd41d6
     path: patches/@actual-app__api@26.10.0.patch
   '@nuxt/devtools@3.4.3':
     hash: 2aafb5a532badb056eea388eeb1d267aa4deab566cfecffd6ac97e1ad523380d
@@ -81,7 +81,7 @@ importers:
     dependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
+        version: 26.10.0(patch_hash=04bc33c3160b56ef048a37f6f62fbca81635824106f6a58eb175ac9a68dd41d6)
       '@balanceframe/actual-adapter':
         specifier: workspace:*
         version: link:../../packages/actual-adapter
@@ -187,7 +187,7 @@ importers:
     dependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
+        version: 26.10.0(patch_hash=04bc33c3160b56ef048a37f6f62fbca81635824106f6a58eb175ac9a68dd41d6)
       '@balanceframe/protocol-generated':
         specifier: workspace:*
         version: link:../protocol-generated
@@ -275,7 +275,7 @@ importers:
     dependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
+        version: 26.10.0(patch_hash=04bc33c3160b56ef048a37f6f62fbca81635824106f6a58eb175ac9a68dd41d6)
       '@balanceframe/actual-adapter':
         specifier: workspace:*
         version: link:../actual-adapter
@@ -331,7 +331,7 @@ importers:
     devDependencies:
       '@actual-app/api':
         specifier: ^26.10.0
-        version: 26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)
+        version: 26.10.0(patch_hash=04bc33c3160b56ef048a37f6f62fbca81635824106f6a58eb175ac9a68dd41d6)
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
@@ -5451,7 +5451,7 @@ packages:
 
 snapshots:
 
-  '@actual-app/api@26.10.0(patch_hash=b7c644ae25ad5b2267fcb860807f8d7f97bf73a22ffb8e69d51730be419e9ec9)':
+  '@actual-app/api@26.10.0(patch_hash=04bc33c3160b56ef048a37f6f62fbca81635824106f6a58eb175ac9a68dd41d6)':
     dependencies:
       '@actual-app/core': 26.10.0
       '@actual-app/crdt': 3.1.3

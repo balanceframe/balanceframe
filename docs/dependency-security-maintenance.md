@@ -4,10 +4,9 @@ This maintenance branch starts at `4bdc5e6cece75b3c3ace64cfd1f2f6b28aad35ac`
 and preserves the separate `controlled_reallocation` branch and PR #34.
 The two leaf upgrades were committed as `051ce22`. The user subsequently approved
 groups A–F, the Actual SDK repair, compatible Nitro replacement and pinned forge
-backport. A–F, the forge mitigation and the subsequently approved Braces interim
-mitigation are implemented. The SDK repair is blocked during immutable package
-fetching; the Nitro owner replacement remains blocked by traversal compatibility.
-Neither blocked replacement has been applied.
+backport. A–F, the Forge and Braces interim mitigations, and the Actual Node SDK
+Handlebars repair are implemented. The Nitro owner replacement remains blocked
+by traversal compatibility; no replacement walker has been applied.
 
 ## Applied and verified
 
@@ -41,7 +40,8 @@ Verification completed:
 Groups A–F add 16 representative dependency regression/control tests, including
 bounded subprocesses for potentially nonterminating inputs and allocation guards
 for ZIP probes. The forge backport adds seven malformed/valid-signature tests.
-Together with ten Braces guards, all **33 dependency-security tests pass**, and CI runs them through
+Together with ten Braces guards and 13 embedded-SDK groups, all
+**46 dependency-security tests pass**, and CI runs them through
 `pnpm test:dependency-security`; the root `test` command includes them too.
 These tests cover each affected package, not every individual advisory variant.
 
@@ -82,6 +82,7 @@ Fresh `pnpm audit --json` results, using the same advisory service:
 | Approved leaf upgrades | 2 | 29 | 10 | 1 |
 | A–F plus forge source backport | 0 | 2 | 5 | 1 |
 | Braces interim guards checkpoint | 0 | 2 | 5 | 1 |
+| Actual Node SDK repair checkpoint | 0 | 2 | 5 | 1 |
 
 No new advisory appeared. Besides the three critical advisories above, the
 standalone Handlebars upgrade removes moderate
@@ -90,16 +91,20 @@ The two remaining high findings are `node-forge` and `braces`; neither interim
 source backport removes its published advisory. The audit still fails. The CI audit command currently catches that failure with
 `|| echo`; a green workflow step does not establish a clean audit.
 
-**The production Actual SDK still embeds Handlebars 4.7.9.** The installed and
-Nuxt production copies of `@actual-app/api/dist/index.js` are byte-identical,
-SHA-256 `adcce45c12250e9deef666632a33c0edb6b0e8988c79a13ddc0a90a9566c7269`.
-Updating the standalone dependency does not repair that bundled copy. The
-current published API release is still 26.10.0; no verified fixed release was
-found. The SDK's rule action can compile a truthy template without a runtime
-string check. First-party types describe strings, but a complete attacker path
-to an AST object has not been established. No application setting enabling
-`allowProtoMethodsByDefault` was found. These limits do not constitute a fix or
-an exemption.
+**The installed and production Actual Node SDK now embed Handlebars 4.7.10.**
+Their main bundles are byte-identical, SHA-256
+`1191509c5c629d99bdf6d4d96637c66abb3fe6e11da2428b4cec30d154ea58c7`.
+All 13 embedded-compiler tests pass against each copy, without loading the
+standalone Handlebars package. The installed SDK also ships its regenerated
+source map; Nitro omits that map from its traced production output. No Nitro
+settings changed. This is a local patch to API **26.10.0**, not a newly published
+fixed API version. Browser distribution and type artifacts are unchanged.
+
+The SDK rule action can compile a truthy template without a runtime string
+check. First-party types describe strings, but a complete attacker path to an
+AST object was not established. No application setting enabling
+`allowProtoMethodsByDefault` was found. Those reachability limits were not used
+as an exemption; the Node compiler and runtime regressions are now fixed.
 
 ## Approved and applied groups A–F
 
@@ -157,7 +162,7 @@ must be retained, not discarded. A direct `simple-git 4.0.1` override is a
 worse candidate: its published dependency still pins vulnerable
 `@simple-git/argv-parser 2.0.0`, and it crosses an owner major boundary.
 
-## Blocked remaining work and additional scope decisions
+## Interim mitigations and SDK rebuild provenance
 
 No published patched version exists for
 [`node-forge <=1.4.0`](https://github.com/advisories/GHSA-86w9-cpqp-85rv) or
@@ -237,8 +242,8 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   This checkpoint also passes root lint/types, Nuxt typecheck, all 1,991 web,
   371 adapter, 172 CLI and 147 contract tests, plus the full workspace build
   including native release compilation and Nuxt production output. The
-  production SDK hash remains unchanged; its embedded Handlebars issue below
-  is still unresolved.
+  production SDK was unchanged at that checkpoint; its subsequent embedded
+  Handlebars repair is described below.
 
   Fresh source-browser verification also passed in Chromium using a newly
   seeded canonical fixture, an isolated space and a real Better Auth owner
@@ -249,108 +254,97 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   financial write request, page error or console error occurred. Initial
   private-fixture identity/bootstrap and anonymous-denial assertion attempts
   were corrected and retained separately; they are not claimed as passes.
-- Embedded Handlebars: rebuilding official Actual 26.10.0 with Handlebars 4.7.10
-  and its isolated 516-entry build closure were approved on 2026-10-18.
-  Official npm provenance identifies source commit
+- Embedded Handlebars: the approved Node-only rebuild is applied. Official npm
+  provenance identifies Actual source commit
   [`2bebdbaae0b701120a8cad9d56aafd64fa04c577`](https://github.com/actualbudget/actual/tree/2bebdbaae0b701120a8cad9d56aafd64fa04c577).
-  Its immutable [yarn.lock](https://raw.githubusercontent.com/actualbudget/actual/2bebdbaae0b701120a8cad9d56aafd64fa04c577/yarn.lock)
-  has SHA-256 `0326284066b6f9f9297c671eb792b034f4435cb26c8b5bfbc89fb7fa5aebb5f9`:
-  2,730 external entries and 15 workspaces, not a verified minimum API closure.
-  A smaller metadata-derived API focus closure contains **516 external entries
-  and four workspaces**: API, core, CRDT and vite-plugin-peggy. All descriptors
-  resolve using the unchanged lock and its existing resolution rules; optional
-  platform variants are included. Its exact receipt has SHA-256
-  `80a318fb302a50cf6172471b3df6fb156c9c1f7dfbb1d0b2d1fdac7daeb39c5a`.
-  Relevant pinned tools include Yarn 4.17.1, Vite 8.1.5, Rolldown/native binding
-  1.1.5, `@oxc-project/types` 0.139.0, Vitest 5.0.0, Peggy 5.1.0, visualizer 7.0.1,
-  Lightning CSS 1.32.0 and TypeScript native preview 7.0.0-dev.20260421.2.
-  An isolated focus attempt was stopped before materializing packages. The
-  proposed command did not enforce immutability: Yarn 4.17.1's focus command
-  forwards only cache and `persistProject: false` to installation, whereas its
-  install command explicitly forwards `immutable` from configuration. Setting
-  `YARN_ENABLE_IMMUTABLE_INSTALLS=true` does not supply the omitted focus option.
-  This corrects the earlier metadata-only plan's assumption; an unchanged
-  on-disk lock is not proof of immutable resolution. Source and checked-in CLI
-  inspection plus an executable check of the extracted option expressions
-  establish the missing option; this was not a full runtime install trace.
-  A strictly frozen installation mechanism is still required before proceeding.
-  The attempt also stalled without report output; a Node HTTPS probe timed out
-  while curl reached the registry. Its exact stall location is unproven; no
-  network settings or lifecycle restrictions were changed. The process was
-  stopped successfully, with zero cached package ZIPs, no `node_modules`, and
-  all 18 source manifests, lock, configuration and CLI bytes unchanged.
-  Official npm integrity checks passed; the unpatched published Node bundle
-  SHA-256 is `fdfed936dac6ba6dc411bac27f94237a90c8cb0ea047a5d9d0d8a5d21ea9aa56`.
-  No baseline build or Handlebars substitution was attempted, so baseline
-  reproducibility has not been disproved or established. Preserve current Node
-  24.19.0, lifecycle restrictions and application/global settings. Stop on any
-  resolution outside the enumerated closure. First reproduce official baseline
-  bytes; then freeze every other
-  resolution, build the correction twice and explain all differences.
-  Preserve the existing grouped-query patch and verify embedded regressions,
-  ordinary rules/templates, grouped queries and installed/production bytes.
+  Its original lock SHA-256 is
+  `0326284066b6f9f9297c671eb792b034f4435cb26c8b5bfbc89fb7fa5aebb5f9`.
+  The isolated projection retains 521 exact underlying external resolutions,
+  four selected source workspaces and all 15 workspace records; 11 non-selected
+  manifests have their dependencies cleared. The earlier 516-record draft
+  omitted five official patch-resolver prerequisites and is not used.
+  Node 24.19.0, the checked-in Yarn 4.17.1 CLI, Vite 8.1.5 and Rolldown 1.1.5
+  remain pinned. Source, CLI, configuration, lifecycle restrictions and the
+  frozen 4,204-file/five-symlink projection were checked independently.
 
-  A disposable focused manifest/lock projection was subsequently authorized
-  as an implementation method and prepared for independent review only.
-  It preserves all 4,204 source files; only 11 non-selected manifests and the
-  lock differ. The four selected manifests, CLI, configuration and source
-  patches remain byte-identical. All 516 listed external records retain exact
-  fields and checksums, and the extracted pinned serializer round-trips the
-  full official lock byte-for-byte. These checks do not execute resolution.
-  Independent review found that the original 516-entry receipt omitted
-  resolver prerequisites. The pinned patch resolver needs the unpatched
-  `vite-plugin-node-polyfills@npm:0.28.0` source archive; built-in compatibility
-  hooks additionally need patch records for `fsevents 2.3.2`, `fsevents 2.3.3`,
-  `resolve 1.22.11` and `typescript 5.4.5`. All five records already exist in
-  the official lock; no new package name, version or transitive package was
-  identified. Dependency edges, root resolution rules, built-in compatibility
-  transformations and patch-source edges statically reach 521 external
-  records; no matching built-in package extensions were found. Exact-516 and
-  the intermediate 517-entry draft are therefore ineligible. The required
-  inventory correction is consolidated for the orchestrator; no installation,
-  fetch, linking or build ran, and full immutable-install compatibility remains
-  unverified. Preserve the failed drafts as review evidence rather than
-  silently widening their frozen inventories.
+  The initial immutable install stalled in Fetch. The parent authorized
+  command-local selection of the environment's existing proxy for Yarn;
+  its value was never logged or persisted. The retry passed in 22.136 seconds.
+  No proxy service, destination, TLS/CA, DNS, registry, authentication, global
+  configuration or hook trust changed. SQLite's build remained explicitly
+  disabled. A small generated-layout correction places existing source-map
+  0.6.1 at the root and 0.7.6 beneath rollup-plugin-visualizer, preserving both
+  declared consumer versions and package bytes. Only two generated Yarn
+  location entries change. This removes an otherwise explained difference in
+  region-comment paths without editing emitted output.
 
-  The orchestrator then authorized the corrected 521-record projection.
-  It was prepared and independently reviewed: all 521 external records and
-  656 descriptor aliases match the official lock and pinned resolver hooks;
-  all 4,204 regular files and five symlinks were checked, with only the 12
-  intended projection changes. The corrected helper has six passing tests,
-  including three regressions reproduced against its earlier implementation.
-  Frozen lock SHA-256:
-  `4ef68cca229f0cbffa9bb3e142be4568430823781bd5b65c86426103950c8db0`.
-  One unmodified `yarn install --immutable --json` attempt completed resolution
-  but rejected the lock with `YN0028` before fetching or linking. Its sole
-  proposed change removes two lines of generated optional metadata for
-  `glob-hasher-linux-arm64-gnu` from the non-selected root workspace record.
-  The root's optional dependency edge had been cleared, while the projection
-  copied this derived metadata from the original lock. No external record or
-  package version change was proposed. The process exited 1 in 0.466 seconds;
-  this was neither a timeout nor an access denial. All frozen source/lock bytes
-  and symlinks remain unchanged, with zero cached archives and no `node_modules`.
-  Work stopped at that unexpected-lock-delta gate; the parent then approved the
-  two-line metadata correction and independent handling of projection-only
-  normalizations preserving the approved external inventory and controls.
-  The corrected helper has eight passing tests, including generated-metadata
-  regressions. All 521 external records/checksums and 656 aliases remain exact;
-  source files, selected manifests, CLI, configuration and symlinks are frozen.
-  Normalized lock SHA-256:
-  `41771ccac3d8af7bd2af92fa9d9d1a162bd4135738f9fcbeb96a8bd9ced29040`.
+  Running the unchanged Node Vite command from the snapshot root reproduced
+  all 65 published Node artifacts exactly, twice, including main SHA-256
+  `fdfed936dac6ba6dc411bac27f94237a90c8cb0ea047a5d9d0d8a5d21ea9aa56`
+  and map SHA-256
+  `756a96361b4d16132e6f19e2f052c254be01bcd45c7ac943be6630ec714ec36d`.
+  Baseline bytes were accepted before the Handlebars substitution.
 
-  One stock `yarn install --immutable --json` retry passed resolution and
-  immutable validation, then timed out during Fetch after 90.016 seconds.
-  It terminated cleanly with no cached ZIPs, no root `node_modules` and all
-  frozen hashes unchanged, independently verified. No baseline build,
-  Handlebars substitution or repeated corrected builds have run. This is a
-  fetch-stage timeout, not a demonstrated access denial or reproducibility
-  failure. Read-only matched probes found curl GET reached the registry (200),
-  while Node HTTPS failed DNS with `EAI_AGAIN`. Pinned Yarn uses its own agents
-  and does not automatically consume the existing standard proxy environment.
-  This is consistent with a transport mismatch; the precise stalled Yarn
-  request is unknown. No proxy, DNS, TLS, registry, authentication, lifecycle,
-  CLI or global settings were changed. Further transport configuration needs
-  parent authorization before another bounded immutable retry.
+  The separate Handlebars 4.7.10 candidate changes only its exact lock record
+  and the minimist descriptor from `^1.2.5` to `^1.2.8`; already locked minimist
+  1.2.8 is reused. All 520 other external records/checksums and 15 workspace
+  records remain exact. All 118 target package files match retained published
+  integrity data. Stock Yarn checksum preparation skips linking; the reviewed,
+  frozen candidate then passes stock immutable installation in 7.515 seconds.
+  No new package fetch or build script runs in that final install. Normal Yarn
+  cleanup removes the unused old Handlebars cache archive; protected source
+  files and symlinks remain unchanged. Target lock SHA-256:
+  `1f507874abc3d901b01384fa28c759df3f669e9a7130952e46480970fbf632c8`.
+
+  Two corrected Node builds produce identical 65-artifact sets. Only main and
+  map differ from baseline; all differences are in 13 Handlebars module/source
+  regions, including its new node-types module. Other 63 artifacts and all
+  non-Handlebars source content remain exact. The final pnpm patch includes
+  the rebuilt main, the exact existing `rows.flatMap` grouped-query fix, and
+  the regenerated map. Its roughly 16.2 MB text size comes from replacing the
+  existing single-line map; no custom installer or loader is introduced.
+  Patch SHA-256:
+  `04bc33c3160b56ef048a37f6f62fbca81635824106f6a58eb175ac9a68dd41d6`.
+  Map SHA-256:
+  `e05a06fd3f235a035c5129d4a3a1009a2725c2385763da8ac185eda483ba895d`.
+  The inherited manual query-line change retains its pre-existing local
+  source-map column limitation; all rebuilt Handlebars mappings are updated.
+  Browser and type outputs are intentionally unchanged.
+
+  The patch uses ordinary unified text. Equal deletion/insertion pairs encode
+  tab-indented context so repository whitespace checks pass without changing
+  runtime bytes. Git reproduction uses `git apply --unidiff-zero`; pnpm's
+  actual patch engine and frozen offline installation produce all 89 expected
+  package payload files exactly. Root manifest/settings remain unchanged and
+  the lock changes only six API patch-hash references.
+
+  Thirteen embedded-compiler groups reproduce 11 failures and two passing
+  controls on the accepted old baseline, then all pass on installed and
+  production entries. They cover malformed AST fields, option paths, escaping,
+  prototype constructors, partials, iterator cleanup and ordinary behavior.
+  Malformed ASTs are not rendered and returned constructors are not invoked.
+  Standard V8-to-Istanbul measurement on added/replaced line locations within
+  the 13 changed Handlebars CJS sources gives **93.16% lines, 93.28% statements,
+  100% functions and 87.96% branch arms**. This is changed-code coverage, not
+  whole-bundle or whole-workspace coverage; no suppression was added.
+
+  Root security (46), web (1,991), adapter (371), CLI (172), contract (147) and
+  live Actual (102) tests pass, along with lint, root/Nuxt types and the full
+  workspace/native/Nuxt production build. A read-only canonical split query
+  returns parent -8000 and children -5000/-3000, preserves matching/unmatched
+  flags and returns an empty set for an absent amount. Independent correctness
+  and complexity reviews accept source, package scope and installed bytes.
+
+  Fresh Chromium source verification of the repaired SDK also passes with real
+  Better Auth and both authentication bypasses disabled. A new isolated space
+  explicitly selects the disposable budget after the live suite; this fixture
+  is no longer pristine. Sync returns 200 with 46 created/transitioned items
+  and zero failures, including Starting Balance at 1038.00 USD. Groceries is
+  present among 24 category options (23 fixture categories plus Uncategorized);
+  selecting it enables Confirm, and Cancel closes the dialog. No financial
+  write request or page/console error occurs. Browser contexts and both owned
+  servers are closed, ports 5396/5397 are closed, and the generated fixture
+  environment file is removed. No product changes were needed for verification.
 
 Do not suppress these advisories, rename a vulnerable package to conceal it,
 weaken audit checks, or claim a clean audit from an unverified source patch.
@@ -365,7 +359,7 @@ delivery of Handlebars, not another registry audit entry.
 | Root | Critical | High | Disposition |
 | --- | ---: | ---: | --- |
 | shell-quote | 1 | 0 | Applied leaf upgrade |
-| handlebars | 2 | 0 | Applied standalone upgrade; embedded copy unresolved |
+| handlebars | 2 | 0 | Standalone upgrade and embedded Node SDK repair applied; browser distribution unchanged |
 | fast-uri | 0 | 7 | A |
 | brace-expansion | 0 | 4 | A |
 | nanoid | 0 | 1 | A |
