@@ -480,13 +480,41 @@ describe('space governance HTTP controls', () => {
 
     expect(resultOf(await routes.setPolicy(request({
       params: { id: spaceId }, proof: true,
-      body: { expectedVersion: '1', policy: { minimumApprovers: 2, approvalThresholds: [], operationApprovers: { 'transfer.create': 3 } } },
-    }))).policy).toMatchObject({ version: '2', minimumApprovers: 2 });
+      body: { expectedVersion: '1', policy: { minimumApprovers: 2, approvalThresholds: [], operationApprovers: { 'transfer.create': 3 }, assistanceMaximum: 'execute_approved_actions' } },
+    }))).policy).toMatchObject({ version: '2', minimumApprovers: 2, assistanceMaximum: 'execute_approved_actions' });
     expect(await routes.setPolicy(request({
       params: { id: spaceId }, proof: true,
       body: { expectedVersion: '1', policy: { minimumApprovers: 1 } },
     }))).toMatchObject({ status: 'error', error: { code: 'POLICY_VERSION_CONFLICT' } });
     expect(records(resultOf(await routes.policy(request({ params: { id: spaceId } }))).history)).toHaveLength(2);
+  });
+  it.each([
+    'analysis_only',
+    'recommend_actions',
+    'create_approval_proposal',
+    'execute_approved_actions',
+  ] as const)('preserves versioned assistance maximum %s', async (assistanceMaximum) => {
+    const initial = store.governance.getPolicy({ spaceId });
+    if (!initial) throw new Error('Test space has no governance policy');
+    expect(initial.assistanceMaximum).toBe('analysis_only');
+    const result = resultOf(await routes.setPolicy(request({
+      params: { id: spaceId },
+      proof: true,
+      body: {
+        expectedVersion: initial.version,
+        policy: { minimumApprovers: 1, assistanceMaximum },
+      },
+    })));
+    expect(result.policy).toMatchObject({ assistanceMaximum, version: '2' });
+    const version = z.object({ version: z.string() }).parse(result.policy).version;
+    const preserved = resultOf(await routes.setPolicy(request({
+      params: { id: spaceId },
+      proof: true,
+      body: { expectedVersion: version, policy: { minimumApprovers: 2 } },
+    })));
+    expect(preserved.policy).toMatchObject({ assistanceMaximum, version: '3' });
+    expect(resultOf(await routes.policy(request({ params: { id: spaceId } }))).policy)
+      .toMatchObject({ assistanceMaximum });
   });
 
   it('issues bounded delegations and binds/revokes only a server-verified credential owner', async () => {

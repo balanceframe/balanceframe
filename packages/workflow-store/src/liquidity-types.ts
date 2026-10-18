@@ -282,6 +282,11 @@ export interface SessionCompletionCommand extends LiquidityActor {
 }
 export type ApproveSessionCompletionInput = SessionCompletionCommand;
 export type BeginSessionCompletionWriteInput = SessionCompletionCommand;
+/** Exact durable intent token checked synchronously against current source and authority before each SDK write. */
+export interface ValidateSessionCompletionWriteInput extends SessionCompletionCommand {
+  readonly intentId: string;
+}
+/** Adapter-observed write outcome; uncertainty remains initiated until reconciled. */
 export interface SessionCompletionWriteResult {
   readonly success: boolean;
   readonly verified: boolean;
@@ -291,9 +296,11 @@ export interface SessionCompletionWriteResult {
   readonly reviewRequired?: boolean;
   readonly evidenceId?: string;
 }
+/** Finishes or reconciles one write intent using its exact durable intent ID. */
 export interface FinishSessionCompletionWriteInput extends LiquidityActor {
   proposalId: string;
   payloadHash: string;
+  intentId: string;
   expectedVersion: number;
   idempotencyKey: string;
   now: string;
@@ -312,10 +319,15 @@ export interface SessionCompletionReconciliation {
 export interface ReconcileSessionCompletionInput extends SessionCompletionCommand {
   readonly evidence: SessionCompletionReconciliation;
 }
+/** Acquired dispatch fence with the durable intent ID and post-claim revision. */
 export type SessionCompletionWriteIntentResult = {
   readonly proposal: SessionCompletionProposalView;
   readonly payload: SessionCompletionPayload | null;
   readonly acquiredWriteIntent: boolean;
+  /** One-shot server identity; present on acquired and replayed intents. */
+  readonly intentId: string | null;
+  /** Claim revision held by this intent after its own claim transition. */
+  readonly claimSetRevision: string | null;
 };
 export interface SettlementVerificationContext {
   plan: TransferPlan;

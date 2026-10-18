@@ -234,9 +234,19 @@
               {{ formatAmount(path.after.destinationAvailability) }} destination
             </p>
           </div>
-          <ul v-if="path.tradeoffs.length" class="mt-2 list-disc pl-5 text-sm">
-            <li v-for="tradeoff in path.tradeoffs" :key="tradeoff">{{ tradeoff }}</li>
-          </ul>
+          <p v-if="canProposeReallocation(path)" class="mt-3 text-xs">
+            Proposal review does not write to the budget. Approval and execution are separate.
+          </p>
+          <button
+            v-if="canProposeReallocation(path)"
+            data-testid="propose-action"
+            type="button"
+            class="mt-2 rounded border px-3 py-1 text-sm disabled:opacity-50"
+            :disabled="proposalDisabled"
+            @click="proposeReallocation(path)"
+          >
+            Propose exact reallocation
+          </button>
         </template>
       </section>
     </section>
@@ -350,12 +360,44 @@
 </template>
 
 <script setup lang="ts">
+import type { ConsequentialActionIntent } from '@balanceframe/protocol-generated';
 import type { PublicDecisionCard, PublicLiquidityView } from '@balanceframe/application';
 
 defineOptions({ name: 'DecisionCardView' });
 
-const props = defineProps<{ card: PublicDecisionCard; catalog?: PublicLiquidityView }>();
-const emit = defineEmits<{ 'plan-transfer': [purchaseItemId: string] }>();
+const props = withDefaults(
+  defineProps<{ card: PublicDecisionCard; catalog?: PublicLiquidityView; proposalDisabled?: boolean }>(),
+  { proposalDisabled: false },
+);
+const emit = defineEmits<{
+  'plan-transfer': [purchaseItemId: string];
+  propose: [action: Extract<ConsequentialActionIntent, { kind: 'reallocation' }>];
+}>();
+
+function proposeReallocation(
+  path: Extract<PublicDecisionCard['fundingPaths'][number], { kind: 'category_reallocation' }>,
+) {
+  emit('propose', {
+    kind: 'reallocation',
+    assignments: [{
+      sourceCategoryId: path.sourceCategoryId,
+      sourceAsOfMonth: path.sourceAsOfMonth,
+      destinationCategoryId: path.destinationCategoryId,
+      destinationAsOfMonth: path.destinationAsOfMonth,
+      amount: path.amount,
+    }],
+  });
+}
+
+function canProposeReallocation(path: PublicDecisionCard['fundingPaths'][number]): boolean {
+  return (
+    path.kind === 'category_reallocation' &&
+    showFinancialState.value &&
+    props.card.outcome === 'safe_with_reallocation' &&
+    props.card.budgetFundingStatus === 'funded' &&
+    props.card.blockers.length === 0
+  );
+}
 
 const showFinancialState = computed(
   () =>

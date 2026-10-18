@@ -10,7 +10,9 @@ import { createNativeCategorizationMutationProtocol } from '../../../../packages
 import { merchantConnectionId } from '../../../../packages/application/src/merchant-service';
 import fixture from '../../../../protocol/fixtures/representative.json';
 import createProposal from '../../server/api/proposal/index.post';
+import actionFixture from '../../../../protocol/fixtures/consequential-action.json';
 import proposalDetail from '../../server/api/proposal/[id].get';
+import proposeConsequentialAction from '../../server/api/proposal/action.post';
 import { createDefaultExecutorFactory } from '../../server/utils/mutation-executor';
 import { nativeReviewFixture } from './native-review.fixture';
 import { completeNativeRuleSourceAvailability } from './native-rule-source.fixture';
@@ -20,14 +22,15 @@ const mocks = vi.hoisted(() => ({
   withConnection: vi.fn(),
   synchronize: vi.fn(),
   setTransactionCategory: vi.fn(),
+  readBody: vi.fn(async (event: { body: unknown }) => {
+    if (event.body instanceof Error) throw event.body;
+    return event.body;
+  }),
 }));
 
 vi.mock('h3', async (importOriginal) => ({
   ...(await importOriginal<typeof H3>()),
-  readBody: async (event: { body: unknown }) => {
-    if (event.body instanceof Error) throw event.body;
-    return event.body;
-  },
+  readBody: mocks.readBody,
 }));
 // Vitest hoists package mocks; load the source constructor here to avoid the stale workspace dist export.
 vi.mock('@balanceframe/application', async (importOriginal) => ({
@@ -504,5 +507,116 @@ describe('standalone categorization proposal creation', () => {
     expect(response.status).toBe('error');
     expect(await storedProposals()).toEqual([]);
     expect(mocks.setTransactionCategory).not.toHaveBeenCalled();
+  });
+});
+
+describe('consequential-action proposal route trust boundary', () => {
+  function actionEvent(body: unknown, selectedSpaceId = spaceId) {
+    vi.stubEnv('BETTER_AUTH_URL', 'https://balanceframe.example.test');
+    const request = event(body);
+    const headers = request.node.req.headers as Record<string, string>;
+    headers['x-balanceframe-space'] = selectedSpaceId;
+    headers.origin = 'https://balanceframe.example.test';
+    headers.host = 'balanceframe.example.test';
+    return request;
+  }
+
+  const validIntent = {
+    action: actionFixture.intent,
+    decision: { origin: { sessionId: 'saved-session', sessionVersion: 4 } },
+  };
+
+  it.each(['actorId', 'actor', 'auth', 'proposerId', 'spaceId', 'budgetId', 'plan', 'payloadHash', 'currentLedger', 'resolvedEvidence'])(
+    'rejects untrusted %s fields before restoring Actual', async (field) => {
+      const value = field === 'actorId' ? ACTOR_ID
+        : field === 'spaceId' ? spaceId
+          : field === 'budgetId' ? budgetId
+            : field === 'resolvedEvidence' ? []
+              : {};
+      const request = actionEvent({ ...validIntent, [field]: value });
+
+      const response = await proposeConsequentialAction(request);
+
+      expect(response.status).toBe('error');
+      expect(request.node.res.statusCode).toBe(400);
+      expect(mocks.loadConfig).not.toHaveBeenCalled();
+      expect(mocks.withConnection).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a session-origin selector combined with caller-copied cart facts', async () => {
+    const request = actionEvent({
+      action: actionFixture.intent,
+      decision: {
+        origin: { sessionId: 'saved-session', sessionVersion: 4 },
+        items: [{ categoryId: 'food', amount: { minorUnits: '2000', currency: 'USD' } }],
+      },
+    });
+
+    const response = await proposeConsequentialAction(request);
+
+    expect(response.status).toBe('error');
+    expect(request.node.res.statusCode).toBe(400);
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+    expect(mocks.withConnection).not.toHaveBeenCalled();
+  });
+
+  it('rejects caller-computed facts nested inside the native action intent', async () => {
+    const action = {
+      ...actionFixture.intent,
+      assignments: actionFixture.intent.assignments.map((assignment, index) =>
+        index === 0 ? { ...assignment, sourceProtected: false } : assignment),
+    };
+    const request = actionEvent({ ...validIntent, action });
+    const response = await proposeConsequentialAction(request);
+
+    expect(response.status).toBe('error');
+    expect(request.node.res.statusCode).toBe(400);
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+    expect(mocks.withConnection).not.toHaveBeenCalled();
+  });
+
+  it('rejects an untrusted browser origin before reading or capturing action intent', async () => {
+    const request = actionEvent(new Error('untrusted origin must stop before body parsing'));
+    (request.node.req.headers as Record<string, string>).origin = 'https://attacker.example.test';
+
+    const response = await proposeConsequentialAction(request);
+
+    expect(response.status).toBe('error');
+    expect(request.node.res.statusCode).toBe(403);
+    expect(mocks.readBody).not.toHaveBeenCalled();
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+    expect(mocks.withConnection).not.toHaveBeenCalled();
+  });
+
+  it('denies a request in a different space before any source connection', async () => {
+    const ownerAuth = {
+      method: 'human-session' as const,
+      actorId: OWNER_ID,
+      sessionId: `session:${OWNER_ID}`,
+      reauthenticatedAt: NOW,
+    };
+    const foreign = store.governance.createSpace({
+      actorId: OWNER_ID, name: 'Unselected action space', kind: 'shared', now: NOW, auth: ownerAuth,
+    });
+    store.governance.bindBudget({
+      spaceId: foreign.id, budgetId: `foreign-action-budget-${sequence}`, now: NOW, auth: ownerAuth,
+    });
+
+    const response = await proposeConsequentialAction(actionEvent(validIntent, foreign.id));
+
+    expect(response.status).toBe('error');
+    expect(response.result).toBeNull();
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+    expect(mocks.withConnection).not.toHaveBeenCalled();
+  });
+
+  it('denies a current member without consequential-action proposal authority before source capture', async () => {
+    const response = await proposeConsequentialAction(actionEvent(validIntent));
+
+    expect(response.status).toBe('error');
+    expect(response.result).toBeNull();
+    expect(mocks.loadConfig).not.toHaveBeenCalled();
+    expect(mocks.withConnection).not.toHaveBeenCalled();
   });
 });

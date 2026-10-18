@@ -23,8 +23,10 @@ export type { Money } from '@balanceframe/protocol-generated';
 import type { ActualMerchantSource, ActualMerchantSourceInput } from './merchant-normalizer.js';
 
 /** Trusted server admission; optional currency overrides connector configuration, never a client grant. */
-export type ActualMerchantCaptureOptions = Pick<ActualMerchantSourceInput,
-  'expiresAt' | 'admission' | 'startDate' | 'endDate' | 'maxTransactions'> & { currency?: string };
+export type ActualMerchantCaptureOptions = Pick<
+  ActualMerchantSourceInput,
+  'expiresAt' | 'admission' | 'startDate' | 'endDate' | 'maxTransactions'
+> & { currency?: string };
 
 /** The callback executes while the Actual budget lock is still held, including final publication. */
 export interface ActualMerchantSourceCapture {
@@ -245,8 +247,101 @@ export interface ManualTransactionInput {
   notes?: string;
   splits?: ManualTransactionSplit[];
 }
+/** Current selected budget and acquired execution authority for a manual write. */
+export interface ManualTransactionPrecondition {
+  readonly budgetId: string;
+  readonly assertExecutionCurrent: () => void;
+}
+
+/** Current assignment and acquired execution authority for one exact budget write. */
+export interface BudgetAssignmentPrecondition {
+  readonly budgetId: string;
+  /** Current assignment in minor units, not the requested target. */
+  readonly expectedAmount: number;
+  readonly currency: string;
+  readonly assertExecutionCurrent: () => void;
+}
+
+export type BudgetAssignmentResult =
+  | { success: true; id: LedgerId; verified: true }
+  | {
+      success: false;
+      error: string;
+      code:
+        | 'BUDGET_NOT_SELECTED'
+        | 'PRECONDITION_MISMATCH'
+        | 'INVALID_INPUT'
+        | 'CATEGORY_NOT_FOUND'
+        | 'PRECONDITION_READ_FAILED'
+        | 'WRITE_UNCERTAIN';
+      reviewRequired?: true;
+    };
+
+export interface WalletAccountInput {
+  readonly walletId: string;
+  readonly accountName: string;
+  readonly currency: string;
+}
+
+export interface WalletAccountPrecondition {
+  readonly budgetId: string;
+  readonly assertExecutionCurrent: () => void;
+}
+
+export type WalletAccountResult =
+  | { success: true; walletId: string; accountId: LedgerId; verified: true }
+  | {
+      success: false;
+      code:
+        | 'INVALID_INPUT'
+        | 'BUDGET_NOT_SELECTED'
+        | 'PRECONDITION_MISMATCH'
+        | 'PRECONDITION_READ_FAILED'
+        | 'WRITE_UNCERTAIN';
+      error: string;
+      reviewRequired?: true;
+    };
+
+export interface LedgerTransferInput {
+  readonly transferId: string;
+  readonly correlationId: string;
+  readonly sourceAccountId: LedgerId;
+  readonly destinationAccountId: LedgerId;
+  /** Positive safe integer in source-currency minor units. */
+  readonly amount: number;
+  readonly date: string;
+}
+
+export interface LedgerTransferPrecondition {
+  readonly budgetId: string;
+  readonly sourceBalance: number;
+  readonly destinationBalance: number;
+  readonly currency: string;
+  readonly assertExecutionCurrent: () => void;
+}
+
+export type LedgerTransferResult =
+  | {
+      success: true;
+      transferId: string;
+      sourceTransactionId: LedgerId;
+      destinationTransactionId: LedgerId;
+      verified: true;
+    }
+  | {
+      success: false;
+      code:
+        | 'INVALID_INPUT'
+        | 'BUDGET_NOT_SELECTED'
+        | 'PRECONDITION_MISMATCH'
+        | 'PRECONDITION_READ_FAILED'
+        | 'WRITE_UNCERTAIN';
+      error: string;
+      reviewRequired?: true;
+    };
 
 export type ManualTransactionErrorCode =
+  | 'BUDGET_PRECONDITION_FAILED'
   | 'INVALID_INPUT'
   | 'AMOUNT_OUT_OF_RANGE'
   | 'SPLIT_CONSERVATION_FAILED'
@@ -324,6 +419,11 @@ export interface MutationPrecondition {
   expectedVersion?: string;
   /** Whether the mutation requires a backup first. */
   requireBackup?: boolean;
+}
+
+/** Current acquired categorization authority, checked after SDK reads and immediately before dispatch. */
+export interface SetCategoryPrecondition {
+  readonly assertExecutionCurrent: () => void;
 }
 
 export type MutationResult =
@@ -408,7 +508,6 @@ export interface RuleProposal {
   actions: unknown[];
 }
 
-
 // ---------------------------------------------------------------------------
 // Budget discovery
 // ---------------------------------------------------------------------------
@@ -477,22 +576,40 @@ export interface BudgetLedger {
     precondition?: MutationPrecondition,
   ): Promise<MutationResult>;
 
+  /** Create the exact rule only while its acquired execution authority remains current. */
   createRule(proposal: RuleProposal, precondition: RuleCreatePrecondition): Promise<MutationResult>;
 
-  /** Delete only the exact current Actual rule and verify its synchronized absence. */
-  deleteRule(ruleId: LedgerId, precondition: RuleDeletePrecondition): Promise<void>;
+  /** Delete the exact current rule only while its acquired execution authority remains current. */
+  deleteRule(id: LedgerId, precondition: RuleDeletePrecondition): Promise<void>;
+
+  createManualTransaction(
+    input: ManualTransactionInput,
+    precondition: ManualTransactionPrecondition,
+  ): Promise<ManualTransactionResult>;
+
+  createWalletAccount(
+    input: WalletAccountInput,
+    precondition: WalletAccountPrecondition,
+  ): Promise<WalletAccountResult>;
+
+  createLedgerTransfer(
+    input: LedgerTransferInput,
+    precondition: LedgerTransferPrecondition,
+  ): Promise<LedgerTransferResult>;
 
   setBudgetAmount(
     month: string,
     categoryId: LedgerId,
     amount: number,
-    precondition?: MutationPrecondition,
-  ): Promise<MutationResult>;
+    precondition: BudgetAssignmentPrecondition,
+  ): Promise<BudgetAssignmentResult>;
 
+  /** Change the category only while the exact proposal's acquired authority remains current. */
   setTransactionCategory(
     transactionId: LedgerId,
     proposedCategoryId: LedgerId,
     currentCategoryId: LedgerId | null,
+    precondition: SetCategoryPrecondition,
   ): Promise<SetCategoryResult>;
 
   // ---- Lifecycle ----

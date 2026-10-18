@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { SqliteWorkflowStore } from '@balanceframe/workflow-store';
-import { canonicalProtocolSnapshotSchema } from '@balanceframe/protocol-generated/validators';
+import { canonicalProtocolSnapshotSchema, decisionCardSchema } from '@balanceframe/protocol-generated/validators';
 import type { Transaction, TransferSettlementRecord } from '@balanceframe/protocol-generated';
 import {
   normalizeAccounts,
@@ -14,7 +14,10 @@ import {
 } from '../../actual-adapter/src/normalizer.js';
 import { actualLiquidityRequest } from '../../../tests/contract/fixtures/actual-liquidity.js';
 import { ConnectionManager } from '../src/connection-manager.js';
-import type { ManualTransactionInput } from '@balanceframe/actual-adapter';
+import type {
+  ManualTransactionInput,
+  ManualTransactionPrecondition,
+} from '@balanceframe/actual-adapter';
 import { LiquidityService, createLiquidityService } from '../src/liquidity-service.js';
 import { LiquidityProjector } from '../src/liquidity-projector.js';
 import {
@@ -466,6 +469,119 @@ describe('authoritative application liquidity service', () => {
     expect(session.card.outcome).toBe('funded_now');
     return session;
   }
+
+  it('reuses trusted capture policy and redaction when building a consequential-action Decision Card request', async () => {
+    current = {
+      ...current,
+      coverage: { ...current.coverage, accounts: 'complete', transactions: 'complete' },
+    };
+    settlementRecords = [];
+    grant(actor, 'category', 'food', 'history', false);
+    grant(actor, 'account', 'checking', 'source', false);
+    const intent = {
+      accountId: 'checking',
+      items: [{
+        id: 'purchase',
+        categoryId: 'food',
+        amount: money('2000'),
+        purchaseAt: now,
+        requiredBy: now,
+        accountId: 'checking',
+      }],
+    };
+    const quick = await service.evaluatePurchase(actor, {
+      ...purchase,
+      purchaseAt: now,
+      requiredBy: now,
+    });
+    const captured = await service.withConsequentialActionCapture(actor, async (capture) => {
+      const request = capture.decisionCardRequest(intent);
+      expect(capture.supplemental).toEqual(
+        store.liquidity.getSupplementalFacts({ ...actor, now: capture.now }),
+      );
+      expect(capture.transferSettlementRecords).toEqual([]);
+      expect(request.claimSet).toEqual(capture.claimSet);
+      expect(request.context.evaluatedAt).toBe(capture.now);
+      expect(request.liquidityPolicy.policyHash).toBe(capture.policy?.policy.policyHash);
+      const card = decisionCardSchema.parse(
+        JSON.parse(native.evaluateDecisionCard(JSON.stringify(request))) as unknown,
+      );
+      return {
+        snapshotId: capture.snapshot.snapshotId,
+        contentHash: capture.snapshot.contentHash,
+        requestSnapshotId: request.context.snapshotId,
+        requestContentHash: request.context.contentHash,
+        policyVersion: capture.policy?.policy.version,
+        claimRevision: capture.claimSet.revision,
+        card: capture.projector.card(card),
+      };
+    });
+    expect(captured).toMatchObject({
+      policyVersion: store.liquidity.getPolicy(actor)?.policy.version,
+      claimRevision: store.liquidity.getClaimSet({ ...actor, now }).revision,
+      card: quick.card,
+    });
+    const emptyCard = await service.withConsequentialActionCapture(actor, async (capture) =>
+      capture.decisionCardRequest({ accountId: null, items: [] }),
+    );
+    const emptyResult = decisionCardSchema.parse(
+      JSON.parse(native.evaluateDecisionCard(JSON.stringify(emptyCard))) as unknown,
+    );
+    expect(emptyResult.items).toEqual([]);
+    const configuration = await service.configuration(actor);
+    expect(configuration).not.toHaveProperty('supplemental');
+    expect(configuration).not.toHaveProperty('createdAt');
+    expect(configuration).not.toHaveProperty('membershipId');
+    expect(captured.requestSnapshotId).toBe(captured.snapshotId);
+    expect(captured.requestContentHash).toBe(captured.contentHash);
+    expect(JSON.stringify(captured.card)).not.toContain('checking-freshness');
+    current = {
+      ...current,
+      coverage: { ...current.coverage, transactions: 'partial' },
+    };
+    expect(await service.withConsequentialActionCapture(actor, async (capture) =>
+      capture.transferSettlementRecords,
+    )).toBeNull();
+  });
+  it('resolves saved-session origins from trusted current versions and rejects stale or cancelled sessions', async () => {
+    const item = {
+      id: 'one',
+      categoryId: 'food',
+      accountId: 'checking',
+      amount: money('1000'),
+      purchaseAt: now,
+      requiredBy: now,
+    };
+    const session = await service.saveSession(actor, null, {
+      accountId: 'checking',
+      expiresAt,
+      items: [item],
+    });
+    const decision = { origin: { sessionId: session.id, sessionVersion: session.version } };
+    const request = await service.withConsequentialActionCapture(actor, async (capture) =>
+      capture.decisionCardRequest(decision),
+    );
+    expect(request.items.map(({ id }) => id)).toEqual(['one']);
+
+    const updated = await service.saveSession(actor, session.id, {
+      accountId: 'checking',
+      expectedVersion: session.version,
+      expiresAt,
+      items: [item],
+    });
+    await expect(service.withConsequentialActionCapture(actor, async (capture) =>
+      capture.decisionCardRequest(decision),
+    )).rejects.toThrow(/Saved session unavailable or changed/);
+    await service.cancelSession(actor, session.id, {
+      expectedVersion: updated.version,
+      idempotencyKey: 'cancel-action-origin',
+    });
+    await expect(service.withConsequentialActionCapture(actor, async (capture) =>
+      capture.decisionCardRequest({
+        origin: { sessionId: updated.id, sessionVersion: updated.version },
+      }),
+    )).rejects.toThrow();
+  });
 
   it('serves the canonical immutable Card for a quick check without claiming a ledger mutation', async () => {
     const result = await service.evaluatePurchase(actor, purchase);
@@ -1233,7 +1349,12 @@ describe('authoritative application liquidity service', () => {
           id: 'fixture', groupId: 'fixture', name: 'Fixture', encrypted: false,
         }),
         synchronize: async () => ({ financialSnapshot: current, snapshot: current.legacySnapshot }),
-        createManualTransaction: async (input: ManualTransactionInput) => {
+        createManualTransaction: async (
+          input: ManualTransactionInput,
+          precondition: ManualTransactionPrecondition,
+        ) => {
+          expect(precondition.budgetId).toBe('fixture');
+          precondition.assertExecutionCurrent();
           writes.push(input);
           return {
             success: true as const, parentId: input.parentId,
@@ -1318,6 +1439,164 @@ describe('authoritative application liquidity service', () => {
     })).rejects.toThrow(/Ambiguous Actual reconciliation/);
     expect(writes).toHaveLength(1);
   });
+
+  it.each([
+    ['confirmation grant revocation', false],
+    ['current claim-set revision change', true],
+  ] as const)(
+    'records a fenced completion denial without dispatch on %s',
+    async (_change, changeClaims) => {
+      const session = await saveFundedSession();
+      const competingSession = changeClaims
+        ? await service.saveSession(actor, null, {
+            accountId: 'checking',
+            expiresAt,
+            items: [{
+              id: 'competing-claim',
+              categoryId: 'food',
+              accountId: 'checking',
+              amount: money('500'),
+              purchaseAt: now,
+              requiredBy: now,
+            }],
+          })
+        : null;
+      const proposed = await service.proposeSessionCompletion(actor, session.id, {
+        expectedSessionVersion: session.version,
+        idempotencyKey: 'fenced-session-proposal',
+        payeeName: 'Fixture shop',
+      });
+      const approver = await addCompletionApprover(proposed, 'fenced-session-approver');
+      const approved = await service.approveSessionCompletion(approver, proposed.id, {
+        payloadHash: proposed.payloadHash!,
+        expectedVersion: proposed.version,
+        idempotencyKey: 'fenced-session-approval',
+      });
+      const command = {
+        payloadHash: proposed.payloadHash!,
+        expectedVersion: approved.version,
+        idempotencyKey: 'fenced-session-execute',
+      };
+      let adapterReadComplete!: () => void;
+      let releaseAdapter!: () => void;
+      const entered = new Promise<void>((resolve) => { adapterReadComplete = resolve; });
+      const adapterRead = new Promise<void>((resolve) => { releaseAdapter = resolve; });
+      const writes: ManualTransactionInput[] = [];
+      let finalFence: ManualTransactionPrecondition | undefined;
+      let fenceAttempted = false;
+      let sdkCalls = 0;
+      const mutationManager = new ConnectionManager({
+        readFile: async () => JSON.stringify({
+          version: 1, serverUrl: 'http://actual', budgetId: 'fixture',
+          budgetName: 'Fixture', groupId: 'fixture',
+        }),
+        writeFile: async () => {},
+        credentialStore: {
+          load: async () => ({ serverUrl: 'http://actual', secretKey: 'fixture' }),
+          store: async () => {},
+        },
+        connectorFactory: async () => ({
+          connect: async () => [],
+          selectBudget: async () => ({
+            id: 'fixture', groupId: 'fixture', name: 'Fixture', encrypted: false,
+          }),
+          synchronize: async () => ({ financialSnapshot: current, snapshot: current.legacySnapshot }),
+          createManualTransaction: async (
+            input: ManualTransactionInput,
+            precondition: ManualTransactionPrecondition,
+          ) => {
+            finalFence = precondition;
+            adapterReadComplete();
+            await adapterRead;
+            fenceAttempted = true;
+            if (!precondition) throw new Error('Missing final execution fence');
+            precondition.assertExecutionCurrent();
+            sdkCalls++;
+            writes.push(input);
+            return {
+              success: true as const, parentId: input.parentId,
+              correlationId: input.correlationId, transactionId: input.parentId,
+              verified: true as const,
+            };
+          },
+          disconnect: async () => {},
+        }),
+      });
+      const writable = new LiquidityService({
+        connectionManager: manager,
+        mutationConnectionManager: mutationManager,
+        store,
+        native,
+        clock: () => new Date(clockNow),
+      });
+
+      const execution = writable.executeSessionCompletion(actor, approved.id, command);
+      try {
+        const writerEntered = await Promise.race([
+          entered.then(() => true),
+          execution.then(() => false, () => false),
+        ]);
+        expect(writerEntered).toBe(true);
+        expect(finalFence?.budgetId).toBe('fixture');
+        if (changeClaims) {
+          if (!competingSession) throw new Error('Competing session fixture required');
+          const currentClaims = store.liquidity.getClaimSet({ ...actor, now: clockNow });
+          const policy = store.liquidity.getPolicy(actor);
+          if (!policy) throw new Error('Liquidity policy fixture required');
+          store.liquidity.saveProspectiveClaim({
+            ...actor,
+            now: clockNow,
+            expectedClaimSetRevision: currentClaims.revision,
+            idempotencyKey: 'claim-during-completion-source-read',
+            claim: {
+              claimId: 'claim-during-completion-source-read',
+              kind: 'reservation',
+              sourceId: `session:${competingSession.id}:${competingSession.version}`,
+              scope: { kind: 'category', id: 'food' },
+              amount: money('500'),
+              status: 'active',
+              effectiveFrom: now,
+              expiresAt,
+              visibility: 'visible',
+              snapshotId: current.snapshotId,
+              policyVersion: policy.policy.version,
+            },
+          }, () => ({ valid: true }));
+        } else {
+          grant(actor, 'budget', actor.budgetId, 'confirmation', false);
+        }
+        releaseAdapter();
+        const result = await execution;
+
+        expect(fenceAttempted).toBe(true);
+        expect(result).toMatchObject({ phase: 'review_required', reviewRequired: true });
+        expect(sdkCalls).toBe(0);
+        expect(writes).toEqual([]);
+        const claimStates = store.liquidity
+          .getClaimSet({ ...actor, now: clockNow }).bundles.map(({ state }) => state).sort();
+        expect(claimStates).toContain('initiated');
+        expect(claimStates).toHaveLength(changeClaims ? 2 : 1);
+        if (changeClaims) expect(claimStates).toContain('active');
+        const write = store['db'].prepare(
+          'SELECT status,result FROM session_completion_writes WHERE proposal_id=?',
+        ).get(proposed.id) as { status: string; result: string };
+        expect(write.status).toBe('review_required');
+        expect(JSON.parse(write.result)).toMatchObject({
+          code: 'PREWRITE_DENIED',
+          dispatchOutcome: 'not_dispatched',
+        });
+        expect(store['db'].prepare(
+          "SELECT operation,idempotency_key FROM audit_records WHERE proposal_id=? AND operation='session_completion:finish_write'",
+        ).get(proposed.id)).toMatchObject({
+          operation: 'session_completion:finish_write',
+          idempotency_key: 'finish:fenced-session-execute',
+        });
+      } finally {
+        releaseAdapter();
+        await execution.catch(() => undefined);
+      }
+    },
+  );
 
   it('closes for imported candidate review before invoking an Actual write', async () => {
     const session = await saveFundedSession();

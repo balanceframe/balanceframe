@@ -465,7 +465,7 @@ describe('live purchase, payment, and evidence scenarios', () => {
       expectMoney(category(card, 'before', groceriesId).availability, '0');
       expectMoney(category(card, 'after', groceriesId).availability, '0');
       expect(ledgerFingerprint(await actualRows(handle))).toEqual(beforeLedger);
-    });
+    }, { branches: ['safe-native-reallocation-path'] });
   });
 
   it('protected-category', { timeout: SCENARIO_TIMEOUT }, async () => {
@@ -602,7 +602,7 @@ describe('live purchase, payment, and evidence scenarios', () => {
         Date.parse(input.requiredBy!),
       );
       expect(ledgerFingerprint(await actualRows(handle))).toEqual(beforeLedger);
-    });
+    }, { branches: ['native-account-transfer-requirement'] });
   });
 
   it('transfer-too-late', { timeout: SCENARIO_TIMEOUT }, async () => {
@@ -869,4 +869,72 @@ describe('live purchase, payment, and evidence scenarios', () => {
       expectMoney(account(funded, 'after', accountId).safeSpendingCapacity, '2000');
     });
   });
+  it(
+    'evidence-projection stays disabled in the uncategorized story after a fresh financial capture',
+    { timeout: SCENARIO_TIMEOUT },
+    async () => {
+      await withScenario('uncategorized-debit', async (handle) => {
+        const event = handle.scenario.events['categorize-uncategorized'];
+        if (!event || event.kind !== 'categorize-uncategorized')
+          throw new Error('Expected a seeded uncategorized transaction');
+        const transactionId = handle.seeded.transactionIds[event.transactionId]!;
+        const accountId = handle.seeded.accountIds['acct-checking']!;
+        const categoryId = handle.seeded.categoryIds['cat-groceries']!;
+        const before = await actualRows(handle);
+        const source = before.find((row) => row.id === transactionId);
+        if (!source || typeof source.date !== 'string')
+          throw new Error('The fixture Actual transaction must provide a date for projection intent');
+        expect(source).toMatchObject({ id: transactionId, account: accountId, amount: -1000, category: null });
+
+        const freshCard = await evaluatePurchase(handle);
+        expect(freshCard.outcome).toBe('insufficient_data');
+        expectReason(freshCard.blockers, 'uncategorized_transaction_activity');
+
+        const action = {
+          kind: 'evidence_projection',
+          evidenceIds: [transactionId],
+          transaction: {
+            parentId: 'phase9-untrusted-projection-parent',
+            correlationId: 'phase9-untrusted-projection',
+            accountId,
+            amount: usd('-1000'),
+            date: source.date,
+            categoryId,
+            payeeName: null,
+            notes: null,
+            splits: [],
+          },
+        };
+        const forged = await scenarioRequest<Envelope<unknown>>(handle, '/api/proposal/action', {
+          method: 'POST',
+          body: {
+            action,
+            resolvedEvidence: [{
+              evidenceId: transactionId,
+              subjectId: transactionId,
+              state: 'resolved',
+              contentHash: 'client-asserted-content',
+              version: 'client-asserted-version',
+              observedAt: new Date().toISOString(),
+            }],
+          },
+        });
+        expect(forged.status).toBe(403);
+        expect(forged.body.status).toBe('error');
+        expect(forged.body.error?.code).toBe('DEMO_OPERATION_DISABLED');
+
+        const absentResolution = await scenarioRequest<Envelope<unknown>>(handle, '/api/proposal/action', {
+          method: 'POST',
+          body: { action },
+        });
+        expect(absentResolution.status).toBe(403);
+        expect(absentResolution.body.status).toBe('error');
+        expect(absentResolution.body.error?.code).toBe('DEMO_OPERATION_DISABLED');
+        const after = await actualRows(handle);
+        expect(ledgerFingerprint(after)).toEqual(ledgerFingerprint(before));
+        expect(ledgerTotal(after)).toBe(ledgerTotal(before));
+      }, { branches: ['uncategorized-evidence-projection-boundary-denied'] });
+    },
+  );
+
 });

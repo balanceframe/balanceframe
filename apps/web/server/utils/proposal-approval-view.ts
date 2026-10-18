@@ -1,3 +1,4 @@
+import type { ConsequentialActionProposal } from '@balanceframe/application';
 import type {
   GenericActionProposal,
   GovernanceDisposition,
@@ -5,6 +6,11 @@ import type {
   ProposalApprovalSummary,
   WorkflowStore,
 } from '@balanceframe/workflow-store';
+
+type PublicProposalPayload =
+  | Exclude<GenericActionProposal['payload'], { readonly kind: 'consequential_action' }>
+  | ConsequentialActionProposal['payload']
+  | null;
 
 export type ProposalApprovalDisposition = GovernanceDisposition['kind'];
 
@@ -22,7 +28,7 @@ export interface ProposalApprovalView {
   readonly policyVersion: string;
   readonly payloadHash: string;
   readonly privateEnvelopeVisible: boolean;
-  readonly payload: GenericActionProposal['payload'] | null;
+  readonly payload: PublicProposalPayload;
   readonly preconditions: Readonly<Record<string, unknown>> | null;
   readonly expiresAt: string;
   readonly requiredApprovers: number;
@@ -69,13 +75,16 @@ export function buildProposalApprovalView(input: {
     policyVersion: proposal.policyVersion,
     payloadHash: proposal.payloadHash,
     privateEnvelopeVisible: summary.privateEnvelopeVisible,
-    payload: summary.privateEnvelopeVisible ? proposal.payload : null,
-    preconditions,
+    payload: summary.privateEnvelopeVisible && proposal.operation !== 'consequential_action'
+      ? proposal.payload
+      : null,
+    preconditions: proposal.operation === 'consequential_action' ? null : preconditions,
     expiresAt: proposal.expiresAt,
     requiredApprovers: summary.requiredApprovers,
     approvers: summary.approvers,
     disposition: summary.disposition.kind,
-    canApprove: summary.canApprove && summary.privateEnvelopeVisible,
+    canApprove: summary.canApprove &&
+      (proposal.operation === 'consequential_action' || summary.privateEnvelopeVisible),
     canExecute: summary.canExecute,
   };
 }

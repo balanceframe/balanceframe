@@ -1,7 +1,10 @@
+import { readFile } from 'node:fs/promises';
 import { ErrorInfo, errorResponse } from '@balanceframe/application/envelope';
 import { merchantPolicyViewSchema, merchantResearchPreviewSchema, merchantResearchOutcomeSchema, merchantResearchCacheSchema, merchantResearchPolicyViewSchema } from '@balanceframe/application';
 import type { CliCommand } from './index.js';
 import { z } from 'zod';
+import { spendSessionInputSchema } from '@balanceframe/application';
+import { consequentialActionIntentSchema } from '@balanceframe/protocol-generated/validators';
 
 const merchantResponseSchemas: Record<string, z.ZodType> = {
   '/api/merchant/research/preview': merchantResearchPreviewSchema,
@@ -116,6 +119,19 @@ function optionBody(
   }
   return body;
 }
+const actionDecisionFileSchema = z.union([
+  z.object({
+    origin: z.object({
+      sessionId: z.string().trim().min(1).max(256),
+      sessionVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    }).strict(),
+  }).strict(),
+  spendSessionInputSchema,
+]);
+const actionProposalFileSchema = z.object({
+  action: consequentialActionIntentSchema,
+  decision: actionDecisionFileSchema.optional(),
+}).strict();
 
 function selectedSpace(): string | undefined {
   const configured = process.env.BALANCEFRAME_SPACE_ID?.trim();
@@ -504,6 +520,26 @@ export async function runServerCommand(cmd: CliCommand, requestId: string): Prom
       return post('/api/lifecycle/remove-connection', undefined, { kind: 'selected' }, true);
     case 'delete-data':
       return post('/api/lifecycle/delete-data', { scope: options.scope }, { kind: 'selected' }, true);
+    case 'proposals.action': {
+      const path = options['action-file'];
+      if (!path) return cliError(requestId, 'action_file_required', 'proposals action requires --action-file.');
+      let source: string;
+      try {
+        source = await readFile(path, 'utf8');
+      } catch {
+        return cliError(requestId, 'action_file_unavailable', 'The consequential-action JSON file could not be read.');
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(source) as unknown;
+      } catch {
+        return cliError(requestId, 'invalid_action_file', 'The consequential-action file must contain valid JSON.');
+      }
+      const request = actionProposalFileSchema.safeParse(value);
+      if (!request.success)
+        return cliError(requestId, 'invalid_action_file', 'The consequential-action file must contain only a valid action and optional pinned decision.');
+      return post('/api/proposal/action', request.data);
+    }
     case 'proposals.create':
       return post(
         '/api/proposal',
@@ -525,7 +561,12 @@ export async function runServerCommand(cmd: CliCommand, requestId: string): Prom
         true,
       );
     case 'proposals.execute':
-      return post(`/api/proposal/${encodeURIComponent(cmd.proposalId ?? '')}/execute`);
+      return post(
+        `/api/proposal/${encodeURIComponent(cmd.proposalId ?? '')}/execute`,
+        undefined,
+        { kind: 'selected' },
+        Boolean(process.env.BALANCEFRAME_SESSION_COOKIE?.trim()),
+      );
     case 'proposals.list':
       return get('/api/proposal');
     case 'audit.query':

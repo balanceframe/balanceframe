@@ -472,6 +472,27 @@ pub fn evaluate_decision_card(input: String) -> napi::Result<String> {
         Ok(cp::evaluate_decision_card(request))
     })
 }
+/// Plan an exact source-bound consequential action using the native ledger contract.
+///
+/// Invalid requests or plans reject the N-API call; planning never authorizes or mutates a ledger.
+#[napi]
+pub fn plan_consequential_action(input: String) -> napi::Result<String> {
+    run::<cp::PlanConsequentialActionRequest, cp::ConsequentialActionPlan>(input, |request| {
+        cp::plan_consequential_action(request)
+    })
+}
+
+/// Revalidate consequential-action preconditions or verify exact ledger readback.
+///
+/// Malformed requests reject the N-API call. Well-formed failed checks return a structured
+/// `valid: false` result with a stable reason and never authorize or perform a write.
+#[napi]
+pub fn verify_consequential_action(input: String) -> napi::Result<String> {
+    run::<cp::VerifyConsequentialActionRequest, cp::ConsequentialActionVerification>(
+        input,
+        cp::verify_consequential_action,
+    )
+}
 
 /// Verify independent imported and reconciled transfer evidence against its immutable plan.
 #[napi]

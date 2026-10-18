@@ -30,6 +30,23 @@ Each approval binds the displayed hash and requires fresh human authentication.
 Execution remains separate and requires the current quorum and executor rights.
 The review is finalized only after Native verifies the actual ledger result.
 
+Purchase Check and Spend Sessions can create an exact controlled reallocation proposal
+only from a current native-safe funding path. The selected space's assistance maximum
+is analysis only, recommendations, approval proposals, or approved execution; missing
+legacy configuration is analysis only for the new action operation. Actor capabilities
+cannot raise that ceiling.
+
+`/proposals/PROPOSAL_ID` separates the donor envelope, retained minimum/projected need,
+safe remainder, account cash postconditions, approvals and execution outcome. Editing a
+cart or funding choice invalidates its prior proposal linkage. Approval and new dispatch
+each require fresh human confirmation. Uncertain writes offer read-only refresh and
+retain durable ownership instead of retrying. Wallet account creation has zero opening
+balance, and linked ledger transfers do not establish institution settlement.
+
+Ensure exclusive mutation ownership of the Actual budget during execution: the SDK
+has no compare-and-set, and another editor can race outside BalanceFrame's local fence.
+Source observations, private hashes and execution proofs are not public proposal data.
+
 Use the disposable Actual fixture for browser verification and disable the development
 authentication bypass. A component test or successful API request alone does not
 verify the signed-in user path.

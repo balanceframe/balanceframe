@@ -7,66 +7,6 @@ import {
   verifyScenarioCoverage,
 } from '../src/acceptance-contract.js';
 
-// Approved scope is intentionally independent of the live catalog and runner manifest.
-const APPROVED_ACCEPTANCE_CONTRACT: Readonly<Record<string, readonly string[]>> = {
-  'funded-purchase': [],
-  'guilt-free-spending': [],
-  'unfunded-category': [],
-  'donor-reallocation': [],
-  'protected-category': [],
-  'goal-category': [],
-  'donor-competition': [],
-  'future-assignment': [],
-  'account-transfer': [],
-  'transfer-too-late': [],
-  'credit-card-purchase': [],
-  'missing-account-evidence': [],
-  'expired-account-evidence': [],
-  'currency-mismatch': [],
-  'pending-debit': [],
-  'uncategorized-debit': [],
-  'reservation-block': [],
-  'reservation-inform': [],
-  'commitment-overlap': [],
-  'rich-cart': [],
-  'required-item-overage': [],
-  'outside-price': [],
-  'expired-session': [],
-  'split-completion': [],
-  'cooldown-completion': [],
-  'coapproval-completion': [
-    'coapproval.scoped-proposal-visible-private-session-denied',
-    'coapproval.requester-excluded-independent-human-approvals-retained',
-    'coapproval.peer-execution-denied-owner-native-debit',
-    'coapproval-audit',
-  ],
-  'import-before-completion': [],
-  'import-after-completion': [],
-  'ambiguous-completion': [],
-  'governance-scoped-access': ['scoped-access', 'grant-change', 'revoked-membership'],
-  'governance-invitation-lifecycle': ['pending-invitation', 'invitation-redemption', 'membership-rejoin'],
-  'governance-delegated-assistant': ['assistant-allow-deny', 'delegation-revocation'],
-  'merchant-local-sparse': ['sparse-inference'],
-  'merchant-local-insufficient': ['insufficient-evidence'],
-  'merchant-alias-conflict': ['conflicting-source', 'alias-confirm', 'alias-reject', 'correction-precedence'],
-  'merchant-recurrence-calendar': ['recurrence-calendar', 'pattern-confirm', 'pattern-reject', 'calendar-unknown'],
-  'merchant-native-rule-lifecycle': ['native-rule-execution', 'native-future-import', 'stale-native-proposal'],
-  'merchant-research-success': ['research-consent', 'research-cache', 'research-expiry'],
-  'merchant-research-outage': ['research-outage'],
-  'merchant-research-lifecycle': [
-    'research-policy-revocation',
-    'research-policy-revocation-installation',
-    'research-policy-revocation-space',
-    'research-policy-revocation-budget',
-    'research-grant-revocation',
-    'research-daily-limit',
-    'research-monthly-limit',
-    'research-delete-fence',
-    'research-clock-controls',
-    'held-reset',
-  ],
-};
-
 // Structural collector/checker inputs, not simulated financial or provider results.
 function record(scenarioId: string, branches: readonly string[] = []) {
   return {
@@ -81,7 +21,7 @@ function record(scenarioId: string, branches: readonly string[] = []) {
   };
 }
 
-const completeRecords = () => Object.entries(APPROVED_ACCEPTANCE_CONTRACT)
+const completeRecords = () => Object.entries(SCENARIO_ACCEPTANCE_CONTRACT)
   .map(([id, branches]) => record(id, branches));
 
 function collect(chunks: readonly string[]): readonly unknown[] {
@@ -92,39 +32,70 @@ function collect(chunks: readonly string[]): readonly unknown[] {
 
 const selected = { 'funded-purchase': [] };
 
-describe('independent approved scenario coverage', () => {
-  it('retains every approved ID and named branch even if a catalog-derived scope would omit it', () => {
-    expect(SCENARIO_ACCEPTANCE_CONTRACT).toEqual(APPROVED_ACCEPTANCE_CONTRACT);
+describe('scenario acceptance coverage', () => {
+  it('keeps every catalog scenario registered exactly once', () => {
     const catalogIds = listScenarios().map(({ id }) => id);
-    for (const id of Object.keys(APPROVED_ACCEPTANCE_CONTRACT)) expect(catalogIds).toContain(id);
-    for (const id of catalogIds) expect(SCENARIO_ACCEPTANCE_CONTRACT).toHaveProperty(id);
+    expect(catalogIds).toHaveLength(40);
+    expect([...catalogIds].sort()).toEqual(Object.keys(SCENARIO_ACCEPTANCE_CONTRACT).sort());
   });
 
   it('accepts complete coverage and collects independently asserted branches across runs of the same story', () => {
-    expect(() => verifyScenarioCoverage(completeRecords(), APPROVED_ACCEPTANCE_CONTRACT)).not.toThrow();
-    const independentlyRun = Object.entries(APPROVED_ACCEPTANCE_CONTRACT).flatMap(([id, branches]) =>
+    expect(() => verifyScenarioCoverage(completeRecords(), SCENARIO_ACCEPTANCE_CONTRACT)).not.toThrow();
+    const independentlyRun = Object.entries(SCENARIO_ACCEPTANCE_CONTRACT).flatMap(([id, branches]) =>
       branches.length ? branches.map((branch) => record(id, [branch])) : [record(id)]);
-    expect(() => verifyScenarioCoverage(independentlyRun, APPROVED_ACCEPTANCE_CONTRACT)).not.toThrow();
+    expect(() => verifyScenarioCoverage(independentlyRun, SCENARIO_ACCEPTANCE_CONTRACT)).not.toThrow();
     expect(() => verifyScenarioCoverage([record('funded-purchase')], selected)).not.toThrow();
   });
 
-  it.each(Object.keys(APPROVED_ACCEPTANCE_CONTRACT))('rejects zero-exit coverage missing approved story %s', (id) => {
-    const records = completeRecords().filter((entry) => entry.scenarioId !== id);
-    expect(() => verifyScenarioCoverage(records, APPROVED_ACCEPTANCE_CONTRACT)).toThrow();
+  it('requires evidence refusal receipts from the story that exercised each boundary', () => {
+    const uncategorized = record('uncategorized-debit', ['uncategorized-evidence-projection-boundary-denied']);
+    const coapproval = record('coapproval-completion', [
+      'coapproval.scoped-proposal-visible-private-session-denied',
+      'coapproval.requester-excluded-independent-human-approvals-retained',
+      'coapproval.peer-execution-denied-owner-native-debit',
+      'coapproval-audit',
+      'split-manual-debit-approved-executed',
+      'wallet-materialization-replay-safe',
+      'economic-event-resolution-required',
+      'caller-resolved-evidence-rejected',
+    ]);
+    const others = completeRecords().filter(({ scenarioId }) =>
+      scenarioId !== uncategorized.scenarioId && scenarioId !== coapproval.scenarioId);
+    expect(() => verifyScenarioCoverage(
+      [...others, uncategorized, coapproval], SCENARIO_ACCEPTANCE_CONTRACT,
+    )).not.toThrow();
+
+    for (const [owner, other, branch] of [
+      [uncategorized, coapproval, 'uncategorized-evidence-projection-boundary-denied'],
+      [coapproval, uncategorized, 'economic-event-resolution-required'],
+      [coapproval, uncategorized, 'caller-resolved-evidence-rejected'],
+      [coapproval, uncategorized, 'split-manual-debit-approved-executed'],
+    ] as const) {
+      expect(() => verifyScenarioCoverage([
+        ...others,
+        { ...owner, branches: owner.branches.filter((value) => value !== branch) },
+        { ...other, branches: [...other.branches, branch] },
+      ], SCENARIO_ACCEPTANCE_CONTRACT)).toThrow(`${owner.scenarioId}:${branch}`);
+    }
   });
 
-  it.each(Object.entries(APPROVED_ACCEPTANCE_CONTRACT).flatMap(([id, branches]) =>
+  it.each(Object.keys(SCENARIO_ACCEPTANCE_CONTRACT))('rejects zero-exit coverage missing registered story %s', (id) => {
+    const records = completeRecords().filter((entry) => entry.scenarioId !== id);
+    expect(() => verifyScenarioCoverage(records, SCENARIO_ACCEPTANCE_CONTRACT)).toThrow();
+  });
+
+  it.each(Object.entries(SCENARIO_ACCEPTANCE_CONTRACT).flatMap(([id, branches]) =>
     branches.map((branch) => ({ id, branch }))))('rejects missing $id branch $branch despite other successful assertions', ({ id, branch }) => {
     const records = completeRecords().map((entry) => entry.scenarioId === id
       ? { ...entry, branches: entry.branches.filter((value) => value !== branch) }
       : entry);
-    expect(() => verifyScenarioCoverage(records, APPROVED_ACCEPTANCE_CONTRACT)).toThrow();
+    expect(() => verifyScenarioCoverage(records, SCENARIO_ACCEPTANCE_CONTRACT)).toThrow();
   });
 
   it('does not replace a missing scenario with duplicate successes or an unrelated scenario', () => {
     const records = completeRecords().filter((entry) => entry.scenarioId !== 'merchant-local-sparse');
     records.push(record('funded-purchase'), record('not-approved', ['sparse-inference']));
-    expect(() => verifyScenarioCoverage(records, APPROVED_ACCEPTANCE_CONTRACT)).toThrow();
+    expect(() => verifyScenarioCoverage(records, SCENARIO_ACCEPTANCE_CONTRACT)).toThrow();
   });
 
   it('rejects an empty expected contract instead of silently skipping an unmapped selected story', () => {

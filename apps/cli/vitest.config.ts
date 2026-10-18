@@ -36,6 +36,7 @@ export default defineConfig({
       ),
       '@balanceframe/application': resolve(import.meta.dirname, '../../packages/application/src'),
       '@balanceframe/application/*': resolve(import.meta.dirname, '../../packages/application/src/*'),
+      '@balanceframe/workflow-store': resolve(import.meta.dirname, '../../packages/workflow-store/src'),
       '@balanceframe/actual-adapter': resolve(import.meta.dirname, '../../packages/actual-adapter/src'),
       '@balanceframe/actual-adapter/types': resolve(
         import.meta.dirname,

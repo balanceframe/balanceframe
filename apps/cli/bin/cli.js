@@ -4,10 +4,24 @@
 import { main } from '../dist/index.js';
 
 const args = process.argv.slice(2);
+const showActionHelp = args[0] === 'proposals' && args[1] === 'action' &&
+  args.length === 3 && args[2] === '--help';
 const showHelp = args[0] === '--help' && args.length === 1 ||
   args[0] === 'merchant' && args.at(-1) === '--help' &&
   (args.length === 2 || args.length === 3 && ['research', 'space-policy'].includes(args[1]));
-const result = showHelp ? `Merchant intelligence (authenticated selected space):
+const result = showActionHelp
+  ? `Consequential action proposal (authenticated selected space):
+  balanceframe proposals action --action-file ACTION.json --json
+
+ACTION.json is a strict object containing only {\"action\": ..., \"decision\"?: ...}.
+The optional decision is either a saved session origin (sessionId and sessionVersion)
+or a complete pinned purchase decision. Actor authority, plans, source facts and
+Actual credentials are never accepted from this file. Review, approve and execute
+remain separate:
+  balanceframe proposals show PROPOSAL_ID --json
+  balanceframe proposals approve PROPOSAL_ID --payload-hash DISPLAYED_HASH --json
+  balanceframe proposals execute PROPOSAL_ID --json.`
+  : showHelp ? `Merchant intelligence (authenticated selected space):
   balanceframe merchant analyze --json
   balanceframe merchant research policy --json
   balanceframe merchant research preview --evidence-key KEY --evidence-revision REVISION --merchant 'Public Business Name' --public-business true [--locale US|CA|GB] --json

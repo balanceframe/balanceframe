@@ -1,5 +1,6 @@
 import { defineEventHandler, setHeader, setResponseStatus } from 'h3';
 import { z } from 'zod';
+import { ProposalAcquisitionError } from '@balanceframe/workflow-store';
 import {
   CategorizationMutationService,
   RuleMutationService,
@@ -18,9 +19,9 @@ import type {
 import type { ConnectionConfig } from '@balanceframe/application';
 import type { BudgetLedger } from '@balanceframe/actual-adapter';
 import { createMutationConnectionManager } from '../../../utils/mutation-executor';
-import { selectedLiquidityActor } from '../../../utils/liquidity-service';
+import { createWebConsequentialActionService, selectedLiquidityActor } from '../../../utils/liquidity-service';
 import { hasNativeRuleSourceAdmission } from '../../../utils/rule-create';
-import { hasTrustedRequestOrigin } from '../../../utils/reauthentication';
+import { getHumanControlAuth, hasTrustedRequestOrigin } from '../../../utils/reauthentication';
 import type { ReauthenticationEvent } from '../../../utils/reauthentication';
 import { requireSelectedSpace } from '../../../utils/space-context';
 import { composeScenarioResearch } from '../../../utils/scenario-research';
@@ -31,6 +32,7 @@ import {
   okEnvelope,
   sanitizeError,
 } from '../../../utils/workflow-store';
+import { projectConsequentialActionExecution } from '../../../utils/proposal-route';
 
 const ProposalId = z.string().trim().min(1).max(200);
 
@@ -63,6 +65,52 @@ function executionError(reasonCodes: readonly string[]): {
     return { status: 503, code: 'LEDGER_SYNC_FAILED', retryable: true };
   if (reasonCodes.some((code) => ['rule_name_conflict','precondition_mismatch','simulation_conflicts','simulation_no_matches','simulation_mismatch','invalid_preconditions','plan_mismatch'].includes(code)))
     return { status: 409, code: 'PRECONDITION_FAILED', retryable: false };
+  return { status: 500, code: 'EXECUTION_FAILED', retryable: true };
+}
+function consequentialActionExecutionError(error: unknown): {
+  status: number;
+  code: string;
+  retryable: boolean;
+} {
+  if (error instanceof ProposalAcquisitionError) {
+    switch (error.reasonCode) {
+      case 'approval_required':
+      case 'approval_consumed':
+        return { status: 403, code: 'PROPOSAL_NOT_APPROVED', retryable: false };
+      case 'authorization_denied':
+        return { status: 403, code: 'FORBIDDEN', retryable: false };
+      case 'proposal_expired':
+        return { status: 409, code: 'PROPOSAL_EXPIRED', retryable: false };
+      case 'proposal_superseded':
+        return { status: 409, code: 'PROPOSAL_SUPERSEDED', retryable: false };
+      case 'policy_version_mismatch':
+        return { status: 409, code: 'GOVERNANCE_CHANGED', retryable: false };
+      case 'payload_hash_mismatch':
+        return { status: 422, code: 'PROPOSAL_INVALID', retryable: false };
+      case 'idempotency_in_progress':
+        return { status: 409, code: 'EXECUTION_IN_PROGRESS', retryable: true };
+      case 'idempotency_replay_mismatch':
+        return { status: 409, code: 'EXECUTION_CONFLICT', retryable: false };
+    }
+  }
+  const message = error instanceof Error ? error.message : '';
+  if (/configured budget|budget mismatch/i.test(message))
+    return { status: 409, code: 'BUDGET_MISMATCH', retryable: false };
+  if (/review required|postcondition mismatch|partial|dispatch outcome unknown|uncertain/i.test(message))
+    return { status: 409, code: 'REVIEW_REQUIRED', retryable: false };
+  if (/expired/i.test(message)) return { status: 409, code: 'PROPOSAL_EXPIRED', retryable: false };
+  if (/approval|human/i.test(message))
+    return { status: 403, code: 'PROPOSAL_NOT_APPROVED', retryable: false };
+  if (/authorization|capability|scope|membership|assistance|resource/i.test(message))
+    return { status: 403, code: 'FORBIDDEN', retryable: false };
+  if (/conflict|idempotency/i.test(message))
+    return { status: 409, code: 'EXECUTION_CONFLICT', retryable: false };
+  if (/source|stale|precondition|evidence|policy|claims|target|changed/i.test(message))
+    return { status: 409, code: 'PRECONDITION_FAILED', retryable: false };
+  if (/native|binding/i.test(message))
+    return { status: 501, code: 'NATIVE_UNAVAILABLE', retryable: false };
+  if (/sync|connection|capture/i.test(message))
+    return { status: 503, code: 'LEDGER_SYNC_FAILED', retryable: true };
   return { status: 500, code: 'EXECUTION_FAILED', retryable: true };
 }
 
@@ -99,10 +147,95 @@ export default defineEventHandler(async (event) => {
     proposal.spaceId !== selected.space.id ||
     proposal.budgetId !== selected.space.budgetId ||
     (proposal.operation !== 'set_category' && proposal.operation !== 'create_rule' &&
-      proposal.operation !== 'update_rule' && proposal.operation !== 'delete_rule')
+      proposal.operation !== 'update_rule' && proposal.operation !== 'delete_rule' &&
+      proposal.operation !== 'consequential_action')
   ) {
     setResponseStatus(event, 404);
     return errorEnvelope('NOT_FOUND', 'Proposal is unavailable in the selected space.', null, false, requestId);
+  }
+  if (proposal.operation === 'consequential_action') {
+    const actor = selectedLiquidityActor(workflow.store, selected);
+    const actionAuthorization = {
+      actorId: selected.auth.actorId,
+      capability: 'consequential_action:execute',
+      allowed: false,
+    };
+    if (!actor) {
+      setResponseStatus(event, 403);
+      return errorEnvelope('FORBIDDEN', 'The selected space is unavailable.', actionAuthorization, false, requestId);
+    }
+    const readOnlyRecovery = ['write_intent', 'review_required', 'verified', 'invalidated_no_dispatch']
+      .includes(proposal.state.phase);
+    if (!readOnlyRecovery) {
+      const controlAuth = await getHumanControlAuth(event as unknown as ReauthenticationEvent);
+      if (!controlAuth || controlAuth.actorId !== selected.auth.actorId) {
+        setResponseStatus(event, 403);
+        return errorEnvelope('REAUTHENTICATION_REQUIRED', 'A recently reauthenticated human session is required.', actionAuthorization, false, requestId);
+      }
+      actor.auth = controlAuth;
+    }
+    try {
+      const service = await createWebConsequentialActionService(workflow.store);
+      const execution = await service.execute(actor, proposal.id);
+      actionAuthorization.allowed = true;
+      if (execution.phase === 'review_required') {
+        setResponseStatus(event, 409);
+        return errorEnvelope('REVIEW_REQUIRED', 'The prior action outcome requires read-only review; it will not be dispatched again.', actionAuthorization, false, requestId);
+      }
+      if (execution.phase === 'invalidated_no_dispatch') {
+        setResponseStatus(event, 409);
+        return errorEnvelope('PRECONDITION_FAILED', 'The action became stale before dispatch.', actionAuthorization, false, requestId);
+      }
+      if (execution.phase !== 'verified') {
+        setResponseStatus(event, 409);
+        return errorEnvelope('PRECONDITION_FAILED', 'The action is not currently executable.', actionAuthorization, false, requestId);
+      }
+      if (!readOnlyRecovery) {
+        const currentPolicy = workflow.store.governance.getPolicy({ spaceId: selected.space.id });
+        const currentExecution = await workflow.store.getProposalApprovalSummary({
+          proposalId: proposal.id,
+          spaceId: selected.space.id,
+          actorId: selected.auth.actorId,
+          auth: selected.auth,
+          now: new Date().toISOString(),
+          requestId,
+        }).catch(() => null);
+        if (
+          !currentExecution?.executionAuthorized ||
+          currentExecution.currentGovernancePolicyVersion !== proposal.governancePolicyVersion ||
+          currentPolicy?.version !== proposal.governancePolicyVersion ||
+          currentPolicy.assistanceMaximum !== 'execute_approved_actions'
+        ) {
+          setResponseStatus(event, 403);
+          return errorEnvelope('PUBLICATION_WITHHELD', 'The authorized action completed; current authority changed and private output was withheld, not rolled back.', actionAuthorization, false, requestId);
+        }
+      }
+      return okEnvelope(
+        projectConsequentialActionExecution(execution),
+        actionAuthorization,
+        requestId,
+      );
+    } catch (error) {
+      const failure = consequentialActionExecutionError(error);
+      setResponseStatus(event, failure.status);
+      return errorEnvelope(
+        failure.code,
+        failure.code === 'FORBIDDEN'
+          ? 'The action or its current resources are not authorized.'
+          : failure.code === 'PROPOSAL_NOT_APPROVED'
+            ? 'Current distinct human approval is required.'
+            : failure.code === 'REVIEW_REQUIRED'
+              ? 'The prior action outcome requires review and will not be retried.'
+              : failure.code === 'PROPOSAL_EXPIRED'
+                ? 'The proposal has expired.'
+                : failure.code === 'PRECONDITION_FAILED'
+                  ? 'The current source or financial preconditions changed.'
+                  : 'The action could not be executed safely.',
+        actionAuthorization,
+        failure.retryable,
+        requestId,
+      );
+    }
   }
 
   const admission = await workflow.store.getProposalApprovalSummary({

@@ -216,8 +216,8 @@
           </fieldset>
         </fieldset>
         <p v-if="dirty && current" role="status" class="text-amber-700">
-          Cart or assumptions changed. The previous Card and transfer previews are invalid.
-          Evaluate changes before relying on a plan.
+          Cart or assumptions changed. The previous Card and transfer previews are invalid, and proposal
+          controls are disabled. Save and re-evaluate to refresh this session version before proposing.
         </p>
         <UButton v-if="editable" :disabled="busy || !draft.items.length" @click="save">
           {{ busy ? 'Evaluating jointly…' : current ? 'Evaluate changes' : 'Create and evaluate session' }}
@@ -228,8 +228,14 @@
     <div v-if="current && !dirty && current.card.cart" data-testid="session-running-total" class="mt-4 font-semibold">
       Evaluated final total: <SemanticAmount :amount="current.card.cart.total" />
     </div>
-    <DecisionCardView v-if="current && !dirty" :card="current.card" :catalog="catalog"
-      @plan-transfer="planTransfer" />
+    <DecisionCardView
+      v-if="current && !dirty"
+      :card="current.card"
+      :catalog="catalog"
+      :proposal-disabled="busy || expired"
+      @plan-transfer="planTransfer"
+      @propose="proposeAction"
+    />
     <TransferPlanReview v-if="preview && !dirty" :key="preview.previewId" :preview="preview"
       @close="preview = null" />
     <section v-if="current?.linkedTransfers.length">
@@ -252,6 +258,7 @@ import type {
   PublicSpendSession,
   PublicTransferPreview,
 } from '@balanceframe/application';
+import type { ConsequentialActionIntent } from '@balanceframe/protocol-generated';
 import { liquidityRequest, liquidityError } from '../utils/liquidity-client';
 
 type SessionItem = PublicSpendSession['items'][number];
@@ -473,6 +480,24 @@ async function planTransfer(purchaseItemId: string) {
     if (!dirty.value && current.value.version === version) preview.value = result;
   } catch (e) {
     error.value = liquidityError(e);
+  } finally {
+    busy.value = false;
+  }
+}
+async function proposeAction(action: Extract<ConsequentialActionIntent, { kind: 'reallocation' }>) {
+  const session = current.value;
+  if (!session || dirty.value || busy.value) return;
+  busy.value = true;
+  error.value = '';
+  preview.value = null;
+  try {
+    const result = await liquidityRequest<{ proposal: { id: string } }>('/api/proposal/action', 'POST', {
+      action,
+      decision: { origin: { sessionId: session.id, sessionVersion: session.version } },
+    });
+    await navigateTo(`/proposals/${encodeURIComponent(result.proposal.id)}`);
+  } catch (cause) {
+    error.value = liquidityError(cause);
   } finally {
     busy.value = false;
   }

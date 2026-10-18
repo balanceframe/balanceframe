@@ -1,13 +1,13 @@
 //! Canonical financial snapshot metadata for deterministic decisions.
 
-use balanceframe_financial_core::{DecisionScope, EvidenceReference};
+use balanceframe_financial_core::{DecisionScope, EvidenceReference, Money};
 use serde::{Deserialize, Serialize};
 
-use crate::ProtocolSnapshot;
+use crate::{ManualTransactionSplit, ProtocolSnapshot};
 
 /// An immutable normalized snapshot and the metadata needed to interpret it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FinancialSnapshot {
     /// Version of this canonical snapshot contract.
     pub contract_version: String,
@@ -133,9 +133,22 @@ pub enum UnclearedActivityTreatment {
     Unknown,
 }
 
+/// Exact normalized ledger effect resolved from one economic event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EconomicEventLedgerEffect {
+    pub account_id: String,
+    pub amount: Money,
+    pub date: String,
+    pub category_id: Option<String>,
+    pub payee_name: Option<String>,
+    pub notes: Option<String>,
+    pub splits: Vec<ManualTransactionSplit>,
+}
+
 /// A normalized source observation attached to a decision scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceObservation {
     /// Kind of fact or data-quality condition observed.
     pub kind: ObservationKind,
@@ -143,8 +156,17 @@ pub struct SourceObservation {
     pub scope: DecisionScope,
     /// State observed for the selected kind and scope.
     pub state: ObservationState,
-    /// ISO-8601 timestamp at which the source state was observed, when known.
+    /// ISO-8601 instant at which this observation was made.
     pub observed_at: Option<String>,
+    /// Resolution-only content identity; native action validation requires it for resolved economic events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    /// Resolution-only source-normalizer version, bound to matching resolved evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Source-normalized economic effect; required for resolved economic-event observations only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_effect: Option<EconomicEventLedgerEffect>,
     /// Authorized references supporting the observation, without raw evidence content.
     pub evidence: Vec<EvidenceReference>,
 }
@@ -177,6 +199,8 @@ pub enum ObservationKind {
     TransferAmbiguity,
     /// Reconciliation state of an account or transaction.
     Reconciliation,
+    /// A source-normalized resolution for one stable economic event.
+    EconomicEventResolution,
     /// Currency compatibility of the relevant facts.
     CurrencyCompatibility,
 }
@@ -191,6 +215,8 @@ pub enum ObservationState {
     Stale,
     /// The source observation is unavailable.
     Unavailable,
+    /// The source explicitly resolved the economic event.
+    Resolved,
     /// The source was read successfully but does not expose this fact.
     Unknown,
     /// The observed activity is included.

@@ -18,6 +18,23 @@ export * from './notifications.js';
 export * from './review-persistence.js';
 export * from './liquidity-public.js';
 export * from './liquidity-service.js';
+export {
+  ConsequentialActionService,
+  createConsequentialActionService,
+  loadConsequentialActionNative,
+} from './consequential-action.js';
+export type {
+  ConsequentialActionCompositionOptions,
+  ConsequentialActionDecisionContext,
+  ConsequentialActionDecisionItem,
+  ConsequentialActionExecution,
+  ConsequentialActionNative,
+  ConsequentialActionProposal,
+  ConsequentialActionPublicEvidenceReference,
+  ConsequentialActionPublicPlan,
+  ConsequentialActionPublicSource,
+  ConsequentialActionServiceOptions,
+} from './consequential-action.js';
 export * from './liquidity-inputs.js';
 export { LiquidityProjector } from './liquidity-projector.js';
 export * from './merchant-service.js';

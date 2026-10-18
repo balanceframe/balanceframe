@@ -1,7 +1,10 @@
 import { defineEventHandler, getRouterParam, setHeader, setResponseStatus } from 'h3';
 import { z } from 'zod';
+import type { ConsequentialActionProposal } from '@balanceframe/application';
 import { buildProposalApprovalView } from '../../utils/proposal-approval-view';
 import type { ProposalApprovalView } from '../../utils/proposal-approval-view';
+import { createWebConsequentialActionService, selectedLiquidityActor } from '../../utils/liquidity-service';
+import { projectConsequentialActionProposal } from '../../utils/proposal-route';
 import { requireSelectedSpace } from '../../utils/space-context';
 import type { EventWithContext } from '../../utils/workflow-store';
 import { errorEnvelope, getWorkflowStore, okEnvelope, sanitizeError } from '../../utils/workflow-store';
@@ -34,7 +37,8 @@ export default defineEventHandler(async (event) => {
       proposal.spaceId !== selected.space.id ||
       proposal.budgetId !== selected.space.budgetId ||
       (proposal.operation !== 'set_category' && proposal.operation !== 'create_rule' &&
-        proposal.operation !== 'update_rule' && proposal.operation !== 'delete_rule')
+        proposal.operation !== 'update_rule' && proposal.operation !== 'delete_rule' &&
+        proposal.operation !== 'consequential_action')
     ) {
       setResponseStatus(event, 404);
       return errorEnvelope('NOT_FOUND', 'Proposal is unavailable in the selected space.', null, false, requestId);
@@ -59,25 +63,51 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 404);
       return errorEnvelope('NOT_FOUND', 'Proposal is unavailable in the selected space.', null, false, requestId);
     }
+    let actionProjection: ConsequentialActionProposal | null = null;
+    let currentAssistanceMaximum = 'analysis_only';
+    if (proposal.operation === 'consequential_action') {
+      const actor = selectedLiquidityActor(workflow.store, selected);
+      if (!actor) {
+        setResponseStatus(event, 403);
+        return errorEnvelope('FORBIDDEN', 'The selected space is unavailable.', null, false, requestId);
+      }
+      try {
+        const service = await createWebConsequentialActionService(workflow.store);
+        actionProjection = await service.getProposal(actor, proposal.id);
+      } catch {
+        setResponseStatus(event, 503);
+        return errorEnvelope('ACTION_SOURCE_UNAVAILABLE', 'The current scoped action view is unavailable.', null, true, requestId);
+      }
+      if (!actionProjection) {
+        setResponseStatus(event, 404);
+        return errorEnvelope('NOT_FOUND', 'Proposal is unavailable in the selected space.', null, false, requestId);
+      }
+      currentAssistanceMaximum =
+        workflow.store.governance.getPolicy({ spaceId: selected.space.id })?.assistanceMaximum ?? 'analysis_only';
+    }
+    const publicView = actionProjection
+      ? projectConsequentialActionProposal(actionProjection, view, currentAssistanceMaximum)
+      : view;
 
-
-    const expiredAt = Date.parse(view.expiresAt);
+    const expiredAt = Date.parse(publicView.expiresAt);
     const stale =
       !Number.isFinite(expiredAt) ||
       expiredAt <= Date.now() ||
-      proposal.supersededAt !== null ||
-      view.governancePolicyVersion !== view.currentGovernancePolicyVersion ||
-      !view.requesterMembershipCurrent;
-    const simulation = view.preconditions
-      ? (view.operation === 'create_rule'
-        ? view.preconditions.reviewedSimulation ?? view.preconditions.simulation
-        : view.preconditions.simulation) ?? null
+      ('supersededAt' in publicView ? publicView.supersededAt !== null : proposal.supersededAt !== null) ||
+      publicView.governancePolicyVersion !== publicView.currentGovernancePolicyVersion ||
+      !publicView.requesterMembershipCurrent;
+    const simulation = 'preconditions' in publicView && publicView.preconditions
+      ? (publicView.operation === 'create_rule'
+        ? publicView.preconditions.reviewedSimulation ?? publicView.preconditions.simulation
+        : publicView.preconditions.simulation) ?? null
       : null;
     const simulationStatus = simulation === null ? 'missing' : stale ? 'stale' : 'present';
 
+
+
     return okEnvelope(
       {
-        proposal: view,
+        proposal: publicView,
         simulation,
         stale: stale || simulationStatus === 'stale',
         simulationStatus,

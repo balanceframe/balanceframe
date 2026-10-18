@@ -1,9 +1,9 @@
 /**
- * Red tests for the bounded Actual manual-transaction write port.
+ * Behavioral tests for the bounded Actual manual-transaction write port.
  *
- * These tests deliberately exercise the write-enabled adapter directly. The
- * application owns authorization/approval; the adapter owns current Actual
- * preconditions, the write, synchronization, and postcondition verification.
+ * These tests directly exercise the write-enabled adapter with an explicit
+ * trusted test fence. The adapter owns current Actual preconditions, writing,
+ * synchronization, and postcondition verification.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +18,7 @@ import type {
   APIPayeeEntity,
 } from '@actual-app/api';
 import type { RuleEntity, TransactionEntity } from '@actual-app/core/types/models';
+import type { ManualTransactionResult } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // Typed manual-write request used by the adapter contract
@@ -261,6 +262,15 @@ async function selectTestBudget(harness: Harness): Promise<void> {
   });
   await harness.connector.selectBudget(BUDGET_ID);
 }
+function createManualTransaction(
+  harness: Harness,
+  input: ManualTransactionInput,
+): Promise<ManualTransactionResult> {
+  return harness.connector.createManualTransaction(input, {
+    budgetId: BUDGET_ID,
+    assertExecutionCurrent: () => {},
+  });
+}
 
 function singleInput(overrides: Partial<ManualTransactionInput> = {}): ManualTransactionInput {
   return {
@@ -319,7 +329,7 @@ describe('ActualConnector.createManualTransaction', () => {
     await selectTestBudget(harness);
 
     const input = singleInput();
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
 
     expectVerified(result, input);
 
@@ -335,6 +345,7 @@ describe('ActualConnector.createManualTransaction', () => {
       amount: input.amount,
       date: input.date,
       category: input.categoryId,
+      cleared: false,
     });
     expect(submittedParent).not.toHaveProperty('imported_id');
     expect(submittedParent).not.toHaveProperty('subtransactions');
@@ -377,7 +388,7 @@ describe('ActualConnector.createManualTransaction', () => {
       ],
     };
 
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
     expectVerified(result, input);
 
     const addTransactions = vi.mocked(harness.client.addTransactions);
@@ -483,7 +494,7 @@ describe('ActualConnector.createManualTransaction', () => {
       ],
     };
 
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
     expectFailure(result, /SPLIT|CONSERVATION|AMOUNT/i);
     expect(vi.mocked(harness.client.addTransactions)).not.toHaveBeenCalled();
   });
@@ -492,7 +503,7 @@ describe('ActualConnector.createManualTransaction', () => {
     const harness = createHarness({ mode: 'observe' });
     await selectTestBudget(harness);
 
-    await expect(harness.connector.createManualTransaction(singleInput())).rejects.toThrow(
+    await expect(createManualTransaction(harness, singleInput())).rejects.toThrow(
       /observe|not permitted/i,
     );
     expect(vi.mocked(harness.client.addTransactions)).not.toHaveBeenCalled();
@@ -505,7 +516,7 @@ describe('ActualConnector.createManualTransaction', () => {
       secretKey: 'test-secret',
     });
 
-    const result = await harness.connector.createManualTransaction(singleInput());
+    const result = await createManualTransaction(harness, singleInput());
     expectFailure(result, /BUDGET_NOT_SELECTED/i);
     expect(vi.mocked(harness.client.addTransactions)).not.toHaveBeenCalled();
   });
@@ -514,7 +525,7 @@ describe('ActualConnector.createManualTransaction', () => {
     const harness = createHarness({ accounts: [] });
     await selectTestBudget(harness);
 
-    const result = await harness.connector.createManualTransaction(singleInput());
+    const result = await createManualTransaction(harness, singleInput());
     expectFailure(result, /ACCOUNT|PRECONDITION/i);
     expect(vi.mocked(harness.client.addTransactions)).not.toHaveBeenCalled();
   });
@@ -523,7 +534,7 @@ describe('ActualConnector.createManualTransaction', () => {
     const harness = createHarness({ categories: [] });
     await selectTestBudget(harness);
 
-    const result = await harness.connector.createManualTransaction(singleInput());
+    const result = await createManualTransaction(harness, singleInput());
     expectFailure(result, /CATEGORY|PRECONDITION/i);
     expect(vi.mocked(harness.client.addTransactions)).not.toHaveBeenCalled();
   });
@@ -534,7 +545,7 @@ describe('ActualConnector.createManualTransaction', () => {
     });
     await selectTestBudget(harness);
 
-    const result = await harness.connector.createManualTransaction(singleInput());
+    const result = await createManualTransaction(harness, singleInput());
     expectFailure(result, /DUPLICATE|IMPORT|REVIEW/i, true);
     expect(vi.mocked(harness.client.addTransactions)).not.toHaveBeenCalled();
 
@@ -552,7 +563,7 @@ describe('ActualConnector.createManualTransaction', () => {
     });
     await selectTestBudget(harness);
 
-    const result = await harness.connector.createManualTransaction(singleInput());
+    const result = await createManualTransaction(harness, singleInput());
     expectFailure(result, /AMBIGUOUS|REVIEW/i, true);
     expect(vi.mocked(harness.client.addTransactions)).not.toHaveBeenCalled();
   });
@@ -574,7 +585,7 @@ describe('ActualConnector.createManualTransaction', () => {
     await selectTestBudget(harness);
 
     const input = singleInput({ payeeName: 'New Merchant' });
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
     expectVerified(result, input);
     expect(vi.mocked(harness.client.addTransactions)).toHaveBeenCalledTimes(1);
 
@@ -591,7 +602,7 @@ describe('ActualConnector.createManualTransaction', () => {
     harness.client.sync = importFromRemote;
     await selectTestBudget(harness);
 
-    const result = await harness.connector.createManualTransaction(singleInput());
+    const result = await createManualTransaction(harness, singleInput());
 
     expectFailure(result, /IMPORT|REVIEW/i, true);
     expect(importFromRemote).toHaveBeenCalled();
@@ -603,7 +614,7 @@ describe('ActualConnector.createManualTransaction', () => {
     await selectTestBudget(harness);
     const input = singleInput({ date: '2100-01-01', parentId: 'manual-future-001' });
 
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
 
     expectVerified(result, input);
     expect(vi.mocked(harness.client.addTransactions)).toHaveBeenCalledTimes(1);
@@ -621,7 +632,7 @@ describe('ActualConnector.createManualTransaction', () => {
       parentId: 'manual-uncertain-001',
       correlationId: 'manual-uncertain-correlation-001',
     });
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
 
     expectFailure(result, /^WRITE_UNCERTAIN$/i, true);
     expect(result).toMatchObject({
@@ -675,7 +686,7 @@ describe('ActualConnector.createManualTransaction', () => {
       ],
     };
 
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
     expectFailure(result, /VERIFICATION|SPLIT/i);
     expect(result).not.toMatchObject({ success: true, verified: true });
     expect(addTransactions).toHaveBeenCalledTimes(1);
@@ -699,7 +710,7 @@ describe('ActualConnector.createManualTransaction', () => {
     await selectTestBudget(harness);
 
     const input = singleInput({ notes: 'requested-note' });
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
 
     expectFailure(result, /VERIFICATION/i, true);
     expect(result).not.toMatchObject({ success: true, verified: true });
@@ -725,7 +736,7 @@ describe('ActualConnector.createManualTransaction', () => {
     await selectTestBudget(harness);
 
     const input = singleInput({ payeeName: 'Requested Merchant' });
-    const result = await harness.connector.createManualTransaction(input);
+    const result = await createManualTransaction(harness, input);
 
     expectFailure(result, /VERIFICATION/i, true);
     expect(result).not.toMatchObject({ success: true, verified: true });

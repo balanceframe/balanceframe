@@ -854,14 +854,16 @@ function coapproverPersona(
   id = 'coapprover',
   categoryIds: readonly string[] = ['cat-groceries', 'cat-household', 'cat-entertainment'],
   accountIds: readonly string[] = ['acct-checking'],
+  includeSourceRead = false,
 ): ScenarioPersona {
+  const sourceRead = includeSourceRead ? ['source'] as const : [];
   return {
     id,
     role: 'coapprover',
     displayName: id === 'coapprover' ? 'Jordan Household' : 'Taylor Reviewer',
     membership: {
       status: 'active',
-      capabilities: ['existence', 'balance', 'liquidity', 'category', 'conclusion', 'session', 'proposal', 'approval', 'session:approve'],
+      capabilities: ['existence', 'balance', 'liquidity', 'category', 'conclusion', 'session', 'proposal', 'approval', 'session:approve', ...sourceRead],
     },
     grants: [
       ...(['session', 'proposal', 'approval', 'conclusion', 'liquidity', 'session:approve'] as const).map((capability) => ({
@@ -871,11 +873,11 @@ function coapproverPersona(
         granted: true,
       })),
       ...accountIds.flatMap((resourceId) =>
-        (['existence', 'balance', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
+        (['existence', 'balance', 'liquidity', 'proposal', 'approval', ...sourceRead] as const).map((capability) => ({
           resourceKind: 'account' as const, resourceId, capability, granted: true,
         }))),
       ...categoryIds.flatMap((resourceId) =>
-        (['existence', 'category', 'liquidity', 'proposal', 'approval'] as const).map((capability) => ({
+        (['existence', 'category', 'liquidity', 'proposal', 'approval', ...sourceRead] as const).map((capability) => ({
           resourceKind: 'category' as const,
           resourceId,
           capability,
@@ -950,6 +952,12 @@ function buildUnfundedCategory(context: BuildContext): MutableScenario {
 
 function buildDonorReallocation(context: BuildContext): MutableScenario {
   const scenario = baseScenario(context, 'donor-reallocation');
+  const readers = ['cat-donor', 'cat-groceries'];
+  const accounts = ['acct-checking'];
+  scenario.personas.push(
+    coapproverPersona('coapprover', readers, accounts, true),
+    coapproverPersona('approver', readers, accounts, true),
+  );
   addCategory(scenario, {
     id: 'cat-donor',
     name: 'Dining Reserve',
@@ -1038,6 +1046,13 @@ function buildFutureAssignment(context: BuildContext): MutableScenario {
 function buildAccountTransfer(context: BuildContext, late: boolean): MutableScenario {
   const id = late ? 'transfer-too-late' : 'account-transfer';
   const scenario = baseScenario(context, id);
+  if (!late) {
+    const accounts = ['acct-checking', 'acct-savings'];
+    scenario.personas.push(
+      coapproverPersona('coapprover', [], accounts, true),
+      coapproverPersona('approver', [], accounts, true),
+    );
+  }
   addAccount(scenario, {
     id: 'acct-savings',
     name: 'Household Savings',

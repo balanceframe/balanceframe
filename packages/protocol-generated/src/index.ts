@@ -454,11 +454,25 @@ export type PendingActivityTreatment = 'included' | 'excluded' | 'unknown';
 
 export type UnclearedActivityTreatment = 'included' | 'excluded' | 'unknown';
 
+/** Source-normalized effect for one resolved economic event, excluding caller-assigned ledger identities. */
+export interface EconomicEventLedgerEffect {
+  accountId: string;
+  amount: Money;
+  date: string;
+  categoryId: string | null;
+  payeeName: string | null;
+  notes: string | null;
+  splits: ManualTransactionSplit[];
+}
+
 export interface SourceObservation {
   kind: ObservationKind;
   scope: DecisionScope;
   state: ObservationState;
   observedAt: string | null;
+  contentHash?: string;
+  version?: string;
+  ledgerEffect?: EconomicEventLedgerEffect;
   evidence: EvidenceReference[];
 }
 
@@ -475,12 +489,14 @@ export type ObservationKind =
   | 'duplicate_candidate'
   | 'transfer_ambiguity'
   | 'reconciliation'
+  | 'economic_event_resolution'
   | 'currency_compatibility';
 
 export type ObservationState =
   | 'fresh'
   | 'stale'
   | 'unavailable'
+  | 'resolved'
   | 'unknown'
   | 'included'
   | 'complete'
@@ -927,6 +943,325 @@ export interface ProspectiveDecisionEnvelope<T> {
   expiresAt: string;
   redaction: RedactionState;
   payload: T;
+}
+export interface ReallocationAssignment {
+  sourceCategoryId: string;
+  sourceAsOfMonth: string;
+  destinationCategoryId: string;
+  destinationAsOfMonth: string;
+  amount: Money;
+}
+
+export interface ManualTransactionSplit {
+  categoryId: string;
+  amount: Money;
+}
+
+export interface ManualTransactionIntent {
+  parentId: string;
+  correlationId: string;
+  accountId: string;
+  amount: Money;
+  date: string;
+  categoryId: string | null;
+  payeeName: string | null;
+  notes: string | null;
+  splits: ManualTransactionSplit[];
+}
+
+export type AtomicConsequentialActionIntent =
+  | { kind: 'reallocation'; assignments: ReallocationAssignment[] }
+  | { kind: 'manual_transaction'; transaction: ManualTransactionIntent }
+  | {
+      kind: 'evidence_projection';
+      transaction: ManualTransactionIntent;
+      evidenceIds: string[];
+    }
+  | { kind: 'wallet_materialization'; walletId: string; accountName: string; currency: string }
+  | {
+      kind: 'transfer';
+      transferId: string;
+      correlationId: string;
+      sourceAccountId: string;
+      destinationAccountId: string;
+      amount: Money;
+      date: string;
+    };
+
+export type ConsequentialActionIntent =
+  | AtomicConsequentialActionIntent
+  | { kind: 'composite'; actions: AtomicConsequentialActionIntent[] };
+
+export interface ConsequentialActionAccount {
+  accountId: string;
+  name: string;
+  onBudget: boolean;
+  closed: boolean;
+  currency: string;
+  balance: Money;
+}
+
+export interface ConsequentialActionCategory {
+  categoryId: string;
+}
+
+export interface ConsequentialActionAssignment {
+  categoryId: string;
+  asOfMonth: string;
+  amount: Money;
+}
+
+export interface WalletMapping {
+  walletId: string;
+  accountId: string;
+}
+
+export interface LedgerTransaction {
+  parentId: string;
+  accountId: string;
+  amount: Money;
+  date: string;
+  categoryId: string | null;
+  payeeName: string | null;
+  notes: string | null;
+  splits: ManualTransactionSplit[];
+  transferAccountId: string | null;
+}
+
+export interface TransferMapping {
+  transferId: string;
+  correlationId: string;
+  marker: string;
+  sourceTransactionId: string;
+  destinationTransactionId: string;
+  sourceAccountId: string;
+  destinationAccountId: string;
+  amount: Money;
+  date: string;
+}
+
+export interface ConsequentialActionLedger {
+  accounts: ConsequentialActionAccount[];
+  categories: ConsequentialActionCategory[];
+  assignments: ConsequentialActionAssignment[];
+  wallets: WalletMapping[];
+  transactions: LedgerTransaction[];
+  transfers: TransferMapping[];
+}
+
+export type EvidenceState = 'resolved' | 'stale' | 'missing';
+
+export interface ConsequentialActionEvidence {
+  evidenceId: string;
+  subjectId: string;
+  state: EvidenceState;
+  contentHash: string | null;
+  version?: string;
+}
+
+export type ConsequentialActionSupplementalField =
+  | 'currency'
+  | 'kind'
+  | 'owned'
+  | 'currentLedgerConfirmed'
+  | 'holds'
+  | 'unsettledFlows'
+  | 'obligations'
+  | 'credit';
+
+export type ConsequentialActionSupplementalFactPath =
+  | 'currency'
+  | 'currencyEvidence'
+  | 'kind'
+  | 'kindEvidence'
+  | 'owned'
+  | 'ownershipEvidence'
+  | 'freshnessEvidence'
+  | 'holds'
+  | 'holdsEvidence'
+  | 'activityEvidence'
+  | 'scheduleEvidence'
+  | 'credit';
+
+export interface ConsequentialActionSupplementalObservation {
+  accountId: string;
+  fields: ConsequentialActionSupplementalField[];
+  flowIds: string[];
+  obligationIds: string[];
+}
+
+export interface ConsequentialActionInvalidatedSupplementalFacts {
+  accountId: string;
+  fields: ConsequentialActionSupplementalField[];
+  paths: ConsequentialActionSupplementalFactPath[];
+  flowIds: string[];
+  obligationIds: string[];
+}
+
+export interface PlanConsequentialActionRequest {
+  decisionCardRequest: DecisionCardRequest;
+  intent: ConsequentialActionIntent;
+  currentLedger: ConsequentialActionLedger;
+  resolvedEvidence: ConsequentialActionEvidence[];
+  financialPolicyVersion: string;
+  evaluatedAt: string;
+  idempotencyKey: string;
+  /** Value-free projection of active supplemental observation keys for accounts the action may touch. */
+  supplementalObservations: ConsequentialActionSupplementalObservation[];
+}
+export interface ConsequentialActionManualPayeeBinding {
+  parentId: string;
+  payeeName: string;
+  existingPayeeId: string | null;
+}
+
+export interface ConsequentialActionSource {
+  snapshotId: string;
+  contentHash: string;
+  policyVersion: string;
+  claimSetRevision: string;
+  financialPolicyVersion: string;
+  evidenceHash: string;
+  invalidatedFreshnessAccounts: string[];
+  manualPayeeBindings: ConsequentialActionManualPayeeBinding[];
+  invalidatedSupplementalFacts: ConsequentialActionInvalidatedSupplementalFacts[];
+  accountsCoverageBefore: CoverageState;
+  transactionsCoverageBefore: CoverageState;
+  preconditionsHash: string;
+  invariantsHash: string;
+}
+
+export interface ConsequentialActionAccountBalancePrecondition {
+  accountId: string;
+  balance: Money;
+}
+
+export interface ConsequentialActionAssignmentPrecondition {
+  categoryId: string;
+  asOfMonth: string;
+  /** Exact native assignment before this atom. */
+  amount: Money;
+  /** Exact native assignment after this atom, not the final composite target. */
+  postAmount: Money;
+}
+
+export interface ConsequentialActionDispatchPrecondition {
+  atomIndex: number;
+  accountBalances: ConsequentialActionAccountBalancePrecondition[];
+  assignments: ConsequentialActionAssignmentPrecondition[];
+}
+
+export type ConsequentialActionReasonCode =
+  | 'safe_reallocation'
+  | 'account_readiness'
+  | 'payment_route'
+  | 'transfer_need'
+  | 'reservation_commitment'
+  | 'evidence_resolution';
+
+export type ReadinessState = 'ready' | 'blocked';
+
+export type ConsequentialActionImpact =
+  | {
+      kind: 'category_reallocation';
+      sourceCategoryId: string;
+      sourceAsOfMonth: string;
+      destinationCategoryId: string;
+      destinationAsOfMonth: string;
+      amount: Money;
+      sourceProtected: boolean;
+      sourceAvailabilityBefore: Money;
+      sourceAvailabilityAfter: Money;
+      sourceUncommittedAvailabilityBefore: Money;
+      sourceUncommittedAvailabilityAfter: Money;
+      minimumRetained: Money;
+      projectedRemainingNeed: Money;
+      safeToRedirectAfter: Money;
+      rationale: 'donor_category_surplus_redirected';
+    }
+  | { kind: 'account_readiness'; accountId: string; state: ReadinessState }
+  | { kind: 'payment_route'; accountId: string; state: ReadinessState }
+  | { kind: 'transfer_need'; accountId: string; amount: Money }
+  | {
+      kind: 'reservation_commitment';
+      categoryId: string;
+      commitments: Money;
+      reservations: Money;
+    }
+  | { kind: 'evidence_resolution'; evidenceId: string; state: 'resolved' };
+
+export type ConsequentialActionPostcondition =
+  | { kind: 'assignment'; categoryId: string; asOfMonth: string; amount: Money }
+  | { kind: 'account_balance'; accountId: string; balance: Money }
+  | {
+      kind: 'transaction';
+      parentId: string;
+      accountId: string;
+      amount: Money;
+      date: string;
+      categoryId: string | null;
+      payeeName: string | null;
+      notes: string | null;
+      splits: ManualTransactionSplit[];
+    }
+  | {
+      kind: 'wallet_mapping';
+      walletId: string;
+      accountName: string;
+      onBudget: true;
+      closed: false;
+      openingBalance: Money;
+    }
+  | {
+      kind: 'transfer_ledger_entry';
+      transferId: string;
+      correlationId: string;
+      sourceAccountId: string;
+      destinationAccountId: string;
+      amount: Money;
+      date: string;
+    };
+
+export interface ConsequentialActionPlan {
+  version: '1';
+  action: ConsequentialActionIntent;
+  source: ConsequentialActionSource;
+  evidenceReferences: ConsequentialActionEvidence[];
+  expiresAt: string;
+  idempotencyKey: string;
+  reasonCodes: ConsequentialActionReasonCode[];
+  impacts: ConsequentialActionImpact[];
+  expectedPostconditions: ConsequentialActionPostcondition[];
+  dispatchPreconditions: ConsequentialActionDispatchPrecondition[];
+  actionHash: string;
+}
+
+export type VerificationPhase = 'preconditions' | 'postconditions';
+
+export interface VerifyConsequentialActionRequest {
+  plan: ConsequentialActionPlan;
+  phase: VerificationPhase;
+  decisionCardRequest: DecisionCardRequest;
+  currentLedger: ConsequentialActionLedger;
+  resolvedEvidence: ConsequentialActionEvidence[];
+  evaluatedAt: string;
+  financialPolicyVersion: string;
+}
+
+export type ConsequentialActionVerificationReason =
+  | 'expired'
+  | 'source_changed'
+  | 'evidence_changed'
+  | 'policy_changed'
+  | 'claims_changed'
+  | 'target_changed'
+  | 'postcondition_mismatch'
+  | 'invalid_plan';
+
+export interface ConsequentialActionVerification {
+  valid: boolean;
+  reason: ConsequentialActionVerificationReason | null;
+  actionHash: string;
 }
 
 export type * from './liquidity.js';

@@ -1,5 +1,48 @@
 # Agent Guidelines
 
+## Ponytail and Role Routing
+
+Use the repository's [Ponytail skill](.agents/skills/ponytail/SKILL.md) for coding
+work, with **Full** as the default: make the smallest complete change, preserve
+required validation, and report checks and remaining risks. The six pinned
+skills and their provenance are in [.agents/skills](.agents/skills/README.md).
+Read relevant skills when they are not listed by the host's catalog.
+
+An explicit user level choice takes precedence. When the current task warrants
+questioning scope or design assumptions, explain why and promote only that task
+to **Ultra**; keep Full as the default for later tasks. Ponytail does not relax
+the TDD, coverage, browser verification, or sign-off requirements below.
+
+Use these four roles actively for substantial feature work:
+
+| Role | Responsibility | Model and effort |
+| --- | --- | --- |
+| `planning` | Map requirements to current code, identify gaps and dependencies, and produce a concise implementation plan. | `gpt-6-astra`, `high` |
+| `implementation` | Implement the agreed scope with regression-first tests and verification. | `gpt-6.1-sol`, `high` |
+| `correctness_review` | Independently review behavior, authorization, financial invariants, failure paths, and test evidence. | `gpt-6.1-sol`, `high` |
+| `complexity_review` | Independently check for unnecessary scope, duplication, and simpler complete solutions. | `gpt-6.1-sol`, `high` |
+
+Limit this project to **two active subagents in addition to the lead**. Select
+`gpt-6.1-sol` with `high` reasoning explicitly for implementation and routine
+review. Reserve `gpt-6-astra` with `high` reasoning for planning or genuinely
+difficult decisions; do not repurpose an Astra planning worker for routine
+implementation or packaging. Do not rely on unknown inherited settings. If a
+running worker cannot be reconfigured, checkpoint and stop it before starting
+a replacement with explicit settings. Report unsupported model selection.
+
+Give parallel workers distinct file ownership and integrate dependent changes
+in order. Reviewers must not sign off their own implementation as independent
+review. Keep existing work and instructions intact. Route unclear major
+decisions, architecture changes, and dependency additions or upgrades to the
+parent for user approval before proceeding.
+
+Standalone local-client profiles live in [.codex/agents](.codex/README.md).
+If the hosted harness cannot select custom profiles, use explicit named role
+handoffs and request the prescribed model/effort when supported; disclose any
+unsupported selection rather than claiming native activation. A fresh task or
+client restart may be needed to discover repository configuration. This setup
+does not install or approve hooks and grants no additional permissions.
+
 ## Git Commits
 
 **Every commit created by an agent MUST include a DCO sign-off.** Agents MUST

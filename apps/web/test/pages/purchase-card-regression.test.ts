@@ -1,15 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import type { PublicDecisionCard } from '@balanceframe/application';
+import actionFixture from '../../../../protocol/fixtures/consequential-action.json';
 import PurchaseCheckPage from '../../app/pages/purchase-check.vue';
 
 const mockFetch = vi.fn();
+const navigateTo = vi.fn();
 const requestUrls: string[] = [];
 vi.stubGlobal('$fetch', mockFetch);
+vi.stubGlobal('navigateTo', navigateTo);
 
 type Money = { minorUnits: string; currency: 'USD' };
 
 const money = (minorUnits: string): Money => ({ minorUnits, currency: 'USD' });
+type TestEnvelope = { status: 'ok'; result: unknown };
 
 const catalog = {
   accounts: [
@@ -20,7 +24,7 @@ const catalog = {
   canCreateSession: false,
 };
 
-const okEnvelope = (result: unknown) => ({ status: 'ok', result });
+const okEnvelope = (result: unknown): TestEnvelope => ({ status: 'ok', result });
 
 const AnalysisPageStub = {
   template:
@@ -220,6 +224,20 @@ const baseCard = (
 
 const fundedNowCard = (): PublicDecisionCard => baseCard('funded_now', 'ready');
 
+function safeReallocationCard(): PublicDecisionCard {
+  const card = baseCard('safe_with_reallocation', 'ready');
+  const assignment = structuredClone(actionFixture.intent.assignments[0]!);
+  card.fundingPaths = [{
+    kind: 'category_reallocation',
+    ...assignment,
+    approvalRequired: true,
+    tradeoffs: [],
+    before: { sourceAvailability: money('6000'), destinationAvailability: money('0') },
+    after: { sourceAvailability: money('4000'), destinationAvailability: money('2000') },
+  }];
+  return card;
+}
+
 const safeAfterDateCard = (): PublicDecisionCard => {
   const card = baseCard('safe_after_date', 'transfer_required');
   card.fundingPaths = [
@@ -278,12 +296,14 @@ async function mountAndEvaluate(
     accountId?: string;
     purchaseAt?: string;
     requiredBy?: string;
+    proposalResult?: unknown;
   } = {},
 ) {
   mockFetch.mockImplementation((url?: string) => {
     requestUrls.push(url ?? '');
     if (url === '/api/liquidity/spendability') return Promise.resolve(okEnvelope(catalog));
     if (url === '/api/purchase/evaluate') return Promise.resolve(okEnvelope({ card }));
+    if (url === '/api/proposal/action') return Promise.resolve(okEnvelope(options.proposalResult ?? {}));
     return Promise.resolve(okEnvelope({}));
   });
 
@@ -304,6 +324,7 @@ async function mountAndEvaluate(
 describe('Purchase Check Decision Card contract', () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    navigateTo.mockReset();
     requestUrls.length = 0;
   });
 
@@ -410,4 +431,71 @@ describe('Purchase Check Decision Card contract', () => {
     expect(rendered).not.toContain('0.00 USD');
     expect(rendered).not.toContain('20.00 USD');
   });
+  it('proposes only the native-safe path using the purchase intent pinned to the evaluated Card', async () => {
+    const wrapper = await mountAndEvaluate(safeReallocationCard(), {
+      accountId: 'checking',
+      purchaseAt: '2026-09-06T12:00',
+      requiredBy: '2026-09-06T12:00',
+      proposalResult: { proposal: { id: 'proposal-action' } },
+    });
+
+    await wrapper.get('[data-testid="propose-action"]').trigger('click');
+    await flushPromises();
+
+    const actionRequest = mockFetch.mock.calls.find(([url]) => url === '/api/proposal/action')?.[1] as {
+      method: string; body: { action: unknown; decision: { accountId: string; items: unknown[] } };
+    } | undefined;
+    expect(actionRequest?.method).toBe('POST');
+    expect(Object.keys(actionRequest?.body ?? {}).sort()).toEqual(['action', 'decision']);
+    expect(actionRequest?.body.action).toEqual({
+      kind: 'reallocation', assignments: [actionFixture.intent.assignments[0]],
+    });
+    expect(actionRequest?.body.decision).toMatchObject({
+      accountId: 'checking',
+      items: [expect.objectContaining({
+        categoryId: 'food', amount: money('2000'),
+        purchaseAt: '2026-09-06T12:00:00.000Z', requiredBy: '2026-09-06T12:00:00.000Z',
+      })],
+    });
+    expect(actionRequest?.body).not.toHaveProperty('plan');
+    expect(actionRequest?.body).not.toHaveProperty('payloadHash');
+    expect(navigateTo).toHaveBeenCalledWith('/proposals/proposal-action');
+  });
+
+  it('removes the prior Propose path when purchase inputs invalidate their evaluated Card', async () => {
+    const wrapper = await mountAndEvaluate(safeReallocationCard(), { accountId: 'checking' });
+    expect(wrapper.get('[data-testid="propose-action"]').exists()).toBe(true);
+
+    await wrapper.get('#purchase-amount').setValue('2500');
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="propose-action"]').exists()).toBe(false);
+    expect(mockFetch.mock.calls.some(([url]) => url === '/api/proposal/action')).toBe(false);
+  });
+  it('does not revive a card evaluated for old inputs after an edit during evaluation', async () => {
+    let resolveEvaluation: ((value: TestEnvelope) => void) | undefined;
+    mockFetch.mockImplementation((url?: string) => {
+      requestUrls.push(url ?? '');
+      if (url === '/api/liquidity/spendability') return Promise.resolve(okEnvelope(catalog));
+      if (url === '/api/purchase/evaluate')
+        return new Promise<TestEnvelope>((resolve) => { resolveEvaluation = resolve; });
+      return Promise.resolve(okEnvelope({}));
+    });
+
+    const wrapper = mount(PurchaseCheckPage, { global: globalMountOptions });
+    await flushPromises();
+    await wrapper.get('#purchase-category').setValue('food');
+    await wrapper.get('#purchase-amount').setValue('2000');
+    await wrapper.get('#purchase-currency').setValue('USD');
+    await wrapper.get('#purchase-account').setValue('checking');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    await wrapper.get('#purchase-amount').setValue('2500');
+    resolveEvaluation?.(okEnvelope({ card: safeReallocationCard() }));
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="purchase-card"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="propose-action"]').exists()).toBe(false);
+  });
+
 });

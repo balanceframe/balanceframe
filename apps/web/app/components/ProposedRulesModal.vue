@@ -500,6 +500,8 @@ function proposalTitle(operation: ProposalApprovalView['operation']): string {
       return 'BalanceFrame classification update';
     case 'delete_rule':
       return 'Actual rule deletion';
+    case 'consequential_action':
+      return 'Financial action';
   }
 }
 
@@ -517,6 +519,8 @@ function executeLabel(operation: ProposalApprovalView['operation']): string {
       return 'Execute exact rule deletion';
     case 'create_rule':
       return 'Execute exact rule proposal';
+    case 'consequential_action':
+      return 'Execute approved financial action';
   }
 }
 

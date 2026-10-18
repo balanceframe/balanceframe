@@ -333,6 +333,8 @@ export interface NativeBindingShim {
   evaluateAccountAwareSpendability?(input: string): string;
   verifyTransferPreconditions?(input: string): string;
   verifyTransferSettlement?(input: string): string;
+  planConsequentialAction?(input: string): string;
+  verifyConsequentialAction?(input: string): string;
   /** Project future cash flow based on schedules and budgets. */
   projectCashFlow(input: string): string;
   /** Evaluate target/sinking-fund health. */

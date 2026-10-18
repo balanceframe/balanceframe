@@ -56,21 +56,21 @@ import {
 } from '../src/normalizer';
 import { integerToMoney } from '../src/normalizer';
 
+const categoryExecutionPrecondition = { assertExecutionCurrent: vi.fn() };
+
 // ============================================================================
 // Mock ActualClient
 // ============================================================================
 
 function createMockClient(overrides: Partial<ActualClient> = {}): ActualClient {
   return {
-    init: vi
-      .fn()
-      .mockResolvedValue({
-        send: vi.fn(),
-        getDataDir: vi.fn(),
-        sendMessage: vi.fn(),
-        amountToInteger: vi.fn(),
-        integerToAmount: vi.fn(),
-      }),
+    init: vi.fn().mockResolvedValue({
+      send: vi.fn(),
+      getDataDir: vi.fn(),
+      sendMessage: vi.fn(),
+      amountToInteger: vi.fn(),
+      integerToAmount: vi.fn(),
+    }),
     shutdown: vi.fn().mockResolvedValue(undefined),
     getBudgets: vi.fn().mockResolvedValue([]),
     downloadBudget: vi.fn().mockResolvedValue(undefined),
@@ -96,6 +96,31 @@ function createMockClient(overrides: Partial<ActualClient> = {}): ActualClient {
     setBudgetAmount: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
+}
+
+interface BudgetAssignmentPrecondition {
+  readonly budgetId: string;
+  readonly expectedAmount: number;
+  readonly currency: string;
+  readonly assertExecutionCurrent: () => void;
+}
+
+function setBudgetAmountUnderTest(connector: ActualConnector): Promise<unknown> {
+  // The adapter type is read-only here; this test exercises the agreed next-phase port.
+  const assignmentPort = connector as unknown as {
+    setBudgetAmount(
+      month: string,
+      categoryId: string,
+      amount: number,
+      precondition: BudgetAssignmentPrecondition,
+    ): Promise<unknown>;
+  };
+  return assignmentPort.setBudgetAmount('2026-07', 'c1', 50000, {
+    budgetId: 'budget_1',
+    expectedAmount: 0,
+    currency: 'USD',
+    assertExecutionCurrent: () => {},
+  });
 }
 
 // ============================================================================
@@ -228,68 +253,123 @@ async function acquireRuleAuthority(
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
   await store.claimBootstrap({
-    name: 'Owner', email: 'owner@example.test', claimId: 'adapter-rule-delete',
+    name: 'Owner',
+    email: 'owner@example.test',
+    claimId: 'adapter-rule-delete',
   });
   await store.finalizeBootstrap({ claimId: 'adapter-rule-delete', ownerUserId: 'owner' });
   const actors = ['owner', 'proposer', 'approver', 'executor'];
   const auth: Record<string, HumanControlContext> = {};
-  for (const actorId of actors) auth[actorId] = {
-    method: 'human-session', actorId, sessionId: `session:${actorId}`, reauthenticatedAt: now,
-  };
+  for (const actorId of actors)
+    auth[actorId] = {
+      method: 'human-session',
+      actorId,
+      sessionId: `session:${actorId}`,
+      reauthenticatedAt: now,
+    };
   const governance = store.governance;
   const budgetId = 'budget_1';
   const space = governance.bindBudget({
     spaceId: governance.createSpace({
-      actorId: 'owner', name: 'Adapter deletion authority', kind: 'shared', now, auth: auth.owner!,
+      actorId: 'owner',
+      name: 'Adapter deletion authority',
+      kind: 'shared',
+      now,
+      auth: auth.owner!,
     }).id,
-    budgetId, now, auth: auth.owner!,
+    budgetId,
+    now,
+    auth: auth.owner!,
   });
   governance.setPolicy({
-    spaceId: space.id, expectedVersion: governance.getPolicy({ spaceId: space.id })!.version,
+    spaceId: space.id,
+    expectedVersion: governance.getPolicy({ spaceId: space.id })!.version,
     policy: { minimumApprovers: 1, approvalThresholds: [], operationApprovers: { [operation]: 1 } },
-    now, auth: auth.owner!,
+    now,
+    auth: auth.owner!,
   });
-  const payload = operation === 'delete_rule'
-    ? { kind: 'delete_rule' as const, ruleId: rule.id }
-    : { kind: 'create_rule' as const, transactionId: null, categoryId: 'c1', rule: {
-        stage: rule.stage, conditionsOp: rule.conditionsOp, conditions: rule.trigger, actions: rule.actions,
-      } };
-  const preconditions = operation === 'delete_rule'
-    ? { rule, override: null, actualVersion }
-    : { nativeRule: payload.kind === 'create_rule' ? payload.rule : undefined, actualVersion };
+  const payload =
+    operation === 'delete_rule'
+      ? { kind: 'delete_rule' as const, ruleId: rule.id }
+      : {
+          kind: 'create_rule' as const,
+          transactionId: null,
+          categoryId: 'c1',
+          rule: {
+            stage: rule.stage,
+            conditionsOp: rule.conditionsOp,
+            conditions: rule.trigger,
+            actions: rule.actions,
+          },
+        };
+  const preconditions =
+    operation === 'delete_rule'
+      ? { rule, override: null, actualVersion }
+      : { nativeRule: payload.kind === 'create_rule' ? payload.rule : undefined, actualVersion };
   const resources = [
     { resourceKind: 'budget' as const, resourceId: budgetId },
     ...deriveProposalAuthorizationFacts(operation, payload, preconditions).resources,
   ];
   const capabilities: Record<string, string> = {
-    proposer: 'rule:propose', approver: 'rule:approve', executor: 'rule:execute',
+    proposer: 'rule:propose',
+    approver: 'rule:approve',
+    executor: 'rule:execute',
   };
   for (const actorId of ['proposer', 'approver', 'executor']) {
     await store.upsertActorMembership(actorId, 'active', [], 'adapter-rule-delete');
     const membership = governance.addMembership({
-      spaceId: space.id, actorId, validFrom: now, now, auth: auth.owner!,
+      spaceId: space.id,
+      actorId,
+      validFrom: now,
+      now,
+      auth: auth.owner!,
     });
-    for (const resource of resources) governance.setResourceGrant({
-      spaceId: space.id, budgetId, actorId, membershipId: membership.id,
-      capability: capabilities[actorId]!, ...resource, granted: true, now, auth: auth.owner!,
-    });
+    for (const resource of resources)
+      governance.setResourceGrant({
+        spaceId: space.id,
+        budgetId,
+        actorId,
+        membershipId: membership.id,
+        capability: capabilities[actorId]!,
+        ...resource,
+        granted: true,
+        now,
+        auth: auth.owner!,
+      });
   }
   const proposal = await store.createProposal({
-    operation, spaceId: space.id, budgetId, payload,
-    preconditions: JSON.stringify(preconditions), policyVersion: GENERIC_MUTATION_POLICY_VERSION,
-    actorId: 'proposer', auth: auth.proposer!, expiresAt, provenance: 'manual',
+    operation,
+    spaceId: space.id,
+    budgetId,
+    payload,
+    preconditions: JSON.stringify(preconditions),
+    policyVersion: GENERIC_MUTATION_POLICY_VERSION,
+    actorId: 'proposer',
+    auth: auth.proposer!,
+    expiresAt,
+    provenance: 'manual',
   });
   await store.createApproval({
-    proposalId: proposal.id, payloadHash: proposal.payloadHash, actorId: 'approver',
-    expiresAt, now, auth: auth.approver!,
+    proposalId: proposal.id,
+    payloadHash: proposal.payloadHash,
+    actorId: 'approver',
+    expiresAt,
+    now,
+    auth: auth.approver!,
   });
-  if (!proposal.governancePolicyVersion) throw new Error('Fixture proposal lacks governance policy');
+  if (!proposal.governancePolicyVersion)
+    throw new Error('Fixture proposal lacks governance policy');
   const input = {
-    actorId: 'executor', auth: auth.executor!, proposalId: proposal.id,
-    payloadHash: proposal.payloadHash, governancePolicyVersion: proposal.governancePolicyVersion,
-    idempotencyKey: 'adapter-rule-delete', requestId: 'adapter-rule-delete',
+    actorId: 'executor',
+    auth: auth.executor!,
+    proposalId: proposal.id,
+    payloadHash: proposal.payloadHash,
+    governancePolicyVersion: proposal.governancePolicyVersion,
+    idempotencyKey: 'adapter-rule-delete',
+    requestId: 'adapter-rule-delete',
     serialisedEffect: JSON.stringify({
-      operation: proposal.operation, payload: proposal.payload,
+      operation: proposal.operation,
+      payload: proposal.payload,
       preconditions: JSON.parse(proposal.preconditions) as unknown,
     }),
   };
@@ -297,7 +377,8 @@ async function acquireRuleAuthority(
   if (!acquired.auditRecord) throw new Error('Fixture failed to acquire an execution token');
   const acquisitionAuditId = acquired.auditRecord.id;
   const precondition: RuleDeletePrecondition = {
-    rule, actualVersion,
+    rule,
+    actualVersion,
     assertExecutionCurrent: () => {
       store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId });
     },
@@ -354,9 +435,14 @@ describe('ActualConnector', () => {
         secretKey: 'secret',
       });
       await expect(
-        connector.createRule({ conditions: [], actions: [] }, {
-          assertExecutionCurrent: () => { throw new Error('No execution acquired'); },
-        }),
+        connector.createRule(
+          { conditions: [], actions: [] },
+          {
+            assertExecutionCurrent: () => {
+              throw new Error('No execution acquired');
+            },
+          },
+        ),
       ).rejects.toThrow(/not yet implemented|not permitted|observe/i);
     });
 
@@ -365,9 +451,7 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      await expect(connector.setBudgetAmount('2026-07', 'c1', 50000)).rejects.toThrow(
-        /not yet implemented|not permitted|observe/i,
-      );
+      await expect(setBudgetAmountUnderTest(connector)).rejects.toThrow(/not permitted|observe/i);
     });
 
     it('should reject setTransactionCategory in Observe mode', async () => {
@@ -375,7 +459,7 @@ describe('ActualConnector', () => {
         serverUrl: 'http://localhost:5006',
         secretKey: 'secret',
       });
-      await expect(connector.setTransactionCategory('tx1', 'c1', null)).rejects.toThrow(
+      await expect(connector.setTransactionCategory('tx1', 'c1', null, categoryExecutionPrecondition)).rejects.toThrow(
         /not permitted|observe/i,
       );
     });
@@ -420,9 +504,14 @@ describe('ActualConnector', () => {
       });
       mockClient.createRule = vi.fn();
       await expect(
-        connector.createRule({ conditions: [], actions: [] }, {
-          assertExecutionCurrent: () => { throw new Error('No execution acquired'); },
-        }),
+        connector.createRule(
+          { conditions: [], actions: [] },
+          {
+            assertExecutionCurrent: () => {
+              throw new Error('No execution acquired');
+            },
+          },
+        ),
       ).rejects.toThrow();
       expect(mockClient.createRule).not.toHaveBeenCalled();
     });
@@ -433,7 +522,7 @@ describe('ActualConnector', () => {
         secretKey: 'secret',
       });
       mockClient.setBudgetAmount = vi.fn();
-      await expect(connector.setBudgetAmount('2026-07', 'c1', 50000)).rejects.toThrow();
+      await expect(setBudgetAmountUnderTest(connector)).rejects.toThrow(/not permitted|observe/i);
       expect(mockClient.setBudgetAmount).not.toHaveBeenCalled();
     });
 
@@ -445,7 +534,7 @@ describe('ActualConnector', () => {
       mockClient.updateTransaction = vi.fn();
       mockClient.getAccounts = vi.fn().mockReturnValue(mockAccounts);
       mockClient.getTransactions = vi.fn().mockReturnValue(mockTransactions);
-      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1')).rejects.toThrow();
+      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition)).rejects.toThrow();
       expect(mockClient.updateTransaction).not.toHaveBeenCalled();
     });
   });
@@ -513,14 +602,19 @@ describe('ActualConnector', () => {
       await writeConnector.selectBudget('budget_1');
 
       const { store, precondition } = await acquireRuleAuthority(
-        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0', 'create_rule',
+        automationRuleSnapshot(mockRules[0]!, 0),
+        '26.7.0',
+        'create_rule',
       );
-      const result = await writeConnector.createRule({
-        stage: 'post',
-        conditionsOp: 'and',
-        conditions: [{ field: 'payee', op: 'is', value: 'p1' }],
-        actions: [{ op: 'set', field: 'category', value: 'c1' }],
-      }, precondition);
+      const result = await writeConnector.createRule(
+        {
+          stage: 'post',
+          conditionsOp: 'and',
+          conditions: [{ field: 'payee', op: 'is', value: 'p1' }],
+          actions: [{ op: 'set', field: 'category', value: 'c1' }],
+        },
+        precondition,
+      );
 
       expect(result.success).toBe(true);
       if (result.success) {
@@ -568,29 +662,30 @@ describe('ActualConnector', () => {
         rules: [mockRules[0]!],
         actualVersion: '26.6.0',
       },
-    ])('does not delete when the displayed $label baseline is stale', async ({
-      rules,
-      actualVersion,
-    }) => {
-      const mock = createMockClient({
-        getBudgets: vi.fn().mockResolvedValue(mockFiles),
-        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
-        getRules: vi.fn().mockResolvedValue(rules),
-        deleteRule: vi.fn().mockResolvedValue(true),
-      });
-      const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-stale');
-      const { store, precondition } = await acquireRuleAuthority(
-        automationRuleSnapshot(mockRules[0]!, 0), actualVersion,
-      );
+    ])(
+      'does not delete when the displayed $label baseline is stale',
+      async ({ rules, actualVersion }) => {
+        const mock = createMockClient({
+          getBudgets: vi.fn().mockResolvedValue(mockFiles),
+          getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+          getRules: vi.fn().mockResolvedValue(rules),
+          deleteRule: vi.fn().mockResolvedValue(true),
+        });
+        const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-stale');
+        const { store, precondition } = await acquireRuleAuthority(
+          automationRuleSnapshot(mockRules[0]!, 0),
+          actualVersion,
+        );
 
-      try {
-        await expect(writeConnector.deleteRule('r1', precondition)).rejects.toThrow();
-        expect(mock.deleteRule).not.toHaveBeenCalled();
-      } finally {
-        await writeConnector.disconnect();
-        store.close();
-      }
-    });
+        try {
+          await expect(writeConnector.deleteRule('r1', precondition)).rejects.toThrow();
+          expect(mock.deleteRule).not.toHaveBeenCalled();
+        } finally {
+          await writeConnector.disconnect();
+          store.close();
+        }
+      },
+    );
 
     it('synchronizes and confirms fresh Actual absence after deleting the captured rule', async () => {
       const mock = createMockClient({
@@ -601,13 +696,12 @@ describe('ActualConnector', () => {
       });
       const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-success');
       const { store, precondition } = await acquireRuleAuthority(
-        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0',
+        automationRuleSnapshot(mockRules[0]!, 0),
+        '26.7.0',
       );
 
       try {
-        await expect(
-          writeConnector.deleteRule('r1', precondition),
-        ).resolves.toBeUndefined();
+        await expect(writeConnector.deleteRule('r1', precondition)).resolves.toBeUndefined();
         expect(mock.deleteRule).toHaveBeenCalledWith('r1');
         expect(mock.sync).toHaveBeenCalledTimes(1);
         expect(mock.getRules).toHaveBeenCalledTimes(2);
@@ -626,13 +720,12 @@ describe('ActualConnector', () => {
       });
       const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-unverified');
       const { store, precondition } = await acquireRuleAuthority(
-        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0',
+        automationRuleSnapshot(mockRules[0]!, 0),
+        '26.7.0',
       );
 
       try {
-        await expect(
-          writeConnector.deleteRule('r1', precondition),
-        ).rejects.toThrow();
+        await expect(writeConnector.deleteRule('r1', precondition)).rejects.toThrow();
         expect(mock.deleteRule).toHaveBeenCalledWith('r1');
         expect(mock.sync).toHaveBeenCalledTimes(1);
         expect(mock.getRules).toHaveBeenCalledTimes(2);
@@ -651,13 +744,12 @@ describe('ActualConnector', () => {
       });
       const writeConnector = await connectRuleWriter(mock, '/tmp/bf-rule-delete-scheduled');
       const { store, precondition } = await acquireRuleAuthority(
-        automationRuleSnapshot(mockRules[0]!, 0), '26.7.0',
+        automationRuleSnapshot(mockRules[0]!, 0),
+        '26.7.0',
       );
 
       try {
-        await expect(
-          writeConnector.deleteRule('r1', precondition),
-        ).rejects.toThrow(/schedule/i);
+        await expect(writeConnector.deleteRule('r1', precondition)).rejects.toThrow(/schedule/i);
         expect(mock.deleteRule).toHaveBeenCalledWith('r1');
         expect(mock.sync).not.toHaveBeenCalled();
       } finally {
@@ -796,35 +888,22 @@ describe('ActualConnector', () => {
         secretKey: 'test',
       });
       mock.createRule = vi.fn();
-      const result = await writeConnector.createRule({
-        conditions: [],
-        actions: [],
-      }, { assertExecutionCurrent: () => { throw new Error('No execution acquired'); } });
+      const result = await writeConnector.createRule(
+        {
+          conditions: [],
+          actions: [],
+        },
+        {
+          assertExecutionCurrent: () => {
+            throw new Error('No execution acquired');
+          },
+        },
+      );
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('BUDGET_NOT_SELECTED');
       }
       expect(mock.createRule).not.toHaveBeenCalled();
-      await writeConnector.disconnect();
-    });
-
-    it('should reject setBudgetAmount in write-enabled mode', async () => {
-      const mock = createMockClient();
-      const writeConnector = new ActualConnector({
-        client: mock,
-        credentialStore: new NullCredentialStore(),
-        mode: 'reviewAndApply',
-        cacheDir: '/tmp/bf-unimpl-budget',
-      });
-      await writeConnector.connect({
-        serverUrl: 'http://test:5006',
-        secretKey: 'test',
-      });
-      mock.setBudgetAmount = vi.fn();
-      await expect(writeConnector.setBudgetAmount('2026-07', 'c1', 50000)).rejects.toThrow(
-        /not yet implemented/i,
-      );
-      expect(mock.setBudgetAmount).not.toHaveBeenCalled();
       await writeConnector.disconnect();
     });
   });
@@ -2517,20 +2596,55 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('split child transactions', () => {
-    it.each([false, true])('retains nested SDK split children exactly once with flat copies %s', (includeFlatCopies) => {
-      const child = { ...mockTransactions[0]!, id: 'nested-child', is_child: true, parent_id: 'nested-parent', amount: -37 };
-      const parent = { ...mockTransactions[0]!, id: 'nested-parent', is_parent: true, is_child: false, subtransactions: [child] };
-      const result = normalizeTransactions(includeFlatCopies ? [parent, child] : [parent], {}, {}, {});
-      expect(result.map(({ id }) => id)).toEqual(['nested-parent']);
-      expect(result[0]!.subtransactions).toMatchObject([{ id: 'nested-child', amount: { minorUnits: '-37', currency: 'USD' } }]);
-      expect(result[0]!.subtransactions).toHaveLength(1);
-    });
+    it.each([false, true])(
+      'retains nested SDK split children exactly once with flat copies %s',
+      (includeFlatCopies) => {
+        const child = {
+          ...mockTransactions[0]!,
+          id: 'nested-child',
+          is_child: true,
+          parent_id: 'nested-parent',
+          amount: -37,
+        };
+        const parent = {
+          ...mockTransactions[0]!,
+          id: 'nested-parent',
+          is_parent: true,
+          is_child: false,
+          subtransactions: [child],
+        };
+        const result = normalizeTransactions(
+          includeFlatCopies ? [parent, child] : [parent],
+          {},
+          {},
+          {},
+        );
+        expect(result.map(({ id }) => id)).toEqual(['nested-parent']);
+        expect(result[0]!.subtransactions).toMatchObject([
+          { id: 'nested-child', amount: { minorUnits: '-37', currency: 'USD' } },
+        ]);
+        expect(result[0]!.subtransactions).toHaveLength(1);
+      },
+    );
 
     it('refuses conflicting nested and flat SDK facts for the same split child', () => {
-      const child = { ...mockTransactions[0]!, id: 'nested-child', is_child: true, parent_id: 'nested-parent', amount: -37 };
-      const parent = { ...mockTransactions[0]!, id: 'nested-parent', is_parent: true, is_child: false, subtransactions: [child] };
-      expect(() => normalizeTransactions([parent, { ...child, amount: -38 }], {}, {}, {}))
-        .toThrow('Conflicting canonical transaction facts');
+      const child = {
+        ...mockTransactions[0]!,
+        id: 'nested-child',
+        is_child: true,
+        parent_id: 'nested-parent',
+        amount: -37,
+      };
+      const parent = {
+        ...mockTransactions[0]!,
+        id: 'nested-parent',
+        is_parent: true,
+        is_child: false,
+        subtransactions: [child],
+      };
+      expect(() => normalizeTransactions([parent, { ...child, amount: -38 }], {}, {}, {})).toThrow(
+        'Conflicting canonical transaction facts',
+      );
     });
 
     it('should attach child transactions as subtransactions on parent', () => {
@@ -2869,22 +2983,38 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('snapshot metadata', () => {
-    it.each(['getRules', 'getPayees', 'getCategories', 'getCategoryGroups', 'getAccounts'] as const)(
+    it.each([
+      'getRules',
+      'getPayees',
+      'getCategories',
+      'getCategoryGroups',
+      'getAccounts',
+    ] as const)(
       'preserves unavailable %s independently of successfully empty full-ledger reads',
       async (method) => {
         mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
-        await connector.connect({ serverUrl: 'http://localhost:5006', secretKey: 'synthetic-test-only' });
+        await connector.connect({
+          serverUrl: 'http://localhost:5006',
+          secretKey: 'synthetic-test-only',
+        });
         await connector.selectBudget('budget_1');
         const complete = await connector.synchronize({ refresh: false });
         expect(complete.rulePlanningSourceAvailability).toEqual({
-          accounts: 'complete', payees: 'complete', categories: 'complete', categoryGroups: 'complete', rules: 'complete',
+          accounts: 'complete',
+          payees: 'complete',
+          categories: 'complete',
+          categoryGroups: 'complete',
+          rules: 'complete',
           history: [],
         });
         mockClient[method] = vi.fn().mockRejectedValue(new Error('Synthetic unavailable SDK read'));
         const unavailable = await connector.synchronize({ refresh: false });
         const key = {
-          getRules: 'rules', getPayees: 'payees', getCategories: 'categories',
-          getCategoryGroups: 'categoryGroups', getAccounts: 'accounts',
+          getRules: 'rules',
+          getPayees: 'payees',
+          getCategories: 'categories',
+          getCategoryGroups: 'categoryGroups',
+          getAccounts: 'accounts',
         }[method];
         expect(unavailable.rulePlanningSourceAvailability).toMatchObject({ [key]: 'unavailable' });
         expect(unavailable.snapshot.rules).toEqual([]);
@@ -2895,19 +3025,39 @@ describe('ActualConnector', () => {
     it('captures all ledger account histories across the full SDK civil range and records individual failures', async () => {
       mockClient.getBudgets = vi.fn().mockResolvedValue(mockFiles);
       mockClient.getAccounts = vi.fn().mockResolvedValue(mockAccounts);
-      mockClient.getTransactions = vi.fn().mockImplementation(async (accountId: string, startDate: string, endDate: string) => {
-        expect([startDate, endDate]).toEqual(['0001-01-01', '9999-12-31']);
-        if (accountId === 'a2') throw new Error('Unreadable Savings history');
-        return accountId === 'a3' ? [{ ...mockTransactions[0]!, id: 'closed-account-history', account: 'a3', date: '1969-12-31' }] : [];
+      mockClient.getTransactions = vi
+        .fn()
+        .mockImplementation(async (accountId: string, startDate: string, endDate: string) => {
+          expect([startDate, endDate]).toEqual(['0001-01-01', '9999-12-31']);
+          if (accountId === 'a2') throw new Error('Unreadable Savings history');
+          return accountId === 'a3'
+            ? [
+                {
+                  ...mockTransactions[0]!,
+                  id: 'closed-account-history',
+                  account: 'a3',
+                  date: '1969-12-31',
+                },
+              ]
+            : [];
+        });
+      await connector.connect({
+        serverUrl: 'http://localhost:5006',
+        secretKey: 'synthetic-test-only',
       });
-      await connector.connect({ serverUrl: 'http://localhost:5006', secretKey: 'synthetic-test-only' });
       await connector.selectBudget('budget_1');
       const result = await connector.synchronize({ refresh: false });
-      expect(result.rulePlanningSourceAvailability?.history).toEqual(mockAccounts.map((account) => ({
-        accountId: account.id, state: account.id === 'a2' ? 'unavailable' : 'complete',
-        startDate: '0001-01-01', endDate: '9999-12-31',
-      })));
-      expect(result.snapshot.transactions.map((transaction) => transaction.id)).toContain('closed-account-history');
+      expect(result.rulePlanningSourceAvailability?.history).toEqual(
+        mockAccounts.map((account) => ({
+          accountId: account.id,
+          state: account.id === 'a2' ? 'unavailable' : 'complete',
+          startDate: '0001-01-01',
+          endDate: '9999-12-31',
+        })),
+      );
+      expect(result.snapshot.transactions.map((transaction) => transaction.id)).toContain(
+        'closed-account-history',
+      );
       expect(result.financialSnapshot.coverage.transactions).toBe('partial');
       await connector.disconnect();
     });
@@ -3050,7 +3200,7 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // currentCategoryId=null skips precondition check; proposed c1 exists in mockCategories
-      const result = await writeConnector.setTransactionCategory('tx1', 'c1', null);
+      const result = await writeConnector.setTransactionCategory('tx1', 'c1', null, categoryExecutionPrecondition);
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3087,7 +3237,7 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // 'nonexistent' is not in mockCategories
-      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1', categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_NOT_FOUND');
@@ -3135,7 +3285,7 @@ describe('ActualConnector', () => {
 
       mock.updateTransaction = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1', categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_DELETED');
@@ -3152,6 +3302,39 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('setTransactionCategory', () => {
+    it('refuses SDK categorization when acquired authority changes during awaited category reads', async () => {
+      let authorityCurrent = true;
+      const mock = createMockClient({
+        getAccounts: vi.fn().mockResolvedValue(mockAccounts),
+        getTransactions: vi.fn().mockResolvedValue(mockTransactions),
+        getCategories: vi.fn().mockResolvedValue(mockCategories),
+        getServerVersion: vi.fn().mockResolvedValue({ version: '26.7.0' }),
+        getBudgets: vi.fn().mockResolvedValue(mockFiles),
+      });
+      const writeConnector = new ActualConnector({
+        client: mock,
+        credentialStore: new NullCredentialStore(),
+        mode: 'reviewAndApply',
+        cacheDir: '/tmp/bf-category-authority-test',
+      });
+      await writeConnector.connect({ serverUrl: 'http://test:5006', secretKey: 'test' });
+      await writeConnector.selectBudget('budget_1');
+      mock.getCategories = vi.fn().mockImplementation(async () => {
+        authorityCurrent = false;
+        return mockCategories;
+      });
+      try {
+        await expect(writeConnector.setTransactionCategory('tx1', 'c2', 'c1', {
+          assertExecutionCurrent: () => {
+            if (!authorityCurrent) throw new Error('acquired authority expired');
+          },
+        })).rejects.toThrow('acquired authority expired');
+        expect(mock.updateTransaction).not.toHaveBeenCalled();
+      } finally {
+        await writeConnector.disconnect();
+      }
+    });
+
     it('should update category in write-enabled mode and return verified result', async () => {
       const transactions = mockTransactions.map((t) => ({ ...t }));
       const mock = createMockClient({
@@ -3186,7 +3369,7 @@ describe('ActualConnector', () => {
           return Promise.resolve(undefined);
         });
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3228,7 +3411,7 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // tx1 has category 'c1', but we say it's 'c2' — precondition mismatch
-      const result = await writeConnector.setTransactionCategory('tx1', 'c3', 'c2');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c3', 'c2', categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('PRECONDITION_MISMATCH');
@@ -3278,7 +3461,7 @@ describe('ActualConnector', () => {
 
       // tx1 has category 'c1' in Actual, but stored review item has null (unknown).
       // Should read Actual's current category and proceed without mismatch.
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null);
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null, categoryExecutionPrecondition);
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3331,7 +3514,7 @@ describe('ActualConnector', () => {
         });
 
       // tx1 has category null in Actual, and stored review item also has null.
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null);
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', null, categoryExecutionPrecondition);
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.transactionId).toBe('tx1');
@@ -3369,7 +3552,7 @@ describe('ActualConnector', () => {
 
       mock.updateTransaction = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('nonexistent', 'c1', null);
+      const result = await writeConnector.setTransactionCategory('nonexistent', 'c1', null, categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('TRANSACTION_NOT_FOUND');
@@ -3392,7 +3575,7 @@ describe('ActualConnector', () => {
       mockClient.getTransactions = vi.fn().mockResolvedValue(mockTransactions);
       mockClient.updateTransaction = vi.fn();
 
-      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1')).rejects.toThrow();
+      await expect(connector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition)).rejects.toThrow();
 
       expect(mockClient.updateTransaction).not.toHaveBeenCalled();
       expect(mockClient.getAccounts).not.toHaveBeenCalled();
@@ -3433,7 +3616,7 @@ describe('ActualConnector', () => {
       // Reset counter after selectBudget (which does not call getTransactions)
       calls = 0;
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
 
       expect(result.success).toBe(true);
       if (result.success) {
@@ -3475,7 +3658,7 @@ describe('ActualConnector', () => {
       });
       await writeConnector.selectBudget('budget_1');
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
 
       // updateTransaction was called (the write happened)
       expect(mock.updateTransaction).toHaveBeenCalledTimes(1);
@@ -3516,7 +3699,7 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
       mock.getCategories = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('BUDGET_NOT_SELECTED');
@@ -3553,7 +3736,7 @@ describe('ActualConnector', () => {
       mock.updateTransaction = vi.fn();
 
       // 'nonexistent' is not in mockCategories
-      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'nonexistent', 'c1', categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_NOT_FOUND');
@@ -3600,7 +3783,7 @@ describe('ActualConnector', () => {
 
       mock.updateTransaction = vi.fn();
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c_deleted', 'c1', categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('CATEGORY_DELETED');
@@ -3645,7 +3828,7 @@ describe('ActualConnector', () => {
 
       calls = 0;
 
-      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1');
+      const result = await writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition);
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.code).toBe('VERIFICATION_FAILED');
@@ -3703,11 +3886,11 @@ describe('ActualConnector', () => {
 
       // Two concurrent calls on DIFFERENT transactions so precondition doesn't
       // become stale. tx1 starts c1 → c2; tx2 starts c2 → c1.
-      const p1 = writeConnector.setTransactionCategory('tx1', 'c2', 'c1').then((r) => {
+      const p1 = writeConnector.setTransactionCategory('tx1', 'c2', 'c1', categoryExecutionPrecondition).then((r) => {
         order.push(1);
         return r;
       });
-      const p2 = writeConnector.setTransactionCategory('tx2', 'c1', 'c2').then((r) => {
+      const p2 = writeConnector.setTransactionCategory('tx2', 'c1', 'c2', categoryExecutionPrecondition).then((r) => {
         order.push(2);
         return r;
       });

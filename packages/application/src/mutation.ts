@@ -330,20 +330,21 @@ export class CategorizationMutationService {
 
     if (!proposal.governancePolicyVersion)
       return this.fail(baseResult, 'authorization_denied', 'Governed proposal provenance unavailable', input);
+    const executionInput = {
+      actorId: input.actorId,
+      proposalId: input.proposalId,
+      payloadHash: proposal.payloadHash,
+      governancePolicyVersion: proposal.governancePolicyVersion,
+      idempotencyKey: input.idempotencyKey,
+      serialisedEffect,
+      ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+      auth: input.auth,
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+    };
     let acquisition: ProposalExecutionAcquisition;
     try {
-      acquisition = await this.store.acquireProposalExecution({
-        actorId: input.actorId,
-        proposalId: input.proposalId,
-        payloadHash: proposal.payloadHash,
-        governancePolicyVersion: proposal.governancePolicyVersion,
-        idempotencyKey: input.idempotencyKey,
-        serialisedEffect,
-        ...(input.approvalId ? { approvalId: input.approvalId } : {}),
-        auth: input.auth,
-        requestId: input.requestId,
-        correlationId: input.correlationId,
-      });
+      acquisition = await this.store.acquireProposalExecution(executionInput);
     } catch (err) {
       const code = err instanceof ProposalAcquisitionError ? err.reasonCode : 'execution_acquisition_failed';
       const message = err instanceof ProposalAcquisitionError
@@ -376,8 +377,6 @@ export class CategorizationMutationService {
         input,
       );
     }
-    if (!this.ledger || !this.rust)
-      return this.fail(baseResult, 'dependencies_unavailable', 'Fresh execution requires ledger and Native verification dependencies', input);
     const auditStarted = acquisition.auditRecord;
     if (!auditStarted) {
       await this.store.completeIdempotencyRecord(
@@ -387,6 +386,11 @@ export class CategorizationMutationService {
       );
       return this.fail(baseResult, 'execution_audit_missing', 'Execution audit record is unavailable', input);
     }
+    const dispatchState = {
+      kind: 'categorization_dispatch',
+      acquisitionAuditId: auditStarted.id,
+      dispatchStarted: false,
+    };
     const authorizationDisposition = auditStarted.authorizationDisposition;
     if (!authorizationDisposition) {
       await this.store.completeIdempotencyRecord(
@@ -394,7 +398,13 @@ export class CategorizationMutationService {
         'Acquisition audit record omitted authorization disposition',
         false,
       );
+      await this.appendFailureAudit(input, proposal, null, 'execution_audit_invalid', dispatchState);
       return this.fail(baseResult, 'execution_audit_invalid', 'Execution audit record is invalid', input);
+    }
+    if (!this.ledger || !this.rust) {
+      await this.recordFailure(input, new Error('Native or ledger execution dependencies unavailable'));
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'dependencies_unavailable', dispatchState);
+      return this.fail(baseResult, 'dependencies_unavailable', 'Fresh execution requires ledger and Native verification dependencies', input);
     }
     const consumedApprovalId =
       input.approvalId ?? acquisition.approvals[0]?.id ?? null;
@@ -412,6 +422,7 @@ export class CategorizationMutationService {
         proposal,
         authorizationDisposition,
         err instanceof Error ? err.message : 'sync_failed',
+        dispatchState,
       );
       return this.fail(
         baseResult,
@@ -426,7 +437,7 @@ export class CategorizationMutationService {
     // Staleness check
     if (Date.now() - new Date(snapshot.snapshotDate).getTime() > STALE_SNAPSHOT_MS) {
       await this.recordFailure(input, new Error('Snapshot data is stale'));
-      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'stale_snapshot');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'stale_snapshot', dispatchState);
       return this.fail(baseResult, 'stale_snapshot', 'Snapshot data is stale', input);
     }
 
@@ -435,12 +446,12 @@ export class CategorizationMutationService {
       tx = indexCanonicalTransactions(snapshot.transactions).get(proposal.payload.transactionId);
     } catch {
       await this.recordFailure(input, new Error('Canonical transaction identity conflict'));
-      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'transaction_identity_conflict');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'transaction_identity_conflict', dispatchState);
       return this.fail(baseResult, 'transaction_identity_conflict', 'Canonical transaction identity conflict', input);
     }
     if (!tx) {
       await this.recordFailure(input, new Error('Transaction not found in latest snapshot'));
-      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'transaction_not_found');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'transaction_not_found', dispatchState);
       return this.fail(
         baseResult,
         'transaction_not_found',
@@ -453,7 +464,7 @@ export class CategorizationMutationService {
     const cat = snapshot.categories.find((c) => c.id === proposal.payload.categoryId);
     if (!cat || cat.deleted) {
       await this.recordFailure(input, new Error('Category not found in latest snapshot'));
-      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'category_not_found');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'category_not_found', dispatchState);
       return this.fail(
         baseResult,
         'category_not_found',
@@ -476,6 +487,7 @@ export class CategorizationMutationService {
         proposal,
         authorizationDisposition,
         err instanceof Error ? err.message : 'plan_failed',
+        dispatchState,
       );
       return this.fail(
         baseResult,
@@ -492,7 +504,7 @@ export class CategorizationMutationService {
     const preconditionCheck = this.checkPreconditions(proposal, plan, tx, snapshot);
     if (!preconditionCheck.ok) {
       await this.recordFailure(input, new Error(preconditionCheck.reason));
-      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'precondition_mismatch');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'precondition_mismatch', dispatchState);
       return this.fail(baseResult, 'precondition_mismatch', preconditionCheck.reason, input);
     }
 
@@ -506,10 +518,19 @@ export class CategorizationMutationService {
         proposal.payload.transactionId,
         proposal.payload.categoryId,
         plan.currentCategoryId,
+        {
+          assertExecutionCurrent: () => {
+            this.store.validateAcquiredProposalExecution({
+              ...executionInput,
+              acquisitionAuditId: auditStarted.id,
+            });
+            dispatchState.dispatchStarted = true;
+          },
+        },
       );
     } catch (err) {
       await this.recordFailure(input, err);
-      await this.auditFailure(input, proposal, authorizationDisposition, err);
+      await this.auditFailure(input, proposal, authorizationDisposition, err, dispatchState);
       return this.fail(
         baseResult,
         'write_failed',
@@ -519,7 +540,7 @@ export class CategorizationMutationService {
     }
     if (!writeResult.success) {
       await this.recordFailure(input, new Error(writeResult.error));
-      await this.auditFailure(input, proposal, authorizationDisposition, new Error(writeResult.error));
+      await this.auditFailure(input, proposal, authorizationDisposition, new Error(writeResult.error), dispatchState);
       return this.fail(baseResult, 'write_failed', writeResult.error, input);
     }
 
@@ -534,7 +555,7 @@ export class CategorizationMutationService {
     } catch (err) {
       // Write happened but we can't verify — still need to record outcome
       await this.recordFailure(input, err);
-      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'reread_failed');
+      await this.appendFailureAudit(input, proposal, authorizationDisposition, 'reread_failed', dispatchState);
       return this.fail(
         baseResult,
         'reread_failed',
@@ -624,6 +645,7 @@ export class CategorizationMutationService {
 
     const allReasonCodes = [...verifyReasonCodes];
     const obsState = JSON.stringify({
+      ...dispatchState,
       transactionId: writeResult.transactionId,
       previousCategoryId: writeResult.previousCategoryId,
       newCategoryId: writeResult.newCategoryId,
@@ -791,6 +813,7 @@ export class CategorizationMutationService {
     proposal: ActionProposal,
     authorizationDisposition: AuthorizationDisposition,
     err: unknown,
+    dispatchState: { kind: string; acquisitionAuditId: string; dispatchStarted: boolean },
   ): Promise<void> {
     try {
       await this.store.appendAuditRecord({
@@ -806,6 +829,7 @@ export class CategorizationMutationService {
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
         result: err instanceof Error ? err.message : String(err),
+        observedResultState: canonicalProposalJson(dispatchState),
         isError: true,
       });
     } catch {
@@ -822,6 +846,7 @@ export class CategorizationMutationService {
     proposal: ActionProposal | null,
     authorizationDisposition: AuthorizationDisposition | null,
     result: string,
+    dispatchState?: { kind: string; acquisitionAuditId: string; dispatchStarted: boolean },
   ): Promise<void> {
     try {
       await this.store.appendAuditRecord({
@@ -837,6 +862,7 @@ export class CategorizationMutationService {
         correlationId: input.correlationId ?? null,
         requestId: input.requestId,
         result,
+        observedResultState: dispatchState === undefined ? null : canonicalProposalJson(dispatchState),
         isError: true,
       });
     } catch {

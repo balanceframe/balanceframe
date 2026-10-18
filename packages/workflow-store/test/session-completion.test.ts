@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import type { HumanControlContext } from '../src/governance-types.js';
+import { hasConflictingBudgetMutationOwner } from '../src/liquidity.js';
 import type { SpendSession } from '../src/liquidity-types.js';
 import { SqliteWorkflowStore } from '../src/store.js';
+import { migrateSessionCompletionWriteFences } from '../src/liquidity-migration.js';
 
 const now = '2098-01-01T00:00:00.000Z';
 const expiresAt = '2099-01-01T00:00:00.000Z';
@@ -127,6 +133,9 @@ interface VersionedCompletionCommand extends CompletionCommand {
   expectedClaimSetRevision: string;
 }
 interface FinishCommand extends CompletionCommand {
+  intentId: string;
+  expectedClaimSetRevision?: string;
+  writeIntentIdempotencyKey?: string;
   result: {
     success: boolean;
     verified: boolean;
@@ -134,6 +143,7 @@ interface FinishCommand extends CompletionCommand {
     transactionId?: string;
     code?: string;
     reviewRequired?: boolean;
+    dispatchOutcome?: 'not_dispatched';
     evidenceId?: string;
   };
 }
@@ -141,11 +151,14 @@ interface BeginResult {
   proposal: CompletionProposal;
   payload: CompletionPayload | null;
   acquiredWriteIntent: boolean;
+  intentId: string | null;
+  claimSetRevision: string | null;
 }
 interface CompletionWorkflow {
   admitSessionCompletion(input: AdmissionInput, validator: Validator): CompletionProposal;
   approveSessionCompletion(input: VersionedCompletionCommand, validator: Validator): CompletionProposal;
   beginSessionCompletionWrite(input: VersionedCompletionCommand, validator: Validator): BeginResult;
+  validateSessionCompletionWrite(input: VersionedCompletionCommand & { intentId: string }): void;
   finishSessionCompletionWrite(input: FinishCommand): CompletionProposal;
   reconcileSessionCompletion(
     input: VersionedCompletionCommand & { evidence: CompletionEvidence },
@@ -505,6 +518,23 @@ describe('session completion durable workflow', () => {
     expect(first.acquiredWriteIntent).toBe(true);
     expect(first.payload).toEqual(admitted.payload);
     expect(first.proposal.state.phase).toBe('write_intent');
+    expect(first.intentId).toEqual(expect.any(String));
+    expect(first.claimSetRevision).toBe('2');
+    const writeFence = {
+      ...financialContext(),
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: first.proposal.version,
+      expectedClaimSetRevision: first.claimSetRevision!,
+      idempotencyKey: 'completion-begin-1',
+      intentId: first.intentId!,
+    };
+    expect(() => api.validateSessionCompletionWrite(writeFence)).not.toThrow();
+    expect(() => api.validateSessionCompletionWrite({ ...writeFence, intentId: 'stale-intent' })).toThrow();
+    expect(() => api.validateSessionCompletionWrite({
+      ...writeFence,
+      expectedClaimSetRevision: 'stale-claims',
+    })).toThrow();
 
     const replay = api.beginSessionCompletionWrite(
       {
@@ -520,6 +550,291 @@ describe('session completion durable workflow', () => {
     expect(replay.acquiredWriteIntent).toBe(false);
     expect(replay.payload).toBeNull();
     expect(replay.proposal.state.phase).toBe('write_intent');
+    expect(replay.intentId).toBe(first.intentId);
+    expect(replay.claimSetRevision).toBe(first.claimSetRevision);
+  });
+  it('preserves session completion write ownership across SQLite connections', async () => {
+    saveSession();
+    const api = completion(store);
+    const admitted = admit();
+    const approved = await approveAsPeer(api, admitted, '1', 'connection-owner-approval');
+    const started = api.beginSessionCompletionWrite({
+      ...financialContext(),
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: approved.version,
+      expectedClaimSetRevision: '1',
+      idempotencyKey: 'connection-owner-begin',
+    }, () => ({ valid: true }));
+    expect(started.acquiredWriteIntent).toBe(true);
+
+    const directory = mkdtempSync(join(tmpdir(), 'session-completion-owner-'));
+    const filename = join(directory, 'workflow.sqlite');
+    let peer: SqliteWorkflowStore | null = null;
+    try {
+      await store['db'].backup(filename);
+      peer = new SqliteWorkflowStore(filename);
+      expect(hasConflictingBudgetMutationOwner(peer['db'], budgetId, 'another-proposal')).toBe(true);
+      expect(hasConflictingBudgetMutationOwner(peer['db'], budgetId, admitted.id)).toBe(false);
+    } finally {
+      peer?.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+
+  it('records an exact no-dispatch denial after confirmation and claim revision change', async () => {
+    saveSession();
+    const api = completion(store);
+    const admitted = admit();
+    const approver = await addApprover('prewrite-denial-approver');
+    const approved = api.approveSessionCompletion({
+      ...approver,
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: admitted.version,
+      expectedClaimSetRevision: '1',
+      idempotencyKey: 'prewrite-denial-approval',
+    }, () => ({ valid: true }));
+    const writeIntentIdempotencyKey = 'prewrite-denial-begin';
+    const started = api.beginSessionCompletionWrite({
+      ...financialContext(),
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: approved.version,
+      expectedClaimSetRevision: '1',
+      idempotencyKey: writeIntentIdempotencyKey,
+    }, () => ({ valid: true }));
+    expect(started.acquiredWriteIntent).toBe(true);
+    expect(started.claimSetRevision).toBe(
+      store.liquidity.getClaimSet(financialContext()).revision,
+    );
+
+    provisionGrant(financialContext(), 'confirmation', 'budget', budgetId, false);
+    const beforeCompetingClaim = store.liquidity.getClaimSet(financialContext());
+    store.liquidity.saveProspectiveClaim({
+      ...financialContext(),
+      expectedClaimSetRevision: beforeCompetingClaim.revision,
+      idempotencyKey: 'prewrite-denial-competing-claim',
+      claim: {
+        claimId: 'prewrite-denial-competing-claim',
+        kind: 'reservation',
+        sourceId: 'obligation:prewrite-denial-competing-claim',
+        scope: { kind: 'category', id: categoryId },
+        amount: money('500'),
+        status: 'active',
+        effectiveFrom: now,
+        expiresAt,
+        visibility: 'visible',
+        snapshotId: 'snapshot-001',
+        policyVersion: '1',
+      },
+    }, () => ({ valid: true }));
+    const latestClaimSetRevision = store.liquidity.getClaimSet(financialContext()).revision;
+    expect(latestClaimSetRevision).not.toBe(started.claimSetRevision);
+
+    const finish = {
+      ...financialContext(),
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: started.proposal.version,
+      expectedClaimSetRevision: started.claimSetRevision!,
+      writeIntentIdempotencyKey,
+      idempotencyKey: 'prewrite-denial-finish',
+      intentId: started.intentId!,
+      result: {
+        success: false,
+        verified: false,
+        parentId: admitted.payload.manualInput.parentId,
+        code: 'PREWRITE_DENIED',
+        reviewRequired: true,
+        dispatchOutcome: 'not_dispatched' as const,
+      },
+    };
+    expect(() => api.finishSessionCompletionWrite({
+      ...finish,
+      expectedClaimSetRevision: latestClaimSetRevision,
+    })).toThrow(/Write intent unavailable/);
+    expect(() => api.finishSessionCompletionWrite({
+      ...finish,
+      writeIntentIdempotencyKey: 'wrong-intent-key',
+    })).toThrow(/Session completion write claim is invalid/);
+    const finished = api.finishSessionCompletionWrite(finish);
+
+    expect(finished.state.phase).toBe('review_required');
+    const claimStates = store.liquidity
+      .getClaimSet(financialContext()).bundles.map(({ state }) => state).sort();
+    expect(claimStates).toEqual(['active', 'initiated']);
+    const deniedWrite = store['db'].prepare(
+      'SELECT status,result FROM session_completion_writes WHERE proposal_id=?',
+    ).get(admitted.id) as { status: string; result: string };
+    expect(deniedWrite.status).toBe('review_required');
+    expect(JSON.parse(deniedWrite.result)).toMatchObject({
+      success: false,
+      verified: false,
+      parentId: admitted.payload.manualInput.parentId,
+      code: 'PREWRITE_DENIED',
+      reviewRequired: true,
+      dispatchOutcome: 'not_dispatched',
+    });
+    expect(store['db'].prepare(
+      "SELECT operation,idempotency_key,result FROM audit_records WHERE proposal_id=? AND operation='session_completion:finish_write'",
+    ).get(admitted.id)).toMatchObject({
+      operation: 'session_completion:finish_write',
+      idempotency_key: 'prewrite-denial-finish',
+      result: 'session_completion:finish_write',
+    });
+
+  });
+
+  it('finalizes a fenced denial for the exact authorized non-requester executor', async () => {
+    saveSession();
+    const api = completion(store);
+    const admitted = admit();
+    const approver = await addApprover('nonrequester-executor-approver');
+    const approved = api.approveSessionCompletion({
+      ...approver,
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: admitted.version,
+      expectedClaimSetRevision: '1',
+      idempotencyKey: 'nonrequester-executor-approval',
+    }, () => ({ valid: true }));
+    const executor = await addApprover('nonrequester-executor');
+    for (const capability of ['initiation-report', 'confirmation'] as const)
+      for (const [resourceKind, resourceId] of [
+        ['budget', budgetId],
+        ['account', accountId],
+        ['category', categoryId],
+      ] as const)
+        provisionGrant(executor, capability, resourceKind, resourceId);
+    const writeIntentIdempotencyKey = 'nonrequester-executor-begin';
+    const started = api.beginSessionCompletionWrite({
+      ...executor,
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: approved.version,
+      expectedClaimSetRevision: '1',
+      idempotencyKey: writeIntentIdempotencyKey,
+    }, () => ({ valid: true }));
+    expect(started.acquiredWriteIntent).toBe(true);
+    const fence = {
+      ...executor,
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: started.proposal.version,
+      expectedClaimSetRevision: started.claimSetRevision!,
+      idempotencyKey: writeIntentIdempotencyKey,
+      now,
+      intentId: started.intentId!,
+    };
+    api.validateSessionCompletionWrite(fence);
+    provisionGrant(executor, 'confirmation', 'budget', budgetId, false);
+
+    const finish = {
+      ...executor,
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: started.proposal.version,
+      expectedClaimSetRevision: started.claimSetRevision!,
+      writeIntentIdempotencyKey,
+      idempotencyKey: 'nonrequester-executor-finish',
+      now,
+      intentId: started.intentId!,
+      result: {
+        success: false,
+        verified: false,
+        parentId: admitted.payload.manualInput.parentId,
+        code: 'PREWRITE_DENIED',
+        reviewRequired: true,
+        dispatchOutcome: 'not_dispatched' as const,
+      },
+    };
+    const wrongExecutor = await addApprover('nonrequester-wrong-finalizer');
+    expect(() => api.finishSessionCompletionWrite({
+      ...finish,
+      ...wrongExecutor,
+    })).toThrow(/Write intent unavailable/);
+    const finished = api.finishSessionCompletionWrite(finish);
+    expect(finished.state.phase).toBe('review_required');
+    expect(store.liquidity.getClaimSet(financialContext()).bundles)
+      .toMatchObject([{ id: 'completion-claim-001', state: 'initiated', initiated: true }]);
+
+  });
+
+  it('upgrades the actual prior schema version with fail-closed fences and retains its hold', async () => {
+    saveSession();
+    const api = completion(store);
+    const admitted = admit();
+    const approved = await approveAsPeer(api, admitted, '1', 'legacy-intent-approval');
+    const idempotencyKey = 'legacy-intent-begin';
+    const started = api.beginSessionCompletionWrite({
+      ...financialContext(),
+      proposalId: admitted.id,
+      payloadHash: admitted.payloadHash,
+      expectedVersion: approved.version,
+      expectedClaimSetRevision: '1',
+      idempotencyKey,
+    }, () => ({ valid: true }));
+    const directory = mkdtempSync(join(tmpdir(), 'session-completion-upgrade-'));
+    const filename = join(directory, 'workflow.sqlite');
+    let upgraded: SqliteWorkflowStore | null = null;
+    try {
+      await store['db'].backup(filename);
+      const legacy = new Database(filename);
+      try {
+        const workflowStoreClass = SqliteWorkflowStore as unknown as {
+          MIGRATIONS: Array<(db: Database.Database) => void>;
+        };
+        const migrations = workflowStoreClass.MIGRATIONS;
+        const migrationIndex = migrations.indexOf(migrateSessionCompletionWriteFences);
+        const migrationVersion = migrationIndex + 1;
+        if (migrationIndex < 0 || migrationVersion !== migrations.length)
+          throw new Error('Session completion write-fence migration must be the latest registered migration');
+        const currentVersion = legacy.prepare(
+          'SELECT MAX(version) AS version FROM schema_version',
+        ).get() as { version: number };
+        expect(currentVersion.version).toBe(migrationVersion);
+        legacy.exec(`
+          ALTER TABLE session_completion_writes DROP COLUMN authorization_hash;
+          ALTER TABLE session_completion_writes DROP COLUMN claim_set_revision;
+          ALTER TABLE session_completion_writes DROP COLUMN approval_ids;
+        `);
+        legacy.prepare('DELETE FROM schema_version WHERE version >= ?').run(migrationVersion);
+        const priorVersion = legacy.prepare(
+          'SELECT MAX(version) AS version FROM schema_version',
+        ).get() as { version: number };
+        expect(priorVersion.version).toBe(migrationVersion - 1);
+      } finally {
+        legacy.close();
+      }
+
+      upgraded = new SqliteWorkflowStore(filename);
+      expect(upgraded['db'].prepare(
+        'SELECT status,authorization_hash,claim_set_revision,approval_ids FROM session_completion_writes WHERE proposal_id=?',
+      ).get(admitted.id)).toEqual({
+        status: 'write_intent',
+        authorization_hash: '',
+        claim_set_revision: '',
+        approval_ids: '[]',
+      });
+      expect(() => upgraded.liquidity.validateSessionCompletionWrite({
+        ...financialContext(),
+        proposalId: admitted.id,
+        payloadHash: admitted.payloadHash,
+        expectedVersion: started.proposal.version,
+        expectedClaimSetRevision: started.claimSetRevision!,
+        idempotencyKey,
+        now,
+        intentId: started.intentId!,
+      })).toThrow(/Session completion write fence changed/);
+      expect(upgraded.liquidity.getClaimSet(financialContext()).bundles).toMatchObject([
+        { id: 'completion-claim-001', state: 'initiated', initiated: true },
+      ]);
+    } finally {
+      upgraded?.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('requires confirmation capability before starting an Actual write', async () => {
@@ -874,6 +1189,7 @@ describe('session completion durable workflow', () => {
       proposalId: admitted.id,
       payloadHash: admitted.payloadHash,
       expectedVersion: started.proposal.version,
+      intentId: started.intentId!,
       idempotencyKey: 'bad-finish-identity',
       result: {
         success: true,
@@ -933,6 +1249,7 @@ describe('session completion durable workflow', () => {
       proposalId: admitted.id,
       payloadHash: admitted.payloadHash,
       expectedVersion: started.proposal.version,
+      intentId: started.intentId!,
       idempotencyKey: 'ordinary-session-completion-finish',
       result: {
         success: true,
@@ -1043,6 +1360,7 @@ describe('session completion durable workflow', () => {
       proposalId: admitted.id,
       payloadHash: admitted.payloadHash,
       expectedVersion: started.proposal.version,
+      intentId: started.intentId!,
       idempotencyKey: 'finish-after-departure-actual-success',
       result: {
         success: true,
@@ -1108,11 +1426,21 @@ describe('session completion durable workflow', () => {
     expect(store.liquidity.getClaimSet({ ...financialContext() }).bundles[0]?.state).toBe(
       'initiated',
     );
+    expect(() => api.validateSessionCompletionWrite({
+      ...financialContext(),
+      proposalId: second.id,
+      payloadHash: second.payloadHash,
+      expectedVersion: started.proposal.version,
+      expectedClaimSetRevision: started.claimSetRevision!,
+      idempotencyKey: 'completion-begin-3',
+      intentId: started.intentId!,
+    })).toThrow();
     expect(api.finishSessionCompletionWrite({
       ...financialContext(),
       proposalId: second.id,
       payloadHash: second.payloadHash,
       expectedVersion: started.proposal.version,
+      intentId: started.intentId!,
       idempotencyKey: 'finish-after-cancel',
       result: { success: true, verified: true,
         parentId: second.payload.manualInput.parentId,
@@ -1141,6 +1469,7 @@ describe('session completion durable workflow', () => {
       proposalId: admitted.id,
       payloadHash: admitted.payloadHash,
       expectedVersion: started.proposal.version,
+      intentId: started.intentId!,
       idempotencyKey: 'completion-finish-review',
       result: {
         success: false,
@@ -1171,6 +1500,7 @@ describe('session completion durable workflow', () => {
       ...financialContext(),
       proposalId: admitted.id, payloadHash: admitted.payloadHash,
       expectedVersion: started.proposal.version,
+      intentId: started.intentId!,
       idempotencyKey: 'finish-prewrite',
       result: {
         success: false, verified: false, parentId: started.payload!.manualInput.parentId,
@@ -1199,6 +1529,7 @@ describe('session completion durable workflow', () => {
       ...financialContext(),
       proposalId: admitted.id, payloadHash: admitted.payloadHash,
       expectedVersion: started.proposal.version, idempotencyKey: 'finish-import-link',
+      intentId: started.intentId!,
     };
     expect(() => api.finishSessionCompletionWrite({
       ...finish, result: { success: true, verified: true, parentId, transactionId: 'another-parent' },
@@ -1253,6 +1584,7 @@ describe('session completion durable workflow', () => {
       ...financialContext(),
       proposalId: admitted.id, payloadHash: admitted.payloadHash,
       expectedVersion: started.proposal.version, idempotencyKey: 'terminal-finish',
+      intentId: started.intentId!,
       result: {
         success: true, verified: true, parentId: started.payload!.manualInput.parentId,
         transactionId: started.payload!.manualInput.parentId,

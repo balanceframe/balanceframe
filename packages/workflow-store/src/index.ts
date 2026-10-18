@@ -61,6 +61,7 @@ export type {
   TransitionReviewResult,
   ReviewListOptions,
   ListProposalsOptions,
+  ConsequentialActionState,
   ActionProposal,
   SessionCompletionProposal,
   SessionCompletionPayload,

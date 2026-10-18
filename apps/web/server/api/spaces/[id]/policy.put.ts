@@ -9,6 +9,12 @@ const Policy = z.object({
     requiredApprovers: z.number().int().positive(),
   }).strict()).optional(),
   operationApprovers: z.record(z.string().min(1).max(128), z.number().int().positive()).optional(),
+  assistanceMaximum: z.enum([
+    'analysis_only',
+    'recommend_actions',
+    'create_approval_proposal',
+    'execute_approved_actions',
+  ]).optional(),
 }).strict();
 const SetPolicyBody = z.object({
   expectedVersion: z.string().regex(/^[1-9]\d*$/).nullable(),

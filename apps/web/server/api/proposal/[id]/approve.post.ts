@@ -46,7 +46,9 @@ export default defineEventHandler(async (event) => {
       ? 'categorization:approve'
       : proposal.operation === 'create_rule' || proposal.operation === 'update_rule' || proposal.operation === 'delete_rule'
         ? 'rule:approve'
-        : null;
+        : proposal.operation === 'consequential_action'
+          ? 'consequential_action:approve'
+          : null;
     if (!capability) return deny();
     const admission = await workflow.store.getProposalApprovalSummary({
       proposalId: proposal.id, spaceId: selected.space.id,

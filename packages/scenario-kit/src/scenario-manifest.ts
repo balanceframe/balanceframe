@@ -195,6 +195,9 @@ export function cancelScenarioResearch(handle: ScenarioProcesses): void {
 /** Exact story mutations; the ordinary handlers retain identity, capabilities, proof and consent checks. */
 export function scenarioFeatureWrite(scenarioId: ScenarioId | null, method: string, path: string): boolean {
   if (!scenarioId) return false;
+  if (['donor-reallocation', 'coapproval-completion', 'donor-competition', 'protected-category', 'account-transfer'].includes(scenarioId))
+    return (method === 'PUT' && /^\/api\/spaces\/[^/]+\/(?:policy|grants)$/.test(path)) ||
+      (method === 'POST' && (path === '/api/proposal/action' || /^\/api\/proposal\/[^/]+\/(?:approve|execute|reconcile)$/.test(path)));
   if (scenarioId === 'governance-scoped-access' || scenarioId === 'governance-invitation-lifecycle')
     return (method === 'PUT' && /^\/api\/spaces\/[^/]+\/grants$/.test(path)) ||
       (method === 'POST' && /^\/api\/spaces\/[^/]+\/memberships\/[^/]+\/revoke$/.test(path));

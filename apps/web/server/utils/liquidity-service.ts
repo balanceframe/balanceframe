@@ -1,12 +1,18 @@
 import {
+  createConsequentialActionService,
   createDefaultConnectionManager,
   createLiquidityService,
   LiquidityProjector,
 } from '@balanceframe/application';
-import type { PublicLiquidityFinding, LiquidityService } from '@balanceframe/application';
+import type {
+  ConsequentialActionService,
+  PublicLiquidityFinding,
+  LiquidityService,
+} from '@balanceframe/application';
 import type { Finding, LiquidityActor, WorkflowStore } from '@balanceframe/workflow-store';
 import type { EventWithContext } from './workflow-store';
 import type { SelectedSpaceResult } from './space-context';
+import { createMutationConnectionManager } from './mutation-executor';
 import {
   defineEventHandler,
   getQuery,
@@ -30,7 +36,6 @@ import { getHumanControlAuth, type ReauthenticationEvent } from './reauthenticat
 import { reviewAndApplyEnabled } from './workflow-store';
 
 import { hasLegacyFullRead } from './legacy-financial-read';
-import { createMutationConnectionManager } from './mutation-executor';
 import { z } from 'zod';
 
 export function findingTransitionRoute<T extends z.ZodType>(
@@ -135,6 +140,18 @@ export function selectedLiquidityActor(
     governancePolicyVersion: policy.version,
     now: new Date().toISOString(),
   };
+}
+/** Compose the existing source and mutation managers for the shared action service. */
+export async function createWebConsequentialActionService(
+  store: WorkflowStore,
+): Promise<ConsequentialActionService> {
+  const configPath = process.env.BALANCEFRAME_CONFIG_PATH;
+  const liquidity = await createLiquidityService({
+    connectionManager: createDefaultConnectionManager({ configPath }),
+    mutationConnectionManager: createMutationConnectionManager({ configPath }),
+    store,
+  });
+  return createConsequentialActionService({ liquidity, store });
 }
 
 /** Resolve a finding only from rows already constrained to the selected budget. */

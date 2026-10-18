@@ -10,7 +10,7 @@
  *   6. Observe Actual automatic rule learning after API updates
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { assertFixtureProvenance, withActualClient } from './helpers';
 import {
   createBudget,
@@ -696,6 +696,7 @@ describe('05 — Disposable Bank Sync & Rule Learning', () => {
         txId,
         groceriesId,
         null, // currentCategoryId null = uncategorized
+        { assertExecutionCurrent: vi.fn() },
       );
       expect(mutationResult.success, JSON.stringify(mutationResult)).toBe(true);
       expect(mutationResult.verified).toBe(true);

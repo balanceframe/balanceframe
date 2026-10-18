@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  financialSnapshotSchema as zodFinancialSnapshotSchema,
+  moneySchema,
+  sourceObservationSchema,
+} from '@balanceframe/protocol-generated/validators';
 
 type JsonObject = Record<string, unknown>;
 
@@ -43,7 +48,12 @@ const accountAwareLiquiditySchema = loadSchema('account-aware-liquidity-v1.json'
 const foundationFixture = loadJson(
   path.resolve(__dirname, '../../protocol/fixtures/financial-decision-foundation.json'),
 ) as FinancialDecisionFixture;
-
+const actionFixture = loadJson(
+  path.resolve(__dirname, '../../protocol/fixtures/consequential-action.json'),
+) as {
+  evidenceProjectionIntent: { transaction: JsonObject };
+  sourceObservation: JsonObject;
+};
 const ajv = new Ajv({ allErrors: true, strict: false });
 for (const schema of [
   accountAwareLiquiditySchema,
@@ -177,12 +187,32 @@ describe('forward-compatible issue and coverage vocabulary', () => {
 });
 
 describe('money, time, redaction, and evidence boundaries', () => {
-  it('accepts signed i64 boundaries and rejects decimal-string overflow', () => {
-    expectValid(validateProspectiveClaim, prospectiveClaim('9223372036854775807'));
-    expectValid(validateProspectiveClaim, prospectiveClaim('-9223372036854775808'));
+  it('accepts signed zero and i64 bounds and rejects malformed Money without throwing', () => {
+    for (const minorUnits of ['0', '-1', '9223372036854775807', '-9223372036854775808']) {
+      const claim = prospectiveClaim(minorUnits);
+      expectValid(validateProspectiveClaim, claim);
+      expect(moneySchema.safeParse(claim.amount).success).toBe(true);
+    }
 
-    expect(validateProspectiveClaim(prospectiveClaim('9223372036854775808'))).toBe(false);
-    expect(validateProspectiveClaim(prospectiveClaim('-9223372036854775809'))).toBe(false);
+    for (const minorUnits of [
+      '9223372036854775808',
+      '-9223372036854775809',
+      'not-money',
+      '-0',
+      '+1',
+      '01',
+      '-01',
+    ]) {
+      const claim = prospectiveClaim(minorUnits);
+      expect(validateProspectiveClaim(claim)).toBe(false);
+      expect(() => moneySchema.safeParse(claim.amount)).not.toThrow();
+      expect(moneySchema.safeParse(claim.amount).success).toBe(false);
+    }
+
+    const malformedCurrency = prospectiveClaim();
+    (malformedCurrency.amount as JsonObject).currency = 'usd';
+    expect(validateProspectiveClaim(malformedCurrency)).toBe(false);
+    expect(moneySchema.safeParse(malformedCurrency.amount).success).toBe(false);
   });
 
   it('accepts canonical three-digit fractional UTC timestamps at every root', () => {
@@ -247,6 +277,111 @@ describe('money, time, redaction, and evidence boundaries', () => {
     const invalidDecision = prospectivePurchaseDecision();
     invalidDecision.redaction = 'masked';
     expect(validateProspectiveDecision(invalidDecision)).toBe(false);
+  });
+});
+
+describe('economic event resolution source metadata', () => {
+  const sourceObservation = actionFixture.sourceObservation;
+
+  it('requires strict, current event-resolution provenance while preserving old snapshots', () => {
+    const oldSnapshot = financialSnapshot();
+    expectValid(validateFinancialSnapshot, oldSnapshot);
+    expect(zodFinancialSnapshotSchema.safeParse(oldSnapshot).success).toBe(true);
+
+    const currentSnapshot = financialSnapshot();
+    currentSnapshot.observations.push(structuredClone(sourceObservation));
+    expectValid(validateFinancialSnapshot, currentSnapshot);
+    expect(zodFinancialSnapshotSchema.safeParse(currentSnapshot).success).toBe(true);
+    expect(sourceObservationSchema.safeParse(sourceObservation).success).toBe(true);
+    const transaction = actionFixture.evidenceProjectionIntent.transaction;
+    expect(sourceObservation.ledgerEffect).toEqual({
+      accountId: transaction.accountId,
+      amount: transaction.amount,
+      date: transaction.date,
+      categoryId: transaction.categoryId,
+      payeeName: transaction.payeeName,
+      notes: transaction.notes,
+      splits: transaction.splits,
+    });
+  });
+
+  it('rejects missing, stale, mismatched, or non-visible event provenance in both contracts', () => {
+    const invalidObservations: JsonObject[] = [];
+    const missingHash = structuredClone(sourceObservation);
+    delete missingHash.contentHash;
+    invalidObservations.push(missingHash);
+    const emptyHash = structuredClone(sourceObservation);
+    emptyHash.contentHash = '';
+    invalidObservations.push(emptyHash);
+    const missingVersion = structuredClone(sourceObservation);
+    const missingLedgerEffect = structuredClone(sourceObservation);
+    delete missingLedgerEffect.ledgerEffect;
+    invalidObservations.push(missingLedgerEffect);
+    const missingEffectAmount = structuredClone(sourceObservation);
+    delete (missingEffectAmount.ledgerEffect as JsonObject).amount;
+    invalidObservations.push(missingEffectAmount);
+    const invalidEffectDate = structuredClone(sourceObservation);
+    (invalidEffectDate.ledgerEffect as JsonObject).date = '2026-09-06T00:00:00Z';
+    invalidObservations.push(invalidEffectDate);
+    const unknownEffectField = structuredClone(sourceObservation);
+    (unknownEffectField.ledgerEffect as JsonObject).unexpected = true;
+    invalidObservations.push(unknownEffectField);
+    delete missingVersion.version;
+    invalidObservations.push(missingVersion);
+    const emptyVersion = structuredClone(sourceObservation);
+    emptyVersion.version = '';
+    const missingObservationTime = structuredClone(sourceObservation);
+    delete missingObservationTime.observedAt;
+    invalidObservations.push(missingObservationTime);
+    const invalidObservationTime = structuredClone(sourceObservation);
+    invalidObservationTime.observedAt = '2026-09-06 09:30:00Z';
+    invalidObservations.push(invalidObservationTime);
+    const emptySubject = structuredClone(sourceObservation);
+    emptySubject.scope = { kind: 'transaction', id: '' };
+    invalidObservations.push(emptySubject);
+    const missingSubject = structuredClone(sourceObservation);
+    missingSubject.scope = { kind: 'transaction' };
+    invalidObservations.push(missingSubject);
+    const wrongSubject = structuredClone(sourceObservation);
+    wrongSubject.scope = { kind: 'category', id: 'manual-parent-evidence-1' };
+    invalidObservations.push(wrongSubject);
+    const stale = structuredClone(sourceObservation);
+    stale.state = 'stale';
+    invalidObservations.push(stale);
+    const emptyEvidence = structuredClone(sourceObservation);
+    emptyEvidence.evidence = [];
+    invalidObservations.push(emptyEvidence);
+    const unauthorized = structuredClone(sourceObservation);
+    (unauthorized.evidence as JsonObject[])[0]!.authorized = false;
+    invalidObservations.push(unauthorized);
+    const wrongEvidenceKind = structuredClone(sourceObservation);
+    (wrongEvidenceKind.evidence as JsonObject[])[0]!.kind = 'transaction_resolution';
+    invalidObservations.push(wrongEvidenceKind);
+    const redacted = structuredClone(sourceObservation);
+    (redacted.evidence as JsonObject[])[0]!.redaction = 'redacted';
+    invalidObservations.push(redacted);
+    const unknownNestedField = structuredClone(sourceObservation);
+    (unknownNestedField.evidence as JsonObject[])[0]!.extra = true;
+    invalidObservations.push(unknownNestedField);
+    const unknownField = structuredClone(sourceObservation);
+    unknownField.extra = true;
+    invalidObservations.push(unknownField);
+    const ordinarySnapshot = financialSnapshot();
+    const ordinaryObservation = ordinarySnapshot.observations.find(
+      ({ kind }) => kind !== 'economic_event_resolution',
+    );
+    if (!ordinaryObservation) throw new Error('canonical non-event source observation is required');
+    ordinaryObservation.ledgerEffect = structuredClone(sourceObservation.ledgerEffect);
+    expect(validateFinancialSnapshot(ordinarySnapshot)).toBe(false);
+    expect(zodFinancialSnapshotSchema.safeParse(ordinarySnapshot).success).toBe(false);
+
+    for (const observation of invalidObservations) {
+      const snapshot = financialSnapshot();
+      snapshot.observations.push(observation);
+      expect(validateFinancialSnapshot(snapshot)).toBe(false);
+      expect(zodFinancialSnapshotSchema.safeParse(snapshot).success).toBe(false);
+      expect(sourceObservationSchema.safeParse(observation).success).toBe(false);
+    }
   });
 });
 

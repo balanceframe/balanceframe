@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, parseArgs } from '../src/index';
+import actionFixture from '../../../protocol/fixtures/consequential-action.json';
 
 type CapturedRequest = { url: URL; method: string; headers: Headers; body: string | undefined };
 const okEnvelope = (result: unknown) => ({
@@ -102,6 +103,57 @@ describe('production CLI governance transport', () => {
     expect(JSON.stringify(requests[0])).not.toContain('usr_env_attacker');
   });
 
+  it('posts only an action intent read from a JSON file through the selected-space proposal API', async () => {
+    const action = actionFixture.intent;
+    const decision = { origin: { sessionId: 'saved-session', sessionVersion: 4 } };
+    const file = join(isolatedDirectory, 'action.json');
+    await writeFile(file, JSON.stringify({ action, decision }));
+    const requests = setup(() => new Response(JSON.stringify(okEnvelope({ proposal: { id: 'proposal-action' } }))));
+
+    const result = JSON.parse(await main(['proposals', 'action', '--action-file', file, '--json']));
+
+    expect(result.status).toBe('ok');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url.pathname).toBe('/api/proposal/action');
+    expect(requests[0]!.method).toBe('POST');
+    expect(requests[0]!.headers.get('authorization')).toBe('Bearer bf_test_secret');
+    expect(requests[0]!.headers.get('x-balanceframe-space')).toBe('spc_selected');
+    expect(JSON.parse(requests[0]!.body ?? '{}')).toEqual({ action, decision });
+    expect(JSON.stringify(requests[0])).not.toMatch(/actorId|spaceId|budgetId|payloadHash|currentLedger|plan|credentials|actual_test_secret/);
+  });
+
+  it.each([
+    ['invalid JSON', '{'],
+    ['extra authority', JSON.stringify({ action: actionFixture.intent, actorAuthority: { actorId: 'local' } })],
+    ['Actual credentials', JSON.stringify({
+      action: actionFixture.intent,
+      decision: { origin: { sessionId: 'saved-session', sessionVersion: 4 }, actualCredentials: { key: 'secret' } },
+    })],
+  ])('rejects %s in a consequential-action file without dispatching it', async (_label, contents) => {
+    const file = join(isolatedDirectory, 'invalid-action.json');
+    await writeFile(file, contents);
+    const requests = setup();
+
+    const result = JSON.parse(await main(['proposals', 'action', '--action-file', file, '--json']));
+
+    expect(result.status).toBe('error');
+    expect(result.error.code).toBe('invalid_action_file');
+    expect(result.error.message).not.toContain(file);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('reports a missing consequential-action file without contacting the server', async () => {
+    const requests = setup();
+
+    const result = JSON.parse(await main([
+      'proposals', 'action', '--action-file', join(isolatedDirectory, 'missing-action.json'), '--json',
+    ]));
+
+    expect(result.status).toBe('error');
+    expect(result.error.code).toBe('action_file_unavailable');
+    expect(requests).toHaveLength(0);
+  });
+
   it('requires a displayed proposal hash and uses the reauthenticated human cookie for approval', async () => {
     const requests = setup(
       () => new Response(JSON.stringify(errorEnvelope('REAUTHENTICATION_REQUIRED')), { status: 403 }),
@@ -133,6 +185,21 @@ describe('production CLI governance transport', () => {
     expect(JSON.stringify(requests[0])).not.toContain('usr_env_attacker');
     expect(output.error.message).not.toContain('session-secret');
     expect(output.error.message).not.toContain('server-proof');
+  });
+
+  it('uses the human session for proposal execution when both credentials are configured', async () => {
+    const requests = setup(
+      () => new Response(JSON.stringify(errorEnvelope('REAUTHENTICATION_REQUIRED')), { status: 403 }),
+    );
+    vi.stubEnv('BALANCEFRAME_SESSION_COOKIE', 'balanceframe_session=session-secret; balanceframe_reauth=server-proof');
+
+    const output = JSON.parse(await main(['proposals', 'execute', 'prop_1', '--json']));
+
+    expect(output.error.code).toBe('REAUTHENTICATION_REQUIRED');
+    expect(requests[0]!.headers.get('cookie')).toBe(
+      'balanceframe_session=session-secret; balanceframe_reauth=server-proof',
+    );
+    expect(requests[0]!.headers.has('authorization')).toBe(false);
   });
 
   it('requires unique review IDs and an exact non-empty hash map before bulk approval', async () => {
@@ -728,7 +795,7 @@ describe('production CLI governance transport', () => {
       { args: ['proposals', 'create', '--category-id', 'cat_1', '--message', 'Review'], method: 'POST', path: '/api/proposal', body: { categoryId: 'cat_1', message: 'Review' } },
       { args: ['proposals', 'show', 'prop_1'], method: 'GET', path: '/api/proposal/prop_1' },
       { args: ['proposals', 'approve', 'prop_1', '--payload-hash', 'a'.repeat(64)], method: 'POST', path: '/api/proposal/prop_1/approve', body: { payloadHash: 'a'.repeat(64) }, humanControl: true },
-      { args: ['proposals', 'execute', 'prop_1'], method: 'POST', path: '/api/proposal/prop_1/execute' },
+      { args: ['proposals', 'execute', 'prop_1'], method: 'POST', path: '/api/proposal/prop_1/execute', humanControl: true },
       { args: ['proposals', 'list'], method: 'GET', path: '/api/proposal' },
       { args: ['audit', 'query', '--actor-id', 'usr_filter', '--from', '2026-09-01', '--limit', '10'], method: 'GET', path: '/api/spaces/spc_selected/audit', query: { actorId: 'usr_filter', from: '2026-09-01', limit: '10' } },
       { args: ['rules', 'create', '--name', 'Auto', '--payee-id', 'payee-Market', '--category-id', 'category-food'], method: 'POST', path: '/api/rule', body: { name: 'Auto', payeeId: 'payee-Market', categoryId: 'category-food' } },

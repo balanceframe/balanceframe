@@ -280,6 +280,24 @@ describe('parseArgs — proposal commands', () => {
   });
 });
 
+describe('parseArgs — consequential-action proposals', () => {
+  it('parses the strict JSON intent-file form without accepting inline trusted facts', () => {
+    const parsed = parseArgs(['proposals', 'action', '--action-file', '/tmp/action-intent.json', '--json']);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.cmd.command).toBe('proposals.action');
+    expect(parsed.cmd.options).toEqual({ 'action-file': '/tmp/action-intent.json' });
+  });
+
+  it.each([
+    { args: ['proposals', 'action', '--json'] },
+    { args: ['proposals', 'action', '--action-file', '--json'] },
+    { args: ['proposals', 'action', '--action-file', '/tmp/action.json', '--plan', '/tmp/plan.json'] },
+  ])('rejects missing or additional authority in the action command: $args', ({ args }) => {
+    expect(parseArgs(args).ok).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Audit command parsing
 // ---------------------------------------------------------------------------

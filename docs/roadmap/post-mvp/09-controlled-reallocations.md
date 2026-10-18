@@ -1,7 +1,7 @@
 # Phase 9 — Controlled reallocations
 
 **Depends on:** Phase 8 analysis and Phase 7 governance  
-**Status:** Post-MVP
+**Status:** Implemented (unreleased)
 
 ## Objective
 
@@ -33,3 +33,15 @@ Fully funded purchase; approved safe reallocation; protected category refusal; m
 ## Exit
 
 **Stale or concurrent proposals cannot double-use funds, evade policy-defined approvals, or violate protected-category policy.**
+
+## Implementation verification — 2026-10-17
+
+The native, application, workflow-store, HTTP and UI paths implement the shared consequential-action contract. Independent correctness and complexity reviews of the completed changes found no must-fix issues.
+
+All seven authenticated disposable Actual acceptance cases pass through the production application: exact reallocation with independent quorum and replay, approved split debit, donor competition, protected-category refusal, stale external assignment refusal, stable wallet materialization/replay, and reciprocal ledger-only transfer without institution settlement.
+
+Real Chromium against source Nuxt with authentication bypass disabled verified two distinct human approvals (quorum 0 → 1 → 2), explicit execution, a deliberately lost success response followed by status refresh, and read-only reconciliation replay. USD minor-unit assignments changed donor 4000 → 2000 and recipient 0 → 2000; cash remained 15000 and transaction rows stayed identical. A separate acquired-but-undispatched action retained its hold after **Check prior execution**, with execution disabled and Actual unchanged. Expired recovery is covered by native/application regressions; it was not exercised in the browser.
+
+Immediate server-derived manual/split and evidence-projection debits survive approval delay within the original UTC date. Approved timestamps/hashes remain fixed, current freshness and expiry still apply, and crossing midnight requires a new proposal. Scheduled and unrelated cart deadlines remain binding. See [ADR 0003](../../adr/0003-space-governance-and-exact-authority.md) for the exact boundary and the external-editor/exclusive-ownership limit.
+
+Final verification passes: 799 Rust tests and 5,885 Vitest tests, with no failed, skipped or pending cases. The complete 355-test scenario suite satisfies the 40-story acceptance contract and every required branch through 71 successful Actual-backed assertion records. Combined coverage against `687088077b0fca9f826fc6c0300a37de2a88e68d` passes all overall and changed-file gates: workspace 90.19%, core protocol 95.69% overall / 95.21% changed, financial core 95.61%, binding 94.72%, and web 83.59% overall / 80.60% changed. Canonical coverage completed through staged full-package reruns after regression fixes, retaining genuine unchanged reports and instrumented native profiles; thresholds and exclusions were not relaxed. Production workspace build and affected final rebuilds, root/web type checks, zero-warning lint, Rust formatting and all-target/all-feature Clippy pass. Independent correctness and complexity reviews cover the complete feature, including the preserved partial implementation. Nix, Docker, future-dated ledger transfer execution and other-platform checks have not been verified in this executor.

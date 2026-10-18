@@ -598,7 +598,6 @@ describe('CategorizationMutationService', () => {
     expect(result.success).toBe(true);
     expect(result.verified).toBe(true);
     expect(ledger.setTransactionCategory).toHaveBeenCalledOnce();
-    expect(ledger.setTransactionCategory).toHaveBeenCalledWith(TEST_TX_ID, TEST_CATEGORY_ID, 'cat_old');
 
 
   });

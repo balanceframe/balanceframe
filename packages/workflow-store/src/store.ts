@@ -11,7 +11,8 @@
  */
 
 import Database from 'better-sqlite3';
-import { LiquidityWorkflow } from './liquidity.js';
+import type { ConsequentialActionLedger } from '@balanceframe/protocol-generated';
+import { LiquidityWorkflow, hasConflictingBudgetMutationOwner } from './liquidity.js';
 import { SpaceGovernance, credentialLifetimeValid, migrateGovernance } from './governance.js';
 import { migrateScopedInvitations } from './scoped-invitations.js';
 import { migrateNotificationGovernance } from './notification-governance.js';
@@ -20,6 +21,7 @@ import {
   migrateTransferPreviews,
   migrateSessionCompletion,
   migrateScopedProspectiveEffects,
+  migrateSessionCompletionWriteFences,
 } from './liquidity-migration.js';
 import {
   canonicalProposalHash,
@@ -27,11 +29,20 @@ import {
   deriveProposalAuthorizationFacts,
   deriveProposalSourceReadFacts,
   deriveProposalDisclosureTotals,
+  consequentialActionHoldKeys,
+  consequentialActionPlanFromPayload,
+  consequentialActionPhaseRequirements,
+  consequentialActionStableIdentity,
+  validateConsequentialActionPreconditions,
   GENERIC_MUTATION_POLICY_VERSION,
   ProposalAcquisitionError,
   requiredProposalApprovers,
 } from './proposal.js';
 import type { ProposalAuthorizationFacts, ProposalSourceReadFacts } from './proposal.js';
+import {
+  consequentialActionInvalidationProof,
+  consequentialActionVerificationProof,
+} from './internal.js';
 import type {
   AcquireProposalExecutionInput,
   ValidateAcquiredProposalExecutionInput,
@@ -46,9 +57,18 @@ import type {
   ProposalApprovalSummary,
   ProposalExecutionAcquisition,
   RuleActionPayload,
+  ConsequentialActionPayload,
+  ConsequentialActionState,
+  ConsequentialActionEffect,
+  ConsequentialActionExecutionIdentity,
+  RecordConsequentialActionEffectInput,
+  FinalizeConsequentialActionExecutionInput,
+  ProposalJsonValue,
 } from './types.js';
 import type {
+  AssistanceMaximum,
   GovernanceAuthorizationInput,
+  GovernanceAuthorizationResult,
   GovernanceFinancialDisclosure,
   GovernanceReadDisclosureLimits,
   GovernanceOperation,
@@ -56,6 +76,7 @@ import type {
   GovernanceResourceRef,
   OperationalAuth,
   HumanControlContext,
+  VersionedGovernancePolicy,
 } from './governance-types.js';
 import { migrateProposalApprovals, migrateProposalOrigins } from './proposal-migration.js';
 import type { Database as DatabaseType, Statement } from 'better-sqlite3';
@@ -184,7 +205,23 @@ function isGenericProposalOperation(operation: string): operation is GenericProp
   return operation === 'set_category' ||
     operation === 'create_rule' ||
     operation === 'update_rule' ||
-    operation === 'delete_rule';
+    operation === 'delete_rule' ||
+    operation === 'consequential_action';
+}
+const ACTION_ASSISTANCE_LEVEL: Readonly<Record<AssistanceMaximum, number>> = {
+  analysis_only: 0,
+  recommend_actions: 1,
+  create_approval_proposal: 2,
+  execute_approved_actions: 3,
+};
+
+function actionAssistanceAllows(maximum: AssistanceMaximum, phase: 'read' | 'propose' | 'approve' | 'execute'): boolean {
+  return phase === 'read' ||
+    ACTION_ASSISTANCE_LEVEL[maximum] >= (phase === 'execute' ? 3 : 2);
+}
+
+function actionJsonValue(value: unknown): ProposalJsonValue {
+  return JSON.parse(canonicalProposalJson(value)) as ProposalJsonValue;
 }
 
 /** Returns true if the ISO-8601 string is invalid or represents a moment <= now. */
@@ -1063,6 +1100,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     selectReviewItemsByIds: null as unknown as ReturnType<DatabaseType['prepare']>,
     insertProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
+    updateConsequentialActionState: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectActiveProposal: null as unknown as ReturnType<DatabaseType['prepare']>,
     selectProposalByExactKey: null as unknown as ReturnType<DatabaseType['prepare']>,
     supersedeProposalStmt: null as unknown as ReturnType<DatabaseType['prepare']>,
@@ -1957,7 +1995,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
           WHERE idempotency_key IS NOT NULL;
       `);
     },
-    // Version 23: Exact lifecycle provenance for exports and candidate jobs
+    // Version 22: Exact lifecycle provenance for exports and candidate jobs
     (db) => {
       db.exec(`
         ALTER TABLE candidate_jobs ADD COLUMN space_id TEXT;
@@ -1975,14 +2013,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
           ON export_records(actor_id, space_id, budget_id, exported_at);
       `);
     },
-    // Version 24: Scoped merchant content, consent fences, and exact research accounting.
+    // Version 23: Scoped merchant content, consent fences, and exact research accounting.
     migrateMerchant,
-    // Version 25: Complete shared native provenance, including unattributed historical IDs.
+    // Version 24: Complete shared native provenance, including unattributed historical IDs.
     migrateReviewRuleSets,
-    // Version 26: Factor complete native outcomes through disjoint scoped ID blocks.
+    // Version 25: Factor complete native outcomes through disjoint scoped ID blocks.
     migrateReviewRuleBlocks,
-    // Version 27: Frozen literal postings and fixed category-filtered OR/AND descriptors.
+    // Version 26: Frozen literal postings and fixed category-filtered OR/AND descriptors.
     migrateReviewRuleParts,
+    // Version 27: Durable writer fences for session completion.
+    migrateSessionCompletionWriteFences,
   ];
 
   private getCurrentSchemaVersion(): number {
@@ -2331,19 +2371,24 @@ export class SqliteWorkflowStore implements WorkflowStore {
                                             payload, payload_hash, policy_version,
                                             preconditions, expires_at, actor_id,
                                             provenance, provider_model, correlation_id,
-                                            superseded_at, created_at)
+                                            superseded_at, created_at, state)
       VALUES (@id, @operation, @budgetId, @spaceId,
               @requesterMembershipId, @requesterDelegationId,
               @requesterDelegationVersion, @governancePolicyVersion,
               @payload, @payloadHash, @policyVersion,
               @preconditions, @expiresAt, @actorId,
               @provenance, @providerModel, @correlationId,
-              @supersededAt, @createdAt)
+              @supersededAt, @createdAt, @state)
       RETURNING *
     `);
 
     this.stmt.selectProposal = this.db.prepare(`
       SELECT * FROM action_proposals WHERE id = ?
+    `);
+    this.stmt.updateConsequentialActionState = this.db.prepare(`
+      UPDATE action_proposals
+         SET state = @state, version = version + 1
+       WHERE id = @id AND payload_hash = @payloadHash AND version = @version
     `);
 
     this.stmt.selectActiveProposal = this.db.prepare(`
@@ -2541,6 +2586,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
        WHERE idempotency_status = 'in_progress'
          AND lease_expires_at IS NOT NULL
          AND lease_expires_at <= @now
+         AND NOT EXISTS (
+           SELECT 1 FROM action_proposals p
+            WHERE p.id=idempotency_records.proposal_id
+              AND p.operation='consequential_action'
+              AND json_extract(p.state,'$.phase') IN ('write_intent','review_required')
+         )
     `);
 
     this.stmt.updateStrandedIdempotencyStmt = this.db.prepare(`
@@ -2551,6 +2602,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
        WHERE idempotency_status = 'in_progress'
          AND lease_expires_at IS NOT NULL
          AND lease_expires_at <= @now
+         AND NOT EXISTS (
+           SELECT 1 FROM action_proposals p
+            WHERE p.id=idempotency_records.proposal_id
+              AND p.operation='consequential_action'
+              AND json_extract(p.state,'$.phase') IN ('write_intent','review_required')
+         )
     `);
 
     // ── Audit ─────────────────────────────────────────────────────────
@@ -4986,6 +5043,20 @@ export class SqliteWorkflowStore implements WorkflowStore {
       } catch {
         throw new Error('Proposal payload and preconditions must be canonical JSON values');
       }
+      let actionPlan: ConsequentialActionPayload['plan'] | null = null;
+      if (input.operation === 'consequential_action') {
+        try {
+          actionPlan = consequentialActionPlanFromPayload(payload);
+          if (actionPlan.expiresAt !== input.expiresAt)
+            throw new Error('Proposal expiry differs from native action expiry');
+          if (!this.currentConsequentialActionApprovalPolicy(
+            input.budgetId, payload, preconditions, policy,
+          ))
+            throw new Error('Native source differs from the current financial policy');
+        } catch {
+          throw new ProposalAcquisitionError('policy_version_mismatch', 'Consequential-action source is stale or malformed');
+        }
+      }
       if (input.operation === 'create_rule') {
         const preconditionsRecord = isPlainRecord(preconditions) ? preconditions : null;
         const embeddedRule = preconditionsRecord && isPlainRecord(preconditionsRecord.nativeRule)
@@ -5019,7 +5090,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
         spaceId: input.spaceId,
         policyVersion: policy.version,
         phase: 'propose',
-        capability: input.operation === 'set_category' ? 'categorization:propose' : 'rule:propose',
+        capability: input.operation === 'set_category' ? 'categorization:propose' :
+          input.operation === 'consequential_action' ? 'consequential_action:propose' : 'rule:propose',
+        ...(actionPlan ? { actionCapabilityPhase: 'propose' as const, preconditions } : {}),
         operation: input.operation,
         budgetId: input.budgetId,
         facts,
@@ -5048,6 +5121,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
         policyVersion: GENERIC_MUTATION_POLICY_VERSION,
         expiresAt: input.expiresAt,
       });
+      if (actionPlan) {
+        const existing = this.stmt.selectProposalByExactKey.get({
+          budgetId: input.budgetId,
+          transactionId: null,
+          operation: input.operation,
+          payloadHash,
+        }) as ProposalRow | undefined;
+        if (existing) return rowToProposal(existing) as GenericActionProposal;
+        this.assertConsequentialActionAdmissionAvailable(input.budgetId, actionPlan, now);
+      }
       const id = randomUUID();
       const row = this.stmt.insertProposal.get({
         id,
@@ -5075,6 +5158,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
         correlationId: input.correlationId ?? null,
         supersededAt: null,
         createdAt: now,
+        state: actionPlan
+          ? canonicalProposalJson({ phase: 'proposed', outcome: null, effects: [] })
+          : '{"phase":"proposed","sourceObserved":false,"destinationObserved":false,"reconciled":false,"outcome":null}',
       }) as ProposalRow | undefined;
       if (row) return rowToProposal(row) as GenericActionProposal;
 
@@ -5111,23 +5197,20 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }
 
   async supersedeProposal(id: string): Promise<ActionProposal> {
-    const existing = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
-    if (!existing) throw new Error(`Proposal ${id} not found`);
-    if (existing.operation === 'transfer' || existing.operation === 'session_completion')
-      throw new Error('Specialized workflow transition required');
-    if (existing.superseded_at) {
-      // Already superseded — idempotent
-      return rowToProposal(existing);
-    }
-
-    const now = nowISO();
-    this.db.transaction(() => {
+    return this.db.transaction(() => {
+      const existing = this.stmt.selectProposal.get(id) as ProposalRow | undefined;
+      if (!existing) throw new Error(`Proposal ${id} not found`);
+      if (existing.operation === 'transfer' || existing.operation === 'session_completion')
+        throw new Error('Specialized workflow transition required');
+      if (existing.operation === 'consequential_action' &&
+          ['write_intent', 'review_required'].includes(this.consequentialActionState(existing).phase))
+        throw new ProposalAcquisitionError('idempotency_in_progress', 'Acquired consequential action cannot be superseded');
+      if (existing.superseded_at) return rowToProposal(existing);
+      const now = nowISO();
       this.stmt.supersedeProposalStmt.run({ id, now });
       this.stmt.supersedeProposalApprovals.run({ proposalId: id, now });
-    })();
-
-    const updated = this.stmt.selectProposal.get(id) as ProposalRow;
-    return rowToProposal(updated);
+      return rowToProposal(this.stmt.selectProposal.get(id) as ProposalRow);
+    }).immediate();
   }
 
   /** Cancels an exact intent and its votes under current human authority in one transaction. */
@@ -5147,19 +5230,30 @@ export class SqliteWorkflowStore implements WorkflowStore {
       const policy = this.governance.getPolicy({ spaceId: context.spaceId });
       if (!policy || policy.version !== context.governancePolicyVersion) return null;
       let payload: unknown;
+      let preconditions: unknown;
       let facts: ProposalAuthorizationFacts;
       try {
         payload = JSON.parse(proposal.payload) as unknown;
-        facts = deriveProposalAuthorizationFacts(proposal.operation, payload, JSON.parse(proposal.preconditions) as unknown);
+        preconditions = JSON.parse(proposal.preconditions) as unknown;
+        facts = deriveProposalAuthorizationFacts(proposal.operation, payload, preconditions);
       } catch {
         return null;
       }
-      const authorization = this.authorizeGenericProposal({
-        actorId, auth: context.auth, spaceId: context.spaceId, policyVersion: policy.version,
-        phase: 'execute',
-        capability: proposal.operation === 'set_category' ? 'categorization:execute' : 'rule:execute',
-        operation: proposal.operation, budgetId: proposal.budget_id, facts, payload, now: context.now,
-      });
+      let authorization;
+      try {
+        authorization = this.authorizeGenericProposal({
+          actorId, auth: context.auth, spaceId: context.spaceId, policyVersion: policy.version,
+          phase: 'execute',
+          capability: proposal.operation === 'set_category' ? 'categorization:execute' :
+            proposal.operation === 'consequential_action' ? 'consequential_action:execute' : 'rule:execute',
+          ...(proposal.operation === 'consequential_action'
+            ? { actionCapabilityPhase: 'execute' as const, preconditions }
+            : {}),
+          operation: proposal.operation, budgetId: proposal.budget_id, facts, payload, now: context.now,
+        });
+      } catch {
+        return null;
+      }
       if (!authorization.allowed) return null;
       if (!proposal.superseded_at) {
         this.stmt.supersedeProposalStmt.run({ id, now: context.now });
@@ -5374,11 +5468,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
     } catch {
       throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal envelope is invalid');
     }
-    if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, policy.version, now))
+    if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, preconditions, policy.version, now))
       throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
     if (!this.ruleOverrideSnapshotMatches(spaceId, proposal.budget_id, payload, preconditions))
       throw new ProposalAcquisitionError('authorization_denied', 'Current rule override state differs from the proposal');
-    const capability = operation === 'set_category' ? 'categorization:approve' : 'rule:approve';
+    const capability = operation === 'set_category' ? 'categorization:approve' :
+      operation === 'consequential_action' ? 'consequential_action:approve' : 'rule:approve';
     const authorization = this.authorizeGenericProposal({
       actorId: input.actorId,
       auth: input.auth,
@@ -5386,6 +5481,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
       policyVersion: policy.version,
       phase: 'approve',
       capability,
+      ...(operation === 'consequential_action'
+        ? { actionCapabilityPhase: 'approve' as const, preconditions }
+        : {}),
       operation: proposal.operation,
       budgetId: proposal.budget_id,
       facts,
@@ -5410,6 +5508,32 @@ export class SqliteWorkflowStore implements WorkflowStore {
     }) as ApprovalRow | undefined;
     if (row) {
       const approval = rowToApproval(row);
+      if (operation === 'consequential_action') {
+        const currentProposal = this.stmt.selectProposal.get(proposal.id) as ProposalRow;
+        const financialApprovers = this.consequentialActionRequiredApprovers(
+          proposal.budget_id, payload, preconditions, policy, facts,
+        );
+        if (financialApprovers === null)
+          throw new ProposalAcquisitionError('policy_version_mismatch', 'Current financial approval policy differs from source');
+        const requiredApprovers = Math.max(requiredProposalApprovers(authorization), financialApprovers);
+        const eligible = this.eligibleHumanApprovals({
+          proposalId: proposal.id,
+          payloadHash: proposal.payload_hash,
+          spaceId,
+          policyVersion: policy.version,
+          operation,
+          budgetId: proposal.budget_id,
+          facts,
+          payload,
+          now,
+        });
+        const actionState = this.consequentialActionState(currentProposal);
+        if (actionState.phase === 'proposed' || actionState.phase === 'approved') {
+          const phase = eligible.length >= requiredApprovers ? 'approved' : 'proposed';
+          if (actionState.phase !== phase)
+            this.updateConsequentialActionState(currentProposal, { ...actionState, phase });
+        }
+      }
       this.stmt.insertAudit.run({
         id: randomUUID(),
         classification: 'approval_granted',
@@ -5573,9 +5697,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
         throw new ProposalAcquisitionError('policy_version_mismatch', 'Generic mutation policy version changed');
 
       const operation = proposal.operation as GenericProposalOperation;
-      const requesterCapability = operation === 'set_category' ? 'categorization:propose' : 'rule:propose';
-      const approvalCapability = operation === 'set_category' ? 'categorization:approve' : 'rule:approve';
-      const executionCapability = operation === 'set_category' ? 'categorization:execute' : 'rule:execute';
+      const requesterCapability = operation === 'set_category' ? 'categorization:propose' :
+        operation === 'consequential_action' ? 'consequential_action:propose' : 'rule:propose';
+      const approvalCapability = operation === 'set_category' ? 'categorization:approve' :
+        operation === 'consequential_action' ? 'consequential_action:approve' : 'rule:approve';
+      const executionCapability = operation === 'set_category' ? 'categorization:execute' :
+        operation === 'consequential_action' ? 'consequential_action:execute' : 'rule:execute';
 
       let payload: unknown;
       let preconditions: unknown;
@@ -5595,11 +5722,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
         }) !== proposal.payload_hash)
           throw new Error('Proposal hash mismatch');
         facts = deriveProposalAuthorizationFacts(operation, payload, preconditions);
-        sourceReadFacts = deriveProposalSourceReadFacts(operation, preconditions, proposal.budget_id);
+        sourceReadFacts = deriveProposalSourceReadFacts(operation, payload, preconditions, proposal.budget_id);
       } catch {
         throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal authorization facts are invalid');
       }
-      if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, policy.version, input.now))
+      if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, preconditions, policy.version, input.now))
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
       const ruleOverrideCurrent = this.ruleOverrideSnapshotMatches(
         input.spaceId,
@@ -5614,8 +5741,11 @@ export class SqliteWorkflowStore implements WorkflowStore {
             auth: input.auth,
             spaceId: input.spaceId,
             policyVersion: policy.version,
-            phase: 'propose',
+            phase: operation === 'consequential_action' ? 'read' : 'propose',
             capability: requesterCapability,
+            ...(operation === 'consequential_action'
+              ? { actionCapabilityPhase: 'propose' as const, preconditions }
+              : {}),
             operation,
             budgetId: proposal.budget_id,
             facts,
@@ -5633,6 +5763,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
             policyVersion: policy.version,
             phase: 'read',
             capability: approvalCapability,
+            ...(operation === 'consequential_action'
+              ? { actionCapabilityPhase: 'approve' as const, preconditions }
+              : {}),
             operation,
             budgetId: proposal.budget_id,
             facts,
@@ -5646,6 +5779,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
             policyVersion: policy.version,
             phase: 'read',
             capability: executionCapability,
+            ...(operation === 'consequential_action'
+              ? { actionCapabilityPhase: 'execute' as const, preconditions }
+              : {}),
             operation,
             budgetId: proposal.budget_id,
             facts,
@@ -5749,19 +5885,46 @@ export class SqliteWorkflowStore implements WorkflowStore {
         policyVersion: policy.version,
         phase: 'execute',
         capability: executionCapability,
+        ...(operation === 'consequential_action'
+          ? { actionCapabilityPhase: 'execute' as const, preconditions }
+          : {}),
         operation,
         budgetId: proposal.budget_id,
         facts,
         payload,
         now: input.now,
       });
-      const requiredApprovers = requiredProposalApprovers(executionAdmission);
+      const financialApprovers = operation === 'consequential_action'
+        ? this.consequentialActionRequiredApprovers(proposal.budget_id, payload, preconditions, policy, facts)
+        : null;
+      if (operation === 'consequential_action' && financialApprovers === null)
+        throw new ProposalAcquisitionError('policy_version_mismatch', 'Current financial approval policy differs from source');
+      const requiredApprovers = Math.max(
+        requiredProposalApprovers(
+          operation === 'consequential_action'
+            ? approvalRead ?? requesterRead ?? executionRead ?? executionAdmission
+            : executionAdmission,
+        ),
+        financialApprovers ?? 0,
+      );
       const proposalExpiresAt = timestampMillis(proposal.expires_at);
+      let readProposal = proposal;
+      let actionPhaseCurrent = true;
+      if (operation === 'consequential_action') {
+        const actionState = this.consequentialActionState(proposal);
+        actionPhaseCurrent = actionState.phase === 'proposed' || actionState.phase === 'approved';
+        if (actionPhaseCurrent) {
+          const phase = eligible.length >= requiredApprovers ? 'approved' : 'proposed';
+          if (actionState.phase !== phase)
+            readProposal = this.updateConsequentialActionState(proposal, { ...actionState, phase });
+        }
+      }
       const proposalCurrent =
         proposal.governance_policy_version === policy.version &&
         proposal.superseded_at === null &&
         proposalExpiresAt !== null &&
         proposalExpiresAt > nowMillis &&
+        actionPhaseCurrent &&
         ruleOverrideCurrent &&
         this.proposalReviewProvenanceMatches(proposal);
       const disposition = !proposalCurrent
@@ -5783,6 +5946,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
               policyVersion: policy.version,
               phase: 'execute',
               capability: executionCapability,
+              ...(operation === 'consequential_action'
+                ? { actionCapabilityPhase: 'execute' as const, preconditions }
+                : {}),
               operation,
               budgetId: proposal.budget_id,
               facts,
@@ -5844,7 +6010,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       };
       return {
         read: {
-          proposal: rowToProposal(proposal, payload as GenericActionProposal['payload']) as GenericActionProposal,
+          proposal: rowToProposal(readProposal, payload as GenericActionProposal['payload']) as GenericActionProposal,
           preconditions: fullReadAllowed ? preconditions as Readonly<Record<string, unknown>> : null,
           summary,
         },
@@ -5955,12 +6121,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
       } catch {
         throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored proposal authorization facts are invalid');
       }
-      if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, policy.version, now))
+      let actionPlan: ConsequentialActionPayload['plan'] | null = null;
+      if (operation === 'consequential_action') {
+        try {
+          actionPlan = consequentialActionPlanFromPayload(payload);
+          const actionState = this.consequentialActionState(proposal);
+          if (actionPlan.idempotencyKey !== input.idempotencyKey ||
+              actionPlan.expiresAt !== proposal.expires_at ||
+              acquisitionAuditId === undefined && !existingAcquisition &&
+                !['proposed', 'approved'].includes(actionState.phase))
+            throw new Error('Action identity or lifecycle phase differs');
+        } catch {
+          throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Consequential-action identity is not executable');
+        }
+      }
+      if (!this.proposalOriginAuthorityCurrent(proposal, operation, facts, payload, preconditions, policy.version, now))
         throw new ProposalAcquisitionError('authorization_denied', 'Proposal origin authority is no longer current');
       const serializedProposal = JSON.stringify({ operation, payload, preconditions });
       if (serializedProposal !== input.serialisedEffect)
         throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution effect differs from proposal');
-      const capability = operation === 'set_category' ? 'categorization:execute' : 'rule:execute';
+      const capability = operation === 'set_category' ? 'categorization:execute' :
+        operation === 'consequential_action' ? 'consequential_action:execute' : 'rule:execute';
       const authorization = this.authorizeGenericProposal({
         actorId: input.actorId,
         auth: input.auth,
@@ -5968,6 +6149,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
         policyVersion: policy.version,
         phase: 'propose',
         capability,
+        ...(operation === 'consequential_action'
+          ? { actionCapabilityPhase: 'execute' as const, preconditions }
+          : {}),
         operation,
         budgetId: proposal.budget_id,
         facts,
@@ -5991,10 +6175,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
         )
           throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Execution replay does not match its claim');
         if (acquisitionAuditId !== undefined) {
+          const state = operation === 'consequential_action' ? this.consequentialActionState(proposal) : null;
+          const acquisition = state?.acquisition;
+          if (operation === 'consequential_action' &&
+              (state?.phase !== 'write_intent' ||
+               acquisition?.actorId !== input.actorId ||
+               acquisition.payloadHash !== proposal.payload_hash ||
+               acquisition.idempotencyKey !== input.idempotencyKey ||
+               acquisition.acquisitionAuditId !== acquisitionAuditId))
+            throw new ProposalAcquisitionError('authorization_denied', 'Exact durable action acquisition is no longer active');
           const leaseExpiresAt = existing.lease_expires_at === null
             ? null : timestampMillis(existing.lease_expires_at);
           if (existing.completed !== 0 || existing.idempotency_status !== 'in_progress' ||
-              leaseExpiresAt === null || leaseExpiresAt <= nowMillis ||
+              operation !== 'consequential_action' && (leaseExpiresAt === null || leaseExpiresAt <= nowMillis) ||
               existing.executed_at !== existingAcquisition.acquired_at)
             throw new ProposalAcquisitionError('authorization_denied', 'Acquired execution lease is no longer active');
           if (!this.proposalReviewProvenanceMatches(proposal) ||
@@ -6033,16 +6226,27 @@ export class SqliteWorkflowStore implements WorkflowStore {
             policyVersion: policy.version, operation, budgetId: proposal.budget_id, facts, payload, now,
             approvals,
           });
+          const financialApprovers = operation === 'consequential_action'
+            ? this.consequentialActionRequiredApprovers(proposal.budget_id, payload, preconditions, policy, facts)
+            : null;
           if (eligible.length !== approvals.length ||
-              eligible.length < requiredProposalApprovers(authorization))
+              eligible.length < Math.max(
+                requiredProposalApprovers(authorization),
+                financialApprovers ?? 0,
+              ))
             throw new ProposalAcquisitionError('approval_required', 'Acquired human approval authority changed');
           const executionAuthorization = this.authorizeGenericProposal({
             actorId: input.actorId, auth: input.auth, spaceId, policyVersion: policy.version,
-            phase: 'execute', capability, operation, budgetId: proposal.budget_id, facts, payload, now,
+            phase: 'execute', capability, operation, budgetId: proposal.budget_id, facts, payload,
+            ...(operation === 'consequential_action'
+              ? { actionCapabilityPhase: 'execute' as const, preconditions }
+              : {}),
+            now,
             verifiedHumanApproval: true,
           });
           if (!executionAuthorization.allowed)
             throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
+          this.assertBudgetMutationOwnerAvailable(proposal.budget_id, proposal.id);
         }
         return {
           claim: { record: rowToIdempotency(existing), isOwner: false },
@@ -6066,6 +6270,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       }) as IdempotencyRow | undefined;
       if (priorClaim)
         throw new ProposalAcquisitionError('idempotency_in_progress', 'Proposal execution was already claimed');
+      this.assertBudgetMutationOwnerAvailable(proposal.budget_id, proposal.id);
 
       const eligible = this.eligibleHumanApprovals({
         proposalId: input.proposalId,
@@ -6079,7 +6284,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
         now,
       });
 
-      const requiredApprovers = requiredProposalApprovers(authorization);
+      const financialApprovers = operation === 'consequential_action'
+        ? this.consequentialActionRequiredApprovers(proposal.budget_id, payload, preconditions, policy, facts)
+        : null;
+      if (operation === 'consequential_action' && financialApprovers === null)
+        throw new ProposalAcquisitionError('policy_version_mismatch', 'Current financial approval policy differs from source');
+      const requiredApprovers = Math.max(requiredProposalApprovers(authorization), financialApprovers ?? 0);
       let selectedApprovals = eligible;
       if (input.approvalId) {
         const selected = eligible.find((approval) => approval.id === input.approvalId);
@@ -6103,6 +6313,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
         policyVersion: policy.version,
         phase: 'execute',
         capability,
+        ...(operation === 'consequential_action'
+          ? { actionCapabilityPhase: 'execute' as const, preconditions }
+          : {}),
         operation,
         budgetId: proposal.budget_id,
         facts,
@@ -6113,7 +6326,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
       if (!executionAuthorization.allowed)
         throw new ProposalAcquisitionError('authorization_denied', executionAuthorization.reason);
 
-      const leaseExpiresAt = new Date(nowMillis + 60_000).toISOString();
+      const leaseExpiresAt = operation === 'consequential_action'
+        ? proposal.expires_at
+        : new Date(nowMillis + 60_000).toISOString();
       const claim = this.stmt.insertIdempotency.get({
         idempotencyKey: input.idempotencyKey,
         proposalId: input.proposalId,
@@ -6170,6 +6385,23 @@ export class SqliteWorkflowStore implements WorkflowStore {
         result: auditResult,
         isError: 0,
       });
+      if (operation === 'consequential_action') {
+        const current = this.stmt.selectProposal.get(proposal.id) as ProposalRow;
+        const state = this.consequentialActionState(current);
+        if (!['proposed', 'approved'].includes(state.phase) || state.acquisition)
+          throw new ProposalAcquisitionError('idempotency_in_progress', 'Consequential action already has a write intent');
+        this.updateConsequentialActionState(current, {
+          ...state,
+          phase: 'write_intent',
+          acquisition: {
+            actorId: input.actorId,
+            payloadHash: proposal.payload_hash,
+            idempotencyKey: input.idempotencyKey,
+            acquisitionAuditId: auditId,
+            acquiredAt: now,
+          },
+        });
+      }
       const auditRecord: AuditRecord = {
         id: auditId,
         classification: 'execution_started',
@@ -6198,6 +6430,390 @@ export class SqliteWorkflowStore implements WorkflowStore {
       };
     }).immediate();
   }
+  /** Persists one observed atom dispatch before a later atom can be recorded. */
+  async recordConsequentialActionEffect(
+    input: RecordConsequentialActionEffectInput,
+  ): Promise<ConsequentialActionState> {
+    return this.db.transaction(() => {
+      const frame = this.requireConsequentialActionExecution(input, ['write_intent']);
+      const atoms = frame.plan.action.kind === 'composite'
+        ? frame.plan.action.actions
+        : [frame.plan.action];
+      if (!Number.isSafeInteger(input.effectIndex) || input.effectIndex < 0 ||
+          !Number.isSafeInteger(input.atomIndex) || input.atomIndex < 0 ||
+          input.dispatchIndex !== 0 ||
+          input.atomIndex >= atoms.length)
+        throw new ProposalAcquisitionError('authorization_denied', 'Consequential-action effect index is invalid');
+      const atom = atoms[input.atomIndex]!;
+      const stableIdentity = actionJsonValue(consequentialActionStableIdentity(atom)) as ProposalJsonValue;
+      const result = actionJsonValue(input.result);
+      const prior = frame.state.effects[input.effectIndex];
+      if (prior) {
+        if (prior.atomIndex === input.atomIndex && prior.effectIndex === input.effectIndex &&
+            prior.dispatchIndex === input.dispatchIndex && prior.actionKind === atom.kind &&
+            canonicalProposalJson(prior.stableIdentity) === canonicalProposalJson(stableIdentity) &&
+            canonicalProposalJson(prior.result) === canonicalProposalJson(result))
+          return frame.state;
+        throw new ProposalAcquisitionError('authorization_denied', 'Consequential-action effect replay differs');
+      }
+      if (input.effectIndex !== frame.state.effects.length ||
+          input.effectIndex !== input.atomIndex)
+        throw new ProposalAcquisitionError('authorization_denied', 'Consequential-action atom results must be recorded in order');
+      const effect: ConsequentialActionEffect = {
+        effectIndex: input.effectIndex,
+        atomIndex: input.atomIndex,
+        dispatchIndex: input.dispatchIndex,
+        actionKind: atom.kind,
+        stableIdentity: stableIdentity as ConsequentialActionEffect['stableIdentity'],
+        result,
+        recordedAt: nowISO(),
+      };
+      const updated = this.updateConsequentialActionState(frame.proposal, {
+        ...frame.state,
+        effects: [...frame.state.effects, effect],
+      });
+      return this.consequentialActionState(updated);
+    }).immediate();
+  }
+
+  /** Atomically records native verification or preserves the acquired hold for review. */
+  async finalizeConsequentialActionExecution(
+    input: FinalizeConsequentialActionExecutionInput,
+  ): Promise<ConsequentialActionState> {
+    return this.db.transaction(() => {
+      const phases: readonly ConsequentialActionState['phase'][] =
+        input.outcome.kind === 'invalidated_no_dispatch'
+          ? ['write_intent']
+          : ['write_intent', 'review_required'];
+      let frame = this.requireConsequentialActionExecution(input, phases);
+      const now = nowISO();
+      let nextState: ConsequentialActionState;
+      let result: Record<string, unknown>;
+      let idempotencyStatus: 'succeeded' | 'terminal_failed' | null = null;
+      let errorMessage: string | null = null;
+      let classification: 'execution_completed' | 'execution_failed';
+      if (input.outcome.kind === 'review_required') {
+        if (!input.outcome.reason.trim())
+          throw new ProposalAcquisitionError('authorization_denied', 'Review outcome requires a reason');
+        const observedState = input.outcome.observedState === undefined
+          ? undefined
+          : actionJsonValue(input.outcome.observedState);
+        nextState = {
+          ...frame.state,
+          phase: 'review_required',
+          outcome: input.outcome.reason,
+          ...(observedState === undefined ? {} : { observedState }),
+        };
+        result = {
+          outcome: 'review_required',
+          reason: input.outcome.reason,
+          ...(observedState === undefined ? {} : { observedState }),
+        };
+        errorMessage = input.outcome.reason;
+        classification = 'execution_failed';
+      } else if (input.outcome.kind === 'invalidated_no_dispatch') {
+        const proof = consequentialActionInvalidationProof(input.outcome.invalidationToken);
+        if (!proof || !this.sameConsequentialActionIdentity(proof, input) ||
+            frame.state.effects.length !== 0)
+          throw new ProposalAcquisitionError('authorization_denied', 'Exact fenced no-dispatch proof is required');
+        const nativeResult = actionJsonValue({ dispatchCount: 0, staleWorkerFenced: true });
+        nextState = {
+          ...frame.state,
+          phase: 'invalidated_no_dispatch',
+          outcome: 'invalidated_no_dispatch',
+          result: nativeResult,
+        };
+        result = { outcome: 'invalidated_no_dispatch', result: nativeResult };
+        idempotencyStatus = 'terminal_failed';
+        errorMessage = 'Consequential action invalidated before dispatch';
+        classification = 'execution_failed';
+      } else {
+        const proof = consequentialActionVerificationProof(input.outcome.verificationToken);
+        const verifyRequest = proof?.verifyRequest;
+        const currentPolicy = frame.proposal.space_id
+          ? this.governance.getPolicy({ spaceId: frame.proposal.space_id })
+          : null;
+        const atoms = frame.plan.action.kind === 'composite'
+          ? frame.plan.action.actions
+          : [frame.plan.action];
+        const expectedEffects = atoms.length;
+        if (!proof || !this.sameConsequentialActionIdentity(proof, input) ||
+            !verifyRequest || verifyRequest.phase !== 'postconditions' ||
+            canonicalProposalJson(verifyRequest.plan) !== canonicalProposalJson(frame.plan) ||
+            frame.state.effects.length > expectedEffects ||
+            verifyRequest.financialPolicyVersion !== frame.plan.source.financialPolicyVersion ||
+            canonicalProposalJson(verifyRequest.currentLedger) !== canonicalProposalJson(proof.observedState) ||
+            !this.currentConsequentialActionApprovalPolicy(
+              frame.proposal.budget_id,
+              JSON.parse(frame.proposal.payload) as unknown,
+              JSON.parse(frame.proposal.preconditions) as unknown,
+              currentPolicy,
+            ) ||
+            proof.verification.valid !== true ||
+            proof.verification.reason !== null ||
+            proof.verification.actionHash !== frame.plan.actionHash)
+          throw new ProposalAcquisitionError('authorization_denied', 'Native postcondition verification proof is invalid');
+        if (frame.state.effects.length < expectedEffects) {
+          const ledger: ConsequentialActionLedger = verifyRequest.currentLedger;
+          const safeNumber = (minorUnits: bigint): number => {
+            const value = Number(minorUnits);
+            if (!Number.isSafeInteger(value))
+              throw new ProposalAcquisitionError('authorization_denied', 'Recovered adapter amount is not safely representable');
+            return value;
+          };
+          const invalidRecovery = (): never => {
+            throw new ProposalAcquisitionError('authorization_denied', 'Native readback cannot recover the missing atom result');
+          };
+          const recoveredEffects = [...frame.state.effects];
+          for (let effectIndex = frame.state.effects.length; effectIndex < expectedEffects; effectIndex++) {
+            const atom = atoms[effectIndex]!;
+            let atomResult: unknown;
+            switch (atom.kind) {
+              case 'reallocation': {
+                const dispatch = frame.plan.dispatchPreconditions.find((entry) =>
+                  entry.atomIndex === effectIndex);
+                if (!dispatch || dispatch.accountBalances.length !== 0) return invalidRecovery();
+                const actionTargets = new Set<string>();
+                for (const assignment of atom.assignments) {
+                  actionTargets.add(canonicalProposalJson([
+                    assignment.sourceCategoryId,
+                    assignment.sourceAsOfMonth,
+                  ]));
+                  actionTargets.add(canonicalProposalJson([
+                    assignment.destinationCategoryId,
+                    assignment.destinationAsOfMonth,
+                  ]));
+                }
+                if (dispatch.assignments.length !== actionTargets.size ||
+                    dispatch.assignments.some((assignment) => !actionTargets.has(
+                      canonicalProposalJson([assignment.categoryId, assignment.asOfMonth]),
+                    )))
+                  return invalidRecovery();
+                const resultTargets = new Set<string>();
+                atomResult = {
+                  status: 'complete',
+                  results: dispatch.assignments.map((assignment) => {
+                    const key = canonicalProposalJson([assignment.categoryId, assignment.asOfMonth]);
+                    if (resultTargets.has(key)) return invalidRecovery();
+                    resultTargets.add(key);
+                    const expected = frame.plan.expectedPostconditions.filter((condition) =>
+                      condition.kind === 'assignment' &&
+                      condition.categoryId === assignment.categoryId &&
+                      condition.asOfMonth === assignment.asOfMonth);
+                    const expectedAssignment = expected[0];
+                    if (expected.length !== 1 || expectedAssignment?.kind !== 'assignment')
+                      return invalidRecovery();
+                    const expectedAmount = expectedAssignment.amount;
+                    const observed = ledger.assignments.filter((entry) =>
+                      entry.categoryId === assignment.categoryId && entry.asOfMonth === assignment.asOfMonth);
+                    if (observed.length !== 1 ||
+                        canonicalProposalJson(expectedAmount) !== canonicalProposalJson(observed[0]!.amount) ||
+                        expectedAmount.currency !== assignment.postAmount.currency ||
+                        assignment.amount.currency !== assignment.postAmount.currency)
+                      return invalidRecovery();
+                    return {
+                      categoryId: assignment.categoryId,
+                      month: assignment.asOfMonth,
+                      amount: safeNumber(BigInt(assignment.postAmount.minorUnits)),
+                      expectedAmount: safeNumber(BigInt(assignment.amount.minorUnits)),
+                      currency: assignment.postAmount.currency,
+                      result: { success: true, id: assignment.categoryId, verified: true },
+                    };
+                  }),
+                };
+                break;
+              }
+              case 'manual_transaction':
+              case 'evidence_projection': {
+                const transaction = atom.transaction;
+                const observed = ledger.transactions.filter((entry) => entry.parentId === transaction.parentId);
+                if (observed.length !== 1) return invalidRecovery();
+                const observedTransaction = observed[0]!;
+                if (canonicalProposalJson({
+                  parentId: observedTransaction.parentId,
+                  accountId: observedTransaction.accountId,
+                  amount: observedTransaction.amount,
+                  date: observedTransaction.date,
+                  categoryId: observedTransaction.categoryId,
+                  payeeName: observedTransaction.payeeName,
+                  notes: observedTransaction.notes,
+                  splits: observedTransaction.splits,
+                  transferAccountId: observedTransaction.transferAccountId,
+                }) !== canonicalProposalJson({
+                  parentId: transaction.parentId,
+                  accountId: transaction.accountId,
+                  amount: transaction.amount,
+                  date: transaction.date,
+                  categoryId: transaction.categoryId,
+                  payeeName: transaction.payeeName,
+                  notes: transaction.notes,
+                  splits: transaction.splits,
+                  transferAccountId: null,
+                }))
+                  return invalidRecovery();
+                atomResult = {
+                  success: true,
+                  parentId: transaction.parentId,
+                  transactionId: observedTransaction.parentId,
+                  correlationId: transaction.correlationId,
+                  verified: true,
+                };
+                break;
+              }
+              case 'wallet_materialization': {
+                const mappings = ledger.wallets.filter((mapping) => mapping.walletId === atom.walletId);
+                if (mappings.length !== 1) return invalidRecovery();
+                const mapping = mappings[0]!;
+                const postconditions = frame.plan.expectedPostconditions.filter((condition) =>
+                  condition.kind === 'wallet_mapping' && condition.walletId === atom.walletId);
+                if (postconditions.length !== 1) return invalidRecovery();
+                const postcondition = postconditions[0];
+                if (!postcondition || postcondition.kind !== 'wallet_mapping') return invalidRecovery();
+                const accounts = ledger.accounts.filter((account) => account.accountId === mapping.accountId);
+                if (accounts.length !== 1) return invalidRecovery();
+                const account = accounts[0]!;
+                if (account.name !== atom.accountName || !account.onBudget || account.closed ||
+                    account.currency !== atom.currency ||
+                    postcondition.accountName !== atom.accountName ||
+                    postcondition.openingBalance.currency !== atom.currency)
+                  return invalidRecovery();
+                atomResult = {
+                  success: true,
+                  walletId: atom.walletId,
+                  accountId: mapping.accountId,
+                  verified: true,
+                };
+                break;
+              }
+              case 'transfer': {
+                const mappings = ledger.transfers.filter((mapping) => mapping.transferId === atom.transferId);
+                const mapping = mappings[0];
+                const marker = `balanceframe:transfer:${atom.transferId}:${atom.correlationId}`;
+                const sourceRows = mapping
+                  ? ledger.transactions.filter((transaction) => transaction.parentId === mapping.sourceTransactionId)
+                  : [];
+                const destinationRows = mapping
+                  ? ledger.transactions.filter((transaction) => transaction.parentId === mapping.destinationTransactionId)
+                  : [];
+                const sourceRow = sourceRows[0];
+                const destinationRow = destinationRows[0];
+                if (mappings.length !== 1 || mapping!.sourceTransactionId === mapping!.destinationTransactionId ||
+                    sourceRows.length !== 1 || destinationRows.length !== 1 ||
+                    mapping!.correlationId !== atom.correlationId || mapping!.marker !== marker ||
+                    mapping!.sourceAccountId !== atom.sourceAccountId ||
+                    mapping!.destinationAccountId !== atom.destinationAccountId ||
+                    canonicalProposalJson(mapping!.amount) !== canonicalProposalJson(atom.amount) ||
+                    mapping!.date !== atom.date ||
+                    sourceRow!.accountId !== atom.sourceAccountId ||
+                    destinationRow!.accountId !== atom.destinationAccountId ||
+                    sourceRow!.transferAccountId !== atom.destinationAccountId ||
+                    destinationRow!.transferAccountId !== atom.sourceAccountId ||
+                    sourceRow!.date !== atom.date || destinationRow!.date !== atom.date ||
+                    sourceRow!.amount.minorUnits !== (-BigInt(atom.amount.minorUnits)).toString() ||
+                    destinationRow!.amount.minorUnits !== atom.amount.minorUnits ||
+                    sourceRow!.amount.currency !== atom.amount.currency ||
+                    destinationRow!.amount.currency !== atom.amount.currency ||
+                    sourceRow!.notes !== marker || destinationRow!.notes !== marker)
+                  invalidRecovery();
+                atomResult = {
+                  success: true,
+                  transferId: atom.transferId,
+                  sourceTransactionId: mapping!.sourceTransactionId,
+                  destinationTransactionId: mapping!.destinationTransactionId,
+                  verified: true,
+                };
+                break;
+              }
+              default: invalidRecovery();
+            }
+            const stableIdentity = actionJsonValue(consequentialActionStableIdentity(atom));
+            recoveredEffects.push({
+              effectIndex,
+              atomIndex: effectIndex,
+              dispatchIndex: 0,
+              actionKind: atom.kind,
+              stableIdentity: stableIdentity as ConsequentialActionEffect['stableIdentity'],
+              result: actionJsonValue({
+                kind: atom.kind,
+                atomIndex: effectIndex,
+                dispatchIndex: 0,
+                result: atomResult,
+              }),
+              recordedAt: now,
+            });
+          }
+          const recoveredProposal = this.updateConsequentialActionState(frame.proposal, {
+            ...frame.state,
+            effects: recoveredEffects,
+          });
+          frame = {
+            ...frame,
+            proposal: recoveredProposal,
+            state: this.consequentialActionState(recoveredProposal),
+          };
+        }
+        const verifiedResult = actionJsonValue({
+          actionHash: proof.verification.actionHash,
+          financialPolicyVersion: verifyRequest.financialPolicyVersion,
+          verification: proof.verification,
+          observedState: proof.observedState,
+        });
+        nextState = {
+          ...frame.state,
+          phase: 'verified',
+          outcome: 'verified',
+          result: verifiedResult,
+          observedState: actionJsonValue(proof.observedState),
+        };
+        result = { outcome: 'verified', result: verifiedResult };
+        idempotencyStatus = 'succeeded';
+        classification = 'execution_completed';
+      }
+      const updated = this.updateConsequentialActionState(frame.proposal, nextState);
+      if (idempotencyStatus !== null) {
+        const idempotency = this.db.prepare(`
+          UPDATE idempotency_records
+             SET completed=1,idempotency_status=?,error_message=?,serialised_result=?,
+                 lease_expires_at=NULL,updated_at=?
+           WHERE idempotency_key=? AND proposal_id=? AND operation='consequential_action'
+             AND completed=0 AND idempotency_status='in_progress'
+        `).run(
+          idempotencyStatus,
+          errorMessage,
+          idempotencyStatus === 'succeeded' ? canonicalProposalJson(nextState) : null,
+          now,
+          input.idempotencyKey,
+          frame.proposal.id,
+        );
+        if (idempotency.changes !== 1)
+          throw new ProposalAcquisitionError('idempotency_in_progress', 'Consequential-action idempotency claim changed');
+      }
+      const stateJson = canonicalProposalJson(nextState);
+      this.stmt.insertAudit.run({
+        id: randomUUID(),
+        classification,
+        timestamp: now,
+        actorId: input.actorId,
+        operation: 'consequential_action',
+        proposalId: input.proposalId,
+        payloadHash: input.payloadHash,
+        budgetId: frame.proposal.budget_id,
+        backendIds: '[]',
+        policyVersion: frame.proposal.policy_version,
+        authorizationDisposition: null,
+        idempotencyKey: input.idempotencyKey,
+        expectedPriorState: canonicalProposalJson(frame.state),
+        observedResultState: stateJson,
+        providerModel: frame.proposal.provider_model,
+        correlationId: frame.proposal.correlation_id,
+        requestId: null,
+        result: JSON.stringify(result),
+        isError: Number(classification === 'execution_failed'),
+      });
+      return this.consequentialActionState(updated);
+    }).immediate();
+  }
+
   async getApproval(id: string): Promise<ProposalApproval | null> {
     const row = this.stmt.selectApproval.get(id) as ApprovalRow | undefined;
     return row ? rowToApproval(row) : null;
@@ -6379,6 +6995,318 @@ export class SqliteWorkflowStore implements WorkflowStore {
 
   // ── Authorization ─────────────────────────────────────────────────
 
+  private currentConsequentialActionApprovalPolicy(
+    budgetId: string,
+    payload: unknown,
+    preconditions: unknown,
+    governancePolicy: VersionedGovernancePolicy | null,
+  ): { readonly minimumApprovers: number; readonly thresholds: readonly {
+    readonly currency: string;
+    readonly minimumMinorUnits: bigint;
+    readonly minimumApprovers: number;
+  }[] } | null {
+    if (!governancePolicy) return null;
+    let plan: ConsequentialActionPayload['plan'];
+    let frozen: Record<string, unknown>;
+    try {
+      plan = consequentialActionPlanFromPayload(payload);
+      frozen = validateConsequentialActionPreconditions(plan, preconditions);
+    } catch {
+      return null;
+    }
+    const current = this.db.prepare(`
+      SELECT p.version, p.policy, p.approval_policy
+        FROM liquidity_current_policy c
+        JOIN liquidity_policy_versions p ON p.budget_id=c.budget_id AND p.version=c.version
+       WHERE c.budget_id=?
+    `).get(budgetId) as {
+      version: string;
+      policy: string;
+      approval_policy: string;
+    } | undefined;
+    if (!current || current.version !== plan.source.financialPolicyVersion) return null;
+    let financialPolicy: unknown;
+    let approvalPolicy: unknown;
+    try {
+      financialPolicy = JSON.parse(current.policy) as unknown;
+      approvalPolicy = JSON.parse(current.approval_policy) as unknown;
+    } catch {
+      return null;
+    }
+    if (!isPlainRecord(financialPolicy) ||
+        financialPolicy.policyHash !== (frozen.financialApprovalPolicy as Record<string, unknown>).policyHash)
+      return null;
+
+    let minimumApprovers = governancePolicy.minimumApprovers;
+    let rawThresholds: readonly {
+      currency: string;
+      amountMinorUnits: string;
+      requiredApprovers: number;
+    }[];
+    if (isPlainRecord(approvalPolicy) && Object.keys(approvalPolicy).length === 0) {
+      rawThresholds = governancePolicy.approvalThresholds;
+    } else {
+      if (!isPlainRecord(approvalPolicy) ||
+          !Number.isSafeInteger(approvalPolicy.minimumApprovers) ||
+          (approvalPolicy.minimumApprovers as number) < 1 ||
+          !Array.isArray(approvalPolicy.thresholds) ||
+          Object.keys(approvalPolicy).some((key) => key !== 'minimumApprovers' && key !== 'thresholds'))
+        return null;
+      minimumApprovers = approvalPolicy.minimumApprovers as number;
+      const parsed: Array<{ currency: string; amountMinorUnits: string; requiredApprovers: number }> = [];
+      for (const value of approvalPolicy.thresholds) {
+        if (!isPlainRecord(value) || typeof value.currency !== 'string' ||
+            !/^[A-Z]{3}$/.test(value.currency) ||
+            typeof value.minimumMinorUnits !== 'string' ||
+            !/^(0|[1-9]\d*)$/.test(value.minimumMinorUnits) ||
+            !Number.isSafeInteger(value.minimumApprovers) || (value.minimumApprovers as number) < 1 ||
+            Object.keys(value).some((key) => !['currency', 'minimumMinorUnits', 'minimumApprovers'].includes(key)))
+          return null;
+        parsed.push({
+          currency: value.currency,
+          amountMinorUnits: value.minimumMinorUnits,
+          requiredApprovers: value.minimumApprovers as number,
+        });
+      }
+      rawThresholds = parsed;
+    }
+    const thresholds: Array<{
+      currency: string;
+      minimumMinorUnits: bigint;
+      minimumApprovers: number;
+    }> = [];
+    for (const threshold of rawThresholds) {
+      try {
+        if (!/^[A-Z]{3}$/.test(threshold.currency) ||
+            !/^(0|[1-9]\d*)$/.test(threshold.amountMinorUnits) ||
+            !Number.isSafeInteger(threshold.requiredApprovers) || threshold.requiredApprovers < 1)
+          return null;
+        thresholds.push({
+          currency: threshold.currency,
+          minimumMinorUnits: BigInt(threshold.amountMinorUnits),
+          minimumApprovers: threshold.requiredApprovers,
+        });
+      } catch {
+        return null;
+      }
+    }
+    return { minimumApprovers, thresholds };
+  }
+
+  private consequentialActionRequiredApprovers(
+    budgetId: string,
+    payload: unknown,
+    preconditions: unknown,
+    governancePolicy: VersionedGovernancePolicy | null,
+    facts: ProposalAuthorizationFacts,
+  ): number | null {
+    const approvalPolicy = this.currentConsequentialActionApprovalPolicy(
+      budgetId, payload, preconditions, governancePolicy,
+    );
+    if (!approvalPolicy) return null;
+    const outgoing: Record<string, bigint> = {};
+    for (const operation of facts.operations) {
+      if (operation.direction !== 'outgoing' || !operation.amount) continue;
+      try {
+        const amount = BigInt(operation.amount.minorUnits);
+        if (amount < 0n) return null;
+        outgoing[operation.amount.currency] = (outgoing[operation.amount.currency] ?? 0n) + amount;
+      } catch {
+        return null;
+      }
+    }
+    let required = approvalPolicy.minimumApprovers;
+    for (const threshold of approvalPolicy.thresholds)
+      if ((outgoing[threshold.currency] ?? 0n) >= threshold.minimumMinorUnits)
+        required = Math.max(required, threshold.minimumApprovers);
+    return required;
+  }
+  private assertConsequentialActionAdmissionAvailable(
+    budgetId: string,
+    plan: ConsequentialActionPayload['plan'],
+    now: string,
+    excludePayloadHash?: string,
+  ): void {
+    const nowMillis = timestampMillis(now);
+    if (nowMillis === null) throw new ProposalAcquisitionError('authorization_denied', 'Invalid action admission time');
+    const requested = new Set(consequentialActionHoldKeys(plan, budgetId));
+    const rows = this.db.prepare(`
+      SELECT * FROM action_proposals
+       WHERE budget_id=? AND operation='consequential_action'
+    `).all(budgetId) as ProposalRow[];
+    const permanentIdentity = (key: string) =>
+      key.startsWith('transaction-parent:') ||
+      key.startsWith('wallet:') ||
+      key.startsWith('transfer:') ||
+      key.startsWith('evidence-effect:');
+    for (const row of rows) {
+      if (row.payload_hash === excludePayloadHash) continue;
+      const state = this.consequentialActionState(row);
+      if (state.phase === 'invalidated_no_dispatch') continue;
+      const acquired = state.phase === 'write_intent' || state.phase === 'review_required';
+      if (row.superseded_at && !acquired && state.phase !== 'verified') continue;
+      const expiresAt = timestampMillis(row.expires_at);
+      if (!acquired && state.phase !== 'verified' && (expiresAt === null || expiresAt <= nowMillis)) continue;
+      let priorPlan: ConsequentialActionPayload['plan'];
+      try {
+        priorPlan = consequentialActionPlanFromPayload(JSON.parse(row.payload) as unknown);
+      } catch {
+        throw new ProposalAcquisitionError('authorization_denied', 'Existing action hold cannot be safely reconciled');
+      }
+      const held = consequentialActionHoldKeys(priorPlan, budgetId)
+        .filter((key) => state.phase !== 'verified' || permanentIdentity(key));
+      if (held.some((key) => requested.has(key)))
+        throw new ProposalAcquisitionError('idempotency_in_progress', 'Consequential-action economic identity is already held');
+    }
+  }
+
+  private consequentialActionState(proposal: ProposalRow): ConsequentialActionState {
+    const state: unknown = JSON.parse(proposal.state);
+    if (!isPlainRecord(state) ||
+        !['proposed', 'approved', 'write_intent', 'verified', 'review_required', 'invalidated_no_dispatch']
+          .includes(String(state.phase)) ||
+        (state.outcome !== null && typeof state.outcome !== 'string') ||
+        !Array.isArray(state.effects))
+      throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored consequential-action state is invalid');
+    return state as unknown as ConsequentialActionState;
+  }
+
+  private requireConsequentialActionExecution(
+    input: ConsequentialActionExecutionIdentity,
+    phases: readonly ConsequentialActionState['phase'][],
+  ): {
+    proposal: ProposalRow;
+    state: ConsequentialActionState;
+    plan: ConsequentialActionPayload['plan'];
+  } {
+    if (![input.proposalId, input.payloadHash, input.actorId, input.idempotencyKey, input.acquisitionAuditId]
+      .every((value) => typeof value === 'string' && value.trim()))
+      throw new ProposalAcquisitionError('authorization_denied', 'Exact consequential-action identity is required');
+    const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+    if (!proposal || proposal.operation !== 'consequential_action' ||
+        proposal.payload_hash !== input.payloadHash || !this.proposalHashMatches(proposal))
+      throw new ProposalAcquisitionError('payload_hash_mismatch', 'Consequential-action proposal identity changed');
+    let payload: unknown;
+    let preconditions: unknown;
+    let plan: ConsequentialActionPayload['plan'];
+    try {
+      payload = JSON.parse(proposal.payload) as unknown;
+      preconditions = JSON.parse(proposal.preconditions) as unknown;
+      plan = consequentialActionPlanFromPayload(payload);
+      validateConsequentialActionPreconditions(plan, preconditions);
+    } catch {
+      throw new ProposalAcquisitionError('payload_hash_mismatch', 'Consequential-action envelope is invalid');
+    }
+    if (plan.idempotencyKey !== input.idempotencyKey || plan.expiresAt !== proposal.expires_at)
+      throw new ProposalAcquisitionError('idempotency_replay_mismatch', 'Consequential-action plan identity changed');
+    const state = this.consequentialActionState(proposal);
+    const acquisition = state.acquisition;
+    if (!phases.includes(state.phase) || !acquisition ||
+        acquisition.actorId !== input.actorId || acquisition.payloadHash !== input.payloadHash ||
+        acquisition.idempotencyKey !== input.idempotencyKey ||
+        acquisition.acquisitionAuditId !== input.acquisitionAuditId ||
+        typeof acquisition.acquiredAt !== 'string')
+      throw new ProposalAcquisitionError('authorization_denied', 'Consequential-action acquisition is no longer active');
+    const acquired = this.stmt.selectProposalExecutionAcquisition.get(proposal.id) as
+      | { proposal_id: string; idempotency_key: string; actor_id: string; acquired_at: string }
+      | undefined;
+    const idempotency = this.stmt.selectIdempotency.get(input.idempotencyKey) as IdempotencyRow | undefined;
+    const audit = this.stmt.selectAuditById.get(input.acquisitionAuditId) as AuditRow | undefined;
+    const expectedEffect = JSON.stringify({ operation: proposal.operation, payload, preconditions });
+    if (!acquired || acquired.proposal_id !== proposal.id ||
+        acquired.idempotency_key !== input.idempotencyKey || acquired.actor_id !== input.actorId ||
+        acquired.acquired_at !== acquisition.acquiredAt ||
+        !idempotency || idempotency.proposal_id !== proposal.id ||
+        idempotency.operation !== proposal.operation || idempotency.executed_at !== acquired.acquired_at ||
+        idempotency.serialised_effect !== expectedEffect || idempotency.completed !== 0 ||
+        idempotency.idempotency_status !== 'in_progress' ||
+        !audit || audit.classification !== 'execution_started' || audit.is_error !== 0 ||
+        audit.actor_id !== input.actorId || audit.proposal_id !== proposal.id ||
+        audit.idempotency_key !== input.idempotencyKey || audit.operation !== proposal.operation ||
+        audit.payload_hash !== input.payloadHash || audit.budget_id !== proposal.budget_id ||
+        audit.policy_version !== proposal.policy_version || audit.timestamp !== acquired.acquired_at)
+      throw new ProposalAcquisitionError('authorization_denied', 'Exact acquired action record is invalid');
+    let auditResult: unknown;
+    try {
+      auditResult = JSON.parse(audit.result) as unknown;
+    } catch {
+      throw new ProposalAcquisitionError('authorization_denied', 'Acquired action audit is invalid');
+    }
+    if (!isPlainRecord(auditResult) || auditResult.proposalId !== proposal.id ||
+        !Array.isArray(auditResult.approvalIds) ||
+        !auditResult.approvalIds.every((id: unknown) => typeof id === 'string' && id.trim()) ||
+        new Set(auditResult.approvalIds).size !== auditResult.approvalIds.length ||
+        auditResult.approvalIds.length === 0)
+      throw new ProposalAcquisitionError('authorization_denied', 'Acquired action approval set is invalid');
+    for (const approvalId of auditResult.approvalIds) {
+      const approval = this.stmt.selectApproval.get(approvalId) as ApprovalRow | undefined;
+      if (!approval || approval.proposal_id !== proposal.id ||
+          approval.payload_hash !== input.payloadHash || approval.status !== 'consumed' ||
+          approval.consumed_at !== acquired.acquired_at)
+        throw new ProposalAcquisitionError('authorization_denied', 'Acquired action approval changed');
+    }
+    this.validateConsequentialActionEffects(state, plan);
+    return { proposal, state, plan };
+  }
+
+  private validateConsequentialActionEffects(
+    state: ConsequentialActionState,
+    plan: ConsequentialActionPayload['plan'],
+  ): void {
+    const atoms = plan.action.kind === 'composite' ? plan.action.actions : [plan.action];
+    for (const [effectIndex, value] of state.effects.entries()) {
+      if (!isPlainRecord(value) ||
+          effectIndex >= atoms.length ||
+          value.effectIndex !== effectIndex ||
+          value.atomIndex !== effectIndex ||
+          value.dispatchIndex !== 0 ||
+          typeof value.actionKind !== 'string' ||
+          typeof value.recordedAt !== 'string' ||
+          timestampMillis(value.recordedAt) === null)
+        throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored consequential-action effects are invalid');
+      const atom = atoms[effectIndex]!;
+      let identity: string;
+      try {
+        identity = canonicalProposalJson(consequentialActionStableIdentity(atom));
+        canonicalProposalJson(value.result);
+      } catch {
+        throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored consequential-action effect result is invalid');
+      }
+      if (value.actionKind !== atom.kind ||
+          canonicalProposalJson(value.stableIdentity) !== identity)
+        throw new ProposalAcquisitionError('payload_hash_mismatch', 'Stored consequential-action effect order differs');
+    }
+  }
+
+
+  private sameConsequentialActionIdentity(
+    left: ConsequentialActionExecutionIdentity,
+    right: ConsequentialActionExecutionIdentity,
+  ): boolean {
+    return left.proposalId === right.proposalId && left.payloadHash === right.payloadHash &&
+      left.actorId === right.actorId && left.idempotencyKey === right.idempotencyKey &&
+      left.acquisitionAuditId === right.acquisitionAuditId;
+  }
+
+  private updateConsequentialActionState(
+    proposal: ProposalRow,
+    state: ConsequentialActionState,
+  ): ProposalRow {
+    const updated = this.stmt.updateConsequentialActionState.run({
+      id: proposal.id,
+      payloadHash: proposal.payload_hash,
+      version: proposal.version,
+      state: canonicalProposalJson(state),
+    });
+    if (updated.changes !== 1)
+      throw new ProposalAcquisitionError('idempotency_in_progress', 'Consequential-action state changed concurrently');
+    return this.stmt.selectProposal.get(proposal.id) as ProposalRow;
+  }
+  private assertBudgetMutationOwnerAvailable(budgetId: string, proposalId: string): void {
+    if (hasConflictingBudgetMutationOwner(this.db, budgetId, proposalId))
+      throw new ProposalAcquisitionError('idempotency_in_progress', 'Another acquired budget mutation owns the write fence');
+  }
+
   private operationalAuthMatches(auth: OperationalAuth, actorId: string, now: string): boolean {
     if (auth.actorId !== actorId || !credentialLifetimeValid(auth, now)) return false;
     if (auth.method === 'session')
@@ -6455,6 +7383,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
     operation: GenericProposalOperation,
     facts: ProposalAuthorizationFacts,
     payload: unknown,
+    preconditions: unknown,
     policyVersion: string,
     now: string,
   ): boolean {
@@ -6474,14 +7403,17 @@ export class SqliteWorkflowStore implements WorkflowStore {
         : issuerMembership.actorId !== proposal.actor_id)
     )
       return false;
-    const capability = operation === 'set_category' ? 'categorization:propose' : 'rule:propose';
     return this.authorizeGenericProposal({
       actorId: issuerMembership.actorId,
       spaceId: proposal.space_id,
       membershipId: issuerMembership.id,
       policyVersion,
-      phase: 'propose',
-      capability,
+      phase: operation === 'consequential_action' ? 'read' : 'propose',
+      capability: operation === 'set_category' ? 'categorization:propose' :
+        operation === 'consequential_action' ? 'consequential_action:propose' : 'rule:propose',
+      ...(operation === 'consequential_action'
+        ? { actionCapabilityPhase: 'propose' as const, preconditions }
+        : {}),
       operation,
       budgetId: proposal.budget_id,
       facts,
@@ -6533,6 +7465,16 @@ export class SqliteWorkflowStore implements WorkflowStore {
   }): ApprovalRow[] {
     const nowMillis = timestampMillis(input.now);
     if (nowMillis === null) return [];
+    let actionPreconditions: unknown;
+    if (input.operation === 'consequential_action') {
+      const proposal = this.stmt.selectProposal.get(input.proposalId) as ProposalRow | undefined;
+      if (!proposal || proposal.payload_hash !== input.payloadHash || !this.proposalHashMatches(proposal)) return [];
+      try {
+        actionPreconditions = JSON.parse(proposal.preconditions) as unknown;
+      } catch {
+        return [];
+      }
+    }
     const activeApprovals = input.approvals ?? this.stmt.selectActiveApprovals.all({
       proposalId: input.proposalId,
       now: input.now,
@@ -6578,8 +7520,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
         actorId: approval.actor_id,
         spaceId: input.spaceId,
         policyVersion: input.policyVersion,
-        phase: 'execute',
-        capability: input.operation === 'set_category' ? 'categorization:approve' : 'rule:approve',
+        phase: input.operation === 'consequential_action' ? 'read' : 'execute',
+        capability: input.operation === 'set_category' ? 'categorization:approve' :
+          input.operation === 'consequential_action' ? 'consequential_action:approve' : 'rule:approve',
+        ...(input.operation === 'consequential_action'
+          ? { actionCapabilityPhase: 'approve' as const, preconditions: actionPreconditions }
+          : {}),
         operation: input.operation,
         budgetId: input.budgetId,
         facts: input.facts,
@@ -6606,16 +7552,58 @@ export class SqliteWorkflowStore implements WorkflowStore {
     readonly budgetId: string;
     readonly facts: ProposalAuthorizationFacts;
     readonly payload: unknown;
+    readonly preconditions?: unknown;
+    readonly actionCapabilityPhase?: 'propose' | 'approve' | 'execute';
     readonly now: string;
     readonly membershipId?: string;
     readonly verifiedHumanApproval?: true;
-  }) {
+  }): GovernanceAuthorizationResult {
     const required: Record<string, GovernanceResourceRef & { readonly capability: string }> = {};
     const addRequired = (resource: GovernanceResourceRef, capability: string): void => {
       required[`${resource.resourceKind}:${resource.resourceId}:${capability}`] = { ...resource, capability };
     };
-    addRequired({ resourceKind: 'budget', resourceId: input.budgetId }, input.capability);
-    for (const resource of input.facts.resources) addRequired(resource, input.capability);
+    const denied = (reason: string): GovernanceAuthorizationResult => ({
+      allowed: false,
+      disposition: { kind: 'denied', reason },
+      actorId: input.actorId,
+      spaceId: input.spaceId,
+      membershipId: null,
+      policyVersion: input.policyVersion,
+      requiredApprovers: 1,
+      reason,
+    });
+    if (input.operation === 'consequential_action') {
+      if (!input.preconditions || !input.actionCapabilityPhase)
+        return denied('Consequential-action authorization facts are incomplete');
+      let plan: ConsequentialActionPayload['plan'];
+      let sourceReadFacts: ProposalSourceReadFacts | null;
+      try {
+        plan = consequentialActionPlanFromPayload(input.payload);
+        sourceReadFacts = deriveProposalSourceReadFacts(
+          'consequential_action', input.payload, input.preconditions, input.budgetId,
+        );
+      } catch {
+        return denied('Consequential-action source facts are invalid');
+      }
+      const governancePolicy = this.governance.getPolicy({ spaceId: input.spaceId });
+      const financialPolicy = this.currentConsequentialActionApprovalPolicy(
+        input.budgetId, input.payload, input.preconditions, governancePolicy,
+      );
+      if (!governancePolicy || governancePolicy.version !== input.policyVersion || !financialPolicy)
+        return denied('Current consequential-action policy differs from source');
+      const maximum = governancePolicy.assistanceMaximum ?? 'analysis_only';
+      if (!actionAssistanceAllows(maximum, input.phase))
+        return denied('Current assistance maximum does not permit this action phase');
+      if (!sourceReadFacts) return denied('Consequential-action source reads are unavailable');
+      for (const fact of consequentialActionPhaseRequirements(
+        plan, input.budgetId, input.actionCapabilityPhase,
+      ))
+        addRequired(fact, fact.capability);
+      for (const fact of sourceReadFacts.required) addRequired(fact, fact.capability);
+    } else {
+      addRequired({ resourceKind: 'budget', resourceId: input.budgetId }, input.capability);
+      for (const resource of input.facts.resources) addRequired(resource, input.capability);
+    }
     const agent = input.auth?.method === 'api-key' && input.auth.principalType === 'agent'
       ? input.auth
       : null;
