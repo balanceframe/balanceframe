@@ -14,6 +14,9 @@ patchedDependencies:
   '@nuxt/devtools@3.4.3':
     hash: 2aafb5a532badb056eea388eeb1d267aa4deab566cfecffd6ac97e1ad523380d
     path: patches/@nuxt__devtools@3.4.3.patch
+  braces@3.0.3:
+    hash: 1418a3f2c7e9ea91706b108614e903178c8bb035ad6a1c84a93dc2e3496bb73e
+    path: patches/braces@3.0.3.patch
   nitropack@2.13.4:
     hash: 22007f33ccd30589c871f2fccc26b762121146bebd6db715732b5190e0dec66b
     path: patches/nitropack@2.13.4.patch
@@ -8034,7 +8037,7 @@ snapshots:
     dependencies:
       balanced-match: 4.0.4
 
-  braces@3.0.3:
+  braces@3.0.3(patch_hash=1418a3f2c7e9ea91706b108614e903178c8bb035ad6a1c84a93dc2e3496bb73e):
     dependencies:
       fill-range: 7.1.1
 
@@ -9228,7 +9231,7 @@ snapshots:
 
   micromatch@4.0.8:
     dependencies:
-      braces: 3.0.3
+      braces: 3.0.3(patch_hash=1418a3f2c7e9ea91706b108614e903178c8bb035ad6a1c84a93dc2e3496bb73e)
       picomatch: 2.3.2
 
   mime-db@1.54.0: {}

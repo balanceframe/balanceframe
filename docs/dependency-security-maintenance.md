@@ -4,9 +4,10 @@ This maintenance branch starts at `4bdc5e6cece75b3c3ace64cfd1f2f6b28aad35ac`
 and preserves the separate `controlled_reallocation` branch and PR #34.
 The two leaf upgrades were committed as `051ce22`. The user subsequently approved
 groups A–F, the Actual SDK repair, compatible Nitro replacement and pinned forge
-backport. A–F and the forge mitigation are implemented. SDK build-tool versions
-and newly established Nitro compatibility gaps require further scope decisions;
-neither blocked replacement has been applied.
+backport. A–F, the forge mitigation and the subsequently approved Braces interim
+mitigation are implemented. The SDK repair is blocked during immutable package
+fetching; the Nitro owner replacement remains blocked by traversal compatibility.
+Neither blocked replacement has been applied.
 
 ## Applied and verified
 
@@ -40,7 +41,7 @@ Verification completed:
 Groups A–F add 16 representative dependency regression/control tests, including
 bounded subprocesses for potentially nonterminating inputs and allocation guards
 for ZIP probes. The forge backport adds seven malformed/valid-signature tests.
-All **23 dependency-security tests pass**, and CI runs them through
+Together with ten Braces guards, all **33 dependency-security tests pass**, and CI runs them through
 `pnpm test:dependency-security`; the root `test` command includes them too.
 These tests cover each affected package, not every individual advisory variant.
 
@@ -51,7 +52,7 @@ patch; four version/ordinary-signature controls pass on both. Package version
 **1.4.0** is retained, and its advisory remains open. This is the Node entry used
 by listhen, not a claim to have rebuilt forge's browser distributions.
 
-Source browser verification passed in real Chromium against Nuxt dev, Vue
+Earlier source browser verification passed in real Chromium against Nuxt dev, Vue
 3.5.43 and devtools 3.4.3. A real Better Auth owner signed in with both bypass
 settings false, selected an explicitly created disposable space/membership and
 connected the fixture budget through the UI. Exact budget/account/category read
@@ -80,12 +81,13 @@ Fresh `pnpm audit --json` results, using the same advisory service:
 | Baseline | 5 | 29 | 11 | 1 |
 | Approved leaf upgrades | 2 | 29 | 10 | 1 |
 | A–F plus forge source backport | 0 | 2 | 5 | 1 |
+| Braces interim guards checkpoint | 0 | 2 | 5 | 1 |
 
 No new advisory appeared. Besides the three critical advisories above, the
 standalone Handlebars upgrade removes moderate
 [GHSA-xw65-4hp5-5hc7](https://github.com/advisories/GHSA-xw65-4hp5-5hc7).
-The two remaining high findings are `node-forge` and `braces`; the backport does
-not remove forge's published advisory. The audit still fails. The CI audit command currently catches that failure with
+The two remaining high findings are `node-forge` and `braces`; neither interim
+source backport removes its published advisory. The audit still fails. The CI audit command currently catches that failure with
 `|| echo`; a green workflow step does not establish a clean audit.
 
 **The production Actual SDK still embeds Handlebars 4.7.9.** The installed and
@@ -197,21 +199,56 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   No attacker-controlled production glob path was established. Every remaining
   braces owner must disappear before claiming removal. Native Windows
   compatibility remains unverified; Linux cyclic-symlink parity failed.
-  A smaller, investigation-only alternative preserves the current walker:
-  backport depth guards from contributor commit
-  `28d440b5dd449dbf1fe6f3506cf94ecca4d02660` in closed, unmerged
-  [braces PR 72](https://github.com/micromatch/braces/pull/72). The proposed
-  derivative changes only `lib/constants.js`, `parse.js`, `compile.js`,
-  `expand.js` and `stringify.js`; unrelated quote/comma parser changes are
-  excluded. It deliberately rejects combined brace/parenthesis or AST nesting
-  above 100 and detects expansion parent-chain cycles. No dependency versions
-  or glob traversal code would change; the advisory would remain open.
-  Isolated diagnostics passed 1,350 shallow behavior comparisons and 126
-  boundary assertions. Direct-AST stack overflow and parent-cycle timeout
-  baselines reproduce; a string-overflow observation was not repeatable and is
-  not an asserted regression gate. No production patch was applied. This
-  proposal still needs authorization and independent security/integration
-  validation, including the existing nine caller contracts and Windows.
+  The user subsequently approved an interim mitigation preserving this walker.
+  The applied Braces 3.0.3 patch derives only the five depth/cycle guard files
+  from contributor commit `28d440b5dd449dbf1fe6f3506cf94ecca4d02660` in closed,
+  unmerged [braces PR 72](https://github.com/micromatch/braces/pull/72):
+  `lib/constants.js`, `parse.js`, `compile.js`, `expand.js` and `stringify.js`.
+  Unrelated quote/comma parser changes are excluded. It deliberately rejects
+  combined brace/parenthesis or AST nesting above 100 and detects expansion
+  parent-chain cycles. No package version, walker, dependency or lifecycle
+  permission changes. Its published advisory stays open; this is not a claim
+  to eliminate every denial-of-service form or establish a production attacker
+  path. Native Windows execution remains unverified.
+
+  Direct-AST stack overflow and parent-cycle timeout baselines reproduce; a
+  string-overflow observation was not repeatable and is not an asserted gate.
+  Ten permanent regression/control tests pass against the installed Nitro
+  dependency chain. The upstream 3.0.3 suite passes all 764 tests on both baseline
+  and patch with no skips; 1,350 ordinary comparisons, 126 boundary controls and
+  38 consumer gates preserve all nine Nitro forms, error behavior, path spelling
+  and Linux cyclic-symlink path sets. Native asynchronous directory order varies
+  even between baseline runs; exact array comparisons use a deterministic
+  filesystem adapter, rather than claiming native concurrent order equivalence.
+  Combined changed-file coverage is 94.59–100% lines and 91.53–100% branches.
+  Independent correctness and complexity reviews found no in-scope issues.
+
+  Patch SHA-256 is
+  `1418a3f2c7e9ea91706b108614e903178c8bb035ad6a1c84a93dc2e3496bb73e`.
+  Two incremental frozen installs linked a patch context but skipped its build
+  node, leaving original bytes. Both patch formats apply correctly in pnpm's
+  actual patch engine; graph reconstruction identified the skipped transitive
+  build node. Standard `pnpm install --force --frozen-lockfile --offline` with
+  the existing store rebuilt the complete graph successfully. Installed runtime
+  bytes and unchanged globby/fast-glob/micromatch sources were independently
+  checked. The permanent tests resolve the actual installed dependency, so
+  merely linking an unapplied patch cannot pass acceptance.
+
+  This checkpoint also passes root lint/types, Nuxt typecheck, all 1,991 web,
+  371 adapter, 172 CLI and 147 contract tests, plus the full workspace build
+  including native release compilation and Nuxt production output. The
+  production SDK hash remains unchanged; its embedded Handlebars issue below
+  is still unresolved.
+
+  Fresh source-browser verification also passed in Chromium using a newly
+  seeded canonical fixture, an isolated space and a real Better Auth owner
+  with both bypass settings false. Explicit budget selection and Sync returned
+  200; 46 review items included Starting Balance at 1038.00 USD with zero sync
+  failures. Edit initially disabled Confirm, listed Groceries among 23 category
+  options, enabled Confirm after selecting it, and closed on Cancel. No
+  financial write request, page error or console error occurred. Initial
+  private-fixture identity/bootstrap and anonymous-denial assertion attempts
+  were corrected and retained separately; they are not claimed as passes.
 - Embedded Handlebars: rebuilding official Actual 26.10.0 with Handlebars 4.7.10
   and its isolated 516-entry build closure were approved on 2026-10-18.
   Official npm provenance identifies source commit
@@ -292,11 +329,28 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   package version change was proposed. The process exited 1 in 0.466 seconds;
   this was neither a timeout nor an access denial. All frozen source/lock bytes
   and symlinks remain unchanged, with zero cached archives and no `node_modules`.
-  Work stopped at the requested unexpected-lock-delta gate without repair or
-  retry. A review-only two-line normalization proposal is retained separately;
-  it was not applied to the install candidate. No baseline build, Handlebars
-  substitution or repeated corrected builds have run. Registry transport also
-  remains untested by this attempt because it stopped before package fetching.
+  Work stopped at that unexpected-lock-delta gate; the parent then approved the
+  two-line metadata correction and independent handling of projection-only
+  normalizations preserving the approved external inventory and controls.
+  The corrected helper has eight passing tests, including generated-metadata
+  regressions. All 521 external records/checksums and 656 aliases remain exact;
+  source files, selected manifests, CLI, configuration and symlinks are frozen.
+  Normalized lock SHA-256:
+  `41771ccac3d8af7bd2af92fa9d9d1a162bd4135738f9fcbeb96a8bd9ced29040`.
+
+  One stock `yarn install --immutable --json` retry passed resolution and
+  immutable validation, then timed out during Fetch after 90.016 seconds.
+  It terminated cleanly with no cached ZIPs, no root `node_modules` and all
+  frozen hashes unchanged, independently verified. No baseline build,
+  Handlebars substitution or repeated corrected builds have run. This is a
+  fetch-stage timeout, not a demonstrated access denial or reproducibility
+  failure. Read-only matched probes found curl GET reached the registry (200),
+  while Node HTTPS failed DNS with `EAI_AGAIN`. Pinned Yarn uses its own agents
+  and does not automatically consume the existing standard proxy environment.
+  This is consistent with a transport mismatch; the precise stalled Yarn
+  request is unknown. No proxy, DNS, TLS, registry, authentication, lifecycle,
+  CLI or global settings were changed. Further transport configuration needs
+  parent authorization before another bounded immutable retry.
 
 Do not suppress these advisories, rename a vulnerable package to conceal it,
 weaken audit checks, or claim a clean audit from an unverified source patch.
@@ -326,7 +380,7 @@ delivery of Handlebars, not another registry audit entry.
 | simple-git | 1 | 2 | F |
 | @simple-git/argv-parser | 1 | 0 | F |
 | node-forge | 0 | 1 | Approved interim backport applied; published advisory remains open |
-| braces | 0 | 1 | No published patch; replacement blocked by compatibility gates |
+| braces | 0 | 1 | Approved five-file interim guards applied; published advisory remains open |
 
 Tooling reachability is not a blanket exemption. The editor and Vue packages
 can run in browsers; the app uses `ssr: false`, which alone does not remove all
