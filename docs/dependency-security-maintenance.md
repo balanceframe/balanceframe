@@ -275,6 +275,29 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   unverified. Preserve the failed drafts as review evidence rather than
   silently widening their frozen inventories.
 
+  The orchestrator then authorized the corrected 521-record projection.
+  It was prepared and independently reviewed: all 521 external records and
+  656 descriptor aliases match the official lock and pinned resolver hooks;
+  all 4,204 regular files and five symlinks were checked, with only the 12
+  intended projection changes. The corrected helper has six passing tests,
+  including three regressions reproduced against its earlier implementation.
+  Frozen lock SHA-256:
+  `4ef68cca229f0cbffa9bb3e142be4568430823781bd5b65c86426103950c8db0`.
+  One unmodified `yarn install --immutable --json` attempt completed resolution
+  but rejected the lock with `YN0028` before fetching or linking. Its sole
+  proposed change removes two lines of generated optional metadata for
+  `glob-hasher-linux-arm64-gnu` from the non-selected root workspace record.
+  The root's optional dependency edge had been cleared, while the projection
+  copied this derived metadata from the original lock. No external record or
+  package version change was proposed. The process exited 1 in 0.466 seconds;
+  this was neither a timeout nor an access denial. All frozen source/lock bytes
+  and symlinks remain unchanged, with zero cached archives and no `node_modules`.
+  Work stopped at the requested unexpected-lock-delta gate without repair or
+  retry. A review-only two-line normalization proposal is retained separately;
+  it was not applied to the install candidate. No baseline build, Handlebars
+  substitution or repeated corrected builds have run. Registry transport also
+  remains untested by this attempt because it stopped before package fetching.
+
 Do not suppress these advisories, rename a vulnerable package to conceal it,
 weaken audit checks, or claim a clean audit from an unverified source patch.
 
