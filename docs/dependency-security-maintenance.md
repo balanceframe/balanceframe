@@ -183,14 +183,23 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   return incomplete/empty results where globby rejects. A segmentation adapter
   alone is insufficient. Preserving the nine call contracts requires additional
   brace expansion, ordering/path handling and filesystem error propagation.
-  Adding an adapter dependency on the already approved fixed `brace-expansion`
-  version is a possible additional scope decision, not an applied change.
+  The user approved a bounded adapter with fixed `brace-expansion 5.0.11` and
+  a filesystem-error wrapper on 2026-10-18. Investigation stopped before
+  implementation at the required cyclic-symlink compatibility gate. On a real
+  disposable Linux fixture containing `a.js` and `loop -> .`, globby returns
+  41 lexical file paths (through 40 loop components); tinyglobby returns two.
+  Independent probes reproduce this across all nine call-site forms.
+  Tinyglobby's fdir walker privately prunes repeated resolved ancestors after
+  successful filesystem calls. An error wrapper cannot restore the missing
+  paths; disabling symlink following also changes the contract. Preserving
+  those results would require traversal emulation or bypassing that pruning,
+  exceeding the approved small adapter. No replacement was applied.
   No attacker-controlled production glob path was established. Every remaining
-  braces owner must disappear before claiming removal; Windows/cyclic-symlink
-  compatibility is still unverified.
+  braces owner must disappear before claiming removal. Native Windows
+  compatibility remains unverified; Linux cyclic-symlink parity failed.
 - Embedded Handlebars: rebuilding official Actual 26.10.0 with Handlebars 4.7.10
-  is approved, but its exact release toolchain contains additional unapproved
-  versions. Official npm provenance identifies source commit
+  and its isolated 516-entry build closure were approved on 2026-10-18.
+  Official npm provenance identifies source commit
   [`2bebdbaae0b701120a8cad9d56aafd64fa04c577`](https://github.com/actualbudget/actual/tree/2bebdbaae0b701120a8cad9d56aafd64fa04c577).
   Its immutable [yarn.lock](https://raw.githubusercontent.com/actualbudget/actual/2bebdbaae0b701120a8cad9d56aafd64fa04c577/yarn.lock)
   has SHA-256 `0326284066b6f9f9297c671eb792b034f4435cb26c8b5bfbc89fb7fa5aebb5f9`:
@@ -203,14 +212,28 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   Relevant pinned tools include Yarn 4.17.1, Vite 8.1.5, Rolldown/native binding
   1.1.5, `@oxc-project/types` 0.139.0, Vitest 5.0.0, Peggy 5.1.0, visualizer 7.0.1,
   Lightning CSS 1.32.0 and TypeScript native preview 7.0.0-dev.20260421.2.
-  No isolated installation/build was attempted. The focused route avoids root
-  Lage/full release workspaces, but install/build compatibility remains unverified.
-  Recommend additional approval for only this immutable focus closure in an
-  isolated directory, preserving lifecycle restrictions and current Node 24.19.0,
-  with no application graph/global configuration changes, plus the approved
-  Handlebars substitution. Use the checked-in Yarn to focus the API and execute
-  its original Vite Node build. Stop on any resolution outside the enumerated
-  closure. First reproduce official baseline bytes; then freeze every other
+  An isolated focus attempt was stopped before materializing packages. The
+  proposed command did not enforce immutability: Yarn 4.17.1's focus command
+  forwards only cache and `persistProject: false` to installation, whereas its
+  install command explicitly forwards `immutable` from configuration. Setting
+  `YARN_ENABLE_IMMUTABLE_INSTALLS=true` does not supply the omitted focus option.
+  This corrects the earlier metadata-only plan's assumption; an unchanged
+  on-disk lock is not proof of immutable resolution. Source and checked-in CLI
+  inspection plus an executable check of the extracted option expressions
+  establish the missing option; this was not a full runtime install trace.
+  A strictly frozen installation mechanism is still required before proceeding.
+  The attempt also stalled without report output; a Node HTTPS probe timed out
+  while curl reached the registry. Its exact stall location is unproven; no
+  network settings or lifecycle restrictions were changed. The process was
+  stopped successfully, with zero cached package ZIPs, no `node_modules`, and
+  all 18 source manifests, lock, configuration and CLI bytes unchanged.
+  Official npm integrity checks passed; the unpatched published Node bundle
+  SHA-256 is `fdfed936dac6ba6dc411bac27f94237a90c8cb0ea047a5d9d0d8a5d21ea9aa56`.
+  No baseline build or Handlebars substitution was attempted, so baseline
+  reproducibility has not been disproved or established. Preserve current Node
+  24.19.0, lifecycle restrictions and application/global settings. Stop on any
+  resolution outside the enumerated closure. First reproduce official baseline
+  bytes; then freeze every other
   resolution, build the correction twice and explain all differences.
   Preserve the existing grouped-query patch and verify embedded regressions,
   ordinary rules/templates, grouped queries and installed/production bytes.
