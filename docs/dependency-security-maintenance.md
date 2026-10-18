@@ -2,8 +2,11 @@
 
 This maintenance branch starts at `4bdc5e6cece75b3c3ace64cfd1f2f6b28aad35ac`
 and preserves the separate `controlled_reallocation` branch and PR #34.
-Only the two explicitly approved leaf upgrades below are applied. Every other
-package change in this document is a proposal awaiting approval.
+The two leaf upgrades were committed as `051ce22`. The user subsequently approved
+groups A–F, the Actual SDK repair, compatible Nitro replacement and pinned forge
+backport. A–F and the forge mitigation are implemented. SDK build-tool versions
+and newly established Nitro compatibility gaps require further scope decisions;
+neither blocked replacement has been applied.
 
 ## Applied and verified
 
@@ -12,10 +15,11 @@ package change in this document is a proposal awaiting approval.
 | `shell-quote` | 1.10.0 | 1.11.0 | [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv) |
 | Standalone `handlebars` | 4.7.9 | 4.7.10 | [GHSA-8r5x-fm3f-whwj](https://github.com/advisories/GHSA-8r5x-fm3f-whwj), [GHSA-p8wg-vrv2-v86f](https://github.com/advisories/GHSA-p8wg-vrv2-v86f) |
 
-The lockfile changes only these two package keys, integrities, snapshots and
-consumer references. Handlebars now requires `minimist ^1.2.8`; the previously
-locked 1.2.8 already satisfies it. Manifests, overrides, existing patches and
-security settings are unchanged. A frozen installation succeeds.
+In the initial leaf commit, the lockfile changes only those two package keys,
+integrities, snapshots and consumer references. Handlebars requires
+`minimist ^1.2.8`; the previously locked 1.2.8 already satisfies it. That commit
+preserves manifests, overrides and existing patches. Subsequent approved group
+changes are described below; security settings are unchanged.
 
 Nine focused tests cover the fixes and normal consumer behavior. The
 malicious-input assertions fail against the previous versions and pass against
@@ -28,12 +32,44 @@ Verification completed:
 
 - Actual adapter: **371 tests**, including four Handlebars tests.
 - Web: **1,991 tests**, including five shell-quote tests.
+- CLI: **172 tests**; contract: **147 tests**; live Actual: **102 tests** across nine proof files.
 - Full workspace build, including a fresh native release build and Nuxt production build.
 - Root lint and TypeScript checks, Nuxt typecheck, and strict typechecking of the Handlebars regression file.
 - Frozen lockfile installation, exact lockfile-scope comparison and `git diff --check`.
 
-No UI behavior or financial implementation changes in this slice. Browser and
-Rust unit suites were not repeated for these two JavaScript leaf upgrades.
+Groups A–F add 16 representative dependency regression/control tests, including
+bounded subprocesses for potentially nonterminating inputs and allocation guards
+for ZIP probes. The forge backport adds seven malformed/valid-signature tests.
+All **23 dependency-security tests pass**, and CI runs them through
+`pnpm test:dependency-security`; the root `test` command includes them too.
+These tests cover each affected package, not every individual advisory variant.
+
+The forge patch changes only `lib/rsa.js`. Its complete patched source matches
+approved upstream head `f192c67ee5850e44296ef83d6a7b6df6552ba8bf` byte-for-byte.
+Three malformed forms fail against the old implementation and pass after the
+patch; four version/ordinary-signature controls pass on both. Package version
+**1.4.0** is retained, and its advisory remains open. This is the Node entry used
+by listhen, not a claim to have rebuilt forge's browser distributions.
+
+Source browser verification passed in real Chromium against Nuxt dev, Vue
+3.5.43 and devtools 3.4.3. A real Better Auth owner signed in with both bypass
+settings false, selected an explicitly created disposable space/membership and
+connected the fixture budget through the UI. Exact budget/account/category read
+grants were provisioned only in its private fixture database. The data began with
+canonical `representative.json`; live Actual proofs added disposable test records.
+Sync returned 200 with 46 review rows and zero failures. The UI displayed the
+Starting Balance row at 1038.00 USD, opened Edit, listed Groceries and other
+fixture categories, changed Confirm from disabled to enabled after selecting
+Groceries, and closed on Cancel. No financial mutation was submitted and no page
+or console errors occurred in the completed flow. Initial fixture/setup selector
+attempts were corrected before that final run; they are not claimed as passes.
+There is no first-party editor UI route to exercise; Tiptap/clipboard changes
+have the separate bounded dependency tests. Browser tabs and owned servers are
+closed after verification.
+
+Full source coverage, Rust unit suites, remote CI and cross-platform execution
+were not repeated for this JavaScript dependency/third-party-patch checkpoint.
+This remains a partial security remediation, not release readiness.
 
 ## Audit result and runtime limit
 
@@ -43,11 +79,13 @@ Fresh `pnpm audit --json` results, using the same advisory service:
 | --- | ---: | ---: | ---: | ---: |
 | Baseline | 5 | 29 | 11 | 1 |
 | Approved leaf upgrades | 2 | 29 | 10 | 1 |
+| A–F plus forge source backport | 0 | 2 | 5 | 1 |
 
 No new advisory appeared. Besides the three critical advisories above, the
 standalone Handlebars upgrade removes moderate
 [GHSA-xw65-4hp5-5hc7](https://github.com/advisories/GHSA-xw65-4hp5-5hc7).
-The audit still fails. The CI audit command currently catches that failure with
+The two remaining high findings are `node-forge` and `braces`; the backport does
+not remove forge's published advisory. The audit still fails. The CI audit command currently catches that failure with
 `|| echo`; a green workflow step does not establish a clean audit.
 
 **The production Actual SDK still embeds Handlebars 4.7.9.** The installed and
@@ -61,15 +99,15 @@ to an AST object has not been established. No application setting enabling
 `allowProtoMethodsByDefault` was found. These limits do not constitute a fix or
 an exemption.
 
-## Approval groups for the remaining published fixes
+## Approved and applied groups A–F
 
-Versions and parent ranges were checked against registry metadata and the
-baseline lockfile. They establish candidate compatibility, not a successful
-installation or test result. No proposed upgrade has been installed or applied.
-If a resolver needs another package/version beyond a group below, stop and
-return that additional change for approval.
+Frozen installation passed. The precise transform replaces 64 approved targets,
+reuses already locked compatible child versions and removes only five unreachable
+Git subtree packages. All other package metadata is retained. Published dependency
+constraints, package integrities, peer metadata and graph edges were checked.
+No additional package version was introduced beyond the approved groups.
 
-| Group | Exact proposed changes | Remaining findings targeted | Required validation |
+| Group | Exact applied changes | Baseline findings targeted | Validation scope |
 | --- | --- | --- | --- |
 | A — compatible utility updates | `fast-uri 3.1.3→3.1.7`; `brace-expansion 5.0.7→5.0.11`; vulnerable `nanoid 3.3.16→3.3.19`; `tar 7.5.20→7.5.21`; `browserslist 4.28.6→4.28.7`; `source-map-js 1.2.1→1.2.2`; required `baseline-browser-mapping 2.10.43→2.10.44` | 16 high across six roots | Bounded advisory regressions, contract/CLI/web suites, lint/types and production build |
 | B — SVG tooling | `svgo 4.0.2→4.1.0`; required `sax 1.6.0→1.6.1`, `css-what 6.2.2→7.0.0`, `css-select 5.2.2→6.0.0` | 1 high | Script-removal bypass regression, ordinary SVG preservation, CSS/icon production build; two transitive major upgrades require explicit approval |
@@ -101,8 +139,8 @@ extension-text, extension-underline, extensions, markdown, starter-kit,
 suggestion, vue-3
 ```
 
-The authoritative target list is the existing lockfile's 3.28.0 family; verify
-the enumeration against that lockfile before applying group D.
+The enumeration was verified against the baseline lockfile's 3.28.0 family;
+all 37 targets now resolve to 3.30.5.
 
 Vue's scoped packages are `@vue/compiler-core`, `compiler-dom`, `compiler-sfc`,
 `compiler-ssr`, `reactivity`, `runtime-core`, `runtime-dom`, `server-renderer`
@@ -117,7 +155,7 @@ must be retained, not discarded. A direct `simple-git 4.0.1` override is a
 worse candidate: its published dependency still pins vulnerable
 `@simple-git/argv-parser 2.0.0`, and it crosses an owner major boundary.
 
-## Findings requiring a separate implementation decision
+## Blocked remaining work and additional scope decisions
 
 No published patched version exists for
 [`node-forge <=1.4.0`](https://github.com/advisories/GHSA-86w9-cpqp-85rv) or
@@ -125,11 +163,10 @@ No published patched version exists for
 advisory each. Current latest owner metadata still reaches the same vulnerable
 packages. A blind Nuxt/Nitro upgrade is not an established fix.
 
-- `node-forge`: a reviewed, pinned backport of the still-unmerged
+- `node-forge`: the approved backport of the still-unmerged
   [upstream RSA verification fix](https://github.com/digitalbazaar/forge/pull/1158)
-  at head `f192c67ee5850e44296ef83d6a7b6df6552ba8bf` is a candidate mitigation.
-  It needs locally verified forged/valid-signature tests
-  and separate approval; it would leave the published 1.4.0 audit finding open.
+  at head `f192c67ee5850e44296ef83d6a7b6df6552ba8bf` is applied and locally
+  verified as an interim mitigation. The published 1.4.0 audit finding stays open.
   For actual package removal, Nuxt CLI → listhen's certificate generation,
   CA signing, encrypted keys and PFX parsing all need compatible replacements.
   Merely substituting `selfsigned 5.5.0` would not preserve those interfaces.
@@ -138,21 +175,45 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   No complete replacement or production attacker-controlled signature path
   was established. No new certificate dependency is proposed for approval yet.
 - `braces`: Nitro → globby → fast-glob → micromatch uses its pattern parser.
-  Replacing globby with the already locked `tinyglobby 0.2.17` is a candidate
-  owner change. Inspection of all nine core/Rollup/Cloudflare calls found
-  supported `cwd`, `absolute`, `dot` and `ignore` options, but configurable
-  positive/negative patterns need differential tests for exclusion/re-inclusion,
-  ordering, escaped paths, directories, symlinks, errors and Windows behavior.
-  Approval would cover replacing Nitro's actual dependency edge while preserving
-  its existing patch; every remaining braces owner must disappear before claiming
-  removal. No attacker-controlled production glob path was established.
-- Embedded Handlebars: request approval to rebuild the pinned Actual API 26.10.0
-  source with official Handlebars 4.7.10 and retain its reproducible bundle delta
-  in the existing API patch, preserving the grouped-query fix. Prove red/green
-  behavior against the embedded implementation, ordinary template/rule behavior,
-  grouped-query behavior and corrected installed/production bytes. Exact build
-  reproducibility is unverified; stop if unrelated bundle changes cannot be
-  explained. A standalone override or version-string edit cannot meet this goal.
+  The approved compatible owner replacement is paused: direct `tinyglobby 0.2.17`
+  substitution fails actual differential probes. `['**','!a.js','a.js']` loses
+  re-inclusion; negative-only arrays become empty; explicit static ordering and
+  `./` path spelling change; `{1..5..2}.js` matches `1,2,5` rather than `1,3,5`;
+  negated ignore entries differ; unreadable paths and a file-valued cwd silently
+  return incomplete/empty results where globby rejects. A segmentation adapter
+  alone is insufficient. Preserving the nine call contracts requires additional
+  brace expansion, ordering/path handling and filesystem error propagation.
+  Adding an adapter dependency on the already approved fixed `brace-expansion`
+  version is a possible additional scope decision, not an applied change.
+  No attacker-controlled production glob path was established. Every remaining
+  braces owner must disappear before claiming removal; Windows/cyclic-symlink
+  compatibility is still unverified.
+- Embedded Handlebars: rebuilding official Actual 26.10.0 with Handlebars 4.7.10
+  is approved, but its exact release toolchain contains additional unapproved
+  versions. Official npm provenance identifies source commit
+  [`2bebdbaae0b701120a8cad9d56aafd64fa04c577`](https://github.com/actualbudget/actual/tree/2bebdbaae0b701120a8cad9d56aafd64fa04c577).
+  Its immutable [yarn.lock](https://raw.githubusercontent.com/actualbudget/actual/2bebdbaae0b701120a8cad9d56aafd64fa04c577/yarn.lock)
+  has SHA-256 `0326284066b6f9f9297c671eb792b034f4435cb26c8b5bfbc89fb7fa5aebb5f9`:
+  2,730 external entries and 15 workspaces, not a verified minimum API closure.
+  A smaller metadata-derived API focus closure contains **516 external entries
+  and four workspaces**: API, core, CRDT and vite-plugin-peggy. All descriptors
+  resolve using the unchanged lock and its existing resolution rules; optional
+  platform variants are included. Its exact receipt has SHA-256
+  `80a318fb302a50cf6172471b3df6fb156c9c1f7dfbb1d0b2d1fdac7daeb39c5a`.
+  Relevant pinned tools include Yarn 4.17.1, Vite 8.1.5, Rolldown/native binding
+  1.1.5, `@oxc-project/types` 0.139.0, Vitest 5.0.0, Peggy 5.1.0, visualizer 7.0.1,
+  Lightning CSS 1.32.0 and TypeScript native preview 7.0.0-dev.20260421.2.
+  No isolated installation/build was attempted. The focused route avoids root
+  Lage/full release workspaces, but install/build compatibility remains unverified.
+  Recommend additional approval for only this immutable focus closure in an
+  isolated directory, preserving lifecycle restrictions and current Node 24.19.0,
+  with no application graph/global configuration changes, plus the approved
+  Handlebars substitution. Use the checked-in Yarn to focus the API and execute
+  its original Vite Node build. Stop on any resolution outside the enumerated
+  closure. First reproduce official baseline bytes; then freeze every other
+  resolution, build the correction twice and explain all differences.
+  Preserve the existing grouped-query patch and verify embedded regressions,
+  ordinary rules/templates, grouped queries and installed/production bytes.
 
 Do not suppress these advisories, rename a vulnerable package to conceal it,
 weaken audit checks, or claim a clean audit from an unverified source patch.
@@ -181,8 +242,8 @@ delivery of Handlebars, not another registry audit entry.
 | @vue/server-renderer | 0 | 1 | E |
 | simple-git | 1 | 2 | F |
 | @simple-git/argv-parser | 1 | 0 | F |
-| node-forge | 0 | 1 | No published patch; owner decision required |
-| braces | 0 | 1 | No published patch; owner decision required |
+| node-forge | 0 | 1 | Approved interim backport applied; published advisory remains open |
+| braces | 0 | 1 | No published patch; replacement blocked by compatibility gates |
 
 Tooling reachability is not a blanket exemption. The editor and Vue packages
 can run in browsers; the app uses `ssr: false`, which alone does not remove all
