@@ -26,15 +26,18 @@
     ],
     "patchedDependencies": {
       "nitropack@2.13.4": "patches/nitropack@2.13.4.patch",
-      "@nuxt/devtools@3.4.2": "patches/@nuxt__devtools@3.4.2.patch",
-      "@actual-app/api@26.10.0": "patches/@actual-app__api@26.10.0.patch"
+      "@nuxt/devtools@3.4.3": "patches/@nuxt__devtools@3.4.3.patch",
+      "@actual-app/api@26.10.0": "patches/@actual-app__api@26.10.0.patch",
+      "node-forge@1.4.0": "patches/node-forge@1.4.0.patch",
+      "braces@3.0.3": "patches/braces@3.0.3.patch"
     }
   },
   "scripts": {
     "build": "pnpm -r build",
     "scenarios": "pnpm --filter @balanceframe/scenario-kit build && node packages/scenario-kit/dist/scenario-kit/src/cli.js",
     "demo": "pnpm scenarios run",
-    "test": "pnpm -r test",
+    "test": "pnpm test:dependency-security && pnpm -r test",
+    "test:dependency-security": "node --test --test-concurrency=1 tests/dependency-security/*.test.mjs",
     "coverage": "bash scripts/coverage/run.sh",
     "test:coverage-gates": "node --test scripts/coverage/check.test.mjs scripts/coverage/run.test.mjs",
     "lint": "eslint \"**/*.{ts,tsx}\" --max-warnings 0",
