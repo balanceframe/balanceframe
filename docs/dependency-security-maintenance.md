@@ -197,6 +197,21 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   No attacker-controlled production glob path was established. Every remaining
   braces owner must disappear before claiming removal. Native Windows
   compatibility remains unverified; Linux cyclic-symlink parity failed.
+  A smaller, investigation-only alternative preserves the current walker:
+  backport depth guards from contributor commit
+  `28d440b5dd449dbf1fe6f3506cf94ecca4d02660` in closed, unmerged
+  [braces PR 72](https://github.com/micromatch/braces/pull/72). The proposed
+  derivative changes only `lib/constants.js`, `parse.js`, `compile.js`,
+  `expand.js` and `stringify.js`; unrelated quote/comma parser changes are
+  excluded. It deliberately rejects combined brace/parenthesis or AST nesting
+  above 100 and detects expansion parent-chain cycles. No dependency versions
+  or glob traversal code would change; the advisory would remain open.
+  Isolated diagnostics passed 1,350 shallow behavior comparisons and 126
+  boundary assertions. Direct-AST stack overflow and parent-cycle timeout
+  baselines reproduce; a string-overflow observation was not repeatable and is
+  not an asserted regression gate. No production patch was applied. This
+  proposal still needs authorization and independent security/integration
+  validation, including the existing nine caller contracts and Windows.
 - Embedded Handlebars: rebuilding official Actual 26.10.0 with Handlebars 4.7.10
   and its isolated 516-entry build closure were approved on 2026-10-18.
   Official npm provenance identifies source commit
@@ -237,6 +252,28 @@ packages. A blind Nuxt/Nitro upgrade is not an established fix.
   resolution, build the correction twice and explain all differences.
   Preserve the existing grouped-query patch and verify embedded regressions,
   ordinary rules/templates, grouped queries and installed/production bytes.
+
+  A disposable focused manifest/lock projection was subsequently authorized
+  as an implementation method and prepared for independent review only.
+  It preserves all 4,204 source files; only 11 non-selected manifests and the
+  lock differ. The four selected manifests, CLI, configuration and source
+  patches remain byte-identical. All 516 listed external records retain exact
+  fields and checksums, and the extracted pinned serializer round-trips the
+  full official lock byte-for-byte. These checks do not execute resolution.
+  Independent review found that the original 516-entry receipt omitted
+  resolver prerequisites. The pinned patch resolver needs the unpatched
+  `vite-plugin-node-polyfills@npm:0.28.0` source archive; built-in compatibility
+  hooks additionally need patch records for `fsevents 2.3.2`, `fsevents 2.3.3`,
+  `resolve 1.22.11` and `typescript 5.4.5`. All five records already exist in
+  the official lock; no new package name, version or transitive package was
+  identified. Dependency edges, root resolution rules, built-in compatibility
+  transformations and patch-source edges statically reach 521 external
+  records; no matching built-in package extensions were found. Exact-516 and
+  the intermediate 517-entry draft are therefore ineligible. The required
+  inventory correction is consolidated for the orchestrator; no installation,
+  fetch, linking or build ran, and full immutable-install compatibility remains
+  unverified. Preserve the failed drafts as review evidence rather than
+  silently widening their frozen inventories.
 
 Do not suppress these advisories, rename a vulnerable package to conceal it,
 weaken audit checks, or claim a clean audit from an unverified source patch.
