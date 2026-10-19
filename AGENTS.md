@@ -13,19 +13,24 @@ questioning scope or design assumptions, explain why and promote only that task
 to **Ultra**; keep Full as the default for later tasks. Ponytail does not relax
 the TDD, coverage, browser verification, or sign-off requirements below.
 
-Use these four roles actively for substantial feature work:
+Use `gpt-6.1-sol` with `high` reasoning explicitly for the lead. Ordinary
+planning stays with the lead; reserve `gpt-6-astra`/`high` for difficult planning
+or genuinely difficult decisions. Use these four roles actively for substantial
+feature work:
 
 | Role | Responsibility | Model and effort |
 | --- | --- | --- |
-| `planning` | Map requirements to current code, identify gaps and dependencies, and produce a concise implementation plan. | `gpt-6-astra`, `high` |
+| `planning` | Resolve difficult specification or invariant questions, map requirements to code, and produce an ordered plan. | `gpt-6-astra`, `high` |
 | `implementation` | Implement the agreed scope with regression-first tests and verification. | `gpt-6.1-sol`, `high` |
 | `correctness_review` | Independently review behavior, authorization, financial invariants, failure paths, and test evidence. | `gpt-6.1-sol`, `high` |
 | `complexity_review` | Independently check for unnecessary scope, duplication, and simpler complete solutions. | `gpt-6.1-sol`, `high` |
 
-Limit this project to **two active subagents in addition to the lead**. Select
-`gpt-6.1-sol` with `high` reasoning explicitly for implementation and routine
-review. Reserve `gpt-6-astra` with `high` reasoning for planning or genuinely
-difficult decisions; do not repurpose an Astra planning worker for routine
+Limit this project to **two active subagents in addition to the lead**. This is
+a coordination policy: track active workers before delegating and wait or stop
+a worker before admitting another. Following the cap is not proof of host
+enforcement. Select `gpt-6.1-sol` with `high` reasoning explicitly for
+implementation and routine review. Reserve `gpt-6-astra` with `high` reasoning
+for difficult planning or decisions; do not repurpose an Astra planning worker for routine
 implementation or packaging. Do not rely on unknown inherited settings. If a
 running worker cannot be reconfigured, checkpoint and stop it before starting
 a replacement with explicit settings. Report unsupported model selection.
@@ -36,12 +41,23 @@ review. Keep existing work and instructions intact. Route unclear major
 decisions, architecture changes, and dependency additions or upgrades to the
 parent for user approval before proceeding.
 
-Standalone local-client profiles live in [.codex/agents](.codex/README.md).
-If the hosted harness cannot select custom profiles, use explicit named role
-handoffs and request the prescribed model/effort when supported; disclose any
-unsupported selection rather than claiming native activation. A fresh task or
-client restart may be needed to discover repository configuration. This setup
-does not install or approve hooks and grants no additional permissions.
+For hosted work, give the platform delegation tool the role instructions
+directly: task, worktree/HEAD, file ownership, required reads, model/effort,
+constraints, validation and expected completion evidence. Do not rely on a role
+name or inherited settings to supply those instructions. Accepted explicit
+model settings and task completion are evidence of request admission and
+completion, not independent backend model attestation. Report unsupported
+lead or worker selection honestly.
+
+Keep the named [local-client TOML profiles](.codex/README.md) for clients that
+support them; their presence does not register custom agents in the hosted
+runtime. Keep static file validation, optional nested CLI diagnostics, hosted
+delegation smoke tests and application/device checks separate. Hosted readiness
+does not require starting a nested Codex CLI or app-server. A managed-home or
+project-trust failure in such a probe remains a real diagnostic failure, not
+evidence that platform delegation is broken. See the README for validation and
+saved-environment publication limits. This setup does not install or approve
+hooks and grants no additional permissions.
 
 ## Git Commits
 
