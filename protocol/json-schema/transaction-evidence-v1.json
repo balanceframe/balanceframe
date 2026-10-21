@@ -1,0 +1,1447 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/transaction-evidence-v1.json",
+  "title": "BalanceFrame Transaction Evidence v1",
+  "description": "Normalized source-neutral evidence only. Rust proves conservation, compatibility, matching uniqueness, wallet continuity, receipt totals and projection eligibility. A result never authorizes a ledger write.",
+  "$ref": "#/$defs/TransactionEvidenceRequest",
+  "$defs": {
+    "EvidenceProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentId", "contentHash", "parserVersion", "sourceTimestamp", "receivedAt"],
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "parserVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sourceTimestamp": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+        },
+        "receivedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+        }
+      }
+    },
+    "EvidenceObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "sourceId",
+        "externalEventId",
+        "date",
+        "amount",
+        "direction",
+        "status",
+        "eventType",
+        "counterparty",
+        "fundingInstrumentId",
+        "walletId",
+        "ledgerTransactionId",
+        "ledgerEffect",
+        "reliability",
+        "provenance"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "ledger_transaction",
+            "wallet_payment",
+            "wallet_transfer",
+            "wallet_fee",
+            "wallet_refund",
+            "wallet_request",
+            "receipt",
+            "order",
+            "spend_session_item",
+            "user_correction"
+          ]
+        },
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "externalEventId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "date": {
+          "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/CanonicalDate"
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "direction": {
+          "enum": ["inflow", "outflow"]
+        },
+        "status": {
+          "enum": ["pending", "completed", "reversed", "superseded"]
+        },
+        "eventType": {
+          "enum": [
+            "purchase",
+            "p2p_payment",
+            "transfer",
+            "reimbursement",
+            "refund",
+            "fee",
+            "mixed",
+            "unknown",
+            "repayment",
+            "rent_contribution",
+            "gift",
+            "business_income",
+            "income",
+            "self_transfer"
+          ]
+        },
+        "counterparty": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fundingInstrumentId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "walletId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ledgerTransactionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ledgerEffect": {
+          "anyOf": [
+            {
+              "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/EconomicEventLedgerEffect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reliability": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "provenance": {
+          "$ref": "#/$defs/EvidenceProvenance"
+        },
+        "reviewedLedgerEffect": {
+          "type": "boolean"
+        },
+        "ledgerAccountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "EvidenceRelationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "fromId",
+        "toId",
+        "kind",
+        "state",
+        "allocatedAmount",
+        "partial",
+        "score",
+        "reasonCodes",
+        "evidenceIds"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "fromId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "toId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "same_event",
+            "funding",
+            "partial_funding",
+            "settlement",
+            "transfer",
+            "reimbursement",
+            "refund",
+            "reversal",
+            "supersession",
+            "containment",
+            "corroboration"
+          ]
+        },
+        "state": {
+          "enum": ["candidate", "confirmed", "rejected", "superseded"]
+        },
+        "allocatedAmount": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "partial": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "WalletEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "walletId",
+        "currency",
+        "openingBalance",
+        "closingBalance",
+        "completeActivity",
+        "materializedAccountId",
+        "requiresStoredValue"
+      ],
+      "properties": {
+        "walletId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "openingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completeActivity": {
+          "type": "boolean"
+        },
+        "materializedAccountId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requiresStoredValue": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ReceiptLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "rawDescription",
+        "normalizedDescription",
+        "sku",
+        "department",
+        "productFamily",
+        "quantityMicros",
+        "unitGross",
+        "gross",
+        "discount",
+        "tax",
+        "net",
+        "categoryId",
+        "memberId",
+        "evidenceStrength",
+        "reasonCodes",
+        "returnOfLineId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "rawDescription": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "normalizedDescription": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "sku": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "department": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "productFamily": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quantityMicros": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "unitGross": {
+          "$ref": "#/$defs/Money"
+        },
+        "gross": {
+          "$ref": "#/$defs/Money"
+        },
+        "discount": {
+          "$ref": "#/$defs/Money"
+        },
+        "tax": {
+          "$ref": "#/$defs/Money"
+        },
+        "net": {
+          "$ref": "#/$defs/Money"
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidenceStrength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "returnOfLineId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ReceiptTender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "amount", "observationId"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": ["card", "bank", "gift_card", "reward", "wallet", "cash"]
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "observationId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "partial": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ReceiptEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "observationId",
+        "version",
+        "supersedesId",
+        "fulfillmentGroupId",
+        "total",
+        "discount",
+        "tax",
+        "lines",
+        "tenders"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "observationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "supersedesId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fulfillmentGroupId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total": {
+          "$ref": "#/$defs/Money"
+        },
+        "discount": {
+          "$ref": "#/$defs/Money"
+        },
+        "tax": {
+          "$ref": "#/$defs/Money"
+        },
+        "lines": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/ReceiptLine"
+          }
+        },
+        "tenders": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/ReceiptTender"
+          }
+        }
+      }
+    },
+    "TransactionEvidenceRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "policyVersion",
+        "maxSettlementDays",
+        "observations",
+        "relationships",
+        "wallets",
+        "receipts"
+      ],
+      "properties": {
+        "allocationReview": {
+          "anyOf": [
+            {
+              "$ref": "https://balanceframe.dev/schemas/evidence-allocation-v1.json#/$defs/EvidenceAllocationReview"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contractVersion": {
+          "const": "1"
+        },
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "maxSettlementDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 90
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceObservation"
+          },
+          "maxItems": 10000
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRelationship"
+          },
+          "maxItems": 20000
+        },
+        "wallets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WalletEvidence"
+          },
+          "maxItems": 1000
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReceiptEvidence"
+          },
+          "maxItems": 1000
+        },
+        "statementProofs": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/wallet-statement-v1.json#/$defs/WalletStatementProof"
+          },
+          "maxItems": 100
+        }
+      }
+    },
+    "EvidenceBlocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "subjectId", "evidenceIds"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "subjectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "ResolvedEconomicEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "eventType",
+        "state",
+        "amount",
+        "observationIds",
+        "evidenceIds",
+        "reasonCodes",
+        "projectionObservation"
+      ],
+      "properties": {
+        "projectionObservations": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/SourceObservation"
+          }
+        },
+        "allocationSetHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "version": {
+          "const": "1"
+        },
+        "eventType": {
+          "enum": [
+            "purchase",
+            "p2p_payment",
+            "transfer",
+            "reimbursement",
+            "refund",
+            "fee",
+            "mixed",
+            "unknown",
+            "repayment",
+            "rent_contribution",
+            "gift",
+            "business_income",
+            "income",
+            "self_transfer"
+          ]
+        },
+        "state": {
+          "enum": ["resolved", "ambiguous", "unmatched", "blocked"]
+        },
+        "amount": {
+          "$ref": "#/$defs/Money"
+        },
+        "observationIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "projectionObservation": {
+          "anyOf": [
+            {
+              "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/SourceObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "WalletEvidenceResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "walletId",
+        "openingBalance",
+        "closingBalance",
+        "balanceState",
+        "projection",
+        "reasonCodes"
+      ],
+      "properties": {
+        "walletId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "openingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closingBalance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "balanceState": {
+          "enum": ["known", "balance_unknown", "discontinuous"]
+        },
+        "projection": {
+          "enum": ["collapsed", "materialize", "materialized", "unresolved"]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "coverage": {
+          "$ref": "https://balanceframe.dev/schemas/wallet-statement-v1.json#/$defs/WalletStatementCoverage"
+        },
+        "balanceAnchors": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/wallet-statement-v1.json#/$defs/WalletStatementBalanceAnchor"
+          }
+        },
+        "anchorObservations": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/SourceObservation"
+          }
+        }
+      }
+    },
+    "ReceiptEvidenceResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "valid", "allocatedDiscount", "allocatedTax", "reasonCodes"],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "valid": {
+          "type": "boolean"
+        },
+        "allocatedDiscount": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Money"
+          }
+        },
+        "allocatedTax": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Money"
+          }
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "TransactionEvidenceResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "policyVersion",
+        "resolutionHash",
+        "events",
+        "relationships",
+        "wallets",
+        "receipts",
+        "blockers"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "resolutionHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResolvedEconomicEvent"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRelationship"
+          }
+        },
+        "wallets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WalletEvidenceResolution"
+          }
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReceiptEvidenceResolution"
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceBlocker"
+          }
+        }
+      }
+    },
+    "EvidenceRuleProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sourceId",
+        "counterparty",
+        "fundingInstrumentId",
+        "sku",
+        "normalizedDescription",
+        "categoryId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "fundingInstrumentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sku": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "normalizedDescription": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "categoryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "counterparty": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        },
+        "criterion": {
+          "$ref": "#/$defs/EvidenceRuleCriterion"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["criterion"]
+          },
+          "then": {
+            "properties": {
+              "sku": {
+                "type": "null"
+              },
+              "normalizedDescription": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "anyOf": [
+              {
+                "properties": {
+                  "sku": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "normalizedDescription": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "EvidenceRuleSimulationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "rule", "evidence", "actualRuleCategories"],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "rule": {
+          "$ref": "#/$defs/EvidenceRuleProposal"
+        },
+        "evidence": {
+          "$ref": "#/$defs/TransactionEvidenceRequest"
+        },
+        "actualRuleCategories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "EvidenceRuleMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "lineId", "currentCategoryId", "proposedCategoryId", "conflict"],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "lineId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "currentCategoryId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proposedCategoryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "conflict": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EvidenceRuleSimulationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ruleId",
+        "resolutionHash",
+        "matches",
+        "conflicts",
+        "falsePositiveRisk",
+        "requiresApproval"
+      ],
+      "properties": {
+        "ruleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "resolutionHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "matches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRuleMatch"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "falsePositiveRisk": {
+          "enum": [
+            "conflicting_history",
+            "no_history",
+            "review_required",
+            "broader_scope_review_required"
+          ]
+        },
+        "requiresApproval": {
+          "const": true
+        }
+      }
+    },
+    "Money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minorUnits", "currency"],
+      "properties": {
+        "minorUnits": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9][0-9]{0,17}|(?:[1-8][0-9]{18}|9[0-1][0-9]{17}|92[0-1][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[0-1][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-6]|9223372036854775807))$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    },
+    "EvidenceItemCategoryOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceIdentity",
+        "documentId",
+        "contentHash",
+        "parserVersion",
+        "receiptId",
+        "lineId",
+        "accountId",
+        "categoryId",
+        "policyVersion"
+      ],
+      "properties": {
+        "sourceIdentity": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "documentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "parserVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "lineId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "accountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "categoryId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "EvidenceItemRuleExample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "lineId", "documentId", "categoryId"],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "lineId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "documentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "categoryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "EvidenceItemRuleCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateHash",
+        "rule",
+        "accountId",
+        "sourceIdentities",
+        "documentIds",
+        "examples",
+        "reviewCount",
+        "requiresApproval"
+      ],
+      "properties": {
+        "candidateHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rule": {
+          "$ref": "#/$defs/EvidenceRuleProposal"
+        },
+        "accountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sourceIdentities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "minItems": 2,
+          "maxItems": 10000
+        },
+        "documentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "minItems": 2,
+          "maxItems": 10000
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceItemRuleExample"
+          },
+          "minItems": 2,
+          "maxItems": 10000
+        },
+        "reviewCount": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10000
+        },
+        "requiresApproval": {
+          "const": true
+        }
+      }
+    },
+    "EvidenceItemRuleLearningRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "policyVersion", "accountId", "evidence", "outcomes"],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "policyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "accountId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "evidence": {
+          "$ref": "#/$defs/TransactionEvidenceRequest"
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceItemCategoryOutcome"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "includeBroaderCriteria": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EvidenceItemRuleLearningResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "resolutionHash", "candidates", "conflicts"],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "resolutionHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceItemRuleCandidate"
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      }
+    },
+    "EvidenceRuleCriterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {
+          "enum": ["retailer_mapping", "department", "product_family", "historical_similarity"]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S",
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "historical_similarity"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "pattern": "[\\p{L}\\p{N}]+[^\\p{L}\\p{N}]+[\\p{L}\\p{N}]+"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

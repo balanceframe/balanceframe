@@ -789,12 +789,12 @@ describe('session completion durable workflow', () => {
         const migrations = workflowStoreClass.MIGRATIONS;
         const migrationIndex = migrations.indexOf(migrateSessionCompletionWriteFences);
         const migrationVersion = migrationIndex + 1;
-        if (migrationIndex < 0 || migrationVersion !== migrations.length)
-          throw new Error('Session completion write-fence migration must be the latest registered migration');
+        if (migrationIndex < 0) throw new Error('Session completion write-fence migration must be registered');
         const currentVersion = legacy.prepare(
           'SELECT MAX(version) AS version FROM schema_version',
         ).get() as { version: number };
-        expect(currentVersion.version).toBe(migrationVersion);
+        expect(currentVersion.version).toBe(migrations.length);
+        for (const table of ['transaction_evidence_session_associations', 'transaction_evidence_session_origins', 'transaction_evidence_item_rule_approvals', 'transaction_evidence_item_rules', 'transaction_evidence_ledger_provenance', 'transaction_evidence_decisions', 'transaction_evidence_resolutions', 'transaction_evidence_audit', 'transaction_evidence_documents']) legacy.exec(`DROP TABLE ${table}`);
         legacy.exec(`
           ALTER TABLE session_completion_writes DROP COLUMN authorization_hash;
           ALTER TABLE session_completion_writes DROP COLUMN claim_set_revision;

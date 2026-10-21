@@ -1,0 +1,171 @@
+{
+  "contractVersion": "1",
+  "sessionSnapshot": {
+    "documentId": "doc-session",
+    "parserVersion": "spend-session-snapshot-v1",
+    "contentHash": "b08591f96d5cc3b73a971ff4f75c86ad19549da9997fb19e7bca643c6b306bd0",
+    "intentHash": "b08591f96d5cc3b73a971ff4f75c86ad19549da9997fb19e7bca643c6b306bd0",
+    "intent": {
+      "kind": "session_completion_intent_v1",
+      "id": "session-1",
+      "version": 2,
+      "accountId": null,
+      "items": [
+        {
+          "id": "item-1",
+          "categoryId": "food",
+          "accountId": null,
+          "amount": {
+            "minorUnits": "600",
+            "currency": "USD"
+          },
+          "purchaseAt": "2026-10-15T12:00:00Z",
+          "requiredBy": "2026-10-15T12:00:00Z",
+          "quantity": 2,
+          "barcode": "sku-1",
+          "priceProvenance": {
+            "kind": "current_session_manual",
+            "observedAt": "2026-10-15T10:00:00Z",
+            "estimate": false
+          }
+        },
+        {
+          "id": "item-omitted",
+          "categoryId": "food",
+          "accountId": null,
+          "amount": {
+            "minorUnits": "100",
+            "currency": "USD"
+          },
+          "purchaseAt": "2026-10-15T12:00:00Z",
+          "requiredBy": "2026-10-15T12:00:00Z",
+          "quantity": 1,
+          "barcode": "sku-missing",
+          "priceProvenance": null
+        }
+      ],
+      "adjustments": [],
+      "warningThresholds": []
+    }
+  },
+  "evidence": {
+    "contractVersion": "1",
+    "policyVersion": "evidence-policy-1",
+    "maxSettlementDays": 5,
+    "observations": [
+      {
+        "id": "wallet-1",
+        "kind": "receipt",
+        "sourceId": "retail-source",
+        "externalEventId": null,
+        "date": "2026-10-15",
+        "amount": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "direction": "outflow",
+        "status": "completed",
+        "eventType": "purchase",
+        "counterparty": "Fixture Store",
+        "fundingInstrumentId": "card-1",
+        "walletId": null,
+        "ledgerTransactionId": null,
+        "ledgerEffect": null,
+        "reliability": 0,
+        "provenance": {
+          "documentId": "doc-receipt",
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parserVersion": "wallet-v1",
+          "sourceTimestamp": "2026-10-15T12:00:00Z",
+          "receivedAt": "2026-10-15T12:01:00Z"
+        }
+      }
+    ],
+    "relationships": [],
+    "wallets": [],
+    "receipts": [
+      {
+        "id": "receipt-1",
+        "observationId": "wallet-1",
+        "version": 1,
+        "supersedesId": null,
+        "fulfillmentGroupId": null,
+        "total": {
+          "minorUnits": "1200",
+          "currency": "USD"
+        },
+        "discount": {
+          "minorUnits": "100",
+          "currency": "USD"
+        },
+        "tax": {
+          "minorUnits": "100",
+          "currency": "USD"
+        },
+        "lines": [
+          {
+            "id": "line-1",
+            "rawDescription": "two items",
+            "normalizedDescription": "item",
+            "sku": "sku-1",
+            "department": null,
+            "productFamily": null,
+            "quantityMicros": 2000000,
+            "unitGross": {
+              "minorUnits": "600",
+              "currency": "USD"
+            },
+            "gross": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "discount": {
+              "minorUnits": "100",
+              "currency": "USD"
+            },
+            "tax": {
+              "minorUnits": "100",
+              "currency": "USD"
+            },
+            "net": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "categoryId": null,
+            "memberId": null,
+            "evidenceStrength": 100,
+            "reasonCodes": [],
+            "returnOfLineId": null
+          }
+        ],
+        "tenders": [
+          {
+            "id": "card",
+            "kind": "card",
+            "amount": {
+              "minorUnits": "1200",
+              "currency": "USD"
+            },
+            "observationId": null
+          }
+        ]
+      }
+    ]
+  },
+  "receipt": {
+    "documentId": "doc-receipt",
+    "receiptId": "receipt-1"
+  },
+  "review": {
+    "coverage": "complete_purchase",
+    "pairs": [
+      {
+        "sessionItemId": "item-1",
+        "receiptLineId": "line-1",
+        "kind": "same_item"
+      }
+    ],
+    "omittedItemIds": ["item-omitted"],
+    "newLineIds": []
+  }
+}

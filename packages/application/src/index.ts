@@ -50,3 +50,45 @@ export type {
   PurchaseEvaluation,
   RedactionState,
 } from '@balanceframe/protocol-generated';
+
+export * from './transaction-evidence.js';
+
+export {
+  evidenceItemRuleInputSchema,
+  evidenceItemRuleDecisionSchema,
+} from './evidence-item-rules.js';
+export type { EvidenceItemSuggestion } from './evidence-item-rules.js';
+
+export { manualReceiptPhotoExtractionSchema, parseManualReceiptPhoto } from './receipt-photo.js';
+
+export {
+  SpendSessionReceiptService,
+  spendSessionReceiptSelectorSchema,
+  spendSessionReceiptCompareSchema,
+  spendSessionReceiptSaveSchema,
+} from './spend-session-receipt.js';
+
+export {
+  evidenceSettlementPreviewSchema,
+  evidenceSettlementSaveSchema,
+  evidenceSettlementTargetsInputSchema,
+} from './evidence-settlement.js';
+
+export {
+  receiptAnnotationInputSchema,
+  receiptReviewSaveSchema,
+} from './evidence-receipt-annotations.js';
+
+export {
+  evidenceAllocationPreviewSchema,
+  evidenceAllocationSaveSchema,
+} from './evidence-allocation.js';
+
+export {
+  walletStatementPreviewInputSchema,
+  walletStatementAttestInputSchema,
+  walletStatementRevokeInputSchema,
+  walletMaterializationSelectorSchema,
+} from './wallet-statement.js';
+
+export * from './evidence-receipt-version.js';

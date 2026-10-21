@@ -3,10 +3,20 @@
 mod account_aware_liquidity;
 mod consequential_action;
 mod decision_card;
+mod evidence_allocation;
+pub use evidence_allocation::*;
+mod evidence_settlement;
+pub use evidence_settlement::*;
 mod financial_snapshot;
 mod merchant_intelligence;
 mod native_rules;
 mod prospective_decision;
+mod spend_session_receipt;
+pub use spend_session_receipt::*;
+mod wallet_statement;
+pub use wallet_statement::*;
+mod transaction_evidence;
+pub use transaction_evidence::*;
 
 pub use account_aware_liquidity::{
     evaluate_account_aware_spendability, verify_transfer_preconditions,

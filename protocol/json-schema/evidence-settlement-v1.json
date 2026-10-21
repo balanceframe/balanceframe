@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://balanceframe.dev/schemas/evidence-settlement-v1.json",
+  "title": "Approval-required evidence settlement allocation plan v1",
+  "description": "Native additionally validates conserved active receipt facts, explicit full funding, globally bounded capacities, authoritative target identity, and exact line selection. Inputs cannot attest their own issuer; output uses the existing governed amendment path only.",
+  "$ref": "#/$defs/DeriveEvidenceSettlementPlanRequest",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!\\s*$)[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "EvidenceSettlementLineCategory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "lineId", "categoryId"],
+      "properties": {
+        "receiptId": {
+          "$ref": "#/$defs/Id"
+        },
+        "lineId": {
+          "$ref": "#/$defs/Id"
+        },
+        "categoryId": {
+          "$ref": "#/$defs/Id"
+        }
+      }
+    },
+    "DeriveEvidenceSettlementPlanRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "evidence",
+        "targetObservationId",
+        "receiptIds",
+        "lineCategories"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "evidence": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/TransactionEvidenceRequest"
+        },
+        "targetObservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "receiptIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 100,
+          "minItems": 1
+        },
+        "lineCategories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceSettlementLineCategory"
+          },
+          "maxItems": 10000
+        }
+      }
+    },
+    "EvidenceSettlementContribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptId", "lineId", "categoryId", "amount"],
+      "properties": {
+        "receiptId": {
+          "$ref": "#/$defs/Id"
+        },
+        "lineId": {
+          "$ref": "#/$defs/Id"
+        },
+        "categoryId": {
+          "$ref": "#/$defs/Id"
+        },
+        "amount": {
+          "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/Money"
+        }
+      }
+    },
+    "EvidenceSettlementPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "resolutionHash",
+        "allocationHash",
+        "eventId",
+        "targetObservationId",
+        "ledgerTransactionId",
+        "evidenceIds",
+        "sources",
+        "contributions",
+        "ledgerEffect"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": "1"
+        },
+        "resolutionHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "allocationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "eventId": {
+          "$ref": "#/$defs/Id"
+        },
+        "targetObservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "ledgerTransactionId": {
+          "$ref": "#/$defs/Id"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "https://balanceframe.dev/schemas/transaction-evidence-v1.json#/$defs/EvidenceProvenance"
+          }
+        },
+        "contributions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceSettlementContribution"
+          }
+        },
+        "ledgerEffect": {
+          "$ref": "https://balanceframe.dev/schemas/financial-snapshot-v1.json#/$defs/EconomicEventLedgerEffect"
+        }
+      }
+    }
+  }
+}

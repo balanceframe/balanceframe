@@ -40,15 +40,15 @@ import type { CreateProposalInput } from '../src/types.js';
 
 const INITIAL_TIME = '2026-09-06T10:00:00.000Z';
 const BUDGET_ID = 'budget-phase9-action';
-const MONEY = (minorUnits: string | number) => ({ minorUnits: String(minorUnits), currency: 'USD' });
+const MONEY = (minorUnits: string | number) => ({
+  minorUnits: String(minorUnits),
+  currency: 'USD',
+});
 const capabilityPhases = ['propose', 'approve', 'execute'] as const;
 type CapabilityPhase = (typeof capabilityPhases)[number];
 type ActionAtom = Exclude<ConsequentialActionIntent, { kind: 'composite' }>;
 type AssistanceMaximum =
-  | 'analysis_only'
-  | 'recommend_actions'
-  | 'create_approval_proposal'
-  | 'execute_approved_actions';
+  'analysis_only' | 'recommend_actions' | 'create_approval_proposal' | 'execute_approved_actions';
 type Resource = GovernanceResourceRef;
 
 interface LiquidityFixture {
@@ -67,8 +67,15 @@ interface FoundationFixture {
   full: FinancialSnapshot;
   claims: { context: DecisionCardRequest['context'] };
 }
-interface ActionFixture extends Pick<PlanConsequentialActionRequest,
-  'intent' | 'currentLedger' | 'resolvedEvidence' | 'financialPolicyVersion' | 'evaluatedAt' | 'idempotencyKey'> {
+interface ActionFixture extends Pick<
+  PlanConsequentialActionRequest,
+  | 'intent'
+  | 'currentLedger'
+  | 'resolvedEvidence'
+  | 'financialPolicyVersion'
+  | 'evaluatedAt'
+  | 'idempotencyKey'
+> {
   alternateDonorIntent: ConsequentialActionIntent;
   alternateDonorEligibility: Array<{ categoryId: string; donorEligible: boolean }>;
   compositeIntent: ConsequentialActionIntent;
@@ -77,13 +84,24 @@ interface ActionFixture extends Pick<PlanConsequentialActionRequest,
   postconditions: {
     reallocation: {
       currentLedger: PlanConsequentialActionRequest['currentLedger'];
-      financialSnapshot: { categoryAvailability: Array<{ categoryId: string; amount: { minorUnits: string; currency: string } }> };
+      financialSnapshot: {
+        categoryAvailability: Array<{
+          categoryId: string;
+          amount: { minorUnits: string; currency: string };
+        }>;
+      };
     };
     composite: {
       currentLedger: PlanConsequentialActionRequest['currentLedger'];
       financialSnapshot: {
-        accountBalances: Array<{ accountId: string; balance: { minorUnits: string; currency: string } }>;
-        categoryAvailability: Array<{ categoryId: string; amount: { minorUnits: string; currency: string } }>;
+        accountBalances: Array<{
+          accountId: string;
+          balance: { minorUnits: string; currency: string };
+        }>;
+        categoryAvailability: Array<{
+          categoryId: string;
+          amount: { minorUnits: string; currency: string };
+        }>;
       };
     };
   };
@@ -116,17 +134,17 @@ interface AcquiredAction {
   input: Record<string, unknown>;
   acquisitionAuditId: string;
 }
-const readFixture = (name: string): unknown => JSON.parse(readFileSync(
-  new URL(`../../../protocol/fixtures/${name}`, import.meta.url),
-  'utf8',
-));
+const readFixture = (name: string): unknown =>
+  JSON.parse(readFileSync(new URL(`../../../protocol/fixtures/${name}`, import.meta.url), 'utf8'));
 const liquidityFixture = readFixture('account-aware-liquidity.json') as LiquidityFixture;
 const foundationFixture = readFixture('financial-decision-foundation.json') as FoundationFixture;
 const actionFixture = readFixture('consequential-action.json') as ActionFixture;
 const native = createRequire(new URL('../../application/package.json', import.meta.url))(
   '@balanceframe/native',
 ) as NativeConsequentialBindings;
-const ACTION_OPERATION = 'consequential_action' as unknown as Parameters<typeof deriveProposalAuthorizationFacts>[0];
+const ACTION_OPERATION = 'consequential_action' as unknown as Parameters<
+  typeof deriveProposalAuthorizationFacts
+>[0];
 const ownerAuth = (actorId: string, reauthenticatedAt = currentTime()) => ({
   method: 'human-session' as const,
   actorId,
@@ -155,18 +173,22 @@ function composeDecisionCardRequest(
   snapshot.legacySnapshot.categories = [];
   snapshot.legacySnapshot.budgets = [];
   snapshot.legacySnapshot.schedules = [];
-  snapshot.observations = [{
-    kind: 'account_freshness',
-    scope: { kind: 'account', id: 'checking' },
-    state: 'fresh',
-    observedAt: evaluatedAt,
-    evidence: [{
-      evidenceId: 'checking-freshness',
-      kind: 'bank_sync',
-      authorized: true,
-      redaction: 'visible',
-    }],
-  }];
+  snapshot.observations = [
+    {
+      kind: 'account_freshness',
+      scope: { kind: 'account', id: 'checking' },
+      state: 'fresh',
+      observedAt: evaluatedAt,
+      evidence: [
+        {
+          evidenceId: 'checking-freshness',
+          kind: 'bank_sync',
+          authorized: true,
+          redaction: 'visible',
+        },
+      ],
+    },
+  ];
   const facts = snapshot.liquidity;
   if (!facts) throw new Error('Canonical liquidity facts are required');
   const checking = facts.accounts.find((account) => account.accountId === 'checking');
@@ -191,7 +213,10 @@ function composeDecisionCardRequest(
   context.policyHash = liquidityFixture.liquidityPolicy.policyHash;
   context.policy.maxBudgetSnapshotAgeMinutes = liquidityFixture.maxBudgetSnapshotAgeMinutes;
   context.policy.maxBankSyncAgeMinutes = null;
-  const item = { ...structuredClone(liquidityFixture.scenario.items[0]!), priority: 'planned' as const };
+  const item = {
+    ...structuredClone(liquidityFixture.scenario.items[0]!),
+    priority: 'planned' as const,
+  };
   item.purchaseAt = purchaseAt;
   item.requiredBy = purchaseAt;
   return decisionCardRequestSchema.parse({
@@ -202,9 +227,27 @@ function composeDecisionCardRequest(
     priorAllocation: null,
     items: [item],
     categoryPolicies: [
-      { categoryId: 'food', kind: 'ordinary', donorEligible: false, minimumRetained: MONEY(0), projectedRemainingNeed: MONEY(0) },
-      { categoryId: 'reserve', kind: 'ordinary', donorEligible: true, minimumRetained: MONEY(1_000), projectedRemainingNeed: MONEY(2_000) },
-      { categoryId: 'reserve-two', kind: 'ordinary', donorEligible: false, minimumRetained: MONEY(1_000), projectedRemainingNeed: MONEY(2_000) },
+      {
+        categoryId: 'food',
+        kind: 'ordinary',
+        donorEligible: false,
+        minimumRetained: MONEY(0),
+        projectedRemainingNeed: MONEY(0),
+      },
+      {
+        categoryId: 'reserve',
+        kind: 'ordinary',
+        donorEligible: true,
+        minimumRetained: MONEY(1_000),
+        projectedRemainingNeed: MONEY(2_000),
+      },
+      {
+        categoryId: 'reserve-two',
+        kind: 'ordinary',
+        donorEligible: false,
+        minimumRetained: MONEY(1_000),
+        projectedRemainingNeed: MONEY(2_000),
+      },
     ],
     validUntil,
     requestId: 'request-consequential-action-1',
@@ -213,18 +256,20 @@ function composeDecisionCardRequest(
   }) as DecisionCardRequest;
 }
 
-function makePlan(options: {
-  intent?: ConsequentialActionIntent;
-  evaluatedAt?: string;
-  validUntil?: string;
-  purchaseAt?: string;
-  cartAmountMinorUnits?: number;
-  multiDonorReallocation?: boolean;
-  idempotencyKey?: string;
-  afterReallocation?: boolean;
-  sourceObservation?: ActionFixture['sourceObservation'];
-  financialPolicyVersion?: string;
-} = {}) {
+function makePlan(
+  options: {
+    intent?: ConsequentialActionIntent;
+    evaluatedAt?: string;
+    validUntil?: string;
+    purchaseAt?: string;
+    cartAmountMinorUnits?: number;
+    multiDonorReallocation?: boolean;
+    idempotencyKey?: string;
+    afterReallocation?: boolean;
+    sourceObservation?: ActionFixture['sourceObservation'];
+    financialPolicyVersion?: string;
+  } = {},
+) {
   const evaluatedAt = options.evaluatedAt ?? actionFixture.evaluatedAt;
   const intent = structuredClone(options.intent ?? actionFixture.intent);
   const decisionCardRequest = composeDecisionCardRequest(
@@ -239,13 +284,19 @@ function makePlan(options: {
   }
   if (intent.kind === 'manual_transaction') {
     const cartItem = decisionCardRequest.items[0];
-    if (!cartItem || intent.transaction.categoryId === null ||
-        cartItem.categoryId !== intent.transaction.categoryId ||
-        cartItem.amount.currency !== intent.transaction.amount.currency ||
-        BigInt(cartItem.amount.minorUnits) !== -BigInt(intent.transaction.amount.minorUnits))
+    if (
+      !cartItem ||
+      intent.transaction.categoryId === null ||
+      cartItem.categoryId !== intent.transaction.categoryId ||
+      cartItem.amount.currency !== intent.transaction.amount.currency ||
+      BigInt(cartItem.amount.minorUnits) !== -BigInt(intent.transaction.amount.minorUnits)
+    )
       throw new Error('Canonical manual cart amount and category must match the transaction');
   }
-  if (intent.kind === 'reallocation' && intent.assignments.some((assignment) => assignment.sourceCategoryId === 'reserve-two')) {
+  if (
+    intent.kind === 'reallocation' &&
+    intent.assignments.some((assignment) => assignment.sourceCategoryId === 'reserve-two')
+  ) {
     for (const eligibility of actionFixture.alternateDonorEligibility) {
       const category = decisionCardRequest.categoryPolicies.find(
         (candidate) => candidate.categoryId === eligibility.categoryId,
@@ -255,8 +306,12 @@ function makePlan(options: {
     }
   }
   if (options.multiDonorReallocation) {
-    const reserve = decisionCardRequest.categoryPolicies.find((candidate) => candidate.categoryId === 'reserve');
-    const reserveTwo = decisionCardRequest.categoryPolicies.find((candidate) => candidate.categoryId === 'reserve-two');
+    const reserve = decisionCardRequest.categoryPolicies.find(
+      (candidate) => candidate.categoryId === 'reserve',
+    );
+    const reserveTwo = decisionCardRequest.categoryPolicies.find(
+      (candidate) => candidate.categoryId === 'reserve-two',
+    );
     if (!reserve || !reserveTwo) throw new Error('Canonical multiple-donor policies are required');
     reserve.donorEligible = true;
     reserve.minimumRetained = MONEY(3_000);
@@ -267,7 +322,8 @@ function makePlan(options: {
     currentLedger = structuredClone(actionFixture.postconditions.reallocation.currentLedger);
     const categoryFacts = decisionCardRequest.financialSnapshot.liquidity?.categories;
     if (!categoryFacts) throw new Error('Canonical post-reallocation category facts are required');
-    for (const postcondition of actionFixture.postconditions.reallocation.financialSnapshot.categoryAvailability) {
+    for (const postcondition of actionFixture.postconditions.reallocation.financialSnapshot
+      .categoryAvailability) {
       const category = categoryFacts.find((fact) => fact.categoryId === postcondition.categoryId);
       if (!category) throw new Error('Canonical post-reallocation category is required');
       category.availability = structuredClone(postcondition.amount);
@@ -295,11 +351,14 @@ function makePlan(options: {
     currentLedger,
     resolvedEvidence: structuredClone(options.resolvedEvidence ?? actionFixture.resolvedEvidence),
     supplementalObservations: [],
-    financialPolicyVersion: options.financialPolicyVersion ?? currentFinancialPolicy().policy.version,
+    financialPolicyVersion:
+      options.financialPolicyVersion ?? currentFinancialPolicy().policy.version,
     evaluatedAt,
     idempotencyKey: options.idempotencyKey ?? actionFixture.idempotencyKey,
   }) as PlanConsequentialActionRequest;
-  const plan = JSON.parse(native.planConsequentialAction(JSON.stringify(request))) as ConsequentialActionPlan;
+  const plan = JSON.parse(
+    native.planConsequentialAction(JSON.stringify(request)),
+  ) as ConsequentialActionPlan;
   return { request, plan };
 }
 
@@ -339,8 +398,14 @@ function atomResources(atom: ActionAtom): Resource[] {
   return [...resources.values()];
 }
 
-function manualTransactionIntent(parentId: string, correlationId: string, payeeName = 'Local shop'): ConsequentialActionIntent {
-  const canonical = atomsOf(actionFixture.compositeIntent).find((atom) => atom.kind === 'manual_transaction');
+function manualTransactionIntent(
+  parentId: string,
+  correlationId: string,
+  payeeName = 'Local shop',
+): ConsequentialActionIntent {
+  const canonical = atomsOf(actionFixture.compositeIntent).find(
+    (atom) => atom.kind === 'manual_transaction',
+  );
   if (!canonical || canonical.kind !== 'manual_transaction')
     throw new Error('Canonical manual transaction intent is required');
   return {
@@ -354,7 +419,10 @@ function manualTransactionIntent(parentId: string, correlationId: string, payeeN
   };
 }
 
-function proposalFacts(plan: ConsequentialActionPlan, preconditions: unknown = preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash)) {
+function proposalFacts(
+  plan: ConsequentialActionPlan,
+  preconditions: unknown = preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash),
+) {
   const payload = { kind: 'consequential_action' as const, plan };
   return deriveProposalAuthorizationFacts(ACTION_OPERATION, payload, preconditions);
 }
@@ -369,7 +437,8 @@ let memberships: Record<string, string>;
 function scoped(actorId = 'owner') {
   const member = store.governance.getCurrentMembership({ spaceId, actorId, now: currentTime() });
   const policy = store.governance.getPolicy({ spaceId });
-  if (!member || !policy) throw new Error('Canonical governance membership and policy are required');
+  if (!member || !policy)
+    throw new Error('Canonical governance membership and policy are required');
   return {
     actorId,
     budgetId: BUDGET_ID,
@@ -386,24 +455,31 @@ function currentFinancialPolicy() {
   if (!current) throw new Error('Canonical financial policy is required');
   return current as unknown as {
     policy: { version: string; policyHash: string; expiresAt: string };
-    approvalPolicy: { minimumApprovers: number; thresholds?: Array<{ currency: string; minimumMinorUnits: string; minimumApprovers: number }> };
+    approvalPolicy: {
+      minimumApprovers: number;
+      thresholds?: Array<{ currency: string; minimumMinorUnits: string; minimumApprovers: number }>;
+    };
   };
 }
 
-function setGovernancePolicy(input: {
-  minimumApprovers?: number;
-  operationApprovers?: number;
-  assistanceMaximum?: AssistanceMaximum | null;
-} = {}) {
+function setGovernancePolicy(
+  input: {
+    minimumApprovers?: number;
+    operationApprovers?: number;
+    assistanceMaximum?: AssistanceMaximum | null;
+  } = {},
+) {
   const current = store.governance.getPolicy({ spaceId });
   if (!current) throw new Error('Current governance policy is required');
-  const priorMaximum = (current as typeof current & { assistanceMaximum?: AssistanceMaximum }).assistanceMaximum;
+  const priorMaximum = (current as typeof current & { assistanceMaximum?: AssistanceMaximum })
+    .assistanceMaximum;
   const policy = {
     minimumApprovers: input.minimumApprovers ?? current.minimumApprovers,
     approvalThresholds: current.approvalThresholds,
     operationApprovers: {
       ...(current.operationApprovers ?? {}),
-      consequential_action: input.operationApprovers ?? current.operationApprovers?.consequential_action ?? 2,
+      consequential_action:
+        input.operationApprovers ?? current.operationApprovers?.consequential_action ?? 2,
     },
     ...(input.assistanceMaximum === null
       ? {}
@@ -448,7 +524,12 @@ function saveFinancialPolicy(
   });
 }
 
-function grant(actorId: string, capability: string, resource: Resource, restrictions?: unknown): void {
+function grant(
+  actorId: string,
+  capability: string,
+  resource: Resource,
+  restrictions?: unknown,
+): void {
   const membershipId = memberships[actorId];
   if (!membershipId) throw new Error(`Missing test membership for ${actorId}`);
   store.governance.setResourceGrant({
@@ -465,7 +546,11 @@ function grant(actorId: string, capability: string, resource: Resource, restrict
   });
 }
 
-function grantVisibility(plan: ConsequentialActionPlan, actorIds: readonly string[], includeEvidence = true): void {
+function grantVisibility(
+  plan: ConsequentialActionPlan,
+  actorIds: readonly string[],
+  includeEvidence = true,
+): void {
   const facts = proposalFacts(plan);
   const payload = { kind: 'consequential_action' as const, plan };
   const sourceReads = deriveProposalSourceReadFacts(
@@ -474,8 +559,8 @@ function grantVisibility(plan: ConsequentialActionPlan, actorIds: readonly strin
     preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash),
     BUDGET_ID,
   );
-  const required = sourceReads.required.filter((entry) =>
-    includeEvidence || entry.resourceKind !== 'evidence',
+  const required = sourceReads.required.filter(
+    (entry) => includeEvidence || entry.resourceKind !== 'evidence',
   );
   for (const actorId of actorIds) {
     for (const entry of required) grant(actorId, entry.capability, entry);
@@ -497,7 +582,14 @@ function grantPhase(plan: ConsequentialActionPlan, actorId: string, phase: Capab
 }
 
 function grantActionActors(plan: ConsequentialActionPlan, proposer = 'proposer') {
-  grantVisibility(plan, [proposer, 'approver-a', 'approver-b', 'approver-c', 'approver-d', 'executor']);
+  grantVisibility(plan, [
+    proposer,
+    'approver-a',
+    'approver-b',
+    'approver-c',
+    'approver-d',
+    'executor',
+  ]);
   grantPhase(plan, proposer, 'propose');
   for (const approver of ['approver-a', 'approver-b', 'approver-c', 'approver-d'])
     grantPhase(plan, approver, 'approve');
@@ -535,10 +627,16 @@ function proposalInput(plan: ConsequentialActionPlan, actorId = 'proposer') {
 }
 
 async function createActionProposal(plan: ConsequentialActionPlan, actorId = 'proposer') {
-  return await store.createProposal(proposalInput(plan, actorId) as unknown as CreateProposalInput) as unknown as StoredConsequentialProposal;
+  return (await store.createProposal(
+    proposalInput(plan, actorId) as unknown as CreateProposalInput,
+  )) as unknown as StoredConsequentialProposal;
 }
 
-async function approve(proposal: StoredConsequentialProposal, actorId: string, expiresAt = proposal.expiresAt) {
+async function approve(
+  proposal: StoredConsequentialProposal,
+  actorId: string,
+  expiresAt = proposal.expiresAt,
+) {
   return store.createApproval({
     proposalId: proposal.id,
     payloadHash: proposal.payloadHash,
@@ -549,7 +647,10 @@ async function approve(proposal: StoredConsequentialProposal, actorId: string, e
   });
 }
 
-function executionInput(proposal: StoredConsequentialProposal, idempotencyKey = proposal.payload.plan.idempotencyKey) {
+function executionInput(
+  proposal: StoredConsequentialProposal,
+  idempotencyKey = proposal.payload.plan.idempotencyKey,
+) {
   return {
     actorId: 'executor',
     proposalId: proposal.id,
@@ -568,19 +669,26 @@ function executionInput(proposal: StoredConsequentialProposal, idempotencyKey = 
   };
 }
 
-async function acquire(plan: ConsequentialActionPlan, proposer = 'proposer'): Promise<AcquiredAction> {
+async function acquire(
+  plan: ConsequentialActionPlan,
+  proposer = 'proposer',
+): Promise<AcquiredAction> {
   const proposal = await createActionProposal(plan, proposer);
-  for (const approver of ['approver-a', 'approver-b', 'approver-c']) await approve(proposal, approver);
+  for (const approver of ['approver-a', 'approver-b', 'approver-c'])
+    await approve(proposal, approver);
   const input = executionInput(proposal);
   const result = await store.acquireProposalExecution(input as never);
-  if (!result.auditRecord?.id) throw new Error('Acquired action must persist its execution audit token');
+  if (!result.auditRecord?.id)
+    throw new Error('Acquired action must persist its execution audit token');
   if (result.claim.record.leaseExpiresAt !== proposal.expiresAt)
     throw new Error('Consequential-action lease must be bound to the immutable proposal expiry');
   if (proposalState(proposal.id).phase !== 'write_intent')
     throw new Error('Acquisition must durably persist the write-intent owner');
   return { proposal, input, acquisitionAuditId: result.auditRecord.id };
 }
-async function createGenericCategoryProposal(transactionId: string): Promise<StoredGenericProposal> {
+async function createGenericCategoryProposal(
+  transactionId: string,
+): Promise<StoredGenericProposal> {
   const payload = { kind: 'set_category' as const, transactionId, categoryId: 'food' };
   const preconditions = {
     transactionId,
@@ -601,7 +709,7 @@ async function createGenericCategoryProposal(transactionId: string): Promise<Sto
       grant(actorId, 'categorization:approve', resource);
     grant('executor', 'categorization:execute', resource);
   }
-  const proposal = await store.createProposal({
+  const proposal = (await store.createProposal({
     spaceId,
     operation: 'set_category',
     budgetId: BUDGET_ID,
@@ -613,7 +721,7 @@ async function createGenericCategoryProposal(transactionId: string): Promise<Sto
     auth: ownerAuth('proposer'),
     provenance: 'manual',
     correlationId: `categorization:${transactionId}`,
-  } as unknown as CreateProposalInput) as unknown as StoredGenericProposal;
+  } as unknown as CreateProposalInput)) as unknown as StoredGenericProposal;
   for (const actorId of ['approver-a', 'approver-b', 'approver-c']) {
     await store.createApproval({
       proposalId: proposal.id,
@@ -656,7 +764,8 @@ async function budgetWriterScenario(prefix: string) {
   const genericProposal = await createGenericCategoryProposal(`${prefix}-transaction`);
   const genericInput = genericExecutionInput(genericProposal, `${prefix}-generic`);
   const acquired = await store.acquireProposalExecution(genericInput as never);
-  if (!acquired.auditRecord?.id) throw new Error('Generic writer must persist its acquisition audit');
+  if (!acquired.auditRecord?.id)
+    throw new Error('Generic writer must persist its acquisition audit');
   return {
     actionInput: executionInput(actionProposal),
     genericProposal,
@@ -670,7 +779,11 @@ async function recordGenericPreDispatchFailure(
   input: { idempotencyKey: string },
   acquisitionAuditId: string,
 ): Promise<void> {
-  await store.completeIdempotencyRecord(input.idempotencyKey, 'Adapter rejected before dispatch', false);
+  await store.completeIdempotencyRecord(
+    input.idempotencyKey,
+    'Adapter rejected before dispatch',
+    false,
+  );
   await store.appendAuditRecord({
     classification: 'execution_failed',
     actorId: 'executor',
@@ -696,7 +809,6 @@ function reopenStore(): void {
   allStores.push(store);
 }
 
-
 function databaseRow<T>(sql: string, ...values: unknown[]): T {
   const database = new Database(databasePath, { readonly: true });
   try {
@@ -707,7 +819,10 @@ function databaseRow<T>(sql: string, ...values: unknown[]): T {
 }
 
 function proposalState(proposalId: string): Record<string, unknown> {
-  const row = databaseRow<{ state: string }>('SELECT state FROM action_proposals WHERE id = ?', proposalId);
+  const row = databaseRow<{ state: string }>(
+    'SELECT state FROM action_proposals WHERE id = ?',
+    proposalId,
+  );
   return JSON.parse(row.state) as Record<string, unknown>;
 }
 
@@ -721,8 +836,19 @@ beforeEach(async () => {
   const claimId = 'phase9-consequential-action-bootstrap';
   await store.claimBootstrap({ name: 'Owner', email: 'phase9-owner@example.com', claimId });
   await store.finalizeBootstrap({ claimId, ownerUserId: 'owner' });
-  const actorIds = ['owner', 'proposer', 'proposer-2', 'approver-a', 'approver-b', 'approver-c', 'approver-d', 'executor', 'reader'];
-  for (const actorId of actorIds) await store.upsertActorMembership(actorId, 'active', [], 'unscoped');
+  const actorIds = [
+    'owner',
+    'proposer',
+    'proposer-2',
+    'approver-a',
+    'approver-b',
+    'approver-c',
+    'approver-d',
+    'executor',
+    'reader',
+  ];
+  for (const actorId of actorIds)
+    await store.upsertActorMembership(actorId, 'active', [], 'unscoped');
   const unboundSpace = store.governance.createSpace({
     actorId: 'owner',
     name: 'Phase 9 action budget',
@@ -738,7 +864,8 @@ beforeEach(async () => {
   });
   spaceId = boundSpace.id;
   memberships = {
-    owner: store.governance.getCurrentMembership({ spaceId, actorId: 'owner', now: INITIAL_TIME })!.id,
+    owner: store.governance.getCurrentMembership({ spaceId, actorId: 'owner', now: INITIAL_TIME })!
+      .id,
   };
   for (const actorId of actorIds.slice(1)) {
     memberships[actorId] = store.governance.addMembership({
@@ -778,37 +905,51 @@ afterEach(() => {
 });
 
 describe('consequential_action workflow-store lifecycle', () => {
-  it.each(['4000', '4001'])('admits composite split debits with an exact %s gross approval threshold', async (threshold) => {
-    const intent = structuredClone(actionFixture.compositeIntent);
-    const manual = atomsOf(intent).find((atom) => atom.kind === 'manual_transaction');
-    if (!manual || manual.kind !== 'manual_transaction') throw new Error('Canonical manual atom required');
-    manual.transaction.categoryId = null;
-    manual.transaction.splits = [
-      { categoryId: 'food', amount: MONEY(-1_200) },
-      { categoryId: 'food', amount: MONEY(-800) },
-    ];
-    const { plan } = makePlan({ intent, idempotencyKey: 'composite-split-governance' });
-    const current = store.governance.getPolicy({ spaceId })!;
-    store.governance.setPolicy({
-      spaceId, expectedVersion: current.version,
-      policy: { minimumApprovers: 2, assistanceMaximum: 'execute_approved_actions',
-        approvalThresholds: [{ currency: 'USD', amountMinorUnits: threshold, requiredApprovers: 4 }] },
-      now: currentTime(), auth: ownerAuth('owner'),
-    });
-    const operations = proposalFacts(plan).operations;
-    expect(operations.filter((operation) => operation.direction === 'outgoing')
-      .map((operation) => operation.amount?.minorUnits)).toEqual(['2000', '1200', '800']);
-    setAssistanceMaximum('execute_approved_actions');
-    grantActionActors(plan);
-    const proposal = await createActionProposal(plan);
-    await approve(proposal, 'approver-a');
-    await approve(proposal, 'approver-b');
-    expect(proposalState(proposal.id).phase).toBe('proposed');
-    await approve(proposal, 'approver-c');
-    expect(proposalState(proposal.id).phase).toBe(threshold === '4000' ? 'proposed' : 'approved');
-    await approve(proposal, 'approver-d');
-    expect(proposalState(proposal.id).phase).toBe('approved');
-  });
+  it.each(['4000', '4001'])(
+    'admits composite split debits with an exact %s gross approval threshold',
+    async (threshold) => {
+      const intent = structuredClone(actionFixture.compositeIntent);
+      const manual = atomsOf(intent).find((atom) => atom.kind === 'manual_transaction');
+      if (!manual || manual.kind !== 'manual_transaction')
+        throw new Error('Canonical manual atom required');
+      manual.transaction.categoryId = null;
+      manual.transaction.splits = [
+        { categoryId: 'food', amount: MONEY(-1_200) },
+        { categoryId: 'food', amount: MONEY(-800) },
+      ];
+      const { plan } = makePlan({ intent, idempotencyKey: 'composite-split-governance' });
+      const current = store.governance.getPolicy({ spaceId })!;
+      store.governance.setPolicy({
+        spaceId,
+        expectedVersion: current.version,
+        policy: {
+          minimumApprovers: 2,
+          assistanceMaximum: 'execute_approved_actions',
+          approvalThresholds: [
+            { currency: 'USD', amountMinorUnits: threshold, requiredApprovers: 4 },
+          ],
+        },
+        now: currentTime(),
+        auth: ownerAuth('owner'),
+      });
+      const operations = proposalFacts(plan).operations;
+      expect(
+        operations
+          .filter((operation) => operation.direction === 'outgoing')
+          .map((operation) => operation.amount?.minorUnits),
+      ).toEqual(['2000', '1200', '800']);
+      setAssistanceMaximum('execute_approved_actions');
+      grantActionActors(plan);
+      const proposal = await createActionProposal(plan);
+      await approve(proposal, 'approver-a');
+      await approve(proposal, 'approver-b');
+      expect(proposalState(proposal.id).phase).toBe('proposed');
+      await approve(proposal, 'approver-c');
+      expect(proposalState(proposal.id).phase).toBe(threshold === '4000' ? 'proposed' : 'approved');
+      await approve(proposal, 'approver-d');
+      expect(proposalState(proposal.id).phase).toBe('approved');
+    },
+  );
 
   it('rejects changed native source and financial policy bindings before authorizing resources', () => {
     const { plan } = makePlan();
@@ -817,8 +958,12 @@ describe('consequential_action workflow-store lifecycle', () => {
       { ...preconditions, nativeActionHash: 'changed' },
       { ...preconditions, nativeSource: { ...plan.source, financialPolicyVersion: 'changed' } },
       { ...preconditions, financialApprovalPolicy: { version: 'changed', policyHash: 'changed' } },
-      { ...preconditions, financialApprovalPolicy: { version: plan.source.financialPolicyVersion, policyHash: ' ' } },
-    ]) expect(() => proposalFacts(plan, changed)).toThrow(/source/);
+      {
+        ...preconditions,
+        financialApprovalPolicy: { version: plan.source.financialPolicyVersion, policyHash: ' ' },
+      },
+    ])
+      expect(() => proposalFacts(plan, changed)).toThrow(/source/);
   });
 
   it('counts composite manual and evidence debits in disclosure limits', () => {
@@ -827,9 +972,14 @@ describe('consequential_action workflow-store lifecycle', () => {
       [actionFixture.evidenceProjectionIntent, 500n],
     ] as const) {
       const { plan } = makePlan({ intent });
-      expect(deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan },
-        preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash), 'detail').grossOutgoing)
-        .toEqual({ USD: expected });
+      expect(
+        deriveProposalDisclosureTotals(
+          ACTION_OPERATION,
+          { kind: 'consequential_action', plan },
+          preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash),
+          'detail',
+        ).grossOutgoing,
+      ).toEqual({ USD: expected });
     }
   });
 
@@ -841,36 +991,56 @@ describe('consequential_action workflow-store lifecycle', () => {
       { ...assignment, amount: MONEY('9223372036854775807') },
       { ...assignment, amount: MONEY(1) },
     ];
-    expect(() => deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan },
-      preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash), 'detail'))
-      .toThrow('Proposal disclosure gross outgoing overflow');
+    expect(() =>
+      deriveProposalDisclosureTotals(
+        ACTION_OPERATION,
+        { kind: 'consequential_action', plan },
+        preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash),
+        'detail',
+      ),
+    ).toThrow('Proposal disclosure gross outgoing overflow');
   });
 
   it('binds evidence identity to economic effects and rejects missing native evidence hold references', () => {
     const { plan } = makePlan({ intent: actionFixture.evidenceProjectionIntent });
-    if (plan.action.kind !== 'evidence_projection') throw new Error('Canonical evidence projection required');
+    if (plan.action.kind !== 'evidence_projection')
+      throw new Error('Canonical evidence projection required');
     const atom = plan.action;
     expect(consequentialActionStableIdentity(atom)).toEqual({
-      parentId: atom.transaction.parentId, evidenceIds: atom.evidenceIds,
+      parentId: atom.transaction.parentId,
+      evidenceIds: atom.evidenceIds,
       economicEffect: {
-        accountId: atom.transaction.accountId, date: atom.transaction.date,
-        amount: atom.transaction.amount, categoryId: atom.transaction.categoryId,
+        accountId: atom.transaction.accountId,
+        date: atom.transaction.date,
+        amount: atom.transaction.amount,
+        categoryId: atom.transaction.categoryId,
         splits: atom.transaction.splits,
       },
     });
-    expect(() => consequentialActionHoldKeys({ ...plan, evidenceReferences: [] }, 'actual-fixture'))
-      .toThrow('Evidence projection lacks its exact native reference');
+    expect(() =>
+      consequentialActionHoldKeys({ ...plan, evidenceReferences: [] }, 'actual-fixture'),
+    ).toThrow('Evidence projection lacks its exact native reference');
   });
 
   it('counts nested Money without treating currency-only account metadata as an amount', () => {
     const { plan } = makePlan();
     const payload = { kind: 'consequential_action' as const, plan };
     const preconditions = preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash);
-    const baseline = deriveProposalDisclosureTotals(ACTION_OPERATION, payload, preconditions, 'detail');
-    const disclosure = deriveProposalDisclosureTotals(ACTION_OPERATION, payload, {
-      ...preconditions,
-      supplemental: { accounts: [liquidityFixture.facts.accounts[0]] },
-    }, 'detail');
+    const baseline = deriveProposalDisclosureTotals(
+      ACTION_OPERATION,
+      payload,
+      preconditions,
+      'detail',
+    );
+    const disclosure = deriveProposalDisclosureTotals(
+      ACTION_OPERATION,
+      payload,
+      {
+        ...preconditions,
+        supplemental: { accounts: [liquidityFixture.facts.accounts[0]] },
+      },
+      'detail',
+    );
     expect(disclosure).toEqual({
       operationCount: baseline.operationCount + 2,
       grossOutgoing: baseline.grossOutgoing,
@@ -883,29 +1053,37 @@ describe('consequential_action workflow-store lifecycle', () => {
     { minorUnits: '9223372036854775808', currency: 'USD' },
     { ...MONEY('1'), accountId: 'unexpected-money-field' },
   ])('fails closed on malformed financial amount %j', (amount) => {
-    expect(() => deriveProposalDisclosureTotals(
-      ACTION_OPERATION, null, { amount }, 'preconditions',
-    )).toThrow();
+    expect(() =>
+      deriveProposalDisclosureTotals(ACTION_OPERATION, null, { amount }, 'preconditions'),
+    ).toThrow();
   });
 
   it('plans the canonical atomic and composite actions natively and hashes the full immutable envelope', () => {
     const atomic = makePlan();
-    const composite = makePlan({ intent: actionFixture.compositeIntent, idempotencyKey: 'composite-hash-test' });
+    const composite = makePlan({
+      intent: actionFixture.compositeIntent,
+      idempotencyKey: 'composite-hash-test',
+    });
     expect(atomic.plan.actionHash).toMatch(/^[0-9a-f]{64}$/);
     expect(composite.plan.action.kind).toBe('composite');
     expect(composite.plan.actionHash).not.toBe(atomic.plan.actionHash);
 
-    const preconditions = preconditionsFor(composite.plan, atomic.request.decisionCardRequest.liquidityPolicy.policyHash);
+    const preconditions = preconditionsFor(
+      composite.plan,
+      atomic.request.decisionCardRequest.liquidityPolicy.policyHash,
+    );
     const facts = proposalFacts(composite.plan, preconditions);
     expect(new Set(facts.operations.map(({ operation }) => operation)).size).toBe(2);
     expect(facts.operations).toHaveLength(2);
-    expect(facts.resources).toEqual(expect.arrayContaining([
-      { resourceKind: 'category', resourceId: 'reserve' },
-      { resourceKind: 'category', resourceId: 'food' },
-      { resourceKind: 'account', resourceId: 'checking' },
-      { resourceKind: 'transaction', resourceId: 'manual-parent-composite-1' },
-      { resourceKind: 'evidence', resourceId: 'checking-freshness' },
-    ]));
+    expect(facts.resources).toEqual(
+      expect.arrayContaining([
+        { resourceKind: 'category', resourceId: 'reserve' },
+        { resourceKind: 'category', resourceId: 'food' },
+        { resourceKind: 'account', resourceId: 'checking' },
+        { resourceKind: 'transaction', resourceId: 'manual-parent-composite-1' },
+        { resourceKind: 'evidence', resourceId: 'checking-freshness' },
+      ]),
+    );
 
     const base = {
       operation: 'consequential_action',
@@ -930,7 +1108,8 @@ describe('consequential_action workflow-store lifecycle', () => {
     const assignment = changedPostcondition.payload.plan.expectedPostconditions.find(
       (condition) => condition.kind === 'assignment' && condition.categoryId === 'reserve',
     );
-    if (!assignment || assignment.kind !== 'assignment') throw new Error('Native assignment postcondition is required');
+    if (!assignment || assignment.kind !== 'assignment')
+      throw new Error('Native assignment postcondition is required');
     assignment.amount.minorUnits = '999';
     const changedPolicyHash = {
       ...base,
@@ -943,8 +1122,10 @@ describe('consequential_action workflow-store lifecycle', () => {
   it('defaults absent assistance maximum to analysis_only for the new operation only', async () => {
     const policy = store.governance.getPolicy({ spaceId });
     if (!policy) throw new Error('Current governance policy is required');
-    expect((policy as typeof policy & { assistanceMaximum?: AssistanceMaximum }).assistanceMaximum ?? 'analysis_only')
-      .toBe('analysis_only');
+    expect(
+      (policy as typeof policy & { assistanceMaximum?: AssistanceMaximum }).assistanceMaximum ??
+        'analysis_only',
+    ).toBe('analysis_only');
     const { plan } = makePlan();
     expect(plan.action.kind).toBe('reallocation');
     grantVisibility(plan, ['proposer']);
@@ -989,9 +1170,13 @@ describe('consequential_action workflow-store lifecycle', () => {
     await approve(proposal, 'approver-b');
     await approve(proposal, 'approver-c');
     for (const resource of refs) grant('executor', 'categorization:execute', resource);
-    await expect(store.acquireProposalExecution(executionInput(proposal) as never)).rejects.toThrow();
+    await expect(
+      store.acquireProposalExecution(executionInput(proposal) as never),
+    ).rejects.toThrow();
     for (const resource of refs) grant('executor', 'reallocation:execute', resource);
-    expect((await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner,
+    ).toBe(true);
   });
 
   it('does not execute an approved proposal above a create_approval_proposal ceiling', async () => {
@@ -1011,7 +1196,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     });
     expect(read.approvers).toHaveLength(3);
     expect(read.canExecute).toBe(false);
-    await expect(store.acquireProposalExecution(executionInput(proposal) as never)).rejects.toThrow();
+    await expect(
+      store.acquireProposalExecution(executionInput(proposal) as never),
+    ).rejects.toThrow();
   });
   it('retains independently authorized detail reads after lowering assistance to analysis_only', async () => {
     setAssistanceMaximum('create_approval_proposal');
@@ -1020,13 +1207,25 @@ describe('consequential_action workflow-store lifecycle', () => {
     const proposal = await createActionProposal(plan);
     const payload = { kind: 'consequential_action' as const, plan };
     const preconditions = preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash);
-    const sourceReads = deriveProposalSourceReadFacts(ACTION_OPERATION, payload, preconditions, BUDGET_ID);
+    const sourceReads = deriveProposalSourceReadFacts(
+      ACTION_OPERATION,
+      payload,
+      preconditions,
+      BUDGET_ID,
+    );
     if (!sourceReads) throw new Error('Canonical consequential-action source reads are required');
-    const disclosure = deriveProposalDisclosureTotals(ACTION_OPERATION, payload, preconditions, 'detail');
+    const disclosure = deriveProposalDisclosureTotals(
+      ACTION_OPERATION,
+      payload,
+      preconditions,
+      'detail',
+    );
     const readRestrictions = {
       maxOperationCount: disclosure.operationCount,
-      maxGrossOutgoing: Object.entries(disclosure.grossOutgoing)
-        .map(([currency, minorUnits]) => ({ currency, minorUnits: minorUnits.toString() })),
+      maxGrossOutgoing: Object.entries(disclosure.grossOutgoing).map(([currency, minorUnits]) => ({
+        currency,
+        minorUnits: minorUnits.toString(),
+      })),
     };
     grantVisibility(plan, ['reader']);
     const privateResources = new Map<string, Resource>();
@@ -1072,19 +1271,26 @@ describe('consequential_action workflow-store lifecycle', () => {
     expect(boundedRead?.preconditions).toBeNull();
   });
 
-
   it('requires each composite atom capability only on that atom closure and no generic fallback', async () => {
     setAssistanceMaximum('create_approval_proposal');
-    const { plan } = makePlan({ intent: actionFixture.compositeIntent, idempotencyKey: 'atom-capabilities' });
+    const { plan } = makePlan({
+      intent: actionFixture.compositeIntent,
+      idempotencyKey: 'atom-capabilities',
+    });
     const [reallocationAtom, manualAtom] = atomsOf(plan.action);
     if (reallocationAtom?.kind !== 'reallocation' || manualAtom?.kind !== 'manual_transaction')
-      throw new Error('Canonical composite action must contain reallocation then manual transaction');
+      throw new Error(
+        'Canonical composite action must contain reallocation then manual transaction',
+      );
     grantVisibility(plan, ['proposer']);
-    for (const resource of atomResources(reallocationAtom)) grant('proposer', 'reallocation:propose', resource);
-    for (const resource of atomResources(manualAtom)) grant('proposer', 'manual_transaction:propose', resource);
+    for (const resource of atomResources(reallocationAtom))
+      grant('proposer', 'reallocation:propose', resource);
+    for (const resource of atomResources(manualAtom))
+      grant('proposer', 'manual_transaction:propose', resource);
     await expect(createActionProposal(plan)).rejects.toThrow();
 
-    for (const resource of atomResources(manualAtom)) grant('proposer', 'transaction:propose', resource);
+    for (const resource of atomResources(manualAtom))
+      grant('proposer', 'transaction:propose', resource);
     const proposal = await createActionProposal(plan);
     expect(proposal.payload.plan.action.kind).toBe('composite');
   });
@@ -1105,10 +1311,10 @@ describe('consequential_action workflow-store lifecycle', () => {
     await approve(proposal, 'approver-a');
     await approve(proposal, 'approver-b');
     await approve(proposal, 'approver-c');
-    expect((await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner,
+    ).toBe(true);
   });
-
-
 
   it('requires independently scoped evidence visibility for private plan reads', async () => {
     setAssistanceMaximum('create_approval_proposal');
@@ -1118,7 +1324,12 @@ describe('consequential_action workflow-store lifecycle', () => {
     });
     const payload = { kind: 'consequential_action' as const, plan };
     const preconditions = preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash);
-    const sourceFacts = deriveProposalSourceReadFacts(ACTION_OPERATION, payload, preconditions, BUDGET_ID);
+    const sourceFacts = deriveProposalSourceReadFacts(
+      ACTION_OPERATION,
+      payload,
+      preconditions,
+      BUDGET_ID,
+    );
     grantPhase(plan, 'proposer', 'propose');
     for (const required of sourceFacts.required) {
       if (required.resourceKind === 'evidence') continue;
@@ -1164,10 +1375,14 @@ describe('consequential_action workflow-store lifecycle', () => {
     expect(proposalState(proposal.id).phase).toBe('proposed');
     await approve(proposal, 'approver-b');
     expect(proposalState(proposal.id).phase).toBe('proposed');
-    await expect(store.acquireProposalExecution(executionInput(proposal) as never)).rejects.toThrow();
+    await expect(
+      store.acquireProposalExecution(executionInput(proposal) as never),
+    ).rejects.toThrow();
     await approve(proposal, 'approver-c');
     expect(proposalState(proposal.id).phase).toBe('approved');
-    expect((await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner,
+    ).toBe(true);
     expect(proposalState(proposal.id).phase).toBe('write_intent');
   });
   it('demotes an approved action when a vote loses current approval authority', async () => {
@@ -1175,7 +1390,8 @@ describe('consequential_action workflow-store lifecycle', () => {
     const { plan } = makePlan({ idempotencyKey: 'approval-authority-demotion' });
     grantActionActors(plan);
     const proposal = await createActionProposal(plan);
-    for (const actorId of ['approver-a', 'approver-b', 'approver-c']) await approve(proposal, actorId);
+    for (const actorId of ['approver-a', 'approver-b', 'approver-c'])
+      await approve(proposal, actorId);
     expect(proposalState(proposal.id).phase).toBe('approved');
 
     for (const resource of atomResources(atomsOf(plan.action)[0]!))
@@ -1201,7 +1417,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     expect(read?.summary.approvers).toHaveLength(2);
     expect(read?.proposal.state).toMatchObject({ phase: 'proposed' });
     expect(proposalState(proposal.id).phase).toBe('proposed');
-    await expect(store.acquireProposalExecution(executionInput(proposal) as never)).rejects.toThrow();
+    await expect(
+      store.acquireProposalExecution(executionInput(proposal) as never),
+    ).rejects.toThrow();
   });
   it('requires only the financial minimum below its multi-digit amount threshold', async () => {
     saveFinancialPolicy('financial-policy-boundary', 'financial-policy-boundary-hash', {
@@ -1217,36 +1435,53 @@ describe('consequential_action workflow-store lifecycle', () => {
     const proposal = await createActionProposal(plan);
     await approve(proposal, 'approver-a');
     await approve(proposal, 'approver-b');
-    expect((await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner,
+    ).toBe(true);
   });
 
   it('uses the higher current governance quorum than the financial quorum', async () => {
     setAssistanceMaximum('execute_approved_actions');
-    setGovernancePolicy({ minimumApprovers: 4, operationApprovers: 4, assistanceMaximum: 'execute_approved_actions' });
+    setGovernancePolicy({
+      minimumApprovers: 4,
+      operationApprovers: 4,
+      assistanceMaximum: 'execute_approved_actions',
+    });
     const { plan } = makePlan({ idempotencyKey: 'governance-floor-four' });
     grantActionActors(plan);
     const proposal = await createActionProposal(plan);
     await approve(proposal, 'approver-a');
     await approve(proposal, 'approver-b');
     await approve(proposal, 'approver-c');
-    await expect(store.acquireProposalExecution(executionInput(proposal) as never)).rejects.toThrow();
+    await expect(
+      store.acquireProposalExecution(executionInput(proposal) as never),
+    ).rejects.toThrow();
     await approve(proposal, 'approver-d');
-    expect((await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(executionInput(proposal) as never)).claim.isOwner,
+    ).toBe(true);
   });
 
   it('preserves assistance maximum when liquidity policy changes and reads legacy empty financial quorum from governance', async () => {
     setAssistanceMaximum('analysis_only');
     saveFinancialPolicy('financial-policy-2', 'financial-policy-hash-2', { minimumApprovers: 3 });
     const afterSave = store.governance.getPolicy({ spaceId });
-    expect((afterSave as typeof afterSave & { assistanceMaximum?: AssistanceMaximum })?.assistanceMaximum)
-      .toBe('analysis_only');
+    expect(
+      (afterSave as typeof afterSave & { assistanceMaximum?: AssistanceMaximum })
+        ?.assistanceMaximum,
+    ).toBe('analysis_only');
     expect(currentFinancialPolicy().approvalPolicy.minimumApprovers).toBe(3);
 
-    setGovernancePolicy({ minimumApprovers: 2, operationApprovers: 2, assistanceMaximum: 'analysis_only' });
+    setGovernancePolicy({
+      minimumApprovers: 2,
+      operationApprovers: 2,
+      assistanceMaximum: 'analysis_only',
+    });
     const db = new Database(databasePath);
     try {
-      db.prepare('UPDATE liquidity_policy_versions SET approval_policy = ? WHERE budget_id = ? AND version = ?')
-        .run('{}', BUDGET_ID, 'financial-policy-2');
+      db.prepare(
+        'UPDATE liquidity_policy_versions SET approval_policy = ? WHERE budget_id = ? AND version = ?',
+      ).run('{}', BUDGET_ID, 'financial-policy-2');
     } finally {
       db.close();
     }
@@ -1262,13 +1497,15 @@ describe('consequential_action workflow-store lifecycle', () => {
       operationApprovers: current.operationApprovers,
       assistanceMaximum: 'write_anything',
     } as unknown as GovernancePolicyInput;
-    expect(() => store.governance.setPolicy({
-      spaceId,
-      expectedVersion: current.version,
-      policy: invalid,
-      now: currentTime(),
-      auth: ownerAuth('owner'),
-    })).toThrow();
+    expect(() =>
+      store.governance.setPolicy({
+        spaceId,
+        expectedVersion: current.version,
+        policy: invalid,
+        now: currentTime(),
+        auth: ownerAuth('owner'),
+      }),
+    ).toThrow();
   });
 
   it('rejects expired plans and payload/effect/key replay mismatches', async () => {
@@ -1298,13 +1535,19 @@ describe('consequential_action workflow-store lifecycle', () => {
     expect(acquired.claim.isOwner).toBe(true);
     const replay = await store.acquireProposalExecution(input as never);
     expect(replay.claim.isOwner).toBe(false);
-    await expect(store.acquireProposalExecution({ ...input, idempotencyKey: 'different-execution-key' } as never))
-      .rejects.toThrow();
-    expect(() => store.validateAcquiredProposalExecution({
-      ...input,
-      acquisitionAuditId: acquired.auditRecord!.id,
-      payloadHash: 'different-payload-hash',
-    } as never)).toThrow();
+    await expect(
+      store.acquireProposalExecution({
+        ...input,
+        idempotencyKey: 'different-execution-key',
+      } as never),
+    ).rejects.toThrow();
+    expect(() =>
+      store.validateAcquiredProposalExecution({
+        ...input,
+        acquisitionAuditId: acquired.auditRecord!.id,
+        payloadHash: 'different-payload-hash',
+      } as never),
+    ).toThrow();
   });
 
   it('rejects expired approvals while the action plan remains live', async () => {
@@ -1318,7 +1561,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     await approve(proposal, 'approver-c', approvalExpiry);
     vi.setSystemTime(new Date(Date.parse(approvalExpiry) + 1_000));
     expect(currentTime() < plan.expiresAt).toBe(true);
-    await expect(store.acquireProposalExecution(executionInput(proposal) as never)).rejects.toThrow();
+    await expect(
+      store.acquireProposalExecution(executionInput(proposal) as never),
+    ).rejects.toThrow();
   });
 
   it('rejects current financial-policy hash drift at the final execution fence', async () => {
@@ -1333,19 +1578,23 @@ describe('consequential_action workflow-store lifecycle', () => {
     const acquired = await store.acquireProposalExecution(input as never);
     const db = new Database(databasePath);
     try {
-      const row = db.prepare('SELECT policy FROM liquidity_policy_versions WHERE budget_id = ? AND version = ?')
+      const row = db
+        .prepare('SELECT policy FROM liquidity_policy_versions WHERE budget_id = ? AND version = ?')
         .get(BUDGET_ID, actionFixture.financialPolicyVersion) as { policy: string };
       const policy = JSON.parse(row.policy) as Record<string, unknown>;
       policy.policyHash = 'changed-policy-hash-without-version-change';
-      db.prepare('UPDATE liquidity_policy_versions SET policy = ? WHERE budget_id = ? AND version = ?')
-        .run(JSON.stringify(policy), BUDGET_ID, actionFixture.financialPolicyVersion);
+      db.prepare(
+        'UPDATE liquidity_policy_versions SET policy = ? WHERE budget_id = ? AND version = ?',
+      ).run(JSON.stringify(policy), BUDGET_ID, actionFixture.financialPolicyVersion);
     } finally {
       db.close();
     }
-    expect(() => store.validateAcquiredProposalExecution({
-      ...input,
-      acquisitionAuditId: acquired.auditRecord!.id,
-    } as never)).toThrow();
+    expect(() =>
+      store.validateAcquiredProposalExecution({
+        ...input,
+        acquisitionAuditId: acquired.auditRecord!.id,
+      } as never),
+    ).toThrow();
   });
 
   it('holds a stable manual parent identity even when a new proposal changes its correlation and payee', async () => {
@@ -1356,7 +1605,11 @@ describe('consequential_action workflow-store lifecycle', () => {
       idempotencyKey: 'manual-parent-first',
     });
     const second = makePlan({
-      intent: manualTransactionIntent('manual-parent-stable', 'manual-correlation-second', 'Renamed shop'),
+      intent: manualTransactionIntent(
+        'manual-parent-stable',
+        'manual-correlation-second',
+        'Renamed shop',
+      ),
       afterReallocation: true,
       idempotencyKey: 'manual-parent-second',
     });
@@ -1371,7 +1624,10 @@ describe('consequential_action workflow-store lifecycle', () => {
     const evidenceIntent = actionFixture.evidenceProjectionIntent;
     if (evidenceIntent.kind !== 'evidence_projection')
       throw new Error('Canonical resolved evidence projection intent is required');
-    const makeEvidenceProjection = (parentId: string, correlationId: string): ConsequentialActionIntent => ({
+    const makeEvidenceProjection = (
+      parentId: string,
+      correlationId: string,
+    ): ConsequentialActionIntent => ({
       ...structuredClone(evidenceIntent),
       transaction: {
         ...structuredClone(evidenceIntent.transaction),
@@ -1385,7 +1641,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     });
     const secondEvidenceIds = ['fd-transaction-followup-2', 'fd-transaction-followup-3'];
     const secondEvidence = structuredClone(actionFixture.resolvedEvidence);
-    const sameSubject = secondEvidence.find((reference) => reference.evidenceId === evidenceIntent.evidenceIds[0]);
+    const sameSubject = secondEvidence.find(
+      (reference) => reference.evidenceId === evidenceIntent.evidenceIds[0],
+    );
     if (!sameSubject) throw new Error('Canonical evidence subject reference is required');
     for (const evidenceId of secondEvidenceIds) {
       secondEvidence.push({
@@ -1410,7 +1668,10 @@ describe('consequential_action workflow-store lifecycle', () => {
       authorized: true,
       redaction: 'visible',
     }));
-    const secondIntent = makeEvidenceProjection('manual-parent-evidence-2', 'evidence-correlation-second');
+    const secondIntent = makeEvidenceProjection(
+      'manual-parent-evidence-2',
+      'evidence-correlation-second',
+    );
     if (secondIntent.kind !== 'evidence_projection')
       throw new Error('Canonical evidence projection intent is required');
     secondIntent.evidenceIds = secondEvidenceIds;
@@ -1435,11 +1696,25 @@ describe('consequential_action workflow-store lifecycle', () => {
       accountName,
       currency: 'USD',
     });
-    const firstWallet = makePlan({ intent: wallet('Emergency savings'), idempotencyKey: 'wallet-first' });
-    const secondWallet = makePlan({ intent: wallet('Emergency savings renamed'), idempotencyKey: 'wallet-second' });
-    expect(consequentialActionStableIdentity(firstWallet.plan.action as ActionAtom)).toEqual({ walletId: 'wallet-stable-phase9' });
-    expect(deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan: firstWallet.plan },
-      preconditionsFor(firstWallet.plan, liquidityFixture.liquidityPolicy.policyHash), 'detail').grossOutgoing).toEqual({});
+    const firstWallet = makePlan({
+      intent: wallet('Emergency savings'),
+      idempotencyKey: 'wallet-first',
+    });
+    const secondWallet = makePlan({
+      intent: wallet('Emergency savings renamed'),
+      idempotencyKey: 'wallet-second',
+    });
+    expect(consequentialActionStableIdentity(firstWallet.plan.action as ActionAtom)).toEqual({
+      walletId: 'wallet-stable-phase9',
+    });
+    expect(
+      deriveProposalDisclosureTotals(
+        ACTION_OPERATION,
+        { kind: 'consequential_action', plan: firstWallet.plan },
+        preconditionsFor(firstWallet.plan, liquidityFixture.liquidityPolicy.policyHash),
+        'detail',
+      ).grossOutgoing,
+    ).toEqual({});
     grantActionActors(firstWallet.plan);
     grantActionActors(secondWallet.plan);
     await createActionProposal(firstWallet.plan);
@@ -1454,11 +1729,25 @@ describe('consequential_action workflow-store lifecycle', () => {
       amount: MONEY(1_000),
       date: '2026-09-06',
     });
-    const firstTransfer = makePlan({ intent: transfer('transfer-correlation-first'), idempotencyKey: 'transfer-first' });
-    const secondTransfer = makePlan({ intent: transfer('transfer-correlation-second'), idempotencyKey: 'transfer-second' });
-    expect(consequentialActionStableIdentity(firstTransfer.plan.action as ActionAtom)).toEqual({ transferId: 'ledger-transfer-stable-phase9' });
-    expect(deriveProposalDisclosureTotals(ACTION_OPERATION, { kind: 'consequential_action', plan: firstTransfer.plan },
-      preconditionsFor(firstTransfer.plan, liquidityFixture.liquidityPolicy.policyHash), 'detail').grossOutgoing).toEqual({ USD: 1_000n });
+    const firstTransfer = makePlan({
+      intent: transfer('transfer-correlation-first'),
+      idempotencyKey: 'transfer-first',
+    });
+    const secondTransfer = makePlan({
+      intent: transfer('transfer-correlation-second'),
+      idempotencyKey: 'transfer-second',
+    });
+    expect(consequentialActionStableIdentity(firstTransfer.plan.action as ActionAtom)).toEqual({
+      transferId: 'ledger-transfer-stable-phase9',
+    });
+    expect(
+      deriveProposalDisclosureTotals(
+        ACTION_OPERATION,
+        { kind: 'consequential_action', plan: firstTransfer.plan },
+        preconditionsFor(firstTransfer.plan, liquidityFixture.liquidityPolicy.policyHash),
+        'detail',
+      ).grossOutgoing,
+    ).toEqual({ USD: 1_000n });
     grantActionActors(firstTransfer.plan);
     grantActionActors(secondTransfer.plan);
     await createActionProposal(firstTransfer.plan);
@@ -1473,8 +1762,14 @@ describe('consequential_action workflow-store lifecycle', () => {
       accountName,
       currency: 'USD',
     });
-    const first = makePlan({ intent: wallet('wallet-owner-one', 'Emergency savings one'), idempotencyKey: 'budget-owner-one' });
-    const second = makePlan({ intent: wallet('wallet-owner-two', 'Emergency savings two'), idempotencyKey: 'budget-owner-two' });
+    const first = makePlan({
+      intent: wallet('wallet-owner-one', 'Emergency savings one'),
+      idempotencyKey: 'budget-owner-one',
+    });
+    const second = makePlan({
+      intent: wallet('wallet-owner-two', 'Emergency savings two'),
+      idempotencyKey: 'budget-owner-two',
+    });
     grantActionActors(first.plan);
     grantActionActors(second.plan);
     const firstProposal = await createActionProposal(first.plan);
@@ -1487,13 +1782,19 @@ describe('consequential_action workflow-store lifecycle', () => {
     await store.acquireProposalExecution(executionInput(firstProposal) as never);
     const peer = new SqliteWorkflowStore(databasePath);
     allStores.push(peer);
-    await expect(peer.acquireProposalExecution(executionInput(secondProposal) as never)).rejects.toThrow();
+    await expect(
+      peer.acquireProposalExecution(executionInput(secondProposal) as never),
+    ).rejects.toThrow();
   });
   it('fences concurrent categorization and rule acquisition and final dispatch against a budget action owner', async () => {
     setAssistanceMaximum('execute_approved_actions');
     const { plan } = makePlan({ idempotencyKey: 'cross-operation-budget-owner' });
     grantActionActors(plan);
-    const { proposal: actionProposal, input: actionInput, acquisitionAuditId } = await acquire(plan);
+    const {
+      proposal: actionProposal,
+      input: actionInput,
+      acquisitionAuditId,
+    } = await acquire(plan);
 
     const transactionId = 'phase9-competing-category-transaction';
     const categoryPayload = { kind: 'set_category' as const, transactionId, categoryId: 'food' };
@@ -1571,7 +1872,11 @@ describe('consequential_action workflow-store lifecycle', () => {
       },
       override: null,
     };
-    const ruleFacts = deriveProposalAuthorizationFacts('update_rule', rulePayload, rulePreconditions);
+    const ruleFacts = deriveProposalAuthorizationFacts(
+      'update_rule',
+      rulePayload,
+      rulePreconditions,
+    );
     const ruleResources = [
       { resourceKind: 'budget' as const, resourceId: BUDGET_ID },
       ...ruleFacts.resources,
@@ -1608,12 +1913,14 @@ describe('consequential_action workflow-store lifecycle', () => {
       auth: ownerAuth('executor'),
       now: currentTime(),
     };
-    await expect(peer.acquireProposalExecution(ruleExecution as never))
-      .rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
+    await expect(peer.acquireProposalExecution(ruleExecution as never)).rejects.toMatchObject({
+      reasonCode: 'idempotency_in_progress',
+    });
 
     expect(approval.actorId).toBe('approver-a');
-    await expect(peer.acquireProposalExecution(categoryExecution as never))
-      .rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
+    await expect(peer.acquireProposalExecution(categoryExecution as never)).rejects.toMatchObject({
+      reasonCode: 'idempotency_in_progress',
+    });
 
     await peer.createIdempotencyRecord({
       idempotencyKey: 'legacy-category-write-fence',
@@ -1621,10 +1928,12 @@ describe('consequential_action workflow-store lifecycle', () => {
       operation: categoryProposal.operation,
       serialisedEffect: categoryEffect,
     });
-    expect(() => store.validateAcquiredProposalExecution({
-      ...actionInput,
-      acquisitionAuditId,
-    } as never)).toThrow();
+    expect(() =>
+      store.validateAcquiredProposalExecution({
+        ...actionInput,
+        acquisitionAuditId,
+      } as never),
+    ).toThrow();
     expect(proposalState(actionProposal.id).phase).toBe('write_intent');
   });
   it('retains a reconciled uncertain generic writer as the budget owner', async () => {
@@ -1633,13 +1942,16 @@ describe('consequential_action workflow-store lifecycle', () => {
     const leaseExpiredAt = new Date(Date.parse(currentTime()) + 61_000).toISOString();
     vi.setSystemTime(new Date(leaseExpiredAt));
     expect(await store.reconcileStrandedIdempotencyRecords()).toBe(1);
-    expect((await store.getIdempotencyRecord(scenario.genericInput.idempotencyKey))?.status)
-      .toBe('retryable_failed');
-    await expect(store.acquireProposalExecution({
-      ...scenario.actionInput,
-      now: leaseExpiredAt,
-      auth: ownerAuth('executor', leaseExpiredAt),
-    } as never)).rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
+    expect((await store.getIdempotencyRecord(scenario.genericInput.idempotencyKey))?.status).toBe(
+      'retryable_failed',
+    );
+    await expect(
+      store.acquireProposalExecution({
+        ...scenario.actionInput,
+        now: leaseExpiredAt,
+        auth: ownerAuth('executor', leaseExpiredAt),
+      } as never),
+    ).rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
   });
 
   it('retains a terminal generic failure without exact no-dispatch proof', async () => {
@@ -1650,8 +1962,9 @@ describe('consequential_action workflow-store lifecycle', () => {
       'Dispatch outcome is uncertain',
       false,
     );
-    await expect(store.acquireProposalExecution(scenario.actionInput as never))
-      .rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
+    await expect(
+      store.acquireProposalExecution(scenario.actionInput as never),
+    ).rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
   });
 
   it('releases a terminal generic writer only with its exact acquisition-bound no-dispatch proof', async () => {
@@ -1662,7 +1975,9 @@ describe('consequential_action workflow-store lifecycle', () => {
       scenario.genericInput,
       scenario.acquisitionAuditId,
     );
-    expect((await store.acquireProposalExecution(scenario.actionInput as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(scenario.actionInput as never)).claim.isOwner,
+    ).toBe(true);
   });
 
   it('keeps a generic writer held when a no-dispatch proof names another acquisition', async () => {
@@ -1673,10 +1988,10 @@ describe('consequential_action workflow-store lifecycle', () => {
       scenario.genericInput,
       'unrelated-execution-started-audit',
     );
-    await expect(store.acquireProposalExecution(scenario.actionInput as never))
-      .rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
+    await expect(
+      store.acquireProposalExecution(scenario.actionInput as never),
+    ).rejects.toMatchObject({ reasonCode: 'idempotency_in_progress' });
   });
-
 
   it('serializes distinct donors competing for the same recipient across two SQLite connections', async () => {
     setAssistanceMaximum('create_approval_proposal');
@@ -1691,7 +2006,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     allStores.push(peer);
     const attempts = await Promise.allSettled([
       createActionProposal(first.plan, 'proposer'),
-      peer.createProposal(proposalInput(second.plan, 'proposer-2') as unknown as CreateProposalInput),
+      peer.createProposal(
+        proposalInput(second.plan, 'proposer-2') as unknown as CreateProposalInput,
+      ),
     ]);
     expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
     expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
@@ -1707,7 +2024,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     allStores.push(peer);
     const attempts = await Promise.allSettled([
       createActionProposal(first.plan, 'proposer'),
-      peer.createProposal(proposalInput(second.plan, 'proposer-2') as unknown as CreateProposalInput),
+      peer.createProposal(
+        proposalInput(second.plan, 'proposer-2') as unknown as CreateProposalInput,
+      ),
     ]);
     expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
     expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
@@ -1753,13 +2072,15 @@ describe('consequential_action workflow-store lifecycle', () => {
       now: currentTime(),
       auth: ownerAuth('owner'),
     });
-    await expect(store.getProposalApprovalSummary({
-      proposalId: proposal.id,
-      spaceId,
-      actorId: 'reader',
-      auth: ownerAuth('reader'),
-      now: currentTime(),
-    })).rejects.toThrow();
+    await expect(
+      store.getProposalApprovalSummary({
+        proposalId: proposal.id,
+        spaceId,
+        actorId: 'reader',
+        auth: ownerAuth('reader'),
+        now: currentTime(),
+      }),
+    ).rejects.toThrow();
     grant('reader', capability, { resourceKind, resourceId });
     for (const actorId of ['approver-a', 'reader']) {
       const [read] = store.getProposalApprovalReads({
@@ -1786,8 +2107,11 @@ describe('consequential_action workflow-store lifecycle', () => {
     const verifiedCard = structuredClone(request.decisionCardRequest);
     const verifiedCategories = verifiedCard.financialSnapshot.liquidity?.categories;
     if (!verifiedCategories) throw new Error('Canonical postcondition category facts are required');
-    for (const postcondition of actionFixture.postconditions.reallocation.financialSnapshot.categoryAvailability) {
-      const category = verifiedCategories.find((fact) => fact.categoryId === postcondition.categoryId);
+    for (const postcondition of actionFixture.postconditions.reallocation.financialSnapshot
+      .categoryAvailability) {
+      const category = verifiedCategories.find(
+        (fact) => fact.categoryId === postcondition.categoryId,
+      );
       if (!category) throw new Error('Canonical postcondition category is required');
       category.availability = structuredClone(postcondition.amount);
     }
@@ -1804,9 +2128,11 @@ describe('consequential_action workflow-store lifecycle', () => {
       currentLedger: observedLedger,
       financialPolicyVersion: request.financialPolicyVersion,
     });
-    const verification = JSON.parse(native.verifyConsequentialAction(
-      JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
-    )) as ConsequentialActionVerification;
+    const verification = JSON.parse(
+      native.verifyConsequentialAction(
+        JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
+      ),
+    ) as ConsequentialActionVerification;
     expect(verification).toEqual({ valid: true, reason: null, actionHash: plan.actionHash });
     const verificationToken = issueConsequentialActionVerificationToken({
       ...identity,
@@ -1814,20 +2140,31 @@ describe('consequential_action workflow-store lifecycle', () => {
       verifyRequest,
       observedState: observedLedger,
     });
-    await expect(store.finalizeConsequentialActionExecution({
-      ...identity,
-      outcome: {
-        kind: 'verified',
-        verificationToken: { verification, verifyRequest, observedState: observedLedger } as never,
-      },
-    })).rejects.toThrow();
+    await expect(
+      store.finalizeConsequentialActionExecution({
+        ...identity,
+        outcome: {
+          kind: 'verified',
+          verificationToken: {
+            verification,
+            verifyRequest,
+            observedState: observedLedger,
+          } as never,
+        },
+      }),
+    ).rejects.toThrow();
 
     vi.setSystemTime(new Date(recoveryAt));
-    expect(() => store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never)).toThrow();
+    expect(() =>
+      store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never),
+    ).toThrow();
     expect(proposalState(proposal.id)).toMatchObject({ phase: 'write_intent' });
-    expect(databaseRow<{ idempotency_status: string }>(
-      'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?', plan.idempotencyKey,
-    ).idempotency_status).toBe('in_progress');
+    expect(
+      databaseRow<{ idempotency_status: string }>(
+        'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?',
+        plan.idempotencyKey,
+      ).idempotency_status,
+    ).toBe('in_progress');
     await store.finalizeConsequentialActionExecution({
       ...identity,
       outcome: { kind: 'verified', verificationToken },
@@ -1840,13 +2177,15 @@ describe('consequential_action workflow-store lifecycle', () => {
       atomIndex: 0,
       actionKind: 'reallocation',
       stableIdentity: {
-        assignments: [{
-          sourceCategoryId: 'reserve',
-          sourceAsOfMonth: '2026-09',
-          destinationCategoryId: 'food',
-          destinationAsOfMonth: '2026-09',
-          amount: MONEY(2_000),
-        }],
+        assignments: [
+          {
+            sourceCategoryId: 'reserve',
+            sourceAsOfMonth: '2026-09',
+            destinationCategoryId: 'food',
+            destinationAsOfMonth: '2026-09',
+            amount: MONEY(2_000),
+          },
+        ],
       },
       result: {
         kind: 'reallocation',
@@ -1882,18 +2221,28 @@ describe('consequential_action workflow-store lifecycle', () => {
     if (!actionResult || typeof actionResult !== 'object' || !('result' in actionResult))
       throw new Error('Recovered reallocation result is required');
     const executionResult = actionResult.result;
-    if (!executionResult || typeof executionResult !== 'object' ||
-        !('results' in executionResult) || !Array.isArray(executionResult.results))
+    if (
+      !executionResult ||
+      typeof executionResult !== 'object' ||
+      !('results' in executionResult) ||
+      !Array.isArray(executionResult.results)
+    )
       throw new Error('Recovered reallocation dispatch results are required');
     expect(executionResult.results).toHaveLength(2);
     setAssistanceMaximum('execute_approved_actions');
-    expect(databaseRow<{ idempotency_status: string }>(
-      'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?', plan.idempotencyKey,
-    ).idempotency_status).toBe('succeeded');
-    expect(() => store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never)).toThrow();
+    expect(
+      databaseRow<{ idempotency_status: string }>(
+        'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?',
+        plan.idempotencyKey,
+      ).idempotency_status,
+    ).toBe('succeeded');
+    expect(() =>
+      store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never),
+    ).toThrow();
 
     const nextDonorIntent = structuredClone(actionFixture.alternateDonorIntent);
-    if (nextDonorIntent.kind !== 'reallocation') throw new Error('Canonical alternate donor intent is required');
+    if (nextDonorIntent.kind !== 'reallocation')
+      throw new Error('Canonical alternate donor intent is required');
     nextDonorIntent.assignments[0]!.amount = MONEY(1_000);
     const sameCategoryMonth = makePlan({
       intent: nextDonorIntent,
@@ -1908,7 +2257,12 @@ describe('consequential_action workflow-store lifecycle', () => {
     await createActionProposal(sameCategoryMonth.plan);
 
     const next = makePlan({
-      intent: { kind: 'wallet_materialization', walletId: 'wallet-after-verified', accountName: 'Verified wallet', currency: 'USD' },
+      intent: {
+        kind: 'wallet_materialization',
+        walletId: 'wallet-after-verified',
+        accountName: 'Verified wallet',
+        currency: 'USD',
+      },
       idempotencyKey: 'budget-owner-after-verified',
       evaluatedAt: recoveryAt,
       validUntil: new Date(Date.parse(recoveryAt) + 7_200_000).toISOString(),
@@ -1920,12 +2274,17 @@ describe('consequential_action workflow-store lifecycle', () => {
     await approve(nextProposal, 'approver-a');
     await approve(nextProposal, 'approver-b');
     await approve(nextProposal, 'approver-c');
-    expect((await store.acquireProposalExecution(executionInput(nextProposal) as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(executionInput(nextProposal) as never)).claim.isOwner,
+    ).toBe(true);
   });
   it('recovers a missing manual result from the exact observed ledger transaction', async () => {
     setAssistanceMaximum('execute_approved_actions');
     const { request, plan } = makePlan({
-      intent: manualTransactionIntent('manual-parent-composite-1', 'manual-correlation-composite-1'),
+      intent: manualTransactionIntent(
+        'manual-parent-composite-1',
+        'manual-correlation-composite-1',
+      ),
       idempotencyKey: 'verified-manual-result-recovery',
       afterReallocation: true,
     });
@@ -1945,14 +2304,17 @@ describe('consequential_action workflow-store lifecycle', () => {
     const checking = verifiedCard.financialSnapshot.liquidity?.accounts.find(
       (account) => account.accountId === 'checking',
     );
-    const postBalance = actionFixture.postconditions.composite.financialSnapshot.accountBalances.find(
-      (account) => account.accountId === 'checking',
-    );
-    if (!checking || !postBalance) throw new Error('Canonical manual poststate balance is required');
+    const postBalance =
+      actionFixture.postconditions.composite.financialSnapshot.accountBalances.find(
+        (account) => account.accountId === 'checking',
+      );
+    if (!checking || !postBalance)
+      throw new Error('Canonical manual poststate balance is required');
     checking.recordedBalance = structuredClone(postBalance.balance);
     const categories = verifiedCard.financialSnapshot.liquidity?.categories;
     if (!categories) throw new Error('Canonical manual poststate categories are required');
-    for (const postcondition of actionFixture.postconditions.composite.financialSnapshot.categoryAvailability) {
+    for (const postcondition of actionFixture.postconditions.composite.financialSnapshot
+      .categoryAvailability) {
       const category = categories.find((fact) => fact.categoryId === postcondition.categoryId);
       if (!category) throw new Error('Canonical manual poststate category is required');
       category.availability = structuredClone(postcondition.amount);
@@ -1966,9 +2328,11 @@ describe('consequential_action workflow-store lifecycle', () => {
       evaluatedAt: request.evaluatedAt,
       financialPolicyVersion: request.financialPolicyVersion,
     };
-    const verification = JSON.parse(native.verifyConsequentialAction(
-      JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
-    )) as ConsequentialActionVerification;
+    const verification = JSON.parse(
+      native.verifyConsequentialAction(
+        JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
+      ),
+    ) as ConsequentialActionVerification;
     expect(verification).toEqual({ valid: true, reason: null, actionHash: plan.actionHash });
     const verificationToken = issueConsequentialActionVerificationToken({
       ...identity,
@@ -1983,26 +2347,31 @@ describe('consequential_action workflow-store lifecycle', () => {
     });
     const recovered = proposalState(proposal.id);
     expect(recovered.phase).toBe('verified');
-    expect(recovered.effects).toMatchObject([{
-      effectIndex: 0,
-      atomIndex: 0,
-      actionKind: 'manual_transaction',
-      result: {
-        kind: 'manual_transaction',
+    expect(recovered.effects).toMatchObject([
+      {
+        effectIndex: 0,
         atomIndex: 0,
-        dispatchIndex: 0,
+        actionKind: 'manual_transaction',
         result: {
-          success: true,
-          parentId: 'manual-parent-composite-1',
-          transactionId: 'manual-parent-composite-1',
-          correlationId: 'manual-correlation-composite-1',
-          verified: true,
+          kind: 'manual_transaction',
+          atomIndex: 0,
+          dispatchIndex: 0,
+          result: {
+            success: true,
+            parentId: 'manual-parent-composite-1',
+            transactionId: 'manual-parent-composite-1',
+            correlationId: 'manual-correlation-composite-1',
+            verified: true,
+          },
         },
       },
-    }]);
-    expect(databaseRow<{ idempotency_status: string }>(
-      'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?', plan.idempotencyKey,
-    ).idempotency_status).toBe('succeeded');
+    ]);
+    expect(
+      databaseRow<{ idempotency_status: string }>(
+        'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?',
+        plan.idempotencyKey,
+      ).idempotency_status,
+    ).toBe('succeeded');
     const replay = await store.acquireProposalExecution(executionInput(proposal) as never);
     expect(replay.claim.isOwner).toBe(false);
   });
@@ -2053,7 +2422,9 @@ describe('consequential_action workflow-store lifecycle', () => {
       ['reserve', 5_000],
       ['reserve-two', 5_000],
     ] as const) {
-      const assignment = observedLedger.assignments.find((entry) => entry.categoryId === categoryId);
+      const assignment = observedLedger.assignments.find(
+        (entry) => entry.categoryId === categoryId,
+      );
       const category = categories.find((entry) => entry.categoryId === categoryId);
       if (!assignment || !category) throw new Error('Canonical multi-donor category is required');
       assignment.amount = MONEY(minorUnits);
@@ -2068,9 +2439,11 @@ describe('consequential_action workflow-store lifecycle', () => {
       evaluatedAt: request.evaluatedAt,
       financialPolicyVersion: request.financialPolicyVersion,
     };
-    const verification = JSON.parse(native.verifyConsequentialAction(
-      JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
-    )) as ConsequentialActionVerification;
+    const verification = JSON.parse(
+      native.verifyConsequentialAction(
+        JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
+      ),
+    ) as ConsequentialActionVerification;
     expect(verification).toEqual({ valid: true, reason: null, actionHash: plan.actionHash });
     const verificationToken = issueConsequentialActionVerificationToken({
       ...identity,
@@ -2094,16 +2467,37 @@ describe('consequential_action workflow-store lifecycle', () => {
     if (!actionResult || typeof actionResult !== 'object' || !('result' in actionResult))
       throw new Error('Native readback must recover the action result');
     const executionResult = actionResult.result;
-    if (!executionResult || typeof executionResult !== 'object' ||
-        !('results' in executionResult) || !Array.isArray(executionResult.results))
+    if (
+      !executionResult ||
+      typeof executionResult !== 'object' ||
+      !('results' in executionResult) ||
+      !Array.isArray(executionResult.results)
+    )
       throw new Error('Native readback must recover the reallocation result list');
     const results: unknown[] = executionResult.results;
     expect(results).toHaveLength(3);
-    expect(results).toEqual(expect.arrayContaining([
-      expect.objectContaining({ categoryId: 'food', month: '2026-09', amount: 2_000, expectedAmount: 0 }),
-      expect.objectContaining({ categoryId: 'reserve', month: '2026-09', amount: 5_000, expectedAmount: 6_000 }),
-      expect.objectContaining({ categoryId: 'reserve-two', month: '2026-09', amount: 5_000, expectedAmount: 6_000 }),
-    ]));
+    expect(results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          categoryId: 'food',
+          month: '2026-09',
+          amount: 2_000,
+          expectedAmount: 0,
+        }),
+        expect.objectContaining({
+          categoryId: 'reserve',
+          month: '2026-09',
+          amount: 5_000,
+          expectedAmount: 6_000,
+        }),
+        expect.objectContaining({
+          categoryId: 'reserve-two',
+          month: '2026-09',
+          amount: 5_000,
+          expectedAmount: 6_000,
+        }),
+      ]),
+    );
   });
 
   it('keeps verified transaction parent identities consumed after native readback', async () => {
@@ -2183,16 +2577,23 @@ describe('consequential_action workflow-store lifecycle', () => {
     });
     const verifiedCard = structuredClone(request.decisionCardRequest);
     const categories = verifiedCard.financialSnapshot.liquidity?.categories;
-    if (!categories) throw new Error('Canonical composite postcondition category facts are required');
-    for (const [categoryId, minorUnits] of [['food', '0'], ['reserve', '4000']] as const) {
+    if (!categories)
+      throw new Error('Canonical composite postcondition category facts are required');
+    for (const [categoryId, minorUnits] of [
+      ['food', '0'],
+      ['reserve', '4000'],
+    ] as const) {
       const category = categories.find((fact) => fact.categoryId === categoryId);
       if (!category) throw new Error(`Canonical ${categoryId} postcondition is required`);
       category.availability = MONEY(minorUnits);
     }
-    const poststateBalance = actionFixture.postconditions.composite.financialSnapshot.accountBalances
-      .find((account) => account.accountId === 'checking');
-    const checkingFact = verifiedCard.financialSnapshot.liquidity?.accounts
-      .find((account) => account.accountId === 'checking');
+    const poststateBalance =
+      actionFixture.postconditions.composite.financialSnapshot.accountBalances.find(
+        (account) => account.accountId === 'checking',
+      );
+    const checkingFact = verifiedCard.financialSnapshot.liquidity?.accounts.find(
+      (account) => account.accountId === 'checking',
+    );
     if (!poststateBalance || !checkingFact)
       throw new Error('Canonical post-composite checking balance is required');
     checkingFact.recordedBalance = structuredClone(poststateBalance.balance);
@@ -2205,9 +2606,11 @@ describe('consequential_action workflow-store lifecycle', () => {
       evaluatedAt: request.evaluatedAt,
       financialPolicyVersion: request.financialPolicyVersion,
     };
-    const verification = JSON.parse(native.verifyConsequentialAction(
-      JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
-    )) as ConsequentialActionVerification;
+    const verification = JSON.parse(
+      native.verifyConsequentialAction(
+        JSON.stringify(verifyConsequentialActionRequestSchema.parse(verifyRequest)),
+      ),
+    ) as ConsequentialActionVerification;
     expect(verification).toEqual({ valid: true, reason: null, actionHash: plan.actionHash });
     const verificationToken = issueConsequentialActionVerificationToken({
       ...identity,
@@ -2231,7 +2634,10 @@ describe('consequential_action workflow-store lifecycle', () => {
         kind: 'reallocation',
         atomIndex: 0,
         dispatchIndex: 0,
-        result: { status: 'complete', results: [{ categoryId: 'reserve' }, { categoryId: 'food' }] },
+        result: {
+          status: 'complete',
+          results: [{ categoryId: 'reserve' }, { categoryId: 'food' }],
+        },
       },
     });
     expect(effects[1]).toMatchObject({
@@ -2254,7 +2660,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     const duplicateIntent = structuredClone(actionFixture.compositeIntent);
     if (duplicateIntent.kind !== 'composite')
       throw new Error('Canonical composite action intent is required');
-    const duplicateTransaction = duplicateIntent.actions.find((atom) => atom.kind === 'manual_transaction');
+    const duplicateTransaction = duplicateIntent.actions.find(
+      (atom) => atom.kind === 'manual_transaction',
+    );
     if (!duplicateTransaction || duplicateTransaction.kind !== 'manual_transaction')
       throw new Error('Canonical composite manual-transaction atom is required');
     duplicateTransaction.transaction.parentId = 'manual-parent-composite-1';
@@ -2284,22 +2692,30 @@ describe('consequential_action workflow-store lifecycle', () => {
       dispatchCount: 0,
       staleWorkerFenced: true,
     });
-    await expect(store.finalizeConsequentialActionExecution({
-      ...identity,
-      outcome: {
-        kind: 'invalidated_no_dispatch',
-        invalidationToken: { ...identity, dispatchCount: 0, staleWorkerFenced: true } as never,
-      },
-    })).rejects.toThrow();
+    await expect(
+      store.finalizeConsequentialActionExecution({
+        ...identity,
+        outcome: {
+          kind: 'invalidated_no_dispatch',
+          invalidationToken: { ...identity, dispatchCount: 0, staleWorkerFenced: true } as never,
+        },
+      }),
+    ).rejects.toThrow();
     expect(proposalState(proposal.id).phase).toBe('write_intent');
     await store.finalizeConsequentialActionExecution({
       ...identity,
       outcome: { kind: 'invalidated_no_dispatch', invalidationToken },
     });
-    expect(proposalState(proposal.id)).toMatchObject({ phase: 'invalidated_no_dispatch', outcome: 'invalidated_no_dispatch' });
-    expect(databaseRow<{ idempotency_status: string }>(
-      'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?', plan.idempotencyKey,
-    ).idempotency_status).toBe('terminal_failed');
+    expect(proposalState(proposal.id)).toMatchObject({
+      phase: 'invalidated_no_dispatch',
+      outcome: 'invalidated_no_dispatch',
+    });
+    expect(
+      databaseRow<{ idempotency_status: string }>(
+        'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?',
+        plan.idempotencyKey,
+      ).idempotency_status,
+    ).toBe('terminal_failed');
     expect(await store.queryAuditRecords('execution_failed')).toHaveLength(1);
 
     const next = makePlan({ idempotencyKey: 'after-fenced-no-dispatch' });
@@ -2308,10 +2724,10 @@ describe('consequential_action workflow-store lifecycle', () => {
     await approve(nextProposal, 'approver-a');
     await approve(nextProposal, 'approver-b');
     await approve(nextProposal, 'approver-c');
-    expect((await store.acquireProposalExecution(executionInput(nextProposal) as never)).claim.isOwner).toBe(true);
+    expect(
+      (await store.acquireProposalExecution(executionInput(nextProposal) as never)).claim.isOwner,
+    ).toBe(true);
   });
-
-
 
   it('keeps an ambiguous acquired donor held past expiry, lease reconciliation, close, and reopen', async () => {
     setAssistanceMaximum('execute_approved_actions');
@@ -2324,7 +2740,11 @@ describe('consequential_action workflow-store lifecycle', () => {
       actorId: 'executor',
       idempotencyKey: plan.idempotencyKey,
       acquisitionAuditId,
-      outcome: { kind: 'review_required', reason: 'partial_or_ambiguous_write', observedState: { dispatchMayHaveOccurred: true } },
+      outcome: {
+        kind: 'review_required',
+        reason: 'partial_or_ambiguous_write',
+        observedState: { dispatchMayHaveOccurred: true },
+      },
     });
     expect(proposalState(proposal.id)).toMatchObject({ phase: 'review_required' });
 
@@ -2335,7 +2755,8 @@ describe('consequential_action workflow-store lifecycle', () => {
     const state = proposalState(proposal.id);
     expect(state.phase).toBe('review_required');
     const idempotency = databaseRow<{ idempotency_status: string }>(
-      'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?', plan.idempotencyKey,
+      'SELECT idempotency_status FROM idempotency_records WHERE idempotency_key = ?',
+      plan.idempotencyKey,
     );
     expect(idempotency.idempotency_status).not.toBe('retryable_failed');
 
@@ -2352,7 +2773,10 @@ describe('consequential_action workflow-store lifecycle', () => {
 
   it('persists ordered composite atom results and rejects changed or stale replays', async () => {
     setAssistanceMaximum('execute_approved_actions');
-    const { plan } = makePlan({ intent: actionFixture.compositeIntent, idempotencyKey: 'ordered-composite-results' });
+    const { plan } = makePlan({
+      intent: actionFixture.compositeIntent,
+      idempotencyKey: 'ordered-composite-results',
+    });
     grantActionActors(plan);
     const { proposal, acquisitionAuditId } = await acquire(plan);
     const token: ConsequentialActionExecutionIdentity = {
@@ -2369,13 +2793,15 @@ describe('consequential_action workflow-store lifecycle', () => {
         { categoryId: 'food', adapterResult: { success: true } },
       ],
     };
-    await expect(store.recordConsequentialActionEffect({
-      ...token,
-      effectIndex: 0,
-      atomIndex: 1,
-      dispatchIndex: 0,
-      result: firstResult,
-    })).rejects.toThrow();
+    await expect(
+      store.recordConsequentialActionEffect({
+        ...token,
+        effectIndex: 0,
+        atomIndex: 1,
+        dispatchIndex: 0,
+        result: firstResult,
+      }),
+    ).rejects.toThrow();
     await store.recordConsequentialActionEffect({
       ...token,
       effectIndex: 0,
@@ -2384,7 +2810,13 @@ describe('consequential_action workflow-store lifecycle', () => {
       result: firstResult,
     });
     expect(proposalState(proposal.id).effects).toEqual([
-      expect.objectContaining({ effectIndex: 0, atomIndex: 0, dispatchIndex: 0, actionKind: 'reallocation', result: firstResult }),
+      expect.objectContaining({
+        effectIndex: 0,
+        atomIndex: 0,
+        dispatchIndex: 0,
+        actionKind: 'reallocation',
+        result: firstResult,
+      }),
     ]);
     reopenStore();
     const firstPersisted = proposalState(proposal.id).effects;
@@ -2409,7 +2841,13 @@ describe('consequential_action workflow-store lifecycle', () => {
       result: secondResult,
     });
     expect(proposalState(proposal.id).effects).toEqual([
-      expect.objectContaining({ effectIndex: 0, atomIndex: 0, dispatchIndex: 0, actionKind: 'reallocation', result: firstResult }),
+      expect.objectContaining({
+        effectIndex: 0,
+        atomIndex: 0,
+        dispatchIndex: 0,
+        actionKind: 'reallocation',
+        result: firstResult,
+      }),
       expect.objectContaining({
         effectIndex: 1,
         atomIndex: 1,
@@ -2419,21 +2857,25 @@ describe('consequential_action workflow-store lifecycle', () => {
         result: secondResult,
       }),
     ]);
-    await expect(store.recordConsequentialActionEffect({
-      ...token,
-      effectIndex: 1,
-      atomIndex: 1,
-      dispatchIndex: 0,
-      result: { ...secondResult, transactionIds: ['other-generated-id'] },
-    })).rejects.toThrow();
-    await expect(store.recordConsequentialActionEffect({
-      ...token,
-      acquisitionAuditId: 'stale-acquisition-audit',
-      effectIndex: 1,
-      atomIndex: 1,
-      dispatchIndex: 0,
-      result: secondResult,
-    })).rejects.toThrow();
+    await expect(
+      store.recordConsequentialActionEffect({
+        ...token,
+        effectIndex: 1,
+        atomIndex: 1,
+        dispatchIndex: 0,
+        result: { ...secondResult, transactionIds: ['other-generated-id'] },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      store.recordConsequentialActionEffect({
+        ...token,
+        acquisitionAuditId: 'stale-acquisition-audit',
+        effectIndex: 1,
+        atomIndex: 1,
+        dispatchIndex: 0,
+        result: secondResult,
+      }),
+    ).rejects.toThrow();
     expect(proposalState(proposal.id)).toMatchObject({ phase: 'write_intent' });
   });
 
@@ -2443,7 +2885,9 @@ describe('consequential_action workflow-store lifecycle', () => {
     grantActionActors(plan);
     const { proposal, input, acquisitionAuditId } = await acquire(plan);
     setAssistanceMaximum('analysis_only');
-    expect(() => store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never)).toThrow();
+    expect(() =>
+      store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never),
+    ).toThrow();
     expect(proposalState(proposal.id).phase).toBe('write_intent');
   });
 
@@ -2466,7 +2910,35 @@ describe('consequential_action workflow-store lifecycle', () => {
         auth: ownerAuth('owner'),
       });
     }
-    expect(() => store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never)).toThrow();
+    expect(() =>
+      store.validateAcquiredProposalExecution({ ...input, acquisitionAuditId } as never),
+    ).toThrow();
     expect(proposalState(proposal.id).phase).toBe('write_intent');
   });
+});
+
+it('treats strictly typed native allocation positions as evidence-local IDs while preserving real receipt workflow resources', () => {
+  const { plan } = makePlan({});
+  const matrix = JSON.parse(
+    readFileSync(
+      new URL('../../../protocol/fixtures/evidence-allocation-plan-result.json', import.meta.url),
+      'utf8',
+    ),
+  ).review;
+  const source = preconditionsFor(plan, liquidityFixture.liquidityPolicy.policyHash);
+  const envelope = { ...source, allocationReviews: [matrix] };
+  const facts = proposalFacts(plan, envelope);
+  expect(
+    facts.resources.some(
+      (resource) =>
+        resource.resourceKind === 'receipt' && resource.resourceId === matrix.receiptIds[0],
+    ),
+  ).toBe(false);
+  expect(facts.resources).toContainEqual({ resourceKind: 'category', resourceId: 'food' });
+  expect(
+    proposalFacts(plan, { ...envelope, receiptId: 'real-workflow-receipt' }).resources,
+  ).toContainEqual({ resourceKind: 'receipt', resourceId: 'real-workflow-receipt' });
+  expect(() =>
+    proposalFacts(plan, { ...source, allocationReviews: [{ ...matrix, forgedScope: 'budget' }] }),
+  ).toThrow();
 });

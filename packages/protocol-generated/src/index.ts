@@ -466,6 +466,8 @@ export interface EconomicEventLedgerEffect {
 }
 
 export interface SourceObservation {
+  walletBalanceAnchor?: import('./wallet-statement.js').WalletStatementBalanceAnchor;
+  allocationReview?: import('./evidence-allocation.js').EvidenceAllocationReview;
   kind: ObservationKind;
   scope: DecisionScope;
   state: ObservationState;
@@ -490,6 +492,7 @@ export type ObservationKind =
   | 'transfer_ambiguity'
   | 'reconciliation'
   | 'economic_event_resolution'
+  | 'wallet_statement_anchor'
   | 'currency_compatibility';
 
 export type ObservationState =
@@ -749,9 +752,7 @@ export interface DecisionCardUnknownObligation {
 }
 
 /** A typed recurring-obligation or persisted-claim projection. */
-export type DecisionCardObligation =
-  | DecisionCardKnownObligation
-  | DecisionCardUnknownObligation;
+export type DecisionCardObligation = DecisionCardKnownObligation | DecisionCardUnknownObligation;
 
 /** Complete before/after financial state projected by the canonical evaluator. */
 export interface DecisionCardState {
@@ -792,8 +793,7 @@ export interface DecisionCardCategoryReallocationPath {
 
 /** One typed funding path retained by a Decision Card. */
 export type DecisionCardFundingPath =
-  | DecisionCardAccountTransferPath
-  | DecisionCardCategoryReallocationPath;
+  DecisionCardAccountTransferPath | DecisionCardCategoryReallocationPath;
 
 /** Explicit category tradeoff caused by a reallocation path. */
 export interface DecisionCardOpportunityCost {
@@ -969,6 +969,24 @@ export interface ManualTransactionIntent {
   splits: ManualTransactionSplit[];
 }
 
+export interface WalletOpeningIntent {
+  amount: Money;
+  date: string;
+  proofSetHash: string;
+  activityManifestHash: string;
+}
+export interface WalletOpeningEquity {
+  walletId: string;
+  accountId: string;
+  transactionId: string;
+  date: string;
+  amount: Money;
+  startingBalance: boolean;
+  sdkFingerprint: string;
+  payeeId: string | null;
+  categoryId: string | null;
+}
+
 export type AtomicConsequentialActionIntent =
   | { kind: 'reallocation'; assignments: ReallocationAssignment[] }
   | { kind: 'manual_transaction'; transaction: ManualTransactionIntent }
@@ -976,8 +994,29 @@ export type AtomicConsequentialActionIntent =
       kind: 'evidence_projection';
       transaction: ManualTransactionIntent;
       evidenceIds: string[];
+      resolutionSubjectId?: string;
     }
-  | { kind: 'wallet_materialization'; walletId: string; accountName: string; currency: string }
+  | {
+      kind: 'evidence_credit';
+      transaction: ManualTransactionIntent;
+      evidenceIds: string[];
+      resolutionSubjectId?: string;
+    }
+  | {
+      kind: 'evidence_amendment';
+      expected: LedgerTransaction;
+      expectedSource: Transaction;
+      transaction: ManualTransactionIntent;
+      evidenceIds: string[];
+      resolutionSubjectId?: string;
+    }
+  | {
+      kind: 'wallet_materialization';
+      walletId: string;
+      accountName: string;
+      currency: string;
+      opening?: WalletOpeningIntent;
+    }
   | {
       kind: 'transfer';
       transferId: string;
@@ -1045,6 +1084,7 @@ export interface ConsequentialActionLedger {
   categories: ConsequentialActionCategory[];
   assignments: ConsequentialActionAssignment[];
   wallets: WalletMapping[];
+  walletOpeningEquities?: WalletOpeningEquity[];
   transactions: LedgerTransaction[];
   transfers: TransferMapping[];
 }
@@ -1212,6 +1252,7 @@ export type ConsequentialActionPostcondition =
       closed: false;
       openingBalance: Money;
     }
+  | { kind: 'wallet_opening_equity'; walletId: string; amount: Money; date: string }
   | {
       kind: 'transfer_ledger_entry';
       transferId: string;
@@ -1267,3 +1308,12 @@ export interface ConsequentialActionVerification {
 export type * from './liquidity.js';
 
 export type * from './merchant-intelligence.js';
+
+export type * from './transaction-evidence.js';
+
+export type * from './spend-session-receipt.js';
+export type * from './evidence-settlement.js';
+
+export type * from './evidence-allocation.js';
+
+export type * from './wallet-statement.js';

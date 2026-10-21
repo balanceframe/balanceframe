@@ -1,0 +1,84 @@
+{
+  "contractVersion": "1",
+  "policyVersion": "evidence-policy-1",
+  "maxSettlementDays": 5,
+  "observations": [
+    {
+      "id": "wallet-1",
+      "kind": "wallet_payment",
+      "sourceId": "wallet-source",
+      "externalEventId": "payment-1",
+      "date": "2026-10-15",
+      "amount": {
+        "minorUnits": "100",
+        "currency": "USD"
+      },
+      "direction": "outflow",
+      "status": "completed",
+      "eventType": "p2p_payment",
+      "counterparty": "person-1",
+      "fundingInstrumentId": "wallet",
+      "walletId": "wallet",
+      "ledgerTransactionId": null,
+      "ledgerEffect": null,
+      "reliability": 0,
+      "provenance": {
+        "documentId": "doc-wallet",
+        "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parserVersion": "wallet-v1",
+        "sourceTimestamp": "2026-10-15T12:00:00Z",
+        "receivedAt": "2026-10-15T12:01:00Z"
+      }
+    }
+  ],
+  "relationships": [],
+  "wallets": [
+    {
+      "walletId": "wallet",
+      "currency": "USD",
+      "openingBalance": null,
+      "closingBalance": null,
+      "completeActivity": false,
+      "materializedAccountId": null,
+      "requiresStoredValue": true
+    }
+  ],
+  "receipts": [],
+  "statementProofs": [
+    {
+      "proofId": "proof",
+      "authorityKind": "human_attested_statement",
+      "statement": {
+        "documentId": "doc-wallet",
+        "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "parserVersion": "wallet-v1"
+      },
+      "walletId": "wallet",
+      "currency": "USD",
+      "calendarBasis": "statement_printed_date",
+      "startDate": "2026-10-15",
+      "endDate": "2026-10-16",
+      "openingBalance": {
+        "minorUnits": "200",
+        "currency": "USD"
+      },
+      "closingBalance": {
+        "minorUnits": "100",
+        "currency": "USD"
+      },
+      "activityManifest": [
+        {
+          "observationId": "wallet-1",
+          "documentId": "doc-wallet",
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "parserVersion": "wallet-v1",
+          "normalizedFieldsHash": "fa6474d08188168e0b6537b647786f700ec0c52d06ac1724457cd9b2c8b71cdc"
+        }
+      ],
+      "actorId": "actor",
+      "membershipId": "member",
+      "policyVersion": "evidence-policy-1",
+      "reviewedAt": "2026-10-17T00:00:00Z"
+    }
+  ]
+}

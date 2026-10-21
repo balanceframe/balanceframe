@@ -1,3 +1,4 @@
+import { registerProtocolSchemas } from './src/schema-registry.js';
 import Ajv, { type AnySchemaObject, type ValidateFunction } from 'ajv';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,7 +45,6 @@ const legacyProtocolSchema = loadSchema('protocol-v1.json');
 const financialSnapshotSchema = loadSchema('financial-snapshot-v1.json');
 const prospectiveClaimSchema = loadSchema('prospective-claim-v1.json');
 const prospectiveDecisionSchema = loadSchema('prospective-decision-v1.json');
-const accountAwareLiquiditySchema = loadSchema('account-aware-liquidity-v1.json');
 const foundationFixture = loadJson(
   path.resolve(__dirname, '../../protocol/fixtures/financial-decision-foundation.json'),
 ) as FinancialDecisionFixture;
@@ -55,15 +55,7 @@ const actionFixture = loadJson(
   sourceObservation: JsonObject;
 };
 const ajv = new Ajv({ allErrors: true, strict: false });
-for (const schema of [
-  accountAwareLiquiditySchema,
-  legacyProtocolSchema,
-  financialSnapshotSchema,
-  prospectiveClaimSchema,
-  prospectiveDecisionSchema,
-]) {
-  ajv.addSchema(schema);
-}
+registerProtocolSchemas(ajv);
 
 function rootValidator(schema: AnySchemaObject): ValidateFunction {
   if (typeof schema.$id !== 'string') {

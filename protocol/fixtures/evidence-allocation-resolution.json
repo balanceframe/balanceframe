@@ -1,0 +1,231 @@
+{
+  "contractVersion": "1",
+  "policyVersion": "evidence-policy-1",
+  "resolutionHash": "e4265d3692ace6b5674dfb47e9be68d78f9f85e9bf05276de2e48408590c80e2",
+  "events": [
+    {
+      "projectionObservations": [
+        {
+          "allocationReview": {
+            "contractVersion": "1",
+            "sourceHash": "90605c44c0bd39cf01abdc0518970a0e775f0e6923e434c2dce517e9a778f73d",
+            "allocationSetHash": "22b6a59c22016b74e7cec31e47a4812354b0ef5622eb05e6988ef43882fc52a0",
+            "receiptIds": ["receipt-1"],
+            "targetObservationIds": ["bank-1", "bank-2"],
+            "lineCategories": [
+              {
+                "receiptId": "receipt-1",
+                "lineId": "line-1",
+                "categoryId": "food"
+              }
+            ],
+            "cells": [
+              {
+                "receiptId": "receipt-1",
+                "lineId": "line-1",
+                "targetObservationId": "bank-1",
+                "amount": {
+                  "minorUnits": "700",
+                  "currency": "USD"
+                }
+              },
+              {
+                "receiptId": "receipt-1",
+                "lineId": "line-1",
+                "targetObservationId": "bank-2",
+                "amount": {
+                  "minorUnits": "500",
+                  "currency": "USD"
+                }
+              }
+            ]
+          },
+          "kind": "economic_event_resolution",
+          "scope": {
+            "kind": "transaction",
+            "id": "actual-bank-1"
+          },
+          "state": "resolved",
+          "observedAt": "2026-10-16T12:01:00Z",
+          "contentHash": "e4265d3692ace6b5674dfb47e9be68d78f9f85e9bf05276de2e48408590c80e2",
+          "version": "1",
+          "ledgerEffect": {
+            "accountId": "checking",
+            "amount": {
+              "minorUnits": "-700",
+              "currency": "USD"
+            },
+            "date": "2026-10-16",
+            "categoryId": "food",
+            "payeeName": null,
+            "notes": null,
+            "splits": []
+          },
+          "evidence": [
+            {
+              "evidenceId": "doc-bank",
+              "kind": "economic_event_resolution",
+              "authorized": true,
+              "redaction": "visible"
+            },
+            {
+              "evidenceId": "doc-bank-2",
+              "kind": "economic_event_resolution",
+              "authorized": true,
+              "redaction": "visible"
+            },
+            {
+              "evidenceId": "doc-receipt-1",
+              "kind": "economic_event_resolution",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ]
+        },
+        {
+          "allocationReview": {
+            "contractVersion": "1",
+            "sourceHash": "90605c44c0bd39cf01abdc0518970a0e775f0e6923e434c2dce517e9a778f73d",
+            "allocationSetHash": "22b6a59c22016b74e7cec31e47a4812354b0ef5622eb05e6988ef43882fc52a0",
+            "receiptIds": ["receipt-1"],
+            "targetObservationIds": ["bank-1", "bank-2"],
+            "lineCategories": [
+              {
+                "receiptId": "receipt-1",
+                "lineId": "line-1",
+                "categoryId": "food"
+              }
+            ],
+            "cells": [
+              {
+                "receiptId": "receipt-1",
+                "lineId": "line-1",
+                "targetObservationId": "bank-1",
+                "amount": {
+                  "minorUnits": "700",
+                  "currency": "USD"
+                }
+              },
+              {
+                "receiptId": "receipt-1",
+                "lineId": "line-1",
+                "targetObservationId": "bank-2",
+                "amount": {
+                  "minorUnits": "500",
+                  "currency": "USD"
+                }
+              }
+            ]
+          },
+          "kind": "economic_event_resolution",
+          "scope": {
+            "kind": "transaction",
+            "id": "actual-bank-2"
+          },
+          "state": "resolved",
+          "observedAt": "2026-10-16T12:01:00Z",
+          "contentHash": "e4265d3692ace6b5674dfb47e9be68d78f9f85e9bf05276de2e48408590c80e2",
+          "version": "1",
+          "ledgerEffect": {
+            "accountId": "checking",
+            "amount": {
+              "minorUnits": "-500",
+              "currency": "USD"
+            },
+            "date": "2026-10-16",
+            "categoryId": "food",
+            "payeeName": null,
+            "notes": null,
+            "splits": []
+          },
+          "evidence": [
+            {
+              "evidenceId": "doc-bank",
+              "kind": "economic_event_resolution",
+              "authorized": true,
+              "redaction": "visible"
+            },
+            {
+              "evidenceId": "doc-bank-2",
+              "kind": "economic_event_resolution",
+              "authorized": true,
+              "redaction": "visible"
+            },
+            {
+              "evidenceId": "doc-receipt-1",
+              "kind": "economic_event_resolution",
+              "authorized": true,
+              "redaction": "visible"
+            }
+          ]
+        }
+      ],
+      "allocationSetHash": "22b6a59c22016b74e7cec31e47a4812354b0ef5622eb05e6988ef43882fc52a0",
+      "id": "event:80e80429d3ec8348f1d5c83f8cda3be1c5f4adb05915716f2ee9ab6dff4f1a19",
+      "version": "1",
+      "eventType": "purchase",
+      "state": "resolved",
+      "amount": {
+        "minorUnits": "1200",
+        "currency": "USD"
+      },
+      "observationIds": ["bank-1", "bank-2", "purchase-1"],
+      "evidenceIds": ["doc-bank", "doc-bank-2", "doc-receipt-1"],
+      "reasonCodes": ["existing_ledger_transaction"],
+      "projectionObservation": null
+    }
+  ],
+  "relationships": [
+    {
+      "id": "fund-bank-1",
+      "fromId": "purchase-1",
+      "toId": "bank-1",
+      "kind": "partial_funding",
+      "state": "confirmed",
+      "allocatedAmount": {
+        "minorUnits": "700",
+        "currency": "USD"
+      },
+      "partial": true,
+      "score": 100,
+      "reasonCodes": ["human_reviewed"],
+      "evidenceIds": ["doc-receipt-1"]
+    },
+    {
+      "id": "fund-bank-2",
+      "fromId": "purchase-1",
+      "toId": "bank-2",
+      "kind": "partial_funding",
+      "state": "confirmed",
+      "allocatedAmount": {
+        "minorUnits": "500",
+        "currency": "USD"
+      },
+      "partial": true,
+      "score": 100,
+      "reasonCodes": ["human_reviewed"],
+      "evidenceIds": ["doc-receipt-1"]
+    }
+  ],
+  "wallets": [],
+  "receipts": [
+    {
+      "receiptId": "receipt-1",
+      "valid": true,
+      "allocatedDiscount": [
+        {
+          "minorUnits": "0",
+          "currency": "USD"
+        }
+      ],
+      "allocatedTax": [
+        {
+          "minorUnits": "0",
+          "currency": "USD"
+        }
+      ],
+      "reasonCodes": []
+    }
+  ],
+  "blockers": []
+}

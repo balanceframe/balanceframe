@@ -1,0 +1,125 @@
+{
+  "contractVersion": "1",
+  "sourceHash": "90605c44c0bd39cf01abdc0518970a0e775f0e6923e434c2dce517e9a778f73d",
+  "allocationSetHash": "22b6a59c22016b74e7cec31e47a4812354b0ef5622eb05e6988ef43882fc52a0",
+  "review": {
+    "contractVersion": "1",
+    "sourceHash": "90605c44c0bd39cf01abdc0518970a0e775f0e6923e434c2dce517e9a778f73d",
+    "allocationSetHash": "22b6a59c22016b74e7cec31e47a4812354b0ef5622eb05e6988ef43882fc52a0",
+    "receiptIds": ["receipt-1"],
+    "targetObservationIds": ["bank-1", "bank-2"],
+    "lineCategories": [
+      {
+        "receiptId": "receipt-1",
+        "lineId": "line-1",
+        "categoryId": "food"
+      }
+    ],
+    "cells": [
+      {
+        "receiptId": "receipt-1",
+        "lineId": "line-1",
+        "targetObservationId": "bank-1",
+        "amount": {
+          "minorUnits": "700",
+          "currency": "USD"
+        }
+      },
+      {
+        "receiptId": "receipt-1",
+        "lineId": "line-1",
+        "targetObservationId": "bank-2",
+        "amount": {
+          "minorUnits": "500",
+          "currency": "USD"
+        }
+      }
+    ]
+  },
+  "projections": [
+    {
+      "eventId": "event:80e80429d3ec8348f1d5c83f8cda3be1c5f4adb05915716f2ee9ab6dff4f1a19",
+      "targetObservationId": "bank-1",
+      "ledgerTransactionId": "actual-bank-1",
+      "evidenceIds": ["doc-bank", "doc-bank-2", "doc-receipt-1"],
+      "sources": [
+        {
+          "documentId": "doc-bank",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        },
+        {
+          "documentId": "doc-bank-2",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        },
+        {
+          "documentId": "doc-receipt-1",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "parserVersion": "wallet-v1",
+          "sourceTimestamp": "2026-10-15T12:00:00Z",
+          "receivedAt": "2026-10-15T12:01:00Z"
+        }
+      ],
+      "ledgerEffect": {
+        "accountId": "checking",
+        "amount": {
+          "minorUnits": "-700",
+          "currency": "USD"
+        },
+        "date": "2026-10-16",
+        "categoryId": "food",
+        "payeeName": null,
+        "notes": null,
+        "splits": []
+      }
+    },
+    {
+      "eventId": "event:80e80429d3ec8348f1d5c83f8cda3be1c5f4adb05915716f2ee9ab6dff4f1a19",
+      "targetObservationId": "bank-2",
+      "ledgerTransactionId": "actual-bank-2",
+      "evidenceIds": ["doc-bank", "doc-bank-2", "doc-receipt-1"],
+      "sources": [
+        {
+          "documentId": "doc-bank",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        },
+        {
+          "documentId": "doc-bank-2",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "parserVersion": "actual-v1",
+          "sourceTimestamp": "2026-10-16T12:00:00Z",
+          "receivedAt": "2026-10-16T12:01:00Z"
+        },
+        {
+          "documentId": "doc-receipt-1",
+          "contentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "parserVersion": "wallet-v1",
+          "sourceTimestamp": "2026-10-15T12:00:00Z",
+          "receivedAt": "2026-10-15T12:01:00Z"
+        }
+      ],
+      "ledgerEffect": {
+        "accountId": "checking",
+        "amount": {
+          "minorUnits": "-500",
+          "currency": "USD"
+        },
+        "date": "2026-10-16",
+        "categoryId": "food",
+        "payeeName": null,
+        "notes": null,
+        "splits": []
+      }
+    }
+  ],
+  "remainders": [],
+  "targetRemainders": []
+}

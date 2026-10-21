@@ -1,3 +1,4 @@
+import { registerProtocolSchemas } from './src/schema-registry.js';
 import Ajv, { type AnySchemaObject, type ValidateFunction } from 'ajv';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -48,20 +49,28 @@ type LedgerEffect = {
   notes: string | null;
   splits: Array<{ categoryId: string; amount: MoneyObject }>;
 };
-type ActionFixture = Pick<PlanConsequentialActionRequest,
-  'intent' | 'currentLedger' | 'resolvedEvidence' | 'financialPolicyVersion' | 'evaluatedAt' | 'idempotencyKey'> & {
-    alternateDonorIntent: ConsequentialActionIntent;
-    compositeIntent: ConsequentialActionIntent;
-    evidenceProjectionIntent: ConsequentialActionIntent;
-    sourceObservation: SourceObservation & { ledgerEffect: LedgerEffect };
-  };
+type ActionFixture = Pick<
+  PlanConsequentialActionRequest,
+  | 'intent'
+  | 'currentLedger'
+  | 'resolvedEvidence'
+  | 'financialPolicyVersion'
+  | 'evaluatedAt'
+  | 'idempotencyKey'
+> & {
+  alternateDonorIntent: ConsequentialActionIntent;
+  compositeIntent: ConsequentialActionIntent;
+  evidenceProjectionIntent: ConsequentialActionIntent;
+  sourceObservation: SourceObservation & { ledgerEffect: LedgerEffect };
+};
 type NativeBindings = {
   planConsequentialAction(input: string): string;
   verifyConsequentialAction(input: string): string;
 };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const loadJson = (filePath: string): unknown => JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+const loadJson = (filePath: string): unknown =>
+  JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
 const loadSchema = (name: string): AnySchemaObject =>
   loadJson(path.resolve(__dirname, '../../protocol/json-schema', name)) as AnySchemaObject;
 const money = (minorUnits: string | number, currency = 'USD'): MoneyObject => ({
@@ -75,28 +84,20 @@ const foundationFixture = readFixture('financial-decision-foundation.json') as F
 const actionFixture = readFixture('consequential-action.json') as ActionFixture;
 
 const ajv = new Ajv({ allErrors: true, strict: false });
-for (const name of [
-  'protocol-v1.json',
-  'financial-snapshot-v1.json',
-  'prospective-claim-v1.json',
-  'prospective-decision-v1.json',
-  'account-aware-liquidity-v1.json',
-  'decision-card-v1.json',
-]) {
-  ajv.addSchema(loadSchema(name));
-}
+registerProtocolSchemas(ajv);
 const actionJsonSchema = loadSchema('consequential-action-v1.json');
-ajv.addSchema(actionJsonSchema);
 
 function rootValidator(schema: AnySchemaObject): ValidateFunction {
-  if (typeof schema.$id !== 'string') throw new Error('Consequential action schema root must declare $id');
+  if (typeof schema.$id !== 'string')
+    throw new Error('Consequential action schema root must declare $id');
   const validate = ajv.getSchema(schema.$id);
   if (!validate) throw new Error(`AJV could not compile schema root ${schema.$id}`);
   return validate;
 }
 
 function definitionValidator(name: string): ValidateFunction {
-  if (typeof actionJsonSchema.$id !== 'string') throw new Error('Consequential action schema root must declare $id');
+  if (typeof actionJsonSchema.$id !== 'string')
+    throw new Error('Consequential action schema root must declare $id');
   return ajv.compile({ $ref: `${actionJsonSchema.$id}#/$defs/${name}` });
 }
 
@@ -139,13 +140,22 @@ function composeDecisionCardRequest(): DecisionCardRequest {
   snapshot.legacySnapshot.categories = [];
   snapshot.legacySnapshot.budgets = [];
   snapshot.legacySnapshot.schedules = [];
-  snapshot.observations = [{
-    kind: 'account_freshness',
-    scope: { kind: 'account', id: 'checking' },
-    state: 'fresh',
-    observedAt: liquidityFixture.evaluatedAt,
-    evidence: [{ evidenceId: 'checking-freshness', kind: 'bank_sync', authorized: true, redaction: 'visible' }],
-  }];
+  snapshot.observations = [
+    {
+      kind: 'account_freshness',
+      scope: { kind: 'account', id: 'checking' },
+      state: 'fresh',
+      observedAt: liquidityFixture.evaluatedAt,
+      evidence: [
+        {
+          evidenceId: 'checking-freshness',
+          kind: 'bank_sync',
+          authorized: true,
+          redaction: 'visible',
+        },
+      ],
+    },
+  ];
   snapshot.observations.push(structuredClone(actionFixture.sourceObservation));
   const facts = snapshot.liquidity;
   if (!facts) throw new Error('canonical liquidity facts are required');
@@ -171,7 +181,10 @@ function composeDecisionCardRequest(): DecisionCardRequest {
   context.policyHash = liquidityFixture.liquidityPolicy.policyHash;
   context.policy.maxBudgetSnapshotAgeMinutes = liquidityFixture.maxBudgetSnapshotAgeMinutes;
   context.policy.maxBankSyncAgeMinutes = null;
-  const item = { ...structuredClone(liquidityFixture.scenario.items[0]!), priority: 'planned' as const };
+  const item = {
+    ...structuredClone(liquidityFixture.scenario.items[0]!),
+    priority: 'planned' as const,
+  };
   item.purchaseAt = '2026-09-06T12:00:00Z';
   item.requiredBy = '2026-09-06T12:00:00Z';
   return {
@@ -182,9 +195,27 @@ function composeDecisionCardRequest(): DecisionCardRequest {
     priorAllocation: null,
     items: [item],
     categoryPolicies: [
-      { categoryId: 'food', kind: 'ordinary', donorEligible: false, minimumRetained: money(0), projectedRemainingNeed: money(0) },
-      { categoryId: 'reserve', kind: 'ordinary', donorEligible: true, minimumRetained: money(1_000), projectedRemainingNeed: money(2_000) },
-      { categoryId: 'reserve-two', kind: 'ordinary', donorEligible: false, minimumRetained: money(1_000), projectedRemainingNeed: money(2_000) },
+      {
+        categoryId: 'food',
+        kind: 'ordinary',
+        donorEligible: false,
+        minimumRetained: money(0),
+        projectedRemainingNeed: money(0),
+      },
+      {
+        categoryId: 'reserve',
+        kind: 'ordinary',
+        donorEligible: true,
+        minimumRetained: money(1_000),
+        projectedRemainingNeed: money(2_000),
+      },
+      {
+        categoryId: 'reserve-two',
+        kind: 'ordinary',
+        donorEligible: false,
+        minimumRetained: money(1_000),
+        projectedRemainingNeed: money(2_000),
+      },
     ],
     validUntil: liquidityFixture.validUntil,
     requestId: 'request-consequential-action-1',
@@ -193,7 +224,9 @@ function composeDecisionCardRequest(): DecisionCardRequest {
   };
 }
 
-function request(intent: ConsequentialActionIntent = actionFixture.intent): PlanConsequentialActionRequest {
+function request(
+  intent: ConsequentialActionIntent = actionFixture.intent,
+): PlanConsequentialActionRequest {
   return {
     decisionCardRequest: composeDecisionCardRequest(),
     intent: structuredClone(intent),
@@ -244,18 +277,44 @@ function nativeVerify(value: VerifyConsequentialActionRequest): JsonObject {
 }
 
 describe('consequential action JSON Schema, Zod, and native boundary', () => {
+  it('binds positive historical opening equity to exact current human-attested anchor across all contracts',()=>{
+    const opening={amount:money(1200),date:'2026-09-01',proofSetHash:'a'.repeat(64),activityManifestHash:'b'.repeat(64)};
+    const input=request({kind:'wallet_materialization',walletId:'wallet-new-1',accountName:'Emergency savings',currency:'USD',opening});
+    input.decisionCardRequest.financialSnapshot.observations.push({kind:'wallet_statement_anchor',scope:{kind:'claim',id:'wallet-new-1'},state:'resolved',observedAt:input.evaluatedAt,version:'wallet-statement-v1',contentHash:opening.proofSetHash,walletBalanceAnchor:{walletId:'wallet-new-1',amount:opening.amount,asOfDate:opening.date,boundary:'before_day_activity',proofIds:['proof'],proofSetHash:opening.proofSetHash,activityManifestHash:opening.activityManifestHash,evidenceIds:['document']},evidence:[{evidenceId:'document',kind:'human_attested_statement',authorized:true,redaction:'visible'}]});
+    input.resolvedEvidence.push({evidenceId:'document',subjectId:'wallet-new-1',state:'resolved',contentHash:opening.proofSetHash});expectRequestValid(input);
+    const result=JSON.parse(native.planConsequentialAction(JSON.stringify(input)));expectJsonValid(validatePlan,result);expect(consequentialActionPlanSchema.safeParse(result).success).toBe(true);expect(result.expectedPostconditions).toContainEqual({kind:'wallet_opening_equity',walletId:'wallet-new-1',amount:money(1200),date:opening.date});
+    for(const changed of [null,{...opening,amount:money(0)},{...opening,date:'2026-02-30'},{...opening,proofSetHash:'forged'}]){const invalid=structuredClone(input);(invalid.intent as unknown as JsonObject).opening=changed;expectRequestInvalid(invalid);}
+    const stale=structuredClone(input);stale.intent={...stale.intent,opening:{...opening,amount:money(1201)}} as ConsequentialActionIntent;expect(()=>native.planConsequentialAction(JSON.stringify(stale))).toThrow();
+    const legacy=request({kind:'wallet_materialization',walletId:'wallet-new-1',accountName:'Emergency savings',currency:'USD'});const legacyPlan=JSON.parse(native.planConsequentialAction(JSON.stringify(legacy)));expect(legacyPlan.action).not.toHaveProperty('opening');expect(legacyPlan.source.manualPayeeBindings).toEqual([]);
+  });
   it('accepts every closed atom and ordered non-nested composite through JSON Schema and Zod', () => {
     const intents: ConsequentialActionIntent[] = [
       actionFixture.intent,
       actionFixture.alternateDonorIntent,
       { kind: 'manual_transaction', transaction: manualTransaction('-1000') },
-      { kind: 'manual_transaction', transaction: manualTransaction('-1000', [
-        { categoryId: 'food', amount: money(-600) },
-        { categoryId: 'reserve', amount: money(-400) },
-      ]) },
+      {
+        kind: 'manual_transaction',
+        transaction: manualTransaction('-1000', [
+          { categoryId: 'food', amount: money(-600) },
+          { categoryId: 'reserve', amount: money(-400) },
+        ]),
+      },
       actionFixture.evidenceProjectionIntent,
-      { kind: 'wallet_materialization', walletId: 'wallet-new-1', accountName: 'Emergency savings', currency: 'USD' },
-      { kind: 'transfer', transferId: 'ledger-transfer-1', correlationId: 'transfer-correlation-1', sourceAccountId: 'checking', destinationAccountId: 'savings', amount: money(1_000), date: '2026-09-06' },
+      {
+        kind: 'wallet_materialization',
+        walletId: 'wallet-new-1',
+        accountName: 'Emergency savings',
+        currency: 'USD',
+      },
+      {
+        kind: 'transfer',
+        transferId: 'ledger-transfer-1',
+        correlationId: 'transfer-correlation-1',
+        sourceAccountId: 'checking',
+        destinationAccountId: 'savings',
+        amount: money(1_000),
+        date: '2026-09-06',
+      },
       actionFixture.compositeIntent,
     ];
 
@@ -273,9 +332,13 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
     expectRequestInvalid(unknownRoot);
     expect(() => native.planConsequentialAction(JSON.stringify(unknownRoot))).toThrow();
     const unknownNested = request(actionFixture.compositeIntent);
-    if (unknownNested.intent.kind !== 'composite') throw new Error('canonical composite fixture is required');
-    const manual = unknownNested.intent.actions.find((action) => action.kind === 'manual_transaction');
-    if (!manual || manual.kind !== 'manual_transaction') throw new Error('composite transaction atom is required');
+    if (unknownNested.intent.kind !== 'composite')
+      throw new Error('canonical composite fixture is required');
+    const manual = unknownNested.intent.actions.find(
+      (action) => action.kind === 'manual_transaction',
+    );
+    if (!manual || manual.kind !== 'manual_transaction')
+      throw new Error('composite transaction atom is required');
     Reflect.set(manual.transaction, 'unexpected', true);
     expectRequestInvalid(unknownNested);
     expect(() => native.planConsequentialAction(JSON.stringify(unknownNested))).toThrow();
@@ -291,13 +354,15 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
     expect(() => native.planConsequentialAction(JSON.stringify(emptyComposite))).toThrow();
 
     const unsafeMoney = request();
-    if (unsafeMoney.intent.kind !== 'reallocation') throw new Error('canonical reallocation fixture is required');
+    if (unsafeMoney.intent.kind !== 'reallocation')
+      throw new Error('canonical reallocation fixture is required');
     unsafeMoney.intent.assignments[0]!.amount.minorUnits = '9223372036854775808';
     expectRequestInvalid(unsafeMoney);
     expect(() => native.planConsequentialAction(JSON.stringify(unsafeMoney))).toThrow();
     for (const minorUnits of ['0', '-1', '9223372036854775808', '-9223372036854775809']) {
       const intent = structuredClone(actionFixture.intent);
-      if (intent.kind !== 'reallocation') throw new Error('canonical reallocation fixture is required');
+      if (intent.kind !== 'reallocation')
+        throw new Error('canonical reallocation fixture is required');
       intent.assignments[0]!.amount.minorUnits = minorUnits;
       expect(validateIntent(intent)).toBe(false);
       expect(consequentialActionIntentSchema.safeParse(intent)).toMatchObject({ success: false });
@@ -328,13 +393,16 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
       transaction: manualTransaction('-not-money'),
     };
     expect(validateIntent(malformedSignedMoneyIntent)).toBe(false);
-    expect(() => consequentialActionIntentSchema.safeParse(malformedSignedMoneyIntent)).not.toThrow();
+    expect(() =>
+      consequentialActionIntentSchema.safeParse(malformedSignedMoneyIntent),
+    ).not.toThrow();
     expect(consequentialActionIntentSchema.safeParse(malformedSignedMoneyIntent)).toMatchObject({
       success: false,
     });
 
     const malformedMinorUnits = request();
-    if (malformedMinorUnits.intent.kind !== 'reallocation') throw new Error('canonical reallocation fixture is required');
+    if (malformedMinorUnits.intent.kind !== 'reallocation')
+      throw new Error('canonical reallocation fixture is required');
     malformedMinorUnits.intent.assignments[0]!.amount.minorUnits = 'not-money';
     expect(validateIntent(malformedMinorUnits.intent)).toBe(false);
     expect(consequentialActionIntentSchema.safeParse(malformedMinorUnits.intent)).toMatchObject({
@@ -355,15 +423,19 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
     expect(consequentialActionIntentSchema.safeParse(malformedTransfer)).toMatchObject({
       success: false,
     });
-    expect(() => native.planConsequentialAction(JSON.stringify(request(malformedTransfer)))).toThrow();
+    expect(() =>
+      native.planConsequentialAction(JSON.stringify(request(malformedTransfer))),
+    ).toThrow();
 
     const malformedCurrency = request();
-    if (malformedCurrency.intent.kind !== 'reallocation') throw new Error('canonical reallocation fixture is required');
+    if (malformedCurrency.intent.kind !== 'reallocation')
+      throw new Error('canonical reallocation fixture is required');
     malformedCurrency.intent.assignments[0]!.amount.currency = 'usd';
     expectRequestInvalid(malformedCurrency);
     expect(() => native.planConsequentialAction(JSON.stringify(malformedCurrency))).toThrow();
     const mismatchedCurrency = request();
-    if (mismatchedCurrency.intent.kind !== 'reallocation') throw new Error('canonical reallocation fixture is required');
+    if (mismatchedCurrency.intent.kind !== 'reallocation')
+      throw new Error('canonical reallocation fixture is required');
     mismatchedCurrency.intent.assignments[0]!.amount.currency = 'EUR';
     expectRequestValid(mismatchedCurrency);
     expect(() => native.planConsequentialAction(JSON.stringify(mismatchedCurrency))).toThrow();
@@ -371,7 +443,9 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
     const missingSupplementalObservations = structuredClone(valid) as unknown as JsonObject;
     delete missingSupplementalObservations.supplementalObservations;
     expectRequestInvalid(missingSupplementalObservations);
-    expect(() => native.planConsequentialAction(JSON.stringify(missingSupplementalObservations))).toThrow();
+    expect(() =>
+      native.planConsequentialAction(JSON.stringify(missingSupplementalObservations)),
+    ).toThrow();
     const missingPolicyVersion = { ...valid } as Record<string, unknown>;
     delete missingPolicyVersion.financialPolicyVersion;
     expectRequestInvalid(missingPolicyVersion);
@@ -381,7 +455,9 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
   it('round-trips a complete native plan through both schema layers and verifies readback', () => {
     const source = request();
     expectRequestValid(source);
-    const plan = JSON.parse(native.planConsequentialAction(JSON.stringify(source))) as ConsequentialActionPlan;
+    const plan = JSON.parse(
+      native.planConsequentialAction(JSON.stringify(source)),
+    ) as ConsequentialActionPlan;
     expectJsonValid(validatePlan, plan);
     expect(consequentialActionPlanSchema.safeParse(plan).success).toBe(true);
     expect(plan.action).toEqual(source.intent);
@@ -407,12 +483,15 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
     expect(preconditionResult).toEqual({ valid: true, reason: null, actionHash: plan.actionHash });
 
     const postRead = structuredClone(source);
-    postRead.currentLedger.assignments.find(({ categoryId }) => categoryId === 'food')!.amount = money(2_000);
-    postRead.currentLedger.assignments.find(({ categoryId }) => categoryId === 'reserve')!.amount = money(4_000);
+    postRead.currentLedger.assignments.find(({ categoryId }) => categoryId === 'food')!.amount =
+      money(2_000);
+    postRead.currentLedger.assignments.find(({ categoryId }) => categoryId === 'reserve')!.amount =
+      money(4_000);
     const facts = postRead.decisionCardRequest.financialSnapshot.liquidity;
     if (!facts) throw new Error('canonical liquidity facts are required');
     facts.categories.find(({ categoryId }) => categoryId === 'food')!.availability = money(2_000);
-    facts.categories.find(({ categoryId }) => categoryId === 'reserve')!.availability = money(4_000);
+    facts.categories.find(({ categoryId }) => categoryId === 'reserve')!.availability =
+      money(4_000);
     const postconditions = verifyRequest(plan, postRead, 'postconditions');
     expectJsonValid(validateVerifyRequest, postconditions);
     expect(verifyConsequentialActionRequestSchema.safeParse(postconditions).success).toBe(true);
@@ -431,28 +510,38 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
       delete (missingPlanSourceField.source as JsonObject)[field];
       expect(validatePlan(missingPlanSourceField)).toBe(false);
       expect(consequentialActionPlanSchema.safeParse(missingPlanSourceField).success).toBe(false);
-      expect(() => native.verifyConsequentialAction(JSON.stringify({
-        ...preconditions,
-        plan: missingPlanSourceField,
-      }))).toThrow();
+      expect(() =>
+        native.verifyConsequentialAction(
+          JSON.stringify({
+            ...preconditions,
+            plan: missingPlanSourceField,
+          }),
+        ),
+      ).toThrow();
     }
 
     const missingPolicyVersion = { ...preconditions } as Record<string, unknown>;
     delete missingPolicyVersion.financialPolicyVersion;
     expect(validateVerifyRequest(missingPolicyVersion)).toBe(false);
-    expect(verifyConsequentialActionRequestSchema.safeParse(missingPolicyVersion).success).toBe(false);
+    expect(verifyConsequentialActionRequestSchema.safeParse(missingPolicyVersion).success).toBe(
+      false,
+    );
     expect(() => native.verifyConsequentialAction(JSON.stringify(missingPolicyVersion))).toThrow();
     const unknownVerifyField = { ...preconditions, untrusted: true };
     expect(validateVerifyRequest(unknownVerifyField)).toBe(false);
-    expect(verifyConsequentialActionRequestSchema.safeParse(unknownVerifyField).success).toBe(false);
+    expect(verifyConsequentialActionRequestSchema.safeParse(unknownVerifyField).success).toBe(
+      false,
+    );
   });
 
   it('binds current event-resolution evidence into a native projection plan', () => {
     const source = request(actionFixture.evidenceProjectionIntent);
-    if (source.intent.kind !== 'evidence_projection') throw new Error('canonical evidence projection intent is required');
+    if (source.intent.kind !== 'evidence_projection')
+      throw new Error('canonical evidence projection intent is required');
     source.intent.transaction.parentId = 'projection-parent-generated-1';
     source.intent.transaction.correlationId = 'projection-correlation-generated-1';
-    source.currentLedger.assignments.find(({ categoryId }) => categoryId === 'food')!.amount = money(2_000);
+    source.currentLedger.assignments.find(({ categoryId }) => categoryId === 'food')!.amount =
+      money(2_000);
     const facts = source.decisionCardRequest.financialSnapshot.liquidity;
     if (!facts) throw new Error('canonical liquidity facts are required');
     facts.categories.find(({ categoryId }) => categoryId === 'food')!.availability = money(2_000);
@@ -471,21 +560,27 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
       splits: source.intent.transaction.splits,
     });
 
-    const plan = JSON.parse(native.planConsequentialAction(JSON.stringify(source))) as ConsequentialActionPlan;
+    const plan = JSON.parse(
+      native.planConsequentialAction(JSON.stringify(source)),
+    ) as ConsequentialActionPlan;
     expectJsonValid(validatePlan, plan);
     expect(consequentialActionPlanSchema.safeParse(plan).success).toBe(true);
     expect(plan.action).toEqual(source.intent);
-    expect(plan.expectedPostconditions).toContainEqual(expect.objectContaining({
-      kind: 'transaction',
-      parentId: 'projection-parent-generated-1',
-    }));
-    expect(plan.evidenceReferences).toContainEqual(expect.objectContaining({
-      evidenceId: 'fd-transaction-pending',
-      subjectId: 'manual-parent-evidence-1',
-      contentHash: 'fd-transaction-pending-content-1',
-      version: 'fd-resolution/1',
-      state: 'resolved',
-    }));
+    expect(plan.expectedPostconditions).toContainEqual(
+      expect.objectContaining({
+        kind: 'transaction',
+        parentId: 'projection-parent-generated-1',
+      }),
+    );
+    expect(plan.evidenceReferences).toContainEqual(
+      expect.objectContaining({
+        evidenceId: 'fd-transaction-pending',
+        subjectId: 'manual-parent-evidence-1',
+        contentHash: 'fd-transaction-pending-content-1',
+        version: 'fd-resolution/1',
+        state: 'resolved',
+      }),
+    );
 
     const preconditions = verifyRequest(plan, source);
     expectJsonValid(validateVerifyRequest, preconditions);
@@ -495,7 +590,8 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
     expect(result).toEqual({ valid: true, reason: null, actionHash: plan.actionHash });
     for (const mismatch of ['amount', 'categoryId', 'date'] as const) {
       const changed = structuredClone(source);
-      if (changed.intent.kind !== 'evidence_projection') throw new Error('canonical evidence projection intent is required');
+      if (changed.intent.kind !== 'evidence_projection')
+        throw new Error('canonical evidence projection intent is required');
       if (mismatch === 'amount') changed.intent.transaction.amount = money(-501);
       if (mismatch === 'categoryId') changed.intent.transaction.categoryId = 'reserve';
       if (mismatch === 'date') changed.intent.transaction.date = '2026-09-07';
@@ -519,11 +615,16 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
       },
     ]);
     expect(compositePlan.source.invalidatedSupplementalFacts).toEqual([]);
-    if (compositePlan.action.kind !== 'composite') throw new Error('native composite plan is required');
+    if (compositePlan.action.kind !== 'composite')
+      throw new Error('native composite plan is required');
     const changedComposite = structuredClone(compositePlan);
-    if (changedComposite.action.kind !== 'composite') throw new Error('native composite plan is required');
-    const changedAtom = changedComposite.action.actions.find((action) => action.kind === 'manual_transaction');
-    if (!changedAtom || changedAtom.kind !== 'manual_transaction') throw new Error('manual transaction atom is required');
+    if (changedComposite.action.kind !== 'composite')
+      throw new Error('native composite plan is required');
+    const changedAtom = changedComposite.action.actions.find(
+      (action) => action.kind === 'manual_transaction',
+    );
+    if (!changedAtom || changedAtom.kind !== 'manual_transaction')
+      throw new Error('manual transaction atom is required');
     changedAtom.transaction.amount.minorUnits = '-501';
     expect(nativeVerify(verifyRequest(changedComposite, compositeSource))).toMatchObject({
       valid: false,
@@ -531,7 +632,9 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
     });
 
     const source = request();
-    const plan = JSON.parse(native.planConsequentialAction(JSON.stringify(source))) as ConsequentialActionPlan;
+    const plan = JSON.parse(
+      native.planConsequentialAction(JSON.stringify(source)),
+    ) as ConsequentialActionPlan;
     const changedEvidencePlan = structuredClone(plan);
     changedEvidencePlan.evidenceReferences[0]!.contentHash = 'tampered-evidence-content';
     expect(nativeVerify(verifyRequest(changedEvidencePlan, source))).toMatchObject({
@@ -562,4 +665,57 @@ describe('consequential action JSON Schema, Zod, and native boundary', () => {
       reason: 'policy_changed',
     });
   });
+});
+
+it('round trips governed credit and amendment actions through schema, Zod and native planning', () => {
+  const extensions = readFixture('consequential-evidence-actions.json') as {
+    creditIntent: Extract<ConsequentialActionIntent, { kind: 'evidence_credit' }>;
+    amendmentIntent: Extract<ConsequentialActionIntent, { kind: 'evidence_amendment' }>;
+  };
+  for (const original of [extensions.creditIntent, extensions.amendmentIntent]) {
+    const intent = { ...original, resolutionSubjectId: "evidence-event" };
+    const source = request(intent);
+    source.decisionCardRequest.items = [];
+    const observation = source.decisionCardRequest.financialSnapshot.observations.find(
+      (value) => value.kind === 'economic_event_resolution',
+    );
+    if (!observation?.ledgerEffect) throw new Error('canonical resolved effect is required');
+    if (observation.scope.kind !== "transaction") throw new Error("canonical transaction proof required");
+    intent.resolutionSubjectId = observation.scope.id;
+    source.intent = intent;
+    observation.ledgerEffect.amount = structuredClone(intent.transaction.amount);
+    if (intent.kind === 'evidence_amendment') {
+      source.currentLedger.transactions = [intent.expected];
+      source.decisionCardRequest.financialSnapshot.legacySnapshot.transactions = [
+        intent.expectedSource,
+      ];
+    }
+    expectRequestValid(source);
+    expect(validateIntent(intent)).toBe(true);
+    expect(consequentialActionIntentSchema.safeParse(intent).success).toBe(true);
+    const planned = JSON.parse(
+      native.planConsequentialAction(JSON.stringify(source)),
+    ) as ConsequentialActionPlan;
+    expect(validatePlan(planned)).toBe(true);
+    expect(consequentialActionPlanSchema.safeParse(planned).success).toBe(true);
+    expect(nativeVerify(verifyRequest(planned, source))).toMatchObject({
+      valid: true,
+      reason: null,
+    });
+  }
+  const negative = structuredClone(extensions.creditIntent);
+  negative.transaction.amount.minorUnits = '-500';
+  expect(validateIntent(negative)).toBe(false);
+  expect(consequentialActionIntentSchema.safeParse(negative).success).toBe(false);
+  const reconciled = request(extensions.amendmentIntent);
+  reconciled.decisionCardRequest.items = [];
+  reconciled.currentLedger.transactions = [extensions.amendmentIntent.expected];
+  reconciled.decisionCardRequest.financialSnapshot.legacySnapshot.transactions = [
+    extensions.amendmentIntent.expectedSource,
+  ];
+  reconciled.intent = structuredClone(extensions.amendmentIntent);
+  if (reconciled.intent.kind !== 'evidence_amendment')
+    throw new Error('amendment fixture required');
+  reconciled.intent.expectedSource.reconciled = true;
+  expect(() => native.planConsequentialAction(JSON.stringify(reconciled))).toThrow();
 });
