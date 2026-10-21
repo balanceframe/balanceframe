@@ -1,9 +1,15 @@
+import {
+  evidenceSettlementPreviewSchema,
+  evidenceSettlementSaveSchema,
+  evidenceSettlementTargetsInputSchema,
+} from '@balanceframe/application';
 import { readFile } from 'node:fs/promises';
 import { ErrorInfo, errorResponse } from '@balanceframe/application/envelope';
 import { merchantPolicyViewSchema, merchantResearchPreviewSchema, merchantResearchOutcomeSchema, merchantResearchCacheSchema, merchantResearchPolicyViewSchema } from '@balanceframe/application';
 import type { CliCommand } from './index.js';
 import { z } from 'zod';
 import { spendSessionInputSchema } from '@balanceframe/application';
+import { transactionEvidenceImportSchema, transactionEvidenceDecisionSchema, evidenceItemRuleInputSchema, evidenceItemRuleDecisionSchema } from '@balanceframe/application';
 import { consequentialActionIntentSchema } from '@balanceframe/protocol-generated/validators';
 
 const merchantResponseSchemas: Record<string, z.ZodType> = {
@@ -104,7 +110,9 @@ function objectJsonOption(
     }
     return { value: parsed as Record<string, unknown> };
   } catch {
-    return { error: cliError(requestId, 'invalid_json_option', `--${option} must be a JSON object.`) };
+    return {
+      error: cliError(requestId, 'invalid_json_option', `--${option} must be a JSON object.`),
+    };
   }
 }
 
@@ -221,7 +229,7 @@ async function send(
     else headers.set('authorization', `Bearer ${apiKey}`);
     if (selected) headers.set('X-BalanceFrame-Space', selected);
     if (options.body !== undefined) headers.set('content-type', 'application/json');
-    if (merchantResponseSchemas[path] && (method === 'POST' || method === 'PUT')) headers.set('origin', base.origin);
+    if ((merchantResponseSchemas[path] || path.startsWith('/api/evidence')) && method !== 'GET') headers.set('origin', base.origin);
   } catch {
     return cliError(requestId, 'invalid_server_auth', 'The configured BalanceFrame credential or space is invalid.');
   }
@@ -304,6 +312,87 @@ export async function runServerCommand(cmd: CliCommand, requestId: string): Prom
   ) => send(requestId, path, 'GET', { query, space, humanControl });
 
   switch (cmd.command) {
+    case 'evidence.list':
+      return get('/api/evidence');
+    case 'evidence.health':
+      return get('/api/evidence/health');
+    case 'evidence.rules':
+      return get('/api/evidence/rules');
+    case 'evidence.targets':
+      return get('/api/evidence/targets');
+    case 'evidence.item-outcomes':
+      return post('/api/evidence/rules/outcomes', {
+        connectorId: options['connector-id'],
+        accountId: options['account-id'],
+      });
+    case 'evidence.rule-candidates':
+      return post('/api/evidence/rules/candidates', {
+        connectorId: options['connector-id'],
+        accountId: options['account-id'],
+      });
+    case 'evidence.suggest-items':
+      return post('/api/evidence/rules/suggestions', { accountId: options['account-id'] });
+    case 'evidence.export':
+      return get('/api/evidence/export');
+    case 'evidence.resolve':
+      return post('/api/evidence/resolve', {});
+    case 'evidence.import':
+    case 'evidence.decision':
+    case 'evidence.proposal':
+    case 'evidence.settlements':
+    case 'evidence.allocation-preview':
+    case 'evidence.allocation-save':
+    case 'evidence.propose-candidate':
+    case 'evidence.propose-rule':
+    case 'evidence.approve-rule':
+    case 'evidence.revoke-rule': {
+      let value: unknown;
+      try { value = JSON.parse(await readFile(options.file ?? '', 'utf8')) as unknown; }
+      catch { return cliError(requestId, 'invalid_evidence_file', 'Provide a readable JSON evidence request file.'); }
+      const commands = {
+        'evidence.import': { schema: transactionEvidenceImportSchema, path: '/api/evidence', human: false },
+        'evidence.proposal': { schema: z.object({ resolutionHash: z.string().regex(/^[a-f0-9]{64}$/), eventId: z.string().min(1).max(256) }).strict(), path: '/api/evidence/proposal', human: false },
+        'evidence.settlements': {
+          schema: evidenceSettlementTargetsInputSchema,
+          path: '/api/evidence/settlement-targets',
+          human: false,
+        },
+        'evidence.allocation-preview': {
+          schema: evidenceSettlementPreviewSchema,
+          path: '/api/evidence/settlement-preview',
+          human: false,
+        },
+        'evidence.allocation-save': {
+          schema: evidenceSettlementSaveSchema,
+          path: '/api/evidence/settlement-allocation',
+          human: true,
+        },
+        'evidence.decision': { schema: transactionEvidenceDecisionSchema.omit({ policyVersion: true, maxSettlementDays: true }), path: '/api/evidence/decision', human: true },
+        'evidence.propose-candidate': {
+          schema: z
+            .object({
+              connectorId: z.string().trim().min(1).max(256),
+              accountId: z.string().trim().min(1).max(256),
+              candidateHash: z.string().regex(/^[a-f0-9]{64}$/),
+            })
+            .strict(),
+          path: '/api/evidence/rules/from-candidate',
+          human: false,
+        },
+        'evidence.propose-rule': { schema: evidenceItemRuleInputSchema, path: '/api/evidence/rules', human: false },
+        'evidence.approve-rule': { schema: evidenceItemRuleDecisionSchema, path: '/api/evidence/rules/approve', human: true },
+        'evidence.revoke-rule': { schema: evidenceItemRuleDecisionSchema, path: '/api/evidence/rules/revoke', human: true },
+      };
+      const command = commands[cmd.command as keyof typeof commands];
+      const schema = command.schema;
+      const parsed = schema.safeParse(value);
+      if (!parsed.success) return cliError(requestId, 'invalid_evidence_file', 'The evidence file must contain only valid source, exact rule criteria, or an exact reviewed decision.');
+      return post(command.path, parsed.data, { kind: 'selected' }, command.human);
+    }
+    case 'evidence.show':
+      return get(`/api/evidence/${encodeURIComponent(options.documentId ?? '')}`);
+    case 'evidence.delete-raw':
+      return send(requestId, `/api/evidence/${encodeURIComponent(options.documentId ?? '')}/raw`, 'DELETE', { humanControl: true });
     case 'merchant.analyze':
     case 'merchant.evidence':
       return get('/api/merchant', queryOptions(options, { 'transaction-id': 'transactionId', cursor: 'cursor', limit: 'limit', 'facts-hash': 'factsHash' }));

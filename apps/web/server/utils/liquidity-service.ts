@@ -37,6 +37,7 @@ import { reviewAndApplyEnabled } from './workflow-store';
 
 import { hasLegacyFullRead } from './legacy-financial-read';
 import { z } from 'zod';
+import { createWebTransactionEvidenceService } from './evidence-service';
 
 export function findingTransitionRoute<T extends z.ZodType>(
   schema: T,
@@ -150,6 +151,16 @@ export async function createWebConsequentialActionService(
     connectionManager: createDefaultConnectionManager({ configPath }),
     mutationConnectionManager: createMutationConnectionManager({ configPath }),
     store,
+    transactionEvidence: {
+      async captureObservations(actor, config, snapshot) {
+        try {
+          return await (await createWebTransactionEvidenceService(store)).captureObservations(actor, config, snapshot);
+        } catch {
+          // Missing evidence invalidates its projections; unrelated actions retain their ordinary checks.
+          return [];
+        }
+      },
+    },
   });
   return createConsequentialActionService({ liquidity, store });
 }

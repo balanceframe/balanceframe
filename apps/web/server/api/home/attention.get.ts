@@ -36,6 +36,7 @@ import { selectedLiquidityActor } from '../../utils/liquidity-service';
 import { merchantAnalysisAuthorized } from '../../utils/merchant-service';
 import { composeScenarioResearch } from '../../utils/scenario-research';
 import { z } from 'zod';
+import { evidenceAttentionPublication } from '../../utils/evidence-attention';
 
 /** Map an analysis error code to an HTTP status. */
 function httpStatusForCode(code: string): number {
@@ -255,9 +256,11 @@ export default defineEventHandler(async (event) => {
     if (!admitted) return forbidden();
 
     if (!hasLegacyFullRead(workflow.store, admitted)) {
+      const evidence = await evidenceAttentionPublication(workflow.store, admitted);
+      if (!currentActor() || !evidence.authorize()) return forbidden();
       return okEnvelope(
         {
-          blockers: transferBlockers(admitted),
+          blockers: [...transferBlockers(admitted), ...evidence.blockers],
           alerts: [],
           recurrences: [],
           categoryRisks: [],
@@ -307,10 +310,11 @@ export default defineEventHandler(async (event) => {
       ledger: { getLatestSynchronization: () => captured }, freshness: null, analysisProtocol: protocol,
     };
     const envelope = await attentionHomeAnalysis(input, params);
+    const evidence = await evidenceAttentionPublication(workflow.store, ready);
     const finalConfig = await manager.loadConfig();
     const finalActor = currentActor();
     if (!finalActor || !hasLegacyFullRead(workflow.store, finalActor, sourceOperations) ||
-        (authorizeMerchant && !authorizeMerchant())) return forbidden();
+        (authorizeMerchant && !authorizeMerchant()) || !evidence.authorize()) return forbidden();
     if (!finalConfig || finalConfig.budgetId !== budgetId || merchantConnectionId(finalConfig) !== connectionId) {
       setResponseStatus(event, 409);
       return errorEnvelope('SPACE_CONNECTION_MISMATCH', 'The selected connection changed.', authInfo, false, requestId);
@@ -320,7 +324,7 @@ export default defineEventHandler(async (event) => {
       const sanitized = z.object({ blockers: z.array(z.unknown()) }).passthrough().parse(
         sanitizeCanonicalEvidence(envelope.result),
       );
-      const result = { ...sanitized, blockers: [...sanitized.blockers, ...transferBlockers(finalActor)] };
+      const result = { ...sanitized, blockers: [...sanitized.blockers, ...transferBlockers(finalActor), ...evidence.blockers] };
       if (!hasLegacyFullRead(workflow.store, finalActor, attentionDisclosureOperations(result))) return forbidden();
       return okEnvelope(result, authInfo, envelope.requestId, envelopeMetadata(envelope));
     }

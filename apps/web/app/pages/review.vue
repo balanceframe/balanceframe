@@ -65,6 +65,15 @@
       </template>
     </UAlert>
 
+    <details id="transaction-evidence" :open="route.hash === '#transaction-evidence'" class="mb-4 shrink-0 rounded border border-neutral-200 dark:border-neutral-700">
+      <summary class="cursor-pointer px-3 py-2 font-medium focus-visible:outline focus-visible:outline-2">Transaction evidence — receipts, wallets, and settlement</summary>
+      <TransactionEvidencePanel
+        :key="identityKey ?? 'anonymous'"
+        :refresh-key="merchantRefreshKey"
+        class="max-h-[50dvh] overflow-y-auto p-3"
+      />
+    </details>
+
     <details class="mb-4 shrink-0 rounded border border-neutral-200 dark:border-neutral-700">
       <summary class="cursor-pointer px-3 py-2 font-medium focus-visible:outline focus-visible:outline-2">Merchant evidence and patterns — also available when the queue is empty</summary>
       <MerchantReviewPanel
@@ -180,6 +189,7 @@ import { onScopeDispose, watch } from 'vue';
 import { authClient } from '../../lib/auth-client';
 
 const session = authClient.useSession();
+const route = useRoute();
 const identityKey = computed(() => {
   const user = session.value?.data?.user;
   return user ? user.id ?? user.email : null;

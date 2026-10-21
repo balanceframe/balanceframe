@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
+import allocationFixture from '../../../../protocol/fixtures/evidence-allocation-plan-result.json';
 import actionFixture from '../../../../protocol/fixtures/consequential-action.json';
+import evidenceFixture from '../../../../protocol/fixtures/consequential-evidence-actions.json';
 import type { ConsequentialActionProposal } from '@balanceframe/application';
 import ConsequentialActionProposalPage from '../../app/pages/proposals/[id].vue';
 
@@ -24,47 +26,83 @@ const plan = {
   evidenceReferences: [],
   expiresAt: '2099-09-06T17:00:00.000Z',
   reasonCodes: ['safe_reallocation'],
-  impacts: [{
-    kind: 'category_reallocation', sourceCategoryId: 'reserve', sourceAsOfMonth: '2026-09',
-    destinationCategoryId: 'food', destinationAsOfMonth: '2026-09', amount: money('2000'),
-    sourceProtected: false, sourceAvailabilityBefore: money('6000'), sourceAvailabilityAfter: money('4000'),
-    sourceUncommittedAvailabilityBefore: money('6000'), sourceUncommittedAvailabilityAfter: money('4000'),
-    minimumRetained: money('1000'), projectedRemainingNeed: money('2000'), safeToRedirectAfter: money('1000'),
-    rationale: 'donor_category_surplus_redirected',
-  }],
+  impacts: [
+    {
+      kind: 'category_reallocation',
+      sourceCategoryId: 'reserve',
+      sourceAsOfMonth: '2026-09',
+      destinationCategoryId: 'food',
+      destinationAsOfMonth: '2026-09',
+      amount: money('2000'),
+      sourceProtected: false,
+      sourceAvailabilityBefore: money('6000'),
+      sourceAvailabilityAfter: money('4000'),
+      sourceUncommittedAvailabilityBefore: money('6000'),
+      sourceUncommittedAvailabilityAfter: money('4000'),
+      minimumRetained: money('1000'),
+      projectedRemainingNeed: money('2000'),
+      safeToRedirectAfter: money('1000'),
+      rationale: 'donor_category_surplus_redirected',
+    },
+  ],
   expectedPostconditions: [
     ...actionFixture.postconditions.reallocation.currentLedger.assignments.map((assignment) => ({
-      kind: 'assignment', ...assignment,
+      kind: 'assignment',
+      ...assignment,
     })),
-    ...actionFixture.postconditions.reallocation.financialSnapshot.accountBalances.map((account) => ({
-      kind: 'account_balance', accountId: account.accountId, balance: account.balance,
-    })),
+    ...actionFixture.postconditions.reallocation.financialSnapshot.accountBalances.map(
+      (account) => ({
+        kind: 'account_balance',
+        accountId: account.accountId,
+        balance: account.balance,
+      }),
+    ),
   ],
 };
- 
+
 const decisionContext = {
   horizon: { startsAt: '2099-09-06T00:00:00.000Z', endsAt: '2099-09-07T00:00:00.000Z' },
   validUntil: '2099-09-06T17:00:00.000Z',
-  items: [{
-    id: 'purchase-item', categoryId: 'food', accountId: 'checking', amount: money('2000'),
-    priority: 'planned', purchaseAt: '2099-09-06T12:00:00.000Z',
-    requiredBy: '2099-09-06T12:00:00.000Z',
-  }],
+  items: [
+    {
+      id: 'purchase-item',
+      categoryId: 'food',
+      accountId: 'checking',
+      amount: money('2000'),
+      priority: 'planned',
+      purchaseAt: '2099-09-06T12:00:00.000Z',
+      requiredBy: '2099-09-06T12:00:00.000Z',
+    },
+  ],
 };
 
-function detail(phase: ConsequentialActionProposal['state']['phase'], overrides: Record<string, unknown> = {}) {
+function detail(
+  phase: ConsequentialActionProposal['state']['phase'],
+  overrides: Record<string, unknown> = {},
+) {
   return {
     proposal: {
-      id: 'proposal-action', operation: 'consequential_action', spaceId: 'selected-space',
-      budgetId: 'selected-budget', requesterActorId: 'actor-requester',
+      id: 'proposal-action',
+      operation: 'consequential_action',
+      spaceId: 'selected-space',
+      budgetId: 'selected-budget',
+      requesterActorId: 'actor-requester',
       requesterMembershipCurrent: true,
-      governancePolicyVersion: 'governance-1', currentGovernancePolicyVersion: 'governance-1',
-      policyVersion: 'generic-action-policy-1', payloadHash: 'b'.repeat(64),
+      governancePolicyVersion: 'governance-1',
+      currentGovernancePolicyVersion: 'governance-1',
+      policyVersion: 'generic-action-policy-1',
+      payloadHash: 'b'.repeat(64),
       payload: { kind: 'consequential_action', plan },
       decisionContext,
-      expiresAt: plan.expiresAt, requiredApprovers: 2, approvers: [], disposition: 'approval_required',
-      canApprove: true, canExecute: false, currentAssistanceMaximum: 'create_approval_proposal',
-      financialPolicyVersion: 'financial-1', currentFinancialPolicyVersion: 'financial-1',
+      expiresAt: plan.expiresAt,
+      requiredApprovers: 2,
+      approvers: [],
+      disposition: 'approval_required',
+      canApprove: true,
+      canExecute: false,
+      currentAssistanceMaximum: 'create_approval_proposal',
+      financialPolicyVersion: 'financial-1',
+      currentFinancialPolicyVersion: 'financial-1',
       state: { phase, outcome: null },
       ...overrides,
     },
@@ -75,7 +113,8 @@ const global = {
   stubs: {
     AnalysisPage: {
       props: ['loading', 'error'],
-      template: '<main><p v-if="error" role="alert">{{ error.message }}</p><slot name="content" /></main>',
+      template:
+        '<main><p v-if="error" role="alert">{{ error.message }}</p><slot name="content" /></main>',
     },
     UCard: { template: '<section><slot name="header" /><slot /></section>' },
     UButton: {
@@ -105,18 +144,124 @@ function mountPage() {
 }
 
 describe('consequential-action proposal review page', () => {
+  it('shows the exact native allocation cells and source hash before financial approval', async () => {
+    request.mockResolvedValue(
+      ok(
+        detail('proposed', {
+          payload: {
+            kind: 'consequential_action',
+            plan: { ...plan, allocationReviews: [allocationFixture.review] },
+          },
+        }),
+      ),
+    );
+    const wrapper = mountPage();
+    await flushPromises();
+    const review = wrapper.get('[data-testid="proposal-allocation-review"]');
+    expect(review.text()).toContain(allocationFixture.sourceHash);
+    expect(review.text()).toContain(allocationFixture.allocationSetHash);
+    expect(review.findAll('[data-testid="proposal-allocation-cell"]')).toHaveLength(
+      allocationFixture.review.cells.length,
+    );
+    for (const cell of allocationFixture.review.cells)
+      expect(review.text()).toContain(cell.targetObservationId);
+    expect(request.mock.calls.some(([url]) => /execute/.test(url))).toBe(false);
+  });
+
+  it('shows historical opening equity separately from income and refunds before independent approval', async () => {
+    const action = {
+      kind: 'wallet_materialization',
+      walletId: 'wallet',
+      accountName: 'Wallet',
+      currency: 'USD',
+      opening: {
+        amount: money('1200'),
+        date: '2026-09-01',
+        proofSetHash: 'a'.repeat(64),
+        activityManifestHash: 'b'.repeat(64),
+      },
+    };
+    request.mockResolvedValue(
+      ok(
+        detail('proposed', {
+          payload: {
+            kind: 'consequential_action',
+            plan: {
+              ...plan,
+              expectedPostconditions: [
+                {
+                  kind: 'wallet_mapping',
+                  walletId: 'wallet',
+                  accountName: 'Wallet',
+                  onBudget: true,
+                  closed: false,
+                  openingBalance: money('1200'),
+                },
+                {
+                  kind: 'wallet_opening_equity',
+                  walletId: 'wallet',
+                  amount: money('1200'),
+                  date: '2026-09-01',
+                },
+              ],
+              action,
+            },
+          },
+        }),
+      ),
+    );
+    const wrapper = mountPage();
+    await flushPromises();
+    expect(wrapper.text()).toContain('Opening equity');
+    expect(wrapper.text()).toContain('12.00 USD');
+    expect(wrapper.text()).toContain('2026-09-01');
+    expect(wrapper.text()).toContain('human-attested');
+    expect(wrapper.text()).toContain('Opening equity postcondition');
+    expect(wrapper.text()).not.toContain('zero opening balance');
+    expect(request.mock.calls.some(([url]) => /execute/.test(url))).toBe(false);
+  });
+  it.each([evidenceFixture.creditIntent, evidenceFixture.amendmentIntent])(
+    'renders exact $kind effects and original settlement metadata for review without executing',
+    async (action) => {
+      request.mockResolvedValue(
+        ok(
+          detail('proposed', {
+            payload: { kind: 'consequential_action', plan: { ...plan, action } },
+          }),
+        ),
+      );
+      const wrapper = mountPage();
+      await flushPromises();
+      expect(wrapper.text()).toContain(action.kind.replaceAll('_', ' '));
+      expect(wrapper.text()).toContain('5.00 USD');
+      expect(wrapper.text()).toContain('fd-transaction-pending');
+      if (action.kind === 'evidence_amendment') {
+        expect(wrapper.text()).toContain('Original settlement');
+        expect(wrapper.text()).toContain('settlement-original');
+        expect(wrapper.text()).toContain('Existing payee and notes are preserved');
+      }
+      expect(request.mock.calls.some(([url]) => /execute/.test(url))).toBe(false);
+    },
+  );
   it('loads the actor-scoped public proposal and renders typed action, impact, and cash postconditions separately', async () => {
     const wrapper = mountPage();
     await flushPromises();
 
-    expect(request.mock.calls.some(([url, options]) => url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET')).toBe(true);
+    expect(
+      request.mock.calls.some(
+        ([url, options]) =>
+          url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET',
+      ),
+    ).toBe(true);
     expect(wrapper.text()).toContain('Proposed');
     expect(wrapper.text()).toContain('reserve');
     expect(wrapper.text()).toContain('food');
     expect(wrapper.text()).toContain('2026-09');
     expect(wrapper.text()).toContain('20.00 USD');
     expect(wrapper.text()).toMatch(/not protected|unprotected|protected\s*:\s*(?:no|false)/i);
-    expect(wrapper.get('[data-testid="action-remainder"]').text()).toContain('40.00 USD / 10.00 USD / 20.00 USD / 10.00 USD');
+    expect(wrapper.get('[data-testid="action-remainder"]').text()).toContain(
+      '40.00 USD / 10.00 USD / 20.00 USD / 10.00 USD',
+    );
     expect(wrapper.text()).toContain('purchase-item');
     expect(wrapper.text()).toContain('2099-09-06T00:00:00.000Z');
     expect(wrapper.text()).toContain('Requester');
@@ -136,7 +281,9 @@ describe('consequential-action proposal review page', () => {
     expect(wrapper.text()).toContain('category_reallocation');
     expect(wrapper.text()).toContain('2099-09-06T12:00:00.000Z');
     expect(wrapper.get('[data-testid="action-category-envelope"]').text()).toContain('20.00 USD');
-    expect(wrapper.get('[data-testid="action-category-envelope"]').text()).not.toContain('130.00 USD');
+    expect(wrapper.get('[data-testid="action-category-envelope"]').text()).not.toContain(
+      '130.00 USD',
+    );
     expect(wrapper.get('[data-testid="action-account-cash"]').text()).toContain('130.00 USD');
     expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeDefined();
     expect(wrapper.text()).not.toContain('Executed');
@@ -148,10 +295,23 @@ describe('consequential-action proposal review page', () => {
     ['verified', 'Execution result'],
     ['review_required', 'Review required'],
   ] as const)('labels %s action state as %s', async (phase, label) => {
-    request.mockResolvedValue(ok(detail(phase, {
-      canApprove: phase === 'proposed', canExecute: phase === 'approved',
-      state: { phase, outcome: phase === 'verified' ? 'verified' : phase === 'review_required' ? 'review_required' : null },
-    })));
+    request.mockResolvedValue(
+      ok(
+        detail(phase, {
+          canApprove: phase === 'proposed',
+          canExecute: phase === 'approved',
+          state: {
+            phase,
+            outcome:
+              phase === 'verified'
+                ? 'verified'
+                : phase === 'review_required'
+                  ? 'review_required'
+                  : null,
+          },
+        }),
+      ),
+    );
     const wrapper = mountPage();
     await flushPromises();
     expect(wrapper.text()).toContain(label);
@@ -171,37 +331,59 @@ describe('consequential-action proposal review page', () => {
         invariantsHash: 'secret-invariants-hash',
       },
     };
-    
-    request.mockResolvedValue(ok(detail('verified', {
-      privateEnvelopeVisible: true,
-      payload: { kind: 'consequential_action', plan: privatePlan },
-      decisionContext: { ...decisionContext, privateDecisionMetadata: 'secret-decision-context' },
-      preconditions: { supplemental: 'secret-supplemental', source: 'secret-preconditions' },
-      state: {
-        phase: 'verified', outcome: 'verified',
-        effects: [{ actionHash: 'secret-effect-hash' }],
-        result: { proofToken: 'secret-proof-token' },
-      },
-    })));
+
+    request.mockResolvedValue(
+      ok(
+        detail('verified', {
+          privateEnvelopeVisible: true,
+          payload: { kind: 'consequential_action', plan: privatePlan },
+          decisionContext: {
+            ...decisionContext,
+            privateDecisionMetadata: 'secret-decision-context',
+          },
+          preconditions: { supplemental: 'secret-supplemental', source: 'secret-preconditions' },
+          state: {
+            phase: 'verified',
+            outcome: 'verified',
+            effects: [{ actionHash: 'secret-effect-hash' }],
+            result: { proofToken: 'secret-proof-token' },
+          },
+        }),
+      ),
+    );
     const wrapper = mountPage();
     await flushPromises();
 
     expect(wrapper.text()).toContain('Execution result');
     expect(wrapper.text()).toContain('6ba7b810-9dad-41d1-80b4-00c04fd430c8');
     for (const secret of [
-      'secret-idempotency-key', 'secret-native-action-hash', 'secret-snapshot-id',
-      'secret-content-hash', 'secret-evidence-hash', 'secret-preconditions-hash',
-      'secret-invariants-hash', 'secret-supplemental', 'secret-effect-hash', 'secret-proof-token',
+      'secret-idempotency-key',
+      'secret-native-action-hash',
+      'secret-snapshot-id',
+      'secret-content-hash',
+      'secret-evidence-hash',
+      'secret-preconditions-hash',
+      'secret-invariants-hash',
+      'secret-supplemental',
+      'secret-effect-hash',
+      'secret-proof-token',
       'secret-decision-context',
-    ]) expect(wrapper.text()).not.toContain(secret);
+    ])
+      expect(wrapper.text()).not.toContain(secret);
     expect(wrapper.text()).not.toContain('Observed effects');
   });
 
   it('offers only read-only refresh while a write is uncertain', async () => {
-    request.mockResolvedValue(ok(detail('write_intent', {
-      canApprove: true, canExecute: true, currentAssistanceMaximum: 'execute_approved_actions',
-      state: { phase: 'write_intent', outcome: null },
-    })));
+    request.mockResolvedValue(
+      ok(
+        detail('write_intent', {
+          canApprove: true,
+          canExecute: true,
+          currentAssistanceMaximum: 'execute_approved_actions',
+          state: { phase: 'write_intent', outcome: null },
+        }),
+      ),
+    );
     const wrapper = mountPage();
     await flushPromises();
 
@@ -209,40 +391,50 @@ describe('consequential-action proposal review page', () => {
     expect(wrapper.text()).toContain('Refresh is read-only');
     expect(wrapper.get('[data-testid="proposal-approve"]').attributes('disabled')).toBeDefined();
     expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeDefined();
-    const readsBeforeRefresh = request.mock.calls.filter(([url, options]) =>
-      url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET',
+    const readsBeforeRefresh = request.mock.calls.filter(
+      ([url, options]) =>
+        url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET',
     ).length;
-    await wrapper.findAll('button').find((button) => button.text().includes('Refresh current proposal'))!.trigger('click');
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Refresh current proposal'))!
+      .trigger('click');
     await flushPromises();
 
-    expect(request.mock.calls.filter(([url, options]) =>
-      url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET',
-    )).toHaveLength(readsBeforeRefresh + 1);
+    expect(
+      request.mock.calls.filter(
+        ([url, options]) =>
+          url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET',
+      ),
+    ).toHaveLength(readsBeforeRefresh + 1);
     expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0);
   });
 
-  it.each(['write_intent', 'review_required'] as const)('checks prior %s execution without reauthentication or redispatch', async (phase) => {
-    let current = detail(phase, { canApprove: false, canExecute: false });
-    request.mockImplementation(async (url: string, options?: { method?: string }) => {
-      if (url.endsWith('/reconcile') && options?.method === 'POST') {
-        current = detail('verified', { canApprove: false, canExecute: false });
-        return ok({ id: 'proposal-action', phase: 'verified', outcome: 'verified' });
-      }
-      return ok(current);
-    });
-    const wrapper = mountPage();
-    await flushPromises();
+  it.each(['write_intent', 'review_required'] as const)(
+    'checks prior %s execution without reauthentication or redispatch',
+    async (phase) => {
+      let current = detail(phase, { canApprove: false, canExecute: false });
+      request.mockImplementation(async (url: string, options?: { method?: string }) => {
+        if (url.endsWith('/reconcile') && options?.method === 'POST') {
+          current = detail('verified', { canApprove: false, canExecute: false });
+          return ok({ id: 'proposal-action', phase: 'verified', outcome: 'verified' });
+        }
+        return ok(current);
+      });
+      const wrapper = mountPage();
+      await flushPromises();
 
-    await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
-    await flushPromises();
+      await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
+      await flushPromises();
 
-    expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toEqual([
-      ['/api/proposal/proposal-action/reconcile', expect.objectContaining({ method: 'POST' })],
-    ]);
-    expect(reauth).not.toHaveBeenCalled();
-    expect(wrapper.text()).toContain('Phase: verified');
-    expect(wrapper.find('[data-testid="proposal-reconcile"]').exists()).toBe(false);
-  });
+      expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toEqual([
+        ['/api/proposal/proposal-action/reconcile', expect.objectContaining({ method: 'POST' })],
+      ]);
+      expect(reauth).not.toHaveBeenCalled();
+      expect(wrapper.text()).toContain('Phase: verified');
+      expect(wrapper.find('[data-testid="proposal-reconcile"]').exists()).toBe(false);
+    },
+  );
 
   it('keeps unresolved checks visible and never enables a repeat execution', async () => {
     request.mockResolvedValue(ok(detail('review_required', { canExecute: true })));
@@ -251,46 +443,64 @@ describe('consequential-action proposal review page', () => {
     await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
     await flushPromises();
     expect(wrapper.text()).toContain('Review required');
-    expect(wrapper.text()).toContain('Only the original executor can reconcile after the proposal expires');
+    expect(wrapper.text()).toContain(
+      'Only the original executor can reconcile after the proposal expires',
+    );
     expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeDefined();
     expect(wrapper.find('[data-testid="proposal-reconcile"]').exists()).toBe(true);
   });
 
-  it.each(['reconciliation', 'refresh'])('keeps execution disabled when the %s response is lost', async (failure) => {
-    let checking = false;
-    request.mockImplementation(async (url: string, options?: { method?: string }) => {
-      if (url.endsWith('/reconcile') && options?.method === 'POST') {
-        checking = true;
-        if (failure === 'reconciliation') throw new Error('connection lost');
-        return ok({ id: 'proposal-action', phase: 'review_required', outcome: 'review_required' });
-      }
-      if (checking && failure === 'refresh') throw new Error('connection lost');
-      return ok(detail('review_required', { canExecute: true }));
-    });
-    const wrapper = mountPage();
-    await flushPromises();
-    await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
-    await flushPromises();
+  it.each(['reconciliation', 'refresh'])(
+    'keeps execution disabled when the %s response is lost',
+    async (failure) => {
+      let checking = false;
+      request.mockImplementation(async (url: string, options?: { method?: string }) => {
+        if (url.endsWith('/reconcile') && options?.method === 'POST') {
+          checking = true;
+          if (failure === 'reconciliation') throw new Error('connection lost');
+          return ok({
+            id: 'proposal-action',
+            phase: 'review_required',
+            outcome: 'review_required',
+          });
+        }
+        if (checking && failure === 'refresh') throw new Error('connection lost');
+        return ok(detail('review_required', { canExecute: true }));
+      });
+      const wrapper = mountPage();
+      await flushPromises();
+      await wrapper.get('[data-testid="proposal-reconcile"]').trigger('click');
+      await flushPromises();
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('connection lost');
-    const execute = wrapper.find('[data-testid="proposal-execute"]');
-    expect(!execute.exists() || execute.attributes('disabled') !== undefined).toBe(true);
-    expect(wrapper.findAll('button').find((button) => button.text().includes('Refresh current proposal'))!.attributes('disabled')).toBeUndefined();
-    expect(reauth).not.toHaveBeenCalled();
-    expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toEqual([
-      ['/api/proposal/proposal-action/reconcile', expect.objectContaining({ method: 'POST' })],
-    ]);
-  });
+      expect(wrapper.get('[role="alert"]').text()).toContain('connection lost');
+      const execute = wrapper.find('[data-testid="proposal-execute"]');
+      expect(!execute.exists() || execute.attributes('disabled') !== undefined).toBe(true);
+      expect(
+        wrapper
+          .findAll('button')
+          .find((button) => button.text().includes('Refresh current proposal'))!
+          .attributes('disabled'),
+      ).toBeUndefined();
+      expect(reauth).not.toHaveBeenCalled();
+      expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toEqual([
+        ['/api/proposal/proposal-action/reconcile', expect.objectContaining({ method: 'POST' })],
+      ]);
+    },
+  );
 
   it('requires read-only recovery after an execute request loses its connection', async () => {
     const approved = detail('approved', {
-      canApprove: false, canExecute: true, currentAssistanceMaximum: 'execute_approved_actions',
+      canApprove: false,
+      canExecute: true,
+      currentAssistanceMaximum: 'execute_approved_actions',
       state: { phase: 'approved', outcome: null },
     });
     let current = approved;
     request.mockImplementation(async (url: string, options?: { method?: string }) => {
-      if (url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET') return ok(current);
-      if (url.endsWith('/execute') && options?.method === 'POST') throw new Error('connection lost');
+      if (url === '/api/proposal/proposal-action' && (options?.method ?? 'GET') === 'GET')
+        return ok(current);
+      if (url.endsWith('/execute') && options?.method === 'POST')
+        throw new Error('connection lost');
       return ok({});
     });
     const wrapper = mountPage();
@@ -308,10 +518,15 @@ describe('consequential-action proposal review page', () => {
     expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
 
     current = detail('write_intent', {
-      canApprove: false, canExecute: true, currentAssistanceMaximum: 'execute_approved_actions',
+      canApprove: false,
+      canExecute: true,
+      currentAssistanceMaximum: 'execute_approved_actions',
       state: { phase: 'write_intent', outcome: null },
     });
-    await wrapper.findAll('button').find((button) => button.text().includes('Refresh current proposal'))!.trigger('click');
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Refresh current proposal'))!
+      .trigger('click');
     await flushPromises();
     expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
     expect(wrapper.text()).toContain('Refresh is read-only');
@@ -320,12 +535,17 @@ describe('consequential-action proposal review page', () => {
   it('reauthenticates approval and execution separately and submits only the displayed exact hash', async () => {
     const proposed = detail('proposed');
     const approved = detail('approved', {
-      disposition: 'authorized_without_approval', canApprove: false, canExecute: true,
-      currentAssistanceMaximum: 'execute_approved_actions', requiredApprovers: 2,
+      disposition: 'authorized_without_approval',
+      canApprove: false,
+      canExecute: true,
+      currentAssistanceMaximum: 'execute_approved_actions',
+      requiredApprovers: 2,
       state: { phase: 'approved', outcome: null },
     });
     const verified = detail('verified', {
-      disposition: 'authorized_without_approval', canApprove: false, canExecute: false,
+      disposition: 'authorized_without_approval',
+      canApprove: false,
+      canExecute: false,
       state: { phase: 'verified', outcome: 'verified' },
     });
     let current = proposed;
@@ -348,12 +568,23 @@ describe('consequential-action proposal review page', () => {
     expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeDefined();
     await wrapper.get('[data-testid="proposal-approve"]').trigger('click');
     await flushPromises();
-    expect(reauth).toHaveBeenCalledWith('/api/reauth', expect.objectContaining({
-      method: 'POST', credentials: 'same-origin', body: JSON.stringify({ password: 'current-password' }),
-    }));
-    const approve = request.mock.calls.find(([url, options]) => url.endsWith('/approve') && options?.method === 'POST');
-    const approveIndex = request.mock.calls.findIndex(([url, options]) => url.endsWith('/approve') && options?.method === 'POST');
-    expect(reauth.mock.invocationCallOrder[0]).toBeLessThan(request.mock.invocationCallOrder[approveIndex]!);
+    expect(reauth).toHaveBeenCalledWith(
+      '/api/reauth',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'same-origin',
+        body: JSON.stringify({ password: 'current-password' }),
+      }),
+    );
+    const approve = request.mock.calls.find(
+      ([url, options]) => url.endsWith('/approve') && options?.method === 'POST',
+    );
+    const approveIndex = request.mock.calls.findIndex(
+      ([url, options]) => url.endsWith('/approve') && options?.method === 'POST',
+    );
+    expect(reauth.mock.invocationCallOrder[0]).toBeLessThan(
+      request.mock.invocationCallOrder[approveIndex]!,
+    );
     expect(approve?.[0]).toBe('/api/proposal/proposal-action/approve');
     expect(approve?.[1]).toMatchObject({ method: 'POST', body: { payloadHash: 'b'.repeat(64) } });
     expect(approve?.[1]?.body).not.toHaveProperty('actorId');
@@ -363,9 +594,15 @@ describe('consequential-action proposal review page', () => {
     expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeUndefined();
     await wrapper.get('[data-testid="proposal-execute"]').trigger('click');
     await flushPromises();
-    const execute = request.mock.calls.find(([url, options]) => url.endsWith('/execute') && options?.method === 'POST');
-    const executeIndex = request.mock.calls.findIndex(([url, options]) => url.endsWith('/execute') && options?.method === 'POST');
-    expect(reauth.mock.invocationCallOrder[1]).toBeLessThan(request.mock.invocationCallOrder[executeIndex]!);
+    const execute = request.mock.calls.find(
+      ([url, options]) => url.endsWith('/execute') && options?.method === 'POST',
+    );
+    const executeIndex = request.mock.calls.findIndex(
+      ([url, options]) => url.endsWith('/execute') && options?.method === 'POST',
+    );
+    expect(reauth.mock.invocationCallOrder[1]).toBeLessThan(
+      request.mock.invocationCallOrder[executeIndex]!,
+    );
     expect(reauth).toHaveBeenCalledTimes(2);
     expect(execute?.[0]).toBe('/api/proposal/proposal-action/execute');
     expect(execute?.[1]).toMatchObject({ method: 'POST' });
@@ -373,39 +610,86 @@ describe('consequential-action proposal review page', () => {
   });
 
   it.each([
-    { phase: 'proposed', action: 'approve', control: 'proposal-approve', canApprove: true, canExecute: false },
-    { phase: 'approved', action: 'execute', control: 'proposal-execute', canApprove: false, canExecute: true },
-  ])('does not $action when fresh human reauthentication fails', async ({ phase, control, canApprove, canExecute }) => {
-    request.mockResolvedValue(ok(detail(phase, {
-      canApprove, canExecute, currentAssistanceMaximum: 'execute_approved_actions',
-    })));
-    reauth.mockResolvedValue({ ok: false, status: 403, json: async () => ({ status: 'error' }) });
-    const wrapper = mountPage();
-    await flushPromises();
-    await wrapper.get('input[type="password"]').setValue('incorrect-password');
-    await wrapper.get(`[data-testid="${control}"]`).trigger('click');
-    await flushPromises();
-    expect(reauth).toHaveBeenCalledTimes(1);
-    expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0);
-  });
+    {
+      phase: 'proposed',
+      action: 'approve',
+      control: 'proposal-approve',
+      canApprove: true,
+      canExecute: false,
+    },
+    {
+      phase: 'approved',
+      action: 'execute',
+      control: 'proposal-execute',
+      canApprove: false,
+      canExecute: true,
+    },
+  ])(
+    'does not $action when fresh human reauthentication fails',
+    async ({ phase, control, canApprove, canExecute }) => {
+      request.mockResolvedValue(
+        ok(
+          detail(phase, {
+            canApprove,
+            canExecute,
+            currentAssistanceMaximum: 'execute_approved_actions',
+          }),
+        ),
+      );
+      reauth.mockResolvedValue({ ok: false, status: 403, json: async () => ({ status: 'error' }) });
+      const wrapper = mountPage();
+      await flushPromises();
+      await wrapper.get('input[type="password"]').setValue('incorrect-password');
+      await wrapper.get(`[data-testid="${control}"]`).trigger('click');
+      await flushPromises();
+      expect(reauth).toHaveBeenCalledTimes(1);
+      expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(
+        0,
+      );
+    },
+  );
 
   it.each([
-    { constraint: 'the current assistance ceiling', currentAssistanceMaximum: 'create_approval_proposal', canExecute: true },
-    { constraint: 'the current execute grant', currentAssistanceMaximum: 'execute_approved_actions', canExecute: false },
-  ])('does not offer execution when $constraint denies it', async ({ currentAssistanceMaximum, canExecute }) => {
-    request.mockResolvedValue(ok(detail('approved', {
-      canApprove: false, canExecute, currentAssistanceMaximum,
-      state: { phase: 'approved', outcome: null },
-    })));
-    const wrapper = mountPage();
-    await flushPromises();
-    expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeDefined();
-    expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0);
-  });
+    {
+      constraint: 'the current assistance ceiling',
+      currentAssistanceMaximum: 'create_approval_proposal',
+      canExecute: true,
+    },
+    {
+      constraint: 'the current execute grant',
+      currentAssistanceMaximum: 'execute_approved_actions',
+      canExecute: false,
+    },
+  ])(
+    'does not offer execution when $constraint denies it',
+    async ({ currentAssistanceMaximum, canExecute }) => {
+      request.mockResolvedValue(
+        ok(
+          detail('approved', {
+            canApprove: false,
+            canExecute,
+            currentAssistanceMaximum,
+            state: { phase: 'approved', outcome: null },
+          }),
+        ),
+      );
+      const wrapper = mountPage();
+      await flushPromises();
+      expect(wrapper.get('[data-testid="proposal-execute"]').attributes('disabled')).toBeDefined();
+      expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(
+        0,
+      );
+    },
+  );
   it('withholds approve and execute when the captured financial policy is no longer current', async () => {
-    request.mockResolvedValue(ok(detail('proposed', {
-      financialPolicyVersion: 'financial-1', currentFinancialPolicyVersion: 'financial-2',
-    })));
+    request.mockResolvedValue(
+      ok(
+        detail('proposed', {
+          financialPolicyVersion: 'financial-1',
+          currentFinancialPolicyVersion: 'financial-2',
+        }),
+      ),
+    );
     const wrapper = mountPage();
     await flushPromises();
     expect(wrapper.get('[data-testid="proposal-approve"]').attributes('disabled')).toBeDefined();
@@ -413,9 +697,14 @@ describe('consequential-action proposal review page', () => {
   });
 
   it('withholds approval when the captured governance policy is no longer current', async () => {
-    request.mockResolvedValue(ok(detail('proposed', {
-      governancePolicyVersion: 'governance-1', currentGovernancePolicyVersion: 'governance-2',
-    })));
+    request.mockResolvedValue(
+      ok(
+        detail('proposed', {
+          governancePolicyVersion: 'governance-1',
+          currentGovernancePolicyVersion: 'governance-2',
+        }),
+      ),
+    );
     const wrapper = mountPage();
     await flushPromises();
     expect(wrapper.get('[data-testid="proposal-approve"]').attributes('disabled')).toBeDefined();

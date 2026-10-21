@@ -259,6 +259,7 @@ beforeEach(() => {
   vi.stubGlobal('useRuntimeConfig', () => ({ public: { apiBase: 'https://review.test' } }));
   vi.stubGlobal('useToast', () => ({ add: toast }));
   vi.stubGlobal('navigateTo', vi.fn());
+  vi.stubGlobal('useRoute', () => ({ hash: '' }));
 });
 
 afterEach(() => {

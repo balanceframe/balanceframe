@@ -61,7 +61,9 @@ function readFlagOptions(args: string[], allowed: string[], command: string): Fl
         ok: false,
         error: {
           code: 'unknown_flags',
-          message: token.startsWith('--') ? `Unknown flag for ${command}: ${token}` : `Unexpected argument for ${command}: ${token}`,
+          message: token.startsWith('--')
+            ? `Unknown flag for ${command}: ${token}`
+            : `Unexpected argument for ${command}: ${token}`,
         },
       };
     }
@@ -114,7 +116,11 @@ function parseFlagCommand(
   };
 }
 
-function parseMerchantCommand(cleanArgs: string[], normalized: string[], format: string): ParseResult | null {
+function parseMerchantCommand(
+  cleanArgs: string[],
+  normalized: string[],
+  format: string,
+): ParseResult | null {
   if (cleanArgs[0] !== 'merchant') return null;
   const action = cleanArgs[1];
   const error = (message: string): ParseResult => ({ ok: false, error: { code: 'invalid_merchant_command', message } });
@@ -182,7 +188,67 @@ function parseMerchantCommand(cleanArgs: string[], normalized: string[], format:
   return result;
 }
 
-function parseSpaceCommand(cleanArgs: string[], normalized: string[], format: string): ParseResult | null {
+function parseEvidenceCommand(
+  cleanArgs: string[],
+  normalized: string[],
+  format: string,
+): ParseResult | null {
+  if (cleanArgs[0] !== 'evidence') return null;
+  const action = cleanArgs[1];
+  if (['list', 'health', 'export', 'resolve', 'rules', 'targets'].includes(action ?? '') && cleanArgs.length === 2)
+    return { ok: true, cmd: { command: `evidence.${action}`, format, args: normalized } };
+  if (
+    (action === 'show' || action === 'delete-raw') && cleanArgs.length === 3 && !cleanArgs[2]!.startsWith('--')
+  )
+    return {
+      ok: true,
+      cmd: {
+        command: `evidence.${action}`,
+        format,
+        args: normalized,
+        options: { documentId: cleanArgs[2]! },
+      },
+    };
+  if (
+    action === 'import' ||
+    action === 'decision' ||
+    [
+      'proposal',
+      'settlements',
+      'allocation-preview',
+      'allocation-save',
+      'propose-rule',
+      'approve-rule',
+      'revoke-rule',
+      'propose-candidate',
+    ].includes(action ?? '')
+  )
+    return parseFlagCommand(`evidence.${action}`, format, normalized, cleanArgs.slice(2), ['file'], ['file']);
+  if (action === 'item-outcomes' || action === 'rule-candidates')
+    return parseFlagCommand(
+      `evidence.${action}`,
+      format,
+      normalized,
+      cleanArgs.slice(2),
+      ['connector-id', 'account-id'],
+      ['connector-id', 'account-id'],
+    );
+  if (action === 'suggest-items') return parseFlagCommand('evidence.suggest-items', format, normalized, cleanArgs.slice(2), ['account-id'], ['account-id']);
+  return {
+    ok: false,
+    error: {
+      code: 'invalid_evidence_command',
+      message:
+        'Use evidence list/health/export/resolve/targets/rules, show/delete-raw DOCUMENT_ID, suggest-items --account-id ACCOUNT, item-outcomes/rule-candidates --connector-id SOURCE --account-id ACCOUNT, or import/decision/proposal/settlements/allocation-preview/allocation-save/propose-rule/approve-rule/revoke-rule/propose-candidate --file REQUEST.json.',
+    },
+  };
+}
+
+function parseSpaceCommand(
+  cleanArgs: string[],
+  normalized: string[],
+  format: string,
+): ParseResult | null {
   if (cleanArgs[0] !== 'spaces') return null;
   const resource = cleanArgs[1];
   const action = cleanArgs[2];
@@ -214,7 +280,10 @@ function parseSpaceCommand(cleanArgs: string[], normalized: string[], format: st
     if (!parsed.ok) return parsed;
     for (const key of required) {
       if (!parsed.options[key]) {
-        return { ok: false, error: { code: 'missing_flag_value', message: `--${key} is required.` } };
+        return {
+          ok: false,
+          error: { code: 'missing_flag_value', message: `--${key} is required.` },
+        };
       }
     }
     return {
@@ -425,6 +494,7 @@ export function parseArgs(argv: string[]): ParseResult {
     '--start-month': true,
     '--amount': true,
     '--account-id': true,
+    '--connector-id': true,
     '--purchase-at': true,
     '--required-by': true,
     '--currency': true,
@@ -476,6 +546,7 @@ export function parseArgs(argv: string[]): ParseResult {
     '--preview-token': true,
     '--consent': true,
     '--idempotency-key': true,
+    '--file': true,
   };
   const unknownFlags = normalized.filter((a) => a.startsWith('--') && !KNOWN_FLAGS[a]);
   if (unknownFlags.length > 0) {
@@ -505,6 +576,8 @@ export function parseArgs(argv: string[]): ParseResult {
   if (spaceCommand) return spaceCommand;
   const merchantCommand = parseMerchantCommand(cleanArgs, normalized, format);
   if (merchantCommand) return merchantCommand;
+  const evidenceCommand = parseEvidenceCommand(cleanArgs, normalized, format);
+  if (evidenceCommand) return evidenceCommand;
 
   // Extract command path
   if (cleanArgs[0] === 'connect') {

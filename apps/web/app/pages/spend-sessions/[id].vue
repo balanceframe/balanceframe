@@ -20,6 +20,7 @@
         Save and re-evaluate your cart before creating claims or completing this session.
       </p>
       <div v-else-if="session" class="mt-6 space-y-6">
+        <SpendSessionEvidence :key="`${session.id}:${session.version}:evidence`" :session-id="session.id" :version="session.version" />
         <ProspectiveClaimPanel :key="`${session.id}:${session.version}:claims`" :session="session" />
         <SessionCompletionPanel :key="`${session.id}:${session.version}:completion`" :session="session" />
       </div></template
@@ -28,6 +29,7 @@
 <script setup lang="ts">
 import type { PublicLiquidityView, PublicSpendSession } from '@balanceframe/application';
 import { liquidityRequest, liquidityError } from '@/utils/liquidity-client';
+import SpendSessionEvidence from '@/components/SpendSessionEvidence.vue';
 definePageMeta({ layout: 'default' });
 const route = useRoute();
 const session = ref<PublicSpendSession | null>(null);
