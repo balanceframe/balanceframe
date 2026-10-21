@@ -1,0 +1,21 @@
+Optional receipt OCR components (only in the separately built OCR image)
+
+Tesseract 5.5.3 — Apache License 2.0
+https://github.com/tesseract-ocr/tesseract/tree/5.5.3
+Copyright Google, Inc.; Hewlett-Packard Company; Tesseract contributors.
+Full upstream license: /opt/ocr/licenses/tesseract-LICENSE
+
+Leptonica 1.87.0 — BSD 2-Clause
+https://github.com/DanBloomberg/leptonica/tree/1.87.0
+Copyright (C) 2001-2020 Leptonica. All rights reserved.
+Full upstream license and attribution: /opt/ocr/licenses/leptonica-LICENSE
+
+English tessdata_fast 4.1.0 — Apache License 2.0
+https://github.com/tesseract-ocr/tessdata_fast/tree/4.1.0
+Copyright tessdata_fast contributors.
+Full upstream license: /opt/ocr/licenses/tessdata-fast-LICENSE
+
+The image also contains the Node/Debian base image and JPEG/PNG/zlib libraries,
+whose distribution license files remain under /usr/share/doc. No npm runtime
+packages are installed by this component. OCR output is untrusted source text
+and always requires review before becoming financial data.

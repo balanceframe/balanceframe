@@ -1,0 +1,17 @@
+{
+  "name": "@balanceframe/receipt-ocr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional local receipt OCR sidecar; no runtime npm dependencies",
+  "scripts": {
+    "build": "node --check src/extract.mjs && node --check src/server.mjs && node --check src/cli.mjs",
+    "start": "node src/cli.mjs",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.11",
+    "vitest": "^4.1.11"
+  }
+}

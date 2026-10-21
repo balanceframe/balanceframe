@@ -1,5 +1,26 @@
 # Release Policy
 
+## Unreleased v0.9.0 — Transaction evidence and intelligent resolution
+
+Implementation and acceptance are still in progress; this is not a published
+release. See the [current acceptance checklist](roadmap/post-mvp/11-5-implementation-status.md).
+
+- Immutable scoped evidence, encrypted raw retention/deletion, camera/photo and
+  manual photo/PDF receipt entry, with optional local OCR isolated in a default-off Compose
+  profile. Core installation, startup and manual review never require extraction.
+- Rust financial conservation, receipt/return lineage, explicit many-to-many item
+  allocations across existing Actual settlements, inspectable native manifests,
+  and the ordinary governed credit/amendment pipeline with reread/recovery proof.
+- Exact human-attested wallet statement intervals and activity; governed nonzero
+  opening equity, distinct from income/refunds, with independent approval and
+  Actual starting-balance/account-balance verification.
+- Explicit receipt versions, return/fulfillment/member review, saved-session
+  comparison, contextual deterministic categorization and approved rule learning.
+- Email forwarding is deferred by user direction. Receipt-model inference awaits
+  its separate privacy/egress design approval. Authenticated browser validation,
+  the OCR container build and final workspace/release gates remain open. No live
+  financial changes, account connections or deployment are included.
+
 ## Unreleased — Phase 9 controlled consequential actions
 
 - Exact reallocation proposals reuse ordinary selected-space authorization, immutable native planning, distinct-human approval, durable acquisition, Actual write/readback and native postcondition verification. Space assistance is a maximum; absent legacy configuration disables the new action workflow without changing existing categorization or rule permissions.

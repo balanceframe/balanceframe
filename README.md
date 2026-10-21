@@ -78,6 +78,10 @@ BalanceFrame is a **Rust–TypeScript modular monolith**:
   published `@actual-app/api` to observe transactions, categories, and
   budget state. Categorisation mutations are written only when explicitly
   authorised through the review-apply workflow (opt-in per deployment).
+- **Transaction evidence** — Review camera/manual receipts, exact settlement
+  allocations and human-attested wallet statements before separately approved
+  Actual changes. [Workflow and acceptance limits](docs/transaction-evidence.md).
+  Local OCR is optional; manual entry is always available.
 - **Deterministic classification** — Rust-based rule engine that applies
   user-defined patterns and learned rules with full provenance.
 - **ML-assisted suggestions** — Provider-neutral model orchestration that
@@ -120,6 +124,15 @@ docker compose -f compose.yaml -f compose.actual.yaml up -d
 After both services become healthy, connect BalanceFrame to `http://actual:5006`
 through the application setup. Actual is independently upgradeable and
 removable — removing BalanceFrame never deletes Actual data.
+
+### Optional local receipt OCR
+
+Photo receipts always support manual entry. Automatic text extraction is an
+optional local sidecar with its own image and private network; core installation,
+builds, startup and health do not require it. To opt in, explicitly run
+`docker compose -f compose.yaml -f compose.ocr.yaml --profile receipt-ocr up -d --build`.
+See [optional receipt OCR](docs/receipt-ocr.md) for pinned engines, resource bounds,
+licenses, verification and disabling it. Review extracted text before saving facts.
 
 ### Optional ValueSerp merchant research
 
@@ -301,7 +314,6 @@ Scenario account attestations are explicit, fictional source evidence, not bank 
 Catalog policy, observation and session expiry durations are materialized at their real submission time, so a fixed historical `--anchor` does not submit an already-expired configuration. Ordinary fixture timestamps remain unchanged; deliberately short expiry stories retain their short lifetime.
 Shared demo load/reset controls enforce a ten-second monotonic cooldown after each attempt; membership, authentication and financial freshness checks keep real time.
 
-
 Scenario setup creates real personal/shared spaces and installs exact resource grants with development authentication bypass disabled. Active human personas have independent Better Auth credentials and selected-space cookies. Pending invitations have no invented user/session; redemption creates a real separate human membership, and rejoining creates a new membership without inherited grants. The assistant uses a real bounded agent/delegation/API-key binding, not a human login. In the disposable browser demo, type **CONFIRM** for the current fictional persona's guarded actions: this renews Source's real session-bound proof without revealing fictional passwords. Ordinary Source accounts still require their own current password.
 
 Scoped completion approvers have explicit selected-budget liquidity admission for Native Card revalidation and exact grants for their completion's canonical accounts and categories. Persona roles infer no private history/source/full-read, execution, or control authority.
@@ -310,19 +322,19 @@ Scoped completion approvers have explicit selected-budget liquidity admission fo
 
 The existing 29 spending stories remain selectable, covering v0.5.0 rich carts, opportunity costs and reservations alongside liquidity routing, completion and reconciliation. `coapproval-completion` additionally demonstrates independently attributed approvals, existing space-scoped audit access, actor filters, financial-detail redaction and denial without audit rights.
 
-| Release | Scenario | Entry and expected behavior |
-|---|---|---|
-| v0.6.0 | `governance-scoped-access` | `/spaces`: separate limited human, Checking name/existence only; exact grant changes and membership revocation withhold other resources and financial data. |
-| v0.6.0 | `governance-invitation-lifecycle` | `/spaces`: pending invitation → separate-person redemption → revoke/rejoin with a new membership and no old grants. |
-| v0.6.0 | `governance-delegated-assistant` | `/spaces`: **Probe bounded assistant access** in demo controls displays admitted native Checking metadata and blocked management/history/financial HTTP outcomes; **Revoke assistant delegation**, then probe again to see the same key rejected with 401. |
-| v0.7.0 | `merchant-local-sparse` | `/review`: run **Sync**; Aster's $346.07 debit suggests Groceries from three real categorized observations, with no research/provider call. |
-| v0.7.0 | `merchant-local-insufficient` | `/review`: one categorized observation and an empty-identity target abstain rather than inventing a confident category or rule. |
-| v0.7.0 | `merchant-alias-conflict` | `/review`: imported Aster text versus Dapple notes abstains; independently reset alias confirm/reject decisions persist versions without ledger edits. A normal independently approved correction to Other wins subsequent inference. |
-| v0.7.0 | `merchant-recurrence-calendar` | `/review` and Dashboard: monthly, civil month-end, US business-end/first-business-day, variable $9–$12 and irregular series; independent pattern accept/reject branches. Clearing the calendar or selecting an unsupported jurisdiction preserves ordinary cadence with uncertainty. Local calendar fixtures also cover leap/year and unsupported-year boundaries. |
-| v0.7.0 | `merchant-native-rule-lifecycle` | `/rules` and Review: select Aster's $749.65 queue row and inspect the exact rule impact. **Proposed rules** remains accessible to scoped reviewers with empty transaction queues. Two independent human approvals exclude the author; owner execution creates one real Actual rule, with idempotent replay checked by local acceptance. **Simulate fixture import** uses Actual alone on Savings. Reset, prepare and approve a fresh unexecuted proposal, then **Change native fixture source** and attempt execution: refusal leaves zero rules. |
-| v0.7.0 | `merchant-research-success` | `/review`: explicitly consent to merchant-only fixture research; observe fixture provenance, cache reuse and **Expire fixture research cache** expiry. |
-| v0.7.0 | `merchant-research-outage` | `/review`: consent returns a modeled provider outage/uncertain billing; local Sync and Review remain usable. |
-| v0.7.0 | `merchant-research-lifecycle` | `/review`: held research, non-draining release/cancel/reset, installation/space/budget or exact-grant revocation, daily/monthly limits, and normal deletion with late-result fencing. Each mutually exclusive branch starts from a fresh load. |
+| Release | Scenario                          | Entry and expected behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.6.0  | `governance-scoped-access`        | `/spaces`: separate limited human, Checking name/existence only; exact grant changes and membership revocation withhold other resources and financial data.                                                                                                                                                                                                                                                                                                                                                                                       |
+| v0.6.0  | `governance-invitation-lifecycle` | `/spaces`: pending invitation → separate-person redemption → revoke/rejoin with a new membership and no old grants.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| v0.6.0  | `governance-delegated-assistant`  | `/spaces`: **Probe bounded assistant access** in demo controls displays admitted native Checking metadata and blocked management/history/financial HTTP outcomes; **Revoke assistant delegation**, then probe again to see the same key rejected with 401.                                                                                                                                                                                                                                                                                        |
+| v0.7.0  | `merchant-local-sparse`           | `/review`: run **Sync**; Aster's $346.07 debit suggests Groceries from three real categorized observations, with no research/provider call.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| v0.7.0  | `merchant-local-insufficient`     | `/review`: one categorized observation and an empty-identity target abstain rather than inventing a confident category or rule.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| v0.7.0  | `merchant-alias-conflict`         | `/review`: imported Aster text versus Dapple notes abstains; independently reset alias confirm/reject decisions persist versions without ledger edits. A normal independently approved correction to Other wins subsequent inference.                                                                                                                                                                                                                                                                                                             |
+| v0.7.0  | `merchant-recurrence-calendar`    | `/review` and Dashboard: monthly, civil month-end, US business-end/first-business-day, variable $9–$12 and irregular series; independent pattern accept/reject branches. Clearing the calendar or selecting an unsupported jurisdiction preserves ordinary cadence with uncertainty. Local calendar fixtures also cover leap/year and unsupported-year boundaries.                                                                                                                                                                                |
+| v0.7.0  | `merchant-native-rule-lifecycle`  | `/rules` and Review: select Aster's $749.65 queue row and inspect the exact rule impact. **Proposed rules** remains accessible to scoped reviewers with empty transaction queues. Two independent human approvals exclude the author; owner execution creates one real Actual rule, with idempotent replay checked by local acceptance. **Simulate fixture import** uses Actual alone on Savings. Reset, prepare and approve a fresh unexecuted proposal, then **Change native fixture source** and attempt execution: refusal leaves zero rules. |
+| v0.7.0  | `merchant-research-success`       | `/review`: explicitly consent to merchant-only fixture research; observe fixture provenance, cache reuse and **Expire fixture research cache** expiry.                                                                                                                                                                                                                                                                                                                                                                                            |
+| v0.7.0  | `merchant-research-outage`        | `/review`: consent returns a modeled provider outage/uncertain billing; local Sync and Review remain usable.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| v0.7.0  | `merchant-research-lifecycle`     | `/review`: held research, non-draining release/cancel/reset, installation/space/budget or exact-grant revocation, daily/monthly limits, and normal deletion with late-result fencing. Each mutually exclusive branch starts from a fresh load.                                                                                                                                                                                                                                                                                                    |
 
 Use the selector's declared entry links, persona selector and event controls; normal application authorization, fresh proof, approval and version checks still apply. After switching personas or reopening a guarded normal screen, enter `CONFIRM` in that screen's fresh-confirmation form before making changes; return to demo controls for fixture events. Governance name/existence probes are bounded local tooling backed by the real principal, governance engine and Actual metadata—not a new production resource-list endpoint.
 
@@ -368,7 +380,6 @@ The separate real-fixture allocation regression is
 in the locked source environment. Its isolated grant-write RSS ceiling is an
 operational regression check, not the native analysis memory gate; it is not
 part of the ordinary unit suite.
-
 
 ### Release
 
