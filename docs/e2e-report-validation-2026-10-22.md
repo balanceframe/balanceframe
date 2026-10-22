@@ -254,3 +254,31 @@ Independent reviews compare the combined candidate against the exact approved
 source patches and preserve the earlier auth, Actual compatibility, Compose,
 runtime artifact and CLI coverage changes. Integration does not authorize a
 merge, release, deployment, package change or PR38 rewrite.
+
+## Native CI fixture scheduling follow-up
+
+Run 39777983977 on `6ea825a` demonstrates that the new failure gates work:
+the native Windows adapter passes all 399 applicable tests, then the separate
+application step fails the existing Review-to-SQLite integration case
+`persists every authorized inferred target beyond the explanation page without
+freshness-clock issue churn`. It exceeds the unchanged 10,000 ms deadline;
+the reporter observes 16,346 ms, with 952 other cases passed before bail.
+Later CLI/contract steps stop rather than mask the failure. The raw log is
+`/tmp/balanceframe-ci-windows-6ea825a.log`.
+
+The bounded test-setup remedy transfers only the two-line application worker
+limit from existing PR38 commit
+`b53d9e619c246bb380e948991916077506841bdf`. It retains fork process isolation
+and bounds simultaneous file-backed SQLite fixtures with `maxWorkers: 1`,
+matching the adapter's existing pattern. No production code, assertion, target
+count, grant, 10-second deadline, inclusion or coverage gate changes.
+
+Supporting native evidence: PR38 run 39753116761 has a separate successful
+Windows application step; the exact case passes in 7,188 ms. Its test and
+fixture files are byte-identical to main. Other PR38 production differences
+mean this is not a controlled proof that contention caused the timeout.
+Before the config change, the isolated Linux case passes in 2.38 seconds;
+afterward all 1,348 application tests pass in 87.64 seconds. Fresh exact-head
+native CI is still required to confirm the remedy. No unrelated PR38 feature
+or dependency is transferred. Evidence:
+`/tmp/balanceframe-application-fixture-ci-evidence.md`.
