@@ -8,10 +8,12 @@ returned that same revision. Changes are isolated in
 `fix/e2e-report-validation-20261022`, worktree
 `/workspace/balanceframe-e2e-fixes`; the original `work` checkout is preserved.
 Remote branch inventory contained main and the active transaction-evidence
-branch. PR38 was fetched read-only as `origin/pr38` at
-`de27067e8a3dd3589a36979f06835b448aec1bb8`; its native Windows credential-store
-work is excluded. Overlapping filenames were compared and the changes below
-do not duplicate that feature or credential fix.
+branch. PR38 was initially fetched read-only as `origin/pr38` at
+`de27067e8a3dd3589a36979f06835b448aec1bb8`. Its broader feature work remains
+excluded. After native CI exposed the Windows dependency, the user authorized
+transferring only its existing cache, credential-boundary and CI-propagation
+fixes into this branch. Source provenance and verification are recorded below;
+PR38 itself remains unchanged.
 
 The exact source is Library item `libfile_81c5d0a97d0481918714ceb7c560cfcf`,
 144,699 bytes, 11 pages. Both the first supported consumer-local materialization
@@ -50,7 +52,7 @@ denials remain intact.
 | 10. CLI lacks --version (row 34) | confirmed | Executable regression returns `unknown_flags` before fix (the report imprecisely said unknown_command). Sole `--version` now prints the CLI manifest's 0.1.0 without credentials/server. Unknown commands, extra flags and help retain existing behavior. 179 CLI tests pass; spawned executable V8 coverage100%. `/tmp/balanceframe-misc-evidence.md`. |
 | 11. Chromium prerequisite undocumented (row 29) | not reproduced | Main README already says "installed Chromium/Chrome" and supplies `--chromium-path` for the real Review benchmark. Browser runner validates absolute executable path, file type and execute access. No browser download/package or weaker sandbox was added. Interactive verification here is separately environment-limited as recorded below. |
 | 12. groupId fails where public budget file ID succeeds (row 40) | not reproduced | The exact reported live groupId retry was not independently executed. Source/contract trace confirms public budget `id` selects and binds the budget; adapter uses `groupId` specifically for SDK downloads. These identifiers are intentionally distinct. The production HTTP test successfully connects by public ID. README now distinguishes IDs for selection/grants; API contract and scope/binding checks remain unchanged. Accepting arbitrary sync-group IDs would change that contract and was not implemented. `/tmp/balanceframe-misc-evidence.md`. |
-| 13. Recursive pnpm stops at the first failing package (row 15) | confirmed | Intentional runner behavior, not a product defect. The initial native smoke failure also stopped its enclosing pnpm invocation as designed. Independent package checks and existing CI coverage orchestration retain their own results. No success masking or dependency validation changes were made. |
+| 13. Recursive pnpm stops at the first failing package (row 15) | confirmed | Intentional runner behavior, not a product defect. The initial native smoke failure also stopped its enclosing pnpm invocation as designed. This behavior remains. A separate inherited PowerShell multi-command step masked earlier failures during native CI; the later authorized correction gives each command its own mandatory step. No dependency validation was weakened. |
 
 No claim was found already fixed by a newer main revision: fetched main equals
 the report's tested revision. Some claims overlook documentation/constraints
@@ -159,15 +161,16 @@ server URL keys in adapter/application tests. They originate in main's
 POSIX-only containment comparison and are already fixed in active PR38's
 platform-aware direct-child guard. PR38 also splits the portable test step so
 an earlier failure cannot be hidden by the last command succeeding. Neither
-fix is duplicated here. Windows verification requires inspecting raw suite
-results even if the inherited multi-command step later reports success.
+was included at the initial publication head. The subsequent authorized
+transfer is recorded below. Windows verification requires inspecting raw suite
+results even if an inherited multi-command step reports success.
 
 Read-only comparison refreshed PR38 to
 `3334f6fbef707b9d45d9cb563c2e207e8fd6b87a`. Four shared filenames have distinct
 hunks; the initial report patch passed an isolated temporary-index apply-check
 against that revision. Combined Windows validation depends on integrating and
-retesting the separate PR38 fixes when authorized. No integration, merge, tag,
-release, deployment or access change is part of this draft PR.
+retesting the separate PR38 fixes after authorization. No merge, tag, release,
+deployment or access change is part of this draft PR.
 
 Follow-up local evidence: `/tmp/balanceframe-compose-ci-evidence.md`,
 `/tmp/balanceframe-container-ci-evidence.md`; first-run CI logs are
@@ -207,3 +210,47 @@ candidate needs independent review and fresh exact-head native platform gates.
 No transfer or branch mutation was performed during that assessment. The
 earlier recommendation to merge the report fixes before resolving this Windows
 dependency is withdrawn. This PR is not merge-ready.
+
+## Authorized Windows dependency transfer
+
+After the repeated native Windows failures, the user authorized transferring
+the bounded existing fixes into PR39. The source commits are:
+
+- `5da008004e5977483c8d6020829305f7229df27e`: direct-child cache containment,
+  native/Windows-path regressions and separate mandatory portable CI steps.
+- `b00e98ed10d136b90a88363727a1b5c010119cda`: non-vacuous native containment
+  assertions for both server caches.
+- `de27067e8a3dd3589a36979f06835b448aec1bb8`: native Windows encrypted-store
+  refusal, complete platform/POSIX security tests and compatibility notices.
+
+Only the twelve approved source files are transferred. Workflow context is
+adapted around this branch's existing deployment checks; the release notice
+uses a neutral Unreleased fixes heading. Existing report fixes remain intact.
+No unrelated PR38 feature, dependency, schema or financial authority is added.
+PR38 stays at `3334f6f` and is not rewritten or otherwise changed.
+
+The cache guard still rejects the base and parent and permits only a sanitized
+direct child, including native roots, Windows drive roots and UNC paths.
+Native Windows file-store construction refuses before options/configuration,
+path resolution or file access, even with a supplied master key. Existing files
+are untouched, without migration or fallback. Explicit environment storage
+remains available; real POSIX permissions, encryption and tamper assertions are
+retained. This deliberately changes support for explicit native Windows
+encrypted-file-store consumers; ADR 0007 and the release notice state it.
+
+Source tests were imported before production changes: 20 of 40 cache cases
+failed, all six platform-refusal cases failed, and the mandatory own-step CI
+contract failed. Existing-file preservation refusal was also reproduced red.
+After transfer, all 60 targeted adapter cases and the CI contract pass.
+The full adapter suite passes 422 tests with 87.37% overall line coverage and
+86.10% across changed production files, above the existing 80% threshold.
+Application 1,348, CLI 179, contract 155 plus eight static container checks,
+and all 30 coverage-tool tests pass. Full workspace build, typecheck and lint
+pass. Native Windows and complete aggregate CI still require fresh
+exact-head execution; simulated platform tests alone are not acceptance.
+
+Implementation evidence: `/tmp/balanceframe-windows-extraction-evidence.md`.
+Independent reviews compare the combined candidate against the exact approved
+source patches and preserve the earlier auth, Actual compatibility, Compose,
+runtime artifact and CLI coverage changes. Integration does not authorize a
+merge, release, deployment, package change or PR38 rewrite.

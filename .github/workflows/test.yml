@@ -132,12 +132,17 @@ jobs:
       - name: Lint workspace
         run: pnpm lint
 
-      - name: Run portable JavaScript and TypeScript tests
-        run: |
-          pnpm --filter @balanceframe/actual-adapter test
-          pnpm --filter @balanceframe/application test
-          pnpm --filter @balanceframe/cli test
-          pnpm --filter @balanceframe/test-contract test
+      - name: Test Actual adapter
+        run: pnpm --filter @balanceframe/actual-adapter test
+
+      - name: Test application
+        run: pnpm --filter @balanceframe/application test
+
+      - name: Test CLI
+        run: pnpm --filter @balanceframe/cli test
+
+      - name: Test protocol contracts
+        run: pnpm --filter @balanceframe/test-contract test
 
       - name: Run Rust tests
         run: cargo test --workspace

@@ -18,6 +18,20 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+test('portable CI gives each mandatory test command its own failure gate', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/test.yml', import.meta.url), 'utf8');
+  const portable = workflow.slice(workflow.indexOf('\n  portable:'));
+  const steps = portable.split(/\n      - name: /).slice(1);
+  for (const name of ['actual-adapter', 'application', 'cli', 'test-contract']) {
+    const command = `pnpm --filter @balanceframe/${name} test`;
+    const matching = steps.filter((step) => step.includes(command));
+    assert.equal(matching.length, 1, `${name} must run exactly once`);
+    assert.ok(matching[0].includes(`\n        run: ${command}\n`),
+      `${name} must exit its own step so a later PowerShell command cannot mask failure`);
+    assert.doesNotMatch(matching[0], /continue-on-error:\s*true/);
+  }
+});
+
 async function waitForFile(path) {
   for (let attempt = 0; attempt < 1000; attempt++) {
     if (existsSync(path)) return JSON.parse(readFileSync(path, 'utf8'));
