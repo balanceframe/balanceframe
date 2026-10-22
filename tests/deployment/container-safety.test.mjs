@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const PROJECT_ROOT = resolve(import.meta.dirname, '../..');
-const dockerfile = readFileSync(resolve(PROJECT_ROOT, 'Dockerfile'), 'utf8');
+const dockerfile = readFileSync(resolve(PROJECT_ROOT, 'Dockerfile'), 'utf8').replace(/\r\n/g, '\n');
 const runtimeStage = dockerfile.split(/^FROM /m).at(-1);
 
 describe('Docker image safety', () => {

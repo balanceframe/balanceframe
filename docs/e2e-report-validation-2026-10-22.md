@@ -119,5 +119,56 @@ local to this execution environment; it is not the report author's missing logs.
   `/tmp/balanceframe-compose-daemon-events.json`.
 
 No packages were added/upgraded, grants broadened, access changed, branches
-merged, release/deployment performed, or PR published. Publishing a new PR
-remains a separate user-authorized step after reporting these local results.
+merged, or release/deployment performed. Initial local results were reported
+before publication. The user subsequently approved pushing this fix branch and
+opening draft [PR39](https://github.com/balanceframe/balanceframe/pull/39).
+
+## Publication CI follow-up
+
+The approved initial publication head was
+`ea04abad53a495514e4168ca2007ed7422ac3bd7`. Its first CI run39762739322
+passed macOS ARM64. Linux passed Nix validation, build, typecheck, lint and
+dependency-security checks, then failed two unsafe Compose policy controls
+using Compose5.3.1. The safe baseline passed, but explicit-true and short-syntax
+controls returned validator0. The log did not retain the unsafe rendered JSON;
+the exact serializer cause is unverified.
+
+The bounded fix retains those controls and adds a separate private
+`config --no-interpolate --no-normalize --format json` model. It requires an
+explicit false on the exact read-only research bind and a complete raw volume
+set containing only that bind and the canonical data volume. Existing normalized
+checks still validate actual resolved source paths and the full deployment.
+Deterministic tests reproduce lost normalized policy evidence and reject true,
+short syntax, an unrelated false decoy, missing raw policy evidence, and long-
+or short-syntax mounts whose interpolated targets collide with the safe target.
+Independent review reproduced the collision before the complete-set check and
+confirmed rejection afterward.
+Local Compose2.40.3 passes all30 deployment tests; actual Compose5.3.1 rerun is
+required. No parser/package installation or security assertion removal.
+
+Windows also exposed CRLF sensitivity in the new static artifact test. A
+canonical-source fixture executes the actual test under LF and CRLF, and
+requires rejection of each of three missing native artifacts under both.
+Before the fix,3/8 regression cases failed; normalizing CRLF at the Dockerfile
+read makes all eight pass without changing exact artifact comparisons. The
+contract invocation now passes155 Vitest cases plus eight static checks.
+
+Two earlier Windows failures in that run report cache-path traversal for normal
+server URL keys in adapter/application tests. They originate in main's
+POSIX-only containment comparison and are already fixed in active PR38's
+platform-aware direct-child guard. PR38 also splits the portable test step so
+an earlier failure cannot be hidden by the last command succeeding. Neither
+fix is duplicated here. Windows verification requires inspecting raw suite
+results even if the inherited multi-command step later reports success.
+
+Read-only comparison refreshed PR38 to
+`3334f6fbef707b9d45d9cb563c2e207e8fd6b87a`. Four shared filenames have distinct
+hunks; the initial report patch passed an isolated temporary-index apply-check
+against that revision. Combined Windows validation depends on integrating and
+retesting the separate PR38 fixes when authorized. No integration, merge, tag,
+release, deployment or access change is part of this draft PR.
+
+Follow-up local evidence: `/tmp/balanceframe-compose-ci-evidence.md`,
+`/tmp/balanceframe-container-ci-evidence.md`; first-run CI logs are
+`/tmp/balanceframe-ci-linux-ea04aba.log` and
+`/tmp/balanceframe-ci-windows-ea04aba.log`.
