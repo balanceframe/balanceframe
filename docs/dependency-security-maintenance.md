@@ -8,6 +8,53 @@ backport. A–F, the Forge and Braces interim mitigations, and the Actual Node S
 Handlebars repair are implemented. The Nitro owner replacement remains blocked
 by traversal compatibility; no replacement walker has been applied.
 
+## v0.9 follow-up — 2026-10-22
+
+The user approved only Vite **8.3.2 → 8.3.3**, standalone launch-editor
+**2.14.1 → 2.14.2** (both MIT), and bounded hardening of the existing Forge
+patch. The earlier dated results below describe prior checkpoints. In particular,
+the current Forge source adds one condition beyond the upstream-head backport
+and therefore no longer matches that upstream file byte-for-byte.
+
+The two package updates address
+[GHSA-587h-7wmj-h5pm / CVE-2026-112942](https://github.com/advisories/GHSA-587h-7wmj-h5pm)
+and the related
+[GHSA-698v-4r3x-3vcv / CVE-2026-112943](https://github.com/advisories/GHSA-698v-4r3x-3vcv).
+The former bypasses a Windows editor-path existence check; the latter involves
+Windows command-argument percent expansion. Both updates are required because
+Vite bundles its own editor implementation, while Nuxt DevTools separately
+imports launch-editor. Current Nuxt/Vitest ranges accept the patch releases;
+the existing shell-quote 1.11.0 satisfies the new editor dependency range.
+
+The lockfile changes only those version keys/references, their two published
+integrities, and the Forge patch hash. Manifests, other package versions and
+security patches remain unchanged. Vite 8.3.3 also changes HTML transformation
+and development-server file checks, so its compatibility requires build and
+application checks in addition to the security regressions.
+
+The Forge patch now rejects nonempty primitive ASN.1 NULL parameters. Two
+additional parser regressions failed before hardening and pass afterward;
+OID-only, empty NULL, wrong-digest and ordinary RSA signature controls remain
+covered. These exponent-one parser probes do not demonstrate a real-key forgery
+or prove complete RSA-verification safety. The Node entry remains version 1.4.0;
+browser distributions are unchanged and the published advisory remains open.
+
+Twenty editor tests evaluate the installed standalone and Vite-bundled code
+with Windows path semantics and captured process calls. They cover path
+normalization before existence checks, percent/CR/LF rejection, ordinary paths,
+quoting, line/column positions, missing files and UNC paths. Before the updates,
+16 security cases failed and four controls passed; after installation all 20
+pass. The harness never starts a shell or editor. Portable CI runs these tests,
+including on Windows; the full Linux security suite contains **68 tests**.
+
+The saved audit for pre-update head `b3faa0e` reported 19 findings (four high,
+13 moderate, two low). Its high-only console identifies Forge, Braces, Vite and
+launch-editor; it does not enumerate all lower-severity findings. Local validation
+does not submit a fresh dependency graph; the existing remote CI audit remains
+unchanged and nonblocking. Forge and Braces retain
+their advisory flags despite local mitigations, so this is not a clean-audit
+claim. Existing Braces guards and all other patches are preserved.
+
 ## Applied and verified
 
 | Package | Previous | Applied | High/critical advisories removed from the lockfile audit |

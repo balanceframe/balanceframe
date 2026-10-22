@@ -41,8 +41,10 @@ for (const [name, algorithm] of [
   ['OID, NULL, extra OCTET STRING (upstream regression)', '301006096086480165030402010500040100'],
   ['OID, extra OCTET STRING without NULL', '300e0609608648016503040201040100'],
   ['OID, NULL, extra NULL', '300f060960864801650304020105000500'],
+  ['OID and nonempty primitive NULL (one byte)', '300e0609608648016503040201050100'],
+  ['OID and nonempty primitive NULL (multiple bytes)', '301006096086480165030402010503616263'],
 ]) {
-  test(`RSA verification rejects nested DigestAlgorithm children: ${name}`, () => {
+  test(`RSA verification rejects malformed DigestAlgorithm: ${name}`, () => {
     const signature = parserSignature(algorithm);
     assert.equal(signature.length, 128);
     assert.throws(() => parserKey.verify(digest, signature), invalidDigestInfo);
