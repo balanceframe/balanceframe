@@ -4,6 +4,23 @@ Actual Budget API adapter.
 
 Provides a typed interface to the Actual Budget server API for reading transactions, budgets, and categories.
 
+## Credential storage platforms
+
+`EnvCredentialStore` remains available on every supported platform and does not
+persist credentials. Configure it explicitly; it is not an OS secret vault.
+The application's default connection and web-writing paths already use this store.
+
+`EncryptedCredentialStore` is supported on POSIX systems, including Linux/Docker.
+On native Windows its constructor throws before filesystem access, even with a
+supplied master key. Node's file-mode API cannot establish owner-only Windows
+access, and this store does not implement or verify Windows access controls.
+There is no automatic fallback to a different store.
+
+Existing credential files are neither opened nor deleted by the Windows refusal.
+An upgrade does not migrate credentials. Explicit environment/secret injection
+remains available; any handling of old files is a separate operator action.
+See [ADR 0007](../../docs/adr/0007-windows-file-credential-store-boundary.md).
+
 `ActualConnector.createManualTransaction` is a bounded write port for a separately
 approved manual debit or conserved split. It rejects Observe mode, synchronizes
 before checking current accounts/categories and imported candidates, uses a

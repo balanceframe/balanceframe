@@ -9,13 +9,16 @@
  *
  * ## Usage
  *
+ * Environment-backed credentials do not persist secrets on disk. The optional
+ * EncryptedCredentialStore requires POSIX permissions and rejects native Windows.
+ *
  * ```ts
  * import { ActualConnector, createDefaultActualClient } from '@balanceframe/actual-adapter';
- * import { EncryptedCredentialStore } from '@balanceframe/actual-adapter/credentials';
+ * import { EnvCredentialStore } from '@balanceframe/actual-adapter/credentials';
  *
  * const connector = new ActualConnector({
  *   client: createDefaultActualClient(),
- *   credentialStore: new EncryptedCredentialStore(),
+ *   credentialStore: new EnvCredentialStore(),
  * });
  *
  * const budgets = await connector.connect({

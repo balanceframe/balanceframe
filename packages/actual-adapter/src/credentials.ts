@@ -228,6 +228,8 @@ function isV1Record(stored: Record<string, unknown>): boolean {
  * - The active credential is tracked via `current.txt` to avoid arbitrary
  *   file selection when multiple credential files exist.
  * - Files are written atomically with restrictive permissions (0o600).
+ * - Native Windows is unsupported; construction fails before inspecting options
+ *   or accessing files. Use EnvCredentialStore or run on Linux / in Docker.
  */
 export class EncryptedCredentialStore implements CredentialStore {
   private readonly _dir: string;
@@ -238,6 +240,12 @@ export class EncryptedCredentialStore implements CredentialStore {
   private _activeUrl: string | null = null;
 
   constructor(opts?: { credentialDir?: string; masterKey?: Buffer }) {
+    if (process.platform === 'win32') {
+      throw new Error(
+        'EncryptedCredentialStore is unsupported on native Windows. ' +
+          'Use EnvCredentialStore explicitly, or run on Linux / in Docker.',
+      );
+    }
     this._dir = opts?.credentialDir ?? credentialDir();
     if (opts?.masterKey) {
       if (opts.masterKey.length !== KEY_LENGTH) {

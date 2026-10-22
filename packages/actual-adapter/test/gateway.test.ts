@@ -1408,10 +1408,12 @@ describe('ActualConnector', () => {
   });
 
   // ==========================================================================
+  // File-backed suites register only on supported POSIX hosts. Windows refusal
+  // and the portable environment store run in credentials-platform.test.ts.
   // 9. Regression: EncryptedCredentialStore restart-safe decrypt
   // ==========================================================================
 
-  describe('restart-safe decrypt (master key persistence)', () => {
+  if (process.platform !== 'win32') describe('POSIX restart-safe decrypt (master key persistence)', () => {
     it('should derive same key when loading with stored master.key across instances', async () => {
       const tmpDir = '/tmp/bf-test-creds-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -1864,7 +1866,7 @@ describe('ActualConnector', () => {
   // 15. Regression: Tampered URL detection via AAD binding
   // ==========================================================================
 
-  describe('tampered URL detection', () => {
+  if (process.platform !== 'win32') describe('POSIX tampered URL detection', () => {
     it('should detect tampered serverUrl via GCM auth failure', async () => {
       const tmpDir = '/tmp/bf-test-tamper-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -1934,7 +1936,7 @@ describe('ActualConnector', () => {
   // 16. Regression: Permissions and atomic writes
   // ==========================================================================
 
-  describe('permissions and atomic writes', () => {
+  if (process.platform !== 'win32') describe('POSIX permissions and atomic writes', () => {
     it('should write credential file with restrictive permissions (0o600)', async () => {
       const tmpDir = '/tmp/bf-test-perms-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -2035,7 +2037,7 @@ describe('ActualConnector', () => {
   // 17. Regression: Rotation failure protection
   // ==========================================================================
 
-  describe('rotation consistency', () => {
+  if (process.platform !== 'win32') describe('POSIX rotation consistency', () => {
     it('should atomically replace old credentials with new', async () => {
       const tmpDir = '/tmp/bf-test-rotate-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
@@ -2116,7 +2118,7 @@ describe('ActualConnector', () => {
   // ==========================================================================
 
   describe('env/file separation', () => {
-    it('should not read environment variables in EncryptedCredentialStore', async () => {
+    if (process.platform !== 'win32') it('POSIX EncryptedCredentialStore ignores environment credentials', async () => {
       const tmpDir = '/tmp/bf-test-envsep-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
       const { rmSync } = await import('node:fs');
@@ -2194,7 +2196,7 @@ describe('ActualConnector', () => {
   // 19. Regression: Deletion truthfulness
   // ==========================================================================
 
-  describe('deletion truthfulness', () => {
+  if (process.platform !== 'win32') describe('POSIX deletion truthfulness', () => {
     it('should remove all credential files on delete', async () => {
       const tmpDir = '/tmp/bf-test-delete-' + Date.now();
       const { EncryptedCredentialStore } = await import('../src/credentials');
