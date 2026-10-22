@@ -376,7 +376,8 @@ export class EvidenceItemRules {
           ),
         }
       : undefined;
-    const now = this.host.now();
+    const access = this.host.access(actor, scope);
+    const now = access.now;
     const payload: EvidenceItemRulePayload = {
       connectorId: input.connectorId,
       accountId: input.accountId,
@@ -393,7 +394,7 @@ export class EvidenceItemRules {
       actualInteraction: { kind: 'local_item_suggestion_only', reasonCode: 'actual_item_predicate_unavailable', actualRuleIds: actual.ruleIds },
     };
     if (!this.host.access(actor, scope, source.documents, payload).authorize({ capability: 'normalized-evidence', document: source.documents[0]!, scope })) throw new Error('Evidence item-rule proposal is not authorized');
-    return this.host.store.evidence.itemRules.propose(this.host.access(actor, scope), payload);
+    return this.host.store.evidence.itemRules.propose(access, payload);
   }
   /** Read only owner-scoped proposals with currently authorized supporting evidence. */
   async list(actor: MerchantActor): Promise<EvidenceItemRuleRecord[]> {
