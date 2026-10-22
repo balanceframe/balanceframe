@@ -7,6 +7,8 @@ export default defineConfig({
     // Native integration tests need process isolation; worker threads can
     // segfault during addon teardown on macOS ARM64.
     pool: 'forks',
+    // Bound contention between file-backed SQLite fixtures on hosted runners.
+    maxWorkers: 1,
     include: ['test/**/*.test.ts'],
     testTimeout: 10_000,
     bail: 1,
