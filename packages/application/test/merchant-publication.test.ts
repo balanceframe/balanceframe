@@ -356,17 +356,23 @@ describe('bounded readonly merchant publication', () => {
     expect(current.localReview.uncategorizedCount).toBe(40);
   });
 
-  it('rejects an incoming-only uncategorized aggregate outside the canonical signed Money range', async () => {
-    fixture.setRows(Array.from({ length: 1025 }, (_, index) => transaction({
-      id: `tx-incoming-overflow-${index}`, amount: Number.MAX_SAFE_INTEGER,
-    })));
-    fixture.grantSources();
-    fixture.grant('budget', fixture.actor.budgetId, 'merchant:analyze', true, fixture.actor,
-      { maxGrossOutgoing: [{ minorUnits: '0', currency: 'USD' }] });
-    const result = fixture.service.analyze(fixture.actor);
-    await expect(result).rejects.toThrow('Merchant uncategorized amount exceeds Money range');
-    await expect(result).rejects.toMatchObject({ code: 'analysis_failed', reasonCodes: ['amount_overflow'], retryable: false });
-    expect(rows('merchant_evidence')).toEqual([]);
+  describe('incoming aggregate overflow with a complete source closure', () => {
+    // Thousands of durable grant writes are fixture setup; analysis keeps its 10s limit.
+    beforeEach(() => {
+      fixture.setRows(Array.from({ length: 1025 }, (_, index) => transaction({
+        id: `tx-incoming-overflow-${index}`, amount: Number.MAX_SAFE_INTEGER,
+      })));
+      fixture.grantSources();
+    }, 60_000);
+
+    it('rejects an incoming-only uncategorized aggregate outside the canonical signed Money range', async () => {
+      fixture.grant('budget', fixture.actor.budgetId, 'merchant:analyze', true, fixture.actor,
+        { maxGrossOutgoing: [{ minorUnits: '0', currency: 'USD' }] });
+      const result = fixture.service.analyze(fixture.actor);
+      await expect(result).rejects.toThrow('Merchant uncategorized amount exceeds Money range');
+      await expect(result).rejects.toMatchObject({ code: 'analysis_failed', reasonCodes: ['amount_overflow'], retryable: false });
+      expect(rows('merchant_evidence')).toEqual([]);
+    });
   });
 
   it.each([

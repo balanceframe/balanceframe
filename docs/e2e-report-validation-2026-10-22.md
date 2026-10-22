@@ -282,3 +282,32 @@ afterward all 1,348 application tests pass in 87.64 seconds. Fresh exact-head
 native CI is still required to confirm the remedy. No unrelated PR38 feature
 or dependency is transferred. Evidence:
 `/tmp/balanceframe-application-fixture-ci-evidence.md`.
+
+## Overflow fixture setup follow-up
+
+Run 39780049206 on `a87c5f1` confirms the preceding scheduling
+remedy on native Windows: the adapter passes 399 tests and the unchanged
+301-target Review case passes in 5,029 ms. The application gate then catches
+a different existing case, incoming-only aggregate overflow, exceeding its
+10,000 ms test deadline. It reports 24,935 ms and 1,059 other passes before
+bail. At the 12:51 UTC checkpoint this was the published head's current failure,
+not an old superseded failure or a misleading green badge.
+Raw evidence: `/tmp/balanceframe-ci-windows-a87c5f1.log`.
+
+The bounded correction transfers only existing PR38 commit
+`3334f6fbef707b9d45d9cb563c2e207e8fd6b87a`'s test-fixture patch. Construction
+of all 1,025 incoming rows and the same complete source grants (8,200 per-row
+durable grants plus fixed grants) move into a scoped setup hook with an
+explicit 60-second budget. The restrictive budget grant, actual analysis,
+overflow message/code/reason/retryability assertions and empty durable
+merchant-evidence check remain inside the unchanged 10-second test deadline.
+No financial source, row count, grant or assertion is removed or bypassed.
+
+Installed Vitest 4.1.11 applies independent timeout wrappers to setup hooks
+and test callbacks; the 60-second setup allowance does not widen analysis.
+PR38 native Windows evidence passes this case in 44,038 ms including hooks;
+that is not a claim that analysis itself takes 44 seconds. Local isolated
+before/after cases pass, and the full unchanged 1,348-case application suite
+passes in 87.72 seconds. The test file byte-matches the exact source commit.
+Fresh exact-head native CI remains required. Evidence:
+`/tmp/balanceframe-overflow-fixture-ci-evidence.md`.
