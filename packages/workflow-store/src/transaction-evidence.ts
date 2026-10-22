@@ -1,3 +1,5 @@
+import { ReceiptInferenceWorkflow } from './receipt-inference.js';
+export * from './receipt-inference.js';
 import {ReceiptVersionWorkflow} from './receipt-version.js';
 export * from './receipt-version.js';
 import { WalletStatementWorkflow } from './wallet-statement.js';
@@ -86,7 +88,10 @@ export interface EvidenceAccess {
       | 'observe'
       | 'item-rule:propose'
       | 'item-rule:approve'
-      | 'item-rule:read';
+      | 'item-rule:read'
+      | 'receipt-inference:local'
+      | 'receipt-inference:external'
+      | 'receipt-inference:policy:manage';
     document: EvidenceDocument | null;
     scope: EvidenceScope;
   }) => boolean;
@@ -166,11 +171,17 @@ export function migrateEvidenceLedgerProvenance(db: Database): void {
 }
 /** Evidence persistence uses the workflow database transaction fence. */
 export class TransactionEvidenceWorkflow {
+  readonly receiptInference: ReceiptInferenceWorkflow;
   readonly itemRules: EvidenceItemRuleWorkflow;
   readonly walletStatements: WalletStatementWorkflow;
   readonly receiptVersions: ReceiptVersionWorkflow;
   readonly sessionSnapshots: SpendSessionEvidenceWorkflow;
   constructor(private readonly db: Database) {
+    this.receiptInference = new ReceiptInferenceWorkflow(
+      db,
+      (access, id) => this.get(access, id),
+      (access, id) => this.isCurrent(access, id),
+    );
     this.receiptVersions = new ReceiptVersionWorkflow(db,(access,id)=>this.get(access,id),(access,id)=>this.isCurrent(access,id));
     this.walletStatements = new WalletStatementWorkflow(
       db,

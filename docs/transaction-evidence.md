@@ -162,3 +162,28 @@ An allocation selector contains `resolutionHash`, `targetTransactionId`,
 `categoryId`). Confirmation includes the exact returned `allocationHash`.
 The server re-reads current permitted evidence and recomputes the native plan;
 caller-supplied amounts, effects and provenance are rejected.
+
+## Optional receipt category inference
+
+Receipt items have a separate suggestion-only model contract. Approved deterministic
+rules run first; conflicts require manual review. The receipt category control can
+preview a local or external request, show its exact minimized labels and category
+aliases, and obtain fresh consent. A returned suggestion requires a separate click
+to fill the category selection. Evidence confirmation, learning and financial
+proposal approval remain separate actions.
+
+Both model paths are unavailable in the default installation: web composition
+registers no providers or installation policy. An integration must independently
+supply an approved provider adapter and installation policy before authorized
+administrators can opt in at space and budget levels. Local/external execution
+capabilities and provider allowlists are distinct. This code release neither
+connects nor enables a model, and adds no package or infrastructure dependency.
+Manual entry and optional OCR continue independently.
+
+Only bounded, permitted item/category labels and opaque aliases enter a provider
+payload. Images, original receipt text, financial fields, real category IDs and
+account/member identities stay outside that contract. Unsupported or sensitive
+labels refuse inference. Preview hashes, current source/category/rule/policy
+revalidation, single-use consent, scoped caches and content-free audit protect
+suggestion reuse. See [ADR 0006](adr/0006-receipt-inference-subject-and-egress-proposal.md)
+for limitations and the approval boundary.

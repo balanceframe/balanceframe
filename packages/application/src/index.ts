@@ -92,3 +92,5 @@ export {
 } from './wallet-statement.js';
 
 export * from './evidence-receipt-version.js';
+
+export * from './receipt-item-inference.js';

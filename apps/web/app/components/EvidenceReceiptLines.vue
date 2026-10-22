@@ -61,6 +61,19 @@
             </option>
           </select>
         </label>
+        <ReceiptItemInference
+          v-if="active && accountId && line.net.minorUnits !== '0'"
+          :account-id="accountId"
+          :receipt-id="receipt.id"
+          :line-id="line.id"
+          :categories="categories"
+          @suggested="
+            (category) => {
+              if (!choices[line.id] && categories.some((value) => value.id === category))
+                choices[line.id] = category;
+            }
+          "
+        />
       </div>
     </template>
   </section>
@@ -69,6 +82,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import type { EconomicEventLedgerEffect, ReceiptEvidence } from '@balanceframe/protocol-generated';
 import SemanticAmount from './SemanticAmount.vue';
+import ReceiptItemInference from './ReceiptItemInference.vue';
 import { evidenceRequest } from '../utils/transaction-evidence-client';
 import { evidenceItemSuggestionsViewSchema } from '../utils/evidence-item-rules-client';
 const props = defineProps<{

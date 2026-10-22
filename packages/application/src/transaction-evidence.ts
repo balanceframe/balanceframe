@@ -24,7 +24,11 @@ import {
 } from './evidence-item-categories.js';
 import { SavedSessionReceiptIntentSchema } from '@balanceframe/protocol-generated/validators';
 import { manualReceiptPhotoExtractionSchema, parseManualReceiptPhoto } from './receipt-photo.js';
-import { EvidenceItemRules } from './evidence-item-rules.js';
+import { EvidenceItemRules, type EvidenceItemRuleCapture } from './evidence-item-rules.js';
+import {
+  ReceiptItemInferenceService,
+  type ReceiptItemInferenceConfiguration,
+} from './receipt-item-inference.js';
 import { canonicalProposalJson } from '@balanceframe/workflow-store';
 import { createHash, createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -271,6 +275,7 @@ export interface TransactionEvidenceServiceOptions {
   connectionManager?: ConnectionManager;
   scopeFor?: (actor: MerchantActor) => EvidenceScope | Promise<EvidenceScope>;
   clock?: () => Date;
+  receiptInference?: ReceiptItemInferenceConfiguration;
 }
 /** Import acknowledgement contains no extraction or prior private source references. */
 export interface EvidenceImportReceipt {
@@ -323,6 +328,7 @@ export interface EvidenceAttentionItem {
 /** Evidence orchestration cannot write Actual; proposals use the existing consequential-action service. */
 export class TransactionEvidenceService {
   private readonly itemRules: EvidenceItemRules;
+  private readonly receiptInference: ReceiptItemInferenceService;
   private readonly sessionReceipts: SpendSessionReceiptService;
   private readonly walletStatements: WalletStatementService;
   private readonly receiptVersions: ReceiptVersionService;
@@ -337,84 +343,40 @@ export class TransactionEvidenceService {
       now: () => this.now(),
       scope: (actor) => this.scope(actor),
       access: (actor, scope, peers, additional) => this.access(actor, scope, peers, additional),
-      capture: async (actor, connectorId) => {
-        const scope = await this.scope(actor);
-        this.requireBudget(actor, scope, 'normalized-evidence');
-        const access = this.access(actor, scope);
-        const documents = this.current(
-          this.readableDocuments(actor, scope).filter(
-            (document) => document.connectorId === connectorId && document.parseStatus === 'parsed',
-          ),
-          access,
-        );
-        if (!documents.length) throw new Error('No current authorized receipt evidence');
-        const request = this.request(documents, actor.governancePolicyVersion!, 5, actor, scope);
-        const decision = this.options.store.evidence.latestDecision(
-          access,
-          documents.map((document) => document.id),
-        );
-        this.applyDecision(
-          request,
-          decision ?? {
-            resolutionHash: '0'.repeat(64),
-            documentIds: documents.map((document) => document.id),
-            relationships: [],
-          },
-          actor,
-          scope,
-        );
-        const storedOutcomes = this.options.store.evidence.itemCategoryOutcomes(access, {
-          documentIds: documents.map((document) => document.id),
-          policyVersion: actor.governancePolicyVersion!,
+      capture: (actor, connectorId) => this.captureItemSource(actor, connectorId),
+    });
+    this.receiptInference = new ReceiptItemInferenceService({
+      store: options.store,
+      now: () => this.now(),
+      configuration: options.receiptInference,
+      scope: (actor) => this.scope(actor),
+      access: (actor, scope) => this.access(actor, scope),
+      fresh: (actor) => this.freshControl(actor),
+      policyAuthorized: (actor, scope, layer) => {
+        const resourceKind = layer === 'space' ? 'space' : 'budget';
+        const resourceId = layer === 'space' ? scope.spaceId : scope.budgetId;
+        const result = options.store.governance.authorize({
+          actorId: actor.actorId,
+          spaceId: scope.spaceId,
           membershipId: actor.membershipId!,
+          expectedPolicyVersion: actor.governancePolicyVersion!,
+          phase: 'approve',
+          operation: 'receipt-inference:policy:manage',
+          required: [
+            {
+              resourceKind,
+              resourceId,
+              capability: 'receipt-inference:policy:manage',
+              visibility: 'resource',
+            },
+          ],
+          payload: { operations: [{ operation: 'receipt-inference:policy:manage' }] },
+          now: this.now(),
+          auth: actor.auth,
         });
-        const outcomes = applyReviewedItemCategories(
-          request,
-          storedOutcomes,
-          actor,
-          (kind, id, capability) =>
-            this.options.store.liquidity.isAuthorized({
-              ...actor,
-              now: this.now(),
-              resourceKind: kind,
-              resourceId: id,
-              capability,
-            }),
-        );
-        const outcomeFingerprint = canonicalProposalJson(storedOutcomes);
-        const fingerprint = canonicalProposalJson(
-          documents.map((document) => [document.id, document.contentHash]),
-        );
-        return {
-          scope,
-          documents,
-          request,
-          outcomes,
-          authorize: () =>
-            this.currentSources(actor, scope, documents, request) &&
-            canonicalProposalJson(
-              this.current(
-                this.readableDocuments(actor, scope).filter(
-                  (document) =>
-                    document.connectorId === connectorId && document.parseStatus === 'parsed',
-                ),
-                this.access(actor, scope),
-              ).map((document) => [document.id, document.contentHash]),
-            ) === fingerprint &&
-            canonicalProposalJson(
-              this.options.store.evidence.itemCategoryOutcomes(this.access(actor, scope), {
-                documentIds: documents.map((document) => document.id),
-                policyVersion: actor.governancePolicyVersion!,
-                membershipId: actor.membershipId!,
-              }),
-            ) === outcomeFingerprint &&
-            this.access(actor, scope, documents, outcomes).authorize({
-              capability: 'normalized-evidence',
-              document: documents[0]!,
-              scope,
-            }),
-        };
+        return result.allowed && result.disposition.kind === 'authorized_without_approval';
       },
+      capture: (actor, selection) => this.captureReceiptInference(actor, selection),
     });
     this.sessionReceipts = new SpendSessionReceiptService({
       store: options.store,
@@ -840,6 +802,236 @@ export class TransactionEvidenceService {
     )
       throw new Error('Evidence operation is not authorized');
     return scope;
+  }
+  private async captureItemSource(
+    actor: MerchantActor,
+    connectorId: string,
+  ): Promise<EvidenceItemRuleCapture> {
+    const scope = await this.scope(actor);
+    this.requireBudget(actor, scope, 'normalized-evidence');
+    const access = this.access(actor, scope);
+    const documents = this.current(
+      this.readableDocuments(actor, scope).filter(
+        (document) => document.connectorId === connectorId && document.parseStatus === 'parsed',
+      ),
+      access,
+    );
+    if (!documents.length) throw new Error('No current authorized receipt evidence');
+    const request = this.request(documents, actor.governancePolicyVersion!, 5, actor, scope);
+    const decision = this.options.store.evidence.latestDecision(
+      access,
+      documents.map((document) => document.id),
+    );
+    this.applyDecision(
+      request,
+      decision ?? {
+        resolutionHash: '0'.repeat(64),
+        documentIds: documents.map((document) => document.id),
+        relationships: [],
+      },
+      actor,
+      scope,
+    );
+    const storedOutcomes = this.options.store.evidence.itemCategoryOutcomes(access, {
+      documentIds: documents.map((document) => document.id),
+      policyVersion: actor.governancePolicyVersion!,
+      membershipId: actor.membershipId!,
+    });
+    const outcomes = applyReviewedItemCategories(
+      request,
+      storedOutcomes,
+      actor,
+      (kind, id, capability) =>
+        this.options.store.liquidity.isAuthorized({
+          ...actor,
+          now: this.now(),
+          resourceKind: kind,
+          resourceId: id,
+          capability,
+        }),
+    );
+    const outcomeFingerprint = canonicalProposalJson(storedOutcomes);
+    const fingerprint = canonicalProposalJson(
+      documents.map((document) => [document.id, document.contentHash]),
+    );
+    return {
+      scope,
+      documents,
+      request,
+      outcomes,
+      authorize: () =>
+        this.currentSources(actor, scope, documents, request) &&
+        canonicalProposalJson(
+          this.current(
+            this.readableDocuments(actor, scope).filter(
+              (document) =>
+                document.connectorId === connectorId && document.parseStatus === 'parsed',
+            ),
+            this.access(actor, scope),
+          ).map((document) => [document.id, document.contentHash]),
+        ) === fingerprint &&
+        canonicalProposalJson(
+          this.options.store.evidence.itemCategoryOutcomes(this.access(actor, scope), {
+            documentIds: documents.map((document) => document.id),
+            policyVersion: actor.governancePolicyVersion!,
+            membershipId: actor.membershipId!,
+          }),
+        ) === outcomeFingerprint &&
+        this.access(actor, scope, documents, outcomes).authorize({
+          capability: 'normalized-evidence',
+          document: documents[0]!,
+          scope,
+        }),
+    };
+  }
+  private async captureReceiptInference(
+    actor: MerchantActor,
+    selection: { accountId: string; receiptId: string; lineId: string },
+  ) {
+    const scope = await this.scope(actor);
+    this.requireBudget(actor, scope, 'normalized-evidence');
+    const documents = this.current(this.readableDocuments(actor, scope), this.access(actor, scope));
+    const matches = documents.filter(
+      (document) =>
+        Array.isArray(document.extraction.receipts) &&
+        document.extraction.receipts.some(
+          (receipt: unknown) =>
+            ReceiptEvidenceSchema.safeParse(receipt).success &&
+            ReceiptEvidenceSchema.parse(receipt).id === selection.receiptId,
+        ),
+    );
+    if (matches.length !== 1) throw new Error('Current receipt inference source unavailable');
+    const source = await this.captureItemSource(actor, matches[0]!.connectorId);
+    const receipt = source.request.receipts.find((receipt) => receipt.id === selection.receiptId);
+    const line = receipt?.lines.find((line) => line.id === selection.lineId);
+    const observation = source.request.observations.find(
+      (observation) => observation.id === receipt?.observationId,
+    );
+    if (!receipt || !line || !observation || observation.provenance.documentId !== matches[0]!.id)
+      throw new Error('Receipt inference identity changed');
+    const document = source.documents.find(
+      (document) => document.id === observation.provenance.documentId,
+    )!;
+    const result = TransactionEvidenceResultSchema.parse(
+      JSON.parse(this.options.native.resolveTransactionEvidence(JSON.stringify(source.request))),
+    );
+    const valid = result.receipts.find((candidate) => candidate.receiptId === receipt.id)?.valid;
+    if (!valid || line.net.minorUnits === '0')
+      throw new Error('Receipt totals require manual review');
+    const targets = await this.ledgerTargets(actor);
+    if (!targets.accounts.some((account) => account.id === selection.accountId))
+      throw new Error('Receipt account unavailable');
+    const rules = await this.options.connectionManager!.withConnection(
+      async (connected) => {
+        if (
+          connected.config.budgetId !== actor.budgetId ||
+          merchantConnectionId(connected.config) !== scope.connectionId
+        )
+          throw new Error('Selected receipt ledger changed');
+        const snapshot = financialSnapshotSchema.parse(
+          (connected.synchronization as { financialSnapshot?: unknown }).financialSnapshot,
+        );
+        const can = (resourceKind: 'budget' | 'rule', resourceId: string) =>
+          this.options.store.liquidity.isAuthorized({
+            ...actor,
+            now: this.now(),
+            resourceKind,
+            resourceId,
+            capability: 'rule:view',
+          });
+        if (
+          !['complete', 'empty'].includes(snapshot.coverage.rules) ||
+          !can('budget', actor.budgetId) ||
+          snapshot.legacySnapshot.rules.some((rule) => !can('rule', rule.id))
+        )
+          throw new Error('Current receipt rule coverage unavailable');
+        return canonicalProposalJson(snapshot.legacySnapshot.rules);
+      },
+      { expectedBudgetId: actor.budgetId },
+    );
+    const deterministic = await this.itemRules.suggestions(actor, {
+      accountId: selection.accountId,
+    });
+    const current = deterministic.filter(
+      (value) => value.receiptId === receipt.id && value.lineId === line.id,
+    );
+    const categoryIds = new Set(current.map((value) => value.categoryId));
+    const reviewed = source.outcomes.find(
+      (outcome) =>
+        outcome.receiptId === receipt.id &&
+        outcome.lineId === line.id &&
+        outcome.accountId === selection.accountId,
+    );
+    const reviewedCategory =
+      reviewed?.categoryId &&
+      targets.categories.some((category) => category.id === reviewed.categoryId)
+        ? reviewed.categoryId
+        : null;
+    const state =
+      current.some((value) => value.state === 'conflicting_rules') || categoryIds.size > 1
+        ? ('conflict' as const)
+        : reviewedCategory || current.length
+          ? ('resolved' as const)
+          : ('unresolved' as const);
+    if (!source.authorize()) throw new Error('Receipt source authorization changed');
+    const sensitiveValues = new Set<string>([
+      actor.actorId,
+      actor.membershipId!,
+      actor.spaceId,
+      actor.budgetId,
+      scope.connectionId,
+      selection.accountId,
+    ]);
+    const collect = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(collect);
+        return;
+      }
+      if (!value || typeof value !== 'object') return;
+      for (const [key, child] of Object.entries(value)) {
+        if (
+          typeof child === 'string' &&
+          (/id$/i.test(key) || key === 'counterparty' || key === 'minorUnits')
+        )
+          sensitiveValues.add(child);
+        else collect(child);
+      }
+    };
+    collect(source.request);
+    return {
+      scope,
+      subject: {
+        kind: 'receipt-item' as const,
+        accountId: selection.accountId,
+        documentId: document.id,
+        contentHash: document.contentHash,
+        parserVersion: document.parserVersion,
+        receiptId: receipt.id,
+        lineId: line.id,
+      },
+      itemLabel: line.normalizedDescription,
+      categories: targets.categories.map((category) => ({
+        categoryId: category.id,
+        label: category.name,
+      })),
+      sensitiveValues: [...sensitiveValues].filter(Boolean),
+      deterministic: state,
+      categoryId: reviewedCategory ?? current[0]?.categoryId ?? null,
+      fence: canonicalProposalJson({
+        actor: {
+          actorId: actor.actorId,
+          membershipId: actor.membershipId,
+          policyVersion: actor.governancePolicyVersion,
+        },
+        scope,
+        request: source.request,
+        outcomes: source.outcomes,
+        deterministic,
+        rules,
+        targets,
+      }),
+      authorize: source.authorize,
+    };
   }
   private access(
     actor: MerchantActor,
@@ -1280,6 +1472,21 @@ export class TransactionEvidenceService {
       ),
     };
   }
+  receiptInferencePreview(actor: MerchantActor, value: unknown) {
+    return this.receiptInference.preview(actor, value);
+  }
+  receiptInferenceRun(actor: MerchantActor, value: unknown) {
+    return this.receiptInference.run(actor, value);
+  }
+  receiptInferenceWithdraw(actor: MerchantActor, value: unknown) {
+    return this.receiptInference.withdraw(actor, value);
+  }
+  receiptInferencePolicy(actor: MerchantActor, value: unknown) {
+    return this.receiptInference.policy(actor, value);
+  }
+  updateReceiptInferencePolicy(actor: MerchantActor, value: unknown) {
+    return this.receiptInference.updatePolicy(actor, value);
+  }
   /** Export only scoped authorized normalization and provenance; raw bytes require their independent grants. */
   async exportEvidence(
     actor: MerchantActor,
@@ -1290,6 +1497,7 @@ export class TransactionEvidenceService {
     documents: EvidenceDocument[];
     decision: EvidenceResolutionDecision | null;
     walletStatementProofs: ReturnType<WorkflowStore['evidence']['walletStatements']['state']>;
+    receiptInferenceAudit: ReturnType<WorkflowStore['evidence']['receiptInference']['audit']>;
     audit: Array<{ documentId: string; entries: EvidenceAudit[] }>;
     raw: Array<{ documentId: string; contentBase64: string | null }> | null;
   }> {
@@ -1348,6 +1556,7 @@ export class TransactionEvidenceService {
       documents,
       decision,
       walletStatementProofs,
+      receiptInferenceAudit: this.options.store.evidence.receiptInference.audit(access),
       audit,
       raw,
     };

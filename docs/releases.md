@@ -16,8 +16,11 @@ release. See the [current acceptance checklist](roadmap/post-mvp/11-5-implementa
   Actual starting-balance/account-balance verification.
 - Explicit receipt versions, return/fulfillment/member review, saved-session
   comparison, contextual deterministic categorization and approved rule learning.
-- Email forwarding is deferred by user direction. Receipt-model inference awaits
-  its separate privacy/egress design approval. Authenticated browser validation,
+- Receipt-item inference has a distinct typed subject, minimized label/category-alias
+  preview, independent local/external permissions and three policy opt-ins, durable
+  consent/quota/cache/audit, and asynchronous source/authority revalidation. Rules
+  run first; manual entry remains available. Production providers are unconfigured.
+- Email forwarding is deferred by user direction. Authenticated browser validation,
   the OCR container build and final workspace/release gates remain open. No live
   financial changes, account connections or deployment are included.
 

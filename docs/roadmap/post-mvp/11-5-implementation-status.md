@@ -4,17 +4,17 @@ The authoritative scope remains
 [Transaction Evidence and Intelligent Resolution](11-5-transaction-evidence-and-intelligent-resolution.md).
 This feature branch is in progress. It is not a completed v0.9.0 release.
 
-| Area                     | Current implementation                                                                                                                                                                                                                           | Remaining acceptance                                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| Contracts                | Versioned Rust, N-API, TypeScript/Zod, JSON Schema, and canonical fixtures                                                                                                                                                                       | Contract and source/execution coverage gates verified                                                                      |
-| Evidence persistence     | Scoped immutable extraction, private delivery identity, encrypted raw bytes, retention/deletion, audit, restore quarantine                                                                                                                       | Scoped lifecycle, independent review and coverage verified                                                                 |
-| Deterministic resolution | Exact allocations, matching candidates, pending/posted supersession, ambiguity, wallet continuity, receipt/tender validation, projection hashes                                                                                                  | Scoped review, 355 scenarios and real-SDK integration verified; no live-provider acceptance                                |
-| Ingestion                | Camera/photo upload with local preview, manual PDF receipt normalization, optional unverified manual summary/items/split tenders, optional local OCR text, local wallet/retail JSON, retained binary sources, exact pending Spend Session import | Optional container build verification and broader source coverage; email forwarding explicitly deferred by the user        |
-| Review                   | Focused purpose/match decisions; one-to-many and many-to-many receipt-line matrices across existing settlements; camera return/order/member review; reviewed invoice versions                                                                    | Governed plural SDK recovery and final coverage verified; authenticated browser verification remains blocked               |
-| Actual integration       | Ordinary governed debit/credit/amendment pipeline, exact source hashes, metadata-preserving reread, explicit opening equity and read-only uncertain recovery                                                                                     | Coverage verified; matrix destinations currently require existing Actual outflow settlements                               |
-| Wallet balances          | Exact fresh human-attested statements, scoped identity/activity, native interval coverage/conflicts/boundary anchors, governed nonzero opening equity, durable account identity                                                                  | Scoped review/component/API verification complete; authenticated browser remains blocked; never provider-authenticated     |
-| Learning                 | SKU/UPC, approved item, retailer label, department, product-family and approved historical token-similarity tiers; scoped rule simulation/approval                                                                                               | Receipt-model inference privacy/egress architecture awaits approval; manual all-models-disabled workflow remains available |
-| Health                   | Authorized receive/parse timestamps, template diagnostics, duplicates, native statement coverage/continuity with balance-state/gap warnings, stale reviewed receipt history in unified attention                                                 | External freshness and notification-based missing-event inference need an approved integration                             |
+| Area                     | Current implementation                                                                                                                                                                                                                           | Remaining acceptance                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contracts                | Versioned Rust, N-API, TypeScript/Zod, JSON Schema, and canonical fixtures                                                                                                                                                                       | Contract and source/execution coverage gates verified                                                                                             |
+| Evidence persistence     | Scoped immutable extraction, private delivery identity, encrypted raw bytes, retention/deletion, audit, restore quarantine                                                                                                                       | Scoped lifecycle, independent review and coverage verified                                                                                        |
+| Deterministic resolution | Exact allocations, matching candidates, pending/posted supersession, ambiguity, wallet continuity, receipt/tender validation, projection hashes                                                                                                  | Scoped review, 355 scenarios and real-SDK integration verified; no live-provider acceptance                                                       |
+| Ingestion                | Camera/photo upload with local preview, manual PDF receipt normalization, optional unverified manual summary/items/split tenders, optional local OCR text, local wallet/retail JSON, retained binary sources, exact pending Spend Session import | Optional container build verification and broader source coverage; email forwarding explicitly deferred by the user                               |
+| Review                   | Focused purpose/match decisions; one-to-many and many-to-many receipt-line matrices across existing settlements; camera return/order/member review; reviewed invoice versions                                                                    | Governed plural SDK recovery and final coverage verified; authenticated browser verification remains blocked                                      |
+| Actual integration       | Ordinary governed debit/credit/amendment pipeline, exact source hashes, metadata-preserving reread, explicit opening equity and read-only uncertain recovery                                                                                     | Coverage verified; matrix destinations currently require existing Actual outflow settlements                                                      |
+| Wallet balances          | Exact fresh human-attested statements, scoped identity/activity, native interval coverage/conflicts/boundary anchors, governed nonzero opening equity, durable account identity                                                                  | Scoped review/component/API verification complete; authenticated browser remains blocked; never provider-authenticated                            |
+| Learning                 | SKU/UPC, approved item, retailer label, department, product-family and approved historical token-similarity tiers; scoped rule simulation/approval                                                                                               | Approved receipt-item model boundary implemented with synthetic providers; production providers remain unconfigured; manual entry stays available |
+| Health                   | Authorized receive/parse timestamps, template diagnostics, duplicates, native statement coverage/continuity with balance-state/gap warnings, stale reviewed receipt history in unified attention                                                 | External freshness and notification-based missing-event inference need an approved integration                                                    |
 
 Rust derives explicit receipt-line matrices, including a $12 receipt across
 $7/$5 payments and a true two-by-two item/payment allocation. Exact line and
@@ -84,12 +84,19 @@ remains open.
    These approvals cover code and synthetic tests only. See the
    [accepted wallet ADR](../../adr/0005-wallet-proof-authority-options.md).
 
-Receipt-item model inference remains an architecture approval boundary. Existing
-inference accepts Actual transaction subjects; receipt items must not fabricate
-Actual identities. The [proposed inference ADR](../../adr/0006-receipt-inference-subject-and-egress-proposal.md)
-recommends a separate typed receipt subject, explicit local/external egress
-grants, provider allowlists and minimized payloads. No receipt-model calls or
-external evidence transmission have been added.
+6. **Optional receipt inference:** the user approved distinct receipt subjects and
+   independently authorized local/external paths for code and synthetic tests.
+   No provider connection, real-data egress, package addition or enabling of
+   inference is included.
+
+Receipt-item inference now implements the [accepted inference ADR](../../adr/0006-receipt-inference-subject-and-egress-proposal.md): a separate typed subject,
+strict label/category-alias payloads, deterministic-first local/external preview,
+independent permissions and three policy opt-ins, durable single-use consent,
+shared quotas, scoped cache/audit, asynchronous revalidation and manual fallback.
+Production composition registers no receipt providers or installation opt-in.
+Synthetic tests exercise the boundary; no provider is connected and no real
+receipt is transmitted. Browser acceptance remains blocked by the existing
+sandbox limitation, independently of component/API verification.
 
 ## Verification evidence so far
 
@@ -113,13 +120,13 @@ external evidence transmission have been added.
   splits, imported metadata preservation, stale-source refusal and lost-write
   acknowledgements followed by read-only proof. Their own synthetic budget is
   deleted and its absence verified. No production budget is involved.
-- Final reports contain **962 Rust tests and 6,351 Vitest tests**, all passed,
+- Final reports contain **962 Rust tests and 6,394 Vitest tests**, all passed,
   with no ignored/pending tests, plus the native binding, real CLI entrypoint
   and 28 coverage-tool tests. All source and changed-source thresholds pass:
-  workspace 91.02%, financial core 95.64%, core protocol 96.25%, N-API 93.56%,
+  workspace 91.05%, financial core 95.64%, core protocol 96.25%, N-API 93.56%,
   and generated protocol 96.83%. The collected native profiles include real
   instrumented N-API consumers.
-- The serial coverage command passed the full scenario/store/SDK stages, then
+- Before the receipt-inference addition, the serial coverage command passed the full scenario/store/SDK stages, then
   stopped on three older contract loaders missing the new schema dependency.
   A shared local-only registry and all-roots/all-definitions regression repaired
   that closure without weakening validation. All 176 contract tests were rerun.
@@ -128,6 +135,14 @@ external evidence transmission have been added.
   Rust reports completed from the collected profiles. The unchanged checker
   passes with required execution evidence. This was a resumed gate, not a
   second monolithic rerun after those final fixes.
+- The approved receipt-inference addition reran all four affected suites with
+  coverage: application 1,496; web 2,165; workflow-store 1,003; inference 246
+  (4,910 tests). Existing unchanged suite/native reports supply the remaining
+  execution evidence. The unchanged checker passes all overall/changed-source
+  thresholds. Root/application/web types, production build and zero-warning lint
+  pass again. Independent correctness and complexity review closed local-first
+  dispatch and long-history journal findings with regressions. No Rust source or
+  packages changed in this addition.
 - The release native resolver's synthetic unmatched-history check completed
   100 / 1,000 / 5,000 observations in 2.6 / 23.45 / 166.7 ms on this executor.
   This is a focused regression measurement, not full-path performance acceptance.

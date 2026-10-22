@@ -7918,7 +7918,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         const selectedEvidence = `SELECT id FROM transaction_evidence_documents WHERE ${evidenceScope}${evidenceActor}`;
         const selectedScopes = `SELECT DISTINCT scope_key FROM transaction_evidence_documents WHERE ${evidenceScope}${evidenceActor}`;
         deleted.evidenceDecisions = run(
-          `DELETE FROM transaction_evidence_decisions WHERE scope_key IN (${selectedScopes}) ${actorOnly ? 'AND actor_id=@actorId' : ''}`,
+          `DELETE FROM transaction_evidence_decisions WHERE json_extract(scope_key,'$[0]')=@spaceId AND json_extract(scope_key,'$[1]')=@budgetId ${actorOnly ? 'AND actor_id=@actorId' : ''}`,
         );
         deleted.evidenceResolutions = run(
           `DELETE FROM transaction_evidence_resolutions WHERE scope_key IN (${selectedScopes})`,
@@ -8093,6 +8093,31 @@ export class SqliteWorkflowStore implements WorkflowStore {
       reasons.push(
         `${governanceHistory.count} space identity, membership, grant, delegation, policy and audit record(s) retained`,
       );
+    const receiptInferencePolicyRecords = db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM transaction_evidence_decisions
+         WHERE actor_id='system:receipt-inference' AND source_hash='receipt-item-inference-policy:1'
+           AND json_extract(scope_key,'$[0]')=@spaceId
+           AND ((json_extract(scope_key,'$[1]')='receipt-inference:space' AND json_extract(scope_key,'$[2]')='receipt-inference:space')
+             OR (json_extract(scope_key,'$[1]')=@budgetId AND json_extract(scope_key,'$[2]')='receipt-inference:budget'))
+      `)
+      .get(params) as {count:number};
+    retainedCount += receiptInferencePolicyRecords.count;
+    if(receiptInferencePolicyRecords.count>0)
+      reasons.push(`${receiptInferencePolicyRecords.count} receipt inference policy record(s) retained with administrator attribution`);
+
+    const receiptInferenceQuotaRecords = db
+      .prepare(`
+        SELECT COUNT(*) AS count FROM transaction_evidence_decisions
+         WHERE actor_id='system:receipt-inference' AND source_hash='receipt-item-inference-quota:1'
+           AND json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END,'$.spaceId')=@spaceId
+           AND json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END,'$.budgetId')=@budgetId
+      `)
+      .get(params) as {count:number};
+    retainedCount += receiptInferenceQuotaRecords.count;
+    if(receiptInferenceQuotaRecords.count>0)
+      reasons.push(`${receiptInferenceQuotaRecords.count} receipt inference quota reservation(s) retained to preserve shared daily limits`);
+
     const economicRecords = db
       .prepare(`
         SELECT
