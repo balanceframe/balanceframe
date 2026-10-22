@@ -29,6 +29,7 @@ import {
 import { fromNodeHeaders } from 'better-auth/node';
 import { timingSafeEqual, createHmac } from 'node:crypto';
 import { auth, isAuthCredentialValid } from '../../lib/auth';
+import { isBetterAuthConfigured } from '../../lib/auth-config';
 import { enforceDemoBoundary } from '../utils/demo-boundary';
 import { authMigrationFailed, authMigrationMessage } from '../utils/auth-migration-status';
 import type { TrustedAuthContext } from '../utils/reauthentication';
@@ -296,7 +297,7 @@ export default defineEventHandler(async (event) => {
       });
       return;
     }
-    if (!legacyToken) {
+    if (!legacyToken && !isBetterAuthConfigured()) {
       setResponseStatus(event, 503);
       return serviceUnavailable(
         'API token not configured. Set apiToken (NUXT_API_TOKEN) or ' +
@@ -393,8 +394,8 @@ export default defineEventHandler(async (event) => {
 
   if (isAuthPath) return;
 
-  // 8. No token or session configured — fail closed.
-  if (!legacyToken) {
+  // 8. No authentication configured — fail closed.
+  if (!legacyToken && !isBetterAuthConfigured()) {
     setResponseStatus(event, 503);
     return serviceUnavailable(
       'API token not configured. Set apiToken (NUXT_API_TOKEN) or ' +

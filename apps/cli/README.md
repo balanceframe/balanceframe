@@ -4,6 +4,9 @@ BalanceFrame CLI tool.
 
 Command-line interface for batch operations, testing, and automation.
 
+Run `balanceframe --version` to print the CLI package version. This needs no
+configured server, selected space, or credentials.
+
 ## Authenticated server transport
 
 Production commands use BalanceFrame's authenticated HTTP APIs; governed reads and actions

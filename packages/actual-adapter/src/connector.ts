@@ -2298,7 +2298,7 @@ export class ActualConnector implements BudgetLedger {
   async getCompatibility(): Promise<CompatibilityResult> {
     const serverVersion = this._serverVersion ?? 'unknown';
     const minVersion = this.compatibilityRange?.min ?? '24.0.0';
-    const maxVersion = this.compatibilityRange?.max ?? '26.7.0';
+    const maxVersion = this.compatibilityRange?.max ?? '26.10.0';
     const blockers: string[] = [];
 
     if (serverVersion === 'unknown') {

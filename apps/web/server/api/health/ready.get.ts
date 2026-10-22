@@ -10,6 +10,7 @@
 
 import { defineEventHandler, setResponseStatus } from 'h3';
 import { resolveAuthDbPath } from '../../../lib/auth-db-path';
+import { isBetterAuthConfigured } from '../../../lib/auth-config';
 import { authMigrationFailed, authMigrationMessage } from '../../utils/auth-migration-status';
 import { getWorkflowStore } from '../../utils/workflow-store';
 
@@ -28,13 +29,13 @@ export default defineEventHandler(async (event) => {
   const migrationOk = !authMigrationFailed;
   const migrationDetail = migrationOk ? 'ok' : `failed: ${authMigrationMessage ?? 'unknown error'}`;
 
-  // 3. Auth configured — apiToken or dev bypass
+  // 3. Auth configured — Better Auth, legacy apiToken, or local dev bypass
   const apiTokenOk = !!(config.apiToken || process.env.BALANCEFRAME_API_TOKEN);
   const bypassRequested =
     config.devBypassAuth === true || process.env.BALANCEFRAME_DEV_BYPASS_AUTH === 'true';
   const devBypassActive =
     bypassRequested && (environment === 'development' || environment === 'test');
-  const authConfigured = apiTokenOk || devBypassActive;
+  const authConfigured = isBetterAuthConfigured() || apiTokenOk || devBypassActive;
 
   // 4. Workflow DB path configured
   const workflowDbPath =

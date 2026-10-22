@@ -4,6 +4,7 @@ import {
   copyFileSync,
   existsSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -219,7 +220,10 @@ describe('optional merchant research Compose overlay', () => {
     assert.equal(mounts[0].source, source);
     assert.equal(mounts[0].target, fixedContainerPath);
     assert.equal(mounts[0].read_only, true);
-    assert.equal(mounts[0].bind?.create_host_path, false);
+    assert.ok(mounts[0].bind, 'the explicit bind policy survives rendering');
+    assert.ok(mounts[0].bind.create_host_path === false ||
+      !Object.hasOwn(mounts[0].bind, 'create_host_path'),
+    'the bind disables host-path creation, including renderers that omit false');
     assert.equal(existsSync(dirname(source)), false, 'Compose config rendering does not create the absent host source directory');
   });
 
@@ -228,6 +232,42 @@ describe('optional merchant research Compose overlay', () => {
     assert.equal(result.status, 0, 'offline validator succeeds with explicit renderer and its private sentinels');
     assertSafeValidatorOutput(result);
   });
+
+  it('accepts a safe bind when the renderer omits its explicit false field', () => {
+    const source = join(scratch(), 'missing', 'merchant.json');
+    const config = parseConfig(invokeCompose([canonical, researchOverlay], sentinelEnvironment(source)));
+    const mount = config.services.balanceframe.volumes.find((mount) => mount.target === fixedContainerPath);
+    assert.ok(mount.bind && typeof mount.bind === 'object', 'the explicit bind policy survives rendering');
+    assert.notEqual(mount.bind.create_host_path, true, 'the renderer never enables host-path creation');
+    assert.match(readFileSync(researchOverlay, 'utf8'), /^\s+create_host_path: false\s*$/m,
+      'the source overlay explicitly disables host-path creation');
+    const result = runValidator();
+    assert.equal(result.status, 0, 'safe rendering is accepted with explicit false or its omitted representation');
+    assertSafeValidatorOutput(result);
+  });
+
+  for (const policy of ['true', 'omitted', 'missing-field', 'short']) {
+    it(`rejects the research bind with ${policy} host-path creation policy`, () => {
+      const overlay = join(scratch(), 'unsafe-research.yaml');
+      const original = readFileSync(researchOverlay, 'utf8');
+      assert.match(original, /^\s+create_host_path: false\s*$/m, 'the control mutates the explicit safe policy');
+      let mutated;
+      if (policy === 'short') {
+        mutated = original.replace(/    volumes:[\s\S]*$/u,
+          '    volumes:\n      - ${BALANCEFRAME_MERCHANT_CONFIG_FILE:?required}:/run/secrets/merchant-research.json:ro\n');
+      } else if (policy === 'missing-field') {
+        mutated = original.replace('          create_host_path: false\n', '');
+      } else {
+        mutated = original.replace('        bind:\n          create_host_path: false\n',
+          policy === 'true' ? '        bind:\n          create_host_path: true\n' : '');
+      }
+      assert.notEqual(mutated, original, 'the unsafe control changes the source overlay');
+      writeFileSync(overlay, mutated);
+      const result = runValidator(overlay);
+      assert.notEqual(result.status, 0, 'the validator rejects the unsafe or unspecified policy');
+      assertSafeValidatorOutput(result);
+    });
+  }
   it('suppresses diagnostics for a missing canonical project parent', () => {
     const directory = scratch();
     const pathSentinel = 'canonical-parent-path-sentinel-private';

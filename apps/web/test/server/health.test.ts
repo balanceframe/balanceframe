@@ -7,7 +7,7 @@
  * - /api/health/ready returns 503 when auth migration failed
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks — must be set up before importing the handlers
@@ -110,6 +110,10 @@ describe('/api/health — liveness', () => {
 describe('/api/health/ready — readiness', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('BETTER_AUTH_SECRET', '');
+    vi.stubEnv('NUXT_BETTER_AUTH_SECRET', '');
+    vi.stubEnv('BALANCEFRAME_API_TOKEN', '');
+    vi.stubEnv('BALANCEFRAME_DEV_BYPASS_AUTH', 'false');
 
     // Default: all checks pass
     mockResolveAuthDbPath.mockReturnValue('./data/auth.db');
@@ -117,6 +121,44 @@ describe('/api/health/ready — readiness', () => {
 
     // Reset migration state via the mock's exported controller
     resetAuthMigrationStatus();
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(['BETTER_AUTH_SECRET', 'NUXT_BETTER_AUTH_SECRET'])(
+    'accepts Better Auth configured with %s without a legacy token', async (variable) => {
+      vi.stubEnv(variable, 'readiness-fixture-secret-with-enough-entropy');
+      const event: MockEvent = { context: { runtimeConfig: { devBypassAuth: false } } };
+
+      const result = await (readyHandler as (event: MockEvent) => unknown)(event);
+
+      expect(result).toMatchObject({ status: 'ok', checks: { authConfigured: 'ok' } });
+      expect(mockSetResponseStatus).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain('readiness-fixture-secret');
+    },
+  );
+
+  it.each(['migration', 'workflow-store'])(
+    'preserves 503 for a failed %s with Better Auth configured', async (failure) => {
+      vi.stubEnv('BETTER_AUTH_SECRET', 'readiness-fixture-secret-with-enough-entropy');
+      if (failure === 'migration') setAuthMigrationFailed('fixture migration failed');
+      else mockGetWorkflowStore.mockReturnValue({ error: 'fixture store unavailable' });
+      const event: MockEvent = { context: {} };
+
+      expect(await (readyHandler as (event: MockEvent) => unknown)(event)).toMatchObject({
+        status: 'degraded', checks: { authConfigured: 'ok' },
+      });
+      expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
+    },
+  );
+
+  it('does not count a production development bypass as configured authentication', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const event: MockEvent = { context: { runtimeConfig: { devBypassAuth: true } } };
+
+    expect(await (readyHandler as (event: MockEvent) => unknown)(event)).toMatchObject({
+      status: 'degraded', checks: { authConfigured: 'missing' },
+    });
+    expect(mockSetResponseStatus).toHaveBeenCalledWith(event, 503);
   });
 
   it('returns ok when all dependencies are healthy', async () => {

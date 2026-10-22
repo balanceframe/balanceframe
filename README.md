@@ -109,6 +109,37 @@ BalanceFrame starts on port 3030 by default. Open `http://localhost:3030` in you
 browser, log in, open **Connection**, and select the Actual budget to use.
 The selected budget is persisted in the configured BalanceFrame data volume.
 
+Create and select a space in **Spaces** before connecting. Connection binds the
+budget to that space; it does not grant financial access. See
+[financial access after connection](#financial-access-after-connection) before
+opening Review or financial pages.
+
+### Financial access after connection
+
+Space membership and ownership do not imply permission to read financial data.
+In **Spaces → Exact resource grants**, a grant manager explicitly selects the
+current membership, capability, resource kind, exact resource ID, and any
+restrictions. Saving a grant requires recent password confirmation. Grant only
+the resources and capabilities the person intends to share; never use a wildcard
+or copy a demo's grants into a real budget.
+
+Budget selection and budget-kind grants use the public budget `id` returned by
+budget discovery, not its SDK synchronization `groupId`. Account and category
+grants use their exact Actual IDs, not their display names.
+
+Reading the Review queue needs the selected budget's `observe` admission. Review
+items also require current `existence` and `history` access to their exact
+accounts, category `existence`, and separate `name` access for displayed labels.
+An empty Review queue can mean those disclosure rights are missing, rather than
+that the budget has no transactions. Running **Sync** and opening whole-budget
+financial pages require explicit, resource-visible budget `observe` and
+`full-read` grants without account/category narrowing or aggregate-only limits;
+these disclose more than account-scoped Review access. Proposal, approval,
+execution, notifications,
+and governance controls retain their separate grants and confirmation checks.
+See [the exact-authority model](docs/adr/0003-space-governance-and-exact-authority.md)
+for membership periods, restrictions, and revocation behavior.
+
 ### Deploy BalanceFrame with a bundled Actual Budget server
 
 For a new single-server setup include the optional overlay:

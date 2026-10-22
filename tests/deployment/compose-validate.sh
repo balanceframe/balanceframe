@@ -140,7 +140,10 @@ if (research) {
     typeof environment.VALUESERP_API_KEY === 'string' && environment.VALUESERP_API_KEY.length > 0,
   'research overlay sets the fixed config path and required server key');
   check(mounts.length === 1 && mount.type === 'bind' && mount.source === sourcePath &&
-    mount.read_only === true && mount.bind?.create_host_path === false,
+    mount.read_only === true && mount.bind &&
+    // Compose v2.40 omits false from JSON but retains the explicit bind object.
+    (mount.bind.create_host_path === false ||
+      !Object.hasOwn(mount.bind, 'create_host_path')),
   'research overlay uses one exact read-only bind and forbids host-path creation');
 }
 

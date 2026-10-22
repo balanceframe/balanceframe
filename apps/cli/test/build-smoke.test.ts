@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { execSync, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 
@@ -52,6 +53,24 @@ describe('CLI executable path', () => {
       expect(parsed.error).toHaveProperty('code');
     },
   );
+
+  it('prints the package version without a configured server or credentials', async () => {
+    const manifest = JSON.parse(readFileSync(resolve(__dirname, '../package.json'), 'utf8'));
+    const result = await promisify(execFile)(process.execPath, [CLI_BIN, '--version'], {
+      env: { ...process.env, BALANCEFRAME_SERVER_URL: '', BALANCEFRAME_API_KEY: '', BALANCEFRAME_SESSION_COOKIE: '', BALANCEFRAME_SPACE_ID: '' },
+    });
+    expect(result.stdout).toBe(`${manifest.version}\n`);
+    expect(result.stderr).toBe('');
+  });
+
+  it.each([
+    { args: ['unknown-command'], code: 'unknown_command' },
+    { args: ['--version', '--json'], code: 'unknown_flags' },
+  ])('preserves $code handling for $args', async ({ args, code }) => {
+    const result = await promisify(execFile)(process.execPath, [CLI_BIN, ...args]);
+    expect(JSON.parse(result.stdout).error.code).toBe(code);
+    expect(result.stderr).toBe('');
+  });
 
   it('dispatches merchant evidence from the executable with exact Money and server identity', async () => {
     const money = { minorUnits: '9223372036854775807', currency: 'JPY' };
@@ -115,8 +134,13 @@ describe('CLI executable path', () => {
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
 
-  it('shows separate research consent and human policy usage without credentials or contacting a server', async () => {
-    const result = await promisify(execFile)(process.execPath, [CLI_BIN, 'merchant', '--help'], {
+  it.each([
+    { args: ['--help'] },
+    { args: ['merchant', '--help'] },
+    { args: ['merchant', 'research', '--help'] },
+    { args: ['merchant', 'space-policy', '--help'] },
+  ])('shows research consent and human policy usage for $args without credentials', async ({ args }) => {
+    const result = await promisify(execFile)(process.execPath, [CLI_BIN, ...args], {
       env: { ...process.env, BALANCEFRAME_SERVER_URL: '', BALANCEFRAME_API_KEY: '', BALANCEFRAME_SESSION_COOKIE: '', BALANCEFRAME_SPACE_ID: '' },
     });
     expect(result.stdout).toContain('merchant research preview');
@@ -125,6 +149,16 @@ describe('CLI executable path', () => {
     expect(result.stdout).toContain('--preview-token TOKEN --consent true --idempotency-key ID');
     expect(result.stdout).toContain('merchant space-policy set');
     expect(result.stdout).toContain('fresh human session');
+    expect(result.stderr).toBe('');
+  });
+
+  it('preserves consequential action help without credentials', async () => {
+    const result = await promisify(execFile)(process.execPath, [CLI_BIN, 'proposals', 'action', '--help'], {
+      env: { ...process.env, BALANCEFRAME_SERVER_URL: '', BALANCEFRAME_API_KEY: '', BALANCEFRAME_SESSION_COOKIE: '', BALANCEFRAME_SPACE_ID: '' },
+    });
+    expect(result.stdout).toContain('balanceframe proposals action --action-file ACTION.json --json');
+    expect(result.stdout).toContain('balanceframe proposals approve PROPOSAL_ID --payload-hash DISPLAYED_HASH --json');
+    expect(result.stdout).toContain('Actual credentials are never accepted from this file');
     expect(result.stderr).toBe('');
   });
 });
