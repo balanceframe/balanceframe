@@ -21,6 +21,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { dirname, resolve } from 'node:path';
 import { ActualConnector } from '../src/connector';
 import { NullCredentialStore } from '../src/credentials';
 import { DEFAULT_MODE, DEFAULT_OVERLAP_DAYS, BROAD_ACCESS_CAVEAT } from '../src/types';
@@ -1691,8 +1692,10 @@ describe('ActualConnector', () => {
         }
       ).caches;
 
+      expect(caches.size).toBe(2);
       for (const [, cache] of caches) {
-        expect(cache.cacheDir.startsWith(base)).toBe(true);
+        expect(cache.cacheDir).not.toBe(resolve(base));
+        expect(dirname(cache.cacheDir)).toBe(resolve(base));
       }
 
       await localConnector.disconnect();
