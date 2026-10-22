@@ -1160,7 +1160,8 @@ async function handleRequest(
   }
   const pathSpace = /^\/api\/spaces\/([^/]+)(?:\/|$)/.exec(target.path)?.[1];
   const featureScope = scenarioFeatureWrite(workspace.scenario.id, method, target.path) ||
-    (workspace.scenario.id.startsWith('merchant-') && /^\/api\/(?:merchant|review|proposal|rule)(?:\/|$)/.test(target.path));
+    (workspace.scenario.id.startsWith('merchant-') && /^\/api\/(?:merchant|review|proposal|rule)(?:\/|$)/.test(target.path)) ||
+    (workspace.scenario.id.startsWith('evidence-') && /^\/api\/(?:evidence|proposal)(?:\/|$)/.test(target.path));
   const requestedSpace = header(request, 'x-balanceframe-space')?.trim() ?? cookieValue(request, 'balanceframe_space');
   if ((pathSpace && pathSpace !== workspace.loaded?.initialized.spaceId) ||
     (featureScope && requestedSpace !== null && requestedSpace !== workspace.loaded?.initialized.spaceId)) {

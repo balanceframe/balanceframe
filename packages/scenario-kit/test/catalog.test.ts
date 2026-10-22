@@ -59,6 +59,11 @@ const EXPANSION_STORIES = [
   ['merchant-research-success', 'Merchant', '/review'],
   ['merchant-research-outage', 'Merchant', '/review'],
   ['merchant-research-lifecycle', 'Merchant', '/review'],
+  ['evidence-receipt-intake', 'Evidence', '/evidence'],
+  ['evidence-plural-allocation', 'Evidence', '/evidence'],
+  ['evidence-return-lifecycle', 'Evidence', '/evidence'],
+  ['evidence-wallet-statement', 'Evidence', '/evidence'],
+  ['evidence-categorization', 'Evidence', '/evidence'],
 ] as const;
 
 type Dict = Record<string, unknown>;
@@ -934,7 +939,7 @@ describe('scenario catalog contract', () => {
       const entry = scenario.entry;
       expect(['purchase', 'session', 'completion', 'page']).toContain(entry.kind);
       if (entry.kind === 'page') {
-        expect(['/spaces', '/review', '/rules', '/']).toContain(entry.path);
+        expect(['/spaces', '/review', '/rules', '/evidence', '/']).toContain(entry.path);
         expect(Object.keys(entry).sort()).toEqual(['kind', 'path']);
       } else if (entry.kind === 'purchase') {
         expect(entry.input).toBeDefined();

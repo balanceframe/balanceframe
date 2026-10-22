@@ -28,6 +28,8 @@ export const SCENARIO_IDS = [
   'merchant-local-insufficient', 'merchant-alias-conflict', 'merchant-recurrence-calendar',
   'merchant-native-rule-lifecycle', 'merchant-research-success', 'merchant-research-outage',
   'merchant-research-lifecycle',
+  'evidence-receipt-intake', 'evidence-plural-allocation', 'evidence-return-lifecycle',
+  'evidence-wallet-statement', 'evidence-categorization',
 ] as const;
 export type ScenarioId = typeof SCENARIO_IDS[number];
 export function isScenarioId(value: unknown): value is ScenarioId {
@@ -195,6 +197,22 @@ export function cancelScenarioResearch(handle: ScenarioProcesses): void {
 /** Exact story mutations; the ordinary handlers retain identity, capabilities, proof and consent checks. */
 export function scenarioFeatureWrite(scenarioId: ScenarioId | null, method: string, path: string): boolean {
   if (!scenarioId) return false;
+  const evidenceWrites: Partial<Record<ScenarioId, readonly string[]>> = {
+    'evidence-receipt-intake': ['/api/evidence/extract-photo'],
+    'evidence-plural-allocation': ['/api/evidence/allocation-preview', '/api/evidence/allocation', '/api/evidence/settlement-targets', '/api/evidence/proposal'],
+    'evidence-return-lifecycle': ['/api/evidence/receipt-review', '/api/evidence/receipt-versions/preview', '/api/evidence/receipt-versions/save', '/api/evidence/receipt-versions/revoke'],
+    'evidence-wallet-statement': ['/api/evidence/wallet-statements', '/api/evidence/wallet-statements/preview', '/api/evidence/wallet-statements/proposal', '/api/evidence/wallet-statements/revoke'],
+    'evidence-categorization': ['/api/evidence/decision', '/api/evidence/rules', '/api/evidence/rules/outcomes', '/api/evidence/rules/candidates', '/api/evidence/rules/from-candidate', '/api/evidence/rules/suggestions', '/api/evidence/rules/approve', '/api/evidence/rules/revoke', '/api/evidence/inference/policy', '/api/evidence/inference/preview', '/api/evidence/inference/run', '/api/evidence/inference/withdraw'],
+  };
+  const evidencePaths = evidenceWrites[scenarioId];
+  if (evidencePaths) {
+    if (method === 'PUT' && /^\/api\/spaces\/[^/]+\/grants$/.test(path)) return true;
+    return method === 'POST' && (path === '/api/evidence' || path === '/api/evidence/resolve' ||
+      evidencePaths.includes(path) ||
+      (scenarioId === 'evidence-return-lifecycle' && /^\/api\/spaces\/[^/]+\/memberships\/[^/]+\/revoke$/.test(path)) ||
+      (['evidence-plural-allocation', 'evidence-wallet-statement'].includes(scenarioId) &&
+        /^\/api\/proposal\/[^/]+\/(?:approve|execute|reconcile)$/.test(path)));
+  }
   if (['donor-reallocation', 'coapproval-completion', 'donor-competition', 'protected-category', 'account-transfer'].includes(scenarioId))
     return (method === 'PUT' && /^\/api\/spaces\/[^/]+\/(?:policy|grants)$/.test(path)) ||
       (method === 'POST' && (path === '/api/proposal/action' || /^\/api\/proposal\/[^/]+\/(?:approve|execute|reconcile)$/.test(path)));

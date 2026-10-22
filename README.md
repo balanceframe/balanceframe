@@ -298,17 +298,19 @@ Scenario fixture packaging uses Node filesystem APIs, so the build does not requ
 pnpm scenarios list
 pnpm scenarios verify funded-purchase
 pnpm scenarios verify merchant-native-rule-lifecycle
+pnpm scenarios verify evidence-plural-allocation
 pnpm scenarios verify --all
 pnpm scenarios verify --faults
 pnpm scenarios run funded-purchase
 pnpm demo --scenario rich-cart
 pnpm demo --scenario governance-scoped-access
 pnpm demo --scenario merchant-research-lifecycle
+pnpm demo --scenario evidence-receipt-intake
 ```
 
 `run` and `demo` open the shared fictional workspace at `http://127.0.0.1:3003/demo` by default. Select a story, follow **Open active scenario** to its ordinary application screen, and use **Reset shared demo** to discard all changes and regenerate that scenario. The selector and banner identify the fictional persona and warn that anyone sharing this instance sees its changes. Stop the supervisor with Ctrl-C; it removes only its own disposable workspace. Never connect it to a personal or production Actual budget.
 
-`verify --all` runs all **40** independently loadable authenticated Actual/Nuxt stories and their required behavior branches, then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with catalog version, scenario ID, anchor, assertion count, branches, and sanitized evidence mode. Missing stories or branches fail verification even if Vitest exits zero. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, and interrupted completion writes without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
+`verify --all` runs all **45** independently loadable authenticated Actual/Nuxt stories and their required behavior branches, then the separately labeled native/service fault contracts. Each passing case emits a JSON verification record with catalog version, scenario ID, anchor, assertion count, branches, and sanitized evidence mode. Missing stories or branches fail verification even if Vitest exits zero. The fault contracts test ambiguous transfer, coverage receipts, authoritative schedule identity, interrupted completion writes, and the evidence failures described below without pretending to provide live-bank proof. `verify --faults` runs only those contracts. For a local HTTPS reverse proxy, a non-loopback listener additionally requires `--host` and an exact `--origin https://…`; restrict network access to that proxy and use disposable state only. See [Actual integration scenarios](tests/actual-integration/README.md) and [ADR 0002](docs/adr/0002-owned-disposable-scenario-demo.md).
 
 Scenario account attestations are explicit, fictional source evidence, not bank imports; missing or expired attestations keep the Card at `insufficient_data`. Reset regenerates only the active instance's credentials, budget, sessions and attestations; another runner is independent.
 Catalog policy, observation and session expiry durations are materialized at their real submission time, so a fixed historical `--anchor` does not submit an already-expired configuration. Ordinary fixture timestamps remain unchanged; deliberately short expiry stories retain their short lifetime.
@@ -341,6 +343,44 @@ Use the selector's declared entry links, persona selector and event controls; no
 Native-rule reviewers receive finite full-read/approval rights for the complete current Actual source graph and exact published evidence, including generated baseline IDs; they receive neither budget-wide full-read nor execution/control rights. The owner receives only that story's required native-rule intent authority on those resources, not generic write rights for generated balances. Imports and newly created rules extend the same exact native-ID scope through validated normal grant handlers.
 
 Research is a **closed fixture provider through the real coordinator, policies, cache and quota journal**. It never constructs a provider transport, reads paid keys, calls ValueSerp, or falls back to live research. `.invalid` sources are synthetic and uncalibrated; the modeled USD tariff is 250000 atoms ($0.0025) per dispatch, not a live provider price. Only the bounded research clock advances; source freshness and human proof use real time. Disabling or retiring fixture authority fails closed, and reset cancels held work before draining requests. This remains one shared disposable runtime, not per-visitor isolation or a static browser demo.
+
+#### Transaction evidence walkthroughs (v0.9.0)
+
+All five evidence stories open `/evidence` and offer owner, two independent approvers,
+and restricted personas. They import fictional source documents through the normal
+authenticated ingestion path. Imported labels, balances and category hints grant no
+authority; reviews, attestations and approvals remain separate user actions.
+
+| Scenario                     | Seed and walkthrough                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `evidence-receipt-intake`    | Inspect a $12 camera photo with manual fields, a manually entered PDF invoice, an unparsed PDF and an item-total mismatch. Use **Add receipt** for another fictional photo or document. Extraction is absent by default; manual review and original-source access remain available to the scoped owner.                                                                                                             |
+| `evidence-plural-allocation` | Allocate two $6 receipt lines across existing $7 and $5 settlements and Groceries/Household categories. Review the matrix, prepare the governed proposal, collect both independent approvals, then execute and reread the resulting native splits. Local verification also denies stale hashes, wrong-document grants, requester approval and one-approval execution, and checks replay creates no additional rows. |
+| `evidence-return-lifecycle`  | Review a $12 purchase, $6 partial return, $7 excess return, replacement and separate order. Link or clear return, member and fulfillment assignments; revoke the fictional member and inspect historical attribution. Preview a replacement receipt version, revoke the old version, and verify unrelated evidence remains intact.                                                                                  |
+| `evidence-wallet-statement`  | Inspect an imported statement whose balance authority starts unknown. Explicitly attest its exact contents as human-reviewed, examine coverage/gaps/conflicts, and revoke the attestation. Prepare a $2 opening-equity wallet proposal, obtain both independent approvals and execute once. This is human-attested local evidence, never provider-authenticated proof.                                              |
+| `evidence-categorization`    | Review two independent granola receipts. Confirm item outcomes, inspect the learned candidate, simulate and approve a deterministic rule, then inspect or revoke its suggestion. Local/external model automation stays disabled; manual decisions work without providers, credentials or OCR.                                                                                                                       |
+
+For each story, run `pnpm scenarios verify <scenario-id>` to exercise its registered
+acceptance branches against a fresh disposable Actual budget and real Better Auth
+sessions. Reset replaces the active story's documents, grants, review state, budget
+and credentials; repeating verification does not reuse earlier approvals or writes.
+The CLI performs governed writes only in the fictional budget it owns.
+
+For plural allocation, enter $4/$2 for the first receipt line across the $7/$5
+settlements, and $3/$3 for the second line. Assign Groceries to the first line
+and Household to the second. Each approver must explicitly review and save that
+same matrix on `/evidence` under their own persona before reviewing the owner's
+proposal link. Allocation reviews are actor-scoped; switching personas never
+copies or silently attests another person's review. Return to the owner for
+execution after both approvals.
+
+`pnpm scenarios verify --faults` additionally exercises absent/failing OCR with
+manual fallback, ambiguous allocation and opening-equity acknowledgments with
+durable recovery, and held categorization results invalidated by consent, source,
+policy or grant revocation. These cases emit `fault-verification` records labeled
+`synthetic-evidence-service-fault`, use service/native contracts and a captured SDK
+transport, and report `actualWrite: false`. They are not browser/Better Auth/Actual
+scenario records. The ordinary demos do not install a fake production inference
+provider or transmit receipt data. Email forwarding remains deferred.
 
 #### Complete Review measurements (Linux)
 

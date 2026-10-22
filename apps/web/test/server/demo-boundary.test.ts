@@ -297,6 +297,35 @@ describe('enforceDemoBoundary', () => {
     expect(mismatchResponse).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
   });
 
+  it.each(['evidence-receipt-intake', 'evidence-plural-allocation', 'evidence-return-lifecycle', 'evidence-wallet-statement', 'evidence-categorization'])(
+    'admits private %s evidence setup and fences selected-space reads', (scenarioId) => {
+      for (const path of ['/api/evidence', '/api/evidence/resolve']) {
+        writeManifest({ phase: 'setup', budgetId: null, actorIds: [], scenarioId });
+        expect(enforceDemoBoundary(makeEvent(path, 'POST', { 'x-balanceframe-demo-internal': INTERNAL }))).toBeUndefined();
+        const publicSetup = makeEvent(path, 'POST');
+        expect(enforceDemoBoundary(publicSetup)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+        expect(publicSetup.status).toBe(403);
+      }
+      writeManifest({ scenarioId });
+      for (const path of ['/api/evidence', '/api/evidence/raw-document', '/api/proposal/proposal-demo']) {
+        expect(enforceDemoBoundary(makeEvent(path, 'GET', { 'x-balanceframe-space': 'space-demo' }))).toBeUndefined();
+        const otherSpace = makeEvent(path, 'GET', { 'x-balanceframe-space': 'other-space' });
+        expect(enforceDemoBoundary(otherSpace)).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+        expect(otherSpace.status).toBe(403);
+      }
+    },
+  );
+
+  it.each(['evidence-plural-allocation', 'evidence-wallet-statement'])(
+    'admits only private initial %s governance policy setup', (scenarioId) => {
+      const path = '/api/spaces/space-demo/policy';
+      writeManifest({ phase: 'setup', budgetId: null, actorIds: [], scenarioId });
+      expect(enforceDemoBoundary(makeEvent(path, 'PUT', { 'x-balanceframe-demo-internal': INTERNAL }))).toBeUndefined();
+      writeManifest({ scenarioId });
+      expect(enforceDemoBoundary(makeEvent(path, 'PUT'))).toMatchObject({ error: { code: 'DEMO_OPERATION_DISABLED' } });
+    },
+  );
+
   it.each([
     ...['donor-reallocation', 'coapproval-completion', 'donor-competition', 'protected-category', 'account-transfer'].flatMap((scenario) => [
       [scenario, '/api/spaces/space-demo/policy', 'PUT'],
@@ -306,6 +335,15 @@ describe('enforceDemoBoundary', () => {
       [scenario, '/api/proposal/proposal-demo/execute', 'POST'],
       [scenario, '/api/proposal/proposal-demo/reconcile', 'POST'],
     ]),
+    ['evidence-receipt-intake', '/api/evidence', 'POST'],
+    ['evidence-receipt-intake', '/api/evidence/extract-photo', 'POST'],
+    ['evidence-plural-allocation', '/api/evidence/allocation-preview', 'POST'],
+    ['evidence-plural-allocation', '/api/proposal/proposal-demo/execute', 'POST'],
+    ['evidence-return-lifecycle', '/api/evidence/receipt-review', 'POST'],
+    ['evidence-return-lifecycle', '/api/spaces/space-demo/memberships/member-demo/revoke', 'POST'],
+    ['evidence-wallet-statement', '/api/evidence/wallet-statements/proposal', 'POST'],
+    ['evidence-categorization', '/api/evidence/rules/approve', 'POST'],
+    ['evidence-categorization', '/api/evidence/inference/preview', 'POST'],
     ['governance-scoped-access', '/api/spaces/space-demo/grants', 'PUT'],
     ['governance-invitation-lifecycle', '/api/spaces/space-demo/memberships/member-demo/revoke', 'POST'],
     ['governance-invitation-lifecycle', '/api/spaces/space-demo/grants', 'PUT'],

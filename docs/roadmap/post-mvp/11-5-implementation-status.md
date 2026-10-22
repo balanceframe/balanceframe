@@ -59,7 +59,8 @@ remains open.
 
 1. **Camera first:** the user directed camera/photo upload first and email
    forwarding later. Email parsing/receiving remains a deferred Phase 11.5
-   requirement, not a completed feature. No live account access, receiver,
+   requirement outside the current v0.9 release scope, not a pending release
+   acceptance gate. No live account access, receiver,
    credentials, deployment, or external evidence transmission is authorized.
 2. **Optional local OCR:** the user approved Tesseract 5.5.3 (Apache-2.0),
    Leptonica 1.87.0 (BSD-2-Clause), and English tessdata_fast 4.1.0
@@ -168,3 +169,34 @@ sandbox limitation, independently of component/API verification.
 
 The release and authoritative roadmap exit must not be marked complete
 until the remaining acceptance criteria and validation gates are resolved.
+
+## Approved demo and local-seed follow-up
+
+The executable scenario catalog now includes five v0.9 families alongside the
+40 existing stories: `evidence-receipt-intake`, `evidence-plural-allocation`,
+`evidence-return-lifecycle`, `evidence-wallet-statement`, and
+`evidence-categorization`. See the [walkthroughs and commands](../../../README.md#transaction-evidence-walkthroughs-v090).
+These are independently loadable, authenticated disposable Actual workspaces;
+they are not only unit-test fixtures. Seeds use ordinary ingestion and exact
+normal grant handlers. Acceptance does not repair permissions through private
+SQLite writes or direct fixture approvals.
+
+Focused live acceptance verifies receipt/manual photo/PDF entry with OCR absent,
+plural allocation and native split reread/replay, returns/member/fulfillment and
+receipt-version revocation, human-attested statement coverage/revocation and
+governed opening equity, and deterministic item learning with model automation
+disabled. Each plural approver explicitly reviews and saves their own matrix
+before approving the same financial proposal; actor-private reviews are never
+copied or silently shared. Supervisor tests verify all five resets replace the
+budget, space, credentials and evidence IDs, maintain unique source counts, and
+fence stale, foreign-space and restricted-persona access.
+
+Eight additional separately labeled service/native fault cases cover absent or
+failing OCR with manual fallback, lost allocation/opening acknowledgments with
+durable read-only recovery, and held inference invalidated by consent, source,
+policy or grant revocation. Their `synthetic-evidence-service-fault` records
+report `actualWrite: false`; they do not claim authenticated browser or live
+Actual/provider transport evidence. No provider, package, deployment or live
+financial access was added. Browser and OCR-container acceptance remain subject
+to the environment limitations above; email forwarding remains intentionally
+deferred.

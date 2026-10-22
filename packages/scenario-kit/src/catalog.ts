@@ -268,7 +268,7 @@ export type ScenarioEntry =
   | { readonly kind: 'purchase'; readonly input: LiquidityPurchaseIntent }
   | { readonly kind: 'session'; readonly sessionKey: string }
   | { readonly kind: 'completion'; readonly sessionKey: string; readonly completionKey: string }
-  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/' };
+  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/evidence' | '/' };
 
 export interface MaterializedScenario {
   readonly id: ScenarioId;
@@ -1651,8 +1651,54 @@ function buildMerchantScenario(context: BuildContext, id: Extract<ScenarioId, `m
   return scenario;
 }
 
+function evidencePersona(scenario: MutableScenario, id: 'owner' | 'coapprover' | 'approver'): ScenarioPersona {
+  const owner = id === 'owner';
+  const persona = owner ? ownerPersona(scenario.ledger) : coapproverPersona(id, ['cat-groceries', 'cat-household']);
+  const rights: ResourceCapability[] = owner
+    ? ['observe', 'ingest', 'resolve', 'evidence', 'normalized-evidence', 'raw-document', 'ledger-effect', 'transaction.view', 'transaction',
+      'rule:view', 'item-rule:read', 'item-rule:propose', 'item-rule:approve', 'lifecycle:delete',
+      'ledger_projection:propose', 'ledger_projection:execute', 'wallet_materialization:propose', 'wallet_materialization:execute']
+    : ['observe', 'evidence', 'normalized-evidence', 'raw-document', 'source', 'transaction.view', 'ledger-effect',
+      'ledger_projection:approve', 'wallet_materialization:approve'];
+  if (!owner && scenario.id === 'evidence-plural-allocation') rights.push('resolve', 'transaction');
+  return {
+    ...persona,
+    displayName: owner ? 'Alex Evidence Household' : id === 'coapprover' ? 'Jordan Evidence Reviewer' : 'Taylor Evidence Reviewer',
+    membership: { ...persona.membership, capabilities: [...new Set([...persona.membership.capabilities, ...rights])] },
+    grants: [...persona.grants, ...(owner ? rights : ['observe'] as ResourceCapability[]).map((capability) => ({
+      resourceKind: 'budget' as const, resourceId: scenario.ledger.budgets[0]!.id, capability, granted: true,
+    }))],
+  };
+}
+
+function buildEvidenceScenario(context: BuildContext, id: ScenarioId): MutableScenario {
+  const scenario = baseScenario(context, id);
+  addCategory(scenario, { id: 'cat-household', name: 'Household', groupName: 'Home', isIncome: false });
+  addBudgetCategory(scenario, context.month(), 'cat-household', '10000');
+  addPolicyAccount(scenario, 'acct-checking', '0', { eligibleCategoryIds: ['cat-groceries', 'cat-household'] });
+  if (id === 'evidence-plural-allocation') {
+    for (const amount of ['700', '500']) addTransaction(scenario, {
+      id: `txn-evidence-${amount}`, accountId: 'acct-checking', date: context.date(),
+      payeeId: 'pay-market', payeeName: 'Market Basket', categoryId: 'cat-groceries', categoryName: 'Groceries',
+      amount: money(`-${amount}`), cleared: true, reconciled: false,
+      importedId: `fictional-evidence-${amount}`, importedPayee: 'Fictional Retailer',
+      notes: `Fictional existing settlement ${amount}`, tags: [], transferAccountId: null,
+    });
+  }
+  scenario.personas = [evidencePersona(scenario, 'owner'), evidencePersona(scenario, 'coapprover'),
+    evidencePersona(scenario, 'approver'), restrictedPersona()];
+  scenario.entry = { kind: 'page', path: '/evidence' };
+  return scenario;
+}
+
 function buildScenario(context: BuildContext, id: ScenarioId): MutableScenario {
   switch (id) {
+    case 'evidence-receipt-intake':
+    case 'evidence-plural-allocation':
+    case 'evidence-return-lifecycle':
+    case 'evidence-wallet-statement':
+    case 'evidence-categorization':
+      return buildEvidenceScenario(context, id);
     case 'funded-purchase':
       return buildFundedPurchase(context);
     case 'guilt-free-spending':
@@ -1728,6 +1774,31 @@ function buildScenario(context: BuildContext, id: ScenarioId): MutableScenario {
 }
 
 const SUMMARY_DATA: Readonly<Record<ScenarioId, Omit<ScenarioSummary, 'id'>>> = {
+  'evidence-receipt-intake': {
+    featureGroup: 'Evidence', title: 'Camera and manual receipt intake',
+    summary: 'Fictional photo, PDF and manual receipts retain exact totals without requiring OCR.',
+    suggestedActions: ['Open the fictional photo and PDF', 'Review quantities, totals and tenders manually', 'Inspect the mismatched receipt blocker'], supportedEventIds: [],
+  },
+  'evidence-plural-allocation': {
+    featureGroup: 'Evidence', title: 'Plural receipt allocation and governed settlement',
+    summary: 'Allocate a receipt across two existing settlements with independent approval and exact reread.',
+    suggestedActions: ['Review the 700/500 settlement matrix', 'Collect both independent approvals', 'Execute and reconcile once, then replay safely'], supportedEventIds: [],
+  },
+  'evidence-return-lifecycle': {
+    featureGroup: 'Evidence', title: 'Returns, members, fulfillment and receipt versions',
+    summary: 'Review linked returns and replacement receipts while preserving capacity and revocation boundaries.',
+    suggestedActions: ['Review return capacity and member periods', 'Confirm fulfillment links', 'Revoke a receipt version and inspect affected evidence'], supportedEventIds: [],
+  },
+  'evidence-wallet-statement': {
+    featureGroup: 'Evidence', title: 'Human-attested wallet statements and opening equity',
+    summary: 'Confirm exact local statement evidence before a separately approved nonzero wallet opening.',
+    suggestedActions: ['Inspect the imported unknown opening', 'Attest exact statement contents as a human', 'Approve and verify native opening equity, then revoke proof'], supportedEventIds: [],
+  },
+  'evidence-categorization': {
+    featureGroup: 'Evidence', title: 'Deterministic receipt categorization with manual fallback',
+    summary: 'Review item outcomes and approve a deterministic rule while optional models remain disabled.',
+    suggestedActions: ['Choose categories manually', 'Simulate and approve a reviewed rule', 'Inspect suggestions and revoke the rule'], supportedEventIds: [],
+  },
   'funded-purchase': {
     featureGroup: 'Purchase',
     title: 'Funded purchase',
@@ -2145,7 +2216,7 @@ function checkReferences(scenario: MutableScenario): void {
     )
       throw new Error('Entry references unknown account');
   } else if (scenario.entry.kind === 'page') {
-    if (!['/spaces', '/review', '/rules', '/'].includes(scenario.entry.path))
+    if (!['/spaces', '/review', '/rules', '/evidence', '/'].includes(scenario.entry.path))
       throw new Error('Page entry must use a registered normal-screen path');
   } else {
     if (!hasOwn(scenario.sessions, scenario.entry.sessionKey))
@@ -2255,7 +2326,8 @@ export function materializeScenario(id: string, anchor: Date): MaterializedScena
   const scenario = buildScenario(context, id);
   scenario.personas = scenario.personas.map((persona) =>
     persona.id === 'owner'
-      ? scenario.merchant ? merchantPersona(scenario, 'owner') : ownerPersona(scenario.ledger)
+      ? scenario.merchant ? merchantPersona(scenario, 'owner') : scenario.id.startsWith('evidence-')
+        ? evidencePersona(scenario, 'owner') : ownerPersona(scenario.ledger)
       : persona);
   if (Object.values(scenario.completions).some(({ approvers }) => approvers.includes('approver'))) {
     const sessions = Object.values(scenario.completions).map(({ sessionKey }) => scenario.sessions[sessionKey]!);
