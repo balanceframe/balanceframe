@@ -25,8 +25,9 @@ bypassed, and no additional transfer retry was attempted.
 Only synthetic, disposable fixtures were used. Ponytail Full governed bounded
 implementation and independent correctness/complexity reviews. Explicit
 Sol/high worker requests were admitted; backend model identity and the running
-lead's model selection were not independently attested. No difficult planning
-decision required Astra or a larger architecture change.
+lead's model selection were not independently attested. Initial bounded fixes
+needed no Astra planning or larger architecture change; the later read-only
+Windows integration decision used targeted Ponytail Ultra with Astra/high.
 
 ## Claim register
 
@@ -172,3 +173,37 @@ Follow-up local evidence: `/tmp/balanceframe-compose-ci-evidence.md`,
 `/tmp/balanceframe-container-ci-evidence.md`; first-run CI logs are
 `/tmp/balanceframe-ci-linux-ea04aba.log` and
 `/tmp/balanceframe-ci-windows-ea04aba.log`.
+
+The exact-head run39764531395 for `45fa5d0` completed. Both macOS jobs passed.
+Linux passed Compose5.3.1, all30 deployment controls, merchant measurement and
+scaled Actual/Review/Sync proofs, then executed the full instrumented suite.
+The final coverage check reported workspace90.24%, web changed files94.12% and
+adapter changed files85.13%. It failed only CLI changed files43.48% against the
+unchanged80% threshold: the aggregate command invoked the executable with no
+arguments, omitting the version/help/error subprocess paths checked locally.
+Aggregate coverage is not accepted as passing; later audit/clippy were skipped.
+The complete log is `/tmp/balanceframe-ci-linux-45fa5d0.log`.
+
+The bounded correction runs asserted real CLI subprocess cases through that
+same owned coverage stage: version, both help families, and parser errors.
+The runner regression reproduced43.48% before the wiring change and100%
+afterward. The exact reporter command covers46/46 entrypoint lines; all179 CLI
+tests and29 coverage-tool tests pass. No checker, threshold, production CLI,
+dependency or security assertion changed. Independent correctness/complexity
+reviews and lint/typecheck/syntax checks pass. A fresh exact-head CI run is
+still needed before accepting aggregate coverage. Evidence:
+`/tmp/balanceframe-cli-coverage-ci-evidence.md`.
+
+The Windows job's success badge is also not accepted. Its raw log confirms the
+same adapter/application cache errors were masked by the last portable command
+succeeding. CLI179, contract155 and eight static artifact checks did pass.
+The read-only integration assessment in
+`/tmp/balanceframe-windows-integration-plan.md` recommends transferring only
+PR38 commits `5da0080`, `b00e98e` and `de27067` into this main-based branch when
+authorized, preserving their complete cache/credential/CI security semantics,
+tests and documentation. Workflow and release-note contexts need adaptation;
+unrelated evidence features and dependencies are excluded. Then the combined
+candidate needs independent review and fresh exact-head native platform gates.
+No transfer or branch mutation was performed during that assessment. The
+earlier recommendation to merge the report fixes before resolving this Windows
+dependency is withdrawn. This PR is not merge-ready.
