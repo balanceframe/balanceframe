@@ -8,6 +8,15 @@
   >
     <template #content>
       <div class="space-y-6">
+        <p
+          v-if="!freshness"
+          role="status"
+          aria-label="Data freshness unavailable"
+          class="text-sm text-amber-700 dark:text-amber-300"
+        >
+          Data freshness unavailable.
+        </p>
+
         <!-- Composite score -->
         <UCard role="region" aria-label="Global health score — not purchase readiness">
           <template #header>
