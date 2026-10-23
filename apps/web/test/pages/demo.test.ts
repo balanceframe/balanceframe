@@ -385,6 +385,7 @@ describe('demo selector', () => {
     ['governance-scoped-access', '/spaces'],
     ['merchant-research-lifecycle', '/review'],
     ['merchant-native-rule-lifecycle', '/rules'],
+    ['evidence-receipt-intake', '/review#transaction-evidence'],
     ['merchant-recurrence-calendar', '/'],
   ])('opens the exact normal page entry for %s', async (scenarioId, path) => {
     state.scenarioId = scenarioId;
@@ -410,6 +411,8 @@ describe('demo selector', () => {
     '//attacker.example',
     '/spaces?invitationToken=private-token',
     '/review?apiKey=private-key',
+    '/review#apiKey=private-key',
+    '/review#transaction-evidence?apiKey=private-key',
     '/api/auth/api-key/create',
     '/spaces/other-space',
   ])('never navigates to an arbitrary or secret-bearing entry %s', async (path) => {

@@ -187,7 +187,7 @@ describe('Financial Health display states', () => {
     await flushPromises();
 
     expect(wrapper.get('[role="alert"]').text()).toBe(
-      'FETCH_ERROR: Error: Test network unavailable',
+      'FETCH_ERROR: Unable to load analysis. Please try again.',
     );
     expect(wrapper.find('[data-testid="composite-score"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="Insufficient Data"]').exists()).toBe(false);

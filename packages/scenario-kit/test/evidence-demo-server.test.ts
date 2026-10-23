@@ -142,8 +142,8 @@ describe('evidence demo reset and isolation through normal sessions', () => {
           originalCookie,
         );
         expect(entry.status).toBe(200);
-        expect(await entry.json()).toEqual({ generation: current.generation, path: '/evidence' });
-        const evidencePage = await api(demo, '/evidence', originalCookie);
+        expect(await entry.json()).toEqual({ generation: current.generation, path: '/review#transaction-evidence' });
+        const evidencePage = await api(demo, '/review', originalCookie);
         expect(evidencePage.status).toBe(200);
         const originalSpace = await selectedSpace(demo, originalCookie);
         const original = await documents(demo, originalCookie, family.count);

@@ -29,6 +29,7 @@
             data-navigation-popover
             @change="selectSpace"
           >
+            <option v-if="!currentSpaceId" value="" disabled>Select a space</option>
             <option v-for="space in spaceOptions" :key="space.id" :value="space.id">{{ space.name }}</option>
           </select>
           <p v-if="spaceSwitchError" role="alert" class="absolute left-4 top-14 z-50 rounded bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950 dark:text-red-200">{{ spaceSwitchError }}</p>
@@ -252,6 +253,24 @@
         </nav>
       </div>
     </header>
+    <div
+      v-if="isAuthenticated && spaceDiscoveryState !== 'idle' && (spaceDiscoveryState !== 'loaded' || !currentSpaceId)"
+      data-testid="space-discovery-status"
+      :role="spaceDiscoveryState === 'failed' ? 'alert' : 'status'"
+      class="flex flex-wrap items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100"
+    >
+      <span v-if="spaceDiscoveryState === 'loading'">Loading spaces…</span>
+      <span v-else-if="spaceDiscoveryState === 'failed'">Spaces could not be loaded.</span>
+      <span v-else-if="!spaceOptions.length">No spaces available. Open Spaces to manage access.</span>
+      <span v-else>Select a space to continue.</span>
+      <button
+        v-if="spaceDiscoveryState === 'failed'"
+        type="button"
+        class="underline focus-visible:outline focus-visible:outline-2"
+        @click="loadSpacePicker"
+      >Retry loading spaces</button>
+      <NuxtLink v-if="spaceDiscoveryState !== 'loading'" to="/spaces" class="underline focus-visible:outline focus-visible:outline-2">Open Spaces</NuxtLink>
+    </div>
     <DemoBanner />
     <div
       v-if="routePending"
@@ -355,6 +374,7 @@ const selectedSpaceId = ref('');
 const currentSpaceId = ref('');
 const spaceSwitching = ref(false);
 const spaceSwitchError = ref('');
+const spaceDiscoveryState = ref<'idle' | 'loading' | 'loaded' | 'failed'>('idle');
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const authorization = ref<{ capability?: string; allowed?: boolean } | null>(null);
 const SpaceListResponse = z.object({
@@ -509,16 +529,18 @@ async function refreshShell() {
 
 async function loadSpacePicker() {
   if (!isAuthenticated.value) return;
+  spaceDiscoveryState.value = 'loading';
   try {
     const parsed = SpaceListResponse.safeParse(await $fetch<unknown>('/api/spaces'));
-    if (!parsed.success) return;
+    if (!parsed.success) throw new Error('Invalid space discovery response');
     spaceOptions.value = parsed.data.result.spaces;
     selectedSpaceId.value = parsed.data.result.selectedSpaceId ?? '';
     currentSpaceId.value = selectedSpaceId.value;
     currentSpace.value =
       spaceOptions.value.find((space) => space.id === selectedSpaceId.value)?.name ?? currentSpace.value;
+    spaceDiscoveryState.value = 'loaded';
   } catch {
-    /* the page itself remains the recovery path when the picker cannot load */
+    spaceDiscoveryState.value = 'failed';
   }
 }
 
@@ -557,6 +579,7 @@ onMounted(() => {
       void loadSpacePicker();
       void refreshShell();
     } else {
+      spaceDiscoveryState.value = 'idle';
       spaceOptions.value = [];
       selectedSpaceId.value = '';
       currentSpaceId.value = '';

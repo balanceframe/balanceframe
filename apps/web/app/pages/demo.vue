@@ -606,7 +606,7 @@ async function openScenario() {
     if (
       generation !== current.generation ||
       typeof path !== 'string' ||
-      (!['/purchase-check', '/liquidity', '/spaces', '/review', '/rules', '/'].includes(path) &&
+      (!['/purchase-check', '/liquidity', '/spaces', '/review', '/review#transaction-evidence', '/rules', '/'].includes(path) &&
         !/^\/spend-sessions\/[a-zA-Z0-9_-]+(?:\/completions\/[a-zA-Z0-9_-]+)?$/.test(path)) ||
       state.value?.generation !== current.generation
     )

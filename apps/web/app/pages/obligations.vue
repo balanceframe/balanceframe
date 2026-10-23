@@ -3,6 +3,7 @@
     title="Irregular Obligations"
     :loading="loading"
     :error="error"
+    @retry="load"
     :freshness="freshness"
     :insufficient-data="!loading && !error && !hasData"
   >
@@ -45,6 +46,7 @@
 </template>
 
 <script setup lang="ts">
+import { analysisError } from '../utils/analysis-error';
 import type { Amount } from '../components/types';
 
 definePageMeta({ layout: 'default' });
@@ -69,7 +71,7 @@ interface IrregularObligation {
 }
 
 const loading = ref(true);
-const error = ref<{ code: string; message: string } | null>(null);
+const error = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const obligations = ref<IrregularObligation[]>([]);
 const totalEstimatedAnnual = ref<Amount | null>(null);
@@ -94,7 +96,9 @@ const obligationRows = computed(() =>
   })),
 );
 
-onMounted(async () => {
+async function load() {
+  loading.value = true;
+  error.value = null;
   try {
     const res = await $fetch<
       Envelope<{
@@ -109,13 +113,16 @@ onMounted(async () => {
     } else {
       error.value = {
         code: res.error?.code ?? 'UNKNOWN',
+        retryable: res.error?.retryable ?? false,
         message: res.error?.message ?? 'Obligations analysis returned an error.',
       };
     }
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(load);
 </script>

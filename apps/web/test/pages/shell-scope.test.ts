@@ -51,10 +51,70 @@ describe('shared shell scope', () => {
     expect(wrapper.find('select[aria-label="Select current space"]').exists()).toBe(false);
     session.value = { data: { user: { email: 'owner@example.com' } } };
     await flushPromises();
-    expect(wrapper.get('select[aria-label="Select current space"] option').text()).toBe('Current human space');
+    expect(wrapper.get('select[aria-label="Select current space"] option[value="late-session-space"]').text()).toBe('Current human space');
     session.value = { data: null };
     await flushPromises();
     expect(wrapper.find('select[aria-label="Select current space"]').exists()).toBe(false);
+  });
+
+  it.each(['network', 'error envelope', 'malformed response'])('offers retry and Spaces recovery after %s discovery failure', async (failure) => {
+    let failed = true;
+    const fetch = vi.fn(async (url: string) => {
+      if (url !== '/api/spaces') return { status: 'error', result: null };
+      if (failed) {
+        if (failure === 'network') throw new Error('Unavailable');
+        return failure === 'error envelope' ? { status: 'error', result: null } : { status: 'ok', result: {} };
+      }
+      return { status: 'ok', result: { spaces: [{ id: 'space-retry', name: 'Recovered space', kind: 'shared' }], selectedSpaceId: null } };
+    });
+    vi.stubGlobal('$fetch', fetch);
+    const wrapper = mount(DefaultLayout, { global: { stubs } });
+    await flushPromises();
+    const recovery = wrapper.get('[data-testid="space-discovery-status"]');
+    expect(recovery.attributes('role')).toBe('alert');
+    expect(recovery.text()).toContain('Spaces could not be loaded.');
+    expect(recovery.text()).not.toContain('No spaces available');
+    expect(recovery.get('a[href="/spaces"]').text()).toBe('Open Spaces');
+    failed = false;
+    await recovery.get('button').trigger('click');
+    await flushPromises();
+    expect((wrapper.get('select[aria-label="Select current space"]').element as HTMLSelectElement).value).toBe('');
+    expect(wrapper.get('option[value=""]').text()).toBe('Select a space');
+    expect(wrapper.get('option[value="space-retry"]').text()).toBe('Recovered space');
+    expect(wrapper.text()).not.toContain('Spaces could not be loaded.');
+    expect(fetch.mock.calls.every(([url]) => url === '/api/spaces' || url === '/api/home/budget-summary')).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('distinguishes confirmed no memberships from failed discovery without creating a space', async () => {
+    const fetch = vi.fn(async (url: string) => url === '/api/spaces'
+      ? { status: 'ok', result: { spaces: [], selectedSpaceId: null } }
+      : { status: 'error', result: null });
+    vi.stubGlobal('$fetch', fetch);
+    const wrapper = mount(DefaultLayout, { global: { stubs } });
+    await flushPromises();
+    const status = wrapper.get('[data-testid="space-discovery-status"]');
+    expect(status.attributes('role')).toBe('status');
+    expect(status.text()).toContain('No spaces available');
+    expect(status.get('a[href="/spaces"]').exists()).toBe(true);
+    expect(wrapper.find('select[aria-label="Select current space"]').exists()).toBe(false);
+    expect(fetch.mock.calls.every(([url]) => url === '/api/spaces' || url === '/api/home/budget-summary')).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('shows discovery loading without claiming the user has no spaces', async () => {
+    let resolveSpaces!: (value: unknown) => void;
+    const pending = new Promise((resolve) => { resolveSpaces = resolve; });
+    vi.stubGlobal('$fetch', vi.fn((url: string) => url === '/api/spaces'
+      ? pending : Promise.resolve({ status: 'error', result: null })));
+    const wrapper = mount(DefaultLayout, { global: { stubs } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="space-discovery-status"]').text()).toBe('Loading spaces…');
+    expect(wrapper.text()).not.toContain('No spaces available');
+    resolveSpaces({ status: 'ok', result: { spaces: [], selectedSpaceId: null } });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="space-discovery-status"]').text()).toContain('No spaces available');
+    wrapper.unmount();
   });
   it('shows current space, authorization scope, sync status and user menu sign out', async () => {
     vi.stubGlobal(

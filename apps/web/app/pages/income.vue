@@ -3,6 +3,7 @@
     title="Income Overview"
     :loading="loading"
     :error="error"
+    @retry="load"
     :freshness="freshness"
     :insufficient-data="!loading && !error && !hasData"
   >
@@ -67,6 +68,7 @@
 </template>
 
 <script setup lang="ts">
+import { analysisError } from '../utils/analysis-error';
 import type { Amount } from '../components/types';
 import { normalizedScorePercent, nullableNormalizedScorePercent } from '../utils/financial-display';
 
@@ -92,7 +94,7 @@ interface IncomeSource {
 }
 
 const loading = ref(true);
-const error = ref<{ code: string; message: string } | null>(null);
+const error = ref<{ code: string; message: string; retryable?: boolean } | null>(null);
 const freshness = ref<{ isStale: boolean; lastSync: string | null; label: string } | null>(null);
 const sources = ref<IncomeSource[]>([]);
 const totalMonthly = ref<Amount | null>(null);
@@ -124,7 +126,9 @@ const sourceRows = computed(() =>
   })),
 );
 
-onMounted(async () => {
+async function load() {
+  loading.value = true;
+  error.value = null;
   try {
     const res = await $fetch<
       Envelope<{
@@ -143,13 +147,16 @@ onMounted(async () => {
     } else {
       error.value = {
         code: res.error?.code ?? 'UNKNOWN',
+        retryable: res.error?.retryable ?? false,
         message: res.error?.message ?? 'Income analysis returned an error.',
       };
     }
   } catch (e) {
-    error.value = { code: 'FETCH_ERROR', message: String(e) };
+    error.value = analysisError(e);
   } finally {
     loading.value = false;
   }
-});
+}
+
+onMounted(load);
 </script>

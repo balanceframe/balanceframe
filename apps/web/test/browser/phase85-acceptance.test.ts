@@ -15,6 +15,10 @@ import ForecastPage from '../../app/pages/forecast-accuracy.vue';
 import ScenariosPage from '../../app/pages/scenarios.vue';
 import NotificationsPage from '../../app/pages/notifications/index.vue';
 import SavedViewPicker from '../../app/components/SavedViewPicker.vue';
+import AnalysisPage from '../../app/components/AnalysisPage.vue';
+import AnalysisTable from '../../app/components/AnalysisTable.vue';
+import SemanticAmount from '../../app/components/SemanticAmount.vue';
+import type { CashFlowProjectionResult } from '@balanceframe/application';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('$fetch', fetchMock);
@@ -105,26 +109,20 @@ const resultFor = (url: string) => {
   if (url.includes('cash-flow'))
     return {
       projectionMonths: 2,
-      projections: [
+      monthlyProjections: [
         {
           month: '2026-08',
-          income: { minorUnits: '100', currency: 'USD' },
-          expenses: { minorUnits: '50', currency: 'USD' },
-          netFlow: { minorUnits: '50', currency: 'USD' },
+          projectedIncome: { minorUnits: '100', currency: 'USD' },
+          projectedExpenses: { minorUnits: '50', currency: 'USD' },
+          netChange: { minorUnits: '50', currency: 'USD' },
           endingBalance: { minorUnits: '150', currency: 'USD' },
+          scheduledIncomeCount: 1,
+          scheduledExpenseCount: 1,
         },
       ],
-      summary: {
-        netProjection: { minorUnits: '50', currency: 'USD' },
-        minBalance: { minorUnits: '150', currency: 'USD' },
-        maxBalance: { minorUnits: '150', currency: 'USD' },
-      },
-      assumptions: { basedOn: 'scheduled_transactions', note: 'Fixture' },
-      scope: { monthsProjected: 2, accountsIncluded: [], categoriesIncluded: [] },
-      envelopeAvailability: { available: false, envelopeCount: 0 },
-      sufficientData: false,
-      dataWarning: 'Insufficient data',
-    };
+      sufficientData: true,
+      dataWarning: null,
+    } satisfies CashFlowProjectionResult;
   if (url.includes('targets/health')) return { categories: [], overallLabel: 'unknown' };
   if (url.includes('sinking-fund')) return { sinkingFunds: [], fullyFunded: 0 };
   if (url.includes('reports/history')) return { entries: [], total: 0 };
@@ -293,8 +291,65 @@ describe('Phase 8.5 deterministic browser acceptance workflows', () => {
   it('P8.5-01 overview with uncategorized blockers', async () => {
     expect((await mount(IndexPage)).text()).toMatch(/uncategorized/i);
   });
-  it('P8.5-06 no schedules and insufficient cash-flow data', async () => {
-    expect((await mount(CashFlowPage)).text()).toContain('Insufficient data');
+  it('P8.5-06 allows a first projection and shows no-schedule results with an insufficient-data warning', async () => {
+    const noSchedules: CashFlowProjectionResult = {
+      projectionMonths: 3,
+      monthlyProjections: ['2026-07', '2026-08', '2026-09'].map((month) => ({
+        month,
+        projectedIncome: { minorUnits: '0', currency: 'USD' },
+        projectedExpenses: { minorUnits: '0', currency: 'USD' },
+        netChange: { minorUnits: '0', currency: 'USD' },
+        endingBalance: { minorUnits: '5000', currency: 'USD' },
+        scheduledIncomeCount: 0,
+        scheduledExpenseCount: 0,
+      })),
+      sufficientData: false,
+      dataWarning: null,
+    };
+    fetchMock.mockResolvedValue(envelope(noSchedules));
+    const wrapper = shallowMount(CashFlowPage, {
+      global: {
+        stubs: {
+          ...stubs,
+          AnalysisPage,
+          AnalysisTable,
+          SemanticAmount,
+          UButton: { ...stubs.UButton, emits: ['click'] },
+          UIcon: true,
+          FreshnessBanner: true,
+          InsufficientDataPanel: true,
+        },
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(wrapper.text()).not.toContain('Projection data is insufficient.');
+    const project = wrapper.findAll('button').find((button) => button.text() === 'Project')!;
+    expect(project.exists()).toBe(true);
+    expect(project.attributes('disabled')).toBeUndefined();
+    await project.trigger('click');
+    await flushPromises();
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/cash-flow/project', {
+      query: { months: '3' },
+    });
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain('Projection data is insufficient.');
+    expect(
+      wrapper
+        .get('table')
+        .findAll('tbody tr')
+        .map((row) => row.findAll('td').map((cell) => cell.text())),
+    ).toEqual([
+      ['2026-07', '0.00 USD', '0.00 USD', '0.00 USD', '50.00 USD'],
+      ['2026-08', '0.00 USD', '0.00 USD', '0.00 USD', '50.00 USD'],
+      ['2026-09', '0.00 USD', '0.00 USD', '0.00 USD', '50.00 USD'],
+    ]);
+    expect(
+      wrapper
+        .findAll('button')
+        .find((button) => button.text() === 'Project')!
+        .attributes('disabled'),
+    ).toBeUndefined();
+    wrapper.unmount();
   });
   it('P8.5-07 populated cash-flow schedules', async () => {
     const w = await mount(CashFlowPage);

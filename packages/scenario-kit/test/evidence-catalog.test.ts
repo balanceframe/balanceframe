@@ -8,12 +8,12 @@ const stories = [
 ] as const;
 
 describe('v0.9 evidence demo catalog', () => {
-  it('registers five independently materialized /evidence stories alongside existing stories', () => {
+  it('registers five independently materialized transaction evidence stories alongside existing stories', () => {
     expect(listScenarios()).toHaveLength(45);
     for (const id of stories) {
       expect(listScenarios().find((story) => story.id === id)).toMatchObject({ featureGroup: 'Evidence' });
       const scenario = materializeScenario(id, new Date('2026-10-22T12:00:00Z'));
-      expect(scenario.entry).toEqual({ kind: 'page', path: '/evidence' });
+      expect(scenario.entry).toEqual({ kind: 'page', path: '/review#transaction-evidence' });
       expect(scenario.personas.map((persona) => persona.id)).toEqual(['owner', 'coapprover', 'approver', 'restricted']);
       expect(scenario.personas.find((persona) => persona.id === 'restricted')?.grants
         .some((grant) => grant.resourceKind === 'evidence')).toBe(false);

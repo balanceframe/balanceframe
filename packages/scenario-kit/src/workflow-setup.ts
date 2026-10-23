@@ -66,7 +66,7 @@ export type ScenarioMappedEntry =
       readonly completionKey: string;
       readonly completionId: string;
     }
-  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/evidence' | '/' };
+  | { readonly kind: 'page'; readonly path: '/spaces' | '/review' | '/rules' | '/review#transaction-evidence' | '/' };
 
 export interface ScenarioInitialized {
   readonly spaceId: string;

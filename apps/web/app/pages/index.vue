@@ -172,7 +172,7 @@
               </div>
               <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 <p>Remaining: <SemanticAmount :amount="cr.remainingBudget" /></p>
-                <p>{{ cr.daysRemaining }} days remaining</p>
+                <p v-if="cr.daysRemaining !== null">{{ cr.daysRemaining }} days remaining</p>
               </div>
               <ReasonCodeList v-if="cr.reasonCodes?.length" :codes="cr.reasonCodes" class="mt-2" />
             </UCard>
@@ -294,7 +294,7 @@ interface CategoryRisk {
   risk: string;
   reasonCodes: string[];
   remainingBudget: Amount;
-  daysRemaining: number;
+  daysRemaining: number | null;
 }
 
 interface TargetProgress {
