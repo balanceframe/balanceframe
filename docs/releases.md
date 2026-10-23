@@ -2,8 +2,9 @@
 
 ## Unreleased v0.9.0 — Transaction evidence and intelligent resolution
 
-Implementation and acceptance are still in progress; this is not a published
-release. See the [current acceptance checklist](roadmap/post-mvp/11-5-implementation-status.md).
+Stable acceptance is still in progress; this is not a completed stable release.
+See the [current acceptance checklist](roadmap/post-mvp/11-5-implementation-status.md)
+and the [acceptance-testing beta policy](#acceptance-testing-betas).
 
 - Immutable scoped evidence, encrypted raw retention/deletion, camera/photo and
   manual photo/PDF receipt entry, with optional local OCR isolated in a default-off Compose
@@ -20,9 +21,10 @@ release. See the [current acceptance checklist](roadmap/post-mvp/11-5-implementa
   preview, independent local/external permissions and three policy opt-ins, durable
   consent/quota/cache/audit, and asynchronous source/authority revalidation. Rules
   run first; manual entry remains available. Production providers are unconfigured.
-- Email forwarding is deferred by user direction. Authenticated browser validation,
-  the OCR container build and final workspace/release gates remain open. No live
-  financial changes, account connections or deployment are included.
+- Email forwarding is deferred by user direction. Authenticated browser validation
+  and optional OCR-container verification remain open. Automated release gates
+  must pass for each tagged release. No live financial changes or account
+  connections are authorized by a beta release.
 
 ## Unreleased — fixes
 
@@ -81,22 +83,68 @@ all stable releases. Before `1.0.0`, `0.y.z` semantics apply:
   backward-compatible.
 
 - **Pre-releases** use the suffix `-rc.N` or `-beta.N` (e.g. `v0.1.0-rc.1`).
-  Pre-releases never advance `vMAJOR`, `vMAJOR.MINOR`, or `latest` tags on the
+  Pre-releases never advance `MAJOR`, `MAJOR.MINOR`, or `latest` tags on the
   image registry.
 
 ## Release channels
 
 | Channel               | Tag pattern     | Image tag semantics                                                    |
 | --------------------- | --------------- | ---------------------------------------------------------------------- |
-| **Stable**            | `vX.Y.Z`        | Immutable `vX.Y.Z`, mutable `vX.Y` and `vX` advance, `latest` advances |
-| **Release candidate** | `vX.Y.Z-rc.N`   | Immutable `vX.Y.Z-rc.N` only; no convenience aliases                   |
-| **Beta**              | `vX.Y.Z-beta.N` | Immutable `vX.Y.Z-beta.N` only; no convenience aliases                 |
+| **Stable**            | `vX.Y.Z`        | Version tag `X.Y.Z`; mutable `X.Y`, `X` and `latest` advance            |
+| **Release candidate** | `vX.Y.Z-rc.N`   | Version tag `X.Y.Z-rc.N` only; no convenience aliases                  |
+| **Beta**              | `vX.Y.Z-beta.N` | Version tag `X.Y.Z-beta.N` only; no convenience aliases                |
+
+Git tags include the `v` prefix; image tags do not. Pin an image digest for an
+immutable installation reference.
+
+## Acceptance-testing betas
+
+An explicitly approved beta may be published to gather the outstanding browser
+and container acceptance evidence listed in the release's checklist. Release
+notes must identify unresolved acceptance checks and audit findings, directly or
+through the linked release policy and checklist. Publishing a beta does not
+record those checks as passed.
+
+All automated release gates apply unchanged to beta tags.
+Verification must pass before image publication; signing, provenance, SBOM and
+release assets remain required. GitHub marks the published release as a
+prerelease. Beta images never advance stable or rolling aliases.
+
+An acceptance-testing beta does not complete the stable release or roadmap exit.
+Stable publication still requires resolving the remaining acceptance criteria
+and validation gates in the owning checklist.
+
+For v0.9.0, the proposed first beta is `v0.9.0-beta.1`, producing
+`ghcr.io/balanceframe/balanceframe:0.9.0-beta.1` only after successful publication.
+Authenticated browser acceptance remains unverified. OCR is a separate,
+default-off image/profile whose container build and runtime acceptance remain
+unverified; the core release workflow does not publish that optional image.
+Manual photo/PDF entry and core health must work without OCR. Receipt model
+providers remain unconfigured.
+
+The last full registry audit ([CI run 128, 2026-10-23](https://github.com/balanceframe/balanceframe/actions/runs/39945116352))
+reported 2 high, 10 moderate and 2 low findings, including registry advisories
+for locally patched `node-forge` and `braces`. This beta does not claim a clean
+dependency audit. Browser acceptance is blocked by the Chromium sandbox; the
+optional OCR image build is blocked by DNS resolution of `deb.debian.org`.
+
+Use a separate installation, new disposable volumes and a fictional Actual
+budget, with normal bootstrap, sign-in and explicit least-privilege grants.
+Do not attach a beta to production data or reuse a live installation's volumes.
+The production image excludes the source-only scenario/demo launcher and rejects
+development authentication bypasses. The source
+[walkthroughs](../README.md#transaction-evidence-walkthroughs-v090) describe the
+five fictional evidence stories; their automated API checks do not replace
+operating the UI in a real browser.
 
 ## Release process
 
-1. Update root `package.json` version to the release version (e.g. `0.1.4`).
-2. Create an annotated Git tag: `git tag -a v0.1.4 -m "v0.1.4"`
-3. Push the tag: `git push origin v0.1.4`
+1. Set root `package.json` to the base release version (e.g. `0.9.0` for
+   `v0.9.0` or `v0.9.0-beta.1`). Complete the applicable stable or beta policy
+   above before tagging the approved commit on main.
+2. Create the approved annotated Git tag, for example:
+   `git tag -a v0.9.0-beta.1 -m "v0.9.0-beta.1"`.
+3. Push that tag: `git push origin v0.9.0-beta.1`.
 4. The `release.yml` GitHub Actions workflow runs two sequential jobs with
    separate timeout budgets:
    - `verify` (45 minutes):
@@ -111,7 +159,8 @@ all stable releases. Before `1.0.0`, `0.y.z` semantics apply:
      - Release asset generation from current templates (`just release-assets`):
        digest-pinned `compose.yaml`, `compose.actual.yaml`, opt-in
        `compose.research.yaml`, inert `.env.example`, and SHA-256 checksums
-     - GitHub Release draft with all assets
+     - Published GitHub Release with all assets (`draft: false`); tags containing
+       `-` are marked as prereleases
 
 ## OCI registry
 
@@ -123,7 +172,8 @@ ghcr.io/<owner>/balanceframe@sha256:<digest>
 ```
 
 Immutable digest references are the canonical image identifier. Human-readable
-tags (`vX.Y.Z`, `vX.Y`, `vX`, `latest`) are convenience aliases.
+tags (`X.Y.Z`, `X.Y`, `X`, `latest`) are convenience aliases. Prereleases use
+only their full version tag, such as `0.9.0-beta.1`.
 
 ## Configuration stability
 

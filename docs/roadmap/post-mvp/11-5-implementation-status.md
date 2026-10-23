@@ -167,8 +167,12 @@ sandbox limitation, independently of component/API verification.
   verified Docker image. The core-only and opt-in Compose boundaries have
   automated tests.
 
-The release and authoritative roadmap exit must not be marked complete
+The stable release and authoritative roadmap exit must not be marked complete
 until the remaining acceptance criteria and validation gates are resolved.
+An explicitly approved [acceptance-testing beta](../../releases.md#acceptance-testing-betas)
+may gather the remaining browser and container evidence while keeping those
+checks open. All automated release gates still apply; a beta does not establish
+stable acceptance or verify the optional OCR image.
 
 ## Approved demo and local-seed follow-up
 
