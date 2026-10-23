@@ -144,6 +144,9 @@ jobs:
       - name: Test protocol contracts
         run: pnpm --filter @balanceframe/test-contract test
 
+      - name: Test editor security with captured Windows process calls
+        run: node --test tests/dependency-security/launch-editor.test.mjs
+
       - name: Run Rust tests
         run: cargo test --workspace
 
